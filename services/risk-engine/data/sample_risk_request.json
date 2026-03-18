@@ -1,0 +1,60 @@
+{
+  "transaction_payload": {
+    "tx_hash": "0xphase1sample",
+    "from_address": "0x1111111111111111111111111111111111111111",
+    "to_address": "0x2222222222222222222222222222222222222222",
+    "value": 1850000.0,
+    "gas_price": 57.0,
+    "gas_limit": 900000,
+    "chain_id": 1,
+    "calldata_size": 644,
+    "token_transfers": [
+      {"token": "USTB", "amount": 550000},
+      {"token": "WETH", "amount": 1200},
+      {"token": "WBTC", "amount": 40},
+      {"token": "USDC", "amount": 300000}
+    ],
+    "metadata": {
+      "contains_flash_loan_hop": true,
+      "entrypoint": "aggregator-router"
+    }
+  },
+  "decoded_function_call": {
+    "function_name": "flashLoan",
+    "contract_name": "LiquidityRouter",
+    "arguments": {
+      "receiver": "0x3333333333333333333333333333333333333333",
+      "owner": "0x4444444444444444444444444444444444444444",
+      "assets": ["USTB", "WETH"]
+    },
+    "selectors": ["0xabcd1234"]
+  },
+  "wallet_reputation": {
+    "address": "0x1111111111111111111111111111111111111111",
+    "score": 22,
+    "prior_flags": 3,
+    "account_age_days": 5,
+    "kyc_verified": false,
+    "sanctions_hits": 0,
+    "known_safe": false,
+    "recent_counterparties": 27,
+    "metadata": {"watchlist": "elevated"}
+  },
+  "contract_metadata": {
+    "address": "0x2222222222222222222222222222222222222222",
+    "contract_name": "LiquidityRouter",
+    "verified_source": false,
+    "proxy": true,
+    "created_days_ago": 3,
+    "tvl": 9000000.0,
+    "audit_count": 0,
+    "categories": ["dex", "router"],
+    "static_flags": {
+      "uses_delegatecall": true,
+      "external_call_in_loop": true,
+      "obfuscated_storage": true
+    },
+    "metadata": {"deployer_reputation": "unknown"}
+  },
+  "recent_market_events": []
+}
