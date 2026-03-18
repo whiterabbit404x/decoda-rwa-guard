@@ -460,17 +460,37 @@ const fallbackThreatDashboard: ThreatDashboardResponse = {
 
 type BackendState = 'online' | 'degraded' | 'offline';
 
+const DEFAULT_API_URL = 'http://127.0.0.1:8000';
+const DEFAULT_FETCH_TIMEOUT_MS = 1500;
+
+function resolveFetchTimeoutMs() {
+  const value = Number(process.env.NEXT_PUBLIC_API_TIMEOUT_MS ?? DEFAULT_FETCH_TIMEOUT_MS);
+
+  if (!Number.isFinite(value) || value <= 0) {
+    return DEFAULT_FETCH_TIMEOUT_MS;
+  }
+
+  return value;
+}
+
 async function fetchJson<T>(path: string): Promise<T | null> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), resolveFetchTimeoutMs());
 
   try {
-    const response = await fetch(`${apiUrl}${path}`, { cache: 'no-store' });
+    const response = await fetch(`${apiUrl}${path}`, {
+      cache: 'no-store',
+      signal: controller.signal
+    });
     if (!response.ok) {
       return null;
     }
     return (await response.json()) as T;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -517,7 +537,7 @@ export default async function Page() {
   const cards = dashboard?.cards?.length ? dashboard.cards : fallbackCards;
   const services = dashboard?.services ?? [];
   const backendState = resolveBackendState(dashboard, riskDashboard, threatDashboard);
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL;
   const summaryCards = [
     {
       label: 'Risk queue',
