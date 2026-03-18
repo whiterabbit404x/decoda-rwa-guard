@@ -1,5 +1,10 @@
 """Seed script for risk-engine."""
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
 from phase1_local.dev_support import load_env_file, pretty_json, seed_service
 
 load_env_file()

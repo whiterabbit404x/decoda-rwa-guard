@@ -256,6 +256,8 @@ fallbackRiskDashboard.decisions_log = [...fallbackRiskDashboard.transaction_queu
     source: 'mock'
   }));
 
+type BackendState = 'online' | 'degraded' | 'offline';
+
 async function getDashboard(): Promise<DashboardResponse | null> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 
@@ -300,10 +302,21 @@ function formatRules(rules: string[]) {
   return rules.length > 0 ? rules : ['No triggered rules'];
 }
 
+function resolveBackendState(dashboard: DashboardResponse | null, riskDashboard: RiskDashboardResponse): BackendState {
+  if (!dashboard) {
+    return 'offline';
+  }
+  if (riskDashboard.source !== 'live') {
+    return 'degraded';
+  }
+  return 'online';
+}
+
 export default async function Page() {
   const [dashboard, riskDashboard] = await Promise.all([getDashboard(), getRiskDashboard()]);
   const cards = dashboard?.cards?.length ? dashboard.cards : fallbackCards;
   const services = dashboard?.services ?? [];
+  const backendState = resolveBackendState(dashboard, riskDashboard);
   const summaryCards = [
     {
       label: 'Risk queue',
@@ -321,6 +334,12 @@ export default async function Page() {
       meta: 'allow / review / block'
     }
   ];
+  const backendBanner =
+    backendState === 'online'
+      ? 'Live API + risk-engine data streaming into the dashboard.'
+      : backendState === 'degraded'
+        ? 'API is reachable, but the risk-engine is unavailable. Showing fallback risk records until port 8001 returns.'
+        : 'Backend is unavailable. The dashboard is showing offline fallback data so the UI still renders cleanly.';
 
   return (
     <main className="container">
@@ -339,6 +358,10 @@ export default async function Page() {
           <p><strong>Risk feed:</strong> {riskDashboard.source === 'live' ? 'risk-engine live data' : 'mock fallback data'}</p>
         </div>
       </div>
+
+      <section className={`banner banner-${backendState}`}>
+        <strong>Runtime status:</strong> {backendBanner}
+      </section>
 
       <section className="summaryGrid">
         {summaryCards.map((card) => (
@@ -364,7 +387,7 @@ export default async function Page() {
       <section className="dashboardSection">
         <div className="sectionHeader">
           <h2>Transaction Queue</h2>
-          <p>Live evaluations from the local risk-engine, or mock records when the backend is unavailable.</p>
+          <p>Live evaluations from the local risk-engine, with graceful fallback records when the backend is unavailable.</p>
         </div>
         <div className="stack">
           {riskDashboard.transaction_queue.map((item) => (

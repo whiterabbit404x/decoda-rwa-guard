@@ -26,7 +26,7 @@ def spawn(service_name: str, port: int) -> subprocess.Popen[str]:
     env.setdefault('REDIS_ENABLED', 'false')
     env.setdefault('PORT', str(port))
     existing_path = env.get('PYTHONPATH', '')
-    env['PYTHONPATH'] = str(REPO_ROOT) if not existing_path else f"{REPO_ROOT}:{existing_path}"
+    env['PYTHONPATH'] = str(REPO_ROOT) if not existing_path else f"{REPO_ROOT}{os.pathsep}{existing_path}"
     return subprocess.Popen(
         [
             sys.executable,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from fastapi import FastAPI
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from phase1_local.dev_support import (
     dashboard_payload,

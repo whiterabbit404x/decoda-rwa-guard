@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from phase1_local.dev_support import load_env_file, database_url, load_service, resolve_sqlite_path, seed_service
 

@@ -16,9 +16,10 @@ body {
 }
 
 .container {
-  max-width: 1240px;
-  margin: 0 auto;
-  padding: 2rem 1rem 4rem;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 2rem clamp(1rem, 2vw, 2rem) 4rem;
 }
 
 .hero {
@@ -156,6 +157,32 @@ p {
 .serviceSection,
 .twoColumnSection {
   margin-top: 2.5rem;
+}
+
+.banner {
+  margin-top: 1.25rem;
+  padding: 0.95rem 1rem;
+  border-radius: 16px;
+  border: 1px solid #30363d;
+  background: rgba(22, 27, 34, 0.92);
+}
+
+.banner-online {
+  border-color: rgba(46, 160, 67, 0.35);
+  background: rgba(46, 160, 67, 0.12);
+  color: #c4f2c8;
+}
+
+.banner-degraded {
+  border-color: rgba(242, 204, 96, 0.35);
+  background: rgba(187, 128, 9, 0.14);
+  color: #ffe59b;
+}
+
+.banner-offline {
+  border-color: rgba(248, 81, 73, 0.35);
+  background: rgba(248, 81, 73, 0.14);
+  color: #ffb4af;
 }
 
 .sectionHeader {
