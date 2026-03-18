@@ -1,3 +1,5 @@
+import ThreatDemoPanel from './threat-demo-panel';
+
 type DashboardCard = {
   title: string;
   status: string;
@@ -99,6 +101,43 @@ type RiskDashboardResponse = {
   risk_alerts: RiskAlert[];
   contract_scan_results: ContractScanResult[];
   decisions_log: DecisionLogEntry[];
+};
+
+type ThreatCard = {
+  label: string;
+  value: string;
+  detail: string;
+  tone: string;
+};
+
+type ThreatDetection = {
+  id: string;
+  category: 'contract' | 'transaction' | 'market';
+  title: string;
+  score: number;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  action: 'allow' | 'review' | 'block';
+  source: 'live' | 'fallback';
+  explanation: string;
+  patterns: string[];
+};
+
+type ThreatDashboardResponse = {
+  source: 'live' | 'fallback';
+  degraded: boolean;
+  generated_at: string;
+  summary: {
+    average_score: number;
+    critical_or_high_alerts: number;
+    blocked_actions: number;
+    review_actions: number;
+    market_anomaly_types: string[];
+  };
+  cards: ThreatCard[];
+  active_alerts: ThreatDetection[];
+  recent_detections: ThreatDetection[];
+  sample_scenarios: Record<string, string>;
+  message: string;
 };
 
 const fallbackCards: DashboardCard[] = [
@@ -272,41 +311,182 @@ fallbackRiskDashboard.decisions_log = [...fallbackRiskDashboard.transaction_queu
     source: 'fallback'
   }));
 
+const fallbackThreatDashboard: ThreatDashboardResponse = {
+  source: 'fallback',
+  degraded: true,
+  generated_at: '2026-03-18T10:00:00Z',
+  summary: {
+    average_score: 64.3,
+    critical_or_high_alerts: 4,
+    blocked_actions: 3,
+    review_actions: 2,
+    market_anomaly_types: [
+      'Abnormal volume spike',
+      'Spoofing-like order behavior',
+      'Wash-trading-like loops',
+      'Abnormal rapid swings'
+    ]
+  },
+  cards: [
+    { label: 'Threat score', value: '82', detail: 'Fallback contract threat score from Feature 2 scenarios.', tone: 'critical' },
+    { label: 'Active alerts', value: '4', detail: 'Fallback critical and high-confidence detections.', tone: 'high' },
+    { label: 'Blocked / reviewed', value: '3/2', detail: 'Fallback action split when the threat-engine is offline.', tone: 'medium' },
+    { label: 'Market anomaly avg', value: '70.0', detail: 'Fallback anomaly average across bundled market scenarios.', tone: 'high' }
+  ],
+  active_alerts: [
+    {
+      id: 'det-001',
+      category: 'transaction',
+      title: 'Suspicious flash-loan-like transaction',
+      score: 88,
+      severity: 'critical',
+      action: 'block',
+      source: 'fallback',
+      explanation: 'Fallback analysis flagged flash-loan setup, rapid drain indicators, and weak counterparty reputation.',
+      patterns: ['Flash-loan indicator', 'High-value drain attempt', 'Burst of high-risk actions']
+    },
+    {
+      id: 'det-002',
+      category: 'transaction',
+      title: 'Admin privilege abuse scenario',
+      score: 75,
+      severity: 'critical',
+      action: 'block',
+      source: 'fallback',
+      explanation: 'Fallback analysis detected unexpected admin activity and drain path indicators.',
+      patterns: ['Unexpected admin action', 'Role mismatch', 'High-value drain attempt']
+    },
+    {
+      id: 'det-003',
+      category: 'market',
+      title: 'Spoofing-like treasury token market',
+      score: 80,
+      severity: 'critical',
+      action: 'block',
+      source: 'fallback',
+      explanation: 'Fallback anomaly detection found cancellation bursts, rapid swings, and concentrated volume.',
+      patterns: ['Spoofing-like order behavior', 'Abnormal volume spike', 'Abnormal rapid swings']
+    },
+    {
+      id: 'det-004',
+      category: 'market',
+      title: 'Wash-trading-like treasury token market',
+      score: 77,
+      severity: 'critical',
+      action: 'block',
+      source: 'fallback',
+      explanation: 'Fallback anomaly detection found circular trading and dominant wallet cluster concentration.',
+      patterns: ['Wash-trading-like loops', 'Wallet cluster concentration']
+    }
+  ],
+  recent_detections: [
+    {
+      id: 'det-001',
+      category: 'transaction',
+      title: 'Suspicious flash-loan-like transaction',
+      score: 88,
+      severity: 'critical',
+      action: 'block',
+      source: 'fallback',
+      explanation: 'Fallback analysis flagged flash-loan setup, rapid drain indicators, and weak counterparty reputation.',
+      patterns: ['Flash-loan indicator', 'Borrow / swap / repay burst', 'High-value drain attempt']
+    },
+    {
+      id: 'det-002',
+      category: 'transaction',
+      title: 'Admin privilege abuse scenario',
+      score: 75,
+      severity: 'critical',
+      action: 'block',
+      source: 'fallback',
+      explanation: 'Fallback analysis detected unexpected admin activity and drain path indicators.',
+      patterns: ['Unexpected admin action', 'Role mismatch']
+    },
+    {
+      id: 'det-003',
+      category: 'market',
+      title: 'Spoofing-like treasury token market',
+      score: 80,
+      severity: 'critical',
+      action: 'block',
+      source: 'fallback',
+      explanation: 'Fallback anomaly detection found cancellation bursts, rapid swings, and concentrated volume.',
+      patterns: ['Spoofing-like order behavior', 'Abnormal volume spike', 'Abnormal rapid swings']
+    },
+    {
+      id: 'det-004',
+      category: 'market',
+      title: 'Wash-trading-like treasury token market',
+      score: 77,
+      severity: 'critical',
+      action: 'block',
+      source: 'fallback',
+      explanation: 'Fallback anomaly detection found circular trading and dominant wallet cluster concentration.',
+      patterns: ['Wash-trading-like loops', 'Wallet cluster concentration']
+    },
+    {
+      id: 'det-005',
+      category: 'contract',
+      title: 'Proxy router contract scan',
+      score: 82,
+      severity: 'critical',
+      action: 'block',
+      source: 'fallback',
+      explanation: 'Fallback contract analysis found privilege escalation, drain path, and untrusted integration indicators.',
+      patterns: ['Unsafe admin action', 'Rapid drain path', 'Untrusted contract interaction']
+    },
+    {
+      id: 'det-006',
+      category: 'transaction',
+      title: 'Safe treasury settlement',
+      score: 6,
+      severity: 'low',
+      action: 'allow',
+      source: 'fallback',
+      explanation: 'Fallback analysis found no material threat indicators in the safe settlement scenario.',
+      patterns: []
+    }
+  ],
+  sample_scenarios: {
+    safe_transaction: 'Safe transaction',
+    flash_loan_transaction: 'Suspicious flash-loan-like transaction',
+    admin_privilege_transaction: 'Admin privilege abuse scenario',
+    normal_market: 'Normal market behavior',
+    spoofing_market: 'Spoofing-like market behavior',
+    wash_trading_market: 'Wash-trading-like market behavior'
+  },
+  message: 'Threat-engine unavailable or timed out. Returning explicit fallback detections so the dashboard and demo panel remain usable.'
+};
+
 type BackendState = 'online' | 'degraded' | 'offline';
 
-async function getDashboard(): Promise<DashboardResponse | null> {
+async function fetchJson<T>(path: string): Promise<T | null> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 
   try {
-    const response = await fetch(`${apiUrl}/dashboard`, { cache: 'no-store' });
-
+    const response = await fetch(`${apiUrl}${path}`, { cache: 'no-store' });
     if (!response.ok) {
       return null;
     }
-
-    return (await response.json()) as DashboardResponse;
+    return (await response.json()) as T;
   } catch {
     return null;
   }
 }
 
-async function getRiskDashboard(): Promise<RiskDashboardResponse> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
-
-  try {
-    const response = await fetch(`${apiUrl}/risk/dashboard`, { cache: 'no-store' });
-
-    if (!response.ok) {
-      return fallbackRiskDashboard;
-    }
-
-    return (await response.json()) as RiskDashboardResponse;
-  } catch {
-    return fallbackRiskDashboard;
-  }
+async function getDashboard(): Promise<DashboardResponse | null> {
+  return fetchJson<DashboardResponse>('/dashboard');
 }
 
-function statusTone(status: 'ALLOW' | 'REVIEW' | 'BLOCK') {
+async function getRiskDashboard(): Promise<RiskDashboardResponse> {
+  return (await fetchJson<RiskDashboardResponse>('/risk/dashboard')) ?? fallbackRiskDashboard;
+}
+
+async function getThreatDashboard(): Promise<ThreatDashboardResponse> {
+  return (await fetchJson<ThreatDashboardResponse>('/threat/dashboard')) ?? fallbackThreatDashboard;
+}
+
+function statusTone(status: string) {
   return status.toLowerCase();
 }
 
@@ -318,21 +498,26 @@ function formatRules(rules: string[]) {
   return rules.length > 0 ? rules : ['No triggered rules'];
 }
 
-function resolveBackendState(dashboard: DashboardResponse | null, riskDashboard: RiskDashboardResponse): BackendState {
+function resolveBackendState(dashboard: DashboardResponse | null, riskDashboard: RiskDashboardResponse, threatDashboard: ThreatDashboardResponse): BackendState {
   if (!dashboard) {
     return 'offline';
   }
-  if (riskDashboard.degraded || riskDashboard.source !== 'live') {
+  if (riskDashboard.degraded || threatDashboard.degraded || riskDashboard.source !== 'live' || threatDashboard.source !== 'live') {
     return 'degraded';
   }
   return 'online';
 }
 
 export default async function Page() {
-  const [dashboard, riskDashboard] = await Promise.all([getDashboard(), getRiskDashboard()]);
+  const [dashboard, riskDashboard, threatDashboard] = await Promise.all([
+    getDashboard(),
+    getRiskDashboard(),
+    getThreatDashboard()
+  ]);
   const cards = dashboard?.cards?.length ? dashboard.cards : fallbackCards;
   const services = dashboard?.services ?? [];
-  const backendState = resolveBackendState(dashboard, riskDashboard);
+  const backendState = resolveBackendState(dashboard, riskDashboard, threatDashboard);
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
   const summaryCards = [
     {
       label: 'Risk queue',
@@ -345,6 +530,11 @@ export default async function Page() {
       meta: `Source: ${riskDashboard.source}`
     },
     {
+      label: 'Feature 2 avg threat',
+      value: `${threatDashboard.summary.average_score}`,
+      meta: `${threatDashboard.summary.critical_or_high_alerts} critical/high alerts`
+    },
+    {
       label: 'Decision split',
       value: `${riskDashboard.summary.allow_count}/${riskDashboard.summary.review_count}/${riskDashboard.summary.block_count}`,
       meta: 'allow / review / block'
@@ -352,9 +542,9 @@ export default async function Page() {
   ];
   const backendBanner =
     backendState === 'online'
-      ? 'Live API + risk-engine data streaming into the dashboard.'
+      ? 'Live API + risk-engine + threat-engine data streaming into the dashboard.'
       : backendState === 'degraded'
-        ? riskDashboard.message
+        ? `${riskDashboard.message} ${threatDashboard.message}`
         : 'Backend is unavailable. The dashboard is showing offline fallback data so the UI still renders cleanly.';
 
   return (
@@ -364,7 +554,7 @@ export default async function Page() {
           <p className="eyebrow">Phase 1 local development</p>
           <h1>Tokenized Treasury Control Dashboard</h1>
           <p className="lede">
-            The dashboard now reads the local API for backend health and live risk-engine decisions, while preserving a fallback safety net when the services are offline.
+            The dashboard now combines the stable Phase 1 risk-engine with Feature 2 preemptive cybersecurity and market anomaly detection, while preserving graceful fallbacks when local services are offline.
           </p>
         </div>
         <div className="heroPanel">
@@ -372,7 +562,8 @@ export default async function Page() {
           <p><strong>Database:</strong> {dashboard?.database_url ?? 'sqlite:///.data/phase1.db'}</p>
           <p><strong>Redis:</strong> {dashboard?.redis_enabled ? 'enabled' : 'disabled for local mode'}</p>
           <p><strong>Risk feed:</strong> {riskDashboard.source === 'live' ? 'risk-engine live data' : 'fallback-safe dashboard data'}</p>
-          <p><strong>Risk-engine URL:</strong> {riskDashboard.risk_engine.url}</p>
+          <p><strong>Threat feed:</strong> {threatDashboard.source === 'live' ? 'threat-engine live data' : 'fallback-safe threat data'}</p>
+          <p><strong>API URL:</strong> {apiUrl}</p>
         </div>
       </div>
 
@@ -399,6 +590,104 @@ export default async function Page() {
             <p>{card.detail}</p>
           </article>
         ))}
+      </section>
+
+      <section className="featureSection">
+        <div className="sectionHeader">
+          <div>
+            <h2>Feature 2 · Preemptive Cybersecurity &amp; AI Threat Defense</h2>
+            <p>Explainable, deterministic scoring for zero-day exploit mitigation and anomalous treasury-token market behavior.</p>
+          </div>
+          <p className="tableMeta">{threatDashboard.message}</p>
+        </div>
+
+        <div className="summaryGrid threatSummaryGrid">
+          {threatDashboard.cards.map((card) => (
+            <article key={card.label} className="metricCard">
+              <p className="metricLabel">{card.label}</p>
+              <p className="metricValue">{card.value}</p>
+              <p className="metricMeta">{card.detail}</p>
+            </article>
+          ))}
+        </div>
+
+        <div className="threeColumnSection">
+          <div className="stack compactStack">
+            <div className="sectionHeader compact">
+              <h3>Active alerts</h3>
+              <p>{threatDashboard.summary.critical_or_high_alerts} escalated detections</p>
+            </div>
+            {threatDashboard.active_alerts.map((alert) => (
+              <article key={alert.id} className="dataCard">
+                <div className="listHeader">
+                  <div>
+                    <p className="serviceTag subtle">{alert.category}</p>
+                    <h3>{alert.title}</h3>
+                  </div>
+                  <div className={`decisionBadge ${statusTone(alert.action)}`}>
+                    <span>{alert.action}</span>
+                    <strong>{alert.score}</strong>
+                  </div>
+                </div>
+                <div className="chipRow">
+                  <span className={`severityPill ${alert.severity}`}>{alert.severity}</span>
+                  <span className="ruleChip">{alert.source}</span>
+                </div>
+                <p className="explanation small">{alert.explanation}</p>
+                <div className="chipRow">
+                  {formatRules(alert.patterns).map((pattern) => (
+                    <span key={`${alert.id}-${pattern}`} className="ruleChip">{pattern}</span>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
+
+          <ThreatDemoPanel apiUrl={apiUrl} />
+
+          <div className="stack compactStack">
+            <div className="sectionHeader compact">
+              <h3>Market anomaly summary</h3>
+              <p>Rule-matched anomaly types from the dashboard feed.</p>
+            </div>
+            <article className="dataCard">
+              <div className="chipRow">
+                {threatDashboard.summary.market_anomaly_types.map((item) => (
+                  <span key={item} className="ruleChip">{item}</span>
+                ))}
+              </div>
+              <div className="kvGrid compactKvGrid">
+                <p><span>Average score</span>{threatDashboard.summary.average_score}</p>
+                <p><span>Blocked</span>{threatDashboard.summary.blocked_actions}</p>
+                <p><span>Review</span>{threatDashboard.summary.review_actions}</p>
+                <p><span>Generated</span>{new Date(threatDashboard.generated_at).toLocaleString()}</p>
+              </div>
+            </article>
+            <div className="sectionHeader compact">
+              <h3>Recent detections</h3>
+              <p>Latest transaction, contract, and market findings.</p>
+            </div>
+            {threatDashboard.recent_detections.map((detection) => (
+              <article key={detection.id} className="dataCard">
+                <div className="listHeader">
+                  <div>
+                    <p className="serviceTag subtle">{detection.category}</p>
+                    <h3>{detection.title}</h3>
+                  </div>
+                  <span className={`severityPill ${statusTone(detection.action)}`}>
+                    {detection.action} · {detection.score}
+                  </span>
+                </div>
+                <p className="explanation small">{detection.explanation}</p>
+                <div className="chipRow">
+                  {formatRules(detection.patterns).map((pattern) => (
+                    <span key={`${detection.id}-${pattern}`} className="ruleChip">{pattern}</span>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
       </section>
 
       <section className="dashboardSection">
@@ -557,7 +846,7 @@ export default async function Page() {
           ) : (
             <article className="serviceCard emptyState">
               <h3>Backend not running yet</h3>
-              <p>Run <code>make init-local</code> and <code>make run-backend</code> to view live service status here.</p>
+              <p>Run the repo-root service commands for the API, risk-engine, and threat-engine to view live service status here.</p>
             </article>
           )}
         </div>

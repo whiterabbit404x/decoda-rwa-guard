@@ -1,0 +1,29 @@
+{
+  "contract_name": "ProxyTreasuryRouter",
+  "address": "0xdddd000000000000000000000000000000router",
+  "verified_source": false,
+  "audit_count": 0,
+  "created_days_ago": 4,
+  "admin_roles": ["governance-multisig"],
+  "calling_actor": "ops-hot-wallet",
+  "function_summaries": [
+    {"name": "flashLoan", "summary": "Borrows assets atomically before external swaps.", "risk_flags": ["flash-loan-indicator"]},
+    {"name": "setImplementation", "summary": "Updates proxy implementation address.", "risk_flags": ["privileged-admin"]},
+    {"name": "sweepFunds", "summary": "Moves full balance to a receiver wallet.", "risk_flags": ["drain-path"]}
+  ],
+  "findings": [
+    "delegatecall present in proxy execution path",
+    "external call to untrusted router",
+    "same-flow borrow / swap / repay sequence observed"
+  ],
+  "flags": {
+    "delegatecall": true,
+    "untrusted_external_call": true,
+    "unsafe_admin_action": true,
+    "high_value_drain_path": true,
+    "burst_risk_actions": true
+  },
+  "metadata": {
+    "description": "Contract analysis example used in API docs."
+  }
+}

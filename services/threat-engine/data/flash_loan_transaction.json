@@ -1,0 +1,22 @@
+{
+  "wallet": "0xbbbb0000000000000000000000000000000flash",
+  "actor": "unknown-bot-17",
+  "action_type": "rebalance",
+  "protocol": "LiquidityRouter",
+  "amount": 2400000.0,
+  "asset": "USTB",
+  "call_sequence": ["borrow", "swap", "swap", "swap", "repay"],
+  "flags": {
+    "contains_flash_loan": true,
+    "unexpected_admin_call": false,
+    "untrusted_contract": true,
+    "rapid_drain_indicator": true
+  },
+  "counterparty_reputation": 24,
+  "actor_role": "external-bot",
+  "expected_actor_roles": ["treasury-operator"],
+  "burst_actions_last_5m": 5,
+  "metadata": {
+    "description": "Flash-loan-like transaction scenario."
+  }
+}

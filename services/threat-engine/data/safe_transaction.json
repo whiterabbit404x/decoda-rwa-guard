@@ -1,0 +1,22 @@
+{
+  "wallet": "0xaaaa00000000000000000000000000000000safe",
+  "actor": "treasury-ops",
+  "action_type": "settlement",
+  "protocol": "TreasurySettlement",
+  "amount": 125000.0,
+  "asset": "USTB",
+  "call_sequence": ["validateInvoice", "settleTreasuryTransfer"],
+  "flags": {
+    "contains_flash_loan": false,
+    "unexpected_admin_call": false,
+    "untrusted_contract": false,
+    "rapid_drain_indicator": false
+  },
+  "counterparty_reputation": 91,
+  "actor_role": "treasury-operator",
+  "expected_actor_roles": ["treasury-operator", "finance-controller"],
+  "burst_actions_last_5m": 1,
+  "metadata": {
+    "description": "Safe settlement scenario for UI demos."
+  }
+}

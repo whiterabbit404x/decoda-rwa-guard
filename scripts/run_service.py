@@ -25,6 +25,11 @@ SERVICE_CONFIG = {
         'app_dir': REPO_ROOT / 'services' / 'risk-engine',
         'env_file': REPO_ROOT / 'services' / 'risk-engine' / '.env',
     },
+    'threat-engine': {
+        'port': 8002,
+        'app_dir': REPO_ROOT / 'services' / 'threat-engine',
+        'env_file': REPO_ROOT / 'services' / 'threat-engine' / '.env',
+    },
 }
 
 

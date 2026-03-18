@@ -101,5 +101,55 @@ class ApiRiskDashboardTests(unittest.TestCase):
         self.assertIn('decisions_log', body)
 
 
+class ApiThreatGatewayTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+
+    def test_threat_dashboard_prefers_live_payload(self) -> None:
+        live_payload = {
+            'source': 'live',
+            'generated_at': '2026-03-18T10:00:00Z',
+            'summary': {'average_score': 70},
+            'cards': [{'label': 'Threat score', 'value': '70', 'detail': 'Live', 'tone': 'high'}],
+            'active_alerts': [],
+            'recent_detections': [],
+            'sample_scenarios': {},
+            'message': 'Live threat-engine response.',
+        }
+
+        with patch.object(api_main, 'fetch_threat_dashboard', return_value={**live_payload, 'degraded': False}):
+            response = self.client.get('/threat/dashboard')
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['source'], 'live')
+        self.assertFalse(body['degraded'])
+        self.assertIn('cards', body)
+
+    def test_threat_gateway_fallback_works_if_threat_engine_is_down(self) -> None:
+        with patch.object(api_main, 'proxy_threat', return_value=None):
+            response = self.client.post(
+                '/threat/analyze/transaction',
+                json={
+                    'wallet': '0xdead',
+                    'actor': 'bot',
+                    'action_type': 'rebalance',
+                    'protocol': 'Router',
+                    'amount': 1500000,
+                    'call_sequence': ['borrow', 'swap', 'repay'],
+                    'flags': {'contains_flash_loan': True, 'rapid_drain_indicator': True},
+                    'counterparty_reputation': 10,
+                    'burst_actions_last_5m': 4,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body['degraded'])
+        self.assertEqual(body['source'], 'fallback')
+        self.assertIn(body['recommended_action'], {'allow', 'review', 'block'})
+        self.assertIn('reasons', body)
+
+
 if __name__ == '__main__':
     unittest.main()

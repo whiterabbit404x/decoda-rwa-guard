@@ -1,0 +1,29 @@
+{
+  "asset": "USTB",
+  "venue": "synthetic-exchange",
+  "timeframe_minutes": 15,
+  "current_volume": 5200000.0,
+  "baseline_volume": 1300000.0,
+  "participant_diversity": 4,
+  "dominant_cluster_share": 0.58,
+  "order_flow_summary": {
+    "large_orders": 17,
+    "rapid_cancellations": 13,
+    "rapid_swings": 6,
+    "circular_trade_loops": 1,
+    "self_trade_markers": 1
+  },
+  "candles": [
+    {"timestamp": "2026-03-18T09:00:00Z", "open": 1.000, "high": 1.065, "low": 0.998, "close": 1.004, "volume": 1800000},
+    {"timestamp": "2026-03-18T09:05:00Z", "open": 1.004, "high": 1.081, "low": 0.992, "close": 1.001, "volume": 1700000},
+    {"timestamp": "2026-03-18T09:10:00Z", "open": 1.001, "high": 1.074, "low": 0.995, "close": 1.003, "volume": 1700000}
+  ],
+  "wallet_activity": [
+    {"cluster_id": "spoof-cluster-1", "trade_count": 12, "net_volume": 2200000},
+    {"cluster_id": "spoof-cluster-2", "trade_count": 7, "net_volume": 1300000},
+    {"cluster_id": "organic-flow", "trade_count": 3, "net_volume": 250000}
+  ],
+  "metadata": {
+    "description": "Spoofing-like market scenario with cancellations and whipsaw candles."
+  }
+}

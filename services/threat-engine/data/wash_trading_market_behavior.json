@@ -1,0 +1,29 @@
+{
+  "asset": "USTB",
+  "venue": "synthetic-exchange",
+  "timeframe_minutes": 15,
+  "current_volume": 4100000.0,
+  "baseline_volume": 1250000.0,
+  "participant_diversity": 3,
+  "dominant_cluster_share": 0.71,
+  "order_flow_summary": {
+    "large_orders": 9,
+    "rapid_cancellations": 3,
+    "rapid_swings": 4,
+    "circular_trade_loops": 5,
+    "self_trade_markers": 4
+  },
+  "candles": [
+    {"timestamp": "2026-03-18T09:00:00Z", "open": 1.000, "high": 1.021, "low": 0.982, "close": 1.018, "volume": 1300000},
+    {"timestamp": "2026-03-18T09:05:00Z", "open": 1.018, "high": 1.033, "low": 0.987, "close": 0.991, "volume": 1400000},
+    {"timestamp": "2026-03-18T09:10:00Z", "open": 0.991, "high": 1.028, "low": 0.980, "close": 1.019, "volume": 1400000}
+  ],
+  "wallet_activity": [
+    {"cluster_id": "loop-cluster-a", "trade_count": 14, "net_volume": 2100000},
+    {"cluster_id": "loop-cluster-b", "trade_count": 10, "net_volume": 1450000},
+    {"cluster_id": "organic-flow", "trade_count": 2, "net_volume": 90000}
+  ],
+  "metadata": {
+    "description": "Wash-trading-like market scenario with circular activity."
+  }
+}

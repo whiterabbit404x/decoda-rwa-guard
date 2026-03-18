@@ -400,3 +400,84 @@ td .tableMeta {
     gap: 1.15rem;
   }
 }
+
+.featureSection {
+  margin-top: 2.5rem;
+}
+
+.threeColumnSection {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 1.1fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+  margin-top: 1.5rem;
+}
+
+.threatSummaryGrid {
+  margin-top: 0;
+}
+
+.demoPanel {
+  min-height: 100%;
+}
+
+.demoButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.demoButton {
+  cursor: pointer;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  background: rgba(13, 17, 23, 0.7);
+  color: #e6edf3;
+  padding: 0.55rem 0.85rem;
+  font-size: 0.9rem;
+}
+
+.demoButton:hover,
+.demoButtonActive {
+  border-color: rgba(88, 166, 255, 0.75);
+  background: rgba(88, 166, 255, 0.14);
+}
+
+.demoButton:disabled {
+  cursor: wait;
+  opacity: 0.75;
+}
+
+.demoPayload,
+.demoResult {
+  margin-top: 1rem;
+}
+
+.demoPayload pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 14px;
+  border: 1px solid #30363d;
+  background: #0d1117;
+  padding: 0.85rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.demoReasonList {
+  margin: 0.75rem 0 0;
+  padding-left: 1.1rem;
+  color: #d2dae2;
+}
+
+.compactKvGrid {
+  margin-top: 1rem;
+}
+
+@media (max-width: 1220px) {
+  .threeColumnSection {
+    grid-template-columns: 1fr;
+  }
+}

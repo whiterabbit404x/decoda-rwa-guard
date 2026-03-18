@@ -1,0 +1,22 @@
+{
+  "wallet": "0xcccc0000000000000000000000000000000admin",
+  "actor": "ops-hot-wallet",
+  "action_type": "admin",
+  "protocol": "ProxyTreasuryVault",
+  "amount": 650000.0,
+  "asset": "USTB",
+  "call_sequence": ["pauseVault", "setImplementation", "sweepFunds"],
+  "flags": {
+    "contains_flash_loan": false,
+    "unexpected_admin_call": true,
+    "untrusted_contract": false,
+    "rapid_drain_indicator": true
+  },
+  "counterparty_reputation": 41,
+  "actor_role": "ops-hot-wallet",
+  "expected_actor_roles": ["governance-multisig"],
+  "burst_actions_last_5m": 4,
+  "metadata": {
+    "description": "Unexpected privileged action scenario."
+  }
+}
