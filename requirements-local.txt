@@ -1,0 +1,6 @@
+-r services/api/requirements.txt
+-r services/risk-engine/requirements.txt
+-r services/oracle-service/requirements.txt
+-r services/compliance-service/requirements.txt
+-r services/reconciliation-service/requirements.txt
+-r services/event-watcher/requirements.txt

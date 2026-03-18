@@ -3,33 +3,150 @@
   font-family: Inter, Arial, sans-serif;
 }
 
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
-  background: #0d1117;
+  background:
+    radial-gradient(circle at top, rgba(88, 166, 255, 0.12), transparent 30%),
+    #0d1117;
   color: #e6edf3;
 }
 
 .container {
-  max-width: 960px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: 2rem 1rem;
+  padding: 2rem 1rem 4rem;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.eyebrow {
+  margin: 0 0 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #58a6ff;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+.lede {
+  max-width: 60ch;
+  color: #9ba7b4;
+  font-size: 1.05rem;
+  line-height: 1.6;
+}
+
+.heroPanel,
+.card,
+.serviceCard {
+  border: 1px solid #30363d;
+  border-radius: 16px;
+  background: rgba(22, 27, 34, 0.92);
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.18);
+}
+
+.heroPanel {
+  padding: 1.25rem;
+}
+
+.heroPanel p:last-child,
+.card p:last-child,
+.serviceCard p:last-child {
+  margin-bottom: 0;
 }
 
 .grid {
-  margin-top: 1.5rem;
+  margin-top: 2rem;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 1rem;
 }
 
-.card {
-  border: 1px solid #30363d;
-  border-radius: 12px;
+.card,
+.serviceCard {
   padding: 1rem;
-  background: #161b22;
+}
+
+.serviceTag,
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
+  background: rgba(88, 166, 255, 0.16);
+  color: #8cc8ff;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 700;
 }
 
 .status {
   color: #58a6ff;
   font-weight: 600;
+}
+
+.serviceSection {
+  margin-top: 2.5rem;
+}
+
+.sectionHeader {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.sectionHeader p {
+  color: #9ba7b4;
+}
+
+.serviceList {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.serviceCardHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.timestamp {
+  color: #8b949e;
+  font-size: 0.9rem;
+}
+
+.emptyState code {
+  display: inline-block;
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.35rem;
+  background: #0d1117;
+  border: 1px solid #30363d;
+}
+
+@media (max-width: 860px) {
+  .hero {
+    grid-template-columns: 1fr;
+  }
 }
