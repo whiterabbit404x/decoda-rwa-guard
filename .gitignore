@@ -1,0 +1,19 @@
+# Node
+node_modules/
+.next/
+out/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Env files
+.env
+
+# Foundry
+contracts/core/out/
+contracts/core/cache/
+
+# Misc
+.DS_Store
