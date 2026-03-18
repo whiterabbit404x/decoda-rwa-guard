@@ -1,0 +1,41 @@
+[
+  {
+    "timestamp": "2026-03-18T00:00:00Z",
+    "event_type": "trade",
+    "asset": "USTB",
+    "venue": "dex-alpha",
+    "price": 1.0001,
+    "volume": 120000.0,
+    "side": "buy",
+    "trader_id": "maker-1",
+    "cancellation_rate": 0.05,
+    "liquidity_change": 0.01,
+    "metadata": {}
+  },
+  {
+    "timestamp": "2026-03-18T00:01:00Z",
+    "event_type": "trade",
+    "asset": "USTB",
+    "venue": "dex-alpha",
+    "price": 1.0003,
+    "volume": 118500.0,
+    "side": "sell",
+    "trader_id": "maker-2",
+    "cancellation_rate": 0.07,
+    "liquidity_change": 0.0,
+    "metadata": {}
+  },
+  {
+    "timestamp": "2026-03-18T00:02:00Z",
+    "event_type": "trade",
+    "asset": "USTB",
+    "venue": "dex-alpha",
+    "price": 1.0002,
+    "volume": 122100.0,
+    "side": "buy",
+    "trader_id": "maker-3",
+    "cancellation_rate": 0.08,
+    "liquidity_change": 0.01,
+    "metadata": {}
+  }
+]

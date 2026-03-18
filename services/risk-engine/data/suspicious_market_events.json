@@ -1,0 +1,75 @@
+[
+  {
+    "timestamp": "2026-03-18T01:00:00Z",
+    "event_type": "borrow",
+    "asset": "USTB",
+    "venue": "dex-beta",
+    "price": 1.0,
+    "volume": 250000.0,
+    "trader_id": "actor-7",
+    "liquidity_change": -0.38,
+    "metadata": {}
+  },
+  {
+    "timestamp": "2026-03-18T01:00:02Z",
+    "event_type": "swap",
+    "asset": "USTB",
+    "venue": "dex-beta",
+    "price": 1.11,
+    "volume": 980000.0,
+    "side": "buy",
+    "trader_id": "actor-7",
+    "cancellation_rate": 0.84,
+    "liquidity_change": -0.12,
+    "metadata": {"self_trade_suspected": true}
+  },
+  {
+    "timestamp": "2026-03-18T01:00:04Z",
+    "event_type": "trade",
+    "asset": "USTB",
+    "venue": "dex-beta",
+    "price": 1.14,
+    "volume": 1100000.0,
+    "side": "buy",
+    "trader_id": "actor-7",
+    "cancellation_rate": 0.88,
+    "liquidity_change": -0.09,
+    "metadata": {"self_trade_suspected": true}
+  },
+  {
+    "timestamp": "2026-03-18T01:00:06Z",
+    "event_type": "swap",
+    "asset": "USTB",
+    "venue": "dex-beta",
+    "price": 1.02,
+    "volume": 240000.0,
+    "side": "sell",
+    "trader_id": "actor-7",
+    "cancellation_rate": 0.81,
+    "liquidity_change": -0.05,
+    "metadata": {}
+  },
+  {
+    "timestamp": "2026-03-18T01:00:08Z",
+    "event_type": "repay",
+    "asset": "USTB",
+    "venue": "dex-beta",
+    "price": 1.01,
+    "volume": 190000.0,
+    "trader_id": "actor-7",
+    "liquidity_change": 0.03,
+    "metadata": {}
+  },
+  {
+    "timestamp": "2026-03-18T01:00:10Z",
+    "event_type": "trade",
+    "asset": "USTB",
+    "venue": "dex-beta",
+    "price": 1.005,
+    "volume": 210000.0,
+    "side": "sell",
+    "trader_id": "actor-7",
+    "cancellation_rate": 0.79,
+    "metadata": {}
+  }
+]
