@@ -184,6 +184,7 @@ npm run smoke:feature2
 ```
 
 `scripts\smoke_feature2.py` now waits longer for `http://127.0.0.1:3000`, retries before failing, and reports whether the Next.js app appears to still be compiling versus not running at all.
+It now uses a two-step frontend readiness check: a lightweight `GET /api/health` probe confirms that the Next.js dev server is alive first, then the script retries the homepage with a longer per-request timeout so slow cold-start compiles do not produce false "frontend unavailable" failures.
 
 ### Which services must be running first?
 
