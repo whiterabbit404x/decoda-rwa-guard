@@ -1,5 +1,6 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 
 type DemoPanelProps = {
@@ -198,6 +199,7 @@ const governanceScenarios = {
 } as const;
 
 export default function ComplianceDemoPanel({ apiUrl }: DemoPanelProps) {
+  const router = useRouter();
   const [transferScenario, setTransferScenario] = useState<TransferScenarioKey>('compliant_transfer_approved');
   const [residencyScenario, setResidencyScenario] = useState<ResidencyScenarioKey>('denied_residency_restricted_region');
   const [governanceScenario, setGovernanceScenario] = useState<GovernanceScenarioKey>('governance_freeze_wallet');
@@ -257,6 +259,7 @@ export default function ComplianceDemoPanel({ apiUrl }: DemoPanelProps) {
     try {
       const result = await postJson('/compliance/governance/actions', currentGovernance.body);
       setGovernanceResult(JSON.stringify(result, null, 2));
+      router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to submit governance action.');
     } finally {
