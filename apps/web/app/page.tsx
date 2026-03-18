@@ -1,3 +1,4 @@
+import ComplianceDemoPanel from './compliance-demo-panel';
 import ThreatDemoPanel from './threat-demo-panel';
 
 type DashboardCard = {
@@ -136,6 +137,85 @@ type ThreatDashboardResponse = {
   cards: ThreatCard[];
   active_alerts: ThreatDetection[];
   recent_detections: ThreatDetection[];
+  sample_scenarios: Record<string, string>;
+  message: string;
+};
+
+type ComplianceCard = {
+  label: string;
+  value: string;
+  detail: string;
+  tone: string;
+};
+
+type ComplianceRule = {
+  rule_id: string;
+  outcome: 'pass' | 'review' | 'block';
+  summary: string;
+};
+
+type ComplianceAction = {
+  action_id: string;
+  created_at: string;
+  action_type: string;
+  target_type: string;
+  target_id: string;
+  status: string;
+  reason: string;
+  actor: string;
+  related_asset_id?: string;
+  metadata?: Record<string, unknown>;
+  attestation_hash: string;
+  policy_effects: string[];
+};
+
+type ComplianceDashboardResponse = {
+  source: 'live' | 'fallback';
+  degraded: boolean;
+  generated_at: string;
+  summary: {
+    allowlisted_wallet_count: number;
+    blocklisted_wallet_count: number;
+    frozen_wallet_count: number;
+    review_required_wallet_count: number;
+    paused_asset_count: number;
+    latest_transfer_decision: string;
+    latest_residency_decision: string;
+    triggered_rule_count: number;
+  };
+  cards: ComplianceCard[];
+  transfer_screening: {
+    decision: 'approved' | 'review' | 'blocked';
+    risk_level: 'low' | 'medium' | 'high' | 'critical';
+    reasons: string[];
+    triggered_rules: ComplianceRule[];
+    recommended_action: string;
+    wrapper_status: string;
+    explainability_summary: string;
+    policy_snapshot: Record<string, unknown>;
+  };
+  residency_screening: {
+    residency_decision: 'allowed' | 'review' | 'denied';
+    policy_violations: string[];
+    routing_recommendation: string;
+    governance_status: string;
+    explainability_summary: string;
+    allowed_region_outcome: string;
+  };
+  policy_state: {
+    allowlisted_wallets: string[];
+    blocklisted_wallets: string[];
+    frozen_wallets: string[];
+    review_required_wallets: string[];
+    paused_assets: string[];
+    approved_cloud_regions: string[];
+    friendly_regions: string[];
+    restricted_regions: string[];
+    action_count: number;
+    latest_action_id: string | null;
+  };
+  latest_governance_actions: ComplianceAction[];
+  asset_transfer_status: Array<{ asset_id: string; status: string }>;
   sample_scenarios: Record<string, string>;
   message: string;
 };
@@ -310,6 +390,129 @@ fallbackRiskDashboard.decisions_log = [...fallbackRiskDashboard.transaction_queu
     explanation: item.explanation,
     source: 'fallback'
   }));
+
+const fallbackComplianceDashboard: ComplianceDashboardResponse = {
+  source: 'fallback',
+  degraded: true,
+  generated_at: '2026-03-18T11:00:00Z',
+  summary: {
+    allowlisted_wallet_count: 2,
+    blocklisted_wallet_count: 1,
+    frozen_wallet_count: 1,
+    review_required_wallet_count: 1,
+    paused_asset_count: 1,
+    latest_transfer_decision: 'review',
+    latest_residency_decision: 'denied',
+    triggered_rule_count: 3
+  },
+  cards: [
+    { label: 'Transfer decision', value: 'review', detail: 'Fallback wrapper decision keeps Feature 3 demoable when the backend is offline.', tone: 'high' },
+    { label: 'Compliance risk', value: 'high', detail: 'Fallback deterministic wrappers remain explainable at the dashboard.', tone: 'high' },
+    { label: 'Governance actions', value: '3', detail: 'Fallback immutable-style governance records are still visible.', tone: 'medium' },
+    { label: 'Residency decision', value: 'denied', detail: 'Fallback sovereignty routing recommends eu-west.', tone: 'critical' }
+  ],
+  transfer_screening: {
+    decision: 'review',
+    risk_level: 'high',
+    reasons: ['One or more wallets have incomplete or pending KYC status.', 'A participating jurisdiction requires manual review.'],
+    triggered_rules: [
+      { rule_id: 'kyc-status', outcome: 'review', summary: 'One or more wallets have incomplete or pending KYC status.' },
+      { rule_id: 'jurisdiction-policy', outcome: 'review', summary: 'A participating jurisdiction requires manual review.' },
+      { rule_id: 'wallet-allowlist', outcome: 'pass', summary: 'At least one participating wallet is allowlisted or tagged as trusted.' }
+    ],
+    recommended_action: 'Escalate to compliance operations for manual approval.',
+    wrapper_status: 'wrapper-hold',
+    explainability_summary: 'Decision review: One or more wallets have incomplete or pending KYC status.',
+    policy_snapshot: {
+      allowlisted_wallets: 2,
+      blocklisted_wallets: 1,
+      frozen_wallets: 1,
+      review_required_wallets: 1,
+      paused_assets: ['USTB-2026']
+    }
+  },
+  residency_screening: {
+    residency_decision: 'denied',
+    policy_violations: ['Requested processing region is on the restricted region list.', 'Requested processing region is not on the approved cloud region list.'],
+    routing_recommendation: 'Route processing to eu-west or request governance override.',
+    governance_status: 'restricted',
+    explainability_summary: 'Requested processing region is on the restricted region list.; Requested processing region is not on the approved cloud region list.',
+    allowed_region_outcome: 'eu-west'
+  },
+  policy_state: {
+    allowlisted_wallets: ['0xaaa0000000000000000000000000000000000101', '0xbbb0000000000000000000000000000000000202'],
+    blocklisted_wallets: ['0xblocked000000000000000000000000000000003'],
+    frozen_wallets: ['0xddd0000000000000000000000000000000000404'],
+    review_required_wallets: ['0xreview000000000000000000000000000000004'],
+    paused_assets: ['USTB-2026'],
+    approved_cloud_regions: ['us-east', 'us-central', 'eu-west'],
+    friendly_regions: ['us-east', 'us-central', 'eu-west', 'sg-gov'],
+    restricted_regions: ['cn-north', 'ru-central', 'ir-gov'],
+    action_count: 3,
+    latest_action_id: 'gov-fallback-003'
+  },
+  latest_governance_actions: [
+    {
+      action_id: 'gov-fallback-003',
+      created_at: '2026-03-18T11:02:00Z',
+      action_type: 'pause_asset_transfers',
+      target_type: 'asset',
+      target_id: 'USTB-2026',
+      status: 'applied',
+      reason: 'Pause asset transfers while wrapper thresholds are recalibrated.',
+      actor: 'governance-multisig',
+      related_asset_id: 'USTB-2026',
+      metadata: { ticket: 'CMP-1043' },
+      attestation_hash: 'fallback-003',
+      policy_effects: ['Asset USTB-2026 transfer activity paused.']
+    },
+    {
+      action_id: 'gov-fallback-002',
+      created_at: '2026-03-18T11:01:00Z',
+      action_type: 'allowlist_wallet',
+      target_type: 'wallet',
+      target_id: '0xeee0000000000000000000000000000000000505',
+      status: 'applied',
+      reason: 'Approved new qualified custodian wallet for primary market settlements.',
+      actor: 'governance-multisig',
+      related_asset_id: 'USTB-2026',
+      metadata: { ticket: 'CMP-1044' },
+      attestation_hash: 'fallback-002',
+      policy_effects: ['Wallet 0xeee0000000000000000000000000000000000505 added to allowlist.']
+    },
+    {
+      action_id: 'gov-fallback-001',
+      created_at: '2026-03-18T11:00:00Z',
+      action_type: 'freeze_wallet',
+      target_type: 'wallet',
+      target_id: '0xddd0000000000000000000000000000000000404',
+      status: 'applied',
+      reason: 'Escalated compliance review after repeated sanctions-adjacent transfers.',
+      actor: 'governance-multisig',
+      related_asset_id: 'USTB-2026',
+      metadata: { ticket: 'CMP-1042' },
+      attestation_hash: 'fallback-001',
+      policy_effects: ['Wallet 0xddd0000000000000000000000000000000000404 frozen.']
+    }
+  ],
+  asset_transfer_status: [
+    { asset_id: 'USTB-2026', status: 'paused' },
+    { asset_id: 'USTB-2027', status: 'active' }
+  ],
+  sample_scenarios: {
+    compliant_transfer_approved: 'Compliant transfer approved',
+    blocked_transfer_sanctions: 'Blocked transfer due to sanctions flag',
+    blocked_transfer_blocklist: 'Blocked transfer due to blocklisted wallet',
+    review_transfer_incomplete_kyc: 'Review due to incomplete KYC',
+    review_transfer_restricted_jurisdiction: 'Review due to restricted jurisdiction',
+    denied_residency_restricted_region: 'Denied residency request for restricted region',
+    governance_freeze_wallet: 'Governance action freezing a wallet',
+    governance_pause_asset: 'Governance action pausing an asset',
+    governance_allowlist_wallet: 'Governance action adding wallet to allowlist',
+    transfer_blocked_asset_paused: 'Transfer blocked because asset is paused'
+  },
+  message: 'Compliance service unavailable. Rendering explicit fallback Feature 3 data so the dashboard remains explainable and demoable.'
+};
 
 const fallbackThreatDashboard: ThreatDashboardResponse = {
   source: 'fallback',
@@ -506,8 +709,19 @@ async function getThreatDashboard(): Promise<ThreatDashboardResponse> {
   return (await fetchJson<ThreatDashboardResponse>('/threat/dashboard')) ?? fallbackThreatDashboard;
 }
 
+async function getComplianceDashboard(): Promise<ComplianceDashboardResponse> {
+  return (await fetchJson<ComplianceDashboardResponse>('/compliance/dashboard')) ?? fallbackComplianceDashboard;
+}
+
 function statusTone(status: string) {
-  return status.toLowerCase();
+  const value = status.toLowerCase();
+  if (value === 'approved' || value === 'allowed' || value === 'active') {
+    return 'allow';
+  }
+  if (value === 'blocked' || value === 'denied' || value === 'paused' || value === 'restricted') {
+    return 'block';
+  }
+  return value;
 }
 
 function formatAddress(value: string) {
@@ -518,25 +732,38 @@ function formatRules(rules: string[]) {
   return rules.length > 0 ? rules : ['No triggered rules'];
 }
 
-function resolveBackendState(dashboard: DashboardResponse | null, riskDashboard: RiskDashboardResponse, threatDashboard: ThreatDashboardResponse): BackendState {
+function resolveBackendState(
+  dashboard: DashboardResponse | null,
+  riskDashboard: RiskDashboardResponse,
+  threatDashboard: ThreatDashboardResponse,
+  complianceDashboard: ComplianceDashboardResponse
+): BackendState {
   if (!dashboard) {
     return 'offline';
   }
-  if (riskDashboard.degraded || threatDashboard.degraded || riskDashboard.source !== 'live' || threatDashboard.source !== 'live') {
+  if (
+    riskDashboard.degraded ||
+    threatDashboard.degraded ||
+    complianceDashboard.degraded ||
+    riskDashboard.source !== 'live' ||
+    threatDashboard.source !== 'live' ||
+    complianceDashboard.source !== 'live'
+  ) {
     return 'degraded';
   }
   return 'online';
 }
 
 export default async function Page() {
-  const [dashboard, riskDashboard, threatDashboard] = await Promise.all([
+  const [dashboard, riskDashboard, threatDashboard, complianceDashboard] = await Promise.all([
     getDashboard(),
     getRiskDashboard(),
-    getThreatDashboard()
+    getThreatDashboard(),
+    getComplianceDashboard()
   ]);
   const cards = dashboard?.cards?.length ? dashboard.cards : fallbackCards;
   const services = dashboard?.services ?? [];
-  const backendState = resolveBackendState(dashboard, riskDashboard, threatDashboard);
+  const backendState = resolveBackendState(dashboard, riskDashboard, threatDashboard, complianceDashboard);
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL;
   const summaryCards = [
     {
@@ -558,13 +785,18 @@ export default async function Page() {
       label: 'Decision split',
       value: `${riskDashboard.summary.allow_count}/${riskDashboard.summary.review_count}/${riskDashboard.summary.block_count}`,
       meta: 'allow / review / block'
+    },
+    {
+      label: 'Feature 3 policy state',
+      value: `${complianceDashboard.summary.allowlisted_wallet_count}/${complianceDashboard.summary.blocklisted_wallet_count}/${complianceDashboard.summary.frozen_wallet_count}`,
+      meta: 'allowlisted / blocklisted / frozen'
     }
   ];
   const backendBanner =
     backendState === 'online'
-      ? 'Live API + risk-engine + threat-engine data streaming into the dashboard.'
+      ? 'Live API + risk-engine + threat-engine + compliance-service data streaming into the dashboard.'
       : backendState === 'degraded'
-        ? `${riskDashboard.message} ${threatDashboard.message}`
+        ? `${riskDashboard.message} ${threatDashboard.message} ${complianceDashboard.message}`
         : 'Backend is unavailable. The dashboard is showing offline fallback data so the UI still renders cleanly.';
 
   return (
@@ -583,6 +815,7 @@ export default async function Page() {
           <p><strong>Redis:</strong> {dashboard?.redis_enabled ? 'enabled' : 'disabled for local mode'}</p>
           <p><strong>Risk feed:</strong> {riskDashboard.source === 'live' ? 'risk-engine live data' : 'fallback-safe dashboard data'}</p>
           <p><strong>Threat feed:</strong> {threatDashboard.source === 'live' ? 'threat-engine live data' : 'fallback-safe threat data'}</p>
+          <p><strong>Compliance feed:</strong> {complianceDashboard.source === 'live' ? 'compliance-service live data' : 'fallback-safe compliance data'}</p>
           <p><strong>API URL:</strong> {apiUrl}</p>
         </div>
       </div>
@@ -703,6 +936,125 @@ export default async function Page() {
                   {formatRules(detection.patterns).map((pattern) => (
                     <span key={`${detection.id}-${pattern}`} className="ruleChip">{pattern}</span>
                   ))}
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="featureSection">
+        <div className="sectionHeader">
+          <div>
+            <h2>Feature 3 · Sovereign-Grade Compliance &amp; Governance</h2>
+            <p>Deterministic transfer wrappers, geopatriation controls, and immutable-style governance actions with explainable fallback behavior.</p>
+          </div>
+          <p className="tableMeta">{complianceDashboard.message}</p>
+        </div>
+
+        <div className="summaryGrid threatSummaryGrid">
+          {complianceDashboard.cards.map((card) => (
+            <article key={card.label} className="metricCard">
+              <p className="metricLabel">{card.label}</p>
+              <p className="metricValue">{card.value}</p>
+              <p className="metricMeta">{card.detail}</p>
+            </article>
+          ))}
+        </div>
+
+        <div className="threeColumnSection">
+          <div className="stack compactStack">
+            <div className="sectionHeader compact">
+              <h3>Transfer wrapper decision</h3>
+              <p>{complianceDashboard.transfer_screening.decision} · {complianceDashboard.transfer_screening.risk_level}</p>
+            </div>
+            <article className="dataCard">
+              <div className="listHeader">
+                <div>
+                  <p className="serviceTag subtle">{complianceDashboard.transfer_screening.wrapper_status}</p>
+                  <h3>{complianceDashboard.transfer_screening.recommended_action}</h3>
+                </div>
+                <span className={`severityPill ${statusTone(complianceDashboard.transfer_screening.decision)}`}>
+                  {complianceDashboard.transfer_screening.decision}
+                </span>
+              </div>
+              <p className="explanation small">{complianceDashboard.transfer_screening.explainability_summary}</p>
+              <div className="chipRow">
+                {complianceDashboard.transfer_screening.triggered_rules.map((rule) => (
+                  <span key={rule.rule_id} className={`ruleChip ${statusTone(rule.outcome)}`}>{rule.rule_id}: {rule.outcome}</span>
+                ))}
+              </div>
+              <div className="chipRow">
+                {formatRules(complianceDashboard.transfer_screening.reasons).map((reason) => (
+                  <span key={reason} className="ruleChip">{reason}</span>
+                ))}
+              </div>
+              <div className="kvGrid compactKvGrid">
+                <p><span>Triggered rules</span>{complianceDashboard.summary.triggered_rule_count}</p>
+                <p><span>Allowlisted</span>{complianceDashboard.summary.allowlisted_wallet_count}</p>
+                <p><span>Blocklisted</span>{complianceDashboard.summary.blocklisted_wallet_count}</p>
+                <p><span>Frozen</span>{complianceDashboard.summary.frozen_wallet_count}</p>
+              </div>
+            </article>
+
+            <div className="sectionHeader compact">
+              <h3>Residency / geopatriation</h3>
+              <p>{complianceDashboard.residency_screening.residency_decision} · {complianceDashboard.residency_screening.allowed_region_outcome}</p>
+            </div>
+            <article className="dataCard">
+              <div className="chipRow">
+                <span className={`severityPill ${statusTone(complianceDashboard.residency_screening.residency_decision)}`}>
+                  {complianceDashboard.residency_screening.residency_decision}
+                </span>
+                <span className="ruleChip">{complianceDashboard.residency_screening.governance_status}</span>
+              </div>
+              <p className="explanation small">{complianceDashboard.residency_screening.explainability_summary}</p>
+              <div className="chipRow">
+                {formatRules(complianceDashboard.residency_screening.policy_violations).map((item) => (
+                  <span key={item} className="ruleChip">{item}</span>
+                ))}
+              </div>
+              <p className="label">Routing recommendation</p>
+              <p>{complianceDashboard.residency_screening.routing_recommendation}</p>
+            </article>
+          </div>
+
+          <ComplianceDemoPanel apiUrl={apiUrl} />
+
+          <div className="stack compactStack">
+            <div className="sectionHeader compact">
+              <h3>Latest governance actions</h3>
+              <p>{complianceDashboard.latest_governance_actions.length} recent actions</p>
+            </div>
+            {complianceDashboard.latest_governance_actions.map((action) => (
+              <article key={action.action_id} className="dataCard">
+                <div className="listHeader">
+                  <div>
+                    <p className="serviceTag subtle">{action.target_type}</p>
+                    <h3>{action.action_type}</h3>
+                  </div>
+                  <span className="ruleChip">{action.status}</span>
+                </div>
+                <p className="muted">{action.target_id} · {new Date(action.created_at).toLocaleString()}</p>
+                <p className="explanation small">{action.reason}</p>
+                <div className="chipRow">
+                  {action.policy_effects.map((effect) => (
+                    <span key={`${action.action_id}-${effect}`} className="ruleChip">{effect}</span>
+                  ))}
+                </div>
+                <p className="tableMeta">Attestation: {action.attestation_hash.slice(0, 12)}…</p>
+              </article>
+            ))}
+
+            <div className="sectionHeader compact">
+              <h3>Asset transfer status</h3>
+              <p>Paused assets and demo wrapper status.</p>
+            </div>
+            {complianceDashboard.asset_transfer_status.map((item) => (
+              <article key={item.asset_id} className="dataCard">
+                <div className="listHeader">
+                  <h3>{item.asset_id}</h3>
+                  <span className={`severityPill ${statusTone(item.status)}`}>{item.status}</span>
                 </div>
               </article>
             ))}
@@ -866,7 +1218,7 @@ export default async function Page() {
           ) : (
             <article className="serviceCard emptyState">
               <h3>Backend not running yet</h3>
-              <p>Run the repo-root service commands for the API, risk-engine, and threat-engine to view live service status here.</p>
+              <p>Run the repo-root service commands for the API, risk-engine, threat-engine, and compliance-service to view live service status here.</p>
             </article>
           )}
         </div>

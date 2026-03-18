@@ -1,6 +1,6 @@
 # Phase 1 Tokenized Treasury Risk-Control Monorepo
 
-This repo now supports a reproducible local Phase 1 workflow without Docker as the primary path. The stable Phase 1 risk-engine remains intact, and Feature 2 adds a new `threat-engine` service for explainable zero-day exploit mitigation and treasury-token market anomaly detection.
+This repo now supports a reproducible local Phase 1 workflow without Docker as the primary path. The stable Phase 1 risk-engine remains intact, Feature 2 adds the `threat-engine` service for explainable zero-day exploit mitigation and treasury-token market anomaly detection, and Feature 3 adds the `compliance-service` for sovereign-grade compliance wrappers, geopatriation controls, and governance actions.
 
 ## Repository Layout
 
@@ -27,8 +27,10 @@ npm install --workspace apps/web
 python services/api/scripts/seed.py
 python services/risk-engine/scripts/seed.py
 python services/threat-engine/scripts/seed.py
+python services/compliance-service/scripts/seed.py
 python scripts/run_service.py risk-engine --reload
 python scripts/run_service.py threat-engine --reload
+python scripts/run_service.py compliance-service --reload
 python scripts/run_service.py api --reload
 npm run dev --workspace apps/web
 ```
@@ -38,6 +40,8 @@ Open:
 - API docs: `http://localhost:8000/docs`
 - Risk-engine docs: `http://localhost:8001/docs`
 - Threat-engine docs: `http://localhost:8002/docs`
+- Oracle-service docs: `http://localhost:8003/docs`
+- Compliance-service docs: `http://localhost:8004/docs`
 - Dashboard: `http://localhost:3000`
 
 ## Windows CMD: exact repo-root commands
@@ -70,6 +74,7 @@ npm install --workspace apps/web
 python services\api\scripts\seed.py
 python services\risk-engine\scripts\seed.py
 python services\threat-engine\scripts\seed.py
+python services\compliance-service\scripts\seed.py
 ```
 
 ### 5) Run the risk-engine
@@ -85,33 +90,43 @@ python scripts\run_service.py risk-engine --reload
 python scripts\run_service.py threat-engine --reload
 ```
 
-### 7) Run the API gateway in a third terminal
+### 7) Run the compliance-service in a third terminal
+
+```cmd
+.venv\Scripts\activate
+python scripts\run_service.py compliance-service --reload
+```
+
+### 8) Run the API gateway in a fourth terminal
 
 ```cmd
 .venv\Scripts\activate
 python scripts\run_service.py api --reload
 ```
 
-### 8) Run the frontend in a fourth terminal
+### 9) Run the frontend in a fifth terminal
 
 ```cmd
 .venv\Scripts\activate
 npm run dev --workspace apps/web
 ```
 
-### 9) Open the local apps
+### 10) Open the local apps
 
 - API docs: `http://localhost:8000/docs`
 - Risk-engine docs: `http://localhost:8001/docs`
 - Threat-engine docs: `http://localhost:8002/docs`
+- Oracle-service docs: `http://localhost:8003/docs`
+- Compliance-service docs: `http://localhost:8004/docs`
 - Dashboard: `http://localhost:3000`
 
 ## Local backend behavior
 
-- `services/api` defaults to `RISK_ENGINE_URL=http://localhost:8001` and `THREAT_ENGINE_URL=http://localhost:8002`.
+- `services/api` defaults to `RISK_ENGINE_URL=http://localhost:8001`, `THREAT_ENGINE_URL=http://localhost:8002`, and `COMPLIANCE_SERVICE_URL=http://localhost:8004`.
 - `services/api /risk/dashboard` prefers live risk-engine evaluations.
 - `services/api /threat/dashboard` prefers live threat-engine data for Feature 2 cards, alerts, and detections.
-- If either backend is unavailable or times out, the API returns explicit fallback-safe dashboard data instead of failing the UI.
+- `services/api /compliance/dashboard` prefers live compliance-service data for Feature 3 transfer wrappers, residency controls, policy state, and governance ledger panels.
+- If any backend is unavailable or times out, the API returns explicit fallback-safe dashboard data instead of failing the UI.
 - The dashboard renders both live and degraded states without blanking the page.
 - Browser demo interactions call the API gateway, not the backend workers directly, so the Windows CMD workflow remains repo-root friendly.
 
@@ -474,3 +489,161 @@ The smoke checks prove that:
 ## Optional Docker support
 
 Docker remains available as an optional workflow through `docker-compose.yml`, but it is no longer the primary local path.
+
+
+## Feature 3: sovereign-grade compliance & governance
+
+### Local ports
+
+- API gateway: `http://localhost:8000`
+- Risk-engine: `http://localhost:8001`
+- Threat-engine: `http://localhost:8002`
+- Oracle-service: `http://localhost:8003`
+- Compliance-service: `http://localhost:8004`
+- Web dashboard: `http://localhost:3000`
+
+### Windows CMD: exact Feature 3 run commands from the repo root
+
+```cmd
+.venv\Scripts\activate
+python services\compliance-service\scripts\seed.py
+python scripts\run_service.py compliance-service --reload
+```
+
+In separate terminals from the repo root:
+
+```cmd
+.venv\Scripts\activate
+python scripts\run_service.py api --reload
+```
+
+```cmd
+.venv\Scripts\activate
+npm run dev --workspace apps/web
+```
+
+### compliance-service direct endpoints
+
+- `GET http://localhost:8004/health`
+- `GET http://localhost:8004/dashboard`
+- `POST http://localhost:8004/screen/transfer`
+- `POST http://localhost:8004/screen/residency`
+- `GET http://localhost:8004/policy/state`
+- `GET http://localhost:8004/governance/actions`
+- `GET http://localhost:8004/governance/actions/{action_id}`
+- `POST http://localhost:8004/governance/actions`
+- `GET http://localhost:8004/scenarios`
+- `GET http://localhost:8004/scenarios/{scenario_name}`
+
+### API gateway Feature 3 endpoints
+
+- `GET http://localhost:8000/compliance/dashboard`
+- `POST http://localhost:8000/compliance/screen/transfer`
+- `POST http://localhost:8000/compliance/screen/residency`
+- `GET http://localhost:8000/compliance/policy/state`
+- `GET http://localhost:8000/compliance/governance/actions`
+- `GET http://localhost:8000/compliance/governance/actions/{action_id}`
+- `POST http://localhost:8000/compliance/governance/actions`
+
+### Sample curl requests for Feature 3
+
+#### 1) Dashboard
+
+```cmd
+curl http://localhost:8000/compliance/dashboard
+```
+
+#### 2) Compliant transfer approved
+
+```cmd
+curl -X POST http://localhost:8000/compliance/screen/transfer ^
+  -H "Content-Type: application/json" ^
+  --data @services\compliance-service\data\compliant_transfer_approved.json
+```
+
+#### 3) Blocked transfer due to sanctions flag
+
+```cmd
+curl -X POST http://localhost:8000/compliance/screen/transfer ^
+  -H "Content-Type: application/json" ^
+  --data @services\compliance-service\data\blocked_transfer_sanctions.json
+```
+
+#### 4) Blocked transfer due to blocklisted wallet
+
+```cmd
+curl -X POST http://localhost:8000/compliance/screen/transfer ^
+  -H "Content-Type: application/json" ^
+  --data @services\compliance-service\data\blocked_transfer_blocklist.json
+```
+
+#### 5) Review due to incomplete KYC
+
+```cmd
+curl -X POST http://localhost:8000/compliance/screen/transfer ^
+  -H "Content-Type: application/json" ^
+  --data @services\compliance-service\data\review_transfer_incomplete_kyc.json
+```
+
+#### 6) Review due to restricted jurisdiction
+
+```cmd
+curl -X POST http://localhost:8000/compliance/screen/transfer ^
+  -H "Content-Type: application/json" ^
+  --data @services\compliance-service\data\review_transfer_restricted_jurisdiction.json
+```
+
+#### 7) Denied residency request for restricted region
+
+```cmd
+curl -X POST http://localhost:8000/compliance/screen/residency ^
+  -H "Content-Type: application/json" ^
+  --data @services\compliance-service\data\denied_residency_restricted_region.json
+```
+
+#### 8) Freeze wallet governance action
+
+```cmd
+curl -X POST http://localhost:8000/compliance/governance/actions ^
+  -H "Content-Type: application/json" ^
+  --data @services\compliance-service\data\governance_freeze_wallet.json
+```
+
+#### 9) Pause asset governance action
+
+```cmd
+curl -X POST http://localhost:8000/compliance/governance/actions ^
+  -H "Content-Type: application/json" ^
+  --data @services\compliance-service\data\governance_pause_asset.json
+```
+
+#### 10) Allowlist wallet governance action
+
+```cmd
+curl -X POST http://localhost:8000/compliance/governance/actions ^
+  -H "Content-Type: application/json" ^
+  --data @services\compliance-service\data\governance_allowlist_wallet.json
+```
+
+#### 11) Transfer blocked because asset is paused
+
+```cmd
+curl -X POST http://localhost:8000/compliance/screen/transfer ^
+  -H "Content-Type: application/json" ^
+  --data @services\compliance-service\data\transfer_blocked_asset_paused.json
+```
+
+### Expected demo flow for Feature 3
+
+1. Start `risk-engine`, `threat-engine`, `compliance-service`, `api`, and `apps/web` from the repo root.
+2. Open `http://localhost:3000` and scroll to **Feature 3 · Sovereign-Grade Compliance & Governance**.
+3. Review the transfer wrapper cards, residency decision, policy-state counts, and latest governance actions.
+4. Use the Feature 3 demo panel to run a transfer screening, run a residency screening, and submit a governance action.
+5. Refresh the page or re-open `GET /compliance/dashboard` to verify that governance actions update policy state and asset transfer status.
+6. Stop `compliance-service` and retry the same dashboard/API flows to confirm the API gateway and UI degrade gracefully with explicit fallback data instead of blank states.
+
+### Graceful fallback behavior
+
+- If `compliance-service` is unavailable, the API gateway returns deterministic fallback Feature 3 payloads for the dashboard, transfer screening, residency screening, and governance actions.
+- The dashboard renders fallback cards, governance actions, and demo interaction responses without a blank page.
+- Feature 1 and Feature 2 routes continue to operate independently when Feature 3 is offline.

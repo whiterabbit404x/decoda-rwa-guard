@@ -30,6 +30,16 @@ SERVICE_CONFIG = {
         'app_dir': REPO_ROOT / 'services' / 'threat-engine',
         'env_file': REPO_ROOT / 'services' / 'threat-engine' / '.env',
     },
+    'oracle-service': {
+        'port': 8003,
+        'app_dir': REPO_ROOT / 'services' / 'oracle-service',
+        'env_file': REPO_ROOT / 'services' / 'oracle-service' / '.env',
+    },
+    'compliance-service': {
+        'port': 8004,
+        'app_dir': REPO_ROOT / 'services' / 'compliance-service',
+        'env_file': REPO_ROOT / 'services' / 'compliance-service' / '.env',
+    },
 }
 
 

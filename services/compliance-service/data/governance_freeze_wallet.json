@@ -1,0 +1,12 @@
+{
+  "action_type": "freeze_wallet",
+  "target_type": "wallet",
+  "target_id": "0xddd0000000000000000000000000000000000404",
+  "actor": "governance-multisig",
+  "reason": "Escalated compliance review after repeated sanctions-adjacent transfers.",
+  "related_asset_id": "USTB-2026",
+  "metadata": {
+    "ticket": "CMP-1042",
+    "severity": "high"
+  }
+}

@@ -12,10 +12,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SERVICES = [
     ('api', 8000),
     ('risk-engine', 8001),
-    ('oracle-service', 8002),
-    ('compliance-service', 8003),
-    ('reconciliation-service', 8004),
-    ('event-watcher', 8005),
+    ('threat-engine', 8002),
+    ('oracle-service', 8003),
+    ('compliance-service', 8004),
 ]
 
 
