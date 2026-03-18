@@ -1,0 +1,27 @@
+{
+  "asset_id": "USTB-2026",
+  "sender_wallet": "0xaaa0000000000000000000000000000000000101",
+  "receiver_wallet": "0xddd0000000000000000000000000000000000404",
+  "amount": 300000,
+  "sender_kyc_status": "verified",
+  "receiver_kyc_status": "verified",
+  "sender_jurisdiction": "US",
+  "receiver_jurisdiction": "RU",
+  "sender_sanctions_flag": false,
+  "receiver_sanctions_flag": false,
+  "sender_accreditation_status": "approved",
+  "receiver_accreditation_status": "approved",
+  "asset_transfer_policy": {
+    "restricted_jurisdictions": ["IR", "KP"],
+    "review_jurisdictions": ["RU"],
+    "restricted_jurisdiction_action": "review",
+    "amount_review_threshold": 500000,
+    "amount_block_threshold": 1500000,
+    "requires_accreditation": true,
+    "allowed_assets": ["USTB-2026", "USTB-2027"]
+  },
+  "wallet_tags": {
+    "sender": ["allowlisted"],
+    "receiver": ["cross-border"]
+  }
+}

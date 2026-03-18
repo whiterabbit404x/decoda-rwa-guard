@@ -1,0 +1,9 @@
+{
+  "asset_id": "USTB-2026",
+  "requested_processing_region": "cn-north",
+  "asset_home_jurisdiction": "US",
+  "approved_regions": ["us-east", "us-central", "eu-west"],
+  "restricted_regions": ["cn-north", "ru-central", "ir-gov"],
+  "sensitivity_level": "sovereign",
+  "cloud_environment": "commercial-cloud-b"
+}

@@ -481,3 +481,43 @@ td .tableMeta {
     grid-template-columns: 1fr;
   }
 }
+
+.complianceDemoPanel select,
+.complianceDemoPanel button {
+  width: 100%;
+  margin-top: 0.5rem;
+  border-radius: 12px;
+  border: 1px solid #30363d;
+  background: #0d1117;
+  color: #e6edf3;
+  padding: 0.75rem 0.9rem;
+  font: inherit;
+}
+
+.complianceDemoPanel button {
+  cursor: pointer;
+  background: rgba(88, 166, 255, 0.14);
+}
+
+.complianceDemoPanel button:disabled {
+  cursor: wait;
+  opacity: 0.75;
+}
+
+.complianceDemoPanel pre {
+  margin: 0.75rem 0 0;
+  max-height: 240px;
+  overflow: auto;
+  border-radius: 14px;
+  border: 1px solid #30363d;
+  background: #0d1117;
+  padding: 0.85rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.errorText {
+  color: #ffb4af;
+}

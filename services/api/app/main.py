@@ -49,6 +49,9 @@ RISK_ENGINE_DATA_DIR = Path(__file__).resolve().parents[2] / 'risk-engine' / 'da
 THREAT_ENGINE_URL = os.getenv('THREAT_ENGINE_URL', 'http://localhost:8002').rstrip('/')
 THREAT_ENGINE_TIMEOUT_SECONDS = float(os.getenv('THREAT_ENGINE_TIMEOUT_SECONDS', '1.5'))
 THREAT_ENGINE_DATA_DIR = Path(__file__).resolve().parents[2] / 'threat-engine' / 'data'
+COMPLIANCE_SERVICE_URL = os.getenv('COMPLIANCE_SERVICE_URL', 'http://localhost:8004').rstrip('/')
+COMPLIANCE_SERVICE_TIMEOUT_SECONDS = float(os.getenv('COMPLIANCE_SERVICE_TIMEOUT_SECONDS', '1.5'))
+COMPLIANCE_DATA_DIR = Path(__file__).resolve().parents[2] / 'compliance-service' / 'data'
 ALLOWED_ORIGINS = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
@@ -84,6 +87,7 @@ def health() -> dict[str, object]:
         'redis_enabled': os.getenv('REDIS_ENABLED', 'false').lower() == 'true',
         'risk_engine_url': RISK_ENGINE_URL,
         'threat_engine_url': THREAT_ENGINE_URL,
+        'compliance_service_url': COMPLIANCE_SERVICE_URL,
     }
 
 
@@ -156,6 +160,53 @@ def threat_analyze_transaction(payload: dict[str, Any]) -> dict[str, Any]:
 def threat_analyze_market(payload: dict[str, Any]) -> dict[str, Any]:
     response = proxy_threat('market', payload)
     return response or fallback_market_analysis(payload)
+
+
+@app.get('/compliance/dashboard', summary='Feature 3 compliance dashboard feed', description='Returns the compliance-service dashboard payload when available and explicit fallback demo data when the compliance service is unavailable.')
+def compliance_dashboard() -> dict[str, Any]:
+    payload = fetch_compliance_dashboard()
+    return payload or fallback_compliance_dashboard()
+
+
+@app.post('/compliance/screen/transfer', summary='Feature 3 transfer compliance screening', description='Proxies a transfer screening request to the compliance service and falls back to a conservative deterministic local decision if the service is unavailable.')
+def compliance_screen_transfer(payload: dict[str, Any]) -> dict[str, Any]:
+    response = proxy_compliance('screen/transfer', payload)
+    return response or fallback_transfer_screening(payload)
+
+
+@app.post('/compliance/screen/residency', summary='Feature 3 residency compliance screening', description='Proxies a residency screening request to the compliance service and falls back to a deterministic local policy response if the service is unavailable.')
+def compliance_screen_residency(payload: dict[str, Any]) -> dict[str, Any]:
+    response = proxy_compliance('screen/residency', payload)
+    return response or fallback_residency_screening(payload)
+
+
+@app.get('/compliance/policy/state', summary='Feature 3 compliance policy state', description='Returns live compliance policy state when the compliance service is available and fallback demo policy state otherwise.')
+def compliance_policy_state() -> dict[str, Any]:
+    response = request_json('GET', f'{COMPLIANCE_SERVICE_URL}/policy/state', None, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
+    return response or fallback_compliance_dashboard()['policy_state']
+
+
+@app.get('/compliance/governance/actions', summary='Feature 3 governance actions list', description='Returns governance actions from the compliance service or fallback demo ledger actions when unavailable.')
+def compliance_governance_actions() -> list[dict[str, Any]]:
+    response = request_json('GET', f'{COMPLIANCE_SERVICE_URL}/governance/actions', None, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
+    return response or fallback_compliance_dashboard()['latest_governance_actions']
+
+
+@app.get('/compliance/governance/actions/{action_id}', summary='Feature 3 governance action detail', description='Returns one governance action from the compliance service or fallback data when unavailable.')
+def compliance_governance_action(action_id: str) -> dict[str, Any]:
+    response = request_json('GET', f'{COMPLIANCE_SERVICE_URL}/governance/actions/{action_id}', None, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
+    if response is not None:
+        return response
+    for action in fallback_compliance_dashboard()['latest_governance_actions']:
+        if action['action_id'] == action_id:
+            return action
+    return {'detail': f'Unknown action_id: {action_id}', 'source': 'fallback', 'degraded': True}
+
+
+@app.post('/compliance/governance/actions', summary='Feature 3 governance action create', description='Creates a governance action via the compliance service or records a deterministic fallback action when the service is unavailable.')
+def compliance_create_governance_action(payload: dict[str, Any]) -> dict[str, Any]:
+    response = proxy_compliance('governance/actions', payload)
+    return response or fallback_governance_action(payload)
 
 
 def build_risk_dashboard_queue() -> list[dict[str, Any]]:
@@ -413,6 +464,24 @@ def evaluate_live_risk(payload: dict[str, Any]) -> dict[str, Any] | None:
     return request_json('POST', f'{RISK_ENGINE_URL}/v1/risk/evaluate', payload, RISK_ENGINE_TIMEOUT_SECONDS)
 
 
+def fetch_compliance_dashboard() -> dict[str, Any] | None:
+    payload = request_json('GET', f'{COMPLIANCE_SERVICE_URL}/dashboard', None, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
+    if payload is None:
+        return None
+    payload['degraded'] = False
+    payload['source'] = 'live'
+    return payload
+
+
+def proxy_compliance(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    response = request_json('POST', f'{COMPLIANCE_SERVICE_URL}/{path}', payload, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
+    if response is None:
+        return None
+    response['source'] = 'live'
+    response['degraded'] = False
+    return response
+
+
 def fetch_threat_dashboard() -> dict[str, Any] | None:
     payload = request_json('GET', f'{THREAT_ENGINE_URL}/dashboard', None, THREAT_ENGINE_TIMEOUT_SECONDS)
     if payload is None:
@@ -442,6 +511,178 @@ def request_json(method: str, url: str, payload: dict[str, Any] | None, timeout_
             return json.loads(response.read().decode('utf-8'))
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
         return None
+
+
+def fallback_compliance_dashboard() -> dict[str, Any]:
+    return {
+        'source': 'fallback',
+        'degraded': True,
+        'generated_at': '2026-03-18T11:00:00Z',
+        'summary': {
+            'allowlisted_wallet_count': 2,
+            'blocklisted_wallet_count': 1,
+            'frozen_wallet_count': 1,
+            'review_required_wallet_count': 1,
+            'paused_asset_count': 1,
+            'latest_transfer_decision': 'review',
+            'latest_residency_decision': 'denied',
+            'triggered_rule_count': 3,
+        },
+        'cards': [
+            {'label': 'Transfer decision', 'value': 'review', 'detail': 'Fallback wrapper decision indicates manual review until the compliance service is back online.', 'tone': 'high'},
+            {'label': 'Compliance risk', 'value': 'high', 'detail': 'Fallback deterministic wrapper rules remain available at the gateway.', 'tone': 'high'},
+            {'label': 'Governance actions', 'value': '3', 'detail': 'Fallback immutable-style action log stays visible in degraded mode.', 'tone': 'medium'},
+            {'label': 'Residency decision', 'value': 'denied', 'detail': 'Fallback residency routing keeps sovereignty restrictions explainable.', 'tone': 'critical'},
+        ],
+        'transfer_screening': {
+            'decision': 'review',
+            'risk_level': 'high',
+            'reasons': ['One or more wallets have incomplete or pending KYC status.', 'A participating jurisdiction requires manual review.'],
+            'triggered_rules': [
+                {'rule_id': 'kyc-status', 'outcome': 'review', 'summary': 'One or more wallets have incomplete or pending KYC status.'},
+                {'rule_id': 'jurisdiction-policy', 'outcome': 'review', 'summary': 'A participating jurisdiction requires manual review.'},
+                {'rule_id': 'wallet-allowlist', 'outcome': 'pass', 'summary': 'At least one participating wallet is allowlisted or tagged as trusted.'},
+            ],
+            'recommended_action': 'Escalate to compliance operations for manual approval.',
+            'wrapper_status': 'wrapper-hold',
+            'explainability_summary': 'Decision review: One or more wallets have incomplete or pending KYC status.',
+            'policy_snapshot': {
+                'allowlisted_wallets': 2,
+                'blocklisted_wallets': 1,
+                'frozen_wallets': 1,
+                'review_required_wallets': 1,
+                'paused_assets': ['USTB-2026'],
+            },
+        },
+        'residency_screening': {
+            'residency_decision': 'denied',
+            'policy_violations': ['Requested processing region is on the restricted region list.', 'Requested processing region is not on the approved cloud region list.'],
+            'routing_recommendation': 'Route processing to eu-west or request governance override.',
+            'governance_status': 'restricted',
+            'explainability_summary': 'Requested processing region is on the restricted region list.; Requested processing region is not on the approved cloud region list.',
+            'allowed_region_outcome': 'eu-west',
+        },
+        'policy_state': {
+            'allowlisted_wallets': ['0xaaa0000000000000000000000000000000000101', '0xbbb0000000000000000000000000000000000202'],
+            'blocklisted_wallets': ['0xblocked000000000000000000000000000000003'],
+            'frozen_wallets': ['0xddd0000000000000000000000000000000000404'],
+            'review_required_wallets': ['0xreview000000000000000000000000000000004'],
+            'paused_assets': ['USTB-2026'],
+            'approved_cloud_regions': ['us-east', 'us-central', 'eu-west'],
+            'friendly_regions': ['us-east', 'us-central', 'eu-west', 'sg-gov'],
+            'restricted_regions': ['cn-north', 'ru-central', 'ir-gov'],
+            'action_count': 3,
+            'latest_action_id': 'gov-fallback-003',
+        },
+        'latest_governance_actions': [
+            {'action_id': 'gov-fallback-003', 'created_at': '2026-03-18T11:02:00Z', 'action_type': 'pause_asset_transfers', 'target_type': 'asset', 'target_id': 'USTB-2026', 'status': 'applied', 'reason': 'Pause asset transfers while wrapper thresholds are recalibrated.', 'actor': 'governance-multisig', 'related_asset_id': 'USTB-2026', 'metadata': {'ticket': 'CMP-1043'}, 'attestation_hash': 'fallback-003', 'policy_effects': ['Asset USTB-2026 transfer activity paused.']},
+            {'action_id': 'gov-fallback-002', 'created_at': '2026-03-18T11:01:00Z', 'action_type': 'allowlist_wallet', 'target_type': 'wallet', 'target_id': '0xeee0000000000000000000000000000000000505', 'status': 'applied', 'reason': 'Approved new qualified custodian wallet for primary market settlements.', 'actor': 'governance-multisig', 'related_asset_id': 'USTB-2026', 'metadata': {'ticket': 'CMP-1044'}, 'attestation_hash': 'fallback-002', 'policy_effects': ['Wallet 0xeee0000000000000000000000000000000000505 added to allowlist.']},
+            {'action_id': 'gov-fallback-001', 'created_at': '2026-03-18T11:00:00Z', 'action_type': 'freeze_wallet', 'target_type': 'wallet', 'target_id': '0xddd0000000000000000000000000000000000404', 'status': 'applied', 'reason': 'Escalated compliance review after repeated sanctions-adjacent transfers.', 'actor': 'governance-multisig', 'related_asset_id': 'USTB-2026', 'metadata': {'ticket': 'CMP-1042'}, 'attestation_hash': 'fallback-001', 'policy_effects': ['Wallet 0xddd0000000000000000000000000000000000404 frozen.']},
+        ],
+        'asset_transfer_status': [
+            {'asset_id': 'USTB-2026', 'status': 'paused'},
+            {'asset_id': 'USTB-2027', 'status': 'active'},
+        ],
+        'sample_scenarios': {
+            'compliant-transfer-approved': 'Compliant transfer that should be approved.',
+            'blocked-transfer-sanctions': 'Transfer blocked because sanctions screening failed.',
+            'blocked-transfer-blocklist': 'Transfer blocked because a wallet is blocklisted.',
+            'review-transfer-incomplete-kyc': 'Transfer sent to review because KYC is incomplete.',
+            'review-transfer-restricted-jurisdiction': 'Transfer sent to review due to restricted jurisdiction policy.',
+            'denied-residency-restricted-region': 'Residency request denied due to restricted processing region.',
+            'governance-freeze-wallet': 'Governance action freezing a wallet.',
+            'governance-pause-asset': 'Governance action pausing asset transfers.',
+            'governance-allowlist-wallet': 'Governance action allowlisting a wallet.',
+            'transfer-blocked-because-asset-paused': 'Transfer blocked because the asset is paused.',
+        },
+        'message': 'Compliance service unavailable or timed out. Returning explicit fallback policy wrappers and governance ledger records so Feature 3 remains demoable.',
+    }
+
+
+def fallback_transfer_screening(payload: dict[str, Any]) -> dict[str, Any]:
+    policy = payload.get('asset_transfer_policy', {})
+    sanctions = payload.get('sender_sanctions_flag') or payload.get('receiver_sanctions_flag')
+    blocklisted = payload.get('sender_wallet') == '0xblocked000000000000000000000000000000003' or payload.get('receiver_wallet') == '0xblocked000000000000000000000000000000003'
+    asset_paused = policy.get('asset_status') == 'paused'
+    incomplete_kyc = payload.get('sender_kyc_status') != 'verified' or payload.get('receiver_kyc_status') != 'verified'
+    review_jurisdictions = set(policy.get('review_jurisdictions', []))
+    restricted_jurisdictions = set(policy.get('restricted_jurisdictions', []))
+    jurisdictions = {payload.get('sender_jurisdiction'), payload.get('receiver_jurisdiction')}
+    triggered_rules = []
+    reasons = []
+    decision = 'approved'
+    risk_level = 'low'
+
+    def add(rule_id: str, outcome: str, summary: str) -> None:
+        nonlocal decision, risk_level
+        triggered_rules.append({'rule_id': rule_id, 'outcome': outcome, 'summary': summary})
+        if outcome != 'pass':
+            reasons.append(summary)
+        if outcome == 'block':
+            decision = 'blocked'
+            risk_level = 'critical'
+        elif outcome == 'review' and decision != 'blocked':
+            decision = 'review'
+            risk_level = 'high'
+
+    add('sanctions-screen', 'block' if sanctions else 'pass', 'Sanctions/watchlist screening failed for one or more wallets.' if sanctions else 'No sanctions/watchlist hits detected.')
+    add('wallet-blocklist', 'block' if blocklisted else 'pass', 'A participating wallet is currently blocklisted by governance policy.' if blocklisted else 'No participating wallets are blocklisted.')
+    add('asset-transfer-status', 'block' if asset_paused else 'pass', 'Asset transfers are currently paused for this asset.' if asset_paused else 'Asset transfer status is active.')
+    add('kyc-status', 'review' if incomplete_kyc else 'pass', 'One or more wallets have incomplete or pending KYC status.' if incomplete_kyc else 'Sender and receiver KYC controls are complete.')
+    jurisdiction_review = bool(jurisdictions & (restricted_jurisdictions | review_jurisdictions))
+    add('jurisdiction-policy', 'review' if jurisdiction_review and decision != 'blocked' else 'pass', 'A participating jurisdiction requires manual review.' if jurisdiction_review and decision != 'blocked' else 'Jurisdiction controls passed.')
+
+    return {
+        'decision': decision,
+        'risk_level': risk_level,
+        'reasons': reasons or ['All required compliance controls passed.'],
+        'triggered_rules': triggered_rules,
+        'recommended_action': 'Reject the transfer and record an exception in governance audit logs.' if decision == 'blocked' else 'Escalate to compliance operations for manual approval.' if decision == 'review' else 'Proceed with wrapped transfer execution.',
+        'wrapper_status': 'wrapper-blocked' if decision == 'blocked' else 'wrapper-hold' if decision == 'review' else 'wrapper-clear',
+        'explainability_summary': f"Decision {decision}: {(reasons or ['all required compliance controls passed'])[0]}",
+        'policy_snapshot': fallback_compliance_dashboard()['policy_state'],
+        'source': 'fallback',
+        'degraded': True,
+    }
+
+
+def fallback_residency_screening(payload: dict[str, Any]) -> dict[str, Any]:
+    approved = set(payload.get('approved_regions', []))
+    restricted = set(payload.get('restricted_regions', []))
+    requested = payload.get('requested_processing_region')
+    violations = []
+    if requested in restricted:
+        violations.append('Requested processing region is on the restricted region list.')
+    if requested not in approved:
+        violations.append('Requested processing region is not on the approved cloud region list.')
+    if payload.get('sensitivity_level') == 'sovereign' and not str(payload.get('cloud_environment', '')).startswith('sovereign'):
+        violations.append('Sovereign data requires a sovereign cloud environment.')
+    decision = 'denied' if violations else 'allowed'
+    return {
+        'residency_decision': decision,
+        'policy_violations': violations,
+        'routing_recommendation': 'Route processing to eu-west or request governance override.' if violations else f"Route processing to {requested} in {payload.get('cloud_environment')}",
+        'governance_status': 'restricted' if violations else 'normal',
+        'explainability_summary': '; '.join(violations) if violations else 'Residency controls passed without violations.',
+        'allowed_region_outcome': 'eu-west' if violations else requested,
+        'source': 'fallback',
+        'degraded': True,
+    }
+
+
+def fallback_governance_action(payload: dict[str, Any]) -> dict[str, Any]:
+    attestation = f"fallback-{payload.get('action_type', 'action')}-{payload.get('target_id', 'target')}"
+    effect = f"Fallback governance action {payload.get('action_type')} applied to {payload.get('target_id')}."
+    return {
+        **payload,
+        'action_id': 'gov-fallback-new',
+        'created_at': '2026-03-18T11:05:00Z',
+        'status': 'applied',
+        'attestation_hash': attestation,
+        'policy_effects': [effect],
+        'source': 'fallback',
+        'degraded': True,
+    }
 
 
 def fallback_threat_dashboard() -> dict[str, Any]:

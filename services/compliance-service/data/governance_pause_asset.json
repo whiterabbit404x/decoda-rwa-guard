@@ -1,0 +1,12 @@
+{
+  "action_type": "pause_asset_transfers",
+  "target_type": "asset",
+  "target_id": "USTB-2026",
+  "actor": "governance-multisig",
+  "reason": "Pause asset transfers while wrapper thresholds are being recalibrated.",
+  "related_asset_id": "USTB-2026",
+  "metadata": {
+    "change_window": "2026-03-18T11:00:00Z",
+    "ticket": "CMP-1043"
+  }
+}

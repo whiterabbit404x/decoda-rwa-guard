@@ -1,0 +1,12 @@
+{
+  "action_type": "allowlist_wallet",
+  "target_type": "wallet",
+  "target_id": "0xeee0000000000000000000000000000000000505",
+  "actor": "governance-multisig",
+  "reason": "Approved new qualified custodian wallet for primary market settlements.",
+  "related_asset_id": "USTB-2026",
+  "metadata": {
+    "counterparty": "Qualified Custodian B",
+    "ticket": "CMP-1044"
+  }
+}
