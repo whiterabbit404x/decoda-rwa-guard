@@ -80,6 +80,13 @@ class RiskEngineApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)
 
+
+    def test_health_endpoint_starts_cleanly(self) -> None:
+        response = self.client.get('/health')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['service'], 'risk-engine')
+
     def test_scenarios_endpoint_lists_seed_data(self) -> None:
         response = self.client.get('/v1/risk/scenarios')
 

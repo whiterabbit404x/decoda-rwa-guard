@@ -19,13 +19,17 @@ body {
   width: 100%;
   max-width: none;
   margin: 0;
-  padding: 2rem clamp(1rem, 2vw, 2rem) 4rem;
+  padding: 2rem clamp(1rem, 2vw, 2.5rem) 4rem;
+}
+
+main.container {
+  min-height: 100vh;
 }
 
 .hero {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
-  gap: 1rem;
+  grid-template-columns: minmax(0, 2.4fr) minmax(320px, 1fr);
+  gap: 1.25rem;
   align-items: stretch;
 }
 
@@ -119,7 +123,7 @@ p {
 
 .grid {
   margin-top: 2rem;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
 
 .serviceTag,
@@ -198,7 +202,8 @@ p {
 }
 
 .twoColumnSection {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
+  align-items: start;
 }
 
 .stack {
@@ -379,5 +384,19 @@ td .tableMeta {
     width: 100%;
     flex-direction: row;
     justify-content: space-between;
+  }
+}
+
+@media (min-width: 1280px) {
+  .summaryGrid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .stack {
+    gap: 1.15rem;
   }
 }

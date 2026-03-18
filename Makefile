@@ -1,6 +1,4 @@
-.PHONY: up down logs install-python install-web init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web
-
-PYTHONPATH_LOCAL := $(CURDIR)
+.PHONY: up down logs install-python install-web init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web smoke-phase1
 
 up:
 	docker compose up -d
@@ -22,33 +20,36 @@ init-local:
 	$(MAKE) seed-all
 
 run-api:
-	cd services/api && PYTHONPATH=$(PYTHONPATH_LOCAL) uvicorn app.main:app --env-file .env --reload --host 0.0.0.0 --port 8000
+	python scripts/run_service.py api --reload
 
 run-risk:
-	cd services/risk-engine && PYTHONPATH=$(PYTHONPATH_LOCAL) uvicorn app.main:app --env-file .env --reload --host 0.0.0.0 --port 8001
+	python scripts/run_service.py risk-engine --reload
 
 run-oracle:
-	cd services/oracle-service && PYTHONPATH=$(PYTHONPATH_LOCAL) uvicorn app.main:app --env-file .env --reload --host 0.0.0.0 --port 8002
+	cd services/oracle-service && PYTHONPATH=$(CURDIR) uvicorn app.main:app --env-file .env --reload --host 0.0.0.0 --port 8002
 
 run-compliance:
-	cd services/compliance-service && PYTHONPATH=$(PYTHONPATH_LOCAL) uvicorn app.main:app --env-file .env --reload --host 0.0.0.0 --port 8003
+	cd services/compliance-service && PYTHONPATH=$(CURDIR) uvicorn app.main:app --env-file .env --reload --host 0.0.0.0 --port 8003
 
 run-reconciliation:
-	cd services/reconciliation-service && PYTHONPATH=$(PYTHONPATH_LOCAL) uvicorn app.main:app --env-file .env --reload --host 0.0.0.0 --port 8004
+	cd services/reconciliation-service && PYTHONPATH=$(CURDIR) uvicorn app.main:app --env-file .env --reload --host 0.0.0.0 --port 8004
 
 run-event-watcher:
-	cd services/event-watcher && PYTHONPATH=$(PYTHONPATH_LOCAL) uvicorn app.main:app --env-file .env --reload --host 0.0.0.0 --port 8005
+	cd services/event-watcher && PYTHONPATH=$(CURDIR) uvicorn app.main:app --env-file .env --reload --host 0.0.0.0 --port 8005
 
 run-backend:
-	PYTHONPATH=$(PYTHONPATH_LOCAL) python scripts/run_local_backend.py
+	python scripts/run_local_backend.py
 
 run-web:
 	cd apps/web && npm run dev
 
 seed-all:
-	cd services/api && PYTHONPATH=$(PYTHONPATH_LOCAL) python scripts/seed.py
-	cd services/risk-engine && PYTHONPATH=$(PYTHONPATH_LOCAL) python scripts/seed.py
-	cd services/oracle-service && PYTHONPATH=$(PYTHONPATH_LOCAL) python scripts/seed.py
-	cd services/compliance-service && PYTHONPATH=$(PYTHONPATH_LOCAL) python scripts/seed.py
-	cd services/reconciliation-service && PYTHONPATH=$(PYTHONPATH_LOCAL) python scripts/seed.py
-	cd services/event-watcher && PYTHONPATH=$(PYTHONPATH_LOCAL) python scripts/seed.py
+	cd services/api && PYTHONPATH=$(CURDIR) python scripts/seed.py
+	cd services/risk-engine && PYTHONPATH=$(CURDIR) python scripts/seed.py
+	cd services/oracle-service && PYTHONPATH=$(CURDIR) python scripts/seed.py
+	cd services/compliance-service && PYTHONPATH=$(CURDIR) python scripts/seed.py
+	cd services/reconciliation-service && PYTHONPATH=$(CURDIR) python scripts/seed.py
+	cd services/event-watcher && PYTHONPATH=$(CURDIR) python scripts/seed.py
+
+smoke-phase1:
+	python scripts/smoke_phase1.py

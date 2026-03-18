@@ -5,14 +5,15 @@ import os
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from phase1_local.dev_support import load_env_file, database_url, load_service, resolve_sqlite_path, seed_service
+from phase1_local.dev_support import database_url, load_env_file, load_service, resolve_sqlite_path, seed_service
 
 from .engine import RiskEngine
-from .schemas import RiskEvaluationRequest, RiskEvaluationResponse, ScenarioSummary
+from .schemas import RISK_EVALUATION_EXAMPLE, RiskEvaluationRequest, RiskEvaluationResponse, ScenarioSummary
 
 load_env_file()
 
@@ -49,7 +50,11 @@ SCENARIOS = {
     },
 }
 
-app = FastAPI(title=f'{SERVICE_NAME} service')
+app = FastAPI(
+    title=f'{SERVICE_NAME} service',
+    summary='Phase 1 heuristic risk-engine for treasury transaction screening.',
+    description='Evaluate treasury-related transactions, inspect bundled scenarios, and surface rule-driven ALLOW / REVIEW / BLOCK recommendations for the dashboard and API gateway.',
+)
 engine = RiskEngine()
 
 
@@ -58,7 +63,11 @@ def startup() -> None:
     seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
 
 
-@app.get('/health')
+@app.get(
+    '/health',
+    summary='Risk-engine health check',
+    description='Returns the runtime mode and local persistence configuration for the risk-engine service.',
+)
 def health() -> dict[str, object]:
     return {
         'status': 'ok',
@@ -70,7 +79,11 @@ def health() -> dict[str, object]:
     }
 
 
-@app.get('/state')
+@app.get(
+    '/state',
+    summary='Risk-engine seeded state',
+    description='Returns the service registry row written into the shared local SQLite file.',
+)
 def state() -> dict[str, object]:
     return {
         'service': load_service(SERVICE_NAME),
@@ -78,7 +91,12 @@ def state() -> dict[str, object]:
     }
 
 
-@app.get('/v1/risk/scenarios', response_model=list[ScenarioSummary])
+@app.get(
+    '/v1/risk/scenarios',
+    response_model=list[ScenarioSummary],
+    summary='List bundled risk scenarios',
+    description='Returns the bundled scenario files that can be used for local demos, docs, and smoke checks.',
+)
 def list_scenarios() -> list[ScenarioSummary]:
     return [
         ScenarioSummary(
@@ -90,7 +108,11 @@ def list_scenarios() -> list[ScenarioSummary]:
     ]
 
 
-@app.get('/v1/risk/scenarios/{scenario_name}')
+@app.get(
+    '/v1/risk/scenarios/{scenario_name}',
+    summary='Fetch a bundled scenario payload',
+    description='Loads one of the bundled JSON scenario payloads so it can be replayed locally or copied into the evaluate endpoint docs.',
+)
 def get_scenario(scenario_name: str) -> dict[str, object]:
     details = SCENARIOS.get(scenario_name)
     if details is None:
@@ -103,11 +125,43 @@ def get_scenario(scenario_name: str) -> dict[str, object]:
     }
 
 
-@app.post('/v1/risk/evaluate', response_model=RiskEvaluationResponse)
-def evaluate_risk(request: RiskEvaluationRequest) -> RiskEvaluationResponse:
+@app.post(
+    '/v1/risk/evaluate',
+    response_model=RiskEvaluationResponse,
+    summary='Evaluate a transaction risk payload',
+    description='Runs the main Phase 1 heuristic scoring engine and returns the triggered rules, score breakdown, and recommendation used by the dashboard.',
+)
+def evaluate_risk(
+    request: RiskEvaluationRequest = Body(
+        ...,
+        openapi_examples={
+            'sample_request': {
+                'summary': 'Sample treasury transaction payload',
+                'description': 'Matches services/risk-engine/data/sample_risk_request.json.',
+                'value': RISK_EVALUATION_EXAMPLE,
+            }
+        },
+    )
+) -> RiskEvaluationResponse:
     return engine.evaluate(request)
 
 
-@app.post('/internal/risk/evaluate', response_model=RiskEvaluationResponse)
-def evaluate_risk_internal(request: RiskEvaluationRequest) -> RiskEvaluationResponse:
+@app.post(
+    '/internal/risk/evaluate',
+    response_model=RiskEvaluationResponse,
+    summary='Internal risk evaluation endpoint',
+    description='Internal-use endpoint consumed by the API gateway when it assembles the live dashboard risk queue.',
+)
+def evaluate_risk_internal(
+    request: RiskEvaluationRequest = Body(
+        ...,
+        openapi_examples={
+            'sample_request': {
+                'summary': 'Gateway-compatible payload',
+                'description': 'Same body as the public evaluate endpoint for local Phase 1 usage.',
+                'value': RISK_EVALUATION_EXAMPLE,
+            }
+        },
+    )
+) -> RiskEvaluationResponse:
     return engine.evaluate(request)

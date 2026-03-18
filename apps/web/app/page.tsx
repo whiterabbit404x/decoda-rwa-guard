@@ -44,7 +44,7 @@ type RiskQueueItem = {
   triggered_rules: string[];
   explanation: string;
   updated_at: string;
-  source: 'live' | 'mock';
+  source: 'live' | 'fallback';
 };
 
 type RiskAlert = {
@@ -68,7 +68,7 @@ type ContractScanResult = {
   recommendation: 'ALLOW' | 'REVIEW' | 'BLOCK';
   triggered_rules: string[];
   explanation: string;
-  source: 'live' | 'mock';
+  source: 'live' | 'fallback';
 };
 
 type DecisionLogEntry = {
@@ -80,11 +80,19 @@ type DecisionLogEntry = {
   recommendation: 'ALLOW' | 'REVIEW' | 'BLOCK';
   triggered_rules: string[];
   explanation: string;
-  source: 'live' | 'mock';
+  source: 'live' | 'fallback';
 };
 
 type RiskDashboardResponse = {
   source: 'live' | 'fallback';
+  degraded: boolean;
+  message: string;
+  risk_engine: {
+    url: string;
+    timeout_seconds: number;
+    live_items: number;
+    fallback_items: number;
+  };
   generated_at: string;
   summary: RiskSummary;
   transaction_queue: RiskQueueItem[];
@@ -104,6 +112,14 @@ const fallbackCards: DashboardCard[] = [
 
 const fallbackRiskDashboard: RiskDashboardResponse = {
   source: 'fallback',
+  degraded: true,
+  message: 'Backend unavailable. Rendering safe fallback data until the local API and risk-engine are running.',
+  risk_engine: {
+    url: 'http://localhost:8001',
+    timeout_seconds: 1.5,
+    live_items: 0,
+    fallback_items: 4
+  },
   generated_at: '2026-03-18T09:00:00Z',
   summary: {
     total_transactions: 4,
@@ -132,7 +148,7 @@ const fallbackRiskDashboard: RiskDashboardResponse = {
       ],
       explanation: 'Aggregate score 100 produced recommendation BLOCK. Primary drivers: flash-loan routing, severe liquidity drain, and weak wallet reputation.',
       updated_at: '2026-03-18T09:00:00Z',
-      source: 'mock'
+      source: 'fallback'
     },
     {
       id: 'txn-002',
@@ -148,7 +164,7 @@ const fallbackRiskDashboard: RiskDashboardResponse = {
       triggered_rules: [],
       explanation: 'Known-safe treasury settlement has verified contract metadata and no defensive heuristics triggered.',
       updated_at: '2026-03-18T09:01:00Z',
-      source: 'mock'
+      source: 'fallback'
     },
     {
       id: 'txn-003',
@@ -168,7 +184,7 @@ const fallbackRiskDashboard: RiskDashboardResponse = {
       ],
       explanation: 'Aggregate score 52 produced recommendation REVIEW. Primary drivers: privileged arguments, weak wallet reputation, and unaudited proxy behavior.',
       updated_at: '2026-03-18T09:02:00Z',
-      source: 'mock'
+      source: 'fallback'
     },
     {
       id: 'txn-004',
@@ -188,7 +204,7 @@ const fallbackRiskDashboard: RiskDashboardResponse = {
       ],
       explanation: 'Mixer-associated sweep touches laundering indicators and elevated market anomalies, so the engine recommends BLOCK.',
       updated_at: '2026-03-18T09:03:00Z',
-      source: 'mock'
+      source: 'fallback'
     }
   ],
   risk_alerts: [
@@ -239,7 +255,7 @@ fallbackRiskDashboard.contract_scan_results = fallbackRiskDashboard.transaction_
   recommendation: item.recommendation,
   triggered_rules: item.triggered_rules,
   explanation: item.explanation,
-  source: 'mock'
+  source: 'fallback'
 }));
 
 fallbackRiskDashboard.decisions_log = [...fallbackRiskDashboard.transaction_queue]
@@ -253,7 +269,7 @@ fallbackRiskDashboard.decisions_log = [...fallbackRiskDashboard.transaction_queu
     recommendation: item.recommendation,
     triggered_rules: item.triggered_rules,
     explanation: item.explanation,
-    source: 'mock'
+    source: 'fallback'
   }));
 
 type BackendState = 'online' | 'degraded' | 'offline';
@@ -306,7 +322,7 @@ function resolveBackendState(dashboard: DashboardResponse | null, riskDashboard:
   if (!dashboard) {
     return 'offline';
   }
-  if (riskDashboard.source !== 'live') {
+  if (riskDashboard.degraded || riskDashboard.source !== 'live') {
     return 'degraded';
   }
   return 'online';
@@ -338,7 +354,7 @@ export default async function Page() {
     backendState === 'online'
       ? 'Live API + risk-engine data streaming into the dashboard.'
       : backendState === 'degraded'
-        ? 'API is reachable, but the risk-engine is unavailable. Showing fallback risk records until port 8001 returns.'
+        ? riskDashboard.message
         : 'Backend is unavailable. The dashboard is showing offline fallback data so the UI still renders cleanly.';
 
   return (
@@ -348,14 +364,15 @@ export default async function Page() {
           <p className="eyebrow">Phase 1 local development</p>
           <h1>Tokenized Treasury Control Dashboard</h1>
           <p className="lede">
-            The dashboard now reads the local API for backend health and live risk-engine decisions, while preserving a mock safety net when the services are offline.
+            The dashboard now reads the local API for backend health and live risk-engine decisions, while preserving a fallback safety net when the services are offline.
           </p>
         </div>
         <div className="heroPanel">
           <p><strong>Mode:</strong> {dashboard?.mode ?? 'local'}</p>
           <p><strong>Database:</strong> {dashboard?.database_url ?? 'sqlite:///.data/phase1.db'}</p>
           <p><strong>Redis:</strong> {dashboard?.redis_enabled ? 'enabled' : 'disabled for local mode'}</p>
-          <p><strong>Risk feed:</strong> {riskDashboard.source === 'live' ? 'risk-engine live data' : 'mock fallback data'}</p>
+          <p><strong>Risk feed:</strong> {riskDashboard.source === 'live' ? 'risk-engine live data' : 'fallback-safe dashboard data'}</p>
+          <p><strong>Risk-engine URL:</strong> {riskDashboard.risk_engine.url}</p>
         </div>
       </div>
 
@@ -388,6 +405,7 @@ export default async function Page() {
         <div className="sectionHeader">
           <h2>Transaction Queue</h2>
           <p>Live evaluations from the local risk-engine, with graceful fallback records when the backend is unavailable.</p>
+          <p className="tableMeta">{riskDashboard.message}</p>
         </div>
         <div className="stack">
           {riskDashboard.transaction_queue.map((item) => (

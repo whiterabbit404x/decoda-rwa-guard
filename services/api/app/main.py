@@ -11,7 +11,8 @@ from urllib.request import Request, urlopen
 
 from fastapi import FastAPI
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from phase1_local.dev_support import (
     dashboard_payload,
@@ -42,9 +43,14 @@ DEFAULT_METRICS = [
     },
 ]
 RISK_ENGINE_URL = os.getenv('RISK_ENGINE_URL', 'http://localhost:8001').rstrip('/')
+RISK_ENGINE_TIMEOUT_SECONDS = float(os.getenv('RISK_ENGINE_TIMEOUT_SECONDS', '1.5'))
 RISK_ENGINE_DATA_DIR = Path(__file__).resolve().parents[2] / 'risk-engine' / 'data'
 
-app = FastAPI(title='api service')
+app = FastAPI(
+    title='api service',
+    summary='Phase 1 gateway for dashboard and live risk-engine data.',
+    description='Aggregates shared local service state and proxies the dashboard risk queue to the risk-engine, while returning explicit fallback metadata when the risk-engine is unavailable.',
+)
 
 
 @app.on_event('startup')
@@ -52,7 +58,7 @@ def startup() -> None:
     seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
 
 
-@app.get('/health')
+@app.get('/health', summary='API health check', description='Returns the API runtime mode and local persistence configuration.')
 def health() -> dict[str, object]:
     return {
         'status': 'ok',
@@ -61,10 +67,11 @@ def health() -> dict[str, object]:
         'app_mode': os.getenv('APP_MODE', 'local'),
         'database_url': database_url(),
         'redis_enabled': os.getenv('REDIS_ENABLED', 'false').lower() == 'true',
+        'risk_engine_url': RISK_ENGINE_URL,
     }
 
 
-@app.get('/state')
+@app.get('/state', summary='API seeded state', description='Returns the service registry row written into the shared local SQLite file.')
 def state() -> dict[str, object]:
     return {
         'service': load_service(SERVICE_NAME),
@@ -72,7 +79,7 @@ def state() -> dict[str, object]:
     }
 
 
-@app.get('/services')
+@app.get('/services', summary='List registered local services', description='Returns the shared local service registry used to populate the dashboard status cards.')
 def services() -> dict[str, object]:
     payload = dashboard_payload()
     return {
@@ -82,16 +89,26 @@ def services() -> dict[str, object]:
     }
 
 
-@app.get('/dashboard')
+@app.get('/dashboard', summary='Dashboard service snapshot', description='Returns the local dashboard summary cards and service registry information for the frontend.')
 def dashboard() -> dict[str, object]:
     return dashboard_payload()
 
 
-@app.get('/risk/dashboard')
+@app.get('/risk/dashboard', summary='Dashboard risk feed', description='Builds the dashboard transaction queue from live risk-engine evaluations and falls back to explicit demo-safe records when the risk-engine is unavailable.')
 def risk_dashboard() -> dict[str, object]:
     queue = build_risk_dashboard_queue()
+    live_count = sum(1 for item in queue if item['live_data'])
+    degraded = live_count != len(queue)
     return {
-        'source': 'live' if all(item['live_data'] for item in queue) else 'fallback',
+        'source': 'live' if not degraded else 'fallback',
+        'degraded': degraded,
+        'message': 'Live risk-engine data loaded successfully.' if not degraded else 'Risk-engine unavailable or timed out for one or more queue items. Returning fallback-safe dashboard records.',
+        'risk_engine': {
+            'url': RISK_ENGINE_URL,
+            'timeout_seconds': RISK_ENGINE_TIMEOUT_SECONDS,
+            'live_items': live_count,
+            'fallback_items': len(queue) - live_count,
+        },
         'generated_at': queue[0]['updated_at'] if queue else None,
         'summary': build_risk_summary(queue),
         'transaction_queue': [serialize_queue_item(item) for item in queue],
@@ -114,7 +131,7 @@ def build_risk_dashboard_queue() -> list[dict[str, Any]]:
             'fallback': {
                 'risk_score': 100,
                 'recommendation': 'BLOCK',
-                'explanation': 'Aggregate score 100 produced recommendation BLOCK. Primary drivers: Low-level liquidity drain, flash-loan routing, and weak wallet reputation.',
+                'explanation': 'Aggregate score 100 produced recommendation BLOCK. Primary drivers: low-level liquidity drain, flash-loan routing, and weak wallet reputation.',
                 'triggered_rules': [
                     {'rule_id': 'runtime:liquidity-drain', 'severity': 'critical', 'summary': 'Observed recent liquidity contraction matches flash-loan drain behavior.'},
                     {'rule_id': 'pre:wallet-reputation', 'severity': 'high', 'summary': 'Wallet reputation is weak relative to defensive transaction policy.'},
@@ -361,7 +378,7 @@ def evaluate_live_risk(payload: dict[str, Any]) -> dict[str, Any] | None:
         method='POST',
     )
     try:
-        with urlopen(request, timeout=1.5) as response:
+        with urlopen(request, timeout=RISK_ENGINE_TIMEOUT_SECONDS) as response:
             return json.loads(response.read().decode('utf-8'))
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
         return None
@@ -406,7 +423,7 @@ def serialize_queue_item(item: dict[str, Any]) -> dict[str, Any]:
         'triggered_rules': [rule['summary'] for rule in evaluation.get('triggered_rules', [])],
         'explanation': evaluation['explanation'],
         'updated_at': item['updated_at'],
-        'source': 'live' if item['live_data'] else 'mock',
+        'source': 'live' if item['live_data'] else 'fallback',
     }
 
 
@@ -443,7 +460,7 @@ def build_contract_scan_results(queue: list[dict[str, Any]]) -> list[dict[str, A
             'recommendation': item['evaluation']['recommendation'],
             'triggered_rules': [rule['summary'] for rule in item['evaluation'].get('triggered_rules', [])],
             'explanation': item['evaluation']['explanation'],
-            'source': 'live' if item['live_data'] else 'mock',
+            'source': 'live' if item['live_data'] else 'fallback',
         }
         for item in queue
     ]
@@ -460,7 +477,7 @@ def build_decisions_log(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
             'recommendation': item['evaluation']['recommendation'],
             'triggered_rules': [rule['summary'] for rule in item['evaluation'].get('triggered_rules', [])],
             'explanation': item['evaluation']['explanation'],
-            'source': 'live' if item['live_data'] else 'mock',
+            'source': 'live' if item['live_data'] else 'fallback',
         }
         for item in reversed(queue)
     ]
