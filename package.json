@@ -12,7 +12,10 @@
     "smoke:feature2": "python scripts/smoke_feature2.py",
     "test:backend:feature3-smoke": "python -m pytest services/api/tests/test_feature3_smoke.py -q",
     "test:frontend:feature3-smoke": "playwright test apps/web/tests/feature3-smoke.spec.ts",
-    "smoke:feature3": "python scripts/smoke_feature3.py"
+    "smoke:feature3": "python scripts/smoke_feature3.py",
+    "test:backend:feature4-smoke": "python -m pytest services/api/tests/test_feature4_smoke.py -q",
+    "test:frontend:feature4-smoke": "playwright test apps/web/tests/feature4-smoke.spec.ts",
+    "smoke:feature4": "python scripts/smoke_feature4.py"
   },
   "devDependencies": {
     "@playwright/test": "1.53.2"

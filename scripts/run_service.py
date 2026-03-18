@@ -40,6 +40,11 @@ SERVICE_CONFIG = {
         'app_dir': REPO_ROOT / 'services' / 'compliance-service',
         'env_file': REPO_ROOT / 'services' / 'compliance-service' / '.env',
     },
+    'reconciliation-service': {
+        'port': 8005,
+        'app_dir': REPO_ROOT / 'services' / 'reconciliation-service',
+        'env_file': REPO_ROOT / 'services' / 'reconciliation-service' / '.env',
+    },
 }
 
 

@@ -1,0 +1,9 @@
+{
+  "asset_id": "USTB-2026",
+  "volatility_score": 87,
+  "cyber_alert_score": 39,
+  "reconciliation_severity": 44,
+  "oracle_confidence_score": 52,
+  "compliance_incident_score": 28,
+  "current_market_mode": "normal"
+}

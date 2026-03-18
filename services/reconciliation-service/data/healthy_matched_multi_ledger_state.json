@@ -1,0 +1,9 @@
+{
+  "asset_id": "USTB-2026",
+  "expected_total_supply": 1000000,
+  "ledgers": [
+    {"ledger_name": "ethereum", "reported_supply": 600000, "locked_supply": 50000, "pending_settlement": 5000, "last_updated_at": "2026-03-18T11:55:00Z", "transfer_count": 82, "reconciliation_weight": 1.0},
+    {"ledger_name": "avalanche", "reported_supply": 300000, "locked_supply": 15000, "pending_settlement": 3000, "last_updated_at": "2026-03-18T11:56:00Z", "transfer_count": 65, "reconciliation_weight": 1.0},
+    {"ledger_name": "private-bank-ledger", "reported_supply": 165000, "locked_supply": 0, "pending_settlement": 2000, "last_updated_at": "2026-03-18T11:54:00Z", "transfer_count": 18, "reconciliation_weight": 1.0}
+  ]
+}

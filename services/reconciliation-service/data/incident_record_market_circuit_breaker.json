@@ -1,0 +1,11 @@
+{
+  "event_type": "market-circuit-breaker",
+  "trigger_source": "backstop-engine",
+  "related_asset_id": "USTB-2026",
+  "affected_assets": ["USTB-2026"],
+  "affected_ledgers": ["ethereum", "avalanche"],
+  "severity": "high",
+  "status": "contained",
+  "summary": "Cyber alert escalation triggered deterministic circuit breaker safeguards and temporary trading pause.",
+  "metadata": {"scenario": "cyber-triggered-restricted-mode", "ticket": "RES-4002"}
+}

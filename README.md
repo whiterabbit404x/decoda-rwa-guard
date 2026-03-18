@@ -1,6 +1,6 @@
 # Phase 1 Tokenized Treasury Risk-Control Monorepo
 
-This repo now supports a reproducible local Phase 1 workflow without Docker as the primary path. The stable Phase 1 risk-engine remains intact, Feature 2 adds the `threat-engine` service for explainable zero-day exploit mitigation and treasury-token market anomaly detection, and Feature 3 adds the `compliance-service` for sovereign-grade compliance wrappers, geopatriation controls, and governance actions.
+This repo now supports a reproducible local Phase 1 workflow without Docker as the primary path. The stable Phase 1 risk-engine remains intact, Feature 2 adds the `threat-engine` service for explainable zero-day exploit mitigation and treasury-token market anomaly detection, Feature 3 adds the `compliance-service` for sovereign-grade compliance wrappers, geopatriation controls, and governance actions, and Feature 4 expands the existing `reconciliation-service` into an interoperability and systemic resilience slice for deterministic cross-chain reconciliation, backstop controls, and local incident logging.
 
 ## Repository Layout
 
@@ -28,9 +28,11 @@ python services/api/scripts/seed.py
 python services/risk-engine/scripts/seed.py
 python services/threat-engine/scripts/seed.py
 python services/compliance-service/scripts/seed.py
+python services/reconciliation-service/scripts/seed.py
 python scripts/run_service.py risk-engine --reload
 python scripts/run_service.py threat-engine --reload
 python scripts/run_service.py compliance-service --reload
+python scripts/run_service.py reconciliation-service --reload
 python scripts/run_service.py api --reload
 npm run dev --workspace apps/web
 ```
@@ -42,6 +44,7 @@ Open:
 - Threat-engine docs: `http://localhost:8002/docs`
 - Oracle-service docs: `http://localhost:8003/docs`
 - Compliance-service docs: `http://localhost:8004/docs`
+- Reconciliation-service docs: `http://localhost:8005/docs`
 - Dashboard: `http://localhost:3000`
 
 ## Windows CMD: exact repo-root commands
@@ -75,6 +78,7 @@ python services\api\scripts\seed.py
 python services\risk-engine\scripts\seed.py
 python services\threat-engine\scripts\seed.py
 python services\compliance-service\scripts\seed.py
+python services\reconciliation-service\scripts\seed.py
 ```
 
 ### 5) Run the risk-engine
@@ -97,35 +101,44 @@ python scripts\run_service.py threat-engine --reload
 python scripts\run_service.py compliance-service --reload
 ```
 
-### 8) Run the API gateway in a fourth terminal
+### 8) Run the reconciliation-service in a fourth terminal
+
+```cmd
+.venv\Scripts\activate
+python scripts\run_service.py reconciliation-service --reload
+```
+
+### 9) Run the API gateway in a fifth terminal
 
 ```cmd
 .venv\Scripts\activate
 python scripts\run_service.py api --reload
 ```
 
-### 9) Run the frontend in a fifth terminal
+### 10) Run the frontend in a sixth terminal
 
 ```cmd
 .venv\Scripts\activate
 npm run dev --workspace apps/web
 ```
 
-### 10) Open the local apps
+### 11) Open the local apps
 
 - API docs: `http://localhost:8000/docs`
 - Risk-engine docs: `http://localhost:8001/docs`
 - Threat-engine docs: `http://localhost:8002/docs`
 - Oracle-service docs: `http://localhost:8003/docs`
 - Compliance-service docs: `http://localhost:8004/docs`
+- Reconciliation-service docs: `http://localhost:8005/docs`
 - Dashboard: `http://localhost:3000`
 
 ## Local backend behavior
 
-- `services/api` defaults to `RISK_ENGINE_URL=http://localhost:8001`, `THREAT_ENGINE_URL=http://localhost:8002`, and `COMPLIANCE_SERVICE_URL=http://localhost:8004`.
+- `services/api` defaults to `RISK_ENGINE_URL=http://localhost:8001`, `THREAT_ENGINE_URL=http://localhost:8002`, `COMPLIANCE_SERVICE_URL=http://localhost:8004`, and `RECONCILIATION_SERVICE_URL=http://localhost:8005`.
 - `services/api /risk/dashboard` prefers live risk-engine evaluations.
 - `services/api /threat/dashboard` prefers live threat-engine data for Feature 2 cards, alerts, and detections.
 - `services/api /compliance/dashboard` prefers live compliance-service data for Feature 3 transfer wrappers, residency controls, policy state, and governance ledger panels.
+- `services/api /resilience/dashboard` prefers live reconciliation-service data for Feature 4 reconciliation, backstop controls, and local incident ledger panels.
 - If any backend is unavailable or times out, the API returns explicit fallback-safe dashboard data instead of failing the UI.
 - The dashboard renders both live and degraded states without blanking the page.
 - Browser demo interactions call the API gateway, not the backend workers directly, so the Windows CMD workflow remains repo-root friendly.
@@ -507,6 +520,7 @@ Docker remains available as an optional workflow through `docker-compose.yml`, b
 ```cmd
 .venv\Scripts\activate
 python services\compliance-service\scripts\seed.py
+python services\reconciliation-service\scripts\seed.py
 python scripts\run_service.py compliance-service --reload
 ```
 
@@ -647,3 +661,112 @@ curl -X POST http://localhost:8000/compliance/screen/transfer ^
 - If `compliance-service` is unavailable, the API gateway returns deterministic fallback Feature 3 payloads for the dashboard, transfer screening, residency screening, and governance actions.
 - The dashboard renders fallback cards, governance actions, and demo interaction responses without a blank page.
 - Feature 1 and Feature 2 routes continue to operate independently when Feature 3 is offline.
+
+## Feature 4: interoperability & systemic resilience
+
+Feature 4 extends the existing `services/reconciliation-service` instead of introducing a new service. The local vertical slice remains deterministic, explainable, and demoable without any real blockchain, bridge, exchange, or third-party network dependency.
+
+### Current local ports
+
+- API gateway: `http://localhost:8000`
+- Risk-engine: `http://localhost:8001`
+- Threat-engine: `http://localhost:8002`
+- Oracle-service: `http://localhost:8003`
+- Compliance-service: `http://localhost:8004`
+- Reconciliation-service: `http://localhost:8005`
+- Web dashboard: `http://localhost:3000`
+
+### Windows CMD: exact Feature 4 run commands from the repo root
+
+```cmd
+.venv\Scripts\activate
+python services\reconciliation-service\scripts\seed.py
+python scripts\run_service.py reconciliation-service --reload
+```
+
+```cmd
+.venv\Scripts\activate
+python scripts\run_service.py api --reload
+```
+
+```cmd
+.venv\Scripts\activate
+npm run dev --workspace apps/web
+```
+
+### Reconciliation-service direct endpoints
+
+- `GET http://localhost:8005/health`
+- `GET http://localhost:8005/state`
+- `GET http://localhost:8005/dashboard`
+- `POST http://localhost:8005/reconcile/state`
+- `POST http://localhost:8005/backstop/evaluate`
+- `POST http://localhost:8005/incidents/record`
+- `GET http://localhost:8005/incidents`
+- `GET http://localhost:8005/incidents/{event_id}`
+- `GET http://localhost:8005/scenarios`
+- `GET http://localhost:8005/scenarios/{scenario_name}`
+
+### API gateway Feature 4 endpoints
+
+- `GET http://localhost:8000/resilience/dashboard`
+- `POST http://localhost:8000/resilience/reconcile/state`
+- `POST http://localhost:8000/resilience/backstop/evaluate`
+- `POST http://localhost:8000/resilience/incidents/record`
+- `GET http://localhost:8000/resilience/incidents`
+- `GET http://localhost:8000/resilience/incidents/{event_id}`
+
+### Sample curl requests for Feature 4
+
+#### 1) Resilience dashboard
+
+```cmd
+curl http://localhost:8000/resilience/dashboard
+```
+
+#### 2) Cross-chain reconciliation
+
+```cmd
+curl -X POST http://localhost:8000/resilience/reconcile/state ^
+  -H "Content-Type: application/json" ^
+  -d "{""asset_id"":""USTB-2026"",""expected_total_supply"":1000000,""ledgers"":[{""ledger_name"":""ethereum"",""reported_supply"":740000,""locked_supply"":10000,""pending_settlement"":45000,""last_updated_at"":""2026-03-18T11:40:00Z"",""transfer_count"":125,""reconciliation_weight"":1.0},{""ledger_name"":""avalanche"",""reported_supply"":510000,""locked_supply"":5000,""pending_settlement"":38000,""last_updated_at"":""2026-03-18T11:42:00Z"",""transfer_count"":118,""reconciliation_weight"":1.0},{""ledger_name"":""private-bank-ledger"",""reported_supply"":210000,""locked_supply"":0,""pending_settlement"":12000,""last_updated_at"":""2026-03-18T09:10:00Z"",""transfer_count"":21,""reconciliation_weight"":1.0}]}"
+```
+
+#### 3) Backstop evaluation
+
+```cmd
+curl -X POST http://localhost:8000/resilience/backstop/evaluate ^
+  -H "Content-Type: application/json" ^
+  -d "{""asset_id"":""USTB-2026"",""volatility_score"":71,""cyber_alert_score"":89,""reconciliation_severity"":81,""oracle_confidence_score"":36,""compliance_incident_score"":74,""current_market_mode"":""restricted""}"
+```
+
+#### 4) Record an incident
+
+```cmd
+curl -X POST http://localhost:8000/resilience/incidents/record ^
+  -H "Content-Type: application/json" ^
+  -d "{""event_type"":""reconciliation-failure"",""trigger_source"":""reconciliation-engine"",""related_asset_id"":""USTB-2026"",""affected_assets"":[""USTB-2026""],""affected_ledgers"":[""ethereum"",""avalanche"",""private-bank-ledger""],""severity"":""critical"",""status"":""open"",""summary"":""Critical multi-ledger divergence with duplicate mint risk triggered a bridge pause."",""metadata"":{""scenario"":""critical-supply-divergence-double-count-risk"",""ticket"":""RES-4001""}}"
+```
+
+### Expected demo flow for Feature 4
+
+1. Start `risk-engine`, `threat-engine`, `compliance-service`, `reconciliation-service`, `api`, and `web` from the repo root.
+2. Open `http://localhost:3000` and scroll to **Feature 4 · Interoperability & Systemic Resilience**.
+3. Review the reconciliation cards for mismatch amount, severity, stale ledger count, and current backstop decision.
+4. Use the Feature 4 demo panel to run a reconciliation scenario, run a backstop evaluation, and record an incident.
+5. Open `http://localhost:8005/docs` or `http://localhost:8000/docs` to replay the same scenarios with the OpenAPI examples.
+6. Stop `reconciliation-service` and refresh the dashboard or retry the same API requests to confirm the API gateway and UI degrade gracefully to explicit fallback resilience data.
+
+### Graceful fallback behavior
+
+- If `reconciliation-service` is unavailable, the API gateway returns deterministic fallback Feature 4 payloads for the dashboard, reconciliation, backstop evaluation, and incident creation flows.
+- The dashboard still renders reconciliation cards, safeguards, and recent incident records without blank sections.
+- Features 2 and 3 continue to operate independently when Feature 4 is offline.
+
+### Feature 4 smoke / regression commands
+
+```cmd
+python -m pytest services\reconciliation-service\tests\test_reconciliation_service.py -q
+python -m pytest services\api\tests\test_feature4_smoke.py -q
+python scripts\smoke_feature4.py
+```

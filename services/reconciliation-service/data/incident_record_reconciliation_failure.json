@@ -1,0 +1,11 @@
+{
+  "event_type": "reconciliation-failure",
+  "trigger_source": "reconciliation-engine",
+  "related_asset_id": "USTB-2026",
+  "affected_assets": ["USTB-2026"],
+  "affected_ledgers": ["ethereum", "avalanche", "private-bank-ledger"],
+  "severity": "critical",
+  "status": "open",
+  "summary": "Critical multi-ledger divergence with duplicate mint risk triggered a bridge pause.",
+  "metadata": {"scenario": "critical-supply-divergence-double-count-risk", "ticket": "RES-4001"}
+}

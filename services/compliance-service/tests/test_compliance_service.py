@@ -17,6 +17,8 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 def load_module(tmp_path: Path):
+    for module_name in ['app', 'app.engine', 'app.schemas', 'app.store']:
+        sys.modules.pop(module_name, None)
     os.environ['COMPLIANCE_LEDGER_PATH'] = str(tmp_path / 'ledger.json')
     os.environ['COMPLIANCE_POLICY_PATH'] = str(tmp_path / 'policy.json')
     sys.path.insert(0, str(MAIN_PATH.parents[1]))

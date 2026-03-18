@@ -15,6 +15,7 @@ SERVICES = [
     ('threat-engine', 8002),
     ('oracle-service', 8003),
     ('compliance-service', 8004),
+    ('reconciliation-service', 8005),
 ]
 
 

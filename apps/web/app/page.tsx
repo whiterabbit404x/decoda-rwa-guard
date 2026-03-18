@@ -1,4 +1,5 @@
 import ComplianceDemoPanel from './compliance-demo-panel';
+import ResilienceDemoPanel from './resilience-demo-panel';
 import ThreatDemoPanel from './threat-demo-panel';
 
 type DashboardCard = {
@@ -216,6 +217,91 @@ type ComplianceDashboardResponse = {
   };
   latest_governance_actions: ComplianceAction[];
   asset_transfer_status: Array<{ asset_id: string; status: string }>;
+  sample_scenarios: Record<string, string>;
+  message: string;
+};
+
+
+type ResilienceCard = {
+  label: string;
+  value: string;
+  detail: string;
+  tone: string;
+};
+
+type ResilienceIncident = {
+  event_id: string;
+  created_at: string;
+  event_type: string;
+  trigger_source: string;
+  related_asset_id: string;
+  affected_assets: string[];
+  affected_ledgers: string[];
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  status: string;
+  summary: string;
+  metadata: Record<string, unknown>;
+  attestation_hash: string;
+  fingerprint: string;
+  source?: 'live' | 'fallback';
+  degraded?: boolean;
+};
+
+type ResilienceLedgerAssessment = {
+  ledger_name: string;
+  normalized_effective_supply: number;
+  accepted: boolean;
+  status: 'accepted' | 'penalized' | 'flagged';
+  staleness_minutes: number;
+  staleness_penalty: number;
+  settlement_lag_flag: boolean;
+  over_reported_against_expected: boolean;
+  explanation: string;
+};
+
+type ResilienceDashboardResponse = {
+  source: 'live' | 'fallback';
+  degraded: boolean;
+  generated_at: string;
+  summary: {
+    reconciliation_status: 'matched' | 'warning' | 'critical';
+    severity_score: number;
+    mismatch_amount: number;
+    stale_ledger_count: number;
+    backstop_decision: 'normal' | 'alert' | 'restricted' | 'paused';
+    incident_count: number;
+  };
+  cards: ResilienceCard[];
+  reconciliation_result: {
+    asset_id: string;
+    reconciliation_status: 'matched' | 'warning' | 'critical';
+    expected_total_supply: number;
+    observed_total_supply: number;
+    normalized_effective_supply: number;
+    mismatch_amount: number;
+    mismatch_percent: number;
+    severity_score: number;
+    duplicate_or_double_count_risk: boolean;
+    stale_ledger_count: number;
+    settlement_lag_ledgers: string[];
+    mismatch_summary: string[];
+    recommendations: string[];
+    explainability_summary: string;
+    per_ledger_balances: Array<{ ledger_name: string; reported_supply: number; locked_supply: number; pending_settlement: number; effective_supply: number; transfer_count: number; last_updated_at: string }>;
+    ledger_assessments: ResilienceLedgerAssessment[];
+  };
+  backstop_result: {
+    asset_id: string;
+    backstop_decision: 'normal' | 'alert' | 'restricted' | 'paused';
+    triggered_safeguards: string[];
+    recommended_actions: string[];
+    operational_status: string;
+    trading_status: string;
+    bridge_status: string;
+    settlement_status: string;
+    explainability_summary: string;
+  };
+  latest_incidents: ResilienceIncident[];
   sample_scenarios: Record<string, string>;
   message: string;
 };
@@ -514,6 +600,120 @@ const fallbackComplianceDashboard: ComplianceDashboardResponse = {
   message: 'Compliance service unavailable. Rendering explicit fallback Feature 3 data so the dashboard remains explainable and demoable.'
 };
 
+const fallbackResilienceDashboard: ResilienceDashboardResponse = {
+  source: 'fallback',
+  degraded: true,
+  generated_at: '2026-03-18T12:00:00Z',
+  summary: {
+    reconciliation_status: 'critical',
+    severity_score: 82,
+    mismatch_amount: 191400,
+    stale_ledger_count: 1,
+    backstop_decision: 'paused',
+    incident_count: 2
+  },
+  cards: [
+    { label: 'Reconciliation', value: 'critical', detail: 'Fallback multi-ledger reconciliation shows material supply divergence.', tone: 'critical' },
+    { label: 'Mismatch amount', value: '191,400', detail: 'Fallback normalized effective supply mismatch vs expected.', tone: 'critical' },
+    { label: 'Stale ledgers', value: '1', detail: 'Fallback stale private-bank-ledger penalty remains visible.', tone: 'high' },
+    { label: 'Backstop', value: 'paused', detail: 'Fallback controls paused bridge and settlement lanes.', tone: 'critical' }
+  ],
+  reconciliation_result: {
+    asset_id: 'USTB-2026',
+    reconciliation_status: 'critical',
+    expected_total_supply: 1000000,
+    observed_total_supply: 1460000,
+    normalized_effective_supply: 1191400,
+    mismatch_amount: 191400,
+    mismatch_percent: 19.14,
+    severity_score: 82,
+    duplicate_or_double_count_risk: true,
+    stale_ledger_count: 1,
+    settlement_lag_ledgers: ['ethereum', 'avalanche'],
+    mismatch_summary: [
+      'Normalized effective supply deviates from expected supply by 19.14%.',
+      'Multiple ledgers over-reported supply simultaneously, indicating duplicate mint / double-count risk.',
+      'private-bank-ledger data is stale by 170 minutes.'
+    ],
+    recommendations: [
+      'Suspend minting and run a ledger-by-ledger reconciliation review.',
+      'Freeze bridge mint/burn operations until duplicate supply sources are resolved.',
+      'Refresh private-bank-ledger reconciliation snapshot before releasing additional supply.'
+    ],
+    explainability_summary: 'Fallback reconciliation critical: expected supply 1,000,000, observed 1,460,000, normalized effective supply 1,191,400.',
+    per_ledger_balances: [
+      { ledger_name: 'ethereum', reported_supply: 740000, locked_supply: 10000, pending_settlement: 45000, effective_supply: 685000, transfer_count: 125, last_updated_at: '2026-03-18T11:40:00Z' },
+      { ledger_name: 'avalanche', reported_supply: 510000, locked_supply: 5000, pending_settlement: 38000, effective_supply: 467000, transfer_count: 118, last_updated_at: '2026-03-18T11:42:00Z' },
+      { ledger_name: 'private-bank-ledger', reported_supply: 210000, locked_supply: 0, pending_settlement: 12000, effective_supply: 198000, transfer_count: 21, last_updated_at: '2026-03-18T09:10:00Z' }
+    ],
+    ledger_assessments: [
+      { ledger_name: 'ethereum', normalized_effective_supply: 685000, accepted: true, status: 'penalized', staleness_minutes: 20, staleness_penalty: 0, settlement_lag_flag: true, over_reported_against_expected: true, explanation: 'Fallback reconciliation normalized supply and flagged settlement lag.' },
+      { ledger_name: 'avalanche', normalized_effective_supply: 467000, accepted: true, status: 'penalized', staleness_minutes: 18, staleness_penalty: 0, settlement_lag_flag: true, over_reported_against_expected: false, explanation: 'Fallback reconciliation normalized supply and flagged settlement lag.' },
+      { ledger_name: 'private-bank-ledger', normalized_effective_supply: 198000, accepted: true, status: 'penalized', staleness_minutes: 170, staleness_penalty: 0.12, settlement_lag_flag: false, over_reported_against_expected: false, explanation: 'Fallback reconciliation normalized supply and applied a stale ledger penalty.' }
+    ]
+  },
+  backstop_result: {
+    asset_id: 'USTB-2026',
+    backstop_decision: 'paused',
+    triggered_safeguards: ['pause trading', 'pause bridge / settlement lane', 'circuit breaker triggered', 'reduce transfer threshold'],
+    recommended_actions: ['Escalate treasury operations and keep deterministic backstop controls engaged.'],
+    operational_status: 'paused',
+    trading_status: 'paused',
+    bridge_status: 'paused',
+    settlement_status: 'paused',
+    explainability_summary: 'Fallback backstop decision paused for USTB-2026.'
+  },
+  latest_incidents: [
+    {
+      event_id: 'evt-fallback-0002',
+      created_at: '2026-03-18T11:52:00Z',
+      event_type: 'market-circuit-breaker',
+      trigger_source: 'backstop-engine',
+      related_asset_id: 'USTB-2026',
+      affected_assets: ['USTB-2026'],
+      affected_ledgers: ['ethereum', 'avalanche'],
+      severity: 'high',
+      status: 'contained',
+      summary: 'Fallback circuit breaker event kept trading paused while cyber scores were elevated.',
+      metadata: { scenario: 'cyber-triggered-restricted-mode' },
+      attestation_hash: 'fallback-event-0002',
+      fingerprint: 'fallback-event-00',
+      source: 'fallback',
+      degraded: true
+    },
+    {
+      event_id: 'evt-fallback-0001',
+      created_at: '2026-03-18T11:45:00Z',
+      event_type: 'reconciliation-failure',
+      trigger_source: 'reconciliation-engine',
+      related_asset_id: 'USTB-2026',
+      affected_assets: ['USTB-2026'],
+      affected_ledgers: ['ethereum', 'avalanche', 'private-bank-ledger'],
+      severity: 'critical',
+      status: 'open',
+      summary: 'Fallback reconciliation incident preserved duplicate mint risk context during service outage.',
+      metadata: { scenario: 'critical-supply-divergence-double-count-risk' },
+      attestation_hash: 'fallback-event-0001',
+      fingerprint: 'fallback-event-00',
+      source: 'fallback',
+      degraded: true
+    }
+  ],
+  sample_scenarios: {
+    healthy_matched_multi_ledger_state: 'Healthy matched supply across ethereum, avalanche, and private-bank-ledger.',
+    mild_mismatch_warning: 'Small mismatch with manageable settlement lag.',
+    critical_supply_divergence_double_count_risk: 'Critical over-reporting across ledgers indicating double-count risk.',
+    stale_private_ledger_data: 'Private ledger data is stale and penalized.',
+    high_volatility_alert: 'High volatility produces a deterministic alert decision.',
+    cyber_triggered_restricted_mode: 'Cyber + volatility combination restricts controls.',
+    critical_mismatch_paused_bridge: 'Critical reconciliation mismatch pauses bridge and settlement.',
+    incident_record_reconciliation_failure: 'Incident example for a reconciliation failure.',
+    incident_record_market_circuit_breaker: 'Incident example for a market circuit breaker.',
+    recovery_normal_mode_after_alert: 'Recovery scenario returning to normal mode after prior alert.'
+  },
+  message: 'Reconciliation-service unavailable. Rendering explicit fallback Feature 4 resilience data so the dashboard remains explainable and demoable.'
+};
+
 const fallbackThreatDashboard: ThreatDashboardResponse = {
   source: 'fallback',
   degraded: true,
@@ -713,6 +913,10 @@ async function getComplianceDashboard(): Promise<ComplianceDashboardResponse> {
   return (await fetchJson<ComplianceDashboardResponse>('/compliance/dashboard')) ?? fallbackComplianceDashboard;
 }
 
+async function getResilienceDashboard(): Promise<ResilienceDashboardResponse> {
+  return (await fetchJson<ResilienceDashboardResponse>('/resilience/dashboard')) ?? fallbackResilienceDashboard;
+}
+
 function statusTone(status: string) {
   const value = status.toLowerCase();
   if (value === 'approved' || value === 'allowed' || value === 'active') {
@@ -736,7 +940,8 @@ function resolveBackendState(
   dashboard: DashboardResponse | null,
   riskDashboard: RiskDashboardResponse,
   threatDashboard: ThreatDashboardResponse,
-  complianceDashboard: ComplianceDashboardResponse
+  complianceDashboard: ComplianceDashboardResponse,
+  resilienceDashboard: ResilienceDashboardResponse
 ): BackendState {
   if (!dashboard) {
     return 'offline';
@@ -745,9 +950,11 @@ function resolveBackendState(
     riskDashboard.degraded ||
     threatDashboard.degraded ||
     complianceDashboard.degraded ||
+    resilienceDashboard.degraded ||
     riskDashboard.source !== 'live' ||
     threatDashboard.source !== 'live' ||
-    complianceDashboard.source !== 'live'
+    complianceDashboard.source !== 'live' ||
+    resilienceDashboard.source !== 'live'
   ) {
     return 'degraded';
   }
@@ -755,15 +962,16 @@ function resolveBackendState(
 }
 
 export default async function Page() {
-  const [dashboard, riskDashboard, threatDashboard, complianceDashboard] = await Promise.all([
+  const [dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard] = await Promise.all([
     getDashboard(),
     getRiskDashboard(),
     getThreatDashboard(),
-    getComplianceDashboard()
+    getComplianceDashboard(),
+    getResilienceDashboard()
   ]);
   const cards = dashboard?.cards?.length ? dashboard.cards : fallbackCards;
   const services = dashboard?.services ?? [];
-  const backendState = resolveBackendState(dashboard, riskDashboard, threatDashboard, complianceDashboard);
+  const backendState = resolveBackendState(dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard);
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL;
   const summaryCards = [
     {
@@ -790,13 +998,18 @@ export default async function Page() {
       label: 'Feature 3 policy state',
       value: `${complianceDashboard.summary.allowlisted_wallet_count}/${complianceDashboard.summary.blocklisted_wallet_count}/${complianceDashboard.summary.frozen_wallet_count}`,
       meta: 'allowlisted / blocklisted / frozen'
+    },
+    {
+      label: 'Feature 4 resilience',
+      value: `${resilienceDashboard.summary.reconciliation_status}/${resilienceDashboard.summary.backstop_decision}`,
+      meta: `${resilienceDashboard.summary.incident_count} incidents tracked`
     }
   ];
   const backendBanner =
     backendState === 'online'
-      ? 'Live API + risk-engine + threat-engine + compliance-service data streaming into the dashboard.'
+      ? 'Live API + risk-engine + threat-engine + compliance-service + reconciliation-service data streaming into the dashboard.'
       : backendState === 'degraded'
-        ? `${riskDashboard.message} ${threatDashboard.message} ${complianceDashboard.message}`
+        ? `${riskDashboard.message} ${threatDashboard.message} ${complianceDashboard.message} ${resilienceDashboard.message}`
         : 'Backend is unavailable. The dashboard is showing offline fallback data so the UI still renders cleanly.';
 
   return (
@@ -806,7 +1019,7 @@ export default async function Page() {
           <p className="eyebrow">Phase 1 local development</p>
           <h1>Tokenized Treasury Control Dashboard</h1>
           <p className="lede">
-            The dashboard now combines the stable Phase 1 risk-engine with Feature 2 preemptive cybersecurity and market anomaly detection, while preserving graceful fallbacks when local services are offline.
+            The dashboard now combines the stable Phase 1 risk-engine with Feature 2 preemptive cybersecurity, Feature 3 compliance controls, and Feature 4 interoperability resilience workflows while preserving graceful fallbacks when local services are offline.
           </p>
         </div>
         <div className="heroPanel">
@@ -816,6 +1029,7 @@ export default async function Page() {
           <p><strong>Risk feed:</strong> {riskDashboard.source === 'live' ? 'risk-engine live data' : 'fallback-safe dashboard data'}</p>
           <p><strong>Threat feed:</strong> {threatDashboard.source === 'live' ? 'threat-engine live data' : 'fallback-safe threat data'}</p>
           <p><strong>Compliance feed:</strong> {complianceDashboard.source === 'live' ? 'compliance-service live data' : 'fallback-safe compliance data'}</p>
+          <p><strong>Resilience feed:</strong> {resilienceDashboard.source === 'live' ? 'reconciliation-service live data' : 'fallback-safe resilience data'}</p>
           <p><strong>API URL:</strong> {apiUrl}</p>
         </div>
       </div>
@@ -1062,6 +1276,133 @@ export default async function Page() {
         </div>
       </section>
 
+      <section className="featureSection">
+        <div className="sectionHeader">
+          <div>
+            <h2>Feature 4 · Interoperability &amp; Systemic Resilience</h2>
+            <p>Deterministic cross-chain reconciliation, liquidity backstop safeguards, and a local incident ledger spanning ethereum, avalanche, and private-bank-ledger.</p>
+          </div>
+          <p className="tableMeta">{resilienceDashboard.message}</p>
+        </div>
+
+        <div className="summaryGrid threatSummaryGrid">
+          {resilienceDashboard.cards.map((card) => (
+            <article key={card.label} className="metricCard">
+              <p className="metricLabel">{card.label}</p>
+              <p className="metricValue">{card.value}</p>
+              <p className="metricMeta">{card.detail}</p>
+            </article>
+          ))}
+        </div>
+
+        <div className="threeColumnSection">
+          <div className="stack compactStack">
+            <div className="sectionHeader compact">
+              <h3>Reconciliation status</h3>
+              <p>{resilienceDashboard.reconciliation_result.reconciliation_status} · severity {resilienceDashboard.reconciliation_result.severity_score}</p>
+            </div>
+            <article className="dataCard">
+              <div className="listHeader">
+                <div>
+                  <p className="serviceTag subtle">{resilienceDashboard.reconciliation_result.asset_id}</p>
+                  <h3>{resilienceDashboard.reconciliation_result.explainability_summary}</h3>
+                </div>
+                <span className={`severityPill ${statusTone(resilienceDashboard.reconciliation_result.reconciliation_status)}`}>
+                  {resilienceDashboard.reconciliation_result.reconciliation_status}
+                </span>
+              </div>
+              <div className="kvGrid compactKvGrid">
+                <p><span>Expected supply</span>{resilienceDashboard.reconciliation_result.expected_total_supply.toLocaleString()}</p>
+                <p><span>Observed supply</span>{resilienceDashboard.reconciliation_result.observed_total_supply.toLocaleString()}</p>
+                <p><span>Mismatch</span>{resilienceDashboard.reconciliation_result.mismatch_amount.toLocaleString()}</p>
+                <p><span>Stale ledgers</span>{resilienceDashboard.reconciliation_result.stale_ledger_count}</p>
+              </div>
+              <div className="chipRow">
+                {formatRules(resilienceDashboard.reconciliation_result.mismatch_summary).map((item) => (
+                  <span key={item} className="ruleChip">{item}</span>
+                ))}
+              </div>
+            </article>
+
+            <div className="sectionHeader compact">
+              <h3>Ledger assessments</h3>
+              <p>Accepted, penalized, and flagged ledger explanations.</p>
+            </div>
+            {resilienceDashboard.reconciliation_result.ledger_assessments.map((ledger) => (
+              <article key={ledger.ledger_name} className="dataCard">
+                <div className="listHeader">
+                  <div>
+                    <h3>{ledger.ledger_name}</h3>
+                    <p className="muted">Normalized supply {ledger.normalized_effective_supply.toLocaleString()}</p>
+                  </div>
+                  <span className={`severityPill ${statusTone(ledger.status)}`}>{ledger.status}</span>
+                </div>
+                <p className="explanation small">{ledger.explanation}</p>
+                <div className="chipRow">
+                  <span className="ruleChip">staleness {ledger.staleness_minutes}m</span>
+                  <span className="ruleChip">settlement lag {ledger.settlement_lag_flag ? 'yes' : 'no'}</span>
+                  <span className="ruleChip">double-count risk {ledger.over_reported_against_expected ? 'elevated' : 'low'}</span>
+                </div>
+              </article>
+            ))}
+          </div>
+
+          <ResilienceDemoPanel apiUrl={apiUrl} />
+
+          <div className="stack compactStack">
+            <div className="sectionHeader compact">
+              <h3>Backstop decision</h3>
+              <p>{resilienceDashboard.backstop_result.backstop_decision} · {resilienceDashboard.backstop_result.operational_status}</p>
+            </div>
+            <article className="dataCard">
+              <div className="chipRow">
+                <span className={`severityPill ${statusTone(resilienceDashboard.backstop_result.backstop_decision)}`}>
+                  {resilienceDashboard.backstop_result.backstop_decision}
+                </span>
+                <span className="ruleChip">trading {resilienceDashboard.backstop_result.trading_status}</span>
+                <span className="ruleChip">bridge {resilienceDashboard.backstop_result.bridge_status}</span>
+                <span className="ruleChip">settlement {resilienceDashboard.backstop_result.settlement_status}</span>
+              </div>
+              <p className="explanation small">{resilienceDashboard.backstop_result.explainability_summary}</p>
+              <div className="chipRow">
+                {formatRules(resilienceDashboard.backstop_result.triggered_safeguards).map((item) => (
+                  <span key={item} className="ruleChip">{item}</span>
+                ))}
+              </div>
+              <div className="chipRow">
+                {formatRules(resilienceDashboard.backstop_result.recommended_actions).map((item) => (
+                  <span key={item} className="ruleChip">{item}</span>
+                ))}
+              </div>
+            </article>
+
+            <div className="sectionHeader compact">
+              <h3>Latest incident records</h3>
+              <p>{resilienceDashboard.latest_incidents.length} deterministic ledger entries</p>
+            </div>
+            {resilienceDashboard.latest_incidents.map((incident) => (
+              <article key={incident.event_id} className="dataCard">
+                <div className="listHeader">
+                  <div>
+                    <p className="serviceTag subtle">{incident.trigger_source}</p>
+                    <h3>{incident.event_type}</h3>
+                  </div>
+                  <span className={`severityPill ${statusTone(incident.severity)}`}>{incident.severity}</span>
+                </div>
+                <p className="muted">{incident.event_id} · {new Date(incident.created_at).toLocaleString()}</p>
+                <p className="explanation small">{incident.summary}</p>
+                <div className="chipRow">
+                  {incident.affected_ledgers.map((ledger) => (
+                    <span key={`${incident.event_id}-${ledger}`} className="ruleChip">{ledger}</span>
+                  ))}
+                </div>
+                <p className="tableMeta">Attestation: {incident.attestation_hash.slice(0, 12)}… · Fingerprint: {incident.fingerprint}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
       <section className="dashboardSection">
         <div className="sectionHeader">
           <h2>Transaction Queue</h2>
@@ -1218,7 +1559,7 @@ export default async function Page() {
           ) : (
             <article className="serviceCard emptyState">
               <h3>Backend not running yet</h3>
-              <p>Run the repo-root service commands for the API, risk-engine, threat-engine, and compliance-service to view live service status here.</p>
+              <p>Run the repo-root service commands for the API, risk-engine, threat-engine, compliance-service, and reconciliation-service to view live service status here.</p>
             </article>
           )}
         </div>

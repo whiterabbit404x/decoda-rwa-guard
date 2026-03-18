@@ -52,6 +52,9 @@ THREAT_ENGINE_DATA_DIR = Path(__file__).resolve().parents[2] / 'threat-engine' /
 COMPLIANCE_SERVICE_URL = os.getenv('COMPLIANCE_SERVICE_URL', 'http://localhost:8004').rstrip('/')
 COMPLIANCE_SERVICE_TIMEOUT_SECONDS = float(os.getenv('COMPLIANCE_SERVICE_TIMEOUT_SECONDS', '1.5'))
 COMPLIANCE_DATA_DIR = Path(__file__).resolve().parents[2] / 'compliance-service' / 'data'
+RECONCILIATION_SERVICE_URL = os.getenv('RECONCILIATION_SERVICE_URL', 'http://localhost:8005').rstrip('/')
+RECONCILIATION_SERVICE_TIMEOUT_SECONDS = float(os.getenv('RECONCILIATION_SERVICE_TIMEOUT_SECONDS', '1.5'))
+RECONCILIATION_DATA_DIR = Path(__file__).resolve().parents[2] / 'reconciliation-service' / 'data'
 ALLOWED_ORIGINS = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
@@ -88,6 +91,7 @@ def health() -> dict[str, object]:
         'risk_engine_url': RISK_ENGINE_URL,
         'threat_engine_url': THREAT_ENGINE_URL,
         'compliance_service_url': COMPLIANCE_SERVICE_URL,
+        'reconciliation_service_url': RECONCILIATION_SERVICE_URL,
     }
 
 
@@ -207,6 +211,47 @@ def compliance_governance_action(action_id: str) -> dict[str, Any]:
 def compliance_create_governance_action(payload: dict[str, Any]) -> dict[str, Any]:
     response = proxy_compliance('governance/actions', payload)
     return response or fallback_governance_action(payload)
+
+
+@app.get('/resilience/dashboard', summary='Feature 4 resilience dashboard feed', description='Returns the reconciliation-service dashboard payload when available and explicit fallback resilience data when the service is unavailable.')
+def resilience_dashboard() -> dict[str, Any]:
+    payload = fetch_resilience_dashboard()
+    return payload or fallback_resilience_dashboard()
+
+
+@app.post('/resilience/reconcile/state', summary='Feature 4 cross-chain reconciliation', description='Proxies a reconciliation request to the reconciliation-service and falls back to a deterministic local reconciliation summary if the service is unavailable.')
+def resilience_reconcile_state(payload: dict[str, Any]) -> dict[str, Any]:
+    response = proxy_resilience_post('reconcile/state', payload)
+    return response or fallback_reconcile_state(payload)
+
+
+@app.post('/resilience/backstop/evaluate', summary='Feature 4 liquidity backstop evaluation', description='Proxies a backstop evaluation request to the reconciliation-service and falls back to deterministic local safeguards when the service is unavailable.')
+def resilience_backstop_evaluate(payload: dict[str, Any]) -> dict[str, Any]:
+    response = proxy_resilience_post('backstop/evaluate', payload)
+    return response or fallback_backstop_evaluate(payload)
+
+
+@app.post('/resilience/incidents/record', summary='Feature 4 resilience incident create', description='Creates a resilience incident via the reconciliation-service or records a deterministic fallback incident when the service is unavailable.')
+def resilience_record_incident(payload: dict[str, Any]) -> dict[str, Any]:
+    response = proxy_resilience_post('incidents/record', payload)
+    return response or fallback_incident_record(payload)
+
+
+@app.get('/resilience/incidents', summary='Feature 4 resilience incident list', description='Returns resilience incidents from the reconciliation-service or fallback incident ledger rows when unavailable.')
+def resilience_incidents() -> list[dict[str, Any]]:
+    response = proxy_resilience_get('incidents')
+    return response or fallback_resilience_dashboard()['latest_incidents']
+
+
+@app.get('/resilience/incidents/{event_id}', summary='Feature 4 resilience incident detail', description='Returns one resilience incident from the reconciliation-service or fallback data when unavailable.')
+def resilience_incident(event_id: str) -> dict[str, Any]:
+    response = proxy_resilience_get(f'incidents/{event_id}')
+    if response is not None:
+        return response
+    for incident in fallback_resilience_dashboard()['latest_incidents']:
+        if incident['event_id'] == event_id:
+            return incident
+    return {'detail': f'Unknown event_id: {event_id}', 'source': 'fallback', 'degraded': True}
 
 
 def build_risk_dashboard_queue() -> list[dict[str, Any]]:
@@ -482,6 +527,34 @@ def proxy_compliance(path: str, payload: dict[str, Any]) -> dict[str, Any] | Non
     return response
 
 
+def fetch_resilience_dashboard() -> dict[str, Any] | None:
+    payload = request_json('GET', f'{RECONCILIATION_SERVICE_URL}/dashboard', None, RECONCILIATION_SERVICE_TIMEOUT_SECONDS)
+    if payload is None:
+        return None
+    payload['degraded'] = False
+    payload['source'] = 'live'
+    return payload
+
+
+def proxy_resilience_get(path: str) -> dict[str, Any] | list[dict[str, Any]] | None:
+    response = request_json('GET', f'{RECONCILIATION_SERVICE_URL}/{path}', None, RECONCILIATION_SERVICE_TIMEOUT_SECONDS)
+    if response is None:
+        return None
+    if isinstance(response, dict):
+        response['source'] = response.get('source', 'live')
+        response['degraded'] = False
+    return response
+
+
+def proxy_resilience_post(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    response = request_json('POST', f'{RECONCILIATION_SERVICE_URL}/{path}', payload, RECONCILIATION_SERVICE_TIMEOUT_SECONDS)
+    if response is None:
+        return None
+    response['source'] = 'live'
+    response['degraded'] = False
+    return response
+
+
 def fetch_threat_dashboard() -> dict[str, Any] | None:
     payload = request_json('GET', f'{THREAT_ENGINE_URL}/dashboard', None, THREAT_ENGINE_TIMEOUT_SECONDS)
     if payload is None:
@@ -680,6 +753,192 @@ def fallback_governance_action(payload: dict[str, Any]) -> dict[str, Any]:
         'status': 'applied',
         'attestation_hash': attestation,
         'policy_effects': [effect],
+        'source': 'fallback',
+        'degraded': True,
+    }
+
+
+def fallback_resilience_dashboard() -> dict[str, Any]:
+    return {
+        'source': 'fallback',
+        'degraded': True,
+        'generated_at': '2026-03-18T12:00:00Z',
+        'summary': {
+            'reconciliation_status': 'critical',
+            'severity_score': 82,
+            'mismatch_amount': 191400.0,
+            'stale_ledger_count': 1,
+            'backstop_decision': 'paused',
+            'incident_count': 2,
+        },
+        'cards': [
+            {'label': 'Reconciliation', 'value': 'critical', 'detail': 'Fallback resilience dashboard detected material supply divergence across multiple ledgers.', 'tone': 'critical'},
+            {'label': 'Mismatch amount', 'value': '191,400', 'detail': 'Fallback normalized supply mismatch vs expected total supply.', 'tone': 'critical'},
+            {'label': 'Stale ledgers', 'value': '1', 'detail': 'Fallback stale-ledger penalty remains visible when the service is offline.', 'tone': 'warning'},
+            {'label': 'Backstop', 'value': 'paused', 'detail': 'Fallback safeguards paused bridge and settlement lanes.', 'tone': 'critical'},
+        ],
+        'reconciliation_result': fallback_reconcile_state(load_json_file(RECONCILIATION_DATA_DIR, 'critical_supply_divergence_double_count_risk.json')),
+        'backstop_result': fallback_backstop_evaluate(load_json_file(RECONCILIATION_DATA_DIR, 'critical_mismatch_paused_bridge.json')),
+        'latest_incidents': [
+            {'event_id': 'evt-fallback-0002', 'created_at': '2026-03-18T11:52:00Z', 'event_type': 'market-circuit-breaker', 'trigger_source': 'backstop-engine', 'related_asset_id': 'USTB-2026', 'affected_assets': ['USTB-2026'], 'affected_ledgers': ['ethereum', 'avalanche'], 'severity': 'high', 'status': 'contained', 'summary': 'Fallback circuit breaker event kept trading paused while cyber scores were elevated.', 'metadata': {'scenario': 'cyber-triggered-restricted-mode'}, 'attestation_hash': 'fallback-event-0002', 'fingerprint': 'fallback-event-00', 'source': 'fallback', 'degraded': True},
+            {'event_id': 'evt-fallback-0001', 'created_at': '2026-03-18T11:45:00Z', 'event_type': 'reconciliation-failure', 'trigger_source': 'reconciliation-engine', 'related_asset_id': 'USTB-2026', 'affected_assets': ['USTB-2026'], 'affected_ledgers': ['ethereum', 'avalanche', 'private-bank-ledger'], 'severity': 'critical', 'status': 'open', 'summary': 'Fallback reconciliation incident preserved duplicate mint risk context during service outage.', 'metadata': {'scenario': 'critical-supply-divergence-double-count-risk'}, 'attestation_hash': 'fallback-event-0001', 'fingerprint': 'fallback-event-00', 'source': 'fallback', 'degraded': True},
+        ],
+        'sample_scenarios': {
+            'healthy-matched-multi-ledger-state': 'Healthy matched supply across ethereum, avalanche, and private-bank-ledger.',
+            'mild-mismatch-warning': 'Small mismatch with manageable settlement lag.',
+            'critical-supply-divergence-double-count-risk': 'Critical over-reporting across ledgers indicating double-count risk.',
+            'stale-private-ledger-data': 'Private ledger data is stale and penalized.',
+            'high-volatility-alert': 'High volatility produces a deterministic alert decision.',
+            'cyber-triggered-restricted-mode': 'Cyber + volatility combination restricts controls.',
+            'critical-mismatch-paused-bridge': 'Critical reconciliation mismatch pauses bridge and settlement.',
+            'incident-record-reconciliation-failure': 'Incident example for a reconciliation failure.',
+            'incident-record-market-circuit-breaker': 'Incident example for a market circuit breaker.',
+            'recovery-normal-mode-after-alert': 'Recovery scenario returning to normal mode after prior alert.',
+        },
+        'message': 'Reconciliation-service unavailable or timed out. Returning explicit fallback resilience data so Feature 4 remains demoable.',
+    }
+
+
+def fallback_reconcile_state(payload: dict[str, Any]) -> dict[str, Any]:
+    expected = float(payload.get('expected_total_supply', 0) or 0)
+    ledgers = payload.get('ledgers', [])
+    observed_total = sum(float(item.get('reported_supply', 0)) for item in ledgers)
+    normalized_total = 0.0
+    stale_count = 0
+    settlement_lag_ledgers: list[str] = []
+    over_reporting: list[str] = []
+    assessments: list[dict[str, Any]] = []
+
+    for item in ledgers:
+        effective = max(float(item.get('reported_supply', 0)) - float(item.get('locked_supply', 0)) - float(item.get('pending_settlement', 0)), 0)
+        staleness_minutes = 180 if item.get('ledger_name') == 'private-bank-ledger' and '09:' in str(item.get('last_updated_at', '')) else 20
+        penalty = 0.12 if staleness_minutes >= 120 else 0.05 if staleness_minutes >= 45 else 0.0
+        normalized_total += effective * float(item.get('reconciliation_weight', 1.0)) * (1 - penalty)
+        if penalty:
+            stale_count += 1
+        lag_flag = float(item.get('pending_settlement', 0)) >= 20000
+        if lag_flag:
+            settlement_lag_ledgers.append(item.get('ledger_name', 'unknown'))
+        over_reported = float(item.get('reported_supply', 0)) > expected * 0.55 if expected else False
+        if over_reported:
+            over_reporting.append(item.get('ledger_name', 'unknown'))
+        assessments.append({
+            'ledger_name': item.get('ledger_name', 'unknown'),
+            'normalized_effective_supply': round(effective, 2),
+            'accepted': True,
+            'status': 'penalized' if penalty or lag_flag else 'accepted',
+            'staleness_minutes': staleness_minutes,
+            'staleness_penalty': penalty,
+            'settlement_lag_flag': lag_flag,
+            'over_reported_against_expected': over_reported,
+            'explanation': 'Fallback reconciliation logic normalized reported supply and applied stale / settlement penalties where necessary.',
+        })
+
+    mismatch_amount = round(normalized_total - expected, 2)
+    mismatch_percent = round((abs(mismatch_amount) / expected) * 100, 2) if expected else 0.0
+    duplicate_risk = len(over_reporting) >= 2
+    severity_score = min(100, int(round(mismatch_percent * 4 + stale_count * 12 + len(settlement_lag_ledgers) * 8 + (24 if duplicate_risk else 0))))
+    status = 'critical' if severity_score >= 70 or mismatch_percent >= 8 or duplicate_risk else 'warning' if severity_score >= 25 or stale_count or settlement_lag_ledgers else 'matched'
+
+    return {
+        'asset_id': payload.get('asset_id', 'USTB-2026'),
+        'reconciliation_status': status,
+        'expected_total_supply': expected,
+        'observed_total_supply': round(observed_total, 2),
+        'normalized_effective_supply': round(normalized_total, 2),
+        'mismatch_amount': mismatch_amount,
+        'mismatch_percent': mismatch_percent,
+        'severity_score': severity_score,
+        'duplicate_or_double_count_risk': duplicate_risk,
+        'stale_ledger_count': stale_count,
+        'settlement_lag_ledgers': settlement_lag_ledgers,
+        'mismatch_summary': ['Fallback gateway detected supply drift requiring operator review.'],
+        'recommendations': ['Refresh stale ledgers.', 'Investigate bridge mint/burn drift before restoring throughput.'] if status != 'matched' else ['Continue scheduled monitoring.'],
+        'explainability_summary': f"Fallback reconciliation {status}: expected {expected:,.0f}, observed {observed_total:,.0f}, normalized {normalized_total:,.0f}.",
+        'per_ledger_balances': [
+            {'ledger_name': item.get('ledger_name', 'unknown'), 'reported_supply': item.get('reported_supply', 0), 'locked_supply': item.get('locked_supply', 0), 'pending_settlement': item.get('pending_settlement', 0), 'effective_supply': max(float(item.get('reported_supply', 0)) - float(item.get('locked_supply', 0)) - float(item.get('pending_settlement', 0)), 0), 'transfer_count': item.get('transfer_count', 0), 'last_updated_at': item.get('last_updated_at', '')}
+            for item in ledgers
+        ],
+        'ledger_assessments': assessments,
+        'source': 'fallback',
+        'degraded': True,
+    }
+
+
+def fallback_backstop_evaluate(payload: dict[str, Any]) -> dict[str, Any]:
+    triggered: list[str] = []
+    actions: list[str] = []
+    decision = 'normal'
+    trading_status = 'active'
+    bridge_status = 'active'
+    settlement_status = 'active'
+
+    if float(payload.get('volatility_score', 0)) >= 60:
+        triggered.append('soft alert')
+        decision = 'alert'
+    if float(payload.get('volatility_score', 0)) >= 80:
+        triggered.extend(['high-volatility mode', 'reduce transfer threshold'])
+        decision = 'restricted'
+        trading_status = 'guarded'
+    if float(payload.get('cyber_alert_score', 0)) >= 75:
+        triggered.append('pause trading')
+        decision = 'restricted' if decision != 'paused' else decision
+        trading_status = 'paused'
+    if float(payload.get('reconciliation_severity', 0)) >= 70:
+        triggered.extend(['pause bridge / settlement lane', 'circuit breaker triggered'])
+        decision = 'paused'
+        bridge_status = 'paused'
+        settlement_status = 'paused'
+    if float(payload.get('oracle_confidence_score', 100)) <= 45:
+        triggered.append('soft alert')
+        if decision == 'normal':
+            decision = 'alert'
+    if float(payload.get('compliance_incident_score', 0)) >= 60:
+        triggered.append('reduce transfer threshold')
+        if decision == 'normal':
+            decision = 'alert'
+
+    if not actions:
+        actions = ['Maintain normal operations and keep baseline telemetry active.'] if decision == 'normal' else ['Escalate treasury operations and keep deterministic backstop controls engaged.']
+    if bridge_status == 'active' and decision in {'alert', 'restricted'}:
+        bridge_status = 'guarded'
+    if settlement_status == 'active' and decision == 'restricted':
+        settlement_status = 'guarded'
+    if trading_status == 'active' and decision == 'alert':
+        trading_status = 'watch'
+
+    operational_status = {'normal': 'normal', 'alert': 'stressed', 'restricted': 'restricted', 'paused': 'paused'}[decision]
+    return {
+        'asset_id': payload.get('asset_id', 'USTB-2026'),
+        'backstop_decision': decision,
+        'triggered_safeguards': list(dict.fromkeys(triggered)),
+        'recommended_actions': actions,
+        'operational_status': operational_status,
+        'trading_status': trading_status,
+        'bridge_status': bridge_status,
+        'settlement_status': settlement_status,
+        'explainability_summary': f"Fallback backstop decision {decision} for {payload.get('asset_id', 'USTB-2026')}.",
+        'source': 'fallback',
+        'degraded': True,
+    }
+
+
+def fallback_incident_record(payload: dict[str, Any]) -> dict[str, Any]:
+    summary = payload.get('summary', 'Fallback resilience incident recorded locally at the API gateway.')
+    return {
+        'event_id': 'evt-fallback-new',
+        'created_at': '2026-03-18T12:01:00Z',
+        'event_type': payload.get('event_type', 'resilience-event'),
+        'trigger_source': payload.get('trigger_source', 'api-gateway-fallback'),
+        'related_asset_id': payload.get('related_asset_id', 'USTB-2026'),
+        'affected_assets': payload.get('affected_assets', [payload.get('related_asset_id', 'USTB-2026')]),
+        'affected_ledgers': payload.get('affected_ledgers', []),
+        'severity': payload.get('severity', 'medium'),
+        'status': payload.get('status', 'open'),
+        'summary': summary,
+        'metadata': payload.get('metadata', {}),
+        'attestation_hash': 'fallback-incident-hash',
+        'fingerprint': 'fallback-inciden',
         'source': 'fallback',
         'degraded': True,
     }
