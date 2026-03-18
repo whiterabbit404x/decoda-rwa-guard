@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import json
 import sys
 import unittest
@@ -8,13 +10,37 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(SERVICE_ROOT))
-
-from app.engine import ThreatEngine
-from app.main import app
-from app.schemas import ContractAnalysisRequest, MarketAnalysisRequest, TransactionAnalysisRequest
-
 DATA_DIR = SERVICE_ROOT / 'data'
+PACKAGE_NAME = 'threat_engine_app'
+
+
+def load_service_package(package_name: str):
+    package_dir = SERVICE_ROOT / 'app'
+    sys.modules.pop(package_name, None)
+    for module_name in [name for name in sys.modules if name.startswith(f'{package_name}.')]:
+        sys.modules.pop(module_name, None)
+
+    spec = importlib.util.spec_from_file_location(
+        package_name,
+        package_dir / '__init__.py',
+        submodule_search_locations=[str(package_dir)],
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f'Unable to load package {package_name} from {package_dir}.')
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[package_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+load_service_package(PACKAGE_NAME)
+ThreatEngine = importlib.import_module(f'{PACKAGE_NAME}.engine').ThreatEngine
+app = importlib.import_module(f'{PACKAGE_NAME}.main').app
+schemas = importlib.import_module(f'{PACKAGE_NAME}.schemas')
+ContractAnalysisRequest = schemas.ContractAnalysisRequest
+MarketAnalysisRequest = schemas.MarketAnalysisRequest
+TransactionAnalysisRequest = schemas.TransactionAnalysisRequest
 
 
 class ThreatEngineUnitTests(unittest.TestCase):

@@ -147,6 +147,14 @@ npx playwright install
 python -m pytest services\api\tests\test_feature2_smoke.py -q
 ```
 
+#### Repo-root pytest run
+
+```cmd
+pytest -q
+```
+
+This repo-root pytest command is now scoped through `pytest.ini` so the service test suites run cleanly from the monorepo root without cross-importing the wrong `app` package.
+
 #### Frontend Feature 2 smoke test
 
 Start the frontend first in another terminal:
@@ -166,8 +174,16 @@ npx playwright test apps\web\tests\feature2-smoke.spec.ts
 Start the frontend first in another terminal, then run:
 
 ```cmd
+python scripts\smoke_feature2.py
+```
+
+Or use the npm wrapper:
+
+```cmd
 npm run smoke:feature2
 ```
+
+`scripts\smoke_feature2.py` now waits longer for `http://127.0.0.1:3000`, retries before failing, and reports whether the Next.js app appears to still be compiling versus not running at all.
 
 ### Which services must be running first?
 
