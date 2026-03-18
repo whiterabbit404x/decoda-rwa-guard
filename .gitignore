@@ -17,3 +17,6 @@ contracts/core/cache/
 
 # Misc
 .DS_Store
+
+.data/
+.env.local
