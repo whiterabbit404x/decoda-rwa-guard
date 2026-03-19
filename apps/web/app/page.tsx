@@ -969,7 +969,7 @@ function resolveGatewayReachability(dashboard: DashboardResponse | null) {
     }
   }
 
-  return false;
+  return true;
 }
 
 function resolveDashboardRegistryDegraded(dashboard: DashboardResponse | null) {
