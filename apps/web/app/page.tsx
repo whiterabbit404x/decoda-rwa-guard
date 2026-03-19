@@ -2,6 +2,8 @@ import ComplianceDemoPanel from './compliance-demo-panel';
 import ResilienceDemoPanel from './resilience-demo-panel';
 import ThreatDemoPanel from './threat-demo-panel';
 
+export const dynamic = 'force-dynamic';
+
 type DashboardCard = {
   title: string;
   status: string;
@@ -864,7 +866,11 @@ const fallbackThreatDashboard: ThreatDashboardResponse = {
 type BackendState = 'online' | 'degraded' | 'offline';
 
 const DEFAULT_API_URL = 'http://127.0.0.1:8000';
-const DEFAULT_FETCH_TIMEOUT_MS = 1500;
+const DEFAULT_FETCH_TIMEOUT_MS = 5000;
+
+function resolveApiUrl() {
+  return (process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL).replace(/\/+$/, '');
+}
 
 function resolveFetchTimeoutMs() {
   const value = Number(process.env.NEXT_PUBLIC_API_TIMEOUT_MS ?? DEFAULT_FETCH_TIMEOUT_MS);
@@ -877,7 +883,7 @@ function resolveFetchTimeoutMs() {
 }
 
 async function fetchJson<T>(path: string): Promise<T | null> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL;
+  const apiUrl = resolveApiUrl();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), resolveFetchTimeoutMs());
 
@@ -895,6 +901,25 @@ async function fetchJson<T>(path: string): Promise<T | null> {
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+function resolveDashboardCards(dashboard: DashboardResponse | null): DashboardCard[] {
+  if (dashboard?.cards?.length) {
+    return dashboard.cards;
+  }
+
+  if (dashboard) {
+    return [
+      {
+        title: 'API Gateway',
+        status: 'Healthy',
+        detail: 'Connected to the local dashboard API, but no registry cards were returned yet.',
+        service: 'api',
+      },
+    ];
+  }
+
+  return fallbackCards;
 }
 
 async function getDashboard(): Promise<DashboardResponse | null> {
@@ -969,10 +994,10 @@ export default async function Page() {
     getComplianceDashboard(),
     getResilienceDashboard()
   ]);
-  const cards = dashboard?.cards?.length ? dashboard.cards : fallbackCards;
+  const cards = resolveDashboardCards(dashboard);
   const services = dashboard?.services ?? [];
   const backendState = resolveBackendState(dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard);
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL;
+  const apiUrl = resolveApiUrl();
   const summaryCards = [
     {
       label: 'Risk queue',
