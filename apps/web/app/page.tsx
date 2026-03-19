@@ -922,6 +922,64 @@ function resolveDashboardCards(dashboard: DashboardResponse | null): DashboardCa
   return fallbackCards;
 }
 
+function resolveFeedState(
+  riskDashboard: RiskDashboardResponse,
+  threatDashboard: ThreatDashboardResponse,
+  complianceDashboard: ComplianceDashboardResponse,
+  resilienceDashboard: ResilienceDashboardResponse
+) {
+  return (
+    riskDashboard.degraded ||
+    threatDashboard.degraded ||
+    complianceDashboard.degraded ||
+    resilienceDashboard.degraded ||
+    riskDashboard.source !== 'live' ||
+    threatDashboard.source !== 'live' ||
+    complianceDashboard.source !== 'live' ||
+    resilienceDashboard.source !== 'live'
+  );
+}
+
+function resolveGatewayReachability(dashboard: DashboardResponse | null) {
+  if (!dashboard) {
+    return false;
+  }
+
+  return (
+    dashboard.services.some((service) => service.service_name === 'api') ||
+    dashboard.cards.some((card) => card.service === 'api' || card.title === 'API Gateway') ||
+    Boolean(dashboard.mode || dashboard.database_url || typeof dashboard.redis_enabled === 'boolean')
+  );
+}
+
+function resolveGatewayCard(card: DashboardCard, backendState: BackendState): DashboardCard {
+  if (card.service !== 'api' && card.title !== 'API Gateway') {
+    return card;
+  }
+
+  if (backendState === 'online') {
+    return {
+      ...card,
+      status: 'Live',
+      detail: 'Gateway reachable and all dashboard feeds are reporting live data.',
+    };
+  }
+
+  if (backendState === 'degraded') {
+    return {
+      ...card,
+      status: 'Live (degraded)',
+      detail: 'Gateway reachable, but one or more downstream dashboard feeds are using degraded or fallback data.',
+    };
+  }
+
+  return {
+    ...card,
+    status: 'Waiting',
+    detail: 'Start the local backend to populate the live dashboard.',
+  };
+}
+
 async function getDashboard(): Promise<DashboardResponse | null> {
   return fetchJson<DashboardResponse>('/dashboard');
 }
@@ -968,19 +1026,10 @@ function resolveBackendState(
   complianceDashboard: ComplianceDashboardResponse,
   resilienceDashboard: ResilienceDashboardResponse
 ): BackendState {
-  if (!dashboard) {
+  if (!resolveGatewayReachability(dashboard)) {
     return 'offline';
   }
-  if (
-    riskDashboard.degraded ||
-    threatDashboard.degraded ||
-    complianceDashboard.degraded ||
-    resilienceDashboard.degraded ||
-    riskDashboard.source !== 'live' ||
-    threatDashboard.source !== 'live' ||
-    complianceDashboard.source !== 'live' ||
-    resilienceDashboard.source !== 'live'
-  ) {
+  if (resolveFeedState(riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard)) {
     return 'degraded';
   }
   return 'online';
@@ -994,15 +1043,15 @@ export default async function Page() {
     getComplianceDashboard(),
     getResilienceDashboard()
   ]);
-  const cards = resolveDashboardCards(dashboard);
-  const services = dashboard?.services ?? [];
   const backendState = resolveBackendState(dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard);
+  const cards = resolveDashboardCards(dashboard).map((card) => resolveGatewayCard(card, backendState));
+  const services = dashboard?.services ?? [];
   const apiUrl = resolveApiUrl();
   const summaryCards = [
     {
       label: 'Risk queue',
       value: `${riskDashboard.summary.total_transactions}`,
-      meta: `${riskDashboard.summary.high_alert_count} elevated alerts`
+      meta: `${riskDashboard.summary.high_alert_count} elevated alerts · source ${riskDashboard.source}`
     },
     {
       label: 'Avg risk score',
@@ -1012,7 +1061,7 @@ export default async function Page() {
     {
       label: 'Feature 2 avg threat',
       value: `${threatDashboard.summary.average_score}`,
-      meta: `${threatDashboard.summary.critical_or_high_alerts} critical/high alerts`
+      meta: `${threatDashboard.summary.critical_or_high_alerts} critical/high alerts · source ${threatDashboard.source}`
     },
     {
       label: 'Decision split',
@@ -1022,19 +1071,19 @@ export default async function Page() {
     {
       label: 'Feature 3 policy state',
       value: `${complianceDashboard.summary.allowlisted_wallet_count}/${complianceDashboard.summary.blocklisted_wallet_count}/${complianceDashboard.summary.frozen_wallet_count}`,
-      meta: 'allowlisted / blocklisted / frozen'
+      meta: `allowlisted / blocklisted / frozen · source ${complianceDashboard.source}`
     },
     {
       label: 'Feature 4 resilience',
       value: `${resilienceDashboard.summary.reconciliation_status}/${resilienceDashboard.summary.backstop_decision}`,
-      meta: `${resilienceDashboard.summary.incident_count} incidents tracked`
+      meta: `${resilienceDashboard.summary.incident_count} incidents tracked · source ${resilienceDashboard.source}`
     }
   ];
   const backendBanner =
     backendState === 'online'
-      ? 'Live API + risk-engine + threat-engine + compliance-service + reconciliation-service data streaming into the dashboard.'
+      ? 'Gateway live and all downstream services are reporting live dashboard data.'
       : backendState === 'degraded'
-        ? `${riskDashboard.message} ${threatDashboard.message} ${complianceDashboard.message} ${resilienceDashboard.message}`
+        ? `Gateway live, some services degraded. ${riskDashboard.message} ${threatDashboard.message} ${complianceDashboard.message} ${resilienceDashboard.message}`
         : 'Backend is unavailable. The dashboard is showing offline fallback data so the UI still renders cleanly.';
 
   return (
