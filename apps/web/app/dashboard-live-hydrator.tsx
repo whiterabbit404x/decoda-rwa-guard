@@ -3,14 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import DashboardPageContent from './dashboard-page-content';
-import {
-  ComplianceDashboardResponse,
-  DashboardPageData,
-  DashboardResponse,
-  ResilienceDashboardResponse,
-  RiskDashboardResponse,
-  ThreatDashboardResponse,
-} from './dashboard-data';
+import { DashboardPageData, DashboardResponse } from './dashboard-data';
 
 type Props = {
   initialData: DashboardPageData;
@@ -18,20 +11,27 @@ type Props = {
 
 type HydrationDebugState = {
   apiHydrationError?: string;
-  backupReachabilityError?: string;
   retriesAttempted: number;
 };
 
 type LiveSectionUpdates = Partial<DashboardPageData>;
 
-type BackupHydrationResult = {
-  updates: LiveSectionUpdates;
+type DashboardPageDataHydrationMeta = {
   gatewayReachable: boolean;
-  errors: string[];
+  dashboardFetchSucceeded: boolean;
+  riskLive: boolean;
+  threatLive: boolean;
+  complianceLive: boolean;
+  resilienceLive: boolean;
+  errors?: string[];
+};
+
+type DashboardPageDataHydrationResponse = {
+  data: DashboardPageData;
+  meta: DashboardPageDataHydrationMeta;
 };
 
 const HYDRATION_RETRY_DELAY_MS = 1200;
-const BACKUP_FETCH_TIMEOUT_MS = 2000;
 const OFFLINE_GATEWAY_STATUSES = new Set(['waiting', 'down', 'offline', 'unavailable', 'fallback']);
 
 function toErrorMessage(error: unknown) {
@@ -120,92 +120,8 @@ function mergeDashboardPageData(current: DashboardPageData, updates: LiveSection
   };
 }
 
-function isHydrationSuccess(data: DashboardPageData) {
-  return isGatewayServiceOk(data.dashboard) || isGatewayClearlyReachable(data.dashboard);
-}
-
-async function fetchJsonWithTimeout<T>(url: string): Promise<T> {
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), BACKUP_FETCH_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(url, {
-      cache: 'no-store',
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Request failed with status ${response.status}.`);
-    }
-
-    return (await response.json()) as T;
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
-}
-
-async function performBackupHydration(apiUrl: string): Promise<BackupHydrationResult> {
-  const [dashboardResult, riskResult, threatResult, complianceResult, resilienceResult] = await Promise.allSettled([
-    fetchJsonWithTimeout<DashboardResponse>(`${apiUrl}/dashboard`),
-    fetchJsonWithTimeout<RiskDashboardResponse>(`${apiUrl}/risk/dashboard`),
-    fetchJsonWithTimeout<ThreatDashboardResponse>(`${apiUrl}/threat/dashboard`),
-    fetchJsonWithTimeout<ComplianceDashboardResponse>(`${apiUrl}/compliance/dashboard`),
-    fetchJsonWithTimeout<ResilienceDashboardResponse>(`${apiUrl}/resilience/dashboard`),
-  ]);
-
-  const updates: LiveSectionUpdates = {};
-  const errors: string[] = [];
-  let gatewayReachable = false;
-
-  if (dashboardResult.status === 'fulfilled') {
-    updates.dashboard = dashboardResult.value;
-    gatewayReachable = true;
-  } else {
-    errors.push(`/dashboard: ${toErrorMessage(dashboardResult.reason)}`);
-    debugHydrationFailure('/dashboard', dashboardResult.reason);
-  }
-
-  if (riskResult.status === 'fulfilled') {
-    if (isLiveSection(riskResult.value)) {
-      updates.riskDashboard = riskResult.value;
-    }
-  } else {
-    errors.push(`/risk/dashboard: ${toErrorMessage(riskResult.reason)}`);
-    debugHydrationFailure('/risk/dashboard', riskResult.reason);
-  }
-
-  if (threatResult.status === 'fulfilled') {
-    if (isLiveSection(threatResult.value)) {
-      updates.threatDashboard = threatResult.value;
-    }
-  } else {
-    errors.push(`/threat/dashboard: ${toErrorMessage(threatResult.reason)}`);
-    debugHydrationFailure('/threat/dashboard', threatResult.reason);
-  }
-
-  if (complianceResult.status === 'fulfilled') {
-    if (isLiveSection(complianceResult.value)) {
-      updates.complianceDashboard = complianceResult.value;
-    }
-  } else {
-    errors.push(`/compliance/dashboard: ${toErrorMessage(complianceResult.reason)}`);
-    debugHydrationFailure('/compliance/dashboard', complianceResult.reason);
-  }
-
-  if (resilienceResult.status === 'fulfilled') {
-    if (isLiveSection(resilienceResult.value)) {
-      updates.resilienceDashboard = resilienceResult.value;
-    }
-  } else {
-    errors.push(`/resilience/dashboard: ${toErrorMessage(resilienceResult.reason)}`);
-    debugHydrationFailure('/resilience/dashboard', resilienceResult.reason);
-  }
-
-  return {
-    updates,
-    gatewayReachable,
-    errors,
-  };
+function hasAnyLiveSection(meta: DashboardPageDataHydrationMeta) {
+  return meta.riskLive || meta.threatLive || meta.complianceLive || meta.resilienceLive;
 }
 
 export default function DashboardLiveHydrator({ initialData }: Props) {
@@ -230,54 +146,40 @@ export default function DashboardLiveHydrator({ initialData }: Props) {
           throw new Error(`Hydration request failed with status ${response.status}.`);
         }
 
-        const liveData = (await response.json()) as DashboardPageData;
+        const hydrationResult = (await response.json()) as DashboardPageDataHydrationResponse;
 
         if (!active) {
           return;
         }
 
-        const routeUpdates = collectLiveSectionUpdates(liveData);
-        const routeHydrationSucceeded = isHydrationSuccess(liveData);
-        const routeGatewayReachable = routeHydrationSucceeded || Boolean(routeUpdates.dashboard);
+        const routeUpdates = collectLiveSectionUpdates(hydrationResult.data);
 
-        if (routeHydrationSucceeded) {
-          setData(liveData);
-          setGatewayReachableOverride((current) => current || routeGatewayReachable);
-          setDebugState({ retriesAttempted: attempt });
-          return;
+        if (hasLiveSectionUpdates(routeUpdates)) {
+          setData((current) => mergeDashboardPageData(current, routeUpdates));
         }
 
-        const backupResult = await performBackupHydration(initialData.apiUrl);
-
-        if (!active) {
-          return;
+        if (hydrationResult.meta.gatewayReachable) {
+          setGatewayReachableOverride(true);
         }
 
-        const mergedUpdates = {
-          ...routeUpdates,
-          ...backupResult.updates,
-        };
+        const shouldRetry =
+          attempt === 0 &&
+          !hydrationResult.meta.gatewayReachable &&
+          !hasAnyLiveSection(hydrationResult.meta) &&
+          !hasLiveSectionUpdates(routeUpdates);
 
-        if (hasLiveSectionUpdates(mergedUpdates)) {
-          setData((current) => mergeDashboardPageData(current, mergedUpdates));
-        }
-
-        const gatewayReachable = routeGatewayReachable || backupResult.gatewayReachable;
-        setGatewayReachableOverride((current) => current || gatewayReachable);
-
-        if (!hasLiveSectionUpdates(mergedUpdates) && attempt === 0) {
+        if (shouldRetry) {
           retryTimer = window.setTimeout(() => {
             void attemptHydration(1);
           }, HYDRATION_RETRY_DELAY_MS);
         }
 
         setDebugState({
-          apiHydrationError: 'Hydration route returned fallback data; attempted direct browser recovery.',
-          backupReachabilityError:
-            gatewayReachable || backupResult.errors.length === 0
-              ? undefined
-              : backupResult.errors.join(' | '),
-          retriesAttempted: attempt + (hasLiveSectionUpdates(mergedUpdates) ? 0 : 1),
+          apiHydrationError:
+            hydrationResult.meta.errors && hydrationResult.meta.errors.length > 0
+              ? hydrationResult.meta.errors.join(' | ')
+              : undefined,
+          retriesAttempted: shouldRetry ? attempt + 1 : attempt,
         });
       } catch (error) {
         if (!active) {
@@ -286,40 +188,15 @@ export default function DashboardLiveHydrator({ initialData }: Props) {
 
         debugHydrationFailure('/api/dashboard-page-data', error);
 
-        const backupResult = await performBackupHydration(initialData.apiUrl);
-
-        if (!active) {
-          return;
-        }
-
-        if (hasLiveSectionUpdates(backupResult.updates)) {
-          setData((current) => mergeDashboardPageData(current, backupResult.updates));
-        }
-
-        setGatewayReachableOverride((current) => current || backupResult.gatewayReachable);
-
-        if (!hasLiveSectionUpdates(backupResult.updates) && attempt === 0) {
+        if (attempt === 0) {
           retryTimer = window.setTimeout(() => {
             void attemptHydration(1);
           }, HYDRATION_RETRY_DELAY_MS);
-          setDebugState({
-            apiHydrationError: toErrorMessage(error),
-            backupReachabilityError:
-              backupResult.gatewayReachable || backupResult.errors.length === 0
-                ? undefined
-                : backupResult.errors.join(' | '),
-            retriesAttempted: attempt + 1,
-          });
-          return;
         }
 
         setDebugState({
           apiHydrationError: toErrorMessage(error),
-          backupReachabilityError:
-            backupResult.gatewayReachable || backupResult.errors.length === 0
-              ? undefined
-              : backupResult.errors.join(' | '),
-          retriesAttempted: attempt + (hasLiveSectionUpdates(backupResult.updates) ? 0 : 1),
+          retriesAttempted: attempt + 1,
         });
       }
     }
