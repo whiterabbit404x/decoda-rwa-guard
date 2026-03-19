@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import DashboardPageContent from './dashboard-page-content';
-import { DashboardPageData, fetchDashboardPageData } from './dashboard-data';
+import { DashboardPageData } from './dashboard-data';
 
 type Props = {
   initialData: DashboardPageData;
@@ -29,13 +29,25 @@ export default function DashboardLiveHydrator({ initialData }: Props) {
     let active = true;
 
     async function hydrateDashboard() {
-      const liveData = await fetchDashboardPageData(initialData.apiUrl);
+      try {
+        const response = await fetch('/api/dashboard-page-data', { cache: 'no-store' });
 
-      if (!active) {
-        return;
+        if (!response.ok) {
+          throw new Error(`Hydration request failed with status ${response.status}`);
+        }
+
+        const liveData = (await response.json()) as DashboardPageData;
+
+        if (!active) {
+          return;
+        }
+
+        setData((currentData) => mergeDashboardPageData(currentData, liveData));
+      } catch (error) {
+        if (process.env.NODE_ENV === 'development') {
+          console.debug('[dashboard] Live hydration route failed; retaining SSR fallback state.', error);
+        }
       }
-
-      setData((currentData) => mergeDashboardPageData(currentData, liveData));
     }
 
     void hydrateDashboard();
