@@ -1155,6 +1155,22 @@ export type DashboardViewModel = {
   backendBanner: string;
 };
 
+export type DashboardViewModelOptions = {
+  gatewayReachableOverride?: boolean;
+};
+
+function formatDegradedBannerMessage(messages: string[]) {
+  const normalized = messages
+    .map((message) => message.replace(/^Backend unavailable\.\s*/i, '').trim())
+    .filter(Boolean);
+
+  if (normalized.length === 0) {
+    return 'Gateway live, some services degraded.';
+  }
+
+  return `Gateway live, some services degraded. ${normalized.join(' ')}`;
+}
+
 export async function fetchDashboardPageData(apiUrl = resolveApiUrl()): Promise<DashboardPageData> {
   const [dashboardResult, riskResult, threatResult, complianceResult, resilienceResult] = await Promise.allSettled([
     getDashboard(apiUrl),
@@ -1184,9 +1200,16 @@ export async function fetchDashboardPageData(apiUrl = resolveApiUrl()): Promise<
   };
 }
 
-export function buildDashboardViewModel(data: DashboardPageData): DashboardViewModel {
+export function buildDashboardViewModel(
+  data: DashboardPageData,
+  options: DashboardViewModelOptions = {}
+): DashboardViewModel {
   const { dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard } = data;
-  const backendState = resolveBackendState(dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard);
+  const resolvedBackendState = resolveBackendState(dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard);
+  const backendState =
+    options.gatewayReachableOverride && resolvedBackendState === 'offline'
+      ? 'degraded'
+      : resolvedBackendState;
   const cards = resolveDashboardCards(dashboard).map((card) => resolveGatewayCard(card, backendState));
   const services = dashboard?.services ?? [];
   const summaryCards = [
@@ -1225,7 +1248,12 @@ export function buildDashboardViewModel(data: DashboardPageData): DashboardViewM
     backendState === 'online'
       ? 'Gateway live and all downstream services are reporting live dashboard data.'
       : backendState === 'degraded'
-        ? `Gateway live, some services degraded. ${riskDashboard.message} ${threatDashboard.message} ${complianceDashboard.message} ${resilienceDashboard.message}`
+        ? formatDegradedBannerMessage([
+            riskDashboard.message,
+            threatDashboard.message,
+            complianceDashboard.message,
+            resilienceDashboard.message,
+          ])
         : 'Backend is unavailable. The dashboard is showing offline fallback data so the UI still renders cleanly.';
 
   return {

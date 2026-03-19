@@ -11,11 +11,14 @@ import {
 
 type Props = {
   data: DashboardPageData;
+  gatewayReachableOverride?: boolean;
 };
 
-export default function DashboardPageContent({ data }: Props) {
+export default function DashboardPageContent({ data, gatewayReachableOverride = false }: Props) {
   const { dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard, apiUrl } = data;
-  const { backendState, cards, services, summaryCards, backendBanner } = buildDashboardViewModel(data);
+  const { backendState, cards, services, summaryCards, backendBanner } = buildDashboardViewModel(data, {
+    gatewayReachableOverride,
+  });
 
   return (
     <main className="container">
