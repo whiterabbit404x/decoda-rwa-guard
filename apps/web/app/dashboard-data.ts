@@ -874,6 +874,68 @@ export function normalizeRuntimeStatus(value: string | undefined) {
   return value?.trim().toLowerCase() ?? '';
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function normalizeDashboardCard(card: unknown): DashboardCard | null {
+  if (!isRecord(card)) {
+    return null;
+  }
+
+  const title = typeof card.title === 'string' ? card.title : null;
+  const status = typeof card.status === 'string' ? card.status : null;
+  const detail = typeof card.detail === 'string' ? card.detail : null;
+  const service = typeof card.service === 'string' ? card.service : null;
+
+  if (!title || !status || !detail || !service) {
+    return null;
+  }
+
+  return { title, status, detail, service };
+}
+
+function normalizeServiceStatus(service: unknown): ServiceStatus | null {
+  if (!isRecord(service)) {
+    return null;
+  }
+
+  const service_name = typeof service.service_name === 'string' ? service.service_name : null;
+  const port = typeof service.port === 'number' ? service.port : Number(service.port ?? Number.NaN);
+  const status = typeof service.status === 'string' ? service.status : null;
+  const detail = typeof service.detail === 'string' ? service.detail : null;
+  const updated_at = typeof service.updated_at === 'string' ? service.updated_at : new Date(0).toISOString();
+
+  if (!service_name || !Number.isFinite(port) || !status || !detail) {
+    return null;
+  }
+
+  return { service_name, port, status, detail, updated_at };
+}
+
+export function normalizeDashboardResponse(payload: unknown): DashboardResponse | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+
+  const rawCards = Array.isArray(payload.cards) ? payload.cards : [];
+  const rawServices = Array.isArray(payload.services) ? payload.services : [];
+  const cards = rawCards.map(normalizeDashboardCard).filter((card): card is DashboardCard => card !== null);
+  const services = rawServices.map(normalizeServiceStatus).filter((service): service is ServiceStatus => service !== null);
+
+  if (cards.length === 0 && services.length === 0) {
+    return null;
+  }
+
+  return {
+    mode: typeof payload.mode === 'string' ? payload.mode : 'local',
+    database_url: typeof payload.database_url === 'string' ? payload.database_url : 'sqlite:///.data/phase1.db',
+    redis_enabled: typeof payload.redis_enabled === 'boolean' ? payload.redis_enabled : false,
+    cards,
+    services,
+  };
+}
+
 export function resolveApiUrl() {
   return (process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL).replace(/\/+$/, '');
 }
@@ -1017,7 +1079,7 @@ export function resolveGatewayCard(card: DashboardCard, backendState: BackendSta
 }
 
 export async function getDashboard(apiUrl = resolveApiUrl()): Promise<DashboardResponse | null> {
-  return fetchJson<DashboardResponse>('/dashboard', apiUrl);
+  return normalizeDashboardResponse(await fetchJson<unknown>('/dashboard', apiUrl));
 }
 
 export async function getRiskDashboard(apiUrl = resolveApiUrl()): Promise<RiskDashboardResponse> {
@@ -1095,7 +1157,7 @@ export type DashboardViewModel = {
 
 export async function fetchDashboardPageData(apiUrl = resolveApiUrl()): Promise<DashboardPageData> {
   const [dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard] = await Promise.all([
-    fetchJson<DashboardResponse>('/dashboard', apiUrl),
+    getDashboard(apiUrl),
     getRiskDashboard(apiUrl),
     getThreatDashboard(apiUrl),
     getComplianceDashboard(apiUrl),
