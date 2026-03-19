@@ -1,4 +1,7 @@
-import { fetchDashboardPageData } from '../../dashboard-data';
+import {
+  fetchDashboardPageData,
+  resolveGatewayReachability,
+} from '../../dashboard-data';
 
 export const dynamic = 'force-dynamic';
 
@@ -7,9 +10,24 @@ export async function GET(request: Request): Promise<Response> {
   const apiUrl = searchParams.get('apiUrl')?.trim();
   const data = await fetchDashboardPageData(apiUrl || undefined);
 
-  return Response.json(data, {
-    headers: {
-      'Cache-Control': 'no-store',
+  const meta = {
+    gatewayReachable: resolveGatewayReachability(data.dashboard),
+    dashboardFetchSucceeded: data.dashboard !== null,
+    riskLive: data.riskDashboard.source === 'live',
+    threatLive: data.threatDashboard.source === 'live',
+    complianceLive: data.complianceDashboard.source === 'live',
+    resilienceLive: data.resilienceDashboard.source === 'live',
+  };
+
+  return Response.json(
+    {
+      data,
+      meta,
     },
-  });
+    {
+      headers: {
+        'Cache-Control': 'no-store',
+      },
+    }
+  );
 }
