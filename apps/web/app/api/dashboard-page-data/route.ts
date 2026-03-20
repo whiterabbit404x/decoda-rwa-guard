@@ -18,6 +18,8 @@ export async function GET(request: Request): Promise<Response> {
     complianceLive: data.complianceDashboard.source === 'live',
     resilienceLive: data.resilienceDashboard.source === 'live',
     diagnostics: data.diagnostics,
+    experienceState: data.diagnostics.experienceState,
+    sampleMode: data.diagnostics.sampleMode,
     errors: data.diagnostics.degradedReasons,
   };
 

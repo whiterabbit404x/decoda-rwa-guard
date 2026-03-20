@@ -1080,6 +1080,7 @@ def fetch_threat_dashboard() -> dict[str, Any] | None:
     payload = request_json('GET', f'{THREAT_ENGINE_URL}/dashboard', None, THREAT_ENGINE_TIMEOUT_SECONDS)
     if payload is None:
         return None
+    payload['source'] = 'live'
     payload['degraded'] = False
     return payload
 

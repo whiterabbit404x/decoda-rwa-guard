@@ -55,6 +55,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
         backendState={backendState}
         threatDashboard={threatDashboard}
         resilienceDashboard={resilienceDashboard}
+        diagnostics={diagnostics}
       />
 
       <section className="summaryGrid">
