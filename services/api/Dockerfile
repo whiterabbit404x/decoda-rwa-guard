@@ -13,5 +13,9 @@ RUN python -m pip install --upgrade pip \
 
 COPY phase1_local ./phase1_local
 COPY services/api ./services/api
+COPY services/risk-engine/data ./services/risk-engine/data
+COPY services/threat-engine/data ./services/threat-engine/data
+COPY services/compliance-service/data ./services/compliance-service/data
+COPY services/reconciliation-service/data ./services/reconciliation-service/data
 
 CMD ["sh", "-c", "cd services/api && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

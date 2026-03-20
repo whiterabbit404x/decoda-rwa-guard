@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request as UrlRequest, urlopen
 
 from contextlib import asynccontextmanager
 
@@ -69,6 +70,8 @@ from phase1_local.dev_support import (
 
 load_env_file()
 
+logger = logging.getLogger(__name__)
+
 SERVICE_NAME = 'api'
 PORT = int(os.getenv('PORT', 8000))
 DETAIL = 'FastAPI gateway serving the local Phase 1 dashboard API.'
@@ -98,6 +101,130 @@ COMPLIANCE_DATA_DIR = Path(__file__).resolve().parents[2] / 'compliance-service'
 RECONCILIATION_SERVICE_URL = os.getenv('RECONCILIATION_SERVICE_URL', 'http://localhost:8005').rstrip('/')
 RECONCILIATION_SERVICE_TIMEOUT_SECONDS = float(os.getenv('RECONCILIATION_SERVICE_TIMEOUT_SECONDS', '1.5'))
 RECONCILIATION_DATA_DIR = Path(__file__).resolve().parents[2] / 'reconciliation-service' / 'data'
+DEFAULT_RISK_SAMPLE_REQUEST = {
+    'transaction_payload': {
+        'tx_hash': '0xphase1sample',
+        'from_address': '0x1111111111111111111111111111111111111111',
+        'to_address': '0x2222222222222222222222222222222222222222',
+        'value': 1850000.0,
+        'gas_price': 57.0,
+        'gas_limit': 900000,
+        'chain_id': 1,
+        'calldata_size': 644,
+        'token_transfers': [
+            {'token': 'USTB', 'amount': 550000},
+            {'token': 'WETH', 'amount': 1200},
+        ],
+        'metadata': {
+            'contains_flash_loan_hop': True,
+            'entrypoint': 'aggregator-router',
+        },
+    },
+    'decoded_function_call': {
+        'function_name': 'flashLoan',
+        'contract_name': 'LiquidityRouter',
+        'arguments': {
+            'receiver': '0x3333333333333333333333333333333333333333',
+            'owner': '0x4444444444444444444444444444444444444444',
+            'assets': ['USTB', 'WETH'],
+        },
+        'selectors': ['0xabcd1234'],
+    },
+    'wallet_reputation': {
+        'address': '0x1111111111111111111111111111111111111111',
+        'score': 22,
+        'prior_flags': 3,
+        'account_age_days': 5,
+        'kyc_verified': False,
+        'sanctions_hits': 0,
+        'known_safe': False,
+        'recent_counterparties': 27,
+        'metadata': {'watchlist': 'elevated'},
+    },
+    'contract_metadata': {
+        'address': '0x2222222222222222222222222222222222222222',
+        'contract_name': 'LiquidityRouter',
+        'verified_source': False,
+        'proxy': True,
+        'created_days_ago': 3,
+        'tvl': 2800000.0,
+        'audit_count': 0,
+        'categories': ['dex-router'],
+        'static_flags': {'hidden_owner': False},
+        'metadata': {'upgradeability': 'mutable'},
+    },
+    'recent_market_events': [],
+}
+DEFAULT_NORMAL_MARKET_EVENTS = [
+    {
+        'timestamp': '2026-03-18T00:00:00Z',
+        'event_type': 'trade',
+        'asset': 'USTB',
+        'venue': 'dex-alpha',
+        'price': 1.0001,
+        'volume': 120000.0,
+        'side': 'buy',
+        'trader_id': 'maker-1',
+        'cancellation_rate': 0.05,
+        'liquidity_change': 0.01,
+        'metadata': {},
+    }
+]
+DEFAULT_SUSPICIOUS_MARKET_EVENTS = [
+    {
+        'timestamp': '2026-03-18T01:00:00Z',
+        'event_type': 'borrow',
+        'asset': 'USTB',
+        'venue': 'dex-beta',
+        'price': 1.0,
+        'volume': 250000.0,
+        'trader_id': 'actor-7',
+        'liquidity_change': -0.38,
+        'metadata': {},
+    }
+]
+DEFAULT_RECONCILIATION_STATE = {
+    'asset_id': 'USTB-2026',
+    'expected_total_supply': 1000000,
+    'ledgers': [
+        {
+            'ledger_name': 'ethereum',
+            'reported_supply': 740000,
+            'locked_supply': 10000,
+            'pending_settlement': 45000,
+            'last_updated_at': '2026-03-18T11:40:00Z',
+            'transfer_count': 125,
+            'reconciliation_weight': 1.0,
+        },
+        {
+            'ledger_name': 'avalanche',
+            'reported_supply': 510000,
+            'locked_supply': 5000,
+            'pending_settlement': 38000,
+            'last_updated_at': '2026-03-18T11:42:00Z',
+            'transfer_count': 118,
+            'reconciliation_weight': 1.0,
+        },
+        {
+            'ledger_name': 'private-bank-ledger',
+            'reported_supply': 210000,
+            'locked_supply': 0,
+            'pending_settlement': 12000,
+            'last_updated_at': '2026-03-18T09:10:00Z',
+            'transfer_count': 21,
+            'reconciliation_weight': 1.0,
+        },
+    ],
+}
+DEFAULT_BACKSTOP_STATE = {
+    'asset_id': 'USTB-2026',
+    'volatility_score': 71,
+    'cyber_alert_score': 89,
+    'reconciliation_severity': 81,
+    'oracle_confidence_score': 36,
+    'compliance_incident_score': 74,
+    'current_market_mode': 'restricted',
+}
 ALLOWED_ORIGINS = parse_csv_env('CORS_ALLOWED_ORIGINS', [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
@@ -507,9 +634,9 @@ def pilot_resilience_record_incident(payload: dict[str, Any], request: Request) 
 
 
 def build_risk_dashboard_queue() -> list[dict[str, Any]]:
-    sample_request = load_json_file(RISK_ENGINE_DATA_DIR, 'sample_risk_request.json')
-    suspicious_events = load_json_file(RISK_ENGINE_DATA_DIR, 'suspicious_market_events.json')
-    normal_events = load_json_file(RISK_ENGINE_DATA_DIR, 'normal_market_events.json')
+    sample_request = load_json_file(RISK_ENGINE_DATA_DIR, 'sample_risk_request.json', DEFAULT_RISK_SAMPLE_REQUEST)
+    suspicious_events = load_json_file(RISK_ENGINE_DATA_DIR, 'suspicious_market_events.json', DEFAULT_SUSPICIOUS_MARKET_EVENTS)
+    normal_events = load_json_file(RISK_ENGINE_DATA_DIR, 'normal_market_events.json', DEFAULT_NORMAL_MARKET_EVENTS)
 
     definitions = [
         {
@@ -825,7 +952,7 @@ def proxy_threat(kind: str, payload: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def request_json(method: str, url: str, payload: dict[str, Any] | None, timeout_seconds: float) -> dict[str, Any] | None:
-    request = Request(
+    request = UrlRequest(
         url,
         data=json.dumps(payload).encode('utf-8') if payload is not None else None,
         headers={'Content-Type': 'application/json'},
@@ -1011,6 +1138,16 @@ def fallback_governance_action(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def fallback_resilience_dashboard() -> dict[str, Any]:
+    reconciliation_payload = load_json_file(
+        RECONCILIATION_DATA_DIR,
+        'critical_supply_divergence_double_count_risk.json',
+        DEFAULT_RECONCILIATION_STATE,
+    )
+    backstop_payload = load_json_file(
+        RECONCILIATION_DATA_DIR,
+        'critical_mismatch_paused_bridge.json',
+        DEFAULT_BACKSTOP_STATE,
+    )
     return {
         'source': 'fallback',
         'degraded': True,
@@ -1029,8 +1166,8 @@ def fallback_resilience_dashboard() -> dict[str, Any]:
             {'label': 'Stale ledgers', 'value': '1', 'detail': 'Fallback stale-ledger penalty remains visible when the service is offline.', 'tone': 'warning'},
             {'label': 'Backstop', 'value': 'paused', 'detail': 'Fallback safeguards paused bridge and settlement lanes.', 'tone': 'critical'},
         ],
-        'reconciliation_result': fallback_reconcile_state(load_json_file(RECONCILIATION_DATA_DIR, 'critical_supply_divergence_double_count_risk.json')),
-        'backstop_result': fallback_backstop_evaluate(load_json_file(RECONCILIATION_DATA_DIR, 'critical_mismatch_paused_bridge.json')),
+        'reconciliation_result': fallback_reconcile_state(reconciliation_payload),
+        'backstop_result': fallback_backstop_evaluate(backstop_payload),
         'latest_incidents': [
             {'event_id': 'evt-fallback-0002', 'created_at': '2026-03-18T11:52:00Z', 'event_type': 'market-circuit-breaker', 'trigger_source': 'backstop-engine', 'related_asset_id': 'USTB-2026', 'affected_assets': ['USTB-2026'], 'affected_ledgers': ['ethereum', 'avalanche'], 'severity': 'high', 'status': 'contained', 'summary': 'Fallback circuit breaker event kept trading paused while cyber scores were elevated.', 'metadata': {'scenario': 'cyber-triggered-restricted-mode'}, 'attestation_hash': 'fallback-event-0002', 'fingerprint': 'fallback-event-00', 'source': 'fallback', 'degraded': True},
             {'event_id': 'evt-fallback-0001', 'created_at': '2026-03-18T11:45:00Z', 'event_type': 'reconciliation-failure', 'trigger_source': 'reconciliation-engine', 'related_asset_id': 'USTB-2026', 'affected_assets': ['USTB-2026'], 'affected_ledgers': ['ethereum', 'avalanche', 'private-bank-ledger'], 'severity': 'critical', 'status': 'open', 'summary': 'Fallback reconciliation incident preserved duplicate mint risk context during service outage.', 'metadata': {'scenario': 'critical-supply-divergence-double-count-risk'}, 'attestation_hash': 'fallback-event-0001', 'fingerprint': 'fallback-event-00', 'source': 'fallback', 'degraded': True},
@@ -1481,5 +1618,15 @@ def iso_timestamp(offset: int) -> str:
     return f'2026-03-18T09:0{offset}:00Z'
 
 
-def load_json_file(data_dir: Path, filename: str) -> Any:
-    return json.loads((data_dir / filename).read_text())
+def load_json_file(data_dir: Path, filename: str, default: Any | None = None) -> Any:
+    path = data_dir / filename
+    try:
+        return json.loads(path.read_text())
+    except FileNotFoundError:
+        logger.warning('Optional JSON fixture missing at %s; using built-in fallback.', path)
+    except json.JSONDecodeError:
+        logger.warning('Optional JSON fixture at %s is invalid JSON; using built-in fallback.', path)
+
+    if default is None:
+        return {}
+    return deepcopy(default)

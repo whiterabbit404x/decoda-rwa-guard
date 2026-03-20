@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -99,6 +100,18 @@ class ApiRiskDashboardTests(unittest.TestCase):
         self.assertIn('risk_alerts', body)
         self.assertIn('contract_scan_results', body)
         self.assertIn('decisions_log', body)
+
+    def test_risk_dashboard_stays_up_when_sample_files_are_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(api_main, 'RISK_ENGINE_DATA_DIR', Path(tmpdir)):
+                with patch.object(api_main, 'urlopen', side_effect=URLError('risk-engine unavailable')):
+                    response = self.client.get('/risk/dashboard')
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['source'], 'fallback')
+        self.assertEqual(len(body['transaction_queue']), 4)
+        self.assertTrue(all(item['tx_hash'] for item in body['transaction_queue']))
 
 
 class ApiThreatGatewayTests(unittest.TestCase):

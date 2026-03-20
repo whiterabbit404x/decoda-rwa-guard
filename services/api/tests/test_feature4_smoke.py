@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -102,3 +103,17 @@ def test_feature4_gateway_fallback_works_when_reconciliation_service_is_unavaila
     assert backstop.json()['source'] == 'fallback'
     assert incident.status_code == 200
     assert incident.json()['source'] == 'fallback'
+
+
+def test_feature4_dashboard_fallback_stays_up_when_sample_files_are_missing(client: TestClient, api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api_main, 'fetch_resilience_dashboard', lambda: None)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setattr(api_main, 'RECONCILIATION_DATA_DIR', Path(tmpdir))
+        dashboard = client.get('/resilience/dashboard')
+
+    assert dashboard.status_code == 200
+    body = dashboard.json()
+    assert body['source'] == 'fallback'
+    assert body['reconciliation_result']['source'] == 'fallback'
+    assert body['backstop_result']['source'] == 'fallback'
