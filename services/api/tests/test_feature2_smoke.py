@@ -160,11 +160,11 @@ def test_feature2_embedded_local_dashboard_is_live_when_service_url_is_localhost
                 'degraded': False,
                 'generated_at': '2026-03-18T10:00:00Z',
                 'summary': {'average_score': 71, 'critical_or_high_alerts': 1, 'blocked_actions': 1, 'review_actions': 0, 'market_anomaly_types': ['Embedded anomaly']},
-                'cards': [{'label': 'Threat score', 'value': '71', 'detail': 'Embedded', 'tone': 'high'}],
-                'active_alerts': [],
-                'recent_detections': [],
+                'cards': [{'label': 'Threat score', 'value': '71', 'detail': 'Fallback contract threat score from bundled Feature 2 scenarios.', 'tone': 'high'}],
+                'active_alerts': [{'id': 'det-001', 'category': 'transaction', 'title': 'Embedded detection', 'score': 71, 'severity': 'high', 'action': 'review', 'source': 'fallback', 'explanation': 'Embedded result.', 'patterns': ['Embedded rule']}],
+                'recent_detections': [{'id': 'det-001', 'category': 'transaction', 'title': 'Embedded detection', 'score': 71, 'severity': 'high', 'action': 'review', 'source': 'fallback', 'explanation': 'Embedded result.', 'patterns': ['Embedded rule']}],
                 'sample_scenarios': {},
-                'message': 'Embedded threat response.',
+                'message': 'Threat-engine unavailable or timed out. Returning explicit fallback detections so the dashboard and demo panel remain usable.',
             }
 
     class _EmbeddedEngine:
@@ -189,6 +189,27 @@ def test_feature2_embedded_local_dashboard_is_live_when_service_url_is_localhost
     body = response.json()
     assert body['source'] == 'live'
     assert body['degraded'] is False
+    assert body['message'] == 'Threat dashboard is driven by deterministic weighted rules so each score remains explainable and demoable.'
+    assert all('fallback' not in card['detail'].lower() for card in body['cards'])
+    assert all(alert['source'] == 'live' for alert in body['active_alerts'])
+    assert all(detection['source'] == 'live' for detection in body['recent_detections'])
     details = client.get('/health/details').json()['dependencies']['threat_engine']
     assert details['selected_mode'] == 'embedded_local'
     assert details['last_used_mode'] == 'embedded_local'
+
+
+def test_feature2_remote_dashboard_preserves_true_fallback_payload_when_upstream_marks_it_degraded(client: TestClient, api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    fallback_payload = api_main.fallback_threat_dashboard()
+
+    monkeypatch.setattr(api_main, 'THREAT_ENGINE_URL_ENV', 'https://railway.example')
+    monkeypatch.setattr(api_main, 'THREAT_ENGINE_URL', 'https://railway.example')
+    monkeypatch.setattr(api_main, 'request_json', lambda *args, **kwargs: fallback_payload)
+
+    response = client.get('/threat/dashboard')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['source'] == 'fallback'
+    assert body['degraded'] is True
+    assert body['message'] == fallback_payload['message']
+    assert all(alert['source'] == 'fallback' for alert in body['active_alerts'])

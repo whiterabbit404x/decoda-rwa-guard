@@ -1355,6 +1355,53 @@ def attach_dependency_diagnostics(payload: dict[str, Any], dependency_name: str,
     return payload
 
 
+THREAT_DASHBOARD_LIVE_MESSAGE = 'Threat dashboard is driven by deterministic weighted rules so each score remains explainable and demoable.'
+THREAT_DASHBOARD_LIVE_CARD_DETAILS = {
+    'Threat score': 'Contract scan composite score from deterministic rules.',
+    'Active alerts': 'Critical and high-confidence exploit or anomaly detections.',
+    'Blocked / reviewed': 'Action decisions produced by the explainable scoring layer.',
+    'Market anomaly avg': 'Average anomaly score across bundled treasury-token scenarios.',
+}
+THREAT_FALLBACK_MARKERS = ('fallback', 'unavailable', 'timed out', 'offline')
+
+
+def contains_threat_fallback_copy(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    lowered = value.strip().lower()
+    return any(marker in lowered for marker in THREAT_FALLBACK_MARKERS)
+
+
+def normalize_live_threat_dashboard_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    payload['source'] = 'live'
+    payload['degraded'] = False
+
+    if contains_threat_fallback_copy(payload.get('message')):
+        payload['message'] = THREAT_DASHBOARD_LIVE_MESSAGE
+
+    cards = payload.get('cards')
+    if isinstance(cards, list):
+        for card in cards:
+            if not isinstance(card, dict):
+                continue
+            if contains_threat_fallback_copy(card.get('detail')):
+                card['detail'] = THREAT_DASHBOARD_LIVE_CARD_DETAILS.get(str(card.get('label')), str(card.get('detail') or ''))
+
+    for key in ('active_alerts', 'recent_detections'):
+        records = payload.get(key)
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if isinstance(record, dict):
+                record['source'] = 'live'
+
+    return payload
+
+
+def threat_dashboard_payload_is_fallback(payload: dict[str, Any]) -> bool:
+    return str(payload.get('source') or '').lower() == 'fallback' or bool(payload.get('degraded'))
+
+
 def mark_live_payload(payload: dict[str, Any], dependency_name: str) -> dict[str, Any]:
     payload['source'] = 'live'
     payload['degraded'] = False
@@ -1605,13 +1652,27 @@ def fetch_threat_dashboard() -> dict[str, Any] | None:
             if payload is None:
                 record_dependency_runtime('threat_engine', 'fallback', 'Remote threat dashboard request failed.')
                 return None
+            if threat_dashboard_payload_is_fallback(payload):
+                record_dependency_runtime(
+                    'threat_engine',
+                    'fallback',
+                    'Remote threat dashboard returned a fallback payload.',
+                    payload_source='fallback',
+                    degraded=True,
+                    detail='Threat dashboard fallback active',
+                )
+                return attach_dependency_diagnostics(
+                    payload,
+                    'threat_engine',
+                    fallback_reason='Threat dashboard remained in fallback mode after remote execution.',
+                )
             record_dependency_runtime('threat_engine', mode)
-            return mark_live_payload(payload, 'threat_engine')
+            return mark_live_payload(normalize_live_threat_dashboard_payload(payload), 'threat_engine')
 
         module = load_embedded_service_main('threat-engine')
         payload = module.engine.build_dashboard(module.load_demo_requests()).model_dump()
         record_dependency_runtime('threat_engine', mode)
-        return mark_live_payload(payload, 'threat_engine')
+        return mark_live_payload(normalize_live_threat_dashboard_payload(payload), 'threat_engine')
     except Exception as exc:  # pragma: no cover
         record_dependency_runtime('threat_engine', 'fallback', str(exc))
         logger.exception('Embedded threat-engine dashboard execution failed; using fallback payload.')

@@ -859,6 +859,47 @@ export const fallbackThreatDashboard: ThreatDashboardResponse = {
   message: 'Threat-engine unavailable or timed out. Returning explicit fallback detections so the dashboard and demo panel remain usable.'
 };
 
+const LIVE_THREAT_MESSAGE = 'Threat dashboard is driven by deterministic weighted rules so each score remains explainable and demoable.';
+const LIVE_THREAT_CARD_DETAILS: Record<string, string> = {
+  'Threat score': 'Contract scan composite score from deterministic rules.',
+  'Active alerts': 'Critical and high-confidence exploit or anomaly detections.',
+  'Blocked / reviewed': 'Action decisions produced by the explainable scoring layer.',
+  'Market anomaly avg': 'Average anomaly score across bundled treasury-token scenarios.',
+};
+const THREAT_FALLBACK_COPY_MARKERS = ['fallback', 'unavailable', 'timed out', 'offline'];
+
+function containsThreatFallbackCopy(value: unknown) {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return THREAT_FALLBACK_COPY_MARKERS.some((marker) => normalized.includes(marker));
+}
+
+function normalizeThreatDashboardPayload(payload: ThreatDashboardResponse): ThreatDashboardResponse {
+  if (payload.source !== 'live' || payload.degraded) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    message: containsThreatFallbackCopy(payload.message) ? LIVE_THREAT_MESSAGE : payload.message,
+    cards: payload.cards.map((card) => ({
+      ...card,
+      detail: containsThreatFallbackCopy(card.detail) ? (LIVE_THREAT_CARD_DETAILS[card.label] ?? card.detail) : card.detail,
+    })),
+    active_alerts: payload.active_alerts.map((alert) => ({
+      ...alert,
+      source: 'live',
+    })),
+    recent_detections: payload.recent_detections.map((detection) => ({
+      ...detection,
+      source: 'live',
+    })),
+  };
+}
+
 export type BackendState = 'online' | 'degraded' | 'offline';
 export type DashboardExperienceState = 'live' | 'live_degraded' | 'sample';
 export type DashboardPayloadState = 'live' | 'fallback' | 'sample' | 'unavailable';
@@ -1192,7 +1233,8 @@ export async function getRiskDashboard(apiUrl = resolveApiUrl()): Promise<RiskDa
 }
 
 export async function getThreatDashboard(apiUrl = resolveApiUrl()): Promise<ThreatDashboardResponse> {
-  return (await fetchJson<ThreatDashboardResponse>('/threat/dashboard', apiUrl)) ?? fallbackThreatDashboard;
+  const payload = (await fetchJson<ThreatDashboardResponse>('/threat/dashboard', apiUrl)) ?? fallbackThreatDashboard;
+  return normalizeThreatDashboardPayload(payload);
 }
 
 export async function getComplianceDashboard(apiUrl = resolveApiUrl()): Promise<ComplianceDashboardResponse> {
@@ -1414,7 +1456,7 @@ export async function fetchDashboardPageData(requestedApiUrl?: string | null): P
 
   const dashboard = normalizeDashboardResponse(dashboardResult.payload);
   const riskDashboard = riskResult.payload ?? fallbackRiskDashboard;
-  const threatDashboard = threatResult.payload ?? fallbackThreatDashboard;
+  const threatDashboard = normalizeThreatDashboardPayload(threatResult.payload ?? fallbackThreatDashboard);
   const complianceDashboard = complianceResult.payload ?? fallbackComplianceDashboard;
   const resilienceDashboard = resilienceResult.payload ?? fallbackResilienceDashboard;
 
