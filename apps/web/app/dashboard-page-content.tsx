@@ -18,7 +18,7 @@ type Props = {
 };
 
 export default function DashboardPageContent({ data, gatewayReachableOverride = false }: Props) {
-  const { dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard, apiUrl } = data;
+  const { dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard, apiUrl, diagnostics } = data;
   const { backendState, cards, services, summaryCards, backendBanner } = buildDashboardViewModel(data, {
     gatewayReachableOverride,
   });
@@ -34,11 +34,14 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           </p>
         </div>
         <div className="heroPanel">
-          <p><strong>Pilot status:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Partially live' : 'Sample mode available'}</p>
+          <p><strong>Pilot status:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Live service degraded' : 'Sample mode active'}</p>
           <p><strong>Workspace history:</strong> Sign in to save alerts, incidents, and analysis activity to your workspace.</p>
           <p><strong>Coverage:</strong> Risk, threat, compliance, and resilience remain visible even when one live service needs attention.</p>
-          <p><strong>Live endpoint:</strong> {apiUrl}</p>
-          <p><strong>Runtime:</strong> {dashboard?.mode ?? 'pilot'} mode</p>
+          <p><strong>Live endpoint:</strong> {apiUrl || 'Not configured'}</p>
+          <p><strong>API source:</strong> {diagnostics.apiUrlSource}</p>
+          <p><strong>Data source:</strong> {diagnostics.fallbackTriggered ? `Fallback active for ${diagnostics.failedEndpoints.join(', ')}` : 'All dashboard feeds are live'}</p>
+          <p><strong>Runtime:</strong> {diagnostics.isProduction ? 'production' : dashboard?.mode ?? 'pilot'} mode</p>
+          {diagnostics.degradedReasons.length > 0 ? <p><strong>Diagnostic:</strong> {diagnostics.degradedReasons[0]}</p> : null}
         </div>
       </div>
 

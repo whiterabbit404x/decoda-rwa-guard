@@ -37,7 +37,7 @@ function formatBackendLabel(state: BackendState) {
   }
 
   if (state === 'degraded') {
-    return 'Partially live';
+    return 'Live service degraded';
   }
 
   return 'Sample data only';
@@ -49,7 +49,7 @@ function formatBackendDetail(state: BackendState) {
   }
 
   if (state === 'degraded') {
-    return 'Some sections are live while others are temporarily filled with sample coverage.';
+    return 'A live dashboard request failed, so fallback coverage is shown only for the affected sections.';
   }
 
   return 'The pilot remains explorable with sample coverage while live connectivity is restored.';
@@ -130,7 +130,7 @@ export default function PilotOverviewPanel({
         <div className="kvGrid compactKvGrid">
           <p>
             <span>Access</span>
-            {liveModeConfigured ? 'Live workspace enabled' : 'Sample mode enabled'}
+            {liveModeConfigured ? 'Live workspace enabled' : 'Live workspace unavailable'}
           </p>
           <p>
             <span>Threat feed</span>

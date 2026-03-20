@@ -17,6 +17,8 @@ export async function GET(request: Request): Promise<Response> {
     threatLive: data.threatDashboard.source === 'live',
     complianceLive: data.complianceDashboard.source === 'live',
     resilienceLive: data.resilienceDashboard.source === 'live',
+    diagnostics: data.diagnostics,
+    errors: data.diagnostics.degradedReasons,
   };
 
   return Response.json(
