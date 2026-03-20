@@ -63,7 +63,13 @@ function liveThreatDashboard() {
   const payload = clone(fallbackThreatDashboard);
   payload.source = 'live';
   payload.degraded = false;
-  payload.message = 'Live threat dashboard connected.';
+  payload.message = 'Threat dashboard is driven by deterministic weighted rules so each score remains explainable and demoable.';
+  payload.cards = [
+    { label: 'Threat score', value: '82', detail: 'Contract scan composite score from deterministic rules.', tone: 'critical' },
+    { label: 'Active alerts', value: '4', detail: 'Critical and high-confidence exploit or anomaly detections.', tone: 'high' },
+    { label: 'Blocked / reviewed', value: '3/2', detail: 'Action decisions produced by the explainable scoring layer.', tone: 'medium' },
+    { label: 'Market anomaly avg', value: '70.0', detail: 'Average anomaly score across bundled treasury-token scenarios.', tone: 'high' },
+  ];
   payload.active_alerts.forEach((item) => {
     item.source = 'live';
   });
@@ -306,8 +312,54 @@ test.describe('dashboard production API flow', () => {
       expect(data.diagnostics.experienceState).toBe('live_degraded');
       expect(viewModel.backendState).toBe('degraded');
       expect(viewModel.summaryCards.find((card) => card.label === 'Threat posture')?.meta).toContain('Fallback coverage');
+      expect(data.threatDashboard.message).toContain('Threat fallback payload from gateway.');
       expect(viewModel.summaryCards.some((card) => card.meta.includes('Sample coverage'))).toBe(false);
       expect(formatSourceLabel(data.diagnostics.endpoints.threatDashboard.payloadState)).toBe('Fallback coverage');
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  test('normalizes Feature 2 copy and labels to live when the payload is live but still contains stale fallback text', async () => {
+    const originalFetch = global.fetch;
+
+    global.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const pathname = new URL(url).pathname;
+
+      const staleLiveThreatPayload = {
+        ...clone(fallbackThreatDashboard),
+        source: 'live',
+        degraded: false,
+      };
+
+      const payloadByPath = {
+        '/dashboard': dashboardPayload,
+        '/risk/dashboard': liveRiskDashboard(),
+        '/threat/dashboard': staleLiveThreatPayload,
+        '/compliance/dashboard': liveComplianceDashboard(),
+        '/resilience/dashboard': liveResilienceDashboard(),
+      } satisfies Record<string, unknown>;
+
+      return new Response(JSON.stringify(payloadByPath[pathname]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof global.fetch;
+
+    try {
+      const data = await fetchDashboardPageData('https://railway.example');
+      const viewModel = buildDashboardViewModel(data);
+
+      expect(data.threatDashboard.source).toBe('live');
+      expect(data.threatDashboard.degraded).toBe(false);
+      expect(data.threatDashboard.message).toBe('Threat dashboard is driven by deterministic weighted rules so each score remains explainable and demoable.');
+      expect(data.threatDashboard.cards.some((card) => card.detail.toLowerCase().includes('fallback'))).toBe(false);
+      expect(data.threatDashboard.active_alerts.every((alert) => alert.source === 'live')).toBe(true);
+      expect(data.threatDashboard.recent_detections.every((detection) => detection.source === 'live')).toBe(true);
+      expect(data.diagnostics.endpoints.threatDashboard.payloadState).toBe('live');
+      expect(viewModel.backendState).toBe('online');
+      expect(viewModel.summaryCards.find((card) => card.label === 'Threat posture')?.meta).toContain('Live feed');
     } finally {
       global.fetch = originalFetch;
     }
