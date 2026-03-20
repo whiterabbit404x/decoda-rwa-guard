@@ -1,6 +1,7 @@
 import ComplianceDemoPanel from './compliance-demo-panel';
 import PilotHistoryPanel from './pilot-history-panel';
 import PilotModeBanner from './pilot-mode-banner';
+import PilotOverviewPanel from './pilot-overview-panel';
 import ResilienceDemoPanel from './resilience-demo-panel';
 import ThreatDemoPanel from './threat-demo-panel';
 import {
@@ -26,29 +27,32 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
     <main className="container">
       <div className="hero">
         <div>
-          <p className="eyebrow">Phase 1 local development</p>
-          <h1>Tokenized Treasury Control Dashboard</h1>
+          <p className="eyebrow">Decoda pilot workspace</p>
+          <h1>Treasury oversight, ready for a customer pilot</h1>
           <p className="lede">
-            The dashboard now combines the stable Phase 1 risk-engine with Feature 2 preemptive cybersecurity, Feature 3 compliance controls, and Feature 4 interoperability resilience workflows while preserving clear degraded-mode handling when local services are offline.
+            Keep the current dashboard structure, but lead with the information a pilot customer needs first: workspace context, live service status, recent alerts, recent incidents, and saved operating history.
           </p>
         </div>
         <div className="heroPanel">
-          <p><strong>Mode:</strong> {dashboard?.mode ?? 'local'}</p>
-          <p><strong>Database:</strong> {dashboard?.database_url ?? 'sqlite:///.data/phase1.db'}</p>
-          <p><strong>Redis:</strong> {dashboard?.redis_enabled ? 'enabled' : 'disabled for local mode'}</p>
-          <p><strong>Risk feed:</strong> {riskDashboard.source === 'live' ? 'risk-engine live data' : 'fallback-safe dashboard data'}</p>
-          <p><strong>Threat feed:</strong> {threatDashboard.source === 'live' ? 'threat-engine live data' : 'fallback-safe threat data'}</p>
-          <p><strong>Compliance feed:</strong> {complianceDashboard.source === 'live' ? 'compliance-service live data' : 'fallback-safe compliance data'}</p>
-          <p><strong>Resilience feed:</strong> {resilienceDashboard.source === 'live' ? 'reconciliation-service live data' : 'fallback-safe resilience data'}</p>
-          <p><strong>API URL:</strong> {apiUrl}</p>
+          <p><strong>Pilot status:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Partially live' : 'Sample mode available'}</p>
+          <p><strong>Workspace history:</strong> Sign in to save alerts, incidents, and analysis activity to your workspace.</p>
+          <p><strong>Coverage:</strong> Risk, threat, compliance, and resilience remain visible even when one live service needs attention.</p>
+          <p><strong>Live endpoint:</strong> {apiUrl}</p>
+          <p><strong>Runtime:</strong> {dashboard?.mode ?? 'pilot'} mode</p>
         </div>
       </div>
 
       <PilotModeBanner />
 
       <section className={`banner banner-${backendState}`}>
-        <strong>Runtime status:</strong> {backendBanner}
+        <strong>Platform status:</strong> {backendBanner}
       </section>
+
+      <PilotOverviewPanel
+        backendState={backendState}
+        threatDashboard={threatDashboard}
+        resilienceDashboard={resilienceDashboard}
+      />
 
       <section className="summaryGrid">
         {summaryCards.map((card) => (

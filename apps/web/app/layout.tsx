@@ -4,8 +4,8 @@ import { PilotAuthProvider } from './pilot-auth-context';
 import './styles.css';
 
 export const metadata: Metadata = {
-  title: 'Phase 1 Treasury Control Dashboard',
-  description: 'Pilot-ready tokenized treasury risk control dashboard',
+  title: 'Decoda Pilot Control Center',
+  description: 'Customer-ready pilot control center for treasury risk, compliance, and resilience',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

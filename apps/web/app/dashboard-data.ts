@@ -1073,8 +1073,8 @@ export function resolveGatewayCard(card: DashboardCard, backendState: BackendSta
 
   return {
     ...card,
-    status: 'Waiting',
-    detail: 'Start the local backend to populate the live dashboard.',
+    status: 'Sample mode',
+    detail: 'Live services are not reachable right now, so the dashboard is showing sample coverage.',
   };
 }
 
@@ -1159,16 +1159,28 @@ export type DashboardViewModelOptions = {
   gatewayReachableOverride?: boolean;
 };
 
+function formatSourceLabel(source: 'live' | 'fallback') {
+  return source === 'live' ? 'Live feed' : 'Sample coverage';
+}
+
 function formatDegradedBannerMessage(messages: string[]) {
   const normalized = messages
-    .map((message) => message.replace(/^Backend unavailable\.\s*/i, '').trim())
+    .map((message) =>
+      message
+        .replace(/^Backend unavailable\.\s*/i, '')
+        .replace(/Rendering explicit fallback/gi, 'Using sample')
+        .replace(/fallback-safe/gi, 'sample')
+        .replace(/fallback/gi, 'sample')
+        .replace(/demoable/gi, 'available')
+        .trim()
+    )
     .filter(Boolean);
 
   if (normalized.length === 0) {
-    return 'Gateway live, some services degraded.';
+    return 'Live platform connected with partial service coverage.';
   }
 
-  return `Gateway live, some services degraded. ${normalized.join(' ')}`;
+  return `Live platform connected with partial service coverage. ${normalized.join(' ')}`;
 }
 
 export async function fetchDashboardPageData(apiUrl = resolveApiUrl()): Promise<DashboardPageData> {
@@ -1214,39 +1226,39 @@ export function buildDashboardViewModel(
   const services = dashboard?.services ?? [];
   const summaryCards = [
     {
-      label: 'Risk queue',
+      label: 'Queued reviews',
       value: `${riskDashboard.summary.total_transactions}`,
-      meta: `${riskDashboard.summary.high_alert_count} elevated alerts · source ${riskDashboard.source}`
+      meta: `${riskDashboard.summary.high_alert_count} elevated alerts · ${formatSourceLabel(riskDashboard.source)}`
     },
     {
-      label: 'Avg risk score',
+      label: 'Average risk score',
       value: `${riskDashboard.summary.avg_risk_score}`,
-      meta: `Source: ${riskDashboard.source}`
+      meta: formatSourceLabel(riskDashboard.source)
     },
     {
-      label: 'Feature 2 avg threat',
+      label: 'Threat posture',
       value: `${threatDashboard.summary.average_score}`,
-      meta: `${threatDashboard.summary.critical_or_high_alerts} critical/high alerts · source ${threatDashboard.source}`
+      meta: `${threatDashboard.summary.critical_or_high_alerts} priority alerts · ${formatSourceLabel(threatDashboard.source)}`
     },
     {
       label: 'Decision split',
       value: `${riskDashboard.summary.allow_count}/${riskDashboard.summary.review_count}/${riskDashboard.summary.block_count}`,
-      meta: 'allow / review / block'
+      meta: 'Allow / review / block'
     },
     {
-      label: 'Feature 3 policy state',
+      label: 'Compliance controls',
       value: `${complianceDashboard.summary.allowlisted_wallet_count}/${complianceDashboard.summary.blocklisted_wallet_count}/${complianceDashboard.summary.frozen_wallet_count}`,
-      meta: `allowlisted / blocklisted / frozen · source ${complianceDashboard.source}`
+      meta: `Allowlisted / blocklisted / frozen · ${formatSourceLabel(complianceDashboard.source)}`
     },
     {
-      label: 'Feature 4 resilience',
+      label: 'Resilience status',
       value: `${resilienceDashboard.summary.reconciliation_status}/${resilienceDashboard.summary.backstop_decision}`,
-      meta: `${resilienceDashboard.summary.incident_count} incidents tracked · source ${resilienceDashboard.source}`
+      meta: `${resilienceDashboard.summary.incident_count} incidents tracked · ${formatSourceLabel(resilienceDashboard.source)}`
     }
   ];
   const backendBanner =
     backendState === 'online'
-      ? 'Gateway live and all downstream services are reporting live dashboard data.'
+      ? 'Live services are connected and the dashboard is updating from the active platform.'
       : backendState === 'degraded'
         ? formatDegradedBannerMessage([
             riskDashboard.message,
@@ -1254,7 +1266,7 @@ export function buildDashboardViewModel(
             complianceDashboard.message,
             resilienceDashboard.message,
           ])
-        : 'Backend is unavailable. The dashboard is showing offline fallback data so the UI still renders cleanly.';
+        : 'Live services are temporarily unavailable. The dashboard remains available with sample coverage while connectivity is restored.';
 
   return {
     backendState,

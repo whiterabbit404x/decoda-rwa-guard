@@ -73,8 +73,8 @@ export default function PilotHistoryPanel() {
       <section className="featureSection">
         <div className="sectionHeader">
           <div>
-            <h2>Live pilot workspace history</h2>
-            <p>Sign in to save alerts, analysis runs, governance actions, incidents, and audit logs in Neon.</p>
+            <h2>Workspace history</h2>
+            <p>Sign in to save alerts, analysis runs, governance actions, incidents, and audit events for your workspace.</p>
           </div>
         </div>
       </section>
@@ -85,12 +85,12 @@ export default function PilotHistoryPanel() {
     <section className="featureSection">
       <div className="sectionHeader">
         <div>
-          <h2>Live pilot workspace history</h2>
+          <h2>Workspace history</h2>
           <p>
             Current workspace: <strong>{user?.current_workspace?.name ?? 'Unselected'}</strong>
           </p>
         </div>
-        <p className="tableMeta">{loading ? 'Loading Neon-backed history…' : error ?? 'Workspace-scoped records persisted through the API gateway.'}</p>
+        <p className="tableMeta">{loading ? 'Loading saved history…' : error ?? 'Workspace activity is being saved through the live platform.'}</p>
       </div>
 
       {history ? (

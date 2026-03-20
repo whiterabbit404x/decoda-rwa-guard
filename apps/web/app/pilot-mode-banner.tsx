@@ -15,14 +15,14 @@ export default function PilotModeBanner() {
   return (
     <section className="banner banner-pilot">
       <div>
-        <strong>Pilot mode:</strong>{' '}
+        <strong>Pilot access:</strong>{' '}
         {!liveModeConfigured
-          ? 'Demo-only until Neon + auth env vars are configured.'
+          ? 'Sample mode is available now. Enable live workspace access after the deployment environment variables are added.'
           : loading
-            ? 'Checking live-mode session…'
+            ? 'Checking your workspace session…'
             : isAuthenticated
-              ? `Signed in as ${user?.email} in ${user?.current_workspace?.name ?? 'no workspace selected'}.`
-              : 'Live mode is available. Sign in to save workspace-scoped history in Neon.'}
+              ? `Signed in as ${user?.email} in ${user?.current_workspace?.name ?? 'a workspace pending selection'}.`
+              : 'Live workspace access is available. Sign in to save activity and history for your team.'}
       </div>
       <div className="chipRow">
         <Link href="/">Dashboard</Link>

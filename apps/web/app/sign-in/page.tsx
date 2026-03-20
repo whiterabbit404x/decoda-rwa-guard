@@ -32,12 +32,12 @@ export default function SignInPage() {
     <main className="container authPage">
       <div className="hero">
         <div>
-          <p className="eyebrow">Pilot SaaS access</p>
-          <h1>Sign in</h1>
-          <p className="lede">Use your workspace account to enable live mode, persist runs in Neon, and review prior history later.</p>
+          <p className="eyebrow">Pilot access</p>
+          <h1>Sign in to your workspace</h1>
+          <p className="lede">Open your live pilot workspace, save operating history, and keep your team on the same company view.</p>
         </div>
       </div>
-      {!liveModeConfigured ? <p className="statusLine">Live mode is disabled until the Vercel and Railway env vars are configured.</p> : null}
+      {!liveModeConfigured ? <p className="statusLine">Live workspace access will appear here after the Railway and Vercel environment variables are configured.</p> : null}
       <form className="dataCard authForm" onSubmit={handleSubmit}>
         <label className="label">Email</label>
         <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />

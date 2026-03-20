@@ -37,9 +37,9 @@ export default function WorkspacesPage() {
     <main className="container authPage">
       <div className="hero">
         <div>
-          <p className="eyebrow">Workspace management</p>
-          <h1>Select or create a workspace</h1>
-          <p className="lede">Live data is always scoped to your current workspace. Demo data remains separate on the main dashboard.</p>
+          <p className="eyebrow">Company workspaces</p>
+          <h1>Select your active workspace</h1>
+          <p className="lede">Choose the company workspace you want to operate in, or create a new one for a separate pilot environment.</p>
         </div>
       </div>
       <section className="threeColumnSection">
@@ -64,7 +64,7 @@ export default function WorkspacesPage() {
         </form>
         <div className="dataCard">
           <h2>Next step</h2>
-          <p className="muted">After selecting a workspace, return to the dashboard and run live analyses. Saved history will appear in the live pilot history section.</p>
+          <p className="muted">After selecting a workspace, return to the dashboard to review live status, recent alerts, recent incidents, and saved history in one place.</p>
           <Link href="/">Back to dashboard</Link>
         </div>
       </section>

@@ -34,9 +34,9 @@ export default function SignUpPage() {
     <main className="container authPage">
       <div className="hero">
         <div>
-          <p className="eyebrow">Pilot SaaS onboarding</p>
-          <h1>Create your workspace account</h1>
-          <p className="lede">Signup creates a user, workspace owner membership, and initial current workspace for live pilot usage.</p>
+          <p className="eyebrow">Pilot onboarding</p>
+          <h1>Create your company workspace</h1>
+          <p className="lede">Create the first workspace owner account for your team and start saving live pilot activity.</p>
         </div>
       </div>
       <form className="dataCard authForm" onSubmit={handleSubmit}>
