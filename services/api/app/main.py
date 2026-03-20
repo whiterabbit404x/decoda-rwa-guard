@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
 import subprocess
 import sys
+import types
 from copy import deepcopy
+from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request as UrlRequest, urlopen
 
 from contextlib import asynccontextmanager
@@ -91,16 +95,20 @@ DEFAULT_METRICS = [
         'status': 'Ready',
     },
 ]
-RISK_ENGINE_URL = os.getenv('RISK_ENGINE_URL', 'http://localhost:8001').rstrip('/')
+RISK_ENGINE_URL_ENV = os.getenv('RISK_ENGINE_URL')
+RISK_ENGINE_URL = (RISK_ENGINE_URL_ENV or 'http://localhost:8001').rstrip('/')
 RISK_ENGINE_TIMEOUT_SECONDS = float(os.getenv('RISK_ENGINE_TIMEOUT_SECONDS', '1.5'))
 RISK_ENGINE_DATA_DIR = Path(__file__).resolve().parents[2] / 'risk-engine' / 'data'
-THREAT_ENGINE_URL = os.getenv('THREAT_ENGINE_URL', 'http://localhost:8002').rstrip('/')
+THREAT_ENGINE_URL_ENV = os.getenv('THREAT_ENGINE_URL')
+THREAT_ENGINE_URL = (THREAT_ENGINE_URL_ENV or 'http://localhost:8002').rstrip('/')
 THREAT_ENGINE_TIMEOUT_SECONDS = float(os.getenv('THREAT_ENGINE_TIMEOUT_SECONDS', '1.5'))
 THREAT_ENGINE_DATA_DIR = Path(__file__).resolve().parents[2] / 'threat-engine' / 'data'
-COMPLIANCE_SERVICE_URL = os.getenv('COMPLIANCE_SERVICE_URL', 'http://localhost:8004').rstrip('/')
+COMPLIANCE_SERVICE_URL_ENV = os.getenv('COMPLIANCE_SERVICE_URL')
+COMPLIANCE_SERVICE_URL = (COMPLIANCE_SERVICE_URL_ENV or 'http://localhost:8004').rstrip('/')
 COMPLIANCE_SERVICE_TIMEOUT_SECONDS = float(os.getenv('COMPLIANCE_SERVICE_TIMEOUT_SECONDS', '1.5'))
 COMPLIANCE_DATA_DIR = Path(__file__).resolve().parents[2] / 'compliance-service' / 'data'
-RECONCILIATION_SERVICE_URL = os.getenv('RECONCILIATION_SERVICE_URL', 'http://localhost:8005').rstrip('/')
+RECONCILIATION_SERVICE_URL_ENV = os.getenv('RECONCILIATION_SERVICE_URL')
+RECONCILIATION_SERVICE_URL = (RECONCILIATION_SERVICE_URL_ENV or 'http://localhost:8005').rstrip('/')
 RECONCILIATION_SERVICE_TIMEOUT_SECONDS = float(os.getenv('RECONCILIATION_SERVICE_TIMEOUT_SECONDS', '1.5'))
 RECONCILIATION_DATA_DIR = Path(__file__).resolve().parents[2] / 'reconciliation-service' / 'data'
 OPTIONAL_FIXTURE_WARNINGS_EMITTED: set[tuple[str, str]] = set()
@@ -294,6 +302,112 @@ def mode_flags() -> dict[str, Any]:
     }
 
 
+DEPENDENCY_CONFIG = {
+    'risk_engine': {
+        'env_value_key': 'RISK_ENGINE_URL_ENV',
+        'url_key': 'RISK_ENGINE_URL',
+        'service_slug': 'risk-engine',
+    },
+    'threat_engine': {
+        'env_value_key': 'THREAT_ENGINE_URL_ENV',
+        'url_key': 'THREAT_ENGINE_URL',
+        'service_slug': 'threat-engine',
+    },
+    'compliance_service': {
+        'env_value_key': 'COMPLIANCE_SERVICE_URL_ENV',
+        'url_key': 'COMPLIANCE_SERVICE_URL',
+        'service_slug': 'compliance-service',
+    },
+    'reconciliation_service': {
+        'env_value_key': 'RECONCILIATION_SERVICE_URL_ENV',
+        'url_key': 'RECONCILIATION_SERVICE_URL',
+        'service_slug': 'reconciliation-service',
+    },
+}
+DEPENDENCY_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
+
+
+def is_remote_service_url(configured_url: str | None) -> bool:
+    if not configured_url or not configured_url.strip():
+        return False
+    parsed = urlparse(configured_url.strip())
+    hostname = (parsed.hostname or '').lower()
+    return hostname not in {'', 'localhost', '127.0.0.1', '::1'}
+
+
+@lru_cache(maxsize=None)
+def load_embedded_service_main(service_slug: str):
+    service_app_dir = REPO_ROOT / 'services' / service_slug / 'app'
+    package_name = f"_embedded_{service_slug.replace('-', '_')}_app"
+    main_module_name = f'{package_name}.main'
+    if main_module_name in sys.modules:
+        return sys.modules[main_module_name]
+
+    package = types.ModuleType(package_name)
+    package.__path__ = [str(service_app_dir)]
+    package.__file__ = str(service_app_dir / '__init__.py')
+    sys.modules[package_name] = package
+
+    alias_names = ('app', 'app.main', 'app.engine', 'app.schemas', 'app.store')
+    previous_aliases = {name: sys.modules.get(name) for name in alias_names}
+    for name in alias_names:
+        sys.modules.pop(name, None)
+
+    alias_package = types.ModuleType('app')
+    alias_package.__path__ = [str(service_app_dir)]
+    alias_package.__file__ = str(service_app_dir / '__init__.py')
+    sys.modules['app'] = alias_package
+
+    spec = importlib.util.spec_from_file_location(main_module_name, service_app_dir / 'main.py')
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f'Unable to load embedded service module for {service_slug}.')
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[main_module_name] = module
+
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        for name in ('app.main', 'app.engine', 'app.schemas', 'app.store', 'app'):
+            sys.modules.pop(name, None)
+        for name, previous in previous_aliases.items():
+            if previous is not None:
+                sys.modules[name] = previous
+
+    return module
+
+
+def dependency_mode(dependency_name: str) -> str:
+    config = DEPENDENCY_CONFIG[dependency_name]
+    env_value = globals()[config['env_value_key']]
+    return 'remote_proxy' if is_remote_service_url(env_value) else 'embedded_local'
+
+
+def record_dependency_runtime(dependency_name: str, mode: str, error: str | None = None) -> None:
+    status = DEPENDENCY_RUNTIME_STATUS.setdefault(dependency_name, {})
+    status.update(
+        {
+            'configured_url': globals()[DEPENDENCY_CONFIG[dependency_name]['url_key']],
+            'selected_mode': dependency_mode(dependency_name),
+            'last_used_mode': mode,
+            'last_error': error,
+        }
+    )
+
+
+def dependency_diagnostics() -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {}
+    for dependency_name, config in DEPENDENCY_CONFIG.items():
+        existing = DEPENDENCY_RUNTIME_STATUS.get(dependency_name, {})
+        diagnostics[dependency_name] = {
+            'configured_url': globals()[config['url_key']],
+            'remote_configured': is_remote_service_url(globals()[config['env_value_key']]),
+            'selected_mode': dependency_mode(dependency_name),
+            'last_used_mode': existing.get('last_used_mode', dependency_mode(dependency_name)),
+            'last_error': existing.get('last_error'),
+        }
+    return diagnostics
+
+
 def fixture_diagnostics() -> dict[str, Any]:
     directories = {
         'risk_engine': {
@@ -326,6 +440,7 @@ def fixture_diagnostics() -> dict[str, Any]:
         'directories': directories,
         'files': files,
         'modes': mode_flags(),
+        'dependencies': dependency_diagnostics(),
     }
 
 
@@ -390,6 +505,7 @@ def health() -> dict[str, object]:
         'live_mode_enabled': live_mode_enabled(),
         'backend_build_id': BACKEND_BUILD_ID,
         'backend_git_commit': BACKEND_GIT_COMMIT,
+        'dependencies': dependency_diagnostics(),
     }
 
 
@@ -446,6 +562,7 @@ def risk_dashboard() -> dict[str, object]:
         'risk_engine': {
             'url': RISK_ENGINE_URL,
             'timeout_seconds': RISK_ENGINE_TIMEOUT_SECONDS,
+            'mode': dependency_mode('risk_engine'),
             'live_items': live_count,
             'fallback_items': len(queue) - live_count,
         },
@@ -502,19 +619,19 @@ def compliance_screen_residency(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.get('/compliance/policy/state', summary='Feature 3 compliance policy state', description='Returns live compliance policy state when the compliance service is available and fallback demo policy state otherwise.')
 def compliance_policy_state() -> dict[str, Any]:
-    response = request_json('GET', f'{COMPLIANCE_SERVICE_URL}/policy/state', None, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
+    response = fetch_compliance_policy_state()
     return response or fallback_compliance_dashboard()['policy_state']
 
 
 @app.get('/compliance/governance/actions', summary='Feature 3 governance actions list', description='Returns governance actions from the compliance service or fallback demo ledger actions when unavailable.')
 def compliance_governance_actions() -> list[dict[str, Any]]:
-    response = request_json('GET', f'{COMPLIANCE_SERVICE_URL}/governance/actions', None, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
+    response = fetch_compliance_governance_actions()
     return response or fallback_compliance_dashboard()['latest_governance_actions']
 
 
 @app.get('/compliance/governance/actions/{action_id}', summary='Feature 3 governance action detail', description='Returns one governance action from the compliance service or fallback data when unavailable.')
 def compliance_governance_action(action_id: str) -> dict[str, Any]:
-    response = request_json('GET', f'{COMPLIANCE_SERVICE_URL}/governance/actions/{action_id}', None, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
+    response = fetch_compliance_governance_action(action_id)
     if response is not None:
         return response
     for action in fallback_compliance_dashboard()['latest_governance_actions']:
@@ -1026,72 +1143,292 @@ def build_mixer_request(sample_request: dict[str, Any], suspicious_events: list[
     return request
 
 
+def mark_live_payload(payload: dict[str, Any], dependency_name: str) -> dict[str, Any]:
+    payload['source'] = 'live'
+    payload['degraded'] = False
+    payload.setdefault('metadata', {})
+    if isinstance(payload['metadata'], dict):
+        payload['metadata'].setdefault('dependency_mode', dependency_mode(dependency_name))
+    return payload
+
+
 def evaluate_live_risk(payload: dict[str, Any]) -> dict[str, Any] | None:
-    return request_json('POST', f'{RISK_ENGINE_URL}/v1/risk/evaluate', payload, RISK_ENGINE_TIMEOUT_SECONDS)
+    mode = dependency_mode('risk_engine')
+    try:
+        if mode == 'remote_proxy':
+            response = request_json('POST', f'{RISK_ENGINE_URL}/v1/risk/evaluate', payload, RISK_ENGINE_TIMEOUT_SECONDS)
+            if response is None:
+                record_dependency_runtime('risk_engine', 'fallback', 'Remote risk-engine request failed.')
+                return None
+            record_dependency_runtime('risk_engine', mode)
+            return response
+
+        module = load_embedded_service_main('risk-engine')
+        request = module.RiskEvaluationRequest.model_validate(payload)
+        response = module.engine.evaluate(request).model_dump()
+        record_dependency_runtime('risk_engine', mode)
+        return response
+    except Exception as exc:  # pragma: no cover - exercised through fallback assertions
+        record_dependency_runtime('risk_engine', 'fallback', str(exc))
+        logger.exception('Embedded risk-engine execution failed; falling back to safe dashboard payloads.')
+        return None
 
 
 def fetch_compliance_dashboard() -> dict[str, Any] | None:
-    payload = request_json('GET', f'{COMPLIANCE_SERVICE_URL}/dashboard', None, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
-    if payload is None:
+    mode = dependency_mode('compliance_service')
+    try:
+        if mode == 'remote_proxy':
+            payload = request_json('GET', f'{COMPLIANCE_SERVICE_URL}/dashboard', None, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
+            if payload is None:
+                record_dependency_runtime('compliance_service', 'fallback', 'Remote compliance dashboard request failed.')
+                return None
+            record_dependency_runtime('compliance_service', mode)
+            return mark_live_payload(payload, 'compliance_service')
+
+        module = load_embedded_service_main('compliance-service')
+        payload = module.engine.dashboard()
+        record_dependency_runtime('compliance_service', mode)
+        return mark_live_payload(payload, 'compliance_service')
+    except Exception as exc:  # pragma: no cover - exercised through fallback assertions
+        record_dependency_runtime('compliance_service', 'fallback', str(exc))
+        logger.exception('Embedded compliance-service dashboard execution failed; using fallback payload.')
         return None
-    payload['degraded'] = False
-    payload['source'] = 'live'
-    return payload
+
+
+def fetch_compliance_policy_state() -> dict[str, Any] | None:
+    mode = dependency_mode('compliance_service')
+    try:
+        if mode == 'remote_proxy':
+            response = request_json('GET', f'{COMPLIANCE_SERVICE_URL}/policy/state', None, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
+            if response is None:
+                record_dependency_runtime('compliance_service', 'fallback', 'Remote compliance policy-state request failed.')
+                return None
+            record_dependency_runtime('compliance_service', mode)
+            return response
+
+        module = load_embedded_service_main('compliance-service')
+        response = module.engine.get_policy_state()
+        record_dependency_runtime('compliance_service', mode)
+        return response
+    except Exception as exc:  # pragma: no cover
+        record_dependency_runtime('compliance_service', 'fallback', str(exc))
+        logger.exception('Embedded compliance-service policy-state execution failed; using fallback payload.')
+        return None
+
+
+def fetch_compliance_governance_actions() -> list[dict[str, Any]] | None:
+    mode = dependency_mode('compliance_service')
+    try:
+        if mode == 'remote_proxy':
+            response = request_json('GET', f'{COMPLIANCE_SERVICE_URL}/governance/actions', None, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
+            if response is None:
+                record_dependency_runtime('compliance_service', 'fallback', 'Remote governance-actions request failed.')
+                return None
+            record_dependency_runtime('compliance_service', mode)
+            return response
+
+        module = load_embedded_service_main('compliance-service')
+        response = module.engine.list_actions()
+        record_dependency_runtime('compliance_service', mode)
+        return response
+    except Exception as exc:  # pragma: no cover
+        record_dependency_runtime('compliance_service', 'fallback', str(exc))
+        logger.exception('Embedded compliance-service governance-actions execution failed; using fallback payload.')
+        return None
+
+
+def fetch_compliance_governance_action(action_id: str) -> dict[str, Any] | None:
+    mode = dependency_mode('compliance_service')
+    try:
+        if mode == 'remote_proxy':
+            response = request_json('GET', f'{COMPLIANCE_SERVICE_URL}/governance/actions/{action_id}', None, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
+            if response is None:
+                record_dependency_runtime('compliance_service', 'fallback', f'Remote governance action request failed for {action_id}.')
+                return None
+            record_dependency_runtime('compliance_service', mode)
+            return mark_live_payload(response, 'compliance_service')
+
+        module = load_embedded_service_main('compliance-service')
+        response = module.engine.get_action(action_id)
+        if response is None:
+            return None
+        record_dependency_runtime('compliance_service', mode)
+        return mark_live_payload(response, 'compliance_service')
+    except Exception as exc:  # pragma: no cover
+        record_dependency_runtime('compliance_service', 'fallback', str(exc))
+        logger.exception('Embedded compliance-service governance-action execution failed; using fallback payload.')
+        return None
 
 
 def proxy_compliance(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-    response = request_json('POST', f'{COMPLIANCE_SERVICE_URL}/{path}', payload, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
-    if response is None:
+    mode = dependency_mode('compliance_service')
+    try:
+        if mode == 'remote_proxy':
+            response = request_json('POST', f'{COMPLIANCE_SERVICE_URL}/{path}', payload, COMPLIANCE_SERVICE_TIMEOUT_SECONDS)
+            if response is None:
+                record_dependency_runtime('compliance_service', 'fallback', f'Remote compliance request failed for {path}.')
+                return None
+            record_dependency_runtime('compliance_service', mode)
+            return mark_live_payload(response, 'compliance_service')
+
+        module = load_embedded_service_main('compliance-service')
+        match path:
+            case 'screen/transfer':
+                request = module.TransferScreeningRequest.model_validate(payload)
+                response = module.engine.screen_transfer(request).model_dump()
+            case 'screen/residency':
+                request = module.ResidencyScreeningRequest.model_validate(payload)
+                response = module.engine.screen_residency(request).model_dump()
+            case 'governance/actions':
+                request = module.GovernanceActionRequest.model_validate(payload)
+                response = module.engine.apply_governance_action(request).model_dump()
+            case _:
+                raise ValueError(f'Unsupported compliance path: {path}')
+        record_dependency_runtime('compliance_service', mode)
+        return mark_live_payload(response, 'compliance_service')
+    except Exception as exc:  # pragma: no cover - covered by fallback tests via monkeypatch
+        record_dependency_runtime('compliance_service', 'fallback', str(exc))
+        logger.exception('Embedded compliance-service request failed for %s; using fallback payload.', path)
         return None
-    response['source'] = 'live'
-    response['degraded'] = False
-    return response
 
 
 def fetch_resilience_dashboard() -> dict[str, Any] | None:
-    payload = request_json('GET', f'{RECONCILIATION_SERVICE_URL}/dashboard', None, RECONCILIATION_SERVICE_TIMEOUT_SECONDS)
-    if payload is None:
+    mode = dependency_mode('reconciliation_service')
+    try:
+        if mode == 'remote_proxy':
+            payload = request_json('GET', f'{RECONCILIATION_SERVICE_URL}/dashboard', None, RECONCILIATION_SERVICE_TIMEOUT_SECONDS)
+            if payload is None:
+                record_dependency_runtime('reconciliation_service', 'fallback', 'Remote resilience dashboard request failed.')
+                return None
+            record_dependency_runtime('reconciliation_service', mode)
+            return mark_live_payload(payload, 'reconciliation_service')
+
+        module = load_embedded_service_main('reconciliation-service')
+        payload = module.engine.dashboard()
+        record_dependency_runtime('reconciliation_service', mode)
+        return mark_live_payload(payload, 'reconciliation_service')
+    except Exception as exc:  # pragma: no cover
+        record_dependency_runtime('reconciliation_service', 'fallback', str(exc))
+        logger.exception('Embedded reconciliation-service dashboard execution failed; using fallback payload.')
         return None
-    payload['degraded'] = False
-    payload['source'] = 'live'
-    return payload
 
 
 def proxy_resilience_get(path: str) -> dict[str, Any] | list[dict[str, Any]] | None:
-    response = request_json('GET', f'{RECONCILIATION_SERVICE_URL}/{path}', None, RECONCILIATION_SERVICE_TIMEOUT_SECONDS)
-    if response is None:
+    mode = dependency_mode('reconciliation_service')
+    try:
+        if mode == 'remote_proxy':
+            response = request_json('GET', f'{RECONCILIATION_SERVICE_URL}/{path}', None, RECONCILIATION_SERVICE_TIMEOUT_SECONDS)
+            if response is None:
+                record_dependency_runtime('reconciliation_service', 'fallback', f'Remote resilience GET request failed for {path}.')
+                return None
+            record_dependency_runtime('reconciliation_service', mode)
+            if isinstance(response, dict):
+                return mark_live_payload(response, 'reconciliation_service')
+            return response
+
+        module = load_embedded_service_main('reconciliation-service')
+        match path:
+            case 'incidents':
+                response = module.engine.list_incidents()
+            case _ if path.startswith('incidents/'):
+                response = module.engine.get_incident(path.split('/', 1)[1])
+            case _:
+                raise ValueError(f'Unsupported resilience GET path: {path}')
+        if response is None:
+            return None
+        record_dependency_runtime('reconciliation_service', mode)
+        if isinstance(response, dict):
+            return mark_live_payload(response, 'reconciliation_service')
+        return response
+    except Exception as exc:  # pragma: no cover
+        record_dependency_runtime('reconciliation_service', 'fallback', str(exc))
+        logger.exception('Embedded reconciliation-service GET request failed for %s; using fallback payload.', path)
         return None
-    if isinstance(response, dict):
-        response['source'] = response.get('source', 'live')
-        response['degraded'] = False
-    return response
 
 
 def proxy_resilience_post(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-    response = request_json('POST', f'{RECONCILIATION_SERVICE_URL}/{path}', payload, RECONCILIATION_SERVICE_TIMEOUT_SECONDS)
-    if response is None:
+    mode = dependency_mode('reconciliation_service')
+    try:
+        if mode == 'remote_proxy':
+            response = request_json('POST', f'{RECONCILIATION_SERVICE_URL}/{path}', payload, RECONCILIATION_SERVICE_TIMEOUT_SECONDS)
+            if response is None:
+                record_dependency_runtime('reconciliation_service', 'fallback', f'Remote resilience POST request failed for {path}.')
+                return None
+            record_dependency_runtime('reconciliation_service', mode)
+            return mark_live_payload(response, 'reconciliation_service')
+
+        module = load_embedded_service_main('reconciliation-service')
+        match path:
+            case 'reconcile/state':
+                request = module.ReconciliationRequest.model_validate(payload)
+                response = module.engine.reconcile(request)
+            case 'backstop/evaluate':
+                request = module.BackstopRequest.model_validate(payload)
+                response = module.engine.evaluate_backstop(request)
+            case 'incidents/record':
+                request = module.IncidentRecordRequest.model_validate(payload)
+                response = module.engine.record_incident(request).model_dump()
+            case _:
+                raise ValueError(f'Unsupported resilience POST path: {path}')
+        record_dependency_runtime('reconciliation_service', mode)
+        return mark_live_payload(response, 'reconciliation_service')
+    except Exception as exc:  # pragma: no cover - covered by fallback tests via monkeypatch
+        record_dependency_runtime('reconciliation_service', 'fallback', str(exc))
+        logger.exception('Embedded reconciliation-service POST request failed for %s; using fallback payload.', path)
         return None
-    response['source'] = 'live'
-    response['degraded'] = False
-    return response
 
 
 def fetch_threat_dashboard() -> dict[str, Any] | None:
-    payload = request_json('GET', f'{THREAT_ENGINE_URL}/dashboard', None, THREAT_ENGINE_TIMEOUT_SECONDS)
-    if payload is None:
+    mode = dependency_mode('threat_engine')
+    try:
+        if mode == 'remote_proxy':
+            payload = request_json('GET', f'{THREAT_ENGINE_URL}/dashboard', None, THREAT_ENGINE_TIMEOUT_SECONDS)
+            if payload is None:
+                record_dependency_runtime('threat_engine', 'fallback', 'Remote threat dashboard request failed.')
+                return None
+            record_dependency_runtime('threat_engine', mode)
+            return mark_live_payload(payload, 'threat_engine')
+
+        module = load_embedded_service_main('threat-engine')
+        payload = module.engine.build_dashboard(module.load_demo_requests()).model_dump()
+        record_dependency_runtime('threat_engine', mode)
+        return mark_live_payload(payload, 'threat_engine')
+    except Exception as exc:  # pragma: no cover
+        record_dependency_runtime('threat_engine', 'fallback', str(exc))
+        logger.exception('Embedded threat-engine dashboard execution failed; using fallback payload.')
         return None
-    payload['source'] = 'live'
-    payload['degraded'] = False
-    return payload
 
 
 def proxy_threat(kind: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-    response = request_json('POST', f'{THREAT_ENGINE_URL}/analyze/{kind}', payload, THREAT_ENGINE_TIMEOUT_SECONDS)
-    if response is None:
+    mode = dependency_mode('threat_engine')
+    try:
+        if mode == 'remote_proxy':
+            response = request_json('POST', f'{THREAT_ENGINE_URL}/analyze/{kind}', payload, THREAT_ENGINE_TIMEOUT_SECONDS)
+            if response is None:
+                record_dependency_runtime('threat_engine', 'fallback', f'Remote threat-engine request failed for {kind}.')
+                return None
+            record_dependency_runtime('threat_engine', mode)
+            return mark_live_payload(response, 'threat_engine')
+
+        module = load_embedded_service_main('threat-engine')
+        match kind:
+            case 'contract':
+                request = module.ContractAnalysisRequest.model_validate(payload)
+                response = module.engine.analyze_contract(request).model_dump()
+            case 'transaction':
+                request = module.TransactionAnalysisRequest.model_validate(payload)
+                response = module.engine.analyze_transaction(request).model_dump()
+            case 'market':
+                request = module.MarketAnalysisRequest.model_validate(payload)
+                response = module.engine.analyze_market(request).model_dump()
+            case _:
+                raise ValueError(f'Unsupported threat analysis kind: {kind}')
+        record_dependency_runtime('threat_engine', mode)
+        return mark_live_payload(response, 'threat_engine')
+    except Exception as exc:  # pragma: no cover - covered by fallback tests via monkeypatch
+        record_dependency_runtime('threat_engine', 'fallback', str(exc))
+        logger.exception('Embedded threat-engine request failed for %s; using fallback payload.', kind)
         return None
-    response['source'] = 'live'
-    response['degraded'] = False
-    return response
 
 
 def request_json(method: str, url: str, payload: dict[str, Any] | None, timeout_seconds: float) -> dict[str, Any] | None:

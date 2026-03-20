@@ -150,3 +150,45 @@ def test_feature2_endpoints_return_safe_fallback_shapes_when_threat_engine_is_un
         assert body['recommended_action'] in {'allow', 'review', 'block'}
         assert 'metadata' in body
         assert body['metadata']['source'] == 'fallback'
+
+
+def test_feature2_embedded_local_dashboard_is_live_when_service_url_is_localhost(client: TestClient, api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _EmbeddedDashboard:
+        def model_dump(self) -> dict[str, Any]:
+            return {
+                'source': 'live',
+                'degraded': False,
+                'generated_at': '2026-03-18T10:00:00Z',
+                'summary': {'average_score': 71, 'critical_or_high_alerts': 1, 'blocked_actions': 1, 'review_actions': 0, 'market_anomaly_types': ['Embedded anomaly']},
+                'cards': [{'label': 'Threat score', 'value': '71', 'detail': 'Embedded', 'tone': 'high'}],
+                'active_alerts': [],
+                'recent_detections': [],
+                'sample_scenarios': {},
+                'message': 'Embedded threat response.',
+            }
+
+    class _EmbeddedEngine:
+        def build_dashboard(self, scenarios: dict[str, Any]) -> _EmbeddedDashboard:
+            return _EmbeddedDashboard()
+
+    class _EmbeddedModule:
+        engine = _EmbeddedEngine()
+
+        @staticmethod
+        def load_demo_requests() -> dict[str, Any]:
+            return {'safe_transaction': {}}
+
+    monkeypatch.setattr(api_main, 'THREAT_ENGINE_URL_ENV', None)
+    monkeypatch.setattr(api_main, 'THREAT_ENGINE_URL', 'http://localhost:8002')
+    monkeypatch.setattr(api_main, 'request_json', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('remote proxy should not be used')))
+    monkeypatch.setattr(api_main, 'load_embedded_service_main', lambda service_slug: _EmbeddedModule())
+
+    response = client.get('/threat/dashboard')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['source'] == 'live'
+    assert body['degraded'] is False
+    details = client.get('/health/details').json()['dependencies']['threat_engine']
+    assert details['selected_mode'] == 'embedded_local'
+    assert details['last_used_mode'] == 'embedded_local'

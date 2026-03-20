@@ -117,3 +117,38 @@ def test_feature4_dashboard_fallback_stays_up_when_sample_files_are_missing(clie
     assert body['source'] == 'fallback'
     assert body['reconciliation_result']['source'] == 'fallback'
     assert body['backstop_result']['source'] == 'fallback'
+
+
+def test_feature4_embedded_local_dashboard_is_live_when_service_url_is_localhost(client: TestClient, api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _EmbeddedEngine:
+        def dashboard(self) -> dict[str, Any]:
+            return {
+                'source': 'live',
+                'degraded': False,
+                'generated_at': '2026-03-18T12:00:00Z',
+                'summary': {'reconciliation_status': 'matched', 'severity_score': 0, 'mismatch_amount': 0, 'stale_ledger_count': 0, 'backstop_decision': 'normal', 'incident_count': 0},
+                'cards': [{'label': 'Reconciliation', 'value': 'matched', 'detail': 'Embedded', 'tone': 'matched'}],
+                'reconciliation_result': {'reconciliation_status': 'matched'},
+                'backstop_result': {'backstop_decision': 'normal'},
+                'latest_incidents': [],
+                'sample_scenarios': {},
+                'message': 'Embedded resilience response.',
+            }
+
+    class _EmbeddedModule:
+        engine = _EmbeddedEngine()
+
+    monkeypatch.setattr(api_main, 'RECONCILIATION_SERVICE_URL_ENV', None)
+    monkeypatch.setattr(api_main, 'RECONCILIATION_SERVICE_URL', 'http://localhost:8005')
+    monkeypatch.setattr(api_main, 'request_json', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('remote proxy should not be used')))
+    monkeypatch.setattr(api_main, 'load_embedded_service_main', lambda service_slug: _EmbeddedModule())
+
+    response = client.get('/resilience/dashboard')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['source'] == 'live'
+    assert body['degraded'] is False
+    details = client.get('/health/details').json()['dependencies']['reconciliation_service']
+    assert details['selected_mode'] == 'embedded_local'
+    assert details['last_used_mode'] == 'embedded_local'

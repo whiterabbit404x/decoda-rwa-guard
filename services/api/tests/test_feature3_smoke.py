@@ -96,7 +96,9 @@ def test_feature3_live_gateway_shapes(client: TestClient, api_main, sample_paylo
 
     monkeypatch.setattr(api_main, 'fetch_compliance_dashboard', lambda: live_dashboard)
     monkeypatch.setattr(api_main, 'proxy_compliance', lambda path, body: live_action if path == 'governance/actions' else live_residency if path == 'screen/residency' else live_transfer)
-    monkeypatch.setattr(api_main, 'request_json', lambda method, url, payload, timeout_seconds: live_action if url.endswith('/gov-0001') else {'allowlisted_wallets': [], 'blocklisted_wallets': []} if url.endswith('/policy/state') else [live_action] if url.endswith('/governance/actions') else None)
+    monkeypatch.setattr(api_main, 'fetch_compliance_policy_state', lambda: {'allowlisted_wallets': [], 'blocklisted_wallets': []})
+    monkeypatch.setattr(api_main, 'fetch_compliance_governance_actions', lambda: [live_action])
+    monkeypatch.setattr(api_main, 'fetch_compliance_governance_action', lambda action_id: live_action if action_id == 'gov-0001' else None)
 
     assert client.get('/compliance/dashboard').json()['source'] == 'live'
     assert client.post('/compliance/screen/transfer', json=sample_payloads['transfer']).json()['decision'] == 'approved'
@@ -110,7 +112,9 @@ def test_feature3_live_gateway_shapes(client: TestClient, api_main, sample_paylo
 def test_feature3_gateway_fallback_works_when_compliance_service_is_unavailable(client: TestClient, api_main, sample_payloads: dict[str, dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(api_main, 'fetch_compliance_dashboard', lambda: None)
     monkeypatch.setattr(api_main, 'proxy_compliance', lambda path, body: None)
-    monkeypatch.setattr(api_main, 'request_json', lambda method, url, payload, timeout_seconds: None)
+    monkeypatch.setattr(api_main, 'fetch_compliance_policy_state', lambda: None)
+    monkeypatch.setattr(api_main, 'fetch_compliance_governance_actions', lambda: None)
+    monkeypatch.setattr(api_main, 'fetch_compliance_governance_action', lambda action_id: None)
 
     dashboard = client.get('/compliance/dashboard')
     assert dashboard.status_code == 200
@@ -132,3 +136,40 @@ def test_feature3_gateway_fallback_works_when_compliance_service_is_unavailable(
     state = client.get('/compliance/policy/state')
     assert state.status_code == 200
     assert 'allowlisted_wallets' in state.json()
+
+
+def test_feature3_embedded_local_dashboard_is_live_when_service_url_is_localhost(client: TestClient, api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _EmbeddedEngine:
+        def dashboard(self) -> dict[str, Any]:
+            return {
+                'source': 'live',
+                'degraded': False,
+                'generated_at': '2026-03-18T11:00:00Z',
+                'summary': {'allowlisted_wallet_count': 2, 'triggered_rule_count': 0},
+                'cards': [{'label': 'Transfer decision', 'value': 'approved', 'detail': 'Embedded', 'tone': 'low'}],
+                'transfer_screening': {'decision': 'approved'},
+                'residency_screening': {'residency_decision': 'allowed'},
+                'policy_state': {'allowlisted_wallets': [], 'blocklisted_wallets': [], 'frozen_wallets': [], 'review_required_wallets': [], 'paused_assets': [], 'action_count': 0, 'latest_action_id': None},
+                'latest_governance_actions': [],
+                'asset_transfer_status': [],
+                'sample_scenarios': {},
+                'message': 'Embedded compliance response.',
+            }
+
+    class _EmbeddedModule:
+        engine = _EmbeddedEngine()
+
+    monkeypatch.setattr(api_main, 'COMPLIANCE_SERVICE_URL_ENV', None)
+    monkeypatch.setattr(api_main, 'COMPLIANCE_SERVICE_URL', 'http://localhost:8004')
+    monkeypatch.setattr(api_main, 'request_json', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('remote proxy should not be used')))
+    monkeypatch.setattr(api_main, 'load_embedded_service_main', lambda service_slug: _EmbeddedModule())
+
+    response = client.get('/compliance/dashboard')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['source'] == 'live'
+    assert body['degraded'] is False
+    details = client.get('/health/details').json()['dependencies']['compliance_service']
+    assert details['selected_mode'] == 'embedded_local'
+    assert details['last_used_mode'] == 'embedded_local'

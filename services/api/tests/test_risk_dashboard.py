@@ -8,7 +8,6 @@ import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from urllib.error import URLError
 
 from fastapi.testclient import TestClient
 
@@ -71,6 +70,7 @@ class ApiRiskDashboardTests(unittest.TestCase):
         self.assertIn('directories', body)
         self.assertIn('files', body)
         self.assertIn('modes', body)
+        self.assertIn('dependencies', body)
         self.assertIn('sample_risk_request.json', body['files']['risk_engine'])
 
     def test_debug_fixtures_exposes_backend_build_and_fixture_paths(self) -> None:
@@ -104,7 +104,21 @@ class ApiRiskDashboardTests(unittest.TestCase):
 
         self.assertEqual(warning_mock.call_count, 1)
 
-    def test_risk_dashboard_prefers_live_data_when_risk_engine_responds(self) -> None:
+    def test_risk_dashboard_uses_embedded_engine_when_service_url_is_unset_or_localhost(self) -> None:
+        with patch.object(api_main, 'RISK_ENGINE_URL_ENV', None), patch.object(api_main, 'RISK_ENGINE_URL', 'http://localhost:8001'):
+            api_main.DEPENDENCY_RUNTIME_STATUS.clear()
+            response = self.client.get('/risk/dashboard')
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['source'], 'live')
+        self.assertFalse(body['degraded'])
+        self.assertEqual(body['risk_engine']['mode'], 'embedded_local')
+        self.assertEqual(body['risk_engine']['fallback_items'], 0)
+        self.assertTrue(all(item['source'] == 'live' for item in body['transaction_queue']))
+        self.assertEqual(self.client.get('/health/details').json()['dependencies']['risk_engine']['last_used_mode'], 'embedded_local')
+
+    def test_risk_dashboard_uses_remote_proxy_when_real_service_url_is_configured(self) -> None:
         live_response = {
             'risk_score': 61,
             'recommendation': 'REVIEW',
@@ -122,19 +136,21 @@ class ApiRiskDashboardTests(unittest.TestCase):
             'category_scores': {'pre_transaction': 12, 'static': 14, 'runtime': 18, 'market': 17},
         }
 
-        with patch.object(api_main, 'evaluate_live_risk', return_value=live_response):
+        with patch.object(api_main, 'RISK_ENGINE_URL_ENV', 'https://risk.example.com'), patch.object(api_main, 'RISK_ENGINE_URL', 'https://risk.example.com'), patch.object(api_main, 'request_json', return_value=live_response) as request_json_mock, patch.object(api_main, 'load_embedded_service_main', side_effect=AssertionError('embedded engine should not be used')):
+            api_main.DEPENDENCY_RUNTIME_STATUS.clear()
             response = self.client.get('/risk/dashboard')
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body['source'], 'live')
         self.assertFalse(body['degraded'])
-        self.assertEqual(body['risk_engine']['fallback_items'], 0)
-        self.assertTrue(all(item['source'] == 'live' for item in body['transaction_queue']))
-        self.assertTrue(all(item['risk_score'] == 61 for item in body['transaction_queue']))
+        self.assertEqual(body['risk_engine']['mode'], 'remote_proxy')
+        self.assertEqual(request_json_mock.call_count, 4)
+        self.assertEqual(self.client.get('/health/details').json()['dependencies']['risk_engine']['last_used_mode'], 'remote_proxy')
 
-    def test_risk_dashboard_returns_frontend_safe_fallback_shape_when_backend_is_unavailable(self) -> None:
-        with patch.object(api_main, 'urlopen', side_effect=URLError('risk-engine unavailable')):
+    def test_risk_dashboard_returns_frontend_safe_fallback_shape_when_embedded_engine_raises(self) -> None:
+        with patch.object(api_main, 'RISK_ENGINE_URL_ENV', None), patch.object(api_main, 'RISK_ENGINE_URL', 'http://localhost:8001'), patch.object(api_main, 'load_embedded_service_main', side_effect=RuntimeError('risk-engine unavailable')):
+            api_main.DEPENDENCY_RUNTIME_STATUS.clear()
             response = self.client.get('/risk/dashboard')
 
         self.assertEqual(response.status_code, 200)
@@ -149,12 +165,12 @@ class ApiRiskDashboardTests(unittest.TestCase):
         self.assertIn('risk_alerts', body)
         self.assertIn('contract_scan_results', body)
         self.assertIn('decisions_log', body)
+        self.assertEqual(self.client.get('/health/details').json()['dependencies']['risk_engine']['last_used_mode'], 'fallback')
 
     def test_risk_dashboard_stays_up_when_sample_files_are_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.object(api_main, 'RISK_ENGINE_DATA_DIR', Path(tmpdir)):
-                with patch.object(api_main, 'urlopen', side_effect=URLError('risk-engine unavailable')):
-                    response = self.client.get('/risk/dashboard')
+            with patch.object(api_main, 'RISK_ENGINE_DATA_DIR', Path(tmpdir)), patch.object(api_main, 'RISK_ENGINE_URL_ENV', None), patch.object(api_main, 'RISK_ENGINE_URL', 'http://localhost:8001'), patch.object(api_main, 'load_embedded_service_main', side_effect=RuntimeError('risk-engine unavailable')):
+                response = self.client.get('/risk/dashboard')
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
