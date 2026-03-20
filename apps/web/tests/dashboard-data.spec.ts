@@ -8,6 +8,7 @@ import {
   fallbackRiskDashboard,
   fallbackThreatDashboard,
   fetchDashboardPageData,
+  formatSourceLabel,
 } from '../app/dashboard-data';
 import { GET as getDashboardPageData } from '../app/api/dashboard-page-data/route';
 
@@ -159,13 +160,16 @@ test.describe('dashboard production API flow', () => {
             apiUrl: string | null;
             fallbackTriggered: boolean;
             failedEndpoints: string[];
+            experienceState?: string;
           };
+          experienceState?: string;
         };
       };
 
       expect(payload.meta.diagnostics.apiUrl).toBe('https://railway.example');
       expect(payload.meta.diagnostics.fallbackTriggered).toBe(false);
       expect(payload.meta.diagnostics.failedEndpoints).toEqual([]);
+      expect(payload.meta.experienceState ?? payload.meta.diagnostics.experienceState).toBe('live');
     } finally {
       global.fetch = originalFetch;
     }
@@ -200,14 +204,84 @@ test.describe('dashboard production API flow', () => {
       const viewModel = buildDashboardViewModel(data);
 
       expect(viewModel.backendState).toBe('degraded');
+      expect(data.diagnostics.experienceState).toBe('live_degraded');
       expect(data.diagnostics.fallbackTriggered).toBe(true);
       expect(data.diagnostics.failedEndpoints).toEqual(['resilienceDashboard']);
       expect(data.diagnostics.endpoints.resilienceDashboard.usedFallback).toBe(true);
+      expect(data.diagnostics.endpoints.resilienceDashboard.payloadState).toBe('fallback');
       expect(data.diagnostics.endpoints.resilienceDashboard.error).toContain('503');
       expect(data.resilienceDashboard.source).toBe('fallback');
+      expect(viewModel.summaryCards.find((card) => card.label === 'Resilience status')?.meta).toContain('Fallback coverage');
+      expect(viewModel.summaryCards.some((card) => card.meta.includes('Sample coverage'))).toBe(false);
       expect(viewModel.backendBanner).toContain('/resilience/dashboard');
     } finally {
       global.fetch = originalFetch;
+    }
+  });
+
+  test('treats backend fallback payloads as degraded fallback coverage instead of sample coverage', async () => {
+    const originalFetch = global.fetch;
+
+    global.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const pathname = new URL(url).pathname;
+
+      const payloadByPath = {
+        '/dashboard': dashboardPayload,
+        '/risk/dashboard': liveRiskDashboard(),
+        '/threat/dashboard': { ...liveThreatDashboard(), source: 'fallback', degraded: true, message: 'Threat fallback payload from gateway.' },
+        '/compliance/dashboard': liveComplianceDashboard(),
+        '/resilience/dashboard': liveResilienceDashboard(),
+      } satisfies Record<string, unknown>;
+
+      return new Response(JSON.stringify(payloadByPath[pathname]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof global.fetch;
+
+    try {
+      const data = await fetchDashboardPageData('https://railway.example');
+      const viewModel = buildDashboardViewModel(data);
+
+      expect(data.diagnostics.endpoints.threatDashboard.transport).toBe('ok');
+      expect(data.diagnostics.endpoints.threatDashboard.payloadState).toBe('fallback');
+      expect(data.diagnostics.experienceState).toBe('live_degraded');
+      expect(viewModel.backendState).toBe('degraded');
+      expect(viewModel.summaryCards.find((card) => card.label === 'Threat posture')?.meta).toContain('Fallback coverage');
+      expect(viewModel.summaryCards.some((card) => card.meta.includes('Sample coverage'))).toBe(false);
+      expect(formatSourceLabel(data.diagnostics.endpoints.threatDashboard.payloadState)).toBe('Fallback coverage');
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  test('enters sample mode when production has no live API configured', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalApiUrl = process.env.NEXT_PUBLIC_API_URL;
+
+    delete process.env.NEXT_PUBLIC_API_URL;
+    process.env.NODE_ENV = 'production';
+
+    try {
+      const data = await fetchDashboardPageData();
+      const viewModel = buildDashboardViewModel(data);
+
+      expect(data.apiUrl).toBe('');
+      expect(data.diagnostics.sampleMode).toBe(true);
+      expect(data.diagnostics.experienceState).toBe('sample');
+      expect(data.diagnostics.endpoints.riskDashboard.transport).toBe('skipped');
+      expect(data.diagnostics.endpoints.riskDashboard.payloadState).toBe('sample');
+      expect(viewModel.backendState).toBe('offline');
+      expect(viewModel.summaryCards.some((card) => card.meta.includes('Sample coverage'))).toBe(true);
+      expect(viewModel.backendBanner).toContain('sample mode');
+    } finally {
+      process.env.NODE_ENV = originalNodeEnv;
+      if (originalApiUrl === undefined) {
+        delete process.env.NEXT_PUBLIC_API_URL;
+      } else {
+        process.env.NEXT_PUBLIC_API_URL = originalApiUrl;
+      }
     }
   });
 });

@@ -4,10 +4,11 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import type {
+  DashboardDiagnostics,
   ResilienceDashboardResponse,
   ThreatDashboardResponse,
 } from './dashboard-data';
-import { statusTone } from './dashboard-data';
+import { formatSourceLabel, statusTone } from './dashboard-data';
 import { usePilotAuth } from './pilot-auth-context';
 
 type BackendState = 'online' | 'degraded' | 'offline';
@@ -29,6 +30,7 @@ type Props = {
   backendState: BackendState;
   threatDashboard: ThreatDashboardResponse;
   resilienceDashboard: ResilienceDashboardResponse;
+  diagnostics: DashboardDiagnostics;
 };
 
 function formatBackendLabel(state: BackendState) {
@@ -59,6 +61,7 @@ export default function PilotOverviewPanel({
   backendState,
   threatDashboard,
   resilienceDashboard,
+  diagnostics,
 }: Props) {
   const {
     apiUrl,
@@ -107,14 +110,14 @@ export default function PilotOverviewPanel({
     <section className="pilotOverviewGrid">
       <article className="dataCard overviewCard">
         <p className="sectionEyebrow">Current workspace</p>
-        <h2>{user?.current_workspace?.name ?? 'Sample workspace view'}</h2>
+        <h2>{user?.current_workspace?.name ?? 'Guest workspace view'}</h2>
         <p className="muted">
           {isAuthenticated
             ? `Signed in as ${user?.email}.`
-            : 'Sign in to switch from sample browsing to a workspace-backed pilot.'}
+            : 'Sign in to connect this dashboard to a saved workspace.'}
         </p>
         <div className="chipRow">
-          <span className="ruleChip">{isAuthenticated ? 'Workspace active' : 'Sample mode'}</span>
+          <span className="ruleChip">{isAuthenticated ? 'Workspace active' : 'Guest mode'}</span>
           {user?.memberships?.length ? <span className="ruleChip">{user.memberships.length} workspaces</span> : null}
         </div>
         <div className="overviewActions">
@@ -134,11 +137,11 @@ export default function PilotOverviewPanel({
           </p>
           <p>
             <span>Threat feed</span>
-            {threatDashboard.source === 'live' ? 'Live feed' : 'Sample coverage'}
+            {formatSourceLabel(diagnostics.endpoints.threatDashboard.payloadState)}
           </p>
           <p>
             <span>Incident feed</span>
-            {resilienceDashboard.source === 'live' ? 'Live feed' : 'Sample coverage'}
+            {formatSourceLabel(diagnostics.endpoints.resilienceDashboard.payloadState)}
           </p>
         </div>
       </article>
