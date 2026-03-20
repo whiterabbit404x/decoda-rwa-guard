@@ -2,7 +2,8 @@ FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app
 
 WORKDIR /app
 
@@ -20,4 +21,4 @@ COPY services/threat-engine/data ./services/threat-engine/data
 COPY services/compliance-service/data ./services/compliance-service/data
 COPY services/reconciliation-service/data ./services/reconciliation-service/data
 
-CMD ["sh", "-c", "cd services/api && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn services.api.app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
