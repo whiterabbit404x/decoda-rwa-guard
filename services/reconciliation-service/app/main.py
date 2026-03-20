@@ -3,12 +3,28 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+
+
+def _find_repo_root(start: Path) -> Path:
+    for candidate in start.resolve().parents:
+        if (candidate / 'phase1_local').is_dir():
+            return candidate
+    raise RuntimeError(f"Unable to locate repo root from {start} via a phase1_local directory search.")
+
+
+def _ensure_repo_root_on_path() -> Path:
+    repo_root = _find_repo_root(Path(__file__))
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
+    return repo_root
+
+
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException
 
-if __package__ in (None, ''):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+REPO_ROOT = _ensure_repo_root_on_path()
 
 from phase1_local.dev_support import database_url, load_env_file, load_service, resolve_sqlite_path, seed_service
 

@@ -14,9 +14,23 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+
+def _find_repo_root(start: Path) -> Path:
+    for candidate in start.resolve().parents:
+        if (candidate / 'phase1_local').is_dir():
+            return candidate
+    raise RuntimeError(f"Unable to locate repo root from {start} via a phase1_local directory search.")
+
+
+def _ensure_repo_root_on_path() -> Path:
+    repo_root = _find_repo_root(Path(__file__))
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
+    return repo_root
+
+
+REPO_ROOT = _ensure_repo_root_on_path()
 
 from phase1_local.dev_support import (
     dashboard_payload,
