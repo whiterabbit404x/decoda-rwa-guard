@@ -16,7 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 
 def _find_repo_root(start: Path) -> Path:
-    for candidate in start.resolve().parents:
+    current = start.resolve()
+    if current.is_file():
+        current = current.parent
+    for candidate in (current, *current.parents):
         if (candidate / 'phase1_local').is_dir():
             return candidate
     raise RuntimeError(f"Unable to locate repo root from {start} via a phase1_local directory search.")
