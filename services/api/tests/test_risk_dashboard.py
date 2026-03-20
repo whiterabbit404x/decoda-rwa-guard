@@ -55,6 +55,36 @@ class ApiRiskDashboardTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['service'], 'api')
 
+    def test_health_details_exposes_runtime_marker_and_fixture_checks(self) -> None:
+        response = self.client.get('/health/details')
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['service'], 'api')
+        self.assertIn('version_marker', body)
+        self.assertIn('directories', body)
+        self.assertIn('files', body)
+        self.assertIn('modes', body)
+        self.assertIn('sample_risk_request.json', body['files']['risk_engine'])
+
+    def test_load_json_file_returns_default_when_fixture_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            default_payload = {'fallback': True}
+
+            result = api_main.load_json_file(Path(tmpdir), 'missing.json', default_payload)
+
+        self.assertEqual(result, default_payload)
+        self.assertIsNot(result, default_payload)
+
+    def test_load_json_file_only_warns_once_for_same_missing_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(api_main.logger, 'warning') as warning_mock:
+                api_main.OPTIONAL_FIXTURE_WARNINGS_EMITTED.clear()
+                api_main.load_json_file(Path(tmpdir), 'missing.json', {'fallback': True})
+                api_main.load_json_file(Path(tmpdir), 'missing.json', {'fallback': True})
+
+        self.assertEqual(warning_mock.call_count, 1)
+
     def test_risk_dashboard_prefers_live_data_when_risk_engine_responds(self) -> None:
         live_response = {
             'risk_score': 61,

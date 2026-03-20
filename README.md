@@ -43,10 +43,12 @@ The pilot demo seed creates a workspace-scoped demo account in Postgres while pr
 ### Railway deploy / update flow
 
 1. Keep deploying `services/api/Dockerfile` on Railway.
-2. Set Railway env vars from `services/api/.env.example`.
-3. Run migrations against Neon with `python services/api/scripts/migrate.py` in Railway's shell or a one-off command using the same image/env.
-4. Optionally run `python services/api/scripts/seed.py --pilot-demo` once for a demo tenant.
-5. Keep the Railway start command binding to `0.0.0.0:$PORT` (already handled by the Dockerfile).
+2. Keep the Docker build context at the repo root so `services/api/Dockerfile` can `COPY` sibling fixture folders such as `services/risk-engine/data` and `services/reconciliation-service/data`.
+3. After each deploy, verify the running container via `GET /health/details` or the startup log line that now prints the runtime version marker plus fixture-path existence checks.
+4. Set Railway env vars from `services/api/.env.example`.
+5. Run migrations against Neon with `python services/api/scripts/migrate.py` in Railway's shell or a one-off command using the same image/env.
+6. Optionally run `python services/api/scripts/seed.py --pilot-demo` once for a demo tenant.
+7. Keep the Railway start command binding to `0.0.0.0:$PORT` (already handled by the Dockerfile).
 
 ### Vercel setup flow
 

@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -101,6 +102,22 @@ COMPLIANCE_DATA_DIR = Path(__file__).resolve().parents[2] / 'compliance-service'
 RECONCILIATION_SERVICE_URL = os.getenv('RECONCILIATION_SERVICE_URL', 'http://localhost:8005').rstrip('/')
 RECONCILIATION_SERVICE_TIMEOUT_SECONDS = float(os.getenv('RECONCILIATION_SERVICE_TIMEOUT_SECONDS', '1.5'))
 RECONCILIATION_DATA_DIR = Path(__file__).resolve().parents[2] / 'reconciliation-service' / 'data'
+OPTIONAL_FIXTURE_WARNINGS_EMITTED: set[tuple[str, str]] = set()
+RUNTIME_MARKER_ENV_VARS = (
+    'APP_VERSION',
+    'APP_BUILD_COMMIT',
+    'RAILWAY_GIT_COMMIT_SHA',
+    'SOURCE_COMMIT',
+    'COMMIT_SHA',
+    'VERCEL_GIT_COMMIT_SHA',
+)
+FIXTURE_FILES = {
+    'risk_engine': ('sample_risk_request.json',),
+    'reconciliation': (
+        'critical_supply_divergence_double_count_risk.json',
+        'critical_mismatch_paused_bridge.json',
+    ),
+}
 DEFAULT_RISK_SAMPLE_REQUEST = {
     'transaction_payload': {
         'tx_hash': '0xphase1sample',
@@ -230,9 +247,86 @@ ALLOWED_ORIGINS = parse_csv_env('CORS_ALLOWED_ORIGINS', [
     'http://127.0.0.1:3000',
 ])
 
+
+def resolve_runtime_marker() -> str:
+    for env_var in RUNTIME_MARKER_ENV_VARS:
+        value = os.getenv(env_var, '').strip()
+        if value:
+            return f'{env_var.lower()}:{value[:12]}'
+    return f'code-sha:{sha256(Path(__file__).read_bytes()).hexdigest()[:12]}'
+
+
+RUNTIME_MARKER = resolve_runtime_marker()
+
+
+def mode_flags() -> dict[str, Any]:
+    live_enabled = live_mode_enabled()
+    return {
+        'app_mode': os.getenv('APP_MODE', 'local'),
+        'pilot_mode': pilot_mode(),
+        'live_mode_enabled': live_enabled,
+        'demo_mode': not live_enabled,
+    }
+
+
+def fixture_diagnostics() -> dict[str, Any]:
+    directories = {
+        'risk_engine': {
+            'path': str(RISK_ENGINE_DATA_DIR),
+            'exists': RISK_ENGINE_DATA_DIR.is_dir(),
+        },
+        'reconciliation': {
+            'path': str(RECONCILIATION_DATA_DIR),
+            'exists': RECONCILIATION_DATA_DIR.is_dir(),
+        },
+    }
+    files: dict[str, dict[str, dict[str, Any]]] = {}
+    data_dirs = {
+        'risk_engine': RISK_ENGINE_DATA_DIR,
+        'reconciliation': RECONCILIATION_DATA_DIR,
+    }
+    for directory_name, filenames in FIXTURE_FILES.items():
+        data_dir = data_dirs[directory_name]
+        files[directory_name] = {
+            filename: {
+                'path': str(data_dir / filename),
+                'exists': (data_dir / filename).is_file(),
+            }
+            for filename in filenames
+        }
+    return {
+        'version_marker': RUNTIME_MARKER,
+        'directories': directories,
+        'files': files,
+        'modes': mode_flags(),
+    }
+
+
+def emit_startup_fixture_diagnostics() -> None:
+    diagnostics = fixture_diagnostics()
+    logger.info(
+        'startup version=%s risk_dir=%s exists=%s sample_risk_request=%s '
+        'reconciliation_dir=%s exists=%s critical_supply_divergence=%s '
+        'critical_mismatch_paused_bridge=%s app_mode=%s pilot_mode=%s live_mode=%s demo_mode=%s',
+        diagnostics['version_marker'],
+        diagnostics['directories']['risk_engine']['path'],
+        diagnostics['directories']['risk_engine']['exists'],
+        diagnostics['files']['risk_engine']['sample_risk_request.json']['exists'],
+        diagnostics['directories']['reconciliation']['path'],
+        diagnostics['directories']['reconciliation']['exists'],
+        diagnostics['files']['reconciliation']['critical_supply_divergence_double_count_risk.json']['exists'],
+        diagnostics['files']['reconciliation']['critical_mismatch_paused_bridge.json']['exists'],
+        diagnostics['modes']['app_mode'],
+        diagnostics['modes']['pilot_mode'],
+        diagnostics['modes']['live_mode_enabled'],
+        diagnostics['modes']['demo_mode'],
+    )
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
+    emit_startup_fixture_diagnostics()
     yield
 
 
@@ -266,6 +360,15 @@ def health() -> dict[str, object]:
         'reconciliation_service_url': RECONCILIATION_SERVICE_URL,
         'pilot_mode': pilot_mode(),
         'live_mode_enabled': live_mode_enabled(),
+    }
+
+
+@app.get('/health/details', summary='Deployment verification details', description='Returns a safe runtime marker plus resolved fixture paths and mode flags for deploy verification.')
+def health_details() -> dict[str, Any]:
+    return {
+        'status': 'ok',
+        'service': SERVICE_NAME,
+        **fixture_diagnostics(),
     }
 
 
@@ -1618,14 +1721,22 @@ def iso_timestamp(offset: int) -> str:
     return f'2026-03-18T09:0{offset}:00Z'
 
 
+def log_optional_fixture_warning_once(path: Path, reason: str, message: str) -> None:
+    warning_key = (str(path), reason)
+    if warning_key in OPTIONAL_FIXTURE_WARNINGS_EMITTED:
+        return
+    OPTIONAL_FIXTURE_WARNINGS_EMITTED.add(warning_key)
+    logger.warning(message, path)
+
+
 def load_json_file(data_dir: Path, filename: str, default: Any | None = None) -> Any:
     path = data_dir / filename
     try:
         return json.loads(path.read_text())
     except FileNotFoundError:
-        logger.warning('Optional JSON fixture missing at %s; using built-in fallback.', path)
+        log_optional_fixture_warning_once(path, 'missing', 'Optional JSON fixture missing at %s; using built-in fallback.')
     except json.JSONDecodeError:
-        logger.warning('Optional JSON fixture at %s is invalid JSON; using built-in fallback.', path)
+        log_optional_fixture_warning_once(path, 'invalid-json', 'Optional JSON fixture at %s is invalid JSON; using built-in fallback.')
 
     if default is None:
         return {}

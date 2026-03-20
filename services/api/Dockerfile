@@ -11,6 +11,8 @@ COPY services/api/requirements.txt services/api/requirements.txt
 RUN python -m pip install --upgrade pip \
     && python -m pip install -r services/api/requirements.txt
 
+# Railway must build this Dockerfile from the repository root so these sibling
+# service fixture directories remain available during COPY.
 COPY phase1_local ./phase1_local
 COPY services/api ./services/api
 COPY services/risk-engine/data ./services/risk-engine/data
