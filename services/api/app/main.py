@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import sys
 from copy import deepcopy
 from hashlib import sha256
@@ -111,6 +112,7 @@ RUNTIME_MARKER_ENV_VARS = (
     'COMMIT_SHA',
     'VERCEL_GIT_COMMIT_SHA',
 )
+HARD_CODED_BACKEND_BUILD_MARKER = 'backend-build-2026-03-20-fixture-diagnostics-v2'
 FIXTURE_FILES = {
     'risk_engine': ('sample_risk_request.json',),
     'reconciliation': (
@@ -256,8 +258,30 @@ def resolve_runtime_marker() -> str:
     return f'code-sha:{sha256(Path(__file__).read_bytes()).hexdigest()[:12]}'
 
 
-BACKEND_BUILD_ID = resolve_runtime_marker()
-RUNTIME_MARKER = BACKEND_BUILD_ID
+def resolve_git_commit() -> str | None:
+    for env_var in RUNTIME_MARKER_ENV_VARS:
+        value = os.getenv(env_var, '').strip()
+        if value:
+            return value
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+
+    commit = result.stdout.strip()
+    return commit or None
+
+
+BACKEND_BUILD_ID = HARD_CODED_BACKEND_BUILD_MARKER
+BACKEND_GIT_COMMIT = resolve_git_commit()
+RUNTIME_MARKER = f'{BACKEND_BUILD_ID}:{resolve_runtime_marker()}'
 
 
 def mode_flags() -> dict[str, Any]:
@@ -297,7 +321,8 @@ def fixture_diagnostics() -> dict[str, Any]:
         }
     return {
         'backend_build_id': BACKEND_BUILD_ID,
-        'version_marker': BACKEND_BUILD_ID,
+        'backend_git_commit': BACKEND_GIT_COMMIT,
+        'version_marker': RUNTIME_MARKER,
         'directories': directories,
         'files': files,
         'modes': mode_flags(),
@@ -309,7 +334,7 @@ def emit_startup_fixture_diagnostics() -> None:
     logger.info(
         'startup version=%s risk_dir=%s exists=%s sample_risk_request=%s '
         'reconciliation_dir=%s exists=%s critical_supply_divergence=%s '
-        'critical_mismatch_paused_bridge=%s app_mode=%s pilot_mode=%s live_mode=%s demo_mode=%s',
+        'critical_mismatch_paused_bridge=%s git_commit=%s app_mode=%s pilot_mode=%s live_mode=%s demo_mode=%s',
         diagnostics['backend_build_id'],
         diagnostics['directories']['risk_engine']['path'],
         diagnostics['directories']['risk_engine']['exists'],
@@ -318,6 +343,7 @@ def emit_startup_fixture_diagnostics() -> None:
         diagnostics['directories']['reconciliation']['exists'],
         diagnostics['files']['reconciliation']['critical_supply_divergence_double_count_risk.json']['exists'],
         diagnostics['files']['reconciliation']['critical_mismatch_paused_bridge.json']['exists'],
+        diagnostics['backend_git_commit'],
         diagnostics['modes']['app_mode'],
         diagnostics['modes']['pilot_mode'],
         diagnostics['modes']['live_mode_enabled'],
@@ -363,6 +389,7 @@ def health() -> dict[str, object]:
         'pilot_mode': pilot_mode(),
         'live_mode_enabled': live_mode_enabled(),
         'backend_build_id': BACKEND_BUILD_ID,
+        'backend_git_commit': BACKEND_GIT_COMMIT,
     }
 
 
