@@ -521,3 +521,52 @@ td .tableMeta {
 .errorText {
   color: #ffb4af;
 }
+
+.banner-pilot {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+}
+
+.banner-pilot a,
+.banner-pilot button {
+  border-radius: 999px;
+  border: 1px solid #30363d;
+  background: rgba(88, 166, 255, 0.12);
+  color: #e6edf3;
+  padding: 0.45rem 0.8rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.authPage {
+  padding-top: 2rem;
+}
+
+.authForm {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.authForm input,
+.authForm button {
+  width: 100%;
+  margin-top: 0.5rem;
+  margin-bottom: 1rem;
+  border-radius: 12px;
+  border: 1px solid #30363d;
+  background: #0d1117;
+  color: #e6edf3;
+  padding: 0.75rem 0.9rem;
+  font: inherit;
+}
+
+.authForm button {
+  cursor: pointer;
+  background: rgba(88, 166, 255, 0.14);
+}
+
+.nestedCard {
+  margin-top: 0.75rem;
+}

@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from 'react';
 
+import { usePilotAuth } from './pilot-auth-context';
+
 type DemoPanelProps = {
   apiUrl: string;
 };
@@ -116,6 +118,7 @@ const incidentScenarios = {
 } as const;
 
 export default function ResilienceDemoPanel({ apiUrl }: DemoPanelProps) {
+  const { isAuthenticated, user, authHeaders } = usePilotAuth();
   const [reconcileScenario, setReconcileScenario] = useState<keyof typeof reconcileScenarios>('critical_supply_divergence_double_count_risk');
   const [backstopScenario, setBackstopScenario] = useState<keyof typeof backstopScenarios>('critical_mismatch_paused_bridge');
   const [incidentScenario, setIncidentScenario] = useState<keyof typeof incidentScenarios>('incident_record_reconciliation_failure');
@@ -130,9 +133,10 @@ export default function ResilienceDemoPanel({ apiUrl }: DemoPanelProps) {
   const currentIncident = useMemo(() => incidentScenarios[incidentScenario], [incidentScenario]);
 
   async function postJson(path: string, body: unknown) {
-    const response = await fetch(`${apiUrl}${path}`, {
+    const livePrefix = isAuthenticated && user?.current_workspace?.id ? '/pilot' : '';
+    const response = await fetch(`${apiUrl}${livePrefix}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body)
     });
 
@@ -149,6 +153,7 @@ export default function ResilienceDemoPanel({ apiUrl }: DemoPanelProps) {
     try {
       const result = await postJson('/resilience/reconcile/state', currentReconcile.body);
       setReconcileResult(JSON.stringify(result, null, 2));
+      window.dispatchEvent(new Event('pilot-history-refresh'));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to run reconciliation.');
     } finally {
@@ -162,6 +167,7 @@ export default function ResilienceDemoPanel({ apiUrl }: DemoPanelProps) {
     try {
       const result = await postJson('/resilience/backstop/evaluate', currentBackstop.body);
       setBackstopResult(JSON.stringify(result, null, 2));
+      window.dispatchEvent(new Event('pilot-history-refresh'));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to run backstop evaluation.');
     } finally {
@@ -175,6 +181,7 @@ export default function ResilienceDemoPanel({ apiUrl }: DemoPanelProps) {
     try {
       const result = await postJson('/resilience/incidents/record', currentIncident.body);
       setIncidentResult(JSON.stringify(result, null, 2));
+      window.dispatchEvent(new Event('pilot-history-refresh'));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to record incident.');
     } finally {
@@ -189,7 +196,7 @@ export default function ResilienceDemoPanel({ apiUrl }: DemoPanelProps) {
           <h3>Feature 4 demo interactions</h3>
           <p>Run reconciliation, evaluate backstops, and append resilience incidents from the browser.</p>
         </div>
-        <span className="pill">Live API</span>
+        <span className="pill">{isAuthenticated && user?.current_workspace ? `Live workspace: ${user.current_workspace.name}` : 'Demo / live API'}</span>
       </div>
 
       <label htmlFor="reconcile-scenario">Reconciliation scenario</label>

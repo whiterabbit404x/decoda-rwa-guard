@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from 'react';
 
+import { usePilotAuth } from './pilot-auth-context';
+
 type DemoPanelProps = {
   apiUrl: string;
 };
@@ -210,6 +212,7 @@ const sampleRequests = {
 } as const;
 
 export default function ThreatDemoPanel({ apiUrl }: DemoPanelProps) {
+  const { isAuthenticated, user, authHeaders } = usePilotAuth();
   const [selected, setSelected] = useState<keyof typeof sampleRequests>('flash_loan_transaction');
   const [result, setResult] = useState<DemoResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -224,9 +227,10 @@ export default function ThreatDemoPanel({ apiUrl }: DemoPanelProps) {
 
     try {
       const scenario = sampleRequests[key];
-      const response = await fetch(`${apiUrl}/threat/analyze/${scenario.endpoint}`, {
+      const livePrefix = isAuthenticated && user?.current_workspace?.id ? '/pilot' : '';
+      const response = await fetch(`${apiUrl}${livePrefix}/threat/analyze/${scenario.endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify(scenario.body)
       });
 
@@ -235,6 +239,7 @@ export default function ThreatDemoPanel({ apiUrl }: DemoPanelProps) {
       }
 
       setResult((await response.json()) as DemoResult);
+      window.dispatchEvent(new Event('pilot-history-refresh'));
     } catch (err) {
       setResult(null);
       setError(err instanceof Error ? err.message : 'Unable to reach the threat API.');
@@ -250,7 +255,7 @@ export default function ThreatDemoPanel({ apiUrl }: DemoPanelProps) {
           <h3>Feature 2 demo interactions</h3>
           <p>Trigger sample contract, transaction, and market analyses from the browser.</p>
         </div>
-        <span className="pill">Live API</span>
+        <span className="pill">{isAuthenticated && user?.current_workspace ? `Live workspace: ${user.current_workspace.name}` : 'Demo / live API'}</span>
       </div>
 
       <div className="demoButtons">

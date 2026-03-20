@@ -3,6 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 
+import { usePilotAuth } from './pilot-auth-context';
+
 type DemoPanelProps = {
   apiUrl: string;
 };
@@ -200,6 +202,7 @@ const governanceScenarios = {
 
 export default function ComplianceDemoPanel({ apiUrl }: DemoPanelProps) {
   const router = useRouter();
+  const { isAuthenticated, user, authHeaders } = usePilotAuth();
   const [transferScenario, setTransferScenario] = useState<TransferScenarioKey>('compliant_transfer_approved');
   const [residencyScenario, setResidencyScenario] = useState<ResidencyScenarioKey>('denied_residency_restricted_region');
   const [governanceScenario, setGovernanceScenario] = useState<GovernanceScenarioKey>('governance_freeze_wallet');
@@ -214,9 +217,10 @@ export default function ComplianceDemoPanel({ apiUrl }: DemoPanelProps) {
   const currentGovernance = useMemo(() => governanceScenarios[governanceScenario], [governanceScenario]);
 
   async function postJson(path: string, body: unknown) {
-    const response = await fetch(`${apiUrl}${path}`, {
+    const livePrefix = isAuthenticated && user?.current_workspace?.id ? '/pilot' : '';
+    const response = await fetch(`${apiUrl}${livePrefix}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body)
     });
 
@@ -233,6 +237,7 @@ export default function ComplianceDemoPanel({ apiUrl }: DemoPanelProps) {
     try {
       const result = await postJson('/compliance/screen/transfer', currentTransfer.body);
       setTransferResult(JSON.stringify(result, null, 2));
+      window.dispatchEvent(new Event('pilot-history-refresh'));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to run transfer screening.');
     } finally {
@@ -246,6 +251,7 @@ export default function ComplianceDemoPanel({ apiUrl }: DemoPanelProps) {
     try {
       const result = await postJson('/compliance/screen/residency', currentResidency.body);
       setResidencyResult(JSON.stringify(result, null, 2));
+      window.dispatchEvent(new Event('pilot-history-refresh'));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to run residency screening.');
     } finally {
@@ -259,6 +265,7 @@ export default function ComplianceDemoPanel({ apiUrl }: DemoPanelProps) {
     try {
       const result = await postJson('/compliance/governance/actions', currentGovernance.body);
       setGovernanceResult(JSON.stringify(result, null, 2));
+      window.dispatchEvent(new Event('pilot-history-refresh'));
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to submit governance action.');
@@ -274,7 +281,7 @@ export default function ComplianceDemoPanel({ apiUrl }: DemoPanelProps) {
           <h3>Feature 3 demo interactions</h3>
           <p>Run wrapper screening and governance actions through the API gateway.</p>
         </div>
-        <span className="pill">{apiUrl}</span>
+        <span className="pill">{isAuthenticated && user?.current_workspace ? `Live workspace: ${user.current_workspace.name}` : apiUrl}</span>
       </div>
 
       <div className="stack compactStack">

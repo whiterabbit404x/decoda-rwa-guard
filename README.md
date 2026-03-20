@@ -2,6 +2,67 @@
 
 This repo now supports a reproducible local Phase 1 workflow without Docker as the primary path. The stable Phase 1 risk-engine remains intact, Feature 2 adds the `threat-engine` service for explainable zero-day exploit mitigation and treasury-token market anomaly detection, Feature 3 adds the `compliance-service` for sovereign-grade compliance wrappers, geopatriation controls, and governance actions, and Feature 4 expands the existing `reconciliation-service` into an interoperability and systemic resilience slice for deterministic cross-chain reconciliation, backstop controls, and local incident logging.
 
+## Pilot SaaS mode (Railway + Vercel + Neon)
+
+The repo now supports a minimal **real pilot SaaS mode** alongside the existing local/demo mode. Demo endpoints and UI still work, but authenticated live-mode actions persist workspace-scoped data through `services/api` into Neon Postgres. The backend deployment model remains the same: Railway still runs the existing API Dockerfile, and Vercel still hosts the Next.js frontend.
+
+### Pilot architecture changes
+
+- `services/api` remains the gateway and now also owns auth, workspace membership, audit logging, and persisted pilot records.
+- Existing backend services (`risk-engine`, `threat-engine`, `compliance-service`, `reconciliation-service`) remain computation/demo providers; the gateway persists live summaries and workflow records after it calls them.
+- Live mode writes Neon-backed `users`, `workspaces`, `workspace_members`, `analysis_runs`, `alerts`, `governance_actions`, `incidents`, and `audit_logs`.
+- Demo mode remains separate from live mode. Existing dashboard fallback/demo data never mixes with live customer records.
+
+### Live-mode environment variables
+
+#### Railway / API
+
+- `LIVE_MODE_ENABLED=true`
+- `DATABASE_URL=postgresql://...` (Neon connection string, with `sslmode=require`)
+- `AUTH_TOKEN_SECRET=<long-random-secret>`
+- `CORS_ALLOWED_ORIGINS=http://localhost:3000,https://<your-vercel-app>.vercel.app`
+- Existing downstream service URLs (`RISK_ENGINE_URL`, `THREAT_ENGINE_URL`, `COMPLIANCE_SERVICE_URL`, `RECONCILIATION_SERVICE_URL`)
+
+#### Vercel / web
+
+- `NEXT_PUBLIC_API_URL=https://<your-railway-api>.up.railway.app`
+- `NEXT_PUBLIC_LIVE_MODE_ENABLED=true`
+- `NEXT_PUBLIC_API_TIMEOUT_MS=5000`
+
+### Migrations and seed commands
+
+Run these from the repo root after setting `DATABASE_URL` and `AUTH_TOKEN_SECRET` for the API service:
+
+```bash
+python services/api/scripts/migrate.py
+python services/api/scripts/seed.py --pilot-demo
+```
+
+The pilot demo seed creates a workspace-scoped demo account in Postgres while preserving the original local SQLite registry seed for demo mode. You can override the seeded credentials with `--demo-email`, `--demo-password`, `--demo-workspace`, and `--demo-full-name`.
+
+### Railway deploy / update flow
+
+1. Keep deploying `services/api/Dockerfile` on Railway.
+2. Set Railway env vars from `services/api/.env.example`.
+3. Run migrations against Neon with `python services/api/scripts/migrate.py` in Railway's shell or a one-off command using the same image/env.
+4. Optionally run `python services/api/scripts/seed.py --pilot-demo` once for a demo tenant.
+5. Keep the Railway start command binding to `0.0.0.0:$PORT` (already handled by the Dockerfile).
+
+### Vercel setup flow
+
+1. Keep deploying `apps/web` on Vercel.
+2. Set Vercel env vars from `apps/web/.env.example`.
+3. Redeploy after updating `NEXT_PUBLIC_API_URL` or `NEXT_PUBLIC_LIVE_MODE_ENABLED`.
+4. Use `/sign-up`, `/sign-in`, and `/workspaces` for live pilot onboarding while `/` continues to expose the existing dashboard.
+
+### What remains for full production later
+
+- Email verification, password reset, MFA, and server-side session invalidation.
+- Stronger distributed rate limiting / shared cache instead of in-memory auth throttling.
+- Richer RBAC enforcement across every workflow action.
+- Background jobs, webhooks, and more granular per-record dashboards instead of summary persistence only.
+- Managed observability, secret rotation, and tenant billing / provisioning workflows.
+
 ## Repository Layout
 
 - `apps/web` — Next.js dashboard UI.

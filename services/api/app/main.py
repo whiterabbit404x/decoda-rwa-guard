@@ -11,8 +11,31 @@ from urllib.request import Request, urlopen
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+from services.api.app.pilot import (
+    authenticate_request,
+    authenticate_with_connection,
+    build_history_response,
+    create_governance_action_record,
+    create_incident_record,
+    create_workspace_for_user,
+    enforce_auth_rate_limit,
+    list_user_workspaces,
+    live_mode_enabled,
+    log_audit,
+    maybe_insert_alert,
+    parse_csv_env,
+    persist_analysis_run,
+    pilot_mode,
+    pg_connection,
+    resolve_workspace,
+    select_workspace_for_user,
+    signin_user,
+    signout_user,
+    signup_user,
+)
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -75,10 +98,10 @@ COMPLIANCE_DATA_DIR = Path(__file__).resolve().parents[2] / 'compliance-service'
 RECONCILIATION_SERVICE_URL = os.getenv('RECONCILIATION_SERVICE_URL', 'http://localhost:8005').rstrip('/')
 RECONCILIATION_SERVICE_TIMEOUT_SECONDS = float(os.getenv('RECONCILIATION_SERVICE_TIMEOUT_SECONDS', '1.5'))
 RECONCILIATION_DATA_DIR = Path(__file__).resolve().parents[2] / 'reconciliation-service' / 'data'
-ALLOWED_ORIGINS = [
+ALLOWED_ORIGINS = parse_csv_env('CORS_ALLOWED_ORIGINS', [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
-]
+])
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -114,6 +137,8 @@ def health() -> dict[str, object]:
         'threat_engine_url': THREAT_ENGINE_URL,
         'compliance_service_url': COMPLIANCE_SERVICE_URL,
         'reconciliation_service_url': RECONCILIATION_SERVICE_URL,
+        'pilot_mode': pilot_mode(),
+        'live_mode_enabled': live_mode_enabled(),
     }
 
 
@@ -274,6 +299,211 @@ def resilience_incident(event_id: str) -> dict[str, Any]:
         if incident['event_id'] == event_id:
             return incident
     return {'detail': f'Unknown event_id: {event_id}', 'source': 'fallback', 'degraded': True}
+
+
+@app.post('/auth/signup', summary='Create a live-mode pilot user')
+def auth_signup(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'signup')
+    return signup_user(payload, request)
+
+
+@app.post('/auth/signin', summary='Sign in a live-mode pilot user')
+def auth_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'signin')
+    return signin_user(payload, request)
+
+
+@app.post('/auth/signout', summary='Sign out a live-mode pilot user')
+def auth_signout(request: Request) -> dict[str, Any]:
+    return signout_user(request)
+
+
+@app.get('/auth/me', summary='Current authenticated live-mode user')
+def auth_me(request: Request) -> dict[str, Any]:
+    return {'mode': pilot_mode(), 'user': authenticate_request(request)}
+
+
+@app.get('/workspaces', summary='List workspaces for the authenticated user')
+def workspaces(request: Request) -> dict[str, Any]:
+    return list_user_workspaces(request)
+
+
+@app.post('/workspaces', summary='Create a workspace for the authenticated user')
+def workspace_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return {'user': create_workspace_for_user(payload, request)}
+
+
+@app.post('/auth/select-workspace', summary='Select the active workspace for the authenticated user')
+def auth_select_workspace(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    workspace_id = str(payload.get('workspace_id', '')).strip()
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail='workspace_id is required')
+    return {'user': select_workspace_for_user(workspace_id, request)}
+
+
+@app.get('/pilot/history', summary='Workspace-scoped persisted live-mode history')
+def pilot_history(request: Request, limit: int = 25) -> dict[str, Any]:
+    return build_history_response(request, limit=limit)
+
+
+def _persist_live_analysis(request: Request, payload: dict[str, Any], response_payload: dict[str, Any], *, analysis_type: str, service_name: str, title: str) -> dict[str, Any]:
+    if not live_mode_enabled():
+        raise HTTPException(status_code=503, detail='Live pilot mode is not enabled.')
+    if 'authorization' not in request.headers:
+        raise HTTPException(status_code=401, detail='Authorization is required for live pilot actions.')
+    with pg_connection() as connection:
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        analysis_run_id = persist_analysis_run(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            user_id=user['id'],
+            analysis_type=analysis_type,
+            service_name=service_name,
+            title=title,
+            status_value='completed',
+            request_payload=payload,
+            response_payload=response_payload,
+            request=request,
+        )
+        maybe_insert_alert(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            user_id=user['id'],
+            analysis_run_id=analysis_run_id,
+            alert_type=analysis_type,
+            title=title,
+            response_payload=response_payload,
+        )
+        connection.commit()
+        return {
+            **response_payload,
+            'pilot_saved': True,
+            'analysis_run_id': analysis_run_id,
+            'workspace': workspace_context['workspace'],
+        }
+
+
+@app.post('/pilot/threat/analyze/contract', summary='Run and persist a contract threat analysis for live mode')
+def pilot_threat_analyze_contract(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    response = proxy_threat('contract', payload) or fallback_contract_analysis(payload)
+    return _persist_live_analysis(request, payload, response, analysis_type='threat_contract', service_name='threat-engine', title='Threat contract analysis')
+
+
+@app.post('/pilot/threat/analyze/transaction', summary='Run and persist a transaction threat analysis for live mode')
+def pilot_threat_analyze_transaction(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    response = proxy_threat('transaction', payload) or fallback_transaction_analysis(payload)
+    return _persist_live_analysis(request, payload, response, analysis_type='threat_transaction', service_name='threat-engine', title='Threat transaction analysis')
+
+
+@app.post('/pilot/threat/analyze/market', summary='Run and persist a market threat analysis for live mode')
+def pilot_threat_analyze_market(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    response = proxy_threat('market', payload) or fallback_market_analysis(payload)
+    return _persist_live_analysis(request, payload, response, analysis_type='threat_market', service_name='threat-engine', title='Threat market analysis')
+
+
+@app.post('/pilot/compliance/screen/transfer', summary='Run and persist a transfer compliance screen for live mode')
+def pilot_compliance_screen_transfer(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    response = proxy_compliance('screen/transfer', payload) or fallback_transfer_screening(payload)
+    return _persist_live_analysis(request, payload, response, analysis_type='compliance_transfer', service_name='compliance-service', title='Compliance transfer screening')
+
+
+@app.post('/pilot/compliance/screen/residency', summary='Run and persist a residency compliance screen for live mode')
+def pilot_compliance_screen_residency(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    response = proxy_compliance('screen/residency', payload) or fallback_residency_screening(payload)
+    return _persist_live_analysis(request, payload, response, analysis_type='compliance_residency', service_name='compliance-service', title='Compliance residency screening')
+
+
+@app.post('/pilot/compliance/governance/actions', summary='Create and persist a governance action for live mode')
+def pilot_compliance_governance_action(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    response = proxy_compliance('governance/actions', payload) or fallback_governance_action(payload)
+    with pg_connection() as connection:
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        analysis_run_id = persist_analysis_run(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            user_id=user['id'],
+            analysis_type='governance_action',
+            service_name='compliance-service',
+            title='Governance action',
+            status_value='completed',
+            request_payload=payload,
+            response_payload=response,
+            request=request,
+        )
+        governance_action_id = create_governance_action_record(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            user_id=user['id'],
+            analysis_run_id=analysis_run_id,
+            payload=payload,
+            response_payload=response,
+        )
+        maybe_insert_alert(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            user_id=user['id'],
+            analysis_run_id=analysis_run_id,
+            alert_type='governance_action',
+            title=str(response.get('action_type') or payload.get('action_type') or 'Governance action'),
+            response_payload=response,
+        )
+        log_audit(connection, action='governance.action', entity_type='governance_action', entity_id=governance_action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'target_id': response.get('target_id') or payload.get('target_id')})
+        connection.commit()
+    return {**response, 'pilot_saved': True, 'analysis_run_id': analysis_run_id, 'governance_action_id': governance_action_id, 'workspace': workspace_context['workspace']}
+
+
+@app.post('/pilot/resilience/reconcile/state', summary='Run and persist a reconciliation analysis for live mode')
+def pilot_resilience_reconcile_state(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    response = proxy_resilience_post('reconcile/state', payload) or fallback_reconcile_state(payload)
+    return _persist_live_analysis(request, payload, response, analysis_type='resilience_reconcile', service_name='reconciliation-service', title='Resilience reconciliation')
+
+
+@app.post('/pilot/resilience/backstop/evaluate', summary='Run and persist a backstop analysis for live mode')
+def pilot_resilience_backstop_evaluate(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    response = proxy_resilience_post('backstop/evaluate', payload) or fallback_backstop_evaluate(payload)
+    return _persist_live_analysis(request, payload, response, analysis_type='resilience_backstop', service_name='reconciliation-service', title='Resilience backstop evaluation')
+
+
+@app.post('/pilot/resilience/incidents/record', summary='Create and persist a resilience incident for live mode')
+def pilot_resilience_record_incident(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    response = proxy_resilience_post('incidents/record', payload) or fallback_incident_record(payload)
+    with pg_connection() as connection:
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        analysis_run_id = persist_analysis_run(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            user_id=user['id'],
+            analysis_type='resilience_incident',
+            service_name='reconciliation-service',
+            title='Resilience incident',
+            status_value='completed',
+            request_payload=payload,
+            response_payload=response,
+            request=request,
+        )
+        incident_id = create_incident_record(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            user_id=user['id'],
+            analysis_run_id=analysis_run_id,
+            payload=payload,
+            response_payload=response,
+        )
+        maybe_insert_alert(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            user_id=user['id'],
+            analysis_run_id=analysis_run_id,
+            alert_type='resilience_incident',
+            title=str(response.get('event_type') or payload.get('event_type') or 'Resilience incident'),
+            response_payload=response,
+        )
+        log_audit(connection, action='incident.record', entity_type='incident', entity_id=incident_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'severity': response.get('severity') or payload.get('severity')})
+        connection.commit()
+    return {**response, 'pilot_saved': True, 'analysis_run_id': analysis_run_id, 'incident_id': incident_id, 'workspace': workspace_context['workspace']}
 
 
 def build_risk_dashboard_queue() -> list[dict[str, Any]]:

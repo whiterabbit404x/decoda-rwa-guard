@@ -1,4 +1,6 @@
 import ComplianceDemoPanel from './compliance-demo-panel';
+import PilotHistoryPanel from './pilot-history-panel';
+import PilotModeBanner from './pilot-mode-banner';
 import ResilienceDemoPanel from './resilience-demo-panel';
 import ThreatDemoPanel from './threat-demo-panel';
 import {
@@ -42,6 +44,8 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
         </div>
       </div>
 
+      <PilotModeBanner />
+
       <section className={`banner banner-${backendState}`}>
         <strong>Runtime status:</strong> {backendBanner}
       </section>
@@ -66,6 +70,8 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           </article>
         ))}
       </section>
+
+      <PilotHistoryPanel />
 
       <section className="featureSection">
         <div className="sectionHeader">
