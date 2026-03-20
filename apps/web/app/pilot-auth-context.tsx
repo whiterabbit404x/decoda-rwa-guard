@@ -2,8 +2,12 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
+import { resolveApiConfig } from './api-config';
+
 const TOKEN_STORAGE_KEY = 'decoda-pilot-access-token';
-const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000').replace(/\/+$/, '');
+const API_CONFIG = resolveApiConfig();
+const API_URL = API_CONFIG.apiUrl ?? '';
+const API_CONFIGURATION_ERROR = API_CONFIG.diagnostic ?? 'Live API URL is not configured.';
 
 export type WorkspaceSummary = {
   id: string;
@@ -53,12 +57,20 @@ async function readJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
+function requireApiUrl() {
+  if (!API_URL) {
+    throw new Error(API_CONFIGURATION_ERROR);
+  }
+
+  return API_URL;
+}
+
 export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<PilotUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const liveModeConfigured = (process.env.NEXT_PUBLIC_LIVE_MODE_ENABLED ?? 'false').toLowerCase() === 'true';
+  const liveModeConfigured = Boolean(API_CONFIG.apiUrl);
 
   const authHeaders = useCallback(() => {
     const headers: Record<string, string> = {};
@@ -73,7 +85,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
 
   const refreshUser = useCallback(async () => {
     const storedToken = window.localStorage.getItem(TOKEN_STORAGE_KEY);
-    if (!storedToken) {
+    if (!storedToken || !API_URL) {
       setToken(null);
       setUser(null);
       setLoading(false);
@@ -117,7 +129,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signIn = useCallback(async (payload: { email: string; password: string }) => {
-    const response = await fetch(`${API_URL}/auth/signin`, {
+    const response = await fetch(`${requireApiUrl()}/auth/signin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -131,7 +143,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   }, [saveAuthPayload]);
 
   const signUp = useCallback(async (payload: { email: string; password: string; full_name: string; workspace_name: string }) => {
-    const response = await fetch(`${API_URL}/auth/signup`, {
+    const response = await fetch(`${requireApiUrl()}/auth/signup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -146,7 +158,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = useCallback(async () => {
     const storedToken = window.localStorage.getItem(TOKEN_STORAGE_KEY);
-    if (storedToken) {
+    if (storedToken && API_URL) {
       await fetch(`${API_URL}/auth/signout`, {
         method: 'POST',
         headers: {
@@ -161,7 +173,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const createWorkspace = useCallback(async (name: string) => {
-    const response = await fetch(`${API_URL}/workspaces`, {
+    const response = await fetch(`${requireApiUrl()}/workspaces`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -178,7 +190,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   }, [authHeaders]);
 
   const selectWorkspace = useCallback(async (workspaceId: string) => {
-    const response = await fetch(`${API_URL}/auth/select-workspace`, {
+    const response = await fetch(`${requireApiUrl()}/auth/select-workspace`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

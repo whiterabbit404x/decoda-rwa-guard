@@ -1,4 +1,4 @@
-
+import { ApiConfig, DEFAULT_API_URL, resolveApiConfig } from './api-config';
 
 export type DashboardCard = {
   title: string;
@@ -861,7 +861,6 @@ export const fallbackThreatDashboard: ThreatDashboardResponse = {
 
 export type BackendState = 'online' | 'degraded' | 'offline';
 
-export const DEFAULT_API_URL = 'http://127.0.0.1:8000';
 export const DEFAULT_FETCH_TIMEOUT_MS = 5000;
 export const EXPECTED_DOWNSTREAM_SERVICES = [
   'risk-engine',
@@ -936,8 +935,9 @@ export function normalizeDashboardResponse(payload: unknown): DashboardResponse 
   };
 }
 
-export function resolveApiUrl() {
-  return (process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL).replace(/\/+$/, '');
+export function resolveApiUrl(requestedApiUrl?: string | null) {
+  const apiConfig = resolveApiConfig({ requestedApiUrl });
+  return apiConfig.apiUrl ?? (apiConfig.isProduction ? '' : DEFAULT_API_URL);
 }
 
 export function resolveFetchTimeoutMs() {
@@ -970,6 +970,87 @@ export async function fetchJson<T>(path: string, apiUrl = resolveApiUrl()): Prom
   }
 }
 
+type EndpointFetchResult<T> = {
+  payload: T | null;
+  meta: DashboardEndpointMeta;
+};
+
+const DASHBOARD_ENDPOINT_PATHS: Record<DashboardEndpointKey, string> = {
+  dashboard: '/dashboard',
+  riskDashboard: '/risk/dashboard',
+  threatDashboard: '/threat/dashboard',
+  complianceDashboard: '/compliance/dashboard',
+  resilienceDashboard: '/resilience/dashboard',
+};
+
+function buildEndpointMeta(
+  key: DashboardEndpointKey,
+  options: Partial<Omit<DashboardEndpointMeta, 'key' | 'path'>> = {}
+): DashboardEndpointMeta {
+  return {
+    key,
+    path: DASHBOARD_ENDPOINT_PATHS[key],
+    ok: options.ok ?? false,
+    status: options.status ?? null,
+    source: options.source ?? 'unavailable',
+    usedFallback: options.usedFallback ?? false,
+    error: options.error ?? null,
+  };
+}
+
+async function fetchEndpointJson<T>(
+  key: DashboardEndpointKey,
+  apiUrl: string | null
+): Promise<EndpointFetchResult<T>> {
+  if (!apiUrl) {
+    return {
+      payload: null,
+      meta: buildEndpointMeta(key, {
+        error: 'Live API URL is not configured, so the live request was skipped.',
+      }),
+    };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), resolveFetchTimeoutMs());
+
+  try {
+    const response = await fetch(`${apiUrl}${DASHBOARD_ENDPOINT_PATHS[key]}`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      return {
+        payload: null,
+        meta: buildEndpointMeta(key, {
+          status: response.status,
+          error: `Live request failed with status ${response.status}.`,
+        }),
+      };
+    }
+
+    return {
+      payload: (await response.json()) as T,
+      meta: buildEndpointMeta(key, {
+        ok: true,
+        status: response.status,
+        source: 'live',
+      }),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      payload: null,
+      meta: buildEndpointMeta(key, {
+        error: message,
+      }),
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export function resolveDashboardCards(dashboard: DashboardResponse | null): DashboardCard[] {
   if (dashboard?.cards?.length) {
     return dashboard.cards;
@@ -980,7 +1061,7 @@ export function resolveDashboardCards(dashboard: DashboardResponse | null): Dash
       {
         title: 'API Gateway',
         status: 'Healthy',
-        detail: 'Connected to the local dashboard API, but no registry cards were returned yet.',
+        detail: 'Connected to the live dashboard API, but no registry cards were returned yet.',
         service: 'api',
       },
     ];
@@ -1004,6 +1085,26 @@ export function resolveFeedState(
     threatDashboard.source !== 'live' ||
     complianceDashboard.source !== 'live' ||
     resilienceDashboard.source !== 'live'
+  );
+}
+
+function hasAllLiveFeeds(
+  riskDashboard: RiskDashboardResponse,
+  threatDashboard: ThreatDashboardResponse,
+  complianceDashboard: ComplianceDashboardResponse,
+  resilienceDashboard: ResilienceDashboardResponse
+) {
+  return !resolveFeedState(riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard);
+}
+
+function hasAnyLiveFeed(
+  riskDashboard: RiskDashboardResponse,
+  threatDashboard: ThreatDashboardResponse,
+  complianceDashboard: ComplianceDashboardResponse,
+  resilienceDashboard: ResilienceDashboardResponse
+) {
+  return [riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard].some(
+    (dashboard) => dashboard.source === 'live' && !dashboard.degraded
   );
 }
 
@@ -1067,7 +1168,7 @@ export function resolveGatewayCard(card: DashboardCard, backendState: BackendSta
     return {
       ...card,
       status: 'Live (degraded)',
-      detail: 'Gateway reachable, but one or more downstream dashboard feeds are using degraded or fallback data.',
+      detail: 'Gateway reachable, but one or more dashboard feeds are using fallback data.',
     };
   }
 
@@ -1098,6 +1199,29 @@ export async function getResilienceDashboard(apiUrl = resolveApiUrl()): Promise<
   return (await fetchJson<ResilienceDashboardResponse>('/resilience/dashboard', apiUrl)) ?? fallbackResilienceDashboard;
 }
 
+function buildDashboardDiagnostics(
+  apiConfig: ApiConfig,
+  endpoints: DashboardDiagnostics['endpoints']
+): DashboardDiagnostics {
+  const failedEndpoints = (Object.keys(endpoints) as DashboardEndpointKey[]).filter((key) => !endpoints[key].ok);
+  const degradedReasons = [
+    apiConfig.diagnostic,
+    ...failedEndpoints.map((key) => `${endpoints[key].path}: ${endpoints[key].error ?? 'live request failed'}`),
+  ].filter((value): value is string => Boolean(value));
+
+  return {
+    apiUrl: apiConfig.apiUrl,
+    apiUrlSource: apiConfig.source,
+    isProduction: apiConfig.isProduction,
+    liveFetchEnabled: Boolean(apiConfig.apiUrl),
+    resolutionMessage: apiConfig.diagnostic,
+    fallbackTriggered: failedEndpoints.some((key) => endpoints[key].usedFallback),
+    failedEndpoints,
+    degradedReasons,
+    endpoints,
+  };
+}
+
 export function statusTone(status: string) {
   const value = status.toLowerCase();
   if (value === 'approved' || value === 'allowed' || value === 'active') {
@@ -1124,19 +1248,44 @@ export function resolveBackendState(
   complianceDashboard: ComplianceDashboardResponse,
   resilienceDashboard: ResilienceDashboardResponse
 ): BackendState {
-  if (!resolveGatewayReachability(dashboard)) {
-    return 'offline';
+  const gatewayReachable = resolveGatewayReachability(dashboard);
+
+  if (gatewayReachable && hasAllLiveFeeds(riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard)) {
+    return 'online';
   }
-  if (
-    resolveDashboardRegistryDegraded(dashboard) ||
-    resolveFeedState(riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard)
-  ) {
+
+  if (gatewayReachable || hasAnyLiveFeed(riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard)) {
     return 'degraded';
   }
-  return 'online';
+
+  return 'offline';
 }
 
 
+
+export type DashboardEndpointKey = 'dashboard' | 'riskDashboard' | 'threatDashboard' | 'complianceDashboard' | 'resilienceDashboard';
+
+export type DashboardEndpointMeta = {
+  key: DashboardEndpointKey;
+  path: string;
+  ok: boolean;
+  status: number | null;
+  source: 'live' | 'fallback' | 'unavailable';
+  usedFallback: boolean;
+  error: string | null;
+};
+
+export type DashboardDiagnostics = {
+  apiUrl: string | null;
+  apiUrlSource: ApiConfig['source'];
+  isProduction: boolean;
+  liveFetchEnabled: boolean;
+  resolutionMessage: string | null;
+  fallbackTriggered: boolean;
+  failedEndpoints: DashboardEndpointKey[];
+  degradedReasons: string[];
+  endpoints: Record<DashboardEndpointKey, DashboardEndpointMeta>;
+};
 
 export type DashboardPageData = {
   apiUrl: string;
@@ -1145,6 +1294,7 @@ export type DashboardPageData = {
   threatDashboard: ThreatDashboardResponse;
   complianceDashboard: ComplianceDashboardResponse;
   resilienceDashboard: ResilienceDashboardResponse;
+  diagnostics: DashboardDiagnostics;
 };
 
 export type DashboardViewModel = {
@@ -1177,38 +1327,75 @@ function formatDegradedBannerMessage(messages: string[]) {
     .filter(Boolean);
 
   if (normalized.length === 0) {
-    return 'Live platform connected with partial service coverage.';
+    return 'One or more live dashboard feeds are temporarily degraded.';
   }
 
-  return `Live platform connected with partial service coverage. ${normalized.join(' ')}`;
+  return `One or more live dashboard feeds are temporarily degraded. ${normalized.join(' ')}`;
 }
 
-export async function fetchDashboardPageData(apiUrl = resolveApiUrl()): Promise<DashboardPageData> {
-  const [dashboardResult, riskResult, threatResult, complianceResult, resilienceResult] = await Promise.allSettled([
-    getDashboard(apiUrl),
-    getRiskDashboard(apiUrl),
-    getThreatDashboard(apiUrl),
-    getComplianceDashboard(apiUrl),
-    getResilienceDashboard(apiUrl),
+export async function fetchDashboardPageData(requestedApiUrl?: string | null): Promise<DashboardPageData> {
+  const apiConfig = resolveApiConfig({ requestedApiUrl });
+  const resolvedApiUrl = apiConfig.apiUrl ?? '';
+
+  const [dashboardResult, riskResult, threatResult, complianceResult, resilienceResult] = await Promise.all([
+    fetchEndpointJson<unknown>('dashboard', apiConfig.apiUrl),
+    fetchEndpointJson<RiskDashboardResponse>('riskDashboard', apiConfig.apiUrl),
+    fetchEndpointJson<ThreatDashboardResponse>('threatDashboard', apiConfig.apiUrl),
+    fetchEndpointJson<ComplianceDashboardResponse>('complianceDashboard', apiConfig.apiUrl),
+    fetchEndpointJson<ResilienceDashboardResponse>('resilienceDashboard', apiConfig.apiUrl),
   ]);
 
-  if (process.env.NODE_ENV === 'development') {
-    const rejectedFetches = [dashboardResult, riskResult, threatResult, complianceResult, resilienceResult].filter(
-      (result) => result.status === 'rejected'
-    );
+  const dashboard = normalizeDashboardResponse(dashboardResult.payload);
+  const riskDashboard = riskResult.payload ?? fallbackRiskDashboard;
+  const threatDashboard = threatResult.payload ?? fallbackThreatDashboard;
+  const complianceDashboard = complianceResult.payload ?? fallbackComplianceDashboard;
+  const resilienceDashboard = resilienceResult.payload ?? fallbackResilienceDashboard;
 
-    if (rejectedFetches.length > 0) {
-      console.debug('[dashboard] Partial hydration fallback engaged for one or more endpoints.');
-    }
+  const endpoints: DashboardDiagnostics['endpoints'] = {
+    dashboard: {
+      ...dashboardResult.meta,
+      source: dashboard ? 'live' : 'unavailable',
+    },
+    riskDashboard: {
+      ...riskResult.meta,
+      source: riskResult.payload ? riskDashboard.source : 'fallback',
+      usedFallback: !riskResult.payload,
+      error: riskResult.payload ? null : riskResult.meta.error,
+    },
+    threatDashboard: {
+      ...threatResult.meta,
+      source: threatResult.payload ? threatDashboard.source : 'fallback',
+      usedFallback: !threatResult.payload,
+      error: threatResult.payload ? null : threatResult.meta.error,
+    },
+    complianceDashboard: {
+      ...complianceResult.meta,
+      source: complianceResult.payload ? complianceDashboard.source : 'fallback',
+      usedFallback: !complianceResult.payload,
+      error: complianceResult.payload ? null : complianceResult.meta.error,
+    },
+    resilienceDashboard: {
+      ...resilienceResult.meta,
+      source: resilienceResult.payload ? resilienceDashboard.source : 'fallback',
+      usedFallback: !resilienceResult.payload,
+      error: resilienceResult.payload ? null : resilienceResult.meta.error,
+    },
+  };
+
+  const diagnostics = buildDashboardDiagnostics(apiConfig, endpoints);
+
+  if (process.env.NODE_ENV === 'development' && diagnostics.fallbackTriggered) {
+    console.debug('[dashboard] Live fetch fallback engaged.', diagnostics.degradedReasons);
   }
 
   return {
-    apiUrl,
-    dashboard: dashboardResult.status === 'fulfilled' ? dashboardResult.value : null,
-    riskDashboard: riskResult.status === 'fulfilled' ? riskResult.value : fallbackRiskDashboard,
-    threatDashboard: threatResult.status === 'fulfilled' ? threatResult.value : fallbackThreatDashboard,
-    complianceDashboard: complianceResult.status === 'fulfilled' ? complianceResult.value : fallbackComplianceDashboard,
-    resilienceDashboard: resilienceResult.status === 'fulfilled' ? resilienceResult.value : fallbackResilienceDashboard,
+    apiUrl: resolvedApiUrl,
+    dashboard,
+    riskDashboard,
+    threatDashboard,
+    complianceDashboard,
+    resilienceDashboard,
+    diagnostics,
   };
 }
 
@@ -1216,7 +1403,7 @@ export function buildDashboardViewModel(
   data: DashboardPageData,
   options: DashboardViewModelOptions = {}
 ): DashboardViewModel {
-  const { dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard } = data;
+  const { dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard, diagnostics } = data;
   const resolvedBackendState = resolveBackendState(dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard);
   const backendState =
     options.gatewayReachableOverride && resolvedBackendState === 'offline'
@@ -1258,14 +1445,18 @@ export function buildDashboardViewModel(
   ];
   const backendBanner =
     backendState === 'online'
-      ? 'Live services are connected and the dashboard is updating from the active platform.'
+      ? 'Live services are connected and the dashboard is updating from the active Railway-backed platform.'
       : backendState === 'degraded'
-        ? formatDegradedBannerMessage([
-            riskDashboard.message,
-            threatDashboard.message,
-            complianceDashboard.message,
-            resilienceDashboard.message,
-          ])
+        ? formatDegradedBannerMessage(
+            diagnostics.degradedReasons.length > 0
+              ? diagnostics.degradedReasons
+              : [
+                  riskDashboard.message,
+                  threatDashboard.message,
+                  complianceDashboard.message,
+                  resilienceDashboard.message,
+                ]
+          )
         : 'Live services are temporarily unavailable. The dashboard remains available with sample coverage while connectivity is restored.';
 
   return {
