@@ -242,3 +242,22 @@ def load_demo_requests() -> dict[str, Any]:
         'wash_trading_market': MarketAnalysisRequest.model_validate(WASH_TRADING_MARKET_EXAMPLE),
         'contract': ContractAnalysisRequest.model_validate(CONTRACT_ANALYSIS_EXAMPLE),
     }
+
+
+embedded_dashboard = internal_dashboard
+
+__all__ = [
+    'app',
+    'engine',
+    'ContractAnalysisRequest',
+    'MarketAnalysisRequest',
+    'ThreatDashboardResponse',
+    'TransactionAnalysisRequest',
+    'dashboard',
+    'internal_dashboard',
+    'internal_analyze_contract',
+    'internal_analyze_transaction',
+    'internal_analyze_market',
+    'load_demo_requests',
+    'embedded_dashboard',
+]
