@@ -5,6 +5,20 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { resolveApiConfig } from './api-config';
 
 const TOKEN_STORAGE_KEY = 'decoda-pilot-access-token';
+const TOKEN_COOKIE_MAX_AGE = 60 * 60 * 24;
+
+function writeTokenCookie(token: string | null) {
+  if (typeof document === 'undefined') {
+    return;
+  }
+
+  if (!token) {
+    document.cookie = `${TOKEN_STORAGE_KEY}=; path=/; max-age=0; SameSite=Lax`;
+    return;
+  }
+
+  document.cookie = `${TOKEN_STORAGE_KEY}=${encodeURIComponent(token)}; path=/; max-age=${TOKEN_COOKIE_MAX_AGE}; SameSite=Lax`;
+}
 const API_CONFIG = resolveApiConfig();
 const API_URL = API_CONFIG.apiUrl ?? '';
 const API_CONFIGURATION_ERROR = API_CONFIG.diagnostic ?? 'Live API URL is not configured.';
@@ -101,9 +115,12 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     if (!response.ok) {
+      const data = await readJson<{ detail?: string }>(response).catch(() => ({ detail: 'Your session expired. Please sign in again.' }));
       window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+      writeTokenCookie(null);
       setToken(null);
       setUser(null);
+      setError(data.detail ?? 'Your session expired. Please sign in again.');
       setLoading(false);
       return null;
     }
@@ -123,6 +140,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
 
   const saveAuthPayload = useCallback((accessToken: string, nextUser: PilotUser) => {
     window.localStorage.setItem(TOKEN_STORAGE_KEY, accessToken);
+    writeTokenCookie(accessToken);
     setToken(accessToken);
     setUser(nextUser);
     setError(null);
@@ -167,6 +185,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       }).catch(() => undefined);
     }
     window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+    writeTokenCookie(null);
     setToken(null);
     setUser(null);
     setError(null);

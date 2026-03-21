@@ -122,7 +122,7 @@ export default function PilotOverviewPanel({
         </div>
         <div className="overviewActions">
           {isAuthenticated ? <Link href="/workspaces">Manage workspace</Link> : <Link href="/sign-in">Sign in</Link>}
-          {!isAuthenticated ? <Link href="/sign-up">Create account</Link> : <Link href="/">Refresh dashboard</Link>}
+          {!isAuthenticated ? <Link href="/sign-up">Create account</Link> : <Link href="/dashboard">Refresh dashboard</Link>}
         </div>
       </article>
 

@@ -909,3 +909,74 @@ python -m pytest services\reconciliation-service\tests\test_reconciliation_servi
 python -m pytest services\api\tests\test_feature4_smoke.py -q
 python scripts\smoke_feature4.py
 ```
+
+## Customer deployment
+
+This repo now ships with a **split experience**:
+
+- `/` is a public marketing homepage for Decoda RWA Guard.
+- `/dashboard`, `/threat`, `/compliance`, `/resilience`, `/history`, and `/settings` are the authenticated product routes.
+- The product always prefers live data first, but it preserves the existing deterministic fallback and sample-safe behavior so the UI never blanks when a dependency is unavailable.
+
+### Railway requirements (API)
+
+- **Build context must remain the repo root.** Railway must build from the repository root so `services/api/Dockerfile` can copy the sibling fixture and service folders used by graceful fallback mode.
+- **Deploy target remains `services/api/Dockerfile`.**
+- Required Railway environment variables:
+  - `LIVE_MODE_ENABLED=true` for persisted workspace records.
+  - `DATABASE_URL=postgresql://...` using the Neon connection string and `sslmode=require`.
+  - `AUTH_TOKEN_SECRET=<long-random-secret>`.
+  - `CORS_ALLOWED_ORIGINS=http://localhost:3000,https://<your-vercel-app>.vercel.app`.
+  - `RISK_ENGINE_URL`, `THREAT_ENGINE_URL`, `COMPLIANCE_SERVICE_URL`, and `RECONCILIATION_SERVICE_URL` for the existing downstream services.
+  - Any existing mode/build variables already used by `services/api` should stay in place.
+
+### Vercel requirements (web)
+
+- Vercel should continue deploying the `apps/web` project.
+- Required Vercel environment variables:
+  - `NEXT_PUBLIC_API_URL=https://<your-railway-api>.up.railway.app`
+  - `NEXT_PUBLIC_LIVE_MODE_ENABLED=true`
+  - `NEXT_PUBLIC_API_TIMEOUT_MS=5000`
+- The web app uses the API URL to resolve **live**, **live (degraded)**, **fallback**, and **sample** states in the UI.
+
+### Neon / Postgres expectations
+
+- `DATABASE_URL` must point at the Neon Postgres database used for live pilot persistence.
+- The connection string should include SSL requirements expected by Neon, typically `sslmode=require`.
+- Live workspace history writes to the existing pilot tables: `users`, `workspaces`, `workspace_members`, `analysis_runs`, `alerts`, `governance_actions`, `incidents`, and `audit_logs`.
+
+### Migration and seed flow
+
+Run these commands from the repo root after setting the Railway/Neon API environment variables locally or in a one-off deploy shell:
+
+```bash
+python services/api/scripts/migrate.py
+python services/api/scripts/seed.py --pilot-demo
+```
+
+- `migrate.py` applies the live pilot schema to Neon.
+- `seed.py --pilot-demo` creates a demo workspace/user for customer walkthroughs while preserving the existing local demo workflow.
+
+### Verifying live vs degraded vs fallback vs sample
+
+Use `GET /health/details` together with the dashboard UI to verify the deployment mode:
+
+1. **Live**: `/health/details` is reachable, the gateway is healthy, and product badges read `Live`.
+2. **Live (degraded)**: the gateway is reachable but one or more feature feeds explain that fallback coverage is active.
+3. **Fallback**: a feature badge reads `Fallback`, usually because a downstream dependency timed out or returned an error while the UI stayed populated.
+4. **Sample**: no live API is configured for the web app, so deterministic sample-safe payloads render across the experience.
+
+You can also inspect `/health/details` to confirm dependency diagnostics, build/runtime markers, and the current fallback-safe fixture resolution.
+
+### Deployment checklist
+
+- [ ] Railway build context is the **repo root**.
+- [ ] Railway deploys `services/api/Dockerfile`.
+- [ ] `DATABASE_URL` points to Neon with SSL enabled.
+- [ ] `AUTH_TOKEN_SECRET` is set.
+- [ ] All downstream service URLs are configured.
+- [ ] Vercel has `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_LIVE_MODE_ENABLED`, and `NEXT_PUBLIC_API_TIMEOUT_MS`.
+- [ ] `python services/api/scripts/migrate.py` has been run against Neon.
+- [ ] Optional pilot seed completed with `python services/api/scripts/seed.py --pilot-demo`.
+- [ ] `/health/details` confirms expected dependency and runtime mode.
+- [ ] `/` shows the marketing homepage and `/dashboard` opens the authenticated product experience.

@@ -22,7 +22,7 @@ export default function SignUpPage() {
     setError(null);
     try {
       await signUp({ email, password, full_name: fullName, workspace_name: workspaceName });
-      router.push('/workspaces');
+      router.push('/dashboard');
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {

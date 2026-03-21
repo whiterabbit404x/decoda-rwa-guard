@@ -3,14 +3,13 @@ import PilotHistoryPanel from './pilot-history-panel';
 import PilotModeBanner from './pilot-mode-banner';
 import PilotOverviewPanel from './pilot-overview-panel';
 import ResilienceDemoPanel from './resilience-demo-panel';
+import StatusBadge from './status-badge';
+import SystemStatusPanel from './system-status-panel';
 import ThreatDemoPanel from './threat-demo-panel';
 import {
-  buildThreatDashboardRuntimeDiagnostics,
   buildDashboardViewModel,
   DashboardPageData,
-  formatAddress,
   formatRules,
-  shouldRenderThreatAlertSourceChip,
   statusTone,
 } from './dashboard-data';
 
@@ -19,49 +18,41 @@ type Props = {
   gatewayReachableOverride?: boolean;
 };
 
+function resolveBadgeState(source: 'live' | 'fallback', degraded?: boolean) {
+  if (source === 'live' && !degraded) {
+    return 'live' as const;
+  }
+  return 'fallback' as const;
+}
+
 export default function DashboardPageContent({ data, gatewayReachableOverride = false }: Props) {
-  const { dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard, apiUrl, diagnostics } = data;
-  const { backendState, cards, services, summaryCards, backendBanner } = buildDashboardViewModel(data, {
+  const { threatDashboard, complianceDashboard, resilienceDashboard, apiUrl, diagnostics } = data;
+  const { backendState, summaryCards, backendBanner } = buildDashboardViewModel(data, {
     gatewayReachableOverride,
   });
-  const threatRuntimeDiagnostics = buildThreatDashboardRuntimeDiagnostics(data);
-  const coverageLabel =
-    backendState === 'online'
-      ? 'Live embedded and Railway feeds are active across risk, threat, compliance, and resilience.'
-      : backendState === 'degraded'
-        ? 'Risk, threat, compliance, and resilience remain visible even when one live service needs attention.'
-        : 'Risk, threat, compliance, and resilience remain explorable in sample mode while connectivity is restored.';
-  const dataSourceLabel = diagnostics.fallbackTriggered
-    ? `Fallback active for ${diagnostics.failedEndpoints.join(', ')}`
-    : 'All dashboard feeds are live';
 
   return (
-    <main className="container">
-      <div className="hero">
+    <main className="container productPage">
+      <section className="hero">
         <div>
-          <p className="eyebrow">Decoda pilot workspace</p>
-          <h1>Treasury oversight, ready for a customer pilot</h1>
-          <p className="lede">
-            Keep the current dashboard structure, but lead with the information a pilot customer needs first: workspace context, live service status, recent alerts, recent incidents, and saved operating history.
-          </p>
+          <p className="eyebrow">Authenticated product workspace</p>
+          <h1>Tokenized treasury control dashboard</h1>
+          <p className="lede">A customer-ready operating surface for threat monitoring, compliance governance, and resilience workflows—while preserving graceful fallback behavior whenever a live dependency fails.</p>
+          <div className="heroActionRow">
+            <StatusBadge state={diagnostics.experienceState === 'live_degraded' ? 'live_degraded' : diagnostics.experienceState} />
+            <span className="ruleChip">Gateway: {diagnostics.endpoints.dashboard.ok ? 'reachable' : 'needs attention'}</span>
+            <span className="ruleChip">API: {apiUrl || 'Not configured'}</span>
+          </div>
         </div>
         <div className="heroPanel">
-          <p><strong>Pilot status:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Live service degraded' : 'Sample mode active'}</p>
-          <p><strong>Workspace history:</strong> Sign in to save alerts, incidents, and analysis activity to your workspace.</p>
-          <p><strong>Coverage:</strong> {coverageLabel}</p>
-          <p><strong>Live endpoint:</strong> {apiUrl || 'Not configured'}</p>
-          <p><strong>API source:</strong> {diagnostics.apiUrlSource}</p>
-          <p><strong>Data source:</strong> {dataSourceLabel}</p>
-          <p><strong>Runtime:</strong> {diagnostics.isProduction ? 'production' : dashboard?.mode ?? 'pilot'} mode</p>
-          {backendState === 'degraded' && diagnostics.degradedReasons.length > 0 ? <p><strong>Diagnostic:</strong> {diagnostics.degradedReasons[0]}</p> : null}
+          <p><strong>Platform state:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Live (degraded)' : 'Sample / fallback coverage'}</p>
+          <p><strong>Readable explanation:</strong> {backendBanner}</p>
+          <p><strong>Protected routes:</strong> Dashboard, threat, compliance, resilience, history, and settings live inside the authenticated app shell.</p>
         </div>
-      </div>
+      </section>
 
       <PilotModeBanner />
-
-      <section className={`banner banner-${backendState}`}>
-        <strong>Platform status:</strong> {backendBanner}
-      </section>
+      <SystemStatusPanel diagnostics={diagnostics} dashboard={data.dashboard} />
 
       <PilotOverviewPanel
         backendState={backendState}
@@ -71,549 +62,109 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
       />
 
       <section className="summaryGrid">
-        {summaryCards.map((card) => (
+        {summaryCards.map((card, index) => (
           <article key={card.label} className="metricCard">
-            <p className="metricLabel">{card.label}</p>
+            <div className="listHeader"><p className="metricLabel">{card.label}</p><StatusBadge state={index < 2 ? diagnostics.endpoints.riskDashboard.payloadState : index === 2 ? diagnostics.endpoints.threatDashboard.payloadState : index === 4 ? diagnostics.endpoints.complianceDashboard.payloadState : diagnostics.endpoints.resilienceDashboard.payloadState} compact /></div>
             <p className="metricValue">{card.value}</p>
             <p className="metricMeta">{card.meta}</p>
           </article>
         ))}
       </section>
 
-      <section className="grid">
-        {cards.map((card) => (
-          <article key={`${card.service}-${card.title}`} className="card">
-            <p className="serviceTag">{card.service}</p>
-            <h2>{card.title}</h2>
-            <p className="status">Status: {card.status}</p>
-            <p>{card.detail}</p>
-          </article>
-        ))}
+      <section className="featureSection">
+        <div className="sectionHeader">
+          <div>
+            <p className="eyebrow">Threat</p>
+            <h2>Feature 2 · Preemptive Cybersecurity &amp; AI Threat Defense</h2>
+            <p>Visible exploit and anomaly detections with deterministic explainability and preserved fallback behavior.</p>
+          </div>
+          <StatusBadge state={resolveBadgeState(threatDashboard.source, threatDashboard.degraded)} />
+        </div>
+        <div className="threeColumnSection">
+          <div className="stack compactStack">
+            {threatDashboard.active_alerts.map((alert) => (
+              <article key={alert.id} className="dataCard">
+                <div className="listHeader"><div><h3>{alert.title}</h3><p className="muted">{alert.category}</p></div><StatusBadge state={alert.source === 'live' ? 'live' : 'fallback'} compact /></div>
+                <p className="explanation small">{alert.explanation}</p>
+                <div className="chipRow">{formatRules(alert.patterns).map((pattern) => <span key={pattern} className="ruleChip">{pattern}</span>)}</div>
+              </article>
+            ))}
+          </div>
+          <ThreatDemoPanel apiUrl={apiUrl} />
+          <div className="stack compactStack">
+            {threatDashboard.recent_detections.map((detection) => (
+              <article key={detection.id} className="dataCard">
+                <div className="listHeader"><div><h3>{detection.title}</h3><p className="muted">{detection.category}</p></div><span className={`severityPill ${statusTone(detection.action)}`}>{detection.action} · {detection.score}</span></div>
+                <p className="explanation small">{detection.explanation}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="featureSection">
+        <div className="sectionHeader">
+          <div>
+            <p className="eyebrow">Compliance</p>
+            <h2>Feature 3 · Sovereign-Grade Compliance &amp; Governance</h2>
+            <p>Screen transfers, record governance actions, and keep policy context readable for customers.</p>
+          </div>
+          <StatusBadge state={resolveBadgeState(complianceDashboard.source, complianceDashboard.degraded)} />
+        </div>
+        <div className="threeColumnSection">
+          <div className="stack compactStack">
+            <article className="dataCard">
+              <div className="listHeader"><div><h3>Transfer wrapper decision</h3><p className="muted">{complianceDashboard.transfer_screening.wrapper_status}</p></div><span className={`severityPill ${statusTone(complianceDashboard.transfer_screening.decision)}`}>{complianceDashboard.transfer_screening.decision}</span></div>
+              <p className="explanation small">{complianceDashboard.transfer_screening.explainability_summary}</p>
+            </article>
+            <article className="dataCard">
+              <div className="listHeader"><div><h3>Residency decision</h3><p className="muted">{complianceDashboard.residency_screening.governance_status}</p></div><span className={`severityPill ${statusTone(complianceDashboard.residency_screening.residency_decision)}`}>{complianceDashboard.residency_screening.residency_decision}</span></div>
+              <p className="explanation small">{complianceDashboard.residency_screening.explainability_summary}</p>
+            </article>
+          </div>
+          <ComplianceDemoPanel apiUrl={apiUrl} />
+          <div className="stack compactStack">
+            {complianceDashboard.latest_governance_actions.map((action) => (
+              <article key={action.action_id} className="dataCard">
+                <div className="listHeader"><div><h3>{action.action_type}</h3><p className="muted">{action.target_type} · {action.target_id}</p></div><StatusBadge state={complianceDashboard.source === 'live' ? 'live' : 'fallback'} compact /></div>
+                <p className="explanation small">{action.reason}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="featureSection">
+        <div className="sectionHeader">
+          <div>
+            <p className="eyebrow">Resilience</p>
+            <h2>Feature 4 · Resilience and recovery readiness</h2>
+            <p>Reconciliation, backstop posture, and incident management remain explorable even in degraded states.</p>
+          </div>
+          <StatusBadge state={resolveBadgeState(resilienceDashboard.source, resilienceDashboard.degraded)} />
+        </div>
+        <div className="threeColumnSection">
+          <div className="stack compactStack">
+            {resilienceDashboard.latest_incidents.map((incident) => (
+              <article key={incident.event_id} className="dataCard">
+                <div className="listHeader"><div><h3>{incident.event_type}</h3><p className="muted">{incident.trigger_source}</p></div><StatusBadge state={incident.source === 'live' && !incident.degraded ? 'live' : 'fallback'} compact /></div>
+                <p className="explanation small">{incident.summary}</p>
+              </article>
+            ))}
+          </div>
+          <ResilienceDemoPanel apiUrl={apiUrl} />
+          <div className="stack compactStack">
+            {resilienceDashboard.reconciliation_result.ledger_assessments.map((assessment) => (
+              <article key={assessment.ledger_name} className="dataCard">
+                <div className="listHeader"><div><h3>{assessment.ledger_name}</h3><p className="muted">{assessment.status}</p></div><span className={`severityPill ${statusTone(assessment.status)}`}>{assessment.normalized_effective_supply}</span></div>
+                <p className="explanation small">{assessment.explanation}</p>
+              </article>
+            ))}
+          </div>
+        </div>
       </section>
 
       <PilotHistoryPanel />
-
-      <section className="featureSection">
-        <div className="sectionHeader">
-          <div>
-            <h2>Feature 2 · Preemptive Cybersecurity &amp; AI Threat Defense</h2>
-            <p>Explainable, deterministic scoring for zero-day exploit mitigation and anomalous treasury-token market behavior.</p>
-          </div>
-          <p className="tableMeta">{threatDashboard.message}</p>
-        </div>
-
-        <div className="summaryGrid threatSummaryGrid">
-          {threatDashboard.cards.map((card) => (
-            <article key={card.label} className="metricCard">
-              <p className="metricLabel">{card.label}</p>
-              <p className="metricValue">{card.value}</p>
-              <p className="metricMeta">{card.detail}</p>
-            </article>
-          ))}
-        </div>
-
-        <article className="dataCard">
-          <div className="sectionHeader compact">
-            <h3>Feature 2 diagnostics</h3>
-            <p>Temporary truth trace for the live vs fallback threat feed.</p>
-          </div>
-          <div className="kvGrid compactKvGrid">
-            <p><span>threatDashboard.source</span>{threatRuntimeDiagnostics.source}</p>
-            <p><span>threatDashboard.degraded</span>{String(threatRuntimeDiagnostics.degraded)}</p>
-            <p><span>first alert source</span>{threatRuntimeDiagnostics.firstAlertSource}</p>
-            <p><span>endpoint</span>{threatRuntimeDiagnostics.endpoint.path}</p>
-            <p><span>endpoint payloadState</span>{threatRuntimeDiagnostics.endpoint.payloadState}</p>
-            <p><span>endpoint usedFallback</span>{String(threatRuntimeDiagnostics.endpoint.usedFallback)}</p>
-          </div>
-          <p className="explanation small"><strong>threatDashboard.message:</strong> {threatRuntimeDiagnostics.message}</p>
-        </article>
-
-        <div className="threeColumnSection">
-          <div className="stack compactStack">
-            <div className="sectionHeader compact">
-              <h3>Active alerts</h3>
-              <p>{threatDashboard.summary.critical_or_high_alerts} escalated detections</p>
-            </div>
-            {threatDashboard.active_alerts.map((alert) => (
-              <article key={alert.id} className="dataCard">
-                <div className="listHeader">
-                  <div>
-                    <p className="serviceTag subtle">{alert.category}</p>
-                    <h3>{alert.title}</h3>
-                  </div>
-                  <div className={`decisionBadge ${statusTone(alert.action)}`}>
-                    <span>{alert.action}</span>
-                    <strong>{alert.score}</strong>
-                  </div>
-                </div>
-                <div className="chipRow">
-                  <span className={`severityPill ${alert.severity}`}>{alert.severity}</span>
-                  {shouldRenderThreatAlertSourceChip(threatDashboard, alert) ? <span className="ruleChip">{alert.source}</span> : null}
-                </div>
-                <p className="explanation small">{alert.explanation}</p>
-                <div className="chipRow">
-                  {formatRules(alert.patterns).map((pattern) => (
-                    <span key={`${alert.id}-${pattern}`} className="ruleChip">{pattern}</span>
-                  ))}
-                </div>
-              </article>
-            ))}
-          </div>
-
-          <ThreatDemoPanel apiUrl={apiUrl} />
-
-          <div className="stack compactStack">
-            <div className="sectionHeader compact">
-              <h3>Market anomaly summary</h3>
-              <p>Rule-matched anomaly types from the dashboard feed.</p>
-            </div>
-            <article className="dataCard">
-              <div className="chipRow">
-                {threatDashboard.summary.market_anomaly_types.map((item) => (
-                  <span key={item} className="ruleChip">{item}</span>
-                ))}
-              </div>
-              <div className="kvGrid compactKvGrid">
-                <p><span>Average score</span>{threatDashboard.summary.average_score}</p>
-                <p><span>Blocked</span>{threatDashboard.summary.blocked_actions}</p>
-                <p><span>Review</span>{threatDashboard.summary.review_actions}</p>
-                <p><span>Generated</span>{new Date(threatDashboard.generated_at).toLocaleString()}</p>
-              </div>
-            </article>
-            <div className="sectionHeader compact">
-              <h3>Recent detections</h3>
-              <p>Latest transaction, contract, and market findings.</p>
-            </div>
-            {threatDashboard.recent_detections.map((detection) => (
-              <article key={detection.id} className="dataCard">
-                <div className="listHeader">
-                  <div>
-                    <p className="serviceTag subtle">{detection.category}</p>
-                    <h3>{detection.title}</h3>
-                  </div>
-                  <span className={`severityPill ${statusTone(detection.action)}`}>
-                    {detection.action} · {detection.score}
-                  </span>
-                </div>
-                <p className="explanation small">{detection.explanation}</p>
-                <div className="chipRow">
-                  {formatRules(detection.patterns).map((pattern) => (
-                    <span key={`${detection.id}-${pattern}`} className="ruleChip">{pattern}</span>
-                  ))}
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="featureSection">
-        <div className="sectionHeader">
-          <div>
-            <h2>Feature 3 · Sovereign-Grade Compliance &amp; Governance</h2>
-            <p>Deterministic transfer wrappers, geopatriation controls, and immutable-style governance actions with explainable service-state handling.</p>
-          </div>
-          <p className="tableMeta">{complianceDashboard.message}</p>
-        </div>
-
-        <div className="summaryGrid threatSummaryGrid">
-          {complianceDashboard.cards.map((card) => (
-            <article key={card.label} className="metricCard">
-              <p className="metricLabel">{card.label}</p>
-              <p className="metricValue">{card.value}</p>
-              <p className="metricMeta">{card.detail}</p>
-            </article>
-          ))}
-        </div>
-
-        <div className="threeColumnSection">
-          <div className="stack compactStack">
-            <div className="sectionHeader compact">
-              <h3>Transfer wrapper decision</h3>
-              <p>{complianceDashboard.transfer_screening.decision} · {complianceDashboard.transfer_screening.risk_level}</p>
-            </div>
-            <article className="dataCard">
-              <div className="listHeader">
-                <div>
-                  <p className="serviceTag subtle">{complianceDashboard.transfer_screening.wrapper_status}</p>
-                  <h3>{complianceDashboard.transfer_screening.recommended_action}</h3>
-                </div>
-                <span className={`severityPill ${statusTone(complianceDashboard.transfer_screening.decision)}`}>
-                  {complianceDashboard.transfer_screening.decision}
-                </span>
-              </div>
-              <p className="explanation small">{complianceDashboard.transfer_screening.explainability_summary}</p>
-              <div className="chipRow">
-                {complianceDashboard.transfer_screening.triggered_rules.map((rule) => (
-                  <span key={rule.rule_id} className={`ruleChip ${statusTone(rule.outcome)}`}>{rule.rule_id}: {rule.outcome}</span>
-                ))}
-              </div>
-              <div className="chipRow">
-                {formatRules(complianceDashboard.transfer_screening.reasons).map((reason) => (
-                  <span key={reason} className="ruleChip">{reason}</span>
-                ))}
-              </div>
-              <div className="kvGrid compactKvGrid">
-                <p><span>Triggered rules</span>{complianceDashboard.summary.triggered_rule_count}</p>
-                <p><span>Allowlisted</span>{complianceDashboard.summary.allowlisted_wallet_count}</p>
-                <p><span>Blocklisted</span>{complianceDashboard.summary.blocklisted_wallet_count}</p>
-                <p><span>Frozen</span>{complianceDashboard.summary.frozen_wallet_count}</p>
-              </div>
-            </article>
-
-            <div className="sectionHeader compact">
-              <h3>Residency / geopatriation</h3>
-              <p>{complianceDashboard.residency_screening.residency_decision} · {complianceDashboard.residency_screening.allowed_region_outcome}</p>
-            </div>
-            <article className="dataCard">
-              <div className="chipRow">
-                <span className={`severityPill ${statusTone(complianceDashboard.residency_screening.residency_decision)}`}>
-                  {complianceDashboard.residency_screening.residency_decision}
-                </span>
-                <span className="ruleChip">{complianceDashboard.residency_screening.governance_status}</span>
-              </div>
-              <p className="explanation small">{complianceDashboard.residency_screening.explainability_summary}</p>
-              <div className="chipRow">
-                {formatRules(complianceDashboard.residency_screening.policy_violations).map((item) => (
-                  <span key={item} className="ruleChip">{item}</span>
-                ))}
-              </div>
-              <p className="label">Routing recommendation</p>
-              <p>{complianceDashboard.residency_screening.routing_recommendation}</p>
-            </article>
-          </div>
-
-          <ComplianceDemoPanel apiUrl={apiUrl} />
-
-          <div className="stack compactStack">
-            <div className="sectionHeader compact">
-              <h3>Latest governance actions</h3>
-              <p>{complianceDashboard.latest_governance_actions.length} recent actions</p>
-            </div>
-            {complianceDashboard.latest_governance_actions.map((action) => (
-              <article key={action.action_id} className="dataCard">
-                <div className="listHeader">
-                  <div>
-                    <p className="serviceTag subtle">{action.target_type}</p>
-                    <h3>{action.action_type}</h3>
-                  </div>
-                  <span className="ruleChip">{action.status}</span>
-                </div>
-                <p className="muted">{action.target_id} · {new Date(action.created_at).toLocaleString()}</p>
-                <p className="explanation small">{action.reason}</p>
-                <div className="chipRow">
-                  {action.policy_effects.map((effect) => (
-                    <span key={`${action.action_id}-${effect}`} className="ruleChip">{effect}</span>
-                  ))}
-                </div>
-                <p className="tableMeta">Attestation: {action.attestation_hash.slice(0, 12)}…</p>
-              </article>
-            ))}
-
-            <div className="sectionHeader compact">
-              <h3>Asset transfer status</h3>
-              <p>Paused assets and demo wrapper status.</p>
-            </div>
-            {complianceDashboard.asset_transfer_status.map((item) => (
-              <article key={item.asset_id} className="dataCard">
-                <div className="listHeader">
-                  <h3>{item.asset_id}</h3>
-                  <span className={`severityPill ${statusTone(item.status)}`}>{item.status}</span>
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="featureSection">
-        <div className="sectionHeader">
-          <div>
-            <h2>Feature 4 · Interoperability &amp; Systemic Resilience</h2>
-            <p>Deterministic cross-chain reconciliation, liquidity backstop safeguards, and a local incident ledger spanning ethereum, avalanche, and private-bank-ledger.</p>
-          </div>
-          <p className="tableMeta">{resilienceDashboard.message}</p>
-        </div>
-
-        <div className="summaryGrid threatSummaryGrid">
-          {resilienceDashboard.cards.map((card) => (
-            <article key={card.label} className="metricCard">
-              <p className="metricLabel">{card.label}</p>
-              <p className="metricValue">{card.value}</p>
-              <p className="metricMeta">{card.detail}</p>
-            </article>
-          ))}
-        </div>
-
-        <div className="threeColumnSection">
-          <div className="stack compactStack">
-            <div className="sectionHeader compact">
-              <h3>Reconciliation status</h3>
-              <p>{resilienceDashboard.reconciliation_result.reconciliation_status} · severity {resilienceDashboard.reconciliation_result.severity_score}</p>
-            </div>
-            <article className="dataCard">
-              <div className="listHeader">
-                <div>
-                  <p className="serviceTag subtle">{resilienceDashboard.reconciliation_result.asset_id}</p>
-                  <h3>{resilienceDashboard.reconciliation_result.explainability_summary}</h3>
-                </div>
-                <span className={`severityPill ${statusTone(resilienceDashboard.reconciliation_result.reconciliation_status)}`}>
-                  {resilienceDashboard.reconciliation_result.reconciliation_status}
-                </span>
-              </div>
-              <div className="kvGrid compactKvGrid">
-                <p><span>Expected supply</span>{resilienceDashboard.reconciliation_result.expected_total_supply.toLocaleString()}</p>
-                <p><span>Observed supply</span>{resilienceDashboard.reconciliation_result.observed_total_supply.toLocaleString()}</p>
-                <p><span>Mismatch</span>{resilienceDashboard.reconciliation_result.mismatch_amount.toLocaleString()}</p>
-                <p><span>Stale ledgers</span>{resilienceDashboard.reconciliation_result.stale_ledger_count}</p>
-              </div>
-              <div className="chipRow">
-                {formatRules(resilienceDashboard.reconciliation_result.mismatch_summary).map((item) => (
-                  <span key={item} className="ruleChip">{item}</span>
-                ))}
-              </div>
-            </article>
-
-            <div className="sectionHeader compact">
-              <h3>Ledger assessments</h3>
-              <p>Accepted, penalized, and flagged ledger explanations.</p>
-            </div>
-            {resilienceDashboard.reconciliation_result.ledger_assessments.map((ledger) => (
-              <article key={ledger.ledger_name} className="dataCard">
-                <div className="listHeader">
-                  <div>
-                    <h3>{ledger.ledger_name}</h3>
-                    <p className="muted">Normalized supply {ledger.normalized_effective_supply.toLocaleString()}</p>
-                  </div>
-                  <span className={`severityPill ${statusTone(ledger.status)}`}>{ledger.status}</span>
-                </div>
-                <p className="explanation small">{ledger.explanation}</p>
-                <div className="chipRow">
-                  <span className="ruleChip">staleness {ledger.staleness_minutes}m</span>
-                  <span className="ruleChip">settlement lag {ledger.settlement_lag_flag ? 'yes' : 'no'}</span>
-                  <span className="ruleChip">double-count risk {ledger.over_reported_against_expected ? 'elevated' : 'low'}</span>
-                </div>
-              </article>
-            ))}
-          </div>
-
-          <ResilienceDemoPanel apiUrl={apiUrl} />
-
-          <div className="stack compactStack">
-            <div className="sectionHeader compact">
-              <h3>Backstop decision</h3>
-              <p>{resilienceDashboard.backstop_result.backstop_decision} · {resilienceDashboard.backstop_result.operational_status}</p>
-            </div>
-            <article className="dataCard">
-              <div className="chipRow">
-                <span className={`severityPill ${statusTone(resilienceDashboard.backstop_result.backstop_decision)}`}>
-                  {resilienceDashboard.backstop_result.backstop_decision}
-                </span>
-                <span className="ruleChip">trading {resilienceDashboard.backstop_result.trading_status}</span>
-                <span className="ruleChip">bridge {resilienceDashboard.backstop_result.bridge_status}</span>
-                <span className="ruleChip">settlement {resilienceDashboard.backstop_result.settlement_status}</span>
-              </div>
-              <p className="explanation small">{resilienceDashboard.backstop_result.explainability_summary}</p>
-              <div className="chipRow">
-                {formatRules(resilienceDashboard.backstop_result.triggered_safeguards).map((item) => (
-                  <span key={item} className="ruleChip">{item}</span>
-                ))}
-              </div>
-              <div className="chipRow">
-                {formatRules(resilienceDashboard.backstop_result.recommended_actions).map((item) => (
-                  <span key={item} className="ruleChip">{item}</span>
-                ))}
-              </div>
-            </article>
-
-            <div className="sectionHeader compact">
-              <h3>Latest incident records</h3>
-              <p>{resilienceDashboard.latest_incidents.length} deterministic ledger entries</p>
-            </div>
-            {resilienceDashboard.latest_incidents.map((incident) => (
-              <article key={incident.event_id} className="dataCard">
-                <div className="listHeader">
-                  <div>
-                    <p className="serviceTag subtle">{incident.trigger_source}</p>
-                    <h3>{incident.event_type}</h3>
-                  </div>
-                  <span className={`severityPill ${statusTone(incident.severity)}`}>{incident.severity}</span>
-                </div>
-                <p className="muted">{incident.event_id} · {new Date(incident.created_at).toLocaleString()}</p>
-                <p className="explanation small">{incident.summary}</p>
-                <div className="chipRow">
-                  {incident.affected_ledgers.map((ledger) => (
-                    <span key={`${incident.event_id}-${ledger}`} className="ruleChip">{ledger}</span>
-                  ))}
-                </div>
-                <p className="tableMeta">Attestation: {incident.attestation_hash.slice(0, 12)}… · Fingerprint: {incident.fingerprint}</p>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="dashboardSection">
-        <div className="sectionHeader">
-          <h2>Transaction Queue</h2>
-          <p>Live evaluations from the local risk-engine, with graceful degraded-mode records when the backend is unavailable.</p>
-          <p className="tableMeta">{riskDashboard.message}</p>
-        </div>
-        <div className="stack">
-          {riskDashboard.transaction_queue.map((item) => (
-            <article key={item.id} className="dataCard transactionCard">
-              <div className="transactionHeader">
-                <div>
-                  <p className="serviceTag subtle">{item.source}</p>
-                  <h3>{item.label}</h3>
-                  <p className="muted">{item.function_name} • {item.contract_name}</p>
-                </div>
-                <div className={`decisionBadge ${statusTone(item.recommendation)}`}>
-                  <span>{item.recommendation}</span>
-                  <strong>{item.risk_score}</strong>
-                </div>
-              </div>
-              <div className="kvGrid">
-                <p><span>Transaction</span>{item.tx_hash}</p>
-                <p><span>From</span>{formatAddress(item.from_address)}</p>
-                <p><span>To</span>{formatAddress(item.to_address)}</p>
-                <p><span>Updated</span>{new Date(item.updated_at).toLocaleString()}</p>
-              </div>
-              <div className="ruleSection">
-                <p className="label">Triggered rules</p>
-                <div className="chipRow">
-                  {formatRules(item.triggered_rules).map((rule) => (
-                    <span key={`${item.id}-${rule}`} className="ruleChip">{rule}</span>
-                  ))}
-                </div>
-              </div>
-              <p className="explanation">{item.explanation}</p>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="twoColumnSection">
-        <div>
-          <div className="sectionHeader compact">
-            <h2>Risk Alerts</h2>
-            <p>Escalations that need analyst attention.</p>
-          </div>
-          <div className="stack compactStack">
-            {riskDashboard.risk_alerts.map((alert) => (
-              <article key={alert.id} className="dataCard">
-                <div className="listHeader">
-                  <div>
-                    <h3>{alert.title}</h3>
-                    <p className="muted">{alert.tx_hash}</p>
-                  </div>
-                  <span className={`severityPill ${alert.severity}`}>{alert.status}</span>
-                </div>
-                <p className="statusLine">
-                  <strong>{alert.recommendation}</strong> · risk score {alert.risk_score}
-                </p>
-                <p className="label">Triggered rule</p>
-                <p>{alert.rule}</p>
-                <p className="explanation small">{alert.explanation}</p>
-              </article>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <div className="sectionHeader compact">
-            <h2>Contract Scan Results</h2>
-            <p>Static and runtime findings grouped by destination contract.</p>
-          </div>
-          <div className="stack compactStack">
-            {riskDashboard.contract_scan_results.map((scan) => (
-              <article key={scan.id} className="dataCard">
-                <div className="listHeader">
-                  <div>
-                    <h3>{scan.contract_name}</h3>
-                    <p className="muted">{formatAddress(scan.contract_address)} · {scan.function_name}</p>
-                  </div>
-                  <div className={`decisionBadge ${statusTone(scan.recommendation)}`}>
-                    <span>{scan.recommendation}</span>
-                    <strong>{scan.risk_score}</strong>
-                  </div>
-                </div>
-                <div className="chipRow">
-                  {formatRules(scan.triggered_rules).map((rule) => (
-                    <span key={`${scan.id}-${rule}`} className="ruleChip">{rule}</span>
-                  ))}
-                </div>
-                <p className="explanation small">{scan.explanation}</p>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="dashboardSection">
-        <div className="sectionHeader">
-          <h2>Decisions Log</h2>
-          <p>Chronological audit trail of risk outcomes, explanations, and rule triggers.</p>
-        </div>
-        <div className="tableWrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Contract</th>
-                <th>Decision</th>
-                <th>Triggered rules</th>
-                <th>Explanation</th>
-              </tr>
-            </thead>
-            <tbody>
-              {riskDashboard.decisions_log.map((entry) => (
-                <tr key={entry.id}>
-                  <td>{new Date(entry.decided_at).toLocaleString()}</td>
-                  <td>
-                    <strong>{entry.contract_name}</strong>
-                    <span className="tableMeta">{entry.tx_hash}</span>
-                  </td>
-                  <td>
-                    <span className={`severityPill ${statusTone(entry.recommendation)}`}>
-                      {entry.recommendation} · {entry.risk_score}
-                    </span>
-                  </td>
-                  <td>{formatRules(entry.triggered_rules).join(', ')}</td>
-                  <td>{entry.explanation}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="serviceSection">
-        <div className="sectionHeader">
-          <h2>Backend services</h2>
-          <p>Each service can run locally with Uvicorn and the shared SQLite file.</p>
-        </div>
-        <div className="serviceList">
-          {services.length > 0 ? (
-            services.map((service) => (
-              <article key={service.service_name} className="serviceCard">
-                <div className="serviceCardHeader">
-                  <h3>{service.service_name}</h3>
-                  <span className="pill">:{service.port}</span>
-                </div>
-                <p className="status">Status: {service.status}</p>
-                <p>{service.detail}</p>
-                <p className="timestamp">Updated {new Date(service.updated_at).toLocaleString()}</p>
-              </article>
-            ))
-          ) : (
-            <article className="serviceCard emptyState">
-              <h3>Backend not running yet</h3>
-              <p>Run the repo-root service commands for the API, risk-engine, threat-engine, compliance-service, and reconciliation-service to view live service status here.</p>
-            </article>
-          )}
-        </div>
-      </section>
     </main>
   );
 }
