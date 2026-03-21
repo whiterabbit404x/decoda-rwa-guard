@@ -179,3 +179,16 @@ def evaluate_risk_internal(
     )
 ) -> RiskEvaluationResponse:
     return engine.evaluate(request)
+
+
+embedded_evaluate = evaluate_risk_internal
+
+__all__ = [
+    'app',
+    'engine',
+    'RiskEvaluationRequest',
+    'RiskEvaluationResponse',
+    'evaluate_risk',
+    'evaluate_risk_internal',
+    'embedded_evaluate',
+]

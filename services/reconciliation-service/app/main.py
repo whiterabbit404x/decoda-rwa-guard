@@ -183,3 +183,24 @@ def get_scenario(scenario_name: str) -> dict[str, Any]:
     if scenario is None:
         raise HTTPException(status_code=404, detail=f'Unknown scenario: {scenario_name}')
     return scenario
+
+
+embedded_dashboard = dashboard
+
+__all__ = [
+    'app',
+    'engine',
+    'BackstopRequest',
+    'BackstopResponse',
+    'IncidentRecord',
+    'IncidentRecordRequest',
+    'ReconciliationRequest',
+    'ReconciliationResponse',
+    'dashboard',
+    'reconcile_state',
+    'evaluate_backstop',
+    'record_incident',
+    'list_incidents',
+    'get_incident',
+    'embedded_dashboard',
+]
