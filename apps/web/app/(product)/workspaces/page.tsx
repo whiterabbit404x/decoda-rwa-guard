@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
-import { usePilotAuth } from '../pilot-auth-context';
+import { usePilotAuth } from '../../pilot-auth-context';
 
 export default function WorkspacesPage() {
   const router = useRouter();
@@ -65,7 +65,7 @@ export default function WorkspacesPage() {
         <div className="dataCard">
           <h2>Next step</h2>
           <p className="muted">After selecting a workspace, return to the dashboard to review live status, recent alerts, recent incidents, and saved history in one place.</p>
-          <Link href="/">Back to dashboard</Link>
+          <Link href="/dashboard">Back to dashboard</Link>
         </div>
       </section>
     </main>

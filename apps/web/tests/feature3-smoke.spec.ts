@@ -16,9 +16,9 @@ test('localhost:3000 renders the Feature 3 dashboard section without a fatal cra
   const response = await page.goto('/', { waitUntil: 'networkidle' });
 
   expect(response?.ok()).toBeTruthy();
-  await expect(page.locator('h1')).toHaveText('Tokenized Treasury Control Dashboard');
-  await expect(page.locator('h2', { hasText: 'Feature 3 · Sovereign-Grade Compliance & Governance' })).toBeVisible();
-  await expect(page.locator('text=Feature 3 demo interactions')).toBeVisible();
+  await expect(page.locator('h1')).toHaveText('Risk control for tokenized treasuries and real-world assets.');
+  await expect(page.locator('text=Request demo')).toBeVisible();
+  await expect(page.locator('text=Start pilot')).toBeVisible();
   await expect(page.locator('body')).not.toContainText('Application error');
   await expect(page.locator('body')).not.toContainText('Unhandled Runtime Error');
   await expect(page.locator('body')).not.toContainText('This page could not be found');

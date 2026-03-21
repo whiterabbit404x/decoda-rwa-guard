@@ -618,3 +618,263 @@ td .tableMeta {
 .nestedCard {
   margin-top: 0.75rem;
 }
+
+.marketingPage,
+.productPage {
+  padding-bottom: 4rem;
+}
+
+.marketingHero {
+  align-items: stretch;
+}
+
+.marketingPanel,
+.polishedCard {
+  background: linear-gradient(180deg, rgba(19, 27, 48, 0.96), rgba(9, 14, 26, 0.94));
+  border: 1px solid rgba(106, 169, 255, 0.24);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+}
+
+.marketingSection {
+  margin-top: 2rem;
+}
+
+.customerTrustSection,
+.pricingSection {
+  margin-top: 3rem;
+}
+
+.heroActionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.primaryCta,
+.secondaryCta,
+.tertiaryCta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0.7rem 1rem;
+  border-radius: 999px;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.primaryCta {
+  background: #6aa9ff;
+  color: #08101d;
+}
+
+.secondaryCta,
+.tertiaryCta {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: inherit;
+}
+
+.compactSummaryGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.statusBadge.compact {
+  padding: 0.2rem 0.55rem;
+  font-size: 0.72rem;
+}
+
+.statusBadge-live {
+  background: rgba(70, 196, 140, 0.12);
+  color: #7ff0b4;
+  border-color: rgba(70, 196, 140, 0.24);
+}
+
+.statusBadge-live_degraded,
+.statusBadge-fallback {
+  background: rgba(255, 186, 73, 0.12);
+  color: #ffd280;
+  border-color: rgba(255, 186, 73, 0.24);
+}
+
+.statusBadge-sample,
+.statusBadge-unavailable {
+  background: rgba(143, 155, 179, 0.16);
+  color: #dbe5ff;
+  border-color: rgba(143, 155, 179, 0.26);
+}
+
+.appShellFrame {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.appSidebar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-height: 100vh;
+  padding: 1.25rem;
+  background: rgba(5, 9, 18, 0.94);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.appShellContent {
+  padding: 1.5rem;
+}
+
+.brandBlock {
+  display: grid;
+  gap: 0.25rem;
+  padding: 1rem;
+  border-radius: 1rem;
+  text-decoration: none;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.brandEyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 0.72rem;
+  color: #8fb2ff;
+}
+
+.appNav {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.appNav a {
+  padding: 0.8rem 0.9rem;
+  border-radius: 0.9rem;
+  text-decoration: none;
+  color: #cbd7ef;
+}
+
+.appNav a.active,
+.appNav a:hover {
+  background: rgba(106, 169, 255, 0.14);
+  color: white;
+}
+
+.sidebarMetaCard,
+.systemStatusPanel,
+.emptyStatePanel,
+.detailDrawer {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1rem;
+  padding: 1rem;
+}
+
+.emptyStatePanel {
+  margin-top: 1rem;
+}
+
+.systemStatusPanel {
+  margin: 1rem 0 1.5rem;
+}
+
+.statusMatrix {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.statusMatrixRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.statusMatrixRow:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.statusMatrixMeta {
+  display: grid;
+  justify-items: end;
+  gap: 0.35rem;
+  max-width: 420px;
+  text-align: right;
+}
+
+.compactHero {
+  margin-bottom: 1rem;
+}
+
+.workspaceControlBar,
+.historyToolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 1rem;
+}
+
+.compactLabel {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.compactLabel select {
+  min-width: 180px;
+}
+
+.historyLayout {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.detailButton {
+  width: 100%;
+  text-align: left;
+  color: inherit;
+}
+
+.detailDrawer {
+  margin-top: 1.5rem;
+}
+
+.detailDrawer pre,
+.dataCard pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.8rem;
+  overflow-x: auto;
+}
+
+@media (max-width: 1100px) {
+  .appShellFrame {
+    grid-template-columns: 1fr;
+  }
+
+  .appSidebar {
+    position: static;
+    min-height: auto;
+  }
+
+  .historyLayout {
+    grid-template-columns: 1fr;
+  }
+}
