@@ -4,11 +4,12 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
+import AuthDiagnosticCard from '../auth-diagnostic-card';
 import { usePilotAuth } from '../pilot-auth-context';
 
 export default function SignInPageClient({ nextPath }: { nextPath?: string }) {
   const router = useRouter();
-  const { signIn, liveModeConfigured } = usePilotAuth();
+  const { apiUrl, signIn, liveModeConfigured } = usePilotAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -39,15 +40,18 @@ export default function SignInPageClient({ nextPath }: { nextPath?: string }) {
       </div>
       {!liveModeConfigured ? <p className="statusLine">Live workspace access will appear here after the Railway and Vercel environment variables are configured.</p> : null}
       {nextPath ? <p className="muted">Sign in to continue to {nextPath}.</p> : null}
-      <form className="dataCard authForm" onSubmit={handleSubmit}>
-        <label className="label">Email</label>
-        <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
-        <label className="label">Password</label>
-        <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" required />
-        <button type="submit" disabled={loading || !liveModeConfigured}>{loading ? 'Signing in…' : 'Sign in'}</button>
-        {error ? <p className="statusLine">{error}</p> : null}
-        <p className="muted">Need an account? <Link href="/sign-up">Create one</Link>.</p>
-      </form>
+      <div className="twoColumnSection authPageGrid">
+        <form className="dataCard authForm" onSubmit={handleSubmit}>
+          <label className="label">Email</label>
+          <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
+          <label className="label">Password</label>
+          <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" required />
+          <button type="submit" disabled={loading || !liveModeConfigured}>{loading ? 'Signing in…' : 'Sign in'}</button>
+          {error ? <p className="statusLine">{error}</p> : null}
+          <p className="muted">Need an account? <Link href="/sign-up">Create one</Link>.</p>
+        </form>
+        <AuthDiagnosticCard apiUrl={apiUrl} liveModeConfigured={liveModeConfigured} />
+      </div>
     </main>
   );
 }

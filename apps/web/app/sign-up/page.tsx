@@ -4,11 +4,12 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
+import AuthDiagnosticCard from '../auth-diagnostic-card';
 import { usePilotAuth } from '../pilot-auth-context';
 
 export default function SignUpPage() {
   const router = useRouter();
-  const { signUp, liveModeConfigured } = usePilotAuth();
+  const { apiUrl, signUp, liveModeConfigured } = usePilotAuth();
   const [fullName, setFullName] = useState('');
   const [workspaceName, setWorkspaceName] = useState('');
   const [email, setEmail] = useState('');
@@ -39,19 +40,22 @@ export default function SignUpPage() {
           <p className="lede">Create the first workspace owner account for your team and start saving live pilot activity.</p>
         </div>
       </div>
-      <form className="dataCard authForm" onSubmit={handleSubmit}>
-        <label className="label">Full name</label>
-        <input value={fullName} onChange={(event) => setFullName(event.target.value)} required />
-        <label className="label">Workspace name</label>
-        <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} required />
-        <label className="label">Email</label>
-        <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
-        <label className="label">Password</label>
-        <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" minLength={10} required />
-        <button type="submit" disabled={loading || !liveModeConfigured}>{loading ? 'Creating account…' : 'Create account'}</button>
-        {error ? <p className="statusLine">{error}</p> : null}
-        <p className="muted">Already have an account? <Link href="/sign-in">Sign in</Link>.</p>
-      </form>
+      <div className="twoColumnSection authPageGrid">
+        <form className="dataCard authForm" onSubmit={handleSubmit}>
+          <label className="label">Full name</label>
+          <input value={fullName} onChange={(event) => setFullName(event.target.value)} required />
+          <label className="label">Workspace name</label>
+          <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} required />
+          <label className="label">Email</label>
+          <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
+          <label className="label">Password</label>
+          <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" minLength={10} required />
+          <button type="submit" disabled={loading || !liveModeConfigured}>{loading ? 'Creating account…' : 'Create account'}</button>
+          {error ? <p className="statusLine">{error}</p> : null}
+          <p className="muted">Already have an account? <Link href="/sign-in">Sign in</Link>.</p>
+        </form>
+        <AuthDiagnosticCard apiUrl={apiUrl} liveModeConfigured={liveModeConfigured} />
+      </div>
     </main>
   );
 }

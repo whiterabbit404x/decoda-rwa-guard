@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
 import { resolveApiConfig } from './api-config';
+import { classifyAuthResponseError, classifyAuthTransportError } from './auth-diagnostics';
 
 const TOKEN_STORAGE_KEY = 'decoda-pilot-access-token';
 const TOKEN_COOKIE_MAX_AGE = 60 * 60 * 24;
@@ -147,31 +148,41 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signIn = useCallback(async (payload: { email: string; password: string }) => {
-    const response = await fetch(`${requireApiUrl()}/auth/signin`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await readJson<{ access_token?: string; user?: PilotUser; detail?: string }>(response);
-    if (!response.ok || !data.access_token || !data.user) {
-      throw new Error(data.detail ?? 'Unable to sign in.');
+    const apiUrl = requireApiUrl();
+    try {
+      const response = await fetch(`${apiUrl}/auth/signin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await readJson<{ access_token?: string; user?: PilotUser; detail?: string }>(response);
+      if (!response.ok || !data.access_token || !data.user) {
+        throw new Error(classifyAuthResponseError('sign in', apiUrl, response.status, data.detail));
+      }
+      saveAuthPayload(data.access_token, data.user);
+      return data.user;
+    } catch (submitError) {
+      throw new Error(classifyAuthTransportError('sign in', apiUrl, submitError));
     }
-    saveAuthPayload(data.access_token, data.user);
-    return data.user;
   }, [saveAuthPayload]);
 
   const signUp = useCallback(async (payload: { email: string; password: string; full_name: string; workspace_name: string }) => {
-    const response = await fetch(`${requireApiUrl()}/auth/signup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await readJson<{ access_token?: string; user?: PilotUser; detail?: string }>(response);
-    if (!response.ok || !data.access_token || !data.user) {
-      throw new Error(data.detail ?? 'Unable to sign up.');
+    const apiUrl = requireApiUrl();
+    try {
+      const response = await fetch(`${apiUrl}/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await readJson<{ access_token?: string; user?: PilotUser; detail?: string }>(response);
+      if (!response.ok || !data.access_token || !data.user) {
+        throw new Error(classifyAuthResponseError('create an account', apiUrl, response.status, data.detail));
+      }
+      saveAuthPayload(data.access_token, data.user);
+      return data.user;
+    } catch (submitError) {
+      throw new Error(classifyAuthTransportError('create an account', apiUrl, submitError));
     }
-    saveAuthPayload(data.access_token, data.user);
-    return data.user;
   }, [saveAuthPayload]);
 
   const signOut = useCallback(async () => {

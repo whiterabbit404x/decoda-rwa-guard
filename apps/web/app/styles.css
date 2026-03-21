@@ -615,6 +615,34 @@ td .tableMeta {
   background: rgba(88, 166, 255, 0.14);
 }
 
+
+.authPageGrid {
+  align-items: start;
+  margin-top: 1.5rem;
+}
+
+.authDiagnosticCard {
+  max-width: 720px;
+}
+
+.authDiagnosticGrid {
+  margin-top: 1rem;
+}
+
+.authDiagnosticLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  margin-top: 1rem;
+  padding: 0.7rem 1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: inherit;
+  text-decoration: none;
+  font-weight: 600;
+}
+
 .nestedCard {
   margin-top: 0.75rem;
 }

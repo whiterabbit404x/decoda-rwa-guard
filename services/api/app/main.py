@@ -22,6 +22,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.pilot import (
+    auth_token_secret_configured,
     authenticate_request,
     authenticate_with_connection,
     build_history_response,
@@ -869,6 +870,13 @@ def fixture_diagnostics() -> dict[str, Any]:
         'directories': directories,
         'files': files,
         'modes': mode_flags(),
+        'config': {
+            'app_mode': os.getenv('APP_MODE', 'local'),
+            'live_mode_enabled': live_mode_enabled(),
+            'auth_token_secret_configured': auth_token_secret_configured(),
+            'database_url_configured': database_url() is not None,
+            'allowed_origins': ALLOWED_ORIGINS,
+        },
         'dependencies': dependency_diagnostics(),
     }
 
