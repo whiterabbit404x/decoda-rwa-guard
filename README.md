@@ -27,8 +27,8 @@ The repo now supports a minimal **real pilot SaaS mode** alongside the existing 
 
 | Environment | Required vars | Notes |
 | --- | --- | --- |
-| Production | `NEXT_PUBLIC_LIVE_MODE_ENABLED=true`, `API_URL=https://<your-railway-api>.up.railway.app` (preferred) or `NEXT_PUBLIC_API_URL=https://<your-railway-api>.up.railway.app`, `NEXT_PUBLIC_API_TIMEOUT_MS=5000` | `next build` now fails clearly if `NEXT_PUBLIC_LIVE_MODE_ENABLED` or both API URL vars are missing. |
-| Preview | `NEXT_PUBLIC_LIVE_MODE_ENABLED=true`, `API_URL=https://<preview-or-shared-railway-api>.up.railway.app` (preferred) or `NEXT_PUBLIC_API_URL=https://<preview-or-shared-railway-api>.up.railway.app`, `NEXT_PUBLIC_API_TIMEOUT_MS=5000` | Preview auth pages surface a warning banner and `/api/build-info` reports the branch, commit SHA, Vercel environment, and runtime-config summary for that deployment. |
+| Production | `NEXT_PUBLIC_LIVE_MODE_ENABLED=true`, `API_URL=https://<your-railway-api>.up.railway.app` (preferred) or `NEXT_PUBLIC_API_URL=https://<your-railway-api>.up.railway.app`, `NEXT_PUBLIC_API_TIMEOUT_MS=5000` | `next build` fails before app code runs if `NEXT_PUBLIC_LIVE_MODE_ENABLED` is missing/invalid or if both API URL vars are absent. |
+| Preview | `API_URL=https://<preview-or-shared-railway-api>.up.railway.app` (preferred) or `NEXT_PUBLIC_API_URL=https://<preview-or-shared-railway-api>.up.railway.app`; `NEXT_PUBLIC_LIVE_MODE_ENABLED=true` is strongly recommended | Preview builds warn when `NEXT_PUBLIC_LIVE_MODE_ENABLED` is missing, pass when `API_URL` exists even if `NEXT_PUBLIC_API_URL` is absent, and fail before app code runs only when both API URL vars are missing or other validation makes the app unusable. |
 | Development | `NEXT_PUBLIC_LIVE_MODE_ENABLED=false` (or `true` if you are exercising pilot mode locally), `NEXT_PUBLIC_API_URL=http://127.0.0.1:8000`, optional `NEXT_PUBLIC_API_TIMEOUT_MS=5000` | Local development still falls back to localhost defaults, but explicitly setting the vars keeps local behavior aligned with Vercel. |
 
 Recommended Vercel project settings:
@@ -62,24 +62,25 @@ The pilot demo seed creates a workspace-scoped demo account in Postgres while pr
 
 1. Keep deploying `apps/web` on Vercel.
 2. Set Vercel env vars from `apps/web/.env.example`.
-3. Redeploy after updating `NEXT_PUBLIC_API_URL` or `NEXT_PUBLIC_LIVE_MODE_ENABLED`.
+3. Redeploy after updating `API_URL`, `NEXT_PUBLIC_API_URL`, or `NEXT_PUBLIC_LIVE_MODE_ENABLED`.
 4. Use `/sign-up`, `/sign-in`, and `/workspaces` for live pilot onboarding while `/` continues to expose the existing dashboard.
 
 ### Why preview can fail while production works
 
 Preview deploys are more likely to fail than production in this monorepo because Vercel treats **environment scopes**, **root-directory settings**, and **branch-specific config** separately:
 
-- Production can keep working while Preview is broken if Preview is missing `NEXT_PUBLIC_LIVE_MODE_ENABLED`, `API_URL`, or `NEXT_PUBLIC_API_URL`.
+- Production can keep working while Preview is broken if Preview is missing both `API_URL` and `NEXT_PUBLIC_API_URL`, or if Preview has an invalid `NEXT_PUBLIC_LIVE_MODE_ENABLED` value. Missing `NEXT_PUBLIC_LIVE_MODE_ENABLED` alone now warns instead of blocking the deploy.
 - Production can keep working while Preview is broken if the Vercel project root points somewhere other than `apps/web`, because the monorepo build will resolve a different working directory during `next build`.
-- Preview can fail at build time even before auth traffic reaches Railway, while production appears healthy, because the web app now validates required Vercel config during `next build`.
+- Preview can fail at build time even before auth traffic reaches Railway, while production appears healthy, because `apps/web/next.config.js` runs `build/vercel-build-validation.js` during `next build` and Vercel stops the deployment before app code executes.
 - Preview can also reach runtime with the wrong backend target if branch-specific env vars drift. In that case, `/api/build-info` tells operators whether the issue is the build, the preview environment, or the resolved runtime config.
 
 Fast operator checks:
 
 1. Confirm the Vercel project **Root Directory** is `apps/web`.
-2. Confirm the Preview environment in Vercel has `NEXT_PUBLIC_LIVE_MODE_ENABLED` and one of `API_URL` / `NEXT_PUBLIC_API_URL`.
-3. Open `/api/build-info` on the preview deployment and verify `vercelEnv`, `branch`, `commitSha`, and the runtime config summary.
-4. If `/api/build-info` is healthy but auth still fails, the next place to check is the backend API / Railway deployment rather than the same-origin auth proxy.
+2. Confirm the Preview environment in Vercel has at least one of `API_URL` / `NEXT_PUBLIC_API_URL`; `API_URL` is preferred because the same-origin auth proxy uses the server-side value first.
+3. If the build logs warn about `NEXT_PUBLIC_LIVE_MODE_ENABLED`, add it explicitly so preview/demo mode and live-mode behavior are obvious to operators.
+4. Open `/api/build-info` on the preview deployment and verify `vercelEnv`, `branch`, `commitSha`, and the runtime config summary.
+5. If `/api/build-info` is healthy but auth still fails, the next place to check is the backend API / Railway deployment rather than the same-origin auth proxy.
 
 ### What remains for full production later
 
@@ -960,9 +961,9 @@ This repo now ships with a **split experience**:
 - The Vercel **Root Directory** should remain `apps/web` for this monorepo.
 - Required Vercel environment variables by scope:
   - **Production:** `NEXT_PUBLIC_LIVE_MODE_ENABLED=true`, `API_URL=https://<your-railway-api>.up.railway.app` (preferred) or `NEXT_PUBLIC_API_URL=https://<your-railway-api>.up.railway.app`, and `NEXT_PUBLIC_API_TIMEOUT_MS=5000`.
-  - **Preview:** `NEXT_PUBLIC_LIVE_MODE_ENABLED=true`, `API_URL=https://<preview-or-shared-railway-api>.up.railway.app` (preferred) or `NEXT_PUBLIC_API_URL=https://<preview-or-shared-railway-api>.up.railway.app`, and `NEXT_PUBLIC_API_TIMEOUT_MS=5000`.
+  - **Preview:** `API_URL=https://<preview-or-shared-railway-api>.up.railway.app` (preferred) or `NEXT_PUBLIC_API_URL=https://<preview-or-shared-railway-api>.up.railway.app`, `NEXT_PUBLIC_API_TIMEOUT_MS=5000`, and `NEXT_PUBLIC_LIVE_MODE_ENABLED=true` is strongly recommended so operators can see the intended mode directly in build logs and runtime diagnostics.
   - **Development:** `NEXT_PUBLIC_LIVE_MODE_ENABLED=false` (or `true` when testing pilot mode locally), `NEXT_PUBLIC_API_URL=http://127.0.0.1:8000`, and optional `NEXT_PUBLIC_API_TIMEOUT_MS=5000`.
-- Preview and production builds now fail clearly when `NEXT_PUBLIC_LIVE_MODE_ENABLED` is missing or when both API URL variables are absent.
+- Production builds fail clearly when `NEXT_PUBLIC_LIVE_MODE_ENABLED` is missing/invalid or when both API URL variables are absent. Preview builds now warn for missing `NEXT_PUBLIC_LIVE_MODE_ENABLED`, prefer server-side `API_URL`, and only fail when the missing API settings would leave the auth proxy unusable before runtime.
 - Operators can inspect `/api/build-info` to see the deployment environment, branch, commit SHA, and runtime-config summary before debugging the backend.
 - The web app uses the API URL to resolve **live**, **live (degraded)**, **fallback**, and **sample** states in the UI.
 
@@ -1002,7 +1003,8 @@ You can also inspect `/health/details` to confirm dependency diagnostics, build/
 - [ ] `DATABASE_URL` points to Neon with SSL enabled.
 - [ ] `AUTH_TOKEN_SECRET` is set.
 - [ ] All downstream service URLs are configured.
-- [ ] Vercel Production and Preview both set `NEXT_PUBLIC_LIVE_MODE_ENABLED` and at least one of `API_URL` / `NEXT_PUBLIC_API_URL`, plus `NEXT_PUBLIC_API_TIMEOUT_MS`.
+- [ ] Vercel Production sets `NEXT_PUBLIC_LIVE_MODE_ENABLED`, at least one of `API_URL` / `NEXT_PUBLIC_API_URL`, and `NEXT_PUBLIC_API_TIMEOUT_MS`.
+- [ ] Vercel Preview sets at least one of `API_URL` / `NEXT_PUBLIC_API_URL`; add `NEXT_PUBLIC_LIVE_MODE_ENABLED` as well so operators do not have to infer whether the deployment should run in demo or live mode.
 - [ ] Vercel Root Directory is `apps/web`.
 - [ ] `/api/build-info` reports the expected `vercelEnv`, branch, commit SHA, and runtime config summary on the deployed site.
 - [ ] `python services/api/scripts/migrate.py` has been run against Neon.
