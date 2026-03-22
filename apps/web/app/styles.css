@@ -643,6 +643,25 @@ td .tableMeta {
   font-weight: 600;
 }
 
+.previewDeploymentNotice {
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  background: rgba(120, 53, 15, 0.15);
+  margin-bottom: 1rem;
+}
+
+.previewDeploymentNotice h2 {
+  margin: 0.25rem 0 0.5rem;
+}
+
+.previewDeploymentNotice p {
+  margin-bottom: 0;
+}
+
+.previewDeploymentNotice a {
+  color: #fbbf24;
+  font-weight: 600;
+}
+
 .nestedCard {
   margin-top: 0.75rem;
 }

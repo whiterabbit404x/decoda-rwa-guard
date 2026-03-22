@@ -4,6 +4,7 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
 import { shouldRedirectUnauthenticatedProductAccess } from '../app/(product)/layout';
+import { GET as getBuildInfoRoute } from '../app/api/build-info/route';
 import { GET as getRuntimeConfigRoute } from '../app/api/runtime-config/route';
 import { resolveAuthFormState } from '../app/auth-form-state';
 import { DEFAULT_API_URL, resolveApiConfig } from '../app/api-config';
@@ -100,6 +101,40 @@ test.describe('runtime auth configuration', () => {
     });
   });
 
+  test('build-info route reports vercel metadata plus runtime config summary', async () => {
+    await withEnv({
+      NODE_ENV: 'production',
+      VERCEL_ENV: 'preview',
+      VERCEL_GIT_COMMIT_REF: 'feature/preview-hardening',
+      VERCEL_GIT_COMMIT_SHA: 'abc123def456',
+      API_URL: 'https://api.preview.decoda.example',
+      NEXT_PUBLIC_LIVE_MODE_ENABLED: 'true',
+      API_TIMEOUT_MS: '3456',
+    }, async () => {
+      const response = await getBuildInfoRoute();
+      const payload = await response.json() as Record<string, unknown>;
+
+      expect(response.headers.get('Cache-Control')).toBe('no-store');
+      expect(payload).toEqual({
+        vercelEnv: 'preview',
+        branch: 'feature/preview-hardening',
+        commitSha: 'abc123def456',
+        runtimeConfig: {
+          apiUrl: 'https://api.preview.decoda.example',
+          liveModeEnabled: true,
+          apiTimeoutMs: 3456,
+          configured: true,
+          diagnostic: null,
+          source: {
+            apiUrl: 'API_URL',
+            liveModeEnabled: 'NEXT_PUBLIC_LIVE_MODE_ENABLED',
+            apiTimeoutMs: 'API_TIMEOUT_MS',
+          },
+        },
+      });
+    });
+  });
+
   test('pilot-auth-context fetches runtime config at runtime instead of reading public env at module scope', async () => {
     const source = readFileSync(path.join(process.cwd(), 'apps/web/app/pilot-auth-context.tsx'), 'utf8');
 
@@ -119,6 +154,17 @@ test.describe('runtime auth configuration', () => {
     expect(source).toContain('runtimeConfig.configured');
     expect(source).toContain('formatRuntimeConfigSource(runtimeConfig.source)');
     expect(source).not.toContain('process.env');
+  });
+
+  test('auth pages gate the preview deployment notice from server-side VERCEL_ENV', async () => {
+    const signInPageSource = readFileSync(path.join(process.cwd(), 'apps/web/app/sign-in/page.tsx'), 'utf8');
+    const signUpPageSource = readFileSync(path.join(process.cwd(), 'apps/web/app/sign-up/page.tsx'), 'utf8');
+    const previewNoticeSource = readFileSync(path.join(process.cwd(), 'apps/web/app/preview-deployment-notice.tsx'), 'utf8');
+
+    expect(signInPageSource).toContain("process.env.VERCEL_ENV === 'preview'");
+    expect(signUpPageSource).toContain("process.env.VERCEL_ENV === 'preview'");
+    expect(previewNoticeSource).toContain('/api/build-info');
+    expect(previewNoticeSource).toContain('Preview environment detected');
   });
 
   test('product layout redirect logic uses resolved server runtime config', async () => {
