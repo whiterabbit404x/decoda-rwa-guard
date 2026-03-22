@@ -2,13 +2,20 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import AuthDiagnosticCard from '../auth-diagnostic-card';
+import type { BuildInfo, BuildInfoDiagnostics } from '../build-info';
 import { resolveAuthFormState } from '../auth-form-state';
 import { usePilotAuth } from '../pilot-auth-context';
 
-export default function SignUpPageClient() {
+export default function SignUpPageClient({
+  buildInfo,
+  buildInfoDiagnostics,
+}: {
+  buildInfo: BuildInfo;
+  buildInfoDiagnostics: BuildInfoDiagnostics;
+}) {
   const router = useRouter();
   const {
     apiTimeoutMs,
@@ -26,6 +33,7 @@ export default function SignUpPageClient() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [currentHost, setCurrentHost] = useState<string | null>(buildInfo.vercelUrl);
 
   const runtimeConfig = useMemo(() => ({
     apiUrl: apiUrl || null,
@@ -36,6 +44,12 @@ export default function SignUpPageClient() {
     source: runtimeConfigSource,
   }), [apiTimeoutMs, apiUrl, configured, liveModeEnabled, runtimeConfigDiagnostic, runtimeConfigSource]);
   const formState = resolveAuthFormState(runtimeConfig, configLoading, loading);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setCurrentHost(window.location.host);
+    }
+  }, []);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -77,7 +91,13 @@ export default function SignUpPageClient() {
           {!configLoading && !configured ? <p className="statusLine">Auth is disabled until this deployment exposes a valid API_URL.</p> : null}
           <p className="muted">Already have an account? <Link href="/sign-in">Sign in</Link>.</p>
         </form>
-        <AuthDiagnosticCard loading={configLoading} runtimeConfig={runtimeConfig} />
+        <AuthDiagnosticCard
+          buildInfo={buildInfo}
+          buildInfoDiagnostics={buildInfoDiagnostics}
+          currentHost={currentHost}
+          loading={configLoading}
+          runtimeConfig={runtimeConfig}
+        />
       </div>
     </main>
   );

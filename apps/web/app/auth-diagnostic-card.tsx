@@ -1,7 +1,13 @@
+import type { BuildInfo, BuildInfoDiagnostics } from './build-info';
 import { formatRuntimeConfigSource, RuntimeConfig } from './runtime-config-schema';
+
+const DEFAULT_AUTH_MODE_LABEL = 'same-origin proxy';
 
 type AuthDiagnosticCardProps = {
   runtimeConfig: RuntimeConfig;
+  buildInfo: BuildInfo;
+  buildInfoDiagnostics: BuildInfoDiagnostics;
+  currentHost?: string | null;
   loading?: boolean;
 };
 
@@ -17,18 +23,52 @@ function envValue(value: string | number | boolean | null | undefined) {
   return value && String(value).trim() ? String(value) : 'unset';
 }
 
-export default function AuthDiagnosticCard({ runtimeConfig, loading = false }: AuthDiagnosticCardProps) {
+export default function AuthDiagnosticCard({
+  runtimeConfig,
+  buildInfo,
+  buildInfoDiagnostics,
+  currentHost = null,
+  loading = false,
+}: AuthDiagnosticCardProps) {
   const healthUrl = runtimeConfig.apiUrl ? `${runtimeConfig.apiUrl}/health` : null;
 
   return (
     <article className="dataCard authDiagnosticCard">
-      <p className="sectionEyebrow">Operator diagnostics</p>
-      <h2>Auth runtime configuration</h2>
-      <p className="muted">Use this before escalating: it shows the server-resolved runtime auth config for the current deployment.</p>
+      <div className="authDiagnosticHeader">
+        <div>
+          <p className="sectionEyebrow">Operator diagnostics</p>
+          <h2>Auth runtime configuration</h2>
+        </div>
+        <span className="pill authVersionBadge">build {buildInfoDiagnostics.versionLabel}</span>
+      </div>
+      <p className="muted">Use this before escalating: it shows the server-resolved runtime auth config and deployment metadata for the current auth UI.</p>
+      {buildInfoDiagnostics.warnings.map((warning) => (
+        <p key={warning} className="statusLine authDiagnosticWarning">{warning}</p>
+      ))}
       <div className="kvGrid compactKvGrid authDiagnosticGrid">
         <p>
+          <span>deploymentEnvironment</span>
+          {envValue(buildInfo.vercelEnv)}
+        </p>
+        <p>
+          <span>currentHost</span>
+          {envValue(currentHost)}
+        </p>
+        <p>
+          <span>vercelUrl</span>
+          {envValue(buildInfo.vercelUrl)}
+        </p>
+        <p>
+          <span>gitCommitSha</span>
+          {envValue(buildInfo.gitCommitShaShort)}
+        </p>
+        <p>
+          <span>gitBranch</span>
+          {envValue(buildInfo.gitBranch)}
+        </p>
+        <p>
           <span>authTransport</span>
-          {loading ? 'loading…' : 'same-origin proxy'}
+          {buildInfo.authMode ?? DEFAULT_AUTH_MODE_LABEL}
         </p>
         <p>
           <span>backendApiUrl</span>
@@ -39,12 +79,16 @@ export default function AuthDiagnosticCard({ runtimeConfig, loading = false }: A
           {loading ? 'loading…' : envValue(runtimeConfig.configured)}
         </p>
         <p>
-          <span>apiUrl</span>
-          {loading ? 'loading…' : envValue(runtimeConfig.apiUrl)}
-        </p>
-        <p>
           <span>liveModeEnabled</span>
           {loading ? 'loading…' : envValue(runtimeConfig.liveModeEnabled)}
+        </p>
+        <p>
+          <span>nodeEnv</span>
+          {envValue(buildInfo.nodeEnv)}
+        </p>
+        <p>
+          <span>buildTimestamp</span>
+          {envValue(buildInfo.buildTimestamp)}
         </p>
         <p>
           <span>apiTimeoutMs</span>
