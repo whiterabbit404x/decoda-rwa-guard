@@ -2,11 +2,23 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
-import { resolveApiConfig } from './api-config';
 import { classifyAuthResponseError, classifyAuthTransportError } from './auth-diagnostics';
+import type { RuntimeConfig } from './runtime-config-schema';
 
 const TOKEN_STORAGE_KEY = 'decoda-pilot-access-token';
 const TOKEN_COOKIE_MAX_AGE = 60 * 60 * 24;
+const UNLOADED_RUNTIME_CONFIG: RuntimeConfig = {
+  apiUrl: null,
+  liveModeEnabled: false,
+  apiTimeoutMs: null,
+  configured: false,
+  diagnostic: null,
+  source: {
+    apiUrl: 'missing',
+    liveModeEnabled: 'missing',
+    apiTimeoutMs: 'missing',
+  },
+};
 
 function writeTokenCookie(token: string | null) {
   if (typeof document === 'undefined') {
@@ -20,9 +32,6 @@ function writeTokenCookie(token: string | null) {
 
   document.cookie = `${TOKEN_STORAGE_KEY}=${encodeURIComponent(token)}; path=/; max-age=${TOKEN_COOKIE_MAX_AGE}; SameSite=Lax`;
 }
-const API_CONFIG = resolveApiConfig();
-const API_URL = API_CONFIG.apiUrl ?? '';
-const API_CONFIGURATION_ERROR = API_CONFIG.diagnostic ?? 'Live API URL is not configured.';
 
 export type WorkspaceSummary = {
   id: string;
@@ -50,11 +59,17 @@ export type PilotUser = {
 
 type PilotAuthContextValue = {
   apiUrl: string;
+  apiTimeoutMs: number | null;
+  configured: boolean;
+  configLoading: boolean;
   liveModeConfigured: boolean;
+  liveModeEnabled: boolean;
   loading: boolean;
   token: string | null;
   user: PilotUser | null;
   error: string | null;
+  runtimeConfigDiagnostic: string | null;
+  runtimeConfigSource: RuntimeConfig['source'];
   isAuthenticated: boolean;
   signIn: (payload: { email: string; password: string }) => Promise<PilotUser>;
   signUp: (payload: { email: string; password: string; full_name: string; workspace_name: string }) => Promise<PilotUser>;
@@ -72,20 +87,37 @@ async function readJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-function requireApiUrl() {
-  if (!API_URL) {
-    throw new Error(API_CONFIGURATION_ERROR);
+export async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
+  const response = await fetch('/api/runtime-config', {
+    cache: 'no-store',
+  });
+
+  if (!response.ok) {
+    throw new Error(`Runtime config request failed with HTTP ${response.status}.`);
   }
 
-  return API_URL;
+  return readJson<RuntimeConfig>(response);
 }
 
 export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
+  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>(UNLOADED_RUNTIME_CONFIG);
+  const [configLoading, setConfigLoading] = useState(true);
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<PilotUser | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [sessionLoading, setSessionLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const liveModeConfigured = Boolean(API_CONFIG.apiUrl);
+
+  const requireApiUrl = useCallback(() => {
+    if (configLoading) {
+      throw new Error('Runtime auth configuration is still loading. Please wait a moment and retry.');
+    }
+
+    if (!runtimeConfig.apiUrl) {
+      throw new Error(runtimeConfig.diagnostic ?? 'Live API URL is not configured for this deployment.');
+    }
+
+    return runtimeConfig.apiUrl;
+  }, [configLoading, runtimeConfig.apiUrl, runtimeConfig.diagnostic]);
 
   const authHeaders = useCallback(() => {
     const headers: Record<string, string> = {};
@@ -99,16 +131,24 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   }, [token, user?.current_workspace?.id]);
 
   const refreshUser = useCallback(async () => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+
+    if (configLoading) {
+      return null;
+    }
+
     const storedToken = window.localStorage.getItem(TOKEN_STORAGE_KEY);
-    if (!storedToken || !API_URL) {
+    if (!storedToken || !runtimeConfig.apiUrl) {
       setToken(null);
       setUser(null);
-      setLoading(false);
+      setSessionLoading(false);
       return null;
     }
 
     setToken(storedToken);
-    const response = await fetch(`${API_URL}/auth/me`, {
+    const response = await fetch(`${runtimeConfig.apiUrl}/auth/me`, {
       headers: {
         Authorization: `Bearer ${storedToken}`,
       },
@@ -122,22 +162,71 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       setToken(null);
       setUser(null);
       setError(data.detail ?? 'Your session expired. Please sign in again.');
-      setLoading(false);
+      setSessionLoading(false);
       return null;
     }
 
     const payload = await readJson<{ user: PilotUser }>(response);
     setUser(payload.user);
-    setLoading(false);
+    setSessionLoading(false);
     return payload.user;
+  }, [configLoading, runtimeConfig.apiUrl]);
+
+  useEffect(() => {
+    let active = true;
+
+    void fetchRuntimeConfig()
+      .then((nextRuntimeConfig) => {
+        if (!active) {
+          return;
+        }
+        setRuntimeConfig(nextRuntimeConfig);
+        if (nextRuntimeConfig.diagnostic) {
+          setError((currentError) => currentError ?? nextRuntimeConfig.diagnostic);
+        }
+      })
+      .catch((fetchError) => {
+        if (!active) {
+          return;
+        }
+
+        const message = fetchError instanceof Error
+          ? fetchError.message
+          : 'Unable to load runtime auth configuration for this deployment.';
+
+        setRuntimeConfig({
+          ...UNLOADED_RUNTIME_CONFIG,
+          diagnostic: message,
+          source: {
+            apiUrl: 'invalid',
+            liveModeEnabled: 'invalid',
+            apiTimeoutMs: 'invalid',
+          },
+        });
+        setError(message);
+      })
+      .finally(() => {
+        if (active) {
+          setConfigLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
+    if (configLoading) {
+      return;
+    }
+
+    setSessionLoading(true);
     void refreshUser().catch((fetchError) => {
       setError(fetchError instanceof Error ? fetchError.message : String(fetchError));
-      setLoading(false);
+      setSessionLoading(false);
     });
-  }, [refreshUser]);
+  }, [configLoading, refreshUser]);
 
   const saveAuthPayload = useCallback((accessToken: string, nextUser: PilotUser) => {
     window.localStorage.setItem(TOKEN_STORAGE_KEY, accessToken);
@@ -164,7 +253,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     } catch (submitError) {
       throw new Error(classifyAuthTransportError('sign in', apiUrl, submitError));
     }
-  }, [saveAuthPayload]);
+  }, [requireApiUrl, saveAuthPayload]);
 
   const signUp = useCallback(async (payload: { email: string; password: string; full_name: string; workspace_name: string }) => {
     const apiUrl = requireApiUrl();
@@ -183,12 +272,12 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     } catch (submitError) {
       throw new Error(classifyAuthTransportError('create an account', apiUrl, submitError));
     }
-  }, [saveAuthPayload]);
+  }, [requireApiUrl, saveAuthPayload]);
 
   const signOut = useCallback(async () => {
     const storedToken = window.localStorage.getItem(TOKEN_STORAGE_KEY);
-    if (storedToken && API_URL) {
-      await fetch(`${API_URL}/auth/signout`, {
+    if (storedToken && runtimeConfig.apiUrl) {
+      await fetch(`${runtimeConfig.apiUrl}/auth/signout`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${storedToken}`,
@@ -200,7 +289,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null);
     setUser(null);
     setError(null);
-  }, []);
+  }, [runtimeConfig.apiUrl]);
 
   const createWorkspace = useCallback(async (name: string) => {
     const response = await fetch(`${requireApiUrl()}/workspaces`, {
@@ -217,7 +306,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     }
     setUser(data.user);
     return data.user;
-  }, [authHeaders]);
+  }, [authHeaders, requireApiUrl]);
 
   const selectWorkspace = useCallback(async (workspaceId: string) => {
     const response = await fetch(`${requireApiUrl()}/auth/select-workspace`, {
@@ -234,15 +323,23 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     }
     setUser(data.user);
     return data.user;
-  }, [authHeaders]);
+  }, [authHeaders, requireApiUrl]);
+
+  const loading = configLoading || sessionLoading;
 
   const value = useMemo<PilotAuthContextValue>(() => ({
-    apiUrl: API_URL,
-    liveModeConfigured,
+    apiUrl: runtimeConfig.apiUrl ?? '',
+    apiTimeoutMs: runtimeConfig.apiTimeoutMs,
+    configured: runtimeConfig.configured,
+    configLoading,
+    liveModeConfigured: runtimeConfig.configured,
+    liveModeEnabled: runtimeConfig.liveModeEnabled,
     loading,
     token,
     user,
     error,
+    runtimeConfigDiagnostic: runtimeConfig.diagnostic,
+    runtimeConfigSource: runtimeConfig.source,
     isAuthenticated: Boolean(token && user),
     signIn,
     signUp,
@@ -252,15 +349,16 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     selectWorkspace,
     authHeaders,
     setError,
-  }), [authHeaders, error, liveModeConfigured, loading, refreshUser, selectWorkspace, signIn, signOut, signUp, token, user, createWorkspace]);
+  }), [authHeaders, configLoading, createWorkspace, error, loading, refreshUser, runtimeConfig, selectWorkspace, signIn, signOut, signUp, token, user]);
 
   return <PilotAuthContext.Provider value={value}>{children}</PilotAuthContext.Provider>;
 }
 
 export function usePilotAuth() {
-  const context = useContext(PilotAuthContext);
-  if (!context) {
-    throw new Error('usePilotAuth must be used within PilotAuthProvider.');
+  const value = useContext(PilotAuthContext);
+  if (!value) {
+    throw new Error('usePilotAuth must be used within PilotAuthProvider');
   }
-  return context;
+
+  return value;
 }

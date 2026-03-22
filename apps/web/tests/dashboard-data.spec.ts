@@ -106,7 +106,7 @@ test.describe('dashboard production API flow', () => {
     expect(normalizeApiBaseUrl('   ')).toBeNull();
   });
 
-  test('requires NEXT_PUBLIC_API_URL in production instead of falling back to localhost', async () => {
+  test('requires API_URL or NEXT_PUBLIC_API_URL in production instead of falling back to localhost', async () => {
     const config = resolveApiConfig({
       env: {
         NODE_ENV: 'production',
@@ -115,7 +115,7 @@ test.describe('dashboard production API flow', () => {
 
     expect(config.apiUrl).toBeNull();
     expect(config.source).toBe('missing');
-    expect(config.diagnostic).toContain('NEXT_PUBLIC_API_URL');
+    expect(config.diagnostic).toContain('API_URL or NEXT_PUBLIC_API_URL');
   });
 
   test('keeps the experience live when /dashboard returns an empty registry but all feature feeds are live', async () => {

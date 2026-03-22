@@ -3,17 +3,20 @@ import { redirect } from 'next/navigation';
 
 import AppShell from '../app-shell';
 import AuthenticatedRoute from '../authenticated-route';
+import { getRuntimeConfig } from '../runtime-config';
+import type { RuntimeConfig } from '../runtime-config-schema';
 
 const TOKEN_COOKIE_NAME = 'decoda-pilot-access-token';
 
-function isLiveModeEnabledOnWeb() {
-  return (process.env.NEXT_PUBLIC_LIVE_MODE_ENABLED ?? '').toLowerCase() === 'true';
+export function shouldRedirectUnauthenticatedProductAccess(token: string | undefined, runtimeConfig: Pick<RuntimeConfig, 'liveModeEnabled'>) {
+  return runtimeConfig.liveModeEnabled && !token;
 }
 
 export default function ProductLayout({ children }: { children: React.ReactNode }) {
   const token = cookies().get(TOKEN_COOKIE_NAME)?.value;
+  const runtimeConfig = getRuntimeConfig();
 
-  if (isLiveModeEnabledOnWeb() && !token) {
+  if (shouldRedirectUnauthenticatedProductAccess(token, runtimeConfig)) {
     redirect('/sign-in');
   }
 

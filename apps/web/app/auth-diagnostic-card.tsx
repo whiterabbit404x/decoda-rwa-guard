@@ -1,42 +1,65 @@
+import { formatRuntimeConfigSource, RuntimeConfig } from './runtime-config-schema';
+
 type AuthDiagnosticCardProps = {
-  apiUrl: string;
-  liveModeConfigured: boolean;
+  runtimeConfig: RuntimeConfig;
+  loading?: boolean;
 };
 
-const LIVE_MODE_ENV_VALUE = process.env.NEXT_PUBLIC_LIVE_MODE_ENABLED ?? '';
+function envValue(value: string | number | boolean | null | undefined) {
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
 
-function envValue(value: string | undefined) {
-  return value && value.trim() ? value : 'unset';
+  if (typeof value === 'number') {
+    return String(value);
+  }
+
+  return value && String(value).trim() ? String(value) : 'unset';
 }
 
-export default function AuthDiagnosticCard({ apiUrl, liveModeConfigured }: AuthDiagnosticCardProps) {
-  const healthUrl = apiUrl ? `${apiUrl}/health` : null;
+export default function AuthDiagnosticCard({ runtimeConfig, loading = false }: AuthDiagnosticCardProps) {
+  const healthUrl = runtimeConfig.apiUrl ? `${runtimeConfig.apiUrl}/health` : null;
 
   return (
     <article className="dataCard authDiagnosticCard">
       <p className="sectionEyebrow">Operator diagnostics</p>
-      <h2>Auth environment snapshot</h2>
-      <p className="muted">Use this before escalating: it shows which public web variables are loaded into the browser and provides a direct API health link.</p>
+      <h2>Auth runtime configuration</h2>
+      <p className="muted">Use this before escalating: it shows the server-resolved runtime auth config for the current deployment.</p>
       <div className="kvGrid compactKvGrid authDiagnosticGrid">
         <p>
-          <span>NEXT_PUBLIC_API_URL</span>
-          {envValue(apiUrl)}
+          <span>apiUrl</span>
+          {loading ? 'loading…' : envValue(runtimeConfig.apiUrl)}
         </p>
         <p>
-          <span>NEXT_PUBLIC_LIVE_MODE_ENABLED</span>
-          {envValue(LIVE_MODE_ENV_VALUE)}
+          <span>liveModeEnabled</span>
+          {loading ? 'loading…' : envValue(runtimeConfig.liveModeEnabled)}
         </p>
         <p>
-          <span>Live mode configured</span>
-          {liveModeConfigured ? 'true' : 'false'}
+          <span>configured</span>
+          {loading ? 'loading…' : envValue(runtimeConfig.configured)}
+        </p>
+        <p>
+          <span>apiTimeoutMs</span>
+          {loading ? 'loading…' : envValue(runtimeConfig.apiTimeoutMs)}
+        </p>
+        <p>
+          <span>source</span>
+          {loading ? 'loading…' : formatRuntimeConfigSource(runtimeConfig.source)}
+        </p>
+        <p>
+          <span>diagnostic</span>
+          {loading ? 'Loading runtime configuration…' : envValue(runtimeConfig.diagnostic)}
         </p>
       </div>
+      {runtimeConfig.diagnostic?.includes('localhost as API base URL') ? (
+        <p className="statusLine">Warning: this deployment is serving a localhost API URL, which is invalid in production and will break browser auth.</p>
+      ) : null}
       {healthUrl ? (
         <a className="authDiagnosticLink" href={healthUrl} target="_blank" rel="noreferrer">
           Open /health
         </a>
       ) : (
-        <p className="statusLine">/health is unavailable until NEXT_PUBLIC_API_URL is configured.</p>
+        <p className="statusLine">/health is unavailable until the deployment runtime config resolves a valid API URL.</p>
       )}
     </article>
   );

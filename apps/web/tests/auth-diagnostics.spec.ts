@@ -4,7 +4,7 @@ import { classifyAuthResponseError, classifyAuthTransportError } from '../app/au
 import { resolveApiConfig } from '../app/api-config';
 
 test.describe('auth diagnostics helpers', () => {
-  test('keeps NEXT_PUBLIC_API_URL missing diagnostics explicit in production', async () => {
+  test('keeps missing production API URL diagnostics explicit', async () => {
     const config = resolveApiConfig({
       env: {
         NODE_ENV: 'production',
@@ -12,14 +12,14 @@ test.describe('auth diagnostics helpers', () => {
     });
 
     expect(config.apiUrl).toBeNull();
-    expect(config.diagnostic).toBe('NEXT_PUBLIC_API_URL is required in production.');
+    expect(config.diagnostic).toBe('API_URL or NEXT_PUBLIC_API_URL is required in production.');
   });
 
   test('classifies localhost transport failures as unreachable API issues', async () => {
     const message = classifyAuthTransportError('sign in', 'http://127.0.0.1:8000', new TypeError('Failed to fetch'));
 
     expect(message).toContain('Cannot reach the API at http://127.0.0.1:8000.');
-    expect(message).toContain('NEXT_PUBLIC_API_URL');
+    expect(message).toContain('API_URL or NEXT_PUBLIC_API_URL');
   });
 
   test('classifies remote transport failures as CORS or network issues', async () => {

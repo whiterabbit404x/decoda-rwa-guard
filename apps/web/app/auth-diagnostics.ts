@@ -34,7 +34,7 @@ export function classifyAuthTransportError(actionLabel: string, apiUrl: string |
   }
 
   if (isLikelyLocalApi(normalizedApiUrl)) {
-    return `Cannot reach the API at ${normalizedApiUrl}. Confirm NEXT_PUBLIC_API_URL points to the deployed backend and that the API service is running before you ${actionLabel}.`;
+    return `Cannot reach the API at ${normalizedApiUrl}. Confirm API_URL or NEXT_PUBLIC_API_URL points to the deployed backend and that the API service is running before you ${actionLabel}.`;
   }
 
   if (lowerMessage.includes('failed to fetch') || lowerMessage.includes('networkerror') || lowerMessage.includes('network request failed') || lowerMessage.includes('load failed')) {
