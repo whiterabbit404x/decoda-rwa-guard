@@ -87,4 +87,15 @@ test.describe('auth diagnostics helpers', () => {
     expect(message).toContain('backend authentication is misconfigured');
     expect(message).toContain('AUTH_TOKEN_SECRET is missing');
   });
+
+  test('legacy auth wording is absent from auth UI source files', async () => {
+    const { execFileSync } = await import('node:child_process');
+
+    const output = execFileSync('node', ['apps/web/scripts/check-auth-ui-legacy.mjs'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    });
+
+    expect(output).toContain('Legacy auth UI guardrails passed.');
+  });
 });

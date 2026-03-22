@@ -592,6 +592,13 @@ td .tableMeta {
   padding-top: 2rem;
 }
 
+.authVersionLine {
+  margin: 0.35rem 0 0;
+  color: #9fc5ff;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
 .authForm {
   max-width: 720px;
   margin: 0 auto;
@@ -619,6 +626,39 @@ td .tableMeta {
 .authPageGrid {
   align-items: start;
   margin-top: 1.5rem;
+}
+
+.authRuntimePanel {
+  display: grid;
+  gap: 1rem;
+}
+
+.authDeploymentBadge {
+  border: 1px solid rgba(106, 169, 255, 0.35);
+  background: linear-gradient(180deg, rgba(19, 27, 48, 0.96), rgba(9, 14, 26, 0.94));
+}
+
+.authDeploymentBadge h2 {
+  margin: 0.25rem 0 0.5rem;
+}
+
+.authDeploymentGrid {
+  margin-top: 1rem;
+}
+
+.authDeploymentBadgeCompact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  padding: 0.75rem 0.95rem;
+  border-radius: 16px;
+  border: 1px solid rgba(106, 169, 255, 0.22);
+  background: rgba(19, 27, 48, 0.68);
+  font-size: 0.83rem;
+}
+
+.authDeploymentBadgeCompact span {
+  white-space: nowrap;
 }
 
 .authDiagnosticCard {
@@ -654,6 +694,10 @@ td .tableMeta {
 }
 
 .previewDeploymentNotice p {
+  margin-bottom: 0.75rem;
+}
+
+.previewDeploymentNotice p:last-child {
   margin-bottom: 0;
 }
 
