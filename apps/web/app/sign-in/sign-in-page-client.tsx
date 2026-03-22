@@ -8,7 +8,13 @@ import AuthDiagnosticCard from '../auth-diagnostic-card';
 import { resolveAuthFormState } from '../auth-form-state';
 import { usePilotAuth } from '../pilot-auth-context';
 
-export default function SignInPageClient({ nextPath }: { nextPath?: string }) {
+export default function SignInPageClient({
+  nextPath,
+  previewNotice,
+}: {
+  nextPath?: string;
+  previewNotice?: React.ReactNode;
+}) {
   const router = useRouter();
   const {
     apiTimeoutMs,
@@ -61,6 +67,7 @@ export default function SignInPageClient({ nextPath }: { nextPath?: string }) {
       {formState.statusMessage ? <p className="statusLine">{formState.statusMessage}</p> : null}
       {formState.deploymentWarning ? <p className="statusLine">{formState.deploymentWarning}</p> : null}
       {nextPath ? <p className="muted">Sign in to continue to {nextPath}.</p> : null}
+      {previewNotice}
       <div className="twoColumnSection authPageGrid">
         <form className="dataCard authForm" onSubmit={handleSubmit}>
           <label className="label">Email</label>
