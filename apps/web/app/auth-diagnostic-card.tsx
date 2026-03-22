@@ -27,16 +27,24 @@ export default function AuthDiagnosticCard({ runtimeConfig, loading = false }: A
       <p className="muted">Use this before escalating: it shows the server-resolved runtime auth config for the current deployment.</p>
       <div className="kvGrid compactKvGrid authDiagnosticGrid">
         <p>
+          <span>authTransport</span>
+          {loading ? 'loading…' : 'same-origin proxy'}
+        </p>
+        <p>
+          <span>backendApiUrl</span>
+          {loading ? 'loading…' : envValue(runtimeConfig.apiUrl)}
+        </p>
+        <p>
+          <span>configured</span>
+          {loading ? 'loading…' : envValue(runtimeConfig.configured)}
+        </p>
+        <p>
           <span>apiUrl</span>
           {loading ? 'loading…' : envValue(runtimeConfig.apiUrl)}
         </p>
         <p>
           <span>liveModeEnabled</span>
           {loading ? 'loading…' : envValue(runtimeConfig.liveModeEnabled)}
-        </p>
-        <p>
-          <span>configured</span>
-          {loading ? 'loading…' : envValue(runtimeConfig.configured)}
         </p>
         <p>
           <span>apiTimeoutMs</span>
@@ -52,14 +60,14 @@ export default function AuthDiagnosticCard({ runtimeConfig, loading = false }: A
         </p>
       </div>
       {runtimeConfig.diagnostic?.includes('localhost as API base URL') ? (
-        <p className="statusLine">Warning: this deployment is serving a localhost API URL, which is invalid in production and will break browser auth.</p>
+        <p className="statusLine">Warning: this deployment is serving a localhost API URL, which is invalid in production and will break the backend auth proxy.</p>
       ) : null}
       {healthUrl ? (
         <a className="authDiagnosticLink" href={healthUrl} target="_blank" rel="noreferrer">
           Open /health
         </a>
       ) : (
-        <p className="statusLine">/health is unavailable until the deployment runtime config resolves a valid API URL.</p>
+        <p className="statusLine">/health is unavailable until the deployment runtime config resolves a valid backend API URL for the same-origin auth proxy.</p>
       )}
     </article>
   );

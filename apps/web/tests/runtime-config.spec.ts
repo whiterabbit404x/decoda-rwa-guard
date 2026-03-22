@@ -109,9 +109,11 @@ test.describe('runtime auth configuration', () => {
     expect(source).not.toContain('const API_URL =');
   });
 
-  test('auth diagnostic card renders runtime-config values passed as props', async () => {
+  test('auth diagnostic card renders same-origin proxy diagnostics from runtime-config props', async () => {
     const source = readFileSync(path.join(process.cwd(), 'apps/web/app/auth-diagnostic-card.tsx'), 'utf8');
 
+    expect(source).toContain('same-origin proxy');
+    expect(source).toContain('backendApiUrl');
     expect(source).toContain('runtimeConfig.apiUrl');
     expect(source).toContain('runtimeConfig.liveModeEnabled');
     expect(source).toContain('runtimeConfig.configured');

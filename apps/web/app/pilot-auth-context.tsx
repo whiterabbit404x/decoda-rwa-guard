@@ -140,7 +140,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     const storedToken = window.localStorage.getItem(TOKEN_STORAGE_KEY);
-    if (!storedToken || !runtimeConfig.apiUrl) {
+    if (!storedToken) {
       setToken(null);
       setUser(null);
       setSessionLoading(false);
@@ -148,7 +148,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     setToken(storedToken);
-    const response = await fetch(`${runtimeConfig.apiUrl}/auth/me`, {
+    const response = await fetch('/api/auth/me', {
       headers: {
         Authorization: `Bearer ${storedToken}`,
       },
@@ -170,7 +170,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     setUser(payload.user);
     setSessionLoading(false);
     return payload.user;
-  }, [configLoading, runtimeConfig.apiUrl]);
+  }, [configLoading]);
 
   useEffect(() => {
     let active = true;
@@ -237,47 +237,69 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signIn = useCallback(async (payload: { email: string; password: string }) => {
-    const apiUrl = requireApiUrl();
+    const proxyUrl = '/api/auth/signin';
+    let response: Response;
+
     try {
-      const response = await fetch(`${apiUrl}/auth/signin`, {
+      response = await fetch(proxyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const data = await readJson<{ access_token?: string; user?: PilotUser; detail?: string }>(response);
-      if (!response.ok || !data.access_token || !data.user) {
-        throw new Error(classifyAuthResponseError('sign in', apiUrl, response.status, data.detail));
-      }
-      saveAuthPayload(data.access_token, data.user);
-      return data.user;
     } catch (submitError) {
-      throw new Error(classifyAuthTransportError('sign in', apiUrl, submitError));
+      throw new Error(classifyAuthTransportError('sign in', proxyUrl, submitError));
     }
-  }, [requireApiUrl, saveAuthPayload]);
+
+    const data = await readJson<{
+      access_token?: string;
+      user?: PilotUser;
+      detail?: string;
+      authTransport?: string;
+      backendApiUrl?: string | null;
+      configured?: boolean;
+      code?: string;
+    }>(response);
+    if (!response.ok || !data.access_token || !data.user) {
+      throw new Error(classifyAuthResponseError('sign in', proxyUrl, response.status, data.detail, data));
+    }
+    saveAuthPayload(data.access_token, data.user);
+    return data.user;
+  }, [saveAuthPayload]);
 
   const signUp = useCallback(async (payload: { email: string; password: string; full_name: string; workspace_name: string }) => {
-    const apiUrl = requireApiUrl();
+    const proxyUrl = '/api/auth/signup';
+    let response: Response;
+
     try {
-      const response = await fetch(`${apiUrl}/auth/signup`, {
+      response = await fetch(proxyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const data = await readJson<{ access_token?: string; user?: PilotUser; detail?: string }>(response);
-      if (!response.ok || !data.access_token || !data.user) {
-        throw new Error(classifyAuthResponseError('create an account', apiUrl, response.status, data.detail));
-      }
-      saveAuthPayload(data.access_token, data.user);
-      return data.user;
     } catch (submitError) {
-      throw new Error(classifyAuthTransportError('create an account', apiUrl, submitError));
+      throw new Error(classifyAuthTransportError('create an account', proxyUrl, submitError));
     }
-  }, [requireApiUrl, saveAuthPayload]);
+
+    const data = await readJson<{
+      access_token?: string;
+      user?: PilotUser;
+      detail?: string;
+      authTransport?: string;
+      backendApiUrl?: string | null;
+      configured?: boolean;
+      code?: string;
+    }>(response);
+    if (!response.ok || !data.access_token || !data.user) {
+      throw new Error(classifyAuthResponseError('create an account', proxyUrl, response.status, data.detail, data));
+    }
+    saveAuthPayload(data.access_token, data.user);
+    return data.user;
+  }, [saveAuthPayload]);
 
   const signOut = useCallback(async () => {
     const storedToken = window.localStorage.getItem(TOKEN_STORAGE_KEY);
-    if (storedToken && runtimeConfig.apiUrl) {
-      await fetch(`${runtimeConfig.apiUrl}/auth/signout`, {
+    if (storedToken) {
+      await fetch('/api/auth/signout', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${storedToken}`,
@@ -289,7 +311,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null);
     setUser(null);
     setError(null);
-  }, [runtimeConfig.apiUrl]);
+  }, []);
 
   const createWorkspace = useCallback(async (name: string) => {
     const response = await fetch(`${requireApiUrl()}/workspaces`, {
@@ -309,7 +331,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   }, [authHeaders, requireApiUrl]);
 
   const selectWorkspace = useCallback(async (workspaceId: string) => {
-    const response = await fetch(`${requireApiUrl()}/auth/select-workspace`, {
+    const response = await fetch('/api/auth/select-workspace', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
