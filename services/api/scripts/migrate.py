@@ -22,7 +22,7 @@ def _ensure_repo_root_on_path() -> Path:
 REPO_ROOT = _ensure_repo_root_on_path()
 
 from phase1_local.dev_support import load_env_file
-from services.api.app.pilot import run_migrations
+from services.api.app.pilot import pilot_schema_status, run_migrations
 
 
 if __name__ == '__main__':
@@ -34,3 +34,5 @@ if __name__ == '__main__':
             print(f'- {version}')
     else:
         print('No pending migrations.')
+    print('Pilot schema status:')
+    print(pilot_schema_status())

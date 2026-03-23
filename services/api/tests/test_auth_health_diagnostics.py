@@ -114,12 +114,44 @@ def test_auth_signin_route_returns_json_schema_error_instead_of_500(api_main, mo
         'message': 'Pilot auth schema is not initialized. Missing required tables: users. Run services/api/scripts/migrate.py before using live auth routes.',
         'missingTables': ['users'],
         'pilotSchemaReady': False,
+        'schemaDiagnostics': {
+            'ready': False,
+            'status': 'missing_tables',
+            'missing_tables': ['users'],
+            'required_tables': [
+                'users',
+                'workspaces',
+                'workspace_members',
+                'auth_sessions',
+                'analysis_runs',
+                'alerts',
+                'governance_actions',
+                'incidents',
+                'audit_logs',
+            ],
+        },
     }
 
 
 def test_health_details_reports_pilot_and_embedded_readiness_flags(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(api_main, 'pilot_schema_status', lambda: {'ready': True, 'status': 'ready', 'missing_tables': []})
-    monkeypatch.setattr(api_main, 'demo_seed_status', lambda email='demo@decoda.app': {'present': True, 'status': 'present', 'email': email})
+    monkeypatch.setattr(
+        api_main,
+        'pilot_schema_status',
+        lambda: {'ready': True, 'status': 'ready', 'missing_tables': [], 'required_tables': ['users', 'workspaces']},
+    )
+    monkeypatch.setattr(
+        api_main,
+        'demo_seed_status',
+        lambda email='demo@decoda.app': {
+            'present': True,
+            'status': 'present',
+            'email': email,
+            'workspace_slug': 'decoda-demo-workspace',
+            'user_present': True,
+            'workspace_present': True,
+            'membership_present': True,
+        },
+    )
 
     def _embedded(service_slug: str, operation: str):
         return {'ready': service_slug != 'threat-engine', 'reason': None if service_slug != 'threat-engine' else 'import collision fixed but runtime unavailable'}
@@ -132,6 +164,8 @@ def test_health_details_reports_pilot_and_embedded_readiness_flags(api_main, mon
 
     assert diagnostics['pilotSchemaReady'] is True
     assert diagnostics['demoSeedPresent'] is True
+    assert diagnostics['pilotSchemaDiagnostics']['required_tables'] == ['users', 'workspaces']
+    assert diagnostics['demoSeedDiagnostics']['membership_present'] is True
     assert diagnostics['embeddedThreatReady'] is False
     assert diagnostics['embeddedComplianceReady'] is True
     assert diagnostics['embeddedResilienceReady'] is True
