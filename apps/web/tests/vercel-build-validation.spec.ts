@@ -20,6 +20,7 @@ test.describe('vercel preview build validation', () => {
     );
 
     const message = formatValidationMessage(result);
+    expect(message).toContain('=== VERCEL BUILD VALIDATION: READ THIS BLOCK ===');
     expect(message).toContain('vercelEnv: preview');
     expect(message).toContain('branch: feature/preview-hardening');
     expect(message).toContain('commitSha: abc123def456');
@@ -27,6 +28,8 @@ test.describe('vercel preview build validation', () => {
     expect(message).toContain('API_URL: found (https://api.preview.decoda.example)');
     expect(message).toContain('NEXT_PUBLIC_API_URL: missing');
     expect(message).toContain('same-origin auth proxy prefers API_URL');
+    expect(message).toContain('If this is a PR preview, verify the env vars are set on the same Vercel project connected to the GitHub repo.');
+    expect(message).toContain('Action summary: Root Directory must be apps/web; verify the env vars are set on the same Vercel project connected to the GitHub repo; redeploy after fixing settings.');
   });
 
   test('fails preview builds with explicit operator guidance when both API_URL variables are missing', async () => {
@@ -58,6 +61,7 @@ test.describe('vercel preview build validation', () => {
     expect(message).toContain('NEXT_PUBLIC_API_URL: missing');
     expect(message).toContain('same-origin auth proxy prefers API_URL');
     expect(message).toContain('Vercel → Project Settings → Environment Variables for the Preview environment');
+    expect(message).toContain('Action summary: missing backend URL env vars (API_URL, NEXT_PUBLIC_API_URL); Root Directory must be apps/web; verify the env vars are set on the same Vercel project connected to the GitHub repo; redeploy after fixing settings.');
   });
 
   test('fails production builds when required vars are missing', async () => {
@@ -72,6 +76,9 @@ test.describe('vercel preview build validation', () => {
       'Missing NEXT_PUBLIC_LIVE_MODE_ENABLED. Production deployments must set this to true or false explicitly so live/demo runtime behavior is unambiguous.',
       'Missing both API_URL and NEXT_PUBLIC_API_URL. The same-origin auth proxy prefers API_URL, so set API_URL on the Vercel project (recommended) or NEXT_PUBLIC_API_URL before redeploying. Production deployments stay blocked until one of these backend URLs is configured.',
     ]);
+
+    const message = formatValidationMessage(result);
+    expect(message).toContain('Action summary: missing backend URL env vars (API_URL, NEXT_PUBLIC_API_URL); invalid or missing NEXT_PUBLIC_LIVE_MODE_ENABLED; Root Directory must be apps/web; verify the env vars are set on the linked Vercel project; redeploy after fixing settings.');
   });
 
   test('warns in development instead of failing hard', async () => {
