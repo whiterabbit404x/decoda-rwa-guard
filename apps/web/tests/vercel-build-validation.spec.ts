@@ -28,8 +28,10 @@ test.describe('vercel preview build validation', () => {
     expect(message).toContain('API_URL: found (https://api.preview.decoda.example)');
     expect(message).toContain('NEXT_PUBLIC_API_URL: missing');
     expect(message).toContain('same-origin auth proxy prefers API_URL');
-    expect(message).toContain('If this is a PR preview, verify the env vars are set on the same Vercel project connected to the GitHub repo.');
-    expect(message).toContain('Action summary: Root Directory must be apps/web; verify the env vars are set on the same Vercel project connected to the GitHub repo; redeploy after fixing settings.');
+    expect(message).toContain('Environment variable status (found/missing):');
+    expect(message).toContain('If this is a PR preview, verify these vars exist on the same Vercel project linked to this GitHub repository.');
+    expect(message).toContain('A failed new preview may leave older preview URLs serving stale builds.');
+    expect(message).toContain('Action summary: Root Directory must be apps/web; verify the env vars are set on the same Vercel project linked to this GitHub repository; redeploy after fixing settings.');
   });
 
   test('fails preview builds with explicit operator guidance when both API_URL variables are missing', async () => {
@@ -60,8 +62,11 @@ test.describe('vercel preview build validation', () => {
     expect(message).toContain('API_URL: missing');
     expect(message).toContain('NEXT_PUBLIC_API_URL: missing');
     expect(message).toContain('same-origin auth proxy prefers API_URL');
+    expect(message).toContain('Environment variable status (found/missing):');
     expect(message).toContain('Vercel → Project Settings → Environment Variables for the Preview environment');
-    expect(message).toContain('Action summary: missing backend URL env vars (API_URL, NEXT_PUBLIC_API_URL); Root Directory must be apps/web; verify the env vars are set on the same Vercel project connected to the GitHub repo; redeploy after fixing settings.');
+    expect(message).toContain('If this is a PR preview, verify these vars exist on the same Vercel project linked to this GitHub repository.');
+    expect(message).toContain('A failed new preview may leave older preview URLs serving stale builds.');
+    expect(message).toContain('Action summary: missing backend URL env vars (API_URL, NEXT_PUBLIC_API_URL); Root Directory must be apps/web; verify the env vars are set on the same Vercel project linked to this GitHub repository; redeploy after fixing settings.');
   });
 
   test('fails production builds when required vars are missing', async () => {

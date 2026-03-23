@@ -46,9 +46,10 @@ Operator checklist for Vercel build validation:
 
 #### PR preview troubleshooting
 
-- Preview vars must exist on the **same linked Vercel project** connected to the GitHub repo; setting them on a different Vercel project will not unblock the PR deployment.
 - **Root Directory** must be `apps/web` so the monorepo build runs the intended Next.js app and validation script.
+- Preview vars must exist on the **same linked Vercel project** connected to the GitHub repo; setting them on a different Vercel project will not unblock the PR deployment.
 - The same-origin auth proxy prefers `API_URL`; use `NEXT_PUBLIC_API_URL` only when the browser truly needs a separate public backend origin.
+- Old preview URLs may be stale if newer preview deploys fail, so always compare the failed build log's branch/commit block before debugging runtime behavior.
 
 ### Migrations and seed commands
 
