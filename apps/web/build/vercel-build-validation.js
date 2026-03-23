@@ -70,7 +70,7 @@ function getActionableSummary(result) {
 
   const joinedSummary = summaryParts.length > 0 ? summaryParts.join('; ') : 'review warnings above';
   const projectGuidance = isPreview
-    ? 'verify the env vars are set on the same Vercel project connected to the GitHub repo'
+    ? 'verify the env vars are set on the same Vercel project linked to this GitHub repository'
     : 'verify the env vars are set on the linked Vercel project';
 
   return `Action summary: ${joinedSummary}; ${projectGuidance}; redeploy after fixing settings.`;
@@ -139,19 +139,20 @@ function formatValidationMessage(result) {
     '[vercel-build-check] === VERCEL BUILD VALIDATION: READ THIS BLOCK ===',
     '[vercel-build-check] ==================================================',
     `[vercel-build-check] Building environment: ${buildTarget}`,
-    '[vercel-build-check] Deployment environment summary:',
+    '[vercel-build-check] Deployment environment summary (use this to confirm the failing project/preview):',
     `  - vercelEnv: ${result.summary.vercelEnv ?? 'unknown'}`,
     `  - nodeEnv: ${result.summary.nodeEnv ?? 'unknown'}`,
     `  - branch: ${result.summary.branch ?? 'unknown'}`,
     `  - commitSha: ${result.summary.commitSha ?? 'unknown'}`,
     `  - cwd: ${result.summary.cwd}`,
     `  - expectedRootDirectory: ${result.summary.expectedRootDirectory}`,
-    '[vercel-build-check] Environment variable status:',
+    '[vercel-build-check] Environment variable status (found/missing):',
     `  - NEXT_PUBLIC_LIVE_MODE_ENABLED: ${result.envStatus.NEXT_PUBLIC_LIVE_MODE_ENABLED}`,
     `  - API_URL: ${result.envStatus.API_URL}`,
     `  - NEXT_PUBLIC_API_URL: ${result.envStatus.NEXT_PUBLIC_API_URL}`,
     '[vercel-build-check] API resolution note: same-origin auth proxy prefers API_URL when it is available.',
-    '[vercel-build-check] If this is a PR preview, verify the env vars are set on the same Vercel project connected to the GitHub repo.',
+    '[vercel-build-check] If this is a PR preview, verify these vars exist on the same Vercel project linked to this GitHub repository.',
+    '[vercel-build-check] A failed new preview may leave older preview URLs serving stale builds.',
   ];
 
   if (result.warnings.length > 0) {
