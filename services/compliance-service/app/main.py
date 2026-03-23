@@ -196,6 +196,12 @@ def get_scenario(scenario_name: str) -> dict[str, Any]:
 
 
 embedded_dashboard = dashboard
+embedded_policy_state = policy_state
+embedded_governance_actions = governance_actions
+embedded_governance_action = governance_action
+embedded_screen_transfer = screen_transfer
+embedded_screen_residency = screen_residency
+embedded_create_governance_action = create_governance_action
 
 __all__ = [
     'app',
@@ -207,11 +213,17 @@ __all__ = [
     'TransferScreeningRequest',
     'TransferScreeningResponse',
     'dashboard',
-    'screen_transfer',
-    'screen_residency',
-    'policy_state',
-    'governance_actions',
-    'governance_action',
-    'create_governance_action',
     'embedded_dashboard',
+    'screen_transfer',
+    'embedded_screen_transfer',
+    'screen_residency',
+    'embedded_screen_residency',
+    'policy_state',
+    'embedded_policy_state',
+    'governance_actions',
+    'embedded_governance_actions',
+    'governance_action',
+    'embedded_governance_action',
+    'create_governance_action',
+    'embedded_create_governance_action',
 ]

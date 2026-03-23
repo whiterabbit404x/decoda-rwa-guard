@@ -186,6 +186,11 @@ def get_scenario(scenario_name: str) -> dict[str, Any]:
 
 
 embedded_dashboard = dashboard
+embedded_reconcile_state = reconcile_state
+embedded_evaluate_backstop = evaluate_backstop
+embedded_record_incident = record_incident
+embedded_list_incidents = list_incidents
+embedded_get_incident = get_incident
 
 __all__ = [
     'app',
@@ -197,10 +202,15 @@ __all__ = [
     'ReconciliationRequest',
     'ReconciliationResponse',
     'dashboard',
-    'reconcile_state',
-    'evaluate_backstop',
-    'record_incident',
-    'list_incidents',
-    'get_incident',
     'embedded_dashboard',
+    'reconcile_state',
+    'embedded_reconcile_state',
+    'evaluate_backstop',
+    'embedded_evaluate_backstop',
+    'record_incident',
+    'embedded_record_incident',
+    'list_incidents',
+    'embedded_list_incidents',
+    'get_incident',
+    'embedded_get_incident',
 ]
