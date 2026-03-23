@@ -42,6 +42,40 @@ function getMissingApiUrlMessage(vercelEnv) {
   return `${baseMessage} Configure one backend URL so the app can resolve auth/runtime traffic correctly.`;
 }
 
+function getActionableSummary(result) {
+  const summaryParts = [];
+  const missingVars = Object.entries(result.envStatus)
+    .filter(([, status]) => status === 'missing')
+    .map(([name]) => name);
+  const hasRootDirectoryWarning = result.warnings.some((warning) => warning.includes('Root Directory should be apps/web'));
+  const hasApiUrlError = result.errors.some((error) => error.includes('Missing both API_URL and NEXT_PUBLIC_API_URL'));
+  const hasLiveModeError = result.errors.some((error) => error.includes('NEXT_PUBLIC_LIVE_MODE_ENABLED'));
+  const isPreview = result.summary.vercelEnv === 'preview';
+
+  if (hasApiUrlError) {
+    summaryParts.push(`missing backend URL env vars (${missingVars.filter((name) => name === 'API_URL' || name === 'NEXT_PUBLIC_API_URL').join(', ')})`);
+  }
+
+  if (hasLiveModeError) {
+    summaryParts.push('invalid or missing NEXT_PUBLIC_LIVE_MODE_ENABLED');
+  }
+
+  if (hasRootDirectoryWarning) {
+    summaryParts.push(`Root Directory must be ${result.summary.expectedRootDirectory}`);
+  }
+
+  if (summaryParts.length === 0 && result.errors.length === 0 && result.warnings.length === 0) {
+    return 'Action summary: build validation passed.';
+  }
+
+  const joinedSummary = summaryParts.length > 0 ? summaryParts.join('; ') : 'review warnings above';
+  const projectGuidance = isPreview
+    ? 'verify the env vars are set on the same Vercel project connected to the GitHub repo'
+    : 'verify the env vars are set on the linked Vercel project';
+
+  return `Action summary: ${joinedSummary}; ${projectGuidance}; redeploy after fixing settings.`;
+}
+
 function validateBuildEnvironment(env = process.env) {
   const summary = getBuildEnvironmentSummary(env);
   const warnings = [];
@@ -101,6 +135,9 @@ function validateBuildEnvironment(env = process.env) {
 function formatValidationMessage(result) {
   const buildTarget = result.summary.vercelEnv ?? result.summary.nodeEnv ?? 'unknown';
   const lines = [
+    '[vercel-build-check] ==================================================',
+    '[vercel-build-check] === VERCEL BUILD VALIDATION: READ THIS BLOCK ===',
+    '[vercel-build-check] ==================================================',
     `[vercel-build-check] Building environment: ${buildTarget}`,
     '[vercel-build-check] Deployment environment summary:',
     `  - vercelEnv: ${result.summary.vercelEnv ?? 'unknown'}`,
@@ -114,6 +151,7 @@ function formatValidationMessage(result) {
     `  - API_URL: ${result.envStatus.API_URL}`,
     `  - NEXT_PUBLIC_API_URL: ${result.envStatus.NEXT_PUBLIC_API_URL}`,
     '[vercel-build-check] API resolution note: same-origin auth proxy prefers API_URL when it is available.',
+    '[vercel-build-check] If this is a PR preview, verify the env vars are set on the same Vercel project connected to the GitHub repo.',
   ];
 
   if (result.warnings.length > 0) {
@@ -129,6 +167,8 @@ function formatValidationMessage(result) {
       lines.push(`  - ${error}`);
     }
   }
+
+  lines.push(`[vercel-build-check] ${getActionableSummary(result)}`);
 
   return lines.join('\n');
 }

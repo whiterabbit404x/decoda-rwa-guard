@@ -44,6 +44,12 @@ Operator checklist for Vercel build validation:
 3. For **Production**, configure both a valid `NEXT_PUBLIC_LIVE_MODE_ENABLED` value (`true` or `false`) and at least one backend URL (`API_URL` preferred, `NEXT_PUBLIC_API_URL` fallback).
 4. If a preview build fails, read the build log block from `apps/web/build/vercel-build-validation.js`: it prints `vercelEnv`, branch, commit SHA, cwd, expected root directory, and found/missing status for `NEXT_PUBLIC_LIVE_MODE_ENABLED`, `API_URL`, and `NEXT_PUBLIC_API_URL`.
 
+#### PR preview troubleshooting
+
+- Preview vars must exist on the **same linked Vercel project** connected to the GitHub repo; setting them on a different Vercel project will not unblock the PR deployment.
+- **Root Directory** must be `apps/web` so the monorepo build runs the intended Next.js app and validation script.
+- The same-origin auth proxy prefers `API_URL`; use `NEXT_PUBLIC_API_URL` only when the browser truly needs a separate public backend origin.
+
 ### Migrations and seed commands
 
 Run these from the repo root after setting `DATABASE_URL` and `AUTH_TOKEN_SECRET` for the API service:
