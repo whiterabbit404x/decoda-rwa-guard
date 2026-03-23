@@ -4,11 +4,13 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 
-import AuthDiagnosticCard from '../auth-diagnostic-card';
+import AuthRuntimePanel from '../auth-runtime-panel';
+import { formatBuildVersionLine } from '../auth-deployment-badge';
+import type { BuildInfo } from '../build-info';
 import { resolveAuthFormState } from '../auth-form-state';
 import { usePilotAuth } from '../pilot-auth-context';
 
-export default function SignUpPageClient({ previewNotice }: { previewNotice?: React.ReactNode }) {
+export default function SignUpPageClient({ buildInfo }: { buildInfo: BuildInfo }) {
   const router = useRouter();
   const {
     apiTimeoutMs,
@@ -57,12 +59,12 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
         <div>
           <p className="eyebrow">Pilot onboarding</p>
           <h1>Create your company workspace</h1>
+          <p className="authVersionLine">{formatBuildVersionLine(buildInfo)}</p>
           <p className="lede">Create the first workspace owner account for your team and start saving live pilot activity.</p>
         </div>
       </div>
       {formState.statusMessage ? <p className="statusLine">{formState.statusMessage}</p> : null}
       {formState.deploymentWarning ? <p className="statusLine">{formState.deploymentWarning}</p> : null}
-      {previewNotice}
       <div className="twoColumnSection authPageGrid">
         <form className="dataCard authForm" onSubmit={handleSubmit}>
           <label className="label">Full name</label>
@@ -75,10 +77,10 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
           <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" minLength={10} required />
           <button type="submit" disabled={formState.submitDisabled}>{loading ? 'Creating account…' : 'Create account'}</button>
           {error ? <p className="statusLine">{error}</p> : null}
-          {!configLoading && !configured ? <p className="statusLine">Auth is disabled until this deployment exposes a valid API_URL.</p> : null}
+          {!configLoading && !configured ? <p className="statusLine">Auth is disabled until this deployment exposes a valid server runtime backend API URL.</p> : null}
           <p className="muted">Already have an account? <Link href="/sign-in">Sign in</Link>.</p>
         </form>
-        <AuthDiagnosticCard loading={configLoading} runtimeConfig={runtimeConfig} />
+        <AuthRuntimePanel buildInfo={buildInfo} loading={configLoading} runtimeConfig={runtimeConfig} />
       </div>
     </main>
   );

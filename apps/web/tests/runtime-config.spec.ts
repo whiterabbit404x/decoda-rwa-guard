@@ -4,10 +4,13 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
 import { shouldRedirectUnauthenticatedProductAccess } from '../app/(product)/layout';
+import { formatBuildVersionLine } from '../app/auth-deployment-badge';
 import { GET as getBuildInfoRoute } from '../app/api/build-info/route';
 import { GET as getRuntimeConfigRoute } from '../app/api/runtime-config/route';
 import { resolveAuthFormState } from '../app/auth-form-state';
 import { DEFAULT_API_URL, resolveApiConfig } from '../app/api-config';
+import type { BuildInfo } from '../app/build-info';
+import { getBuildInfo } from '../app/build-info';
 import { getRuntimeConfig } from '../app/runtime-config';
 import type { RuntimeConfig } from '../app/runtime-config-schema';
 
@@ -44,6 +47,32 @@ function withEnv(overrides: Record<string, string | undefined>, run: () => Promi
     restore();
     throw error;
   }
+}
+
+function sampleBuildInfo(overrides: Partial<BuildInfo> = {}): BuildInfo {
+  return {
+    vercelEnv: 'preview',
+    vercelUrl: 'preview-build-123.vercel.app',
+    currentHost: 'preview-build-123.vercel.app',
+    gitCommitShaShort: 'abc123d',
+    gitBranch: 'feature/preview-hardening',
+    nodeEnv: 'production',
+    buildTimestamp: '2026-03-22T00:00:00.000Z',
+    authMode: 'same-origin proxy',
+    runtimeConfig: {
+      configured: true,
+      diagnostic: null,
+      backendApiUrl: 'https://api.preview.decoda.example',
+      liveModeEnabled: true,
+      apiTimeoutMs: 3456,
+      sourceSummary: {
+        backendApiUrl: 'backend API URL resolved from server runtime config',
+        liveModeEnabled: 'live mode flag resolved from public runtime fallback',
+        apiTimeoutMs: 'API timeout resolved from server runtime config',
+      },
+    },
+    ...overrides,
+  };
 }
 
 test.describe('runtime auth configuration', () => {
@@ -101,38 +130,108 @@ test.describe('runtime auth configuration', () => {
     });
   });
 
-  test('build-info route reports vercel metadata plus runtime config summary', async () => {
-    await withEnv({
+  test('build-info helper returns safe deployment metadata plus runtime config summary', async () => {
+    const payload = getBuildInfo({
       NODE_ENV: 'production',
       VERCEL_ENV: 'preview',
+      VERCEL_URL: 'preview-build-123.vercel.app',
       VERCEL_GIT_COMMIT_REF: 'feature/preview-hardening',
       VERCEL_GIT_COMMIT_SHA: 'abc123def456',
       API_URL: 'https://api.preview.decoda.example',
       NEXT_PUBLIC_LIVE_MODE_ENABLED: 'true',
       API_TIMEOUT_MS: '3456',
+      BUILD_TIMESTAMP: '2026-03-22T00:00:00.000Z',
+      SECRET_TOKEN: 'super-secret-value',
+    } as NodeJS.ProcessEnv, 'preview-runtime.decoda.app') as Record<string, unknown>;
+
+    expect(payload).toEqual({
+      vercelEnv: 'preview',
+      vercelUrl: 'preview-build-123.vercel.app',
+      currentHost: 'preview-runtime.decoda.app',
+      gitCommitShaShort: 'abc123d',
+      gitBranch: 'feature/preview-hardening',
+      nodeEnv: 'production',
+      buildTimestamp: '2026-03-22T00:00:00.000Z',
+      authMode: 'same-origin proxy',
+      runtimeConfig: {
+        backendApiUrl: 'https://api.preview.decoda.example',
+        liveModeEnabled: true,
+        apiTimeoutMs: 3456,
+        configured: true,
+        diagnostic: null,
+        sourceSummary: {
+          backendApiUrl: 'backend API URL resolved from server runtime config',
+          liveModeEnabled: 'live mode flag resolved from public runtime fallback',
+          apiTimeoutMs: 'API timeout resolved from server runtime config',
+        },
+      },
+    });
+    expect(payload.SECRET_TOKEN).toBeUndefined();
+  });
+
+  test('build-info route is dynamic and returns safe metadata only', async () => {
+    await withEnv({
+      NODE_ENV: 'production',
+      VERCEL_ENV: 'preview',
+      VERCEL_URL: 'preview-build-123.vercel.app',
+      VERCEL_GIT_COMMIT_REF: 'feature/preview-hardening',
+      VERCEL_GIT_COMMIT_SHA: 'abc123def456',
+      API_URL: 'https://api.preview.decoda.example',
+      NEXT_PUBLIC_LIVE_MODE_ENABLED: 'true',
+      API_TIMEOUT_MS: '3456',
+      BUILD_TIMESTAMP: '2026-03-22T00:00:00.000Z',
+      SECRET_TOKEN: 'super-secret-value',
     }, async () => {
-      const response = await getBuildInfoRoute();
+      const response = await getBuildInfoRoute(new Request('https://decoda.example/api/build-info', {
+        headers: { host: 'preview-runtime.decoda.app' },
+      }));
       const payload = await response.json() as Record<string, unknown>;
 
-      expect(response.headers.get('Cache-Control')).toBe('no-store');
-      expect(payload).toEqual({
-        vercelEnv: 'preview',
-        branch: 'feature/preview-hardening',
-        commitSha: 'abc123def456',
-        runtimeConfig: {
-          apiUrl: 'https://api.preview.decoda.example',
-          liveModeEnabled: true,
-          apiTimeoutMs: 3456,
-          configured: true,
-          diagnostic: null,
-          source: {
-            apiUrl: 'API_URL',
-            liveModeEnabled: 'NEXT_PUBLIC_LIVE_MODE_ENABLED',
-            apiTimeoutMs: 'API_TIMEOUT_MS',
-          },
+      expect(response.headers.get('Cache-Control')).toBe('no-store, max-age=0');
+      expect(payload.authMode).toBe('same-origin proxy');
+      expect(payload.gitCommitShaShort).toBe('abc123d');
+      expect(payload.runtimeConfig).toEqual({
+        backendApiUrl: 'https://api.preview.decoda.example',
+        liveModeEnabled: true,
+        apiTimeoutMs: 3456,
+        configured: true,
+        diagnostic: null,
+        sourceSummary: {
+          backendApiUrl: 'backend API URL resolved from server runtime config',
+          liveModeEnabled: 'live mode flag resolved from public runtime fallback',
+          apiTimeoutMs: 'API timeout resolved from server runtime config',
         },
       });
+      expect(payload.SECRET_TOKEN).toBeUndefined();
     });
+  });
+
+  test('auth deployment badge and version line expose deployment identity details', async () => {
+    const buildInfo = sampleBuildInfo();
+    const badgeSource = readFileSync(path.join(process.cwd(), 'apps/web/app/auth-deployment-badge.tsx'), 'utf8');
+    const signInPageSource = readFileSync(path.join(process.cwd(), 'apps/web/app/sign-in/sign-in-page-client.tsx'), 'utf8');
+    const signUpPageSource = readFileSync(path.join(process.cwd(), 'apps/web/app/sign-up/sign-up-page-client.tsx'), 'utf8');
+
+    expect(badgeSource).toContain('Deployment identity');
+    expect(badgeSource).toContain('Environment');
+    expect(badgeSource).toContain('Commit');
+    expect(badgeSource).toContain('Branch');
+    expect(badgeSource).toContain('Host');
+    expect(badgeSource).toContain('Auth mode');
+    expect(signInPageSource).toContain('formatBuildVersionLine(buildInfo)');
+    expect(signUpPageSource).toContain('formatBuildVersionLine(buildInfo)');
+    expect(formatBuildVersionLine(buildInfo)).toBe('Build: abc123d · feature/preview-hardening · preview');
+  });
+
+  test('preview deployments render a stale-preview warning and build-info link', async () => {
+    const previewNoticeSource = readFileSync(path.join(process.cwd(), 'apps/web/app/preview-deployment-notice.tsx'), 'utf8');
+    const runtimePanelSource = readFileSync(path.join(process.cwd(), 'apps/web/app/auth-runtime-panel.tsx'), 'utf8');
+
+    expect(previewNoticeSource).toContain('Preview URLs are deployment-specific');
+    expect(previewNoticeSource).toContain('Old Vercel preview URLs can keep serving older auth UI');
+    expect(previewNoticeSource).toContain('/api/build-info');
+    expect(runtimePanelSource).toContain("buildInfo.vercelEnv === 'preview'");
+    expect(runtimePanelSource).toContain('AuthDeploymentBadge');
   });
 
   test('pilot-auth-context fetches runtime config at runtime instead of reading public env at module scope', async () => {
@@ -144,27 +243,22 @@ test.describe('runtime auth configuration', () => {
     expect(source).not.toContain('const API_URL =');
   });
 
-  test('auth diagnostic card renders same-origin proxy diagnostics from runtime-config props', async () => {
-    const source = readFileSync(path.join(process.cwd(), 'apps/web/app/auth-diagnostic-card.tsx'), 'utf8');
+  test('auth diagnostics are centralized in shared deployment/runtime components', async () => {
+    const signInPageSource = readFileSync(path.join(process.cwd(), 'apps/web/app/sign-in/sign-in-page-client.tsx'), 'utf8');
+    const signUpPageSource = readFileSync(path.join(process.cwd(), 'apps/web/app/sign-up/sign-up-page-client.tsx'), 'utf8');
+    const runtimePanelSource = readFileSync(path.join(process.cwd(), 'apps/web/app/auth-runtime-panel.tsx'), 'utf8');
+    const diagnosticCardSource = readFileSync(path.join(process.cwd(), 'apps/web/app/auth-diagnostic-card.tsx'), 'utf8');
 
-    expect(source).toContain('same-origin proxy');
-    expect(source).toContain('backendApiUrl');
-    expect(source).toContain('runtimeConfig.apiUrl');
-    expect(source).toContain('runtimeConfig.liveModeEnabled');
-    expect(source).toContain('runtimeConfig.configured');
-    expect(source).toContain('formatRuntimeConfigSource(runtimeConfig.source)');
-    expect(source).not.toContain('process.env');
-  });
-
-  test('auth pages gate the preview deployment notice from server-side VERCEL_ENV', async () => {
-    const signInPageSource = readFileSync(path.join(process.cwd(), 'apps/web/app/sign-in/page.tsx'), 'utf8');
-    const signUpPageSource = readFileSync(path.join(process.cwd(), 'apps/web/app/sign-up/page.tsx'), 'utf8');
-    const previewNoticeSource = readFileSync(path.join(process.cwd(), 'apps/web/app/preview-deployment-notice.tsx'), 'utf8');
-
-    expect(signInPageSource).toContain("process.env.VERCEL_ENV === 'preview'");
-    expect(signUpPageSource).toContain("process.env.VERCEL_ENV === 'preview'");
-    expect(previewNoticeSource).toContain('/api/build-info');
-    expect(previewNoticeSource).toContain('Preview environment detected');
+    expect(signInPageSource).toContain('AuthRuntimePanel');
+    expect(signInPageSource).toContain('authVersionLine');
+    expect(signUpPageSource).toContain('AuthRuntimePanel');
+    expect(signUpPageSource).toContain('authVersionLine');
+    expect(runtimePanelSource).toContain('AuthDeploymentBadge');
+    expect(runtimePanelSource).toContain('PreviewDeploymentNotice');
+    expect(diagnosticCardSource).toContain('Auth runtime configuration');
+    expect(diagnosticCardSource).toContain('buildInfo.authMode');
+    expect(diagnosticCardSource).not.toContain('Auth environment snapshot');
+    expect(diagnosticCardSource).not.toContain('NEXT_PUBLIC_API_URL');
   });
 
   test('product layout redirect logic uses resolved server runtime config', async () => {

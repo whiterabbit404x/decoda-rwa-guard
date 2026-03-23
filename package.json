@@ -7,6 +7,7 @@
     "packages/*"
   ],
   "scripts": {
+    "lint:auth-ui-legacy": "node apps/web/scripts/check-auth-ui-legacy.mjs",
     "test:backend:feature2-smoke": "python -m pytest services/api/tests/test_feature2_smoke.py -q",
     "test:frontend:feature2-smoke": "playwright test apps/web/tests/feature2-smoke.spec.ts",
     "smoke:feature2": "python scripts/smoke_feature2.py",

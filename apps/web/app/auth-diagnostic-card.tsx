@@ -1,6 +1,8 @@
+import type { BuildInfo } from './build-info';
 import { formatRuntimeConfigSource, RuntimeConfig } from './runtime-config-schema';
 
 type AuthDiagnosticCardProps = {
+  buildInfo: BuildInfo;
   runtimeConfig: RuntimeConfig;
   loading?: boolean;
 };
@@ -17,7 +19,7 @@ function envValue(value: string | number | boolean | null | undefined) {
   return value && String(value).trim() ? String(value) : 'unset';
 }
 
-export default function AuthDiagnosticCard({ runtimeConfig, loading = false }: AuthDiagnosticCardProps) {
+export default function AuthDiagnosticCard({ buildInfo, runtimeConfig, loading = false }: AuthDiagnosticCardProps) {
   const healthUrl = runtimeConfig.apiUrl ? `${runtimeConfig.apiUrl}/health` : null;
 
   return (
@@ -27,8 +29,8 @@ export default function AuthDiagnosticCard({ runtimeConfig, loading = false }: A
       <p className="muted">Use this before escalating: it shows the server-resolved runtime auth config for the current deployment.</p>
       <div className="kvGrid compactKvGrid authDiagnosticGrid">
         <p>
-          <span>authTransport</span>
-          {loading ? 'loading…' : 'same-origin proxy'}
+          <span>authMode</span>
+          {loading ? 'loading…' : buildInfo.authMode}
         </p>
         <p>
           <span>backendApiUrl</span>
@@ -39,10 +41,6 @@ export default function AuthDiagnosticCard({ runtimeConfig, loading = false }: A
           {loading ? 'loading…' : envValue(runtimeConfig.configured)}
         </p>
         <p>
-          <span>apiUrl</span>
-          {loading ? 'loading…' : envValue(runtimeConfig.apiUrl)}
-        </p>
-        <p>
           <span>liveModeEnabled</span>
           {loading ? 'loading…' : envValue(runtimeConfig.liveModeEnabled)}
         </p>
@@ -51,8 +49,8 @@ export default function AuthDiagnosticCard({ runtimeConfig, loading = false }: A
           {loading ? 'loading…' : envValue(runtimeConfig.apiTimeoutMs)}
         </p>
         <p>
-          <span>source</span>
-          {loading ? 'loading…' : formatRuntimeConfigSource(runtimeConfig.source)}
+          <span>runtimeConfigSource</span>
+          {loading ? 'Loading runtime configuration…' : formatRuntimeConfigSource(runtimeConfig.source)}
         </p>
         <p>
           <span>diagnostic</span>
@@ -60,11 +58,11 @@ export default function AuthDiagnosticCard({ runtimeConfig, loading = false }: A
         </p>
       </div>
       {runtimeConfig.diagnostic?.includes('localhost as API base URL') ? (
-        <p className="statusLine">Warning: this deployment is serving a localhost API URL, which is invalid in production and will break the backend auth proxy.</p>
+        <p className="statusLine">Warning: this deployment is serving a localhost API URL, which is invalid in production and will break the same-origin auth proxy.</p>
       ) : null}
       {healthUrl ? (
         <a className="authDiagnosticLink" href={healthUrl} target="_blank" rel="noreferrer">
-          Open /health
+          Open backend /health
         </a>
       ) : (
         <p className="statusLine">/health is unavailable until the deployment runtime config resolves a valid backend API URL for the same-origin auth proxy.</p>
