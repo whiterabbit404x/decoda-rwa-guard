@@ -836,9 +836,11 @@ def pilot_runtime_diagnostics() -> dict[str, Any]:
         'pilotSchemaReady': bool(schema['ready']),
         'pilotSchemaStatus': schema['status'],
         'pilotSchemaMissingTables': schema.get('missing_tables', []),
+        'pilotSchemaDiagnostics': schema,
         'demoSeedPresent': bool(demo['present']),
         'demoSeedStatus': demo['status'],
         'demoSeedEmail': demo['email'],
+        'demoSeedDiagnostics': demo,
         'embeddedThreatReady': bool(embedded_status['threat']['ready']),
         'embeddedComplianceReady': bool(embedded_status['compliance']['ready']),
         'embeddedResilienceReady': bool(embedded_status['resilience']['ready']),
@@ -858,6 +860,11 @@ def auth_schema_error_response(exc: HTTPException) -> JSONResponse | None:
         for table in ((exc.headers or {}).get('X-Decoda-Missing-Tables') or '').split(',')
         if table.strip()
     ]
+    if not missing_tables and isinstance(exc.detail, str):
+        marker = 'Missing required tables:'
+        if marker in exc.detail:
+            suffix = exc.detail.split(marker, 1)[1].split('.', 1)[0]
+            missing_tables = [table.strip() for table in suffix.split(',') if table.strip()]
     payload = schema_missing_error_payload(missing_tables or ['users'])
     return JSONResponse(payload, status_code=exc.status_code, headers={'Cache-Control': 'no-store'})
 

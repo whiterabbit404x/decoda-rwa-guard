@@ -7,6 +7,7 @@ from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 API_MAIN_PATH = Path(__file__).resolve().parents[1] / 'app' / 'main.py'
@@ -86,6 +87,37 @@ def test_run_migrations_replays_idempotent_foundation_sql_and_records_versions_o
     assert inserted_versions == [migration_path.name]
 
 
+def test_run_migrations_verifies_core_tables_after_replaying_sql(pilot_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    migration_path = tmp_path / '0001_pilot_foundation.sql'
+    migration_path.write_text('CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY);')
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT version FROM schema_migrations' in normalized:
+                return _Result([])
+            if 'SELECT required.table_name FROM unnest' in normalized:
+                return _Result([{'table_name': 'workspaces'}])
+            return _Result()
+
+        def commit(self):
+            raise AssertionError('commit should not run when required pilot tables are still missing')
+
+    @contextmanager
+    def fake_pg_connection():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
+    monkeypatch.setattr(pilot_module, 'migration_dir', lambda: tmp_path)
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot_module.run_migrations()
+
+    assert 'Pilot auth schema is not initialized.' in str(exc_info.value.detail)
+    assert 'workspaces' in str(exc_info.value.detail)
+
+
 def test_seed_script_pilot_demo_runs_migrations_and_seeds_demo_login(seed_module, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, object]] = []
     monkeypatch.setattr(
@@ -106,6 +138,7 @@ def test_seed_script_pilot_demo_runs_migrations_and_seeds_demo_login(seed_module
     monkeypatch.setattr(seed_module, 'seed_local_state', lambda: {'service': 'api'})
     monkeypatch.setattr(seed_module, 'pretty_json', lambda value: str(value))
     monkeypatch.setattr(seed_module, 'run_migrations', lambda: calls.append(('migrate', None)) or ['0001_pilot_foundation.sql'])
+    monkeypatch.setattr(seed_module, 'pilot_schema_status', lambda: {'ready': True, 'status': 'ready', 'missing_tables': []})
     monkeypatch.setattr(
         seed_module,
         'seed_demo_workspace',
@@ -125,6 +158,7 @@ def test_seed_script_pilot_demo_runs_migrations_and_seeds_demo_login(seed_module
         ('demo@decoda.app', 'PilotDemoPass123!', 'Decoda Demo Workspace', 'Decoda Demo User'),
     ) in calls
     assert 'Applied migrations before seeding live pilot data:' in output
+    assert 'pilot_schema_status' in output
     assert 'demo_seed_status' in output
 
 
@@ -166,6 +200,41 @@ def test_seed_demo_workspace_backfills_existing_demo_login(pilot_module, monkeyp
     assert any('INSERT INTO workspaces' in statement for statement, _ in executed)
     assert any('INSERT INTO workspace_members' in statement for statement, _ in executed)
     assert any('UPDATE users SET password_hash' in statement for statement, _ in executed)
+
+
+def test_demo_seed_status_requires_workspace_and_membership_for_present_state(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT required.table_name FROM unnest' in normalized:
+                return _Result([])
+            if 'SELECT users.id, users.current_workspace_id, workspaces.slug,' in normalized:
+                return _Result(
+                    [
+                        {
+                            'id': 'user-1',
+                            'current_workspace_id': 'workspace-1',
+                            'slug': None,
+                            'has_membership': True,
+                            'has_current_workspace_membership': False,
+                        }
+                    ]
+                )
+            raise AssertionError(f'unexpected SQL: {statement}')
+
+    @contextmanager
+    def fake_pg_connection():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
+    monkeypatch.setattr(pilot_module, 'live_mode_enabled', lambda: True)
+
+    status_payload = pilot_module.demo_seed_status('demo@decoda.app')
+
+    assert status_payload['present'] is False
+    assert status_payload['user_present'] is True
+    assert status_payload['workspace_present'] is False
+    assert status_payload['membership_present'] is True
 
 def test_embedded_loader_isolates_top_level_app_package_namespaces(api_main) -> None:
     api_main.load_embedded_service_main.cache_clear()

@@ -101,6 +101,19 @@ def ensure_migration_table(connection: Any) -> None:
     )
 
 
+def schema_missing_diagnostics(missing_tables: Iterable[str], *, status_value: str = 'missing_tables', reason: str | None = None) -> dict[str, Any]:
+    unique_tables = sorted(dict.fromkeys(str(table) for table in missing_tables if str(table).strip()))
+    diagnostics: dict[str, Any] = {
+        'ready': not unique_tables,
+        'status': 'ready' if not unique_tables else status_value,
+        'missing_tables': unique_tables,
+        'required_tables': list(CORE_PILOT_TABLES),
+    }
+    if reason:
+        diagnostics['reason'] = reason
+    return diagnostics
+
+
 def run_migrations() -> list[str]:
     require_live_mode()
     applied_versions: list[str] = []
@@ -117,6 +130,9 @@ def run_migrations() -> list[str]:
             )
             if path.name not in already_applied:
                 applied_versions.append(path.name)
+        missing_tables = _fetch_missing_pilot_tables(connection)
+        if missing_tables:
+            raise _schema_missing_http_exception(missing_tables)
         connection.commit()
     return applied_versions
 
@@ -127,7 +143,8 @@ def _missing_relation_error(exc: Exception) -> bool:
 
 
 def schema_missing_error_payload(missing_tables: Iterable[str]) -> dict[str, Any]:
-    unique_tables = sorted(dict.fromkeys(str(table) for table in missing_tables if str(table).strip()))
+    diagnostics = schema_missing_diagnostics(missing_tables)
+    unique_tables = diagnostics['missing_tables']
     table_list = ', '.join(unique_tables) if unique_tables else 'unknown'
     return {
         'code': 'pilot_schema_missing',
@@ -143,6 +160,7 @@ def schema_missing_error_payload(missing_tables: Iterable[str]) -> dict[str, Any
         ),
         'missingTables': unique_tables,
         'pilotSchemaReady': False,
+        'schemaDiagnostics': diagnostics,
     }
 
 
@@ -179,28 +197,15 @@ def ensure_pilot_schema(connection: Any) -> None:
 
 def pilot_schema_status() -> dict[str, Any]:
     if not live_mode_enabled():
-        return {
-            'ready': False,
-            'status': 'not_configured',
-            'missing_tables': list(CORE_PILOT_TABLES),
-        }
+        return schema_missing_diagnostics(CORE_PILOT_TABLES, status_value='not_configured')
     try:
         with pg_connection() as connection:
             missing_tables = _fetch_missing_pilot_tables(connection)
     except HTTPException:
         raise
     except Exception as exc:
-        return {
-            'ready': False,
-            'status': 'check_failed',
-            'missing_tables': [],
-            'reason': str(exc),
-        }
-    return {
-        'ready': not missing_tables,
-        'status': 'ready' if not missing_tables else 'missing_tables',
-        'missing_tables': missing_tables,
-    }
+        return schema_missing_diagnostics((), status_value='check_failed', reason=str(exc))
+    return schema_missing_diagnostics(missing_tables)
 
 
 def demo_seed_status(email: str = DEFAULT_DEMO_EMAIL) -> dict[str, Any]:
@@ -216,7 +221,21 @@ def demo_seed_status(email: str = DEFAULT_DEMO_EMAIL) -> dict[str, Any]:
             ensure_pilot_schema(connection)
             user = connection.execute(
                 '''
-                SELECT users.id, users.current_workspace_id, workspaces.slug
+                SELECT
+                    users.id,
+                    users.current_workspace_id,
+                    workspaces.slug,
+                    EXISTS (
+                        SELECT 1
+                        FROM workspace_members
+                        WHERE workspace_members.user_id = users.id
+                    ) AS has_membership,
+                    EXISTS (
+                        SELECT 1
+                        FROM workspace_members
+                        WHERE workspace_members.user_id = users.id
+                          AND workspace_members.workspace_id = users.current_workspace_id
+                    ) AS has_current_workspace_membership
                 FROM users
                 LEFT JOIN workspaces ON workspaces.id = users.current_workspace_id
                 WHERE users.email = %s
@@ -237,11 +256,16 @@ def demo_seed_status(email: str = DEFAULT_DEMO_EMAIL) -> dict[str, Any]:
             'email': normalized_email,
             'reason': str(exc),
         }
+    workspace_present = bool(user and user['current_workspace_id'] and user['slug'])
+    membership_present = bool(user and (user['has_current_workspace_membership'] or user['has_membership']))
     return {
-        'present': user is not None,
-        'status': 'present' if user is not None else 'missing',
+        'present': bool(user and workspace_present and membership_present),
+        'status': 'present' if user and workspace_present and membership_present else 'missing',
         'email': normalized_email,
         'workspace_slug': None if user is None else user['slug'],
+        'user_present': user is not None,
+        'workspace_present': workspace_present,
+        'membership_present': membership_present,
     }
 
 
@@ -711,6 +735,13 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
         ).fetchone()
         workspace_created = False
         workspace_id = str(existing['current_workspace_id'] or '')
+        if workspace_id:
+            workspace_row = connection.execute(
+                'SELECT id, name, slug FROM workspaces WHERE id = %s',
+                (workspace_id,),
+            ).fetchone()
+            if workspace_row is None:
+                workspace_id = ''
         if membership is not None and not workspace_id:
             workspace_id = str(membership['workspace_id'])
         if not workspace_id:

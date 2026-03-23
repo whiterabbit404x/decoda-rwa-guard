@@ -24,7 +24,7 @@ def _ensure_repo_root_on_path() -> Path:
 REPO_ROOT = _ensure_repo_root_on_path()
 
 from phase1_local.dev_support import load_env_file, pretty_json, seed_service
-from services.api.app.pilot import DEFAULT_DEMO_EMAIL, demo_seed_status, run_migrations, seed_demo_workspace
+from services.api.app.pilot import DEFAULT_DEMO_EMAIL, demo_seed_status, pilot_schema_status, run_migrations, seed_demo_workspace
 
 load_env_file()
 
@@ -61,6 +61,7 @@ def seed() -> None:
             print('Applied migrations before seeding live pilot data:')
             for version in applied:
                 print(f'- {version}')
+        print(pretty_json({'pilot_schema_status': pilot_schema_status()}))
         seeded = seed_demo_workspace(args.demo_email, args.demo_password, args.demo_workspace, args.demo_full_name)
         print(pretty_json(seeded))
         print(pretty_json({'demo_seed_status': demo_seed_status(args.demo_email)}))
