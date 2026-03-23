@@ -625,6 +625,57 @@ td .tableMeta {
   max-width: 720px;
 }
 
+.authMetaColumn {
+  display: grid;
+  gap: 1rem;
+}
+
+.authBuildVersion {
+  margin: 0.5rem 0 0;
+  color: #fbbf24;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.buildIdentityBadge {
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  background: linear-gradient(180deg, rgba(30, 64, 175, 0.24), rgba(15, 23, 42, 0.9));
+}
+
+.buildIdentityBadgeHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.buildIdentityBadgeHeader h2 {
+  margin: 0.25rem 0 0;
+}
+
+.buildIdentityVersion {
+  margin: 0;
+  color: #dbeafe;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.buildIdentitySummary {
+  margin: 0.75rem 0 0;
+}
+
+.buildIdentityGrid {
+  margin-top: 1rem;
+}
+
+.previewDeploymentNotice {
+  border: 2px solid rgba(251, 191, 36, 0.85);
+  background: rgba(120, 53, 15, 0.32);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.16);
+  margin-bottom: 0;
+}
+
 .authDiagnosticGrid {
   margin-top: 1rem;
 }
@@ -643,11 +694,6 @@ td .tableMeta {
   font-weight: 600;
 }
 
-.previewDeploymentNotice {
-  border: 1px solid rgba(245, 158, 11, 0.5);
-  background: rgba(120, 53, 15, 0.15);
-  margin-bottom: 1rem;
-}
 
 .previewDeploymentNotice h2 {
   margin: 0.25rem 0 0.5rem;

@@ -107,18 +107,27 @@ test.describe('runtime auth configuration', () => {
       VERCEL_ENV: 'preview',
       VERCEL_GIT_COMMIT_REF: 'feature/preview-hardening',
       VERCEL_GIT_COMMIT_SHA: 'abc123def456',
+      VERCEL_DEPLOYMENT_CREATED_AT: '2026-03-23T12:34:56.000Z',
       API_URL: 'https://api.preview.decoda.example',
       NEXT_PUBLIC_LIVE_MODE_ENABLED: 'true',
       API_TIMEOUT_MS: '3456',
     }, async () => {
-      const response = await getBuildInfoRoute();
+      const request = new Request('https://preview.decoda.example/api/build-info', {
+        headers: {
+          host: 'preview.decoda.example',
+        },
+      });
+      const response = await getBuildInfoRoute(request);
       const payload = await response.json() as Record<string, unknown>;
 
       expect(response.headers.get('Cache-Control')).toBe('no-store');
       expect(payload).toEqual({
         vercelEnv: 'preview',
+        host: 'preview.decoda.example',
         branch: 'feature/preview-hardening',
         commitSha: 'abc123def456',
+        buildTimestamp: '2026-03-23T12:34:56.000Z',
+        authMode: 'same-origin proxy',
         runtimeConfig: {
           apiUrl: 'https://api.preview.decoda.example',
           liveModeEnabled: true,
@@ -148,7 +157,7 @@ test.describe('runtime auth configuration', () => {
     const source = readFileSync(path.join(process.cwd(), 'apps/web/app/auth-diagnostic-card.tsx'), 'utf8');
 
     expect(source).toContain('same-origin proxy');
-    expect(source).toContain('backendApiUrl');
+    expect(source).toContain('backend API URL');
     expect(source).toContain('runtimeConfig.apiUrl');
     expect(source).toContain('runtimeConfig.liveModeEnabled');
     expect(source).toContain('runtimeConfig.configured');
@@ -164,7 +173,25 @@ test.describe('runtime auth configuration', () => {
     expect(signInPageSource).toContain("process.env.VERCEL_ENV === 'preview'");
     expect(signUpPageSource).toContain("process.env.VERCEL_ENV === 'preview'");
     expect(previewNoticeSource).toContain('/api/build-info');
-    expect(previewNoticeSource).toContain('Preview environment detected');
+    expect(previewNoticeSource).toContain('Older preview URLs may not reflect the latest source.');
+  });
+
+  test('auth pages expose deployment identity and reject legacy auth wording', async () => {
+    const authSources = [
+      'apps/web/app/build-identity-badge.tsx',
+      'apps/web/app/preview-deployment-notice.tsx',
+      'apps/web/app/auth-diagnostic-card.tsx',
+      'apps/web/app/sign-in/sign-in-page-client.tsx',
+      'apps/web/app/sign-up/sign-up-page-client.tsx',
+    ].map((filePath) => readFileSync(path.join(process.cwd(), filePath), 'utf8')).join('\n');
+
+    expect(authSources).toContain('Build:');
+    expect(authSources).toContain('current host');
+    expect(authSources).toContain('short commit SHA');
+    expect(authSources).toContain('auth mode');
+    expect(authSources).toContain('same-origin proxy');
+    expect(authSources).not.toContain('Auth environment snapshot');
+    expect(authSources).not.toContain('NEXT_PUBLIC_API_URL');
   });
 
   test('product layout redirect logic uses resolved server runtime config', async () => {

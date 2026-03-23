@@ -8,7 +8,15 @@ import AuthDiagnosticCard from '../auth-diagnostic-card';
 import { resolveAuthFormState } from '../auth-form-state';
 import { usePilotAuth } from '../pilot-auth-context';
 
-export default function SignUpPageClient({ previewNotice }: { previewNotice?: React.ReactNode }) {
+export default function SignUpPageClient({
+  buildBadge,
+  versionLine,
+  previewNotice,
+}: {
+  buildBadge?: React.ReactNode;
+  versionLine?: string;
+  previewNotice?: React.ReactNode;
+}) {
   const router = useRouter();
   const {
     apiTimeoutMs,
@@ -57,12 +65,12 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
         <div>
           <p className="eyebrow">Pilot onboarding</p>
           <h1>Create your company workspace</h1>
+          {versionLine ? <p className="authBuildVersion">{versionLine}</p> : null}
           <p className="lede">Create the first workspace owner account for your team and start saving live pilot activity.</p>
         </div>
       </div>
       {formState.statusMessage ? <p className="statusLine">{formState.statusMessage}</p> : null}
       {formState.deploymentWarning ? <p className="statusLine">{formState.deploymentWarning}</p> : null}
-      {previewNotice}
       <div className="twoColumnSection authPageGrid">
         <form className="dataCard authForm" onSubmit={handleSubmit}>
           <label className="label">Full name</label>
@@ -78,7 +86,11 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
           {!configLoading && !configured ? <p className="statusLine">Auth is disabled until this deployment exposes a valid API_URL.</p> : null}
           <p className="muted">Already have an account? <Link href="/sign-in">Sign in</Link>.</p>
         </form>
-        <AuthDiagnosticCard loading={configLoading} runtimeConfig={runtimeConfig} />
+        <div className="authMetaColumn">
+          {buildBadge}
+          {previewNotice}
+          <AuthDiagnosticCard loading={configLoading} runtimeConfig={runtimeConfig} />
+        </div>
       </div>
     </main>
   );

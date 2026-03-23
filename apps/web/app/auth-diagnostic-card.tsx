@@ -27,11 +27,11 @@ export default function AuthDiagnosticCard({ runtimeConfig, loading = false }: A
       <p className="muted">Use this before escalating: it shows the server-resolved runtime auth config for the current deployment.</p>
       <div className="kvGrid compactKvGrid authDiagnosticGrid">
         <p>
-          <span>authTransport</span>
+          <span>auth mode</span>
           {loading ? 'loading…' : 'same-origin proxy'}
         </p>
         <p>
-          <span>backendApiUrl</span>
+          <span>backend API URL</span>
           {loading ? 'loading…' : envValue(runtimeConfig.apiUrl)}
         </p>
         <p>
@@ -39,19 +39,15 @@ export default function AuthDiagnosticCard({ runtimeConfig, loading = false }: A
           {loading ? 'loading…' : envValue(runtimeConfig.configured)}
         </p>
         <p>
-          <span>apiUrl</span>
-          {loading ? 'loading…' : envValue(runtimeConfig.apiUrl)}
-        </p>
-        <p>
-          <span>liveModeEnabled</span>
+          <span>live mode enabled</span>
           {loading ? 'loading…' : envValue(runtimeConfig.liveModeEnabled)}
         </p>
         <p>
-          <span>apiTimeoutMs</span>
+          <span>API timeout ms</span>
           {loading ? 'loading…' : envValue(runtimeConfig.apiTimeoutMs)}
         </p>
         <p>
-          <span>source</span>
+          <span>config source</span>
           {loading ? 'loading…' : formatRuntimeConfigSource(runtimeConfig.source)}
         </p>
         <p>
