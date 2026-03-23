@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import types
+from contextlib import contextmanager
 from copy import deepcopy
 from functools import lru_cache
 from hashlib import sha256
@@ -35,11 +36,13 @@ from services.api.app.pilot import (
     log_audit,
     maybe_insert_alert,
     parse_csv_env,
+    pilot_schema_status,
     persist_analysis_run,
     pilot_mode,
     pg_connection,
     resolve_workspace,
     select_workspace_for_user,
+    demo_seed_status,
     signin_user,
     signout_user,
     signup_user,
@@ -330,6 +333,7 @@ DEPENDENCY_CONFIG = {
 }
 DEPENDENCY_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
 EMBEDDED_SERVICE_STATUS_DETAIL = 'Embedded local execution active'
+EMBEDDED_ALIAS_MODULE_NAMES = ('app', 'app.main', 'app.engine', 'app.schemas', 'app.store')
 DEPENDENCY_SERVICE_REGISTRY = {
     'risk_engine': {
         'service_name': 'risk-engine',
@@ -474,43 +478,71 @@ def is_remote_service_url(configured_url: str | None) -> bool:
     return hostname not in {'', 'localhost', '127.0.0.1', '::1'}
 
 
-@lru_cache(maxsize=None)
-def load_embedded_service_main(service_slug: str):
-    service_app_dir = REPO_ROOT / 'services' / service_slug / 'app'
-    package_name = f"_embedded_{service_slug.replace('-', '_')}_app"
-    main_module_name = f'{package_name}.main'
-    if main_module_name in sys.modules:
-        return sys.modules[main_module_name]
+def embedded_service_namespace(service_slug: str) -> str:
+    return f"_embedded_{service_slug.replace('-', '_')}_app"
 
+
+def _embedded_service_app_dir(service_slug: str) -> Path:
+    return REPO_ROOT / 'services' / service_slug / 'app'
+
+
+def _ensure_embedded_service_package(service_slug: str) -> types.ModuleType:
+    package_name = embedded_service_namespace(service_slug)
+    package = sys.modules.get(package_name)
+    if isinstance(package, types.ModuleType):
+        return package
+    service_app_dir = _embedded_service_app_dir(service_slug)
     package = types.ModuleType(package_name)
     package.__path__ = [str(service_app_dir)]
     package.__file__ = str(service_app_dir / '__init__.py')
     sys.modules[package_name] = package
+    return package
 
-    alias_names = ('app', 'app.main', 'app.engine', 'app.schemas', 'app.store')
-    previous_aliases = {name: sys.modules.get(name) for name in alias_names}
-    for name in alias_names:
-        sys.modules.pop(name, None)
 
-    alias_package = types.ModuleType('app')
-    alias_package.__path__ = [str(service_app_dir)]
-    alias_package.__file__ = str(service_app_dir / '__init__.py')
-    sys.modules['app'] = alias_package
-
-    spec = importlib.util.spec_from_file_location(main_module_name, service_app_dir / 'main.py')
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f'Unable to load embedded service module for {service_slug}.')
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[main_module_name] = module
-
+@contextmanager
+def embedded_service_import_context(service_slug: str):
+    package_name = embedded_service_namespace(service_slug)
+    previous_aliases = {name: sys.modules.get(name) for name in EMBEDDED_ALIAS_MODULE_NAMES}
+    package = _ensure_embedded_service_package(service_slug)
     try:
-        spec.loader.exec_module(module)
+        sys.modules['app'] = package
+        for alias_name in EMBEDDED_ALIAS_MODULE_NAMES[1:]:
+            suffix = alias_name.split('.', 1)[1]
+            unique_name = f'{package_name}.{suffix}'
+            unique_module = sys.modules.get(unique_name)
+            if unique_module is not None:
+                sys.modules[alias_name] = unique_module
+        yield package_name
     finally:
-        for name in ('app.main', 'app.engine', 'app.schemas', 'app.store', 'app'):
-            sys.modules.pop(name, None)
-        for name, previous in previous_aliases.items():
+        for alias_name in EMBEDDED_ALIAS_MODULE_NAMES:
+            sys.modules.pop(alias_name, None)
+        for alias_name, previous in previous_aliases.items():
             if previous is not None:
-                sys.modules[name] = previous
+                sys.modules[alias_name] = previous
+
+
+@lru_cache(maxsize=None)
+def load_embedded_service_main(service_slug: str):
+    service_app_dir = _embedded_service_app_dir(service_slug)
+    package_name = embedded_service_namespace(service_slug)
+    main_module_name = f'{package_name}.main'
+    if main_module_name in sys.modules:
+        return sys.modules[main_module_name]
+
+    _ensure_embedded_service_package(service_slug)
+    with embedded_service_import_context(service_slug):
+        spec = importlib.util.spec_from_file_location(main_module_name, service_app_dir / 'main.py')
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f'Unable to load embedded service module for {service_slug}.')
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[main_module_name] = module
+        sys.modules['app.main'] = module
+        spec.loader.exec_module(module)
+        for alias_name in EMBEDDED_ALIAS_MODULE_NAMES[1:]:
+            alias_module = sys.modules.get(alias_name)
+            if alias_module is not None:
+                suffix = alias_name.split('.', 1)[1]
+                sys.modules[f'{package_name}.{suffix}'] = alias_module
 
     return module
 
@@ -530,38 +562,85 @@ def _log_embedded_adapter_path(service_slug: str, operation: str, adapter_path: 
     logger.info('Embedded %s adapter path used for %s: %s', service_slug, operation, adapter_path)
 
 
+def _resolve_embedded_callable(module: Any, adapter_candidates: list[tuple[str, ...]]) -> tuple[Any, str]:
+    for candidate in adapter_candidates:
+        current = module
+        path_parts: list[str] = ['module']
+        for segment in candidate:
+            current = getattr(current, segment, None)
+            path_parts.append(segment)
+            if current is None:
+                break
+        if callable(current):
+            return current, '.'.join(path_parts)
+    raise AttributeError(f'Embedded module {getattr(module, "__name__", "<unknown>")} has no compatible adapter.')
+
+
+def _invoke_embedded_callable(
+    service_slug: str,
+    operation: str,
+    adapter_candidates: list[tuple[str, ...]],
+    *args: Any,
+) -> Any:
+    module = load_embedded_service_main(service_slug)
+    with embedded_service_import_context(service_slug):
+        adapter, adapter_path = _resolve_embedded_callable(module, adapter_candidates)
+        suffix = '' if not args else '(' + ', '.join(arg for arg in ('request',)[: len(args)]) + ')'
+        _log_embedded_adapter_path(service_slug, operation, f'{adapter_path}{suffix}')
+        return adapter(*args)
+
+
+EMBEDDED_ADAPTER_CANDIDATES: dict[str, dict[str, list[tuple[str, ...]]]] = {
+    'risk-engine': {
+        'evaluate': [('embedded_evaluate',), ('evaluate_risk_internal',), ('evaluate_risk',), ('engine', 'evaluate')],
+    },
+    'threat-engine': {
+        'dashboard': [('embedded_dashboard',), ('internal_dashboard',), ('dashboard',), ('engine', 'build_dashboard')],
+        'contract': [('embedded_analyze_contract',), ('internal_analyze_contract',), ('analyze_contract',), ('engine', 'analyze_contract')],
+        'transaction': [('embedded_analyze_transaction',), ('internal_analyze_transaction',), ('analyze_transaction',), ('engine', 'analyze_transaction')],
+        'market': [('embedded_analyze_market',), ('internal_analyze_market',), ('analyze_market',), ('engine', 'analyze_market')],
+    },
+    'compliance-service': {
+        'dashboard': [('embedded_dashboard',), ('dashboard',), ('internal_dashboard',), ('engine', 'dashboard')],
+        'policy_state': [('embedded_policy_state',), ('policy_state',), ('engine', 'get_policy_state')],
+        'governance_actions': [('embedded_governance_actions',), ('governance_actions',), ('engine', 'list_actions')],
+        'governance_action': [('embedded_governance_action',), ('governance_action',), ('engine', 'get_action')],
+        'screen/transfer': [('embedded_screen_transfer',), ('screen_transfer',), ('internal_screen_transfer',), ('engine', 'screen_transfer')],
+        'screen/residency': [('embedded_screen_residency',), ('screen_residency',), ('internal_screen_residency',), ('engine', 'screen_residency')],
+        'governance/actions': [('embedded_create_governance_action',), ('create_governance_action',), ('internal_create_governance_action',), ('engine', 'apply_governance_action')],
+    },
+    'reconciliation-service': {
+        'dashboard': [('embedded_dashboard',), ('dashboard',), ('internal_dashboard',), ('engine', 'dashboard')],
+        'incidents': [('embedded_list_incidents',), ('list_incidents',), ('engine', 'list_incidents')],
+        'incident': [('embedded_get_incident',), ('get_incident',), ('engine', 'get_incident')],
+        'reconcile/state': [('embedded_reconcile_state',), ('reconcile_state',), ('internal_reconcile_state',), ('engine', 'reconcile')],
+        'backstop/evaluate': [('embedded_evaluate_backstop',), ('evaluate_backstop',), ('internal_evaluate_backstop',), ('engine', 'evaluate_backstop')],
+        'incidents/record': [('embedded_record_incident',), ('record_incident',), ('internal_record_incident',), ('engine', 'record_incident')],
+    },
+}
+
+
 def execute_embedded_risk_evaluation(payload: dict[str, Any]) -> dict[str, Any]:
     module = load_embedded_service_main('risk-engine')
     request, request_source = _build_embedded_request(module, 'RiskEvaluationRequest', payload)
-
-    if callable(getattr(module, 'evaluate_risk_internal', None)):
-        _log_embedded_adapter_path('risk-engine', 'evaluate', f'module.evaluate_risk_internal({request_source})')
-        return _model_dump(module.evaluate_risk_internal(request))
-    if callable(getattr(module, 'evaluate_risk', None)):
-        _log_embedded_adapter_path('risk-engine', 'evaluate', f'module.evaluate_risk({request_source})')
-        return _model_dump(module.evaluate_risk(request))
-    engine = getattr(module, 'engine', None)
-    if engine is not None and callable(getattr(engine, 'evaluate', None)):
-        _log_embedded_adapter_path('risk-engine', 'evaluate', f'module.engine.evaluate({request_source})')
-        return _model_dump(engine.evaluate(request))
-    raise AttributeError('Embedded risk-engine module exposes neither evaluate_risk(_internal) nor engine.evaluate.')
+    response = _invoke_embedded_callable('risk-engine', 'evaluate', EMBEDDED_ADAPTER_CANDIDATES['risk-engine']['evaluate'], request)
+    _log_embedded_adapter_path('risk-engine', 'evaluate', f'request_source={request_source}')
+    return _model_dump(response)
 
 
 def execute_embedded_threat_dashboard() -> dict[str, Any]:
     module = load_embedded_service_main('threat-engine')
-    if callable(getattr(module, 'internal_dashboard', None)):
-        _log_embedded_adapter_path('threat-engine', 'dashboard', 'module.internal_dashboard()')
-        return _model_dump(module.internal_dashboard())
-    if callable(getattr(module, 'dashboard', None)):
-        _log_embedded_adapter_path('threat-engine', 'dashboard', 'module.dashboard()')
-        return _model_dump(module.dashboard())
-    engine = getattr(module, 'engine', None)
-    if engine is not None and callable(getattr(engine, 'build_dashboard', None)):
-        scenarios = module.load_demo_requests() if callable(getattr(module, 'load_demo_requests', None)) else {}
-        adapter = 'module.engine.build_dashboard(module.load_demo_requests())' if scenarios else 'module.engine.build_dashboard({})'
-        _log_embedded_adapter_path('threat-engine', 'dashboard', adapter)
-        return _model_dump(engine.build_dashboard(scenarios))
-    raise AttributeError('Embedded threat-engine module exposes neither dashboard/internal_dashboard nor engine.build_dashboard.')
+    scenarios = module.load_demo_requests() if callable(getattr(module, 'load_demo_requests', None)) else {}
+    try:
+        response = _invoke_embedded_callable(
+            'threat-engine',
+            'dashboard',
+            [('embedded_dashboard',), ('internal_dashboard',), ('dashboard',)],
+        )
+        return _model_dump(response)
+    except AttributeError:
+        response = _invoke_embedded_callable('threat-engine', 'dashboard', [('engine', 'build_dashboard')], scenarios)
+        return _model_dump(response)
 
 
 def execute_embedded_threat_request(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -569,93 +648,39 @@ def execute_embedded_threat_request(kind: str, payload: dict[str, Any]) -> dict[
     match kind:
         case 'contract':
             request, request_source = _build_embedded_request(module, 'ContractAnalysisRequest', payload)
-            for adapter_name in ('internal_analyze_contract', 'analyze_contract'):
-                adapter = getattr(module, adapter_name, None)
-                if callable(adapter):
-                    _log_embedded_adapter_path('threat-engine', kind, f'module.{adapter_name}({request_source})')
-                    return _model_dump(adapter(request))
-            engine_method = getattr(getattr(module, 'engine', None), 'analyze_contract', None)
-            if callable(engine_method):
-                _log_embedded_adapter_path('threat-engine', kind, f'module.engine.analyze_contract({request_source})')
-                return _model_dump(engine_method(request))
+            response = _invoke_embedded_callable('threat-engine', kind, EMBEDDED_ADAPTER_CANDIDATES['threat-engine']['contract'], request)
+            return _model_dump(response)
         case 'transaction':
             request, request_source = _build_embedded_request(module, 'TransactionAnalysisRequest', payload)
-            for adapter_name in ('internal_analyze_transaction', 'analyze_transaction'):
-                adapter = getattr(module, adapter_name, None)
-                if callable(adapter):
-                    _log_embedded_adapter_path('threat-engine', kind, f'module.{adapter_name}({request_source})')
-                    return _model_dump(adapter(request))
-            engine_method = getattr(getattr(module, 'engine', None), 'analyze_transaction', None)
-            if callable(engine_method):
-                _log_embedded_adapter_path('threat-engine', kind, f'module.engine.analyze_transaction({request_source})')
-                return _model_dump(engine_method(request))
+            response = _invoke_embedded_callable('threat-engine', kind, EMBEDDED_ADAPTER_CANDIDATES['threat-engine']['transaction'], request)
+            return _model_dump(response)
         case 'market':
             request, request_source = _build_embedded_request(module, 'MarketAnalysisRequest', payload)
-            for adapter_name in ('internal_analyze_market', 'analyze_market'):
-                adapter = getattr(module, adapter_name, None)
-                if callable(adapter):
-                    _log_embedded_adapter_path('threat-engine', kind, f'module.{adapter_name}({request_source})')
-                    return _model_dump(adapter(request))
-            engine_method = getattr(getattr(module, 'engine', None), 'analyze_market', None)
-            if callable(engine_method):
-                _log_embedded_adapter_path('threat-engine', kind, f'module.engine.analyze_market({request_source})')
-                return _model_dump(engine_method(request))
+            response = _invoke_embedded_callable('threat-engine', kind, EMBEDDED_ADAPTER_CANDIDATES['threat-engine']['market'], request)
+            return _model_dump(response)
         case _:
             raise ValueError(f'Unsupported threat analysis kind: {kind}')
-    raise AttributeError(f'Embedded threat-engine module has no compatible adapter for {kind}.')
+    raise AttributeError(f'Embedded threat-engine module has no compatible adapter for {kind}; request_source={request_source}.')
 
 
 def execute_embedded_compliance_dashboard() -> dict[str, Any]:
-    module = load_embedded_service_main('compliance-service')
-    for adapter_name in ('dashboard', 'internal_dashboard'):
-        adapter = getattr(module, adapter_name, None)
-        if callable(adapter):
-            _log_embedded_adapter_path('compliance-service', 'dashboard', f'module.{adapter_name}()')
-            return _model_dump(adapter())
-    engine = getattr(module, 'engine', None)
-    if engine is not None and callable(getattr(engine, 'dashboard', None)):
-        _log_embedded_adapter_path('compliance-service', 'dashboard', 'module.engine.dashboard()')
-        return _model_dump(engine.dashboard())
-    raise AttributeError('Embedded compliance-service module exposes neither dashboard nor engine.dashboard.')
+    response = _invoke_embedded_callable('compliance-service', 'dashboard', EMBEDDED_ADAPTER_CANDIDATES['compliance-service']['dashboard'])
+    return _model_dump(response)
 
 
 def execute_embedded_compliance_policy_state() -> dict[str, Any] | None:
-    module = load_embedded_service_main('compliance-service')
-    adapter = getattr(module, 'policy_state', None)
-    if callable(adapter):
-        _log_embedded_adapter_path('compliance-service', 'policy_state', 'module.policy_state()')
-        return _model_dump(adapter())
-    engine_method = getattr(getattr(module, 'engine', None), 'get_policy_state', None)
-    if callable(engine_method):
-        _log_embedded_adapter_path('compliance-service', 'policy_state', 'module.engine.get_policy_state()')
-        return _model_dump(engine_method())
-    raise AttributeError('Embedded compliance-service module exposes neither policy_state nor engine.get_policy_state.')
+    response = _invoke_embedded_callable('compliance-service', 'policy_state', EMBEDDED_ADAPTER_CANDIDATES['compliance-service']['policy_state'])
+    return _model_dump(response)
 
 
 def execute_embedded_compliance_governance_actions() -> list[dict[str, Any]] | None:
-    module = load_embedded_service_main('compliance-service')
-    adapter = getattr(module, 'governance_actions', None)
-    if callable(adapter):
-        _log_embedded_adapter_path('compliance-service', 'governance_actions', 'module.governance_actions()')
-        return _model_dump(adapter())
-    engine_method = getattr(getattr(module, 'engine', None), 'list_actions', None)
-    if callable(engine_method):
-        _log_embedded_adapter_path('compliance-service', 'governance_actions', 'module.engine.list_actions()')
-        return _model_dump(engine_method())
-    raise AttributeError('Embedded compliance-service module exposes neither governance_actions nor engine.list_actions.')
+    response = _invoke_embedded_callable('compliance-service', 'governance_actions', EMBEDDED_ADAPTER_CANDIDATES['compliance-service']['governance_actions'])
+    return _model_dump(response)
 
 
 def execute_embedded_compliance_governance_action(action_id: str) -> dict[str, Any] | None:
-    module = load_embedded_service_main('compliance-service')
-    adapter = getattr(module, 'governance_action', None)
-    if callable(adapter):
-        _log_embedded_adapter_path('compliance-service', 'governance_action', 'module.governance_action(action_id)')
-        return _model_dump(adapter(action_id))
-    engine_method = getattr(getattr(module, 'engine', None), 'get_action', None)
-    if callable(engine_method):
-        _log_embedded_adapter_path('compliance-service', 'governance_action', 'module.engine.get_action(action_id)')
-        return _model_dump(engine_method(action_id))
-    raise AttributeError('Embedded compliance-service module exposes neither governance_action nor engine.get_action.')
+    response = _invoke_embedded_callable('compliance-service', 'governance_action', EMBEDDED_ADAPTER_CANDIDATES['compliance-service']['governance_action'], action_id)
+    return _model_dump(response)
 
 
 def execute_embedded_compliance_request(path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -663,78 +688,35 @@ def execute_embedded_compliance_request(path: str, payload: dict[str, Any]) -> d
     match path:
         case 'screen/transfer':
             request, request_source = _build_embedded_request(module, 'TransferScreeningRequest', payload)
-            for adapter_name in ('screen_transfer', 'internal_screen_transfer'):
-                adapter = getattr(module, adapter_name, None)
-                if callable(adapter):
-                    _log_embedded_adapter_path('compliance-service', path, f'module.{adapter_name}({request_source})')
-                    return _model_dump(adapter(request))
-            engine_method = getattr(getattr(module, 'engine', None), 'screen_transfer', None)
-            if callable(engine_method):
-                _log_embedded_adapter_path('compliance-service', path, f'module.engine.screen_transfer({request_source})')
-                return _model_dump(engine_method(request))
+            response = _invoke_embedded_callable('compliance-service', path, EMBEDDED_ADAPTER_CANDIDATES['compliance-service'][path], request)
+            return _model_dump(response)
         case 'screen/residency':
             request, request_source = _build_embedded_request(module, 'ResidencyScreeningRequest', payload)
-            for adapter_name in ('screen_residency', 'internal_screen_residency'):
-                adapter = getattr(module, adapter_name, None)
-                if callable(adapter):
-                    _log_embedded_adapter_path('compliance-service', path, f'module.{adapter_name}({request_source})')
-                    return _model_dump(adapter(request))
-            engine_method = getattr(getattr(module, 'engine', None), 'screen_residency', None)
-            if callable(engine_method):
-                _log_embedded_adapter_path('compliance-service', path, f'module.engine.screen_residency({request_source})')
-                return _model_dump(engine_method(request))
+            response = _invoke_embedded_callable('compliance-service', path, EMBEDDED_ADAPTER_CANDIDATES['compliance-service'][path], request)
+            return _model_dump(response)
         case 'governance/actions':
             request, request_source = _build_embedded_request(module, 'GovernanceActionRequest', payload)
-            for adapter_name in ('create_governance_action', 'internal_create_governance_action'):
-                adapter = getattr(module, adapter_name, None)
-                if callable(adapter):
-                    _log_embedded_adapter_path('compliance-service', path, f'module.{adapter_name}({request_source})')
-                    return _model_dump(adapter(request))
-            engine_method = getattr(getattr(module, 'engine', None), 'apply_governance_action', None)
-            if callable(engine_method):
-                _log_embedded_adapter_path('compliance-service', path, f'module.engine.apply_governance_action({request_source})')
-                return _model_dump(engine_method(request))
+            response = _invoke_embedded_callable('compliance-service', path, EMBEDDED_ADAPTER_CANDIDATES['compliance-service'][path], request)
+            return _model_dump(response)
         case _:
             raise ValueError(f'Unsupported compliance path: {path}')
-    raise AttributeError(f'Embedded compliance-service module has no compatible adapter for {path}.')
+    raise AttributeError(f'Embedded compliance-service module has no compatible adapter for {path}; request_source={request_source}.')
 
 
 def execute_embedded_resilience_dashboard() -> dict[str, Any]:
-    module = load_embedded_service_main('reconciliation-service')
-    for adapter_name in ('dashboard', 'internal_dashboard'):
-        adapter = getattr(module, adapter_name, None)
-        if callable(adapter):
-            _log_embedded_adapter_path('reconciliation-service', 'dashboard', f'module.{adapter_name}()')
-            return _model_dump(adapter())
-    engine = getattr(module, 'engine', None)
-    if engine is not None and callable(getattr(engine, 'dashboard', None)):
-        _log_embedded_adapter_path('reconciliation-service', 'dashboard', 'module.engine.dashboard()')
-        return _model_dump(engine.dashboard())
-    raise AttributeError('Embedded reconciliation-service module exposes neither dashboard nor engine.dashboard.')
+    response = _invoke_embedded_callable('reconciliation-service', 'dashboard', EMBEDDED_ADAPTER_CANDIDATES['reconciliation-service']['dashboard'])
+    return _model_dump(response)
 
 
 def execute_embedded_resilience_get(path: str) -> dict[str, Any] | list[dict[str, Any]] | None:
-    module = load_embedded_service_main('reconciliation-service')
     match path:
         case 'incidents':
-            adapter = getattr(module, 'list_incidents', None)
-            if callable(adapter):
-                _log_embedded_adapter_path('reconciliation-service', path, 'module.list_incidents()')
-                return _model_dump(adapter())
-            engine_method = getattr(getattr(module, 'engine', None), 'list_incidents', None)
-            if callable(engine_method):
-                _log_embedded_adapter_path('reconciliation-service', path, 'module.engine.list_incidents()')
-                return _model_dump(engine_method())
+            response = _invoke_embedded_callable('reconciliation-service', path, EMBEDDED_ADAPTER_CANDIDATES['reconciliation-service']['incidents'])
+            return _model_dump(response)
         case _ if path.startswith('incidents/'):
             event_id = path.split('/', 1)[1]
-            adapter = getattr(module, 'get_incident', None)
-            if callable(adapter):
-                _log_embedded_adapter_path('reconciliation-service', path, 'module.get_incident(event_id)')
-                return _model_dump(adapter(event_id))
-            engine_method = getattr(getattr(module, 'engine', None), 'get_incident', None)
-            if callable(engine_method):
-                _log_embedded_adapter_path('reconciliation-service', path, 'module.engine.get_incident(event_id)')
-                return _model_dump(engine_method(event_id))
+            response = _invoke_embedded_callable('reconciliation-service', path, EMBEDDED_ADAPTER_CANDIDATES['reconciliation-service']['incident'], event_id)
+            return _model_dump(response)
         case _:
             raise ValueError(f'Unsupported resilience GET path: {path}')
     raise AttributeError(f'Embedded reconciliation-service module has no compatible GET adapter for {path}.')
@@ -745,40 +727,19 @@ def execute_embedded_resilience_post(path: str, payload: dict[str, Any]) -> dict
     match path:
         case 'reconcile/state':
             request, request_source = _build_embedded_request(module, 'ReconciliationRequest', payload)
-            for adapter_name in ('reconcile_state', 'internal_reconcile_state'):
-                adapter = getattr(module, adapter_name, None)
-                if callable(adapter):
-                    _log_embedded_adapter_path('reconciliation-service', path, f'module.{adapter_name}({request_source})')
-                    return _model_dump(adapter(request))
-            engine_method = getattr(getattr(module, 'engine', None), 'reconcile', None)
-            if callable(engine_method):
-                _log_embedded_adapter_path('reconciliation-service', path, f'module.engine.reconcile({request_source})')
-                return _model_dump(engine_method(request))
+            response = _invoke_embedded_callable('reconciliation-service', path, EMBEDDED_ADAPTER_CANDIDATES['reconciliation-service'][path], request)
+            return _model_dump(response)
         case 'backstop/evaluate':
             request, request_source = _build_embedded_request(module, 'BackstopRequest', payload)
-            for adapter_name in ('evaluate_backstop', 'internal_evaluate_backstop'):
-                adapter = getattr(module, adapter_name, None)
-                if callable(adapter):
-                    _log_embedded_adapter_path('reconciliation-service', path, f'module.{adapter_name}({request_source})')
-                    return _model_dump(adapter(request))
-            engine_method = getattr(getattr(module, 'engine', None), 'evaluate_backstop', None)
-            if callable(engine_method):
-                _log_embedded_adapter_path('reconciliation-service', path, f'module.engine.evaluate_backstop({request_source})')
-                return _model_dump(engine_method(request))
+            response = _invoke_embedded_callable('reconciliation-service', path, EMBEDDED_ADAPTER_CANDIDATES['reconciliation-service'][path], request)
+            return _model_dump(response)
         case 'incidents/record':
             request, request_source = _build_embedded_request(module, 'IncidentRecordRequest', payload)
-            for adapter_name in ('record_incident', 'internal_record_incident'):
-                adapter = getattr(module, adapter_name, None)
-                if callable(adapter):
-                    _log_embedded_adapter_path('reconciliation-service', path, f'module.{adapter_name}({request_source})')
-                    return _model_dump(adapter(request))
-            engine_method = getattr(getattr(module, 'engine', None), 'record_incident', None)
-            if callable(engine_method):
-                _log_embedded_adapter_path('reconciliation-service', path, f'module.engine.record_incident({request_source})')
-                return _model_dump(engine_method(request))
+            response = _invoke_embedded_callable('reconciliation-service', path, EMBEDDED_ADAPTER_CANDIDATES['reconciliation-service'][path], request)
+            return _model_dump(response)
         case _:
             raise ValueError(f'Unsupported resilience POST path: {path}')
-    raise AttributeError(f'Embedded reconciliation-service module has no compatible POST adapter for {path}.')
+    raise AttributeError(f'Embedded reconciliation-service module has no compatible POST adapter for {path}; request_source={request_source}.')
 
 
 def dependency_mode(dependency_name: str) -> str:
@@ -838,6 +799,47 @@ def dependency_diagnostics() -> dict[str, Any]:
     return diagnostics
 
 
+def embedded_service_health(service_slug: str, operation: str) -> dict[str, Any]:
+    try:
+        module = load_embedded_service_main(service_slug)
+        candidates = EMBEDDED_ADAPTER_CANDIDATES[service_slug][operation]
+        with embedded_service_import_context(service_slug):
+            _resolve_embedded_callable(module, candidates)
+        return {'ready': True, 'reason': None}
+    except Exception as exc:
+        return {'ready': False, 'reason': str(exc)}
+
+
+def pilot_runtime_diagnostics() -> dict[str, Any]:
+    schema = pilot_schema_status()
+    demo = demo_seed_status(os.getenv('PILOT_DEMO_EMAIL', 'demo@decoda.app'))
+    embedded_status = {
+        'threat': embedded_service_health('threat-engine', 'dashboard'),
+        'compliance': embedded_service_health('compliance-service', 'dashboard'),
+        'resilience': embedded_service_health('reconciliation-service', 'dashboard'),
+        'risk': embedded_service_health('risk-engine', 'evaluate'),
+    }
+    last_failure_reason = {
+        'threat': DEPENDENCY_RUNTIME_STATUS.get('threat_engine', {}).get('last_error') or embedded_status['threat']['reason'],
+        'compliance': DEPENDENCY_RUNTIME_STATUS.get('compliance_service', {}).get('last_error') or embedded_status['compliance']['reason'],
+        'resilience': DEPENDENCY_RUNTIME_STATUS.get('reconciliation_service', {}).get('last_error') or embedded_status['resilience']['reason'],
+        'risk': DEPENDENCY_RUNTIME_STATUS.get('risk_engine', {}).get('last_error') or embedded_status['risk']['reason'],
+    }
+    return {
+        'pilotSchemaReady': bool(schema['ready']),
+        'pilotSchemaStatus': schema['status'],
+        'pilotSchemaMissingTables': schema.get('missing_tables', []),
+        'demoSeedPresent': bool(demo['present']),
+        'demoSeedStatus': demo['status'],
+        'demoSeedEmail': demo['email'],
+        'embeddedThreatReady': bool(embedded_status['threat']['ready']),
+        'embeddedComplianceReady': bool(embedded_status['compliance']['ready']),
+        'embeddedResilienceReady': bool(embedded_status['resilience']['ready']),
+        'embeddedRiskReady': bool(embedded_status['risk']['ready']),
+        'lastEmbeddedFailureReason': last_failure_reason,
+    }
+
+
 def fixture_diagnostics() -> dict[str, Any]:
     directories = {
         'risk_engine': {
@@ -877,6 +879,7 @@ def fixture_diagnostics() -> dict[str, Any]:
             'database_url_configured': database_url() is not None,
             'allowed_origins': ALLOWED_ORIGINS,
         },
+        **pilot_runtime_diagnostics(),
         'dependencies': dependency_diagnostics(),
     }
 

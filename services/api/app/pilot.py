@@ -20,6 +20,17 @@ from fastapi import HTTPException, Request, status
 ROLE_VALUES = {'workspace_owner', 'workspace_admin', 'workspace_member'}
 AUTH_WINDOW_SECONDS = 60
 AUTH_MAX_ATTEMPTS = 10
+CORE_PILOT_TABLES = (
+    'users',
+    'workspaces',
+    'workspace_members',
+    'analysis_runs',
+    'alerts',
+    'governance_actions',
+    'incidents',
+    'audit_logs',
+)
+DEFAULT_DEMO_EMAIL = 'demo@decoda.app'
 _rate_limit_lock = threading.Lock()
 _rate_limit_state: dict[str, list[float]] = {}
 
@@ -98,13 +109,119 @@ def run_migrations() -> list[str]:
             row['version'] for row in connection.execute('SELECT version FROM schema_migrations').fetchall()
         }
         for path in sorted(migration_dir().glob('*.sql')):
-            if path.name in already_applied:
-                continue
             connection.execute(path.read_text())
-            connection.execute('INSERT INTO schema_migrations (version) VALUES (%s)', (path.name,))
-            applied_versions.append(path.name)
+            connection.execute(
+                'INSERT INTO schema_migrations (version) VALUES (%s) ON CONFLICT (version) DO NOTHING',
+                (path.name,),
+            )
+            if path.name not in already_applied:
+                applied_versions.append(path.name)
         connection.commit()
     return applied_versions
+
+
+def _missing_relation_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return exc.__class__.__name__ == 'UndefinedTable' or 'does not exist' in message and 'relation' in message
+
+
+def _schema_missing_http_exception(missing_tables: Iterable[str]) -> HTTPException:
+    tables = ', '.join(sorted(dict.fromkeys(missing_tables)))
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=(
+            'Pilot auth schema is not initialized. '
+            f'Missing required tables: {tables}. '
+            'Run services/api/scripts/migrate.py before using live auth routes.'
+        ),
+    )
+
+
+def _fetch_missing_pilot_tables(connection: Any) -> list[str]:
+    rows = connection.execute(
+        '''
+        SELECT required.table_name
+        FROM unnest(%s::text[]) AS required(table_name)
+        WHERE to_regclass(required.table_name) IS NULL
+        ORDER BY required.table_name
+        ''',
+        (list(CORE_PILOT_TABLES),),
+    ).fetchall()
+    return [str(row['table_name']) for row in rows]
+
+
+def ensure_pilot_schema(connection: Any) -> None:
+    missing_tables = _fetch_missing_pilot_tables(connection)
+    if missing_tables:
+        raise _schema_missing_http_exception(missing_tables)
+
+
+def pilot_schema_status() -> dict[str, Any]:
+    if not live_mode_enabled():
+        return {
+            'ready': False,
+            'status': 'not_configured',
+            'missing_tables': list(CORE_PILOT_TABLES),
+        }
+    try:
+        with pg_connection() as connection:
+            missing_tables = _fetch_missing_pilot_tables(connection)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return {
+            'ready': False,
+            'status': 'check_failed',
+            'missing_tables': [],
+            'reason': str(exc),
+        }
+    return {
+        'ready': not missing_tables,
+        'status': 'ready' if not missing_tables else 'missing_tables',
+        'missing_tables': missing_tables,
+    }
+
+
+def demo_seed_status(email: str = DEFAULT_DEMO_EMAIL) -> dict[str, Any]:
+    normalized_email = email.strip().lower() or DEFAULT_DEMO_EMAIL
+    if not live_mode_enabled():
+        return {
+            'present': False,
+            'status': 'not_configured',
+            'email': normalized_email,
+        }
+    try:
+        with pg_connection() as connection:
+            ensure_pilot_schema(connection)
+            user = connection.execute(
+                '''
+                SELECT users.id, users.current_workspace_id, workspaces.slug
+                FROM users
+                LEFT JOIN workspaces ON workspaces.id = users.current_workspace_id
+                WHERE users.email = %s
+                ''',
+                (normalized_email,),
+            ).fetchone()
+    except HTTPException as exc:
+        return {
+            'present': False,
+            'status': 'schema_missing' if exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE else 'check_failed',
+            'email': normalized_email,
+            'reason': str(exc.detail),
+        }
+    except Exception as exc:
+        return {
+            'present': False,
+            'status': 'check_failed',
+            'email': normalized_email,
+            'reason': str(exc),
+        }
+    return {
+        'present': user is not None,
+        'status': 'present' if user is not None else 'missing',
+        'email': normalized_email,
+        'workspace_slug': None if user is None else user['slug'],
+    }
 
 
 def _b64url(value: bytes) -> str:
@@ -319,6 +436,7 @@ def authenticate_request(request: Request) -> dict[str, Any]:
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Token payload missing subject.')
     with pg_connection() as connection:
+        ensure_pilot_schema(connection)
         user = build_user_response(connection, user_id)
     return user
 
@@ -363,6 +481,7 @@ def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     workspace_name = str(payload.get('workspace_name', '')).strip() or f"{full_name}'s Workspace"
     password_hash = hash_password(password)
     with pg_connection() as connection:
+        ensure_pilot_schema(connection)
         existing = connection.execute('SELECT id FROM users WHERE email = %s', (email,)).fetchone()
         if existing is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='An account with that email already exists.')
@@ -414,32 +533,41 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     email = _normalize_email(str(payload.get('email', '')))
     password = str(payload.get('password', ''))
-    with pg_connection() as connection:
-        user = connection.execute(
-            'SELECT id, password_hash FROM users WHERE email = %s',
-            (email,),
-        ).fetchone()
-        if user is None or not verify_password(password, user['password_hash']):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid email or password.')
-        connection.execute('UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = %s', (user['id'],))
-        log_audit(
-            connection,
-            action='auth.signin',
-            entity_type='user',
-            entity_id=user['id'],
-            request=request,
-            user_id=user['id'],
-            workspace_id=None,
-            metadata={'email': email},
-        )
-        connection.commit()
-        hydrated_user = build_user_response(connection, user['id'])
+    try:
+        with pg_connection() as connection:
+            ensure_pilot_schema(connection)
+            user = connection.execute(
+                'SELECT id, password_hash FROM users WHERE email = %s',
+                (email,),
+            ).fetchone()
+            if user is None or not verify_password(password, user['password_hash']):
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid email or password.')
+            connection.execute('UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = %s', (user['id'],))
+            log_audit(
+                connection,
+                action='auth.signin',
+                entity_type='user',
+                entity_id=user['id'],
+                request=request,
+                user_id=user['id'],
+                workspace_id=None,
+                metadata={'email': email},
+            )
+            connection.commit()
+            hydrated_user = build_user_response(connection, user['id'])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if _missing_relation_error(exc):
+            raise _schema_missing_http_exception(('users',)) from exc
+        raise
     return {'access_token': create_access_token(user['id']), 'token_type': 'bearer', 'user': hydrated_user}
 
 
 def signout_user(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
+        ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         log_audit(
             connection,
@@ -464,6 +592,7 @@ def create_workspace_for_user(payload: dict[str, Any], request: Request) -> dict
     if role not in ROLE_VALUES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid workspace role.')
     with pg_connection() as connection:
+        ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         workspace_id = str(uuid.uuid4())
         slug_base = _slugify(workspace_name)
@@ -498,6 +627,7 @@ def create_workspace_for_user(payload: dict[str, Any], request: Request) -> dict
 def select_workspace_for_user(workspace_id: str, request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
+        ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         membership = _ensure_membership(connection, user['id'], workspace_id)
         connection.execute('UPDATE users SET current_workspace_id = %s, updated_at = NOW() WHERE id = %s', (workspace_id, user['id']))
@@ -518,6 +648,7 @@ def select_workspace_for_user(workspace_id: str, request: Request) -> dict[str, 
 def list_user_workspaces(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
+        ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         return {'workspaces': user['memberships'], 'current_workspace': user['current_workspace']}
 
@@ -527,6 +658,7 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
     normalized_email = _normalize_email(email)
     _require_password(password)
     with pg_connection() as connection:
+        ensure_pilot_schema(connection)
         existing = connection.execute('SELECT id FROM users WHERE email = %s', (normalized_email,)).fetchone()
         if existing is not None:
             user = build_user_response(connection, existing['id'])

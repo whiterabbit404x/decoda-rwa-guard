@@ -245,6 +245,9 @@ def load_demo_requests() -> dict[str, Any]:
 
 
 embedded_dashboard = internal_dashboard
+embedded_analyze_contract = internal_analyze_contract
+embedded_analyze_transaction = internal_analyze_transaction
+embedded_analyze_market = internal_analyze_market
 
 __all__ = [
     'app',
@@ -255,9 +258,12 @@ __all__ = [
     'TransactionAnalysisRequest',
     'dashboard',
     'internal_dashboard',
-    'internal_analyze_contract',
-    'internal_analyze_transaction',
-    'internal_analyze_market',
-    'load_demo_requests',
     'embedded_dashboard',
+    'internal_analyze_contract',
+    'embedded_analyze_contract',
+    'internal_analyze_transaction',
+    'embedded_analyze_transaction',
+    'internal_analyze_market',
+    'embedded_analyze_market',
+    'load_demo_requests',
 ]
