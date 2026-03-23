@@ -42,6 +42,7 @@ from services.api.app.pilot import (
     pilot_mode,
     pg_connection,
     resolve_workspace,
+    run_startup_migrations_if_enabled,
     select_workspace_for_user,
     demo_seed_status,
     schema_missing_error_payload,
@@ -121,6 +122,7 @@ RECONCILIATION_SERVICE_URL = (RECONCILIATION_SERVICE_URL_ENV or 'http://localhos
 RECONCILIATION_SERVICE_TIMEOUT_SECONDS = float(os.getenv('RECONCILIATION_SERVICE_TIMEOUT_SECONDS', '1.5'))
 RECONCILIATION_DATA_DIR = Path(__file__).resolve().parents[2] / 'reconciliation-service' / 'data'
 OPTIONAL_FIXTURE_WARNINGS_EMITTED: set[tuple[str, str]] = set()
+STARTUP_BOOTSTRAP_STATUS: dict[str, Any] = {'enabled': False, 'ran': False, 'applied_versions': []}
 RUNTIME_MARKER_ENV_VARS = (
     'APP_VERSION',
     'APP_BUILD_COMMIT',
@@ -835,6 +837,7 @@ def pilot_runtime_diagnostics() -> dict[str, Any]:
     return {
         'pilotSchemaReady': bool(schema['ready']),
         'pilotSchemaStatus': schema['status'],
+        'missingPilotTables': schema.get('missing_tables', []),
         'pilotSchemaMissingTables': schema.get('missing_tables', []),
         'pilotSchemaDiagnostics': schema,
         'demoSeedPresent': bool(demo['present']),
@@ -919,6 +922,7 @@ def fixture_diagnostics() -> dict[str, Any]:
             'allowed_origins': ALLOWED_ORIGINS,
         },
         **pilot_runtime_diagnostics(),
+        'startupBootstrap': STARTUP_BOOTSTRAP_STATUS,
         'dependencies': dependency_diagnostics(),
     }
 
@@ -945,10 +949,22 @@ def emit_startup_fixture_diagnostics() -> None:
     )
 
 
+def bootstrap_live_pilot() -> dict[str, Any]:
+    global STARTUP_BOOTSTRAP_STATUS
+    STARTUP_BOOTSTRAP_STATUS = run_startup_migrations_if_enabled()
+    applied_versions = STARTUP_BOOTSTRAP_STATUS.get('applied_versions', [])
+    if STARTUP_BOOTSTRAP_STATUS.get('ran'):
+        logger.info('startup pilot bootstrap ran migrations: %s', ', '.join(applied_versions) or 'none')
+    else:
+        logger.info('startup pilot bootstrap skipped; %s disabled', 'RUN_MIGRATIONS_ON_STARTUP')
+    return STARTUP_BOOTSTRAP_STATUS
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
     seed_embedded_dependency_registry()
+    bootstrap_live_pilot()
     emit_startup_fixture_diagnostics()
     yield
 

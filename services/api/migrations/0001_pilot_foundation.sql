@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS id UUID,
     ADD COLUMN IF NOT EXISTS email TEXT,
     ADD COLUMN IF NOT EXISTS password_hash TEXT,
     ADD COLUMN IF NOT EXISTS full_name TEXT,
@@ -20,6 +21,9 @@ ALTER TABLE users
 
 DO $$
 BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'id') THEN
+        ALTER TABLE users ALTER COLUMN id SET NOT NULL;
+    END IF;
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'email') THEN
         ALTER TABLE users ALTER COLUMN email SET NOT NULL;
     END IF;
@@ -28,6 +32,16 @@ BEGIN
     END IF;
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'full_name') THEN
         ALTER TABLE users ALTER COLUMN full_name SET NOT NULL;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'users'::regclass AND contype = 'p'
+    ) THEN
+        ALTER TABLE users ADD CONSTRAINT users_pkey PRIMARY KEY (id);
     END IF;
 END $$;
 
@@ -42,6 +56,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
 );
 
 ALTER TABLE workspaces
+    ADD COLUMN IF NOT EXISTS id UUID,
     ADD COLUMN IF NOT EXISTS name TEXT,
     ADD COLUMN IF NOT EXISTS slug TEXT,
     ADD COLUMN IF NOT EXISTS created_by_user_id UUID,
@@ -49,6 +64,9 @@ ALTER TABLE workspaces
 
 DO $$
 BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'workspaces' AND column_name = 'id') THEN
+        ALTER TABLE workspaces ALTER COLUMN id SET NOT NULL;
+    END IF;
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'workspaces' AND column_name = 'name') THEN
         ALTER TABLE workspaces ALTER COLUMN name SET NOT NULL;
     END IF;
@@ -57,6 +75,16 @@ BEGIN
     END IF;
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'workspaces' AND column_name = 'created_by_user_id') THEN
         ALTER TABLE workspaces ALTER COLUMN created_by_user_id SET NOT NULL;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'workspaces'::regclass AND contype = 'p'
+    ) THEN
+        ALTER TABLE workspaces ADD CONSTRAINT workspaces_pkey PRIMARY KEY (id);
     END IF;
 END $$;
 
@@ -85,6 +113,7 @@ CREATE TABLE IF NOT EXISTS workspace_members (
 );
 
 ALTER TABLE workspace_members
+    ADD COLUMN IF NOT EXISTS id UUID,
     ADD COLUMN IF NOT EXISTS workspace_id UUID,
     ADD COLUMN IF NOT EXISTS user_id UUID,
     ADD COLUMN IF NOT EXISTS role TEXT,
@@ -92,6 +121,9 @@ ALTER TABLE workspace_members
 
 DO $$
 BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'workspace_members' AND column_name = 'id') THEN
+        ALTER TABLE workspace_members ALTER COLUMN id SET NOT NULL;
+    END IF;
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'workspace_members' AND column_name = 'workspace_id') THEN
         ALTER TABLE workspace_members ALTER COLUMN workspace_id SET NOT NULL;
     END IF;
@@ -100,6 +132,16 @@ BEGIN
     END IF;
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'workspace_members' AND column_name = 'role') THEN
         ALTER TABLE workspace_members ALTER COLUMN role SET NOT NULL;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'workspace_members'::regclass AND contype = 'p'
+    ) THEN
+        ALTER TABLE workspace_members ADD CONSTRAINT workspace_members_pkey PRIMARY KEY (id);
     END IF;
 END $$;
 
@@ -139,6 +181,7 @@ BEGIN
 END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_members_workspace_user_unique ON workspace_members (workspace_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_members_user_id ON workspace_members (user_id);
 
 DO $$
 BEGIN
@@ -168,6 +211,70 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE analysis_runs
+    ADD COLUMN IF NOT EXISTS id UUID,
+    ADD COLUMN IF NOT EXISTS workspace_id UUID,
+    ADD COLUMN IF NOT EXISTS user_id UUID,
+    ADD COLUMN IF NOT EXISTS analysis_type TEXT,
+    ADD COLUMN IF NOT EXISTS service_name TEXT,
+    ADD COLUMN IF NOT EXISTS status TEXT,
+    ADD COLUMN IF NOT EXISTS title TEXT,
+    ADD COLUMN IF NOT EXISTS source TEXT,
+    ADD COLUMN IF NOT EXISTS summary TEXT,
+    ADD COLUMN IF NOT EXISTS request_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS response_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'analysis_runs' AND column_name = 'id') THEN
+        ALTER TABLE analysis_runs ALTER COLUMN id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'analysis_runs' AND column_name = 'workspace_id') THEN
+        ALTER TABLE analysis_runs ALTER COLUMN workspace_id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'analysis_runs' AND column_name = 'user_id') THEN
+        ALTER TABLE analysis_runs ALTER COLUMN user_id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'analysis_runs' AND column_name = 'analysis_type') THEN
+        ALTER TABLE analysis_runs ALTER COLUMN analysis_type SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'analysis_runs' AND column_name = 'service_name') THEN
+        ALTER TABLE analysis_runs ALTER COLUMN service_name SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'analysis_runs' AND column_name = 'status') THEN
+        ALTER TABLE analysis_runs ALTER COLUMN status SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'analysis_runs' AND column_name = 'title') THEN
+        ALTER TABLE analysis_runs ALTER COLUMN title SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'analysis_runs' AND column_name = 'source') THEN
+        ALTER TABLE analysis_runs ALTER COLUMN source SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'analysis_runs' AND column_name = 'summary') THEN
+        ALTER TABLE analysis_runs ALTER COLUMN summary SET NOT NULL;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'analysis_runs'::regclass AND contype = 'p') THEN
+        ALTER TABLE analysis_runs ADD CONSTRAINT analysis_runs_pkey PRIMARY KEY (id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'analysis_runs_workspace_fk') THEN
+        ALTER TABLE analysis_runs
+            ADD CONSTRAINT analysis_runs_workspace_fk
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'analysis_runs_user_fk') THEN
+        ALTER TABLE analysis_runs
+            ADD CONSTRAINT analysis_runs_user_fk
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_workspace_created_at ON analysis_runs (workspace_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS alerts (
     id UUID PRIMARY KEY,
     workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -183,6 +290,75 @@ CREATE TABLE IF NOT EXISTS alerts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE alerts
+    ADD COLUMN IF NOT EXISTS id UUID,
+    ADD COLUMN IF NOT EXISTS workspace_id UUID,
+    ADD COLUMN IF NOT EXISTS user_id UUID,
+    ADD COLUMN IF NOT EXISTS analysis_run_id UUID NULL,
+    ADD COLUMN IF NOT EXISTS alert_type TEXT,
+    ADD COLUMN IF NOT EXISTS title TEXT,
+    ADD COLUMN IF NOT EXISTS severity TEXT,
+    ADD COLUMN IF NOT EXISTS status TEXT,
+    ADD COLUMN IF NOT EXISTS source_service TEXT,
+    ADD COLUMN IF NOT EXISTS summary TEXT,
+    ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'alerts' AND column_name = 'id') THEN
+        ALTER TABLE alerts ALTER COLUMN id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'alerts' AND column_name = 'workspace_id') THEN
+        ALTER TABLE alerts ALTER COLUMN workspace_id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'alerts' AND column_name = 'user_id') THEN
+        ALTER TABLE alerts ALTER COLUMN user_id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'alerts' AND column_name = 'alert_type') THEN
+        ALTER TABLE alerts ALTER COLUMN alert_type SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'alerts' AND column_name = 'title') THEN
+        ALTER TABLE alerts ALTER COLUMN title SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'alerts' AND column_name = 'severity') THEN
+        ALTER TABLE alerts ALTER COLUMN severity SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'alerts' AND column_name = 'status') THEN
+        ALTER TABLE alerts ALTER COLUMN status SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'alerts' AND column_name = 'source_service') THEN
+        ALTER TABLE alerts ALTER COLUMN source_service SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'alerts' AND column_name = 'summary') THEN
+        ALTER TABLE alerts ALTER COLUMN summary SET NOT NULL;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'alerts'::regclass AND contype = 'p') THEN
+        ALTER TABLE alerts ADD CONSTRAINT alerts_pkey PRIMARY KEY (id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'alerts_workspace_fk') THEN
+        ALTER TABLE alerts
+            ADD CONSTRAINT alerts_workspace_fk
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'alerts_user_fk') THEN
+        ALTER TABLE alerts
+            ADD CONSTRAINT alerts_user_fk
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'alerts_analysis_run_fk') THEN
+        ALTER TABLE alerts
+            ADD CONSTRAINT alerts_analysis_run_fk
+            FOREIGN KEY (analysis_run_id) REFERENCES analysis_runs(id) ON DELETE SET NULL;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_alerts_workspace_created_at ON alerts (workspace_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS governance_actions (
     id UUID PRIMARY KEY,
     workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -197,6 +373,71 @@ CREATE TABLE IF NOT EXISTS governance_actions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE governance_actions
+    ADD COLUMN IF NOT EXISTS id UUID,
+    ADD COLUMN IF NOT EXISTS workspace_id UUID,
+    ADD COLUMN IF NOT EXISTS user_id UUID,
+    ADD COLUMN IF NOT EXISTS analysis_run_id UUID NULL,
+    ADD COLUMN IF NOT EXISTS action_type TEXT,
+    ADD COLUMN IF NOT EXISTS target_type TEXT,
+    ADD COLUMN IF NOT EXISTS target_id TEXT,
+    ADD COLUMN IF NOT EXISTS status TEXT,
+    ADD COLUMN IF NOT EXISTS reason TEXT,
+    ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'governance_actions' AND column_name = 'id') THEN
+        ALTER TABLE governance_actions ALTER COLUMN id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'governance_actions' AND column_name = 'workspace_id') THEN
+        ALTER TABLE governance_actions ALTER COLUMN workspace_id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'governance_actions' AND column_name = 'user_id') THEN
+        ALTER TABLE governance_actions ALTER COLUMN user_id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'governance_actions' AND column_name = 'action_type') THEN
+        ALTER TABLE governance_actions ALTER COLUMN action_type SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'governance_actions' AND column_name = 'target_type') THEN
+        ALTER TABLE governance_actions ALTER COLUMN target_type SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'governance_actions' AND column_name = 'target_id') THEN
+        ALTER TABLE governance_actions ALTER COLUMN target_id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'governance_actions' AND column_name = 'status') THEN
+        ALTER TABLE governance_actions ALTER COLUMN status SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'governance_actions' AND column_name = 'reason') THEN
+        ALTER TABLE governance_actions ALTER COLUMN reason SET NOT NULL;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'governance_actions'::regclass AND contype = 'p') THEN
+        ALTER TABLE governance_actions ADD CONSTRAINT governance_actions_pkey PRIMARY KEY (id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'governance_actions_workspace_fk') THEN
+        ALTER TABLE governance_actions
+            ADD CONSTRAINT governance_actions_workspace_fk
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'governance_actions_user_fk') THEN
+        ALTER TABLE governance_actions
+            ADD CONSTRAINT governance_actions_user_fk
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'governance_actions_analysis_run_fk') THEN
+        ALTER TABLE governance_actions
+            ADD CONSTRAINT governance_actions_analysis_run_fk
+            FOREIGN KEY (analysis_run_id) REFERENCES analysis_runs(id) ON DELETE SET NULL;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_governance_actions_workspace_created_at ON governance_actions (workspace_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS incidents (
     id UUID PRIMARY KEY,
     workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -210,6 +451,67 @@ CREATE TABLE IF NOT EXISTS incidents (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE incidents
+    ADD COLUMN IF NOT EXISTS id UUID,
+    ADD COLUMN IF NOT EXISTS workspace_id UUID,
+    ADD COLUMN IF NOT EXISTS user_id UUID,
+    ADD COLUMN IF NOT EXISTS analysis_run_id UUID NULL,
+    ADD COLUMN IF NOT EXISTS event_type TEXT,
+    ADD COLUMN IF NOT EXISTS severity TEXT,
+    ADD COLUMN IF NOT EXISTS status TEXT,
+    ADD COLUMN IF NOT EXISTS summary TEXT,
+    ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'incidents' AND column_name = 'id') THEN
+        ALTER TABLE incidents ALTER COLUMN id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'incidents' AND column_name = 'workspace_id') THEN
+        ALTER TABLE incidents ALTER COLUMN workspace_id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'incidents' AND column_name = 'user_id') THEN
+        ALTER TABLE incidents ALTER COLUMN user_id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'incidents' AND column_name = 'event_type') THEN
+        ALTER TABLE incidents ALTER COLUMN event_type SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'incidents' AND column_name = 'severity') THEN
+        ALTER TABLE incidents ALTER COLUMN severity SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'incidents' AND column_name = 'status') THEN
+        ALTER TABLE incidents ALTER COLUMN status SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'incidents' AND column_name = 'summary') THEN
+        ALTER TABLE incidents ALTER COLUMN summary SET NOT NULL;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'incidents'::regclass AND contype = 'p') THEN
+        ALTER TABLE incidents ADD CONSTRAINT incidents_pkey PRIMARY KEY (id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'incidents_workspace_fk') THEN
+        ALTER TABLE incidents
+            ADD CONSTRAINT incidents_workspace_fk
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'incidents_user_fk') THEN
+        ALTER TABLE incidents
+            ADD CONSTRAINT incidents_user_fk
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'incidents_analysis_run_fk') THEN
+        ALTER TABLE incidents
+            ADD CONSTRAINT incidents_analysis_run_fk
+            FOREIGN KEY (analysis_run_id) REFERENCES analysis_runs(id) ON DELETE SET NULL;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_incidents_workspace_created_at ON incidents (workspace_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
     id UUID PRIMARY KEY,
     workspace_id UUID NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -222,9 +524,48 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_workspace_members_user_id ON workspace_members (user_id);
-CREATE INDEX IF NOT EXISTS idx_analysis_runs_workspace_created_at ON analysis_runs (workspace_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_alerts_workspace_created_at ON alerts (workspace_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_governance_actions_workspace_created_at ON governance_actions (workspace_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_incidents_workspace_created_at ON incidents (workspace_id, created_at DESC);
+ALTER TABLE audit_logs
+    ADD COLUMN IF NOT EXISTS id UUID,
+    ADD COLUMN IF NOT EXISTS workspace_id UUID NULL,
+    ADD COLUMN IF NOT EXISTS user_id UUID NULL,
+    ADD COLUMN IF NOT EXISTS action TEXT,
+    ADD COLUMN IF NOT EXISTS entity_type TEXT,
+    ADD COLUMN IF NOT EXISTS entity_id TEXT,
+    ADD COLUMN IF NOT EXISTS ip_address TEXT NULL,
+    ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'audit_logs' AND column_name = 'id') THEN
+        ALTER TABLE audit_logs ALTER COLUMN id SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'audit_logs' AND column_name = 'action') THEN
+        ALTER TABLE audit_logs ALTER COLUMN action SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'audit_logs' AND column_name = 'entity_type') THEN
+        ALTER TABLE audit_logs ALTER COLUMN entity_type SET NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'audit_logs' AND column_name = 'entity_id') THEN
+        ALTER TABLE audit_logs ALTER COLUMN entity_id SET NOT NULL;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'audit_logs'::regclass AND contype = 'p') THEN
+        ALTER TABLE audit_logs ADD CONSTRAINT audit_logs_pkey PRIMARY KEY (id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'audit_logs_workspace_fk') THEN
+        ALTER TABLE audit_logs
+            ADD CONSTRAINT audit_logs_workspace_fk
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'audit_logs_user_fk') THEN
+        ALTER TABLE audit_logs
+            ADD CONSTRAINT audit_logs_user_fk
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
+    END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace_created_at ON audit_logs (workspace_id, created_at DESC);

@@ -36,6 +36,14 @@ _rate_limit_lock = threading.Lock()
 _rate_limit_state: dict[str, list[float]] = {}
 
 
+STARTUP_BOOTSTRAP_ENV = 'RUN_MIGRATIONS_ON_STARTUP'
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name, 'true' if default else 'false').strip().lower()
+    return value in {'1', 'true', 'yes', 'on'}
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -56,7 +64,7 @@ def database_url() -> str | None:
 
 
 def live_mode_enabled() -> bool:
-    return os.getenv('LIVE_MODE_ENABLED', 'false').strip().lower() in {'1', 'true', 'yes', 'on'} and database_url() is not None
+    return env_flag('LIVE_MODE_ENABLED') and database_url() is not None
 
 
 def pilot_mode() -> str:
@@ -112,6 +120,19 @@ def schema_missing_diagnostics(missing_tables: Iterable[str], *, status_value: s
     if reason:
         diagnostics['reason'] = reason
     return diagnostics
+
+
+def should_run_startup_migrations() -> bool:
+    return env_flag(STARTUP_BOOTSTRAP_ENV)
+
+
+def run_startup_migrations_if_enabled() -> dict[str, Any]:
+    enabled = should_run_startup_migrations()
+    if not enabled:
+        return {'enabled': False, 'ran': False, 'applied_versions': []}
+    require_live_mode()
+    applied_versions = run_migrations()
+    return {'enabled': True, 'ran': True, 'applied_versions': applied_versions}
 
 
 def run_migrations() -> list[str]:
@@ -702,26 +723,34 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
     require_live_mode()
     normalized_email = _normalize_email(email)
     _require_password(password)
+    normalized_full_name = full_name.strip() or 'Pilot Demo User'
+    normalized_workspace_name = workspace_name.strip() or 'Decoda Demo Workspace'
+    password_hash = hash_password(password)
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         existing = connection.execute(
             'SELECT id, current_workspace_id FROM users WHERE email = %s',
             (normalized_email,),
         ).fetchone()
-        if existing is None:
-            response = signup_user(
-                {
-                    'email': normalized_email,
-                    'password': password,
-                    'full_name': full_name,
-                    'workspace_name': workspace_name,
-                },
-                Request({'type': 'http', 'client': ('seed-script', 0), 'headers': []}),
-            )
-            return {'seeded': True, 'user': response['user'], 'email': normalized_email, 'password': password}
+        created_user = False
+        workspace_created = False
+        membership_created = False
 
-        user_id = existing['id']
-        password_hash = hash_password(password)
+        if existing is None:
+            user_id = str(uuid.uuid4())
+            connection.execute(
+                '''
+                INSERT INTO users (id, email, password_hash, full_name, current_workspace_id, created_at, updated_at, last_sign_in_at)
+                VALUES (%s, %s, %s, %s, NULL, NOW(), NOW(), NOW())
+                ''',
+                (user_id, normalized_email, password_hash, normalized_full_name),
+            )
+            created_user = True
+            workspace_id = ''
+        else:
+            user_id = str(existing['id'])
+            workspace_id = str(existing['current_workspace_id'] or '')
+
         membership = connection.execute(
             '''
             SELECT wm.workspace_id, w.name, w.slug
@@ -733,8 +762,6 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
             ''',
             (user_id,),
         ).fetchone()
-        workspace_created = False
-        workspace_id = str(existing['current_workspace_id'] or '')
         if workspace_id:
             workspace_row = connection.execute(
                 'SELECT id, name, slug FROM workspaces WHERE id = %s',
@@ -746,7 +773,7 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
             workspace_id = str(membership['workspace_id'])
         if not workspace_id:
             workspace_id = str(uuid.uuid4())
-            slug_base = _slugify(workspace_name)
+            slug_base = _slugify(normalized_workspace_name)
             slug = slug_base
             suffix = 1
             while connection.execute('SELECT 1 FROM workspaces WHERE slug = %s', (slug,)).fetchone() is not None:
@@ -754,30 +781,29 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
                 slug = f'{slug_base}-{suffix}'
             connection.execute(
                 'INSERT INTO workspaces (id, name, slug, created_by_user_id, created_at) VALUES (%s, %s, %s, %s, NOW())',
-                (workspace_id, workspace_name, slug, user_id),
-            )
-            connection.execute(
-                'INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (%s, %s, %s, %s, NOW()) ON CONFLICT (workspace_id, user_id) DO NOTHING',
-                (str(uuid.uuid4()), workspace_id, user_id, 'workspace_owner'),
+                (workspace_id, normalized_workspace_name, slug, user_id),
             )
             workspace_created = True
-        elif membership is None:
+        if workspace_created or membership is None:
             connection.execute(
                 'INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (%s, %s, %s, %s, NOW()) ON CONFLICT (workspace_id, user_id) DO NOTHING',
                 (str(uuid.uuid4()), workspace_id, user_id, 'workspace_owner'),
             )
+            membership_created = True
         connection.execute(
             'UPDATE users SET password_hash = %s, full_name = %s, current_workspace_id = %s, updated_at = NOW(), last_sign_in_at = NOW() WHERE id = %s',
-            (password_hash, full_name, workspace_id, user_id),
+            (password_hash, normalized_full_name, workspace_id, user_id),
         )
         connection.commit()
         user = build_user_response(connection, user_id)
         return {
-            'seeded': workspace_created,
+            'seeded': created_user or workspace_created or membership_created,
             'user': user,
             'email': normalized_email,
             'password': password,
             'workspace_created': workspace_created,
+            'membership_created': membership_created,
+            'user_created': created_user,
         }
 
 

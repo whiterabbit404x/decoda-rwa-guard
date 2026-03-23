@@ -164,6 +164,49 @@ def test_seed_script_pilot_demo_runs_migrations_and_seeds_demo_login(seed_module
 
 
 
+def test_seed_demo_workspace_creates_demo_user_workspace_and_membership(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    executed: list[tuple[str, object]] = []
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            executed.append((normalized, params))
+            if 'SELECT required.table_name FROM unnest' in normalized:
+                return _Result([])
+            if 'SELECT id, current_workspace_id FROM users WHERE email = %s' in normalized:
+                return _Result([])
+            if 'SELECT wm.workspace_id, w.name, w.slug' in normalized:
+                return _Result([])
+            if 'SELECT 1 FROM workspaces WHERE slug = %s' in normalized:
+                return _Result([])
+            if 'SELECT id, email, full_name, current_workspace_id, created_at, updated_at, last_sign_in_at FROM users WHERE id = %s' in normalized:
+                return _Result([{'id': 'user-1', 'email': 'demo@decoda.app', 'full_name': 'Decoda Demo User', 'current_workspace_id': 'workspace-1', 'created_at': 'now', 'updated_at': 'now', 'last_sign_in_at': 'now'}])
+            if 'SELECT wm.workspace_id, wm.role, wm.created_at, w.name, w.slug FROM workspace_members wm JOIN workspaces w ON w.id = wm.workspace_id WHERE wm.user_id = %s' in normalized:
+                return _Result([{'workspace_id': 'workspace-1', 'role': 'workspace_owner', 'created_at': 'now', 'name': 'Decoda Demo Workspace', 'slug': 'decoda-demo-workspace'}])
+            return _Result()
+
+        def commit(self):
+            executed.append(('COMMIT', None))
+
+    @contextmanager
+    def fake_pg_connection():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
+    monkeypatch.setattr(pilot_module, 'build_user_response', lambda connection, user_id: {'id': user_id, 'email': 'demo@decoda.app'})
+
+    payload = pilot_module.seed_demo_workspace('demo@decoda.app', 'PilotDemoPass123!', 'Decoda Demo Workspace', 'Decoda Demo User')
+
+    assert payload['email'] == 'demo@decoda.app'
+    assert payload['user_created'] is True
+    assert payload['workspace_created'] is True
+    assert payload['membership_created'] is True
+    assert any('INSERT INTO users' in statement for statement, _ in executed)
+    assert any('INSERT INTO workspaces' in statement for statement, _ in executed)
+    assert any('INSERT INTO workspace_members' in statement for statement, _ in executed)
+
+
 def test_seed_demo_workspace_backfills_existing_demo_login(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
     executed: list[tuple[str, object]] = []
 
@@ -236,6 +279,26 @@ def test_demo_seed_status_requires_workspace_and_membership_for_present_state(pi
     assert status_payload['workspace_present'] is False
     assert status_payload['membership_present'] is True
 
+def test_run_startup_migrations_if_enabled_respects_env_flag(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('RUN_MIGRATIONS_ON_STARTUP', 'true')
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'run_migrations', lambda: ['0001_pilot_foundation.sql'])
+
+    payload = pilot_module.run_startup_migrations_if_enabled()
+
+    assert payload == {'enabled': True, 'ran': True, 'applied_versions': ['0001_pilot_foundation.sql']}
+
+
+def test_bootstrap_live_pilot_records_startup_status(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api_main, 'run_startup_migrations_if_enabled', lambda: {'enabled': True, 'ran': True, 'applied_versions': ['0001_pilot_foundation.sql', '0002_pilot_auth_sessions.sql']})
+
+    payload = api_main.bootstrap_live_pilot()
+
+    assert payload['enabled'] is True
+    assert payload['applied_versions'] == ['0001_pilot_foundation.sql', '0002_pilot_auth_sessions.sql']
+    assert api_main.STARTUP_BOOTSTRAP_STATUS == payload
+
+
 def test_embedded_loader_isolates_top_level_app_package_namespaces(api_main) -> None:
     api_main.load_embedded_service_main.cache_clear()
 
@@ -284,5 +347,10 @@ def test_migration_sql_creates_core_pilot_auth_tables() -> None:
     assert 'CREATE TABLE IF NOT EXISTS users' in foundation_sql
     assert 'CREATE TABLE IF NOT EXISTS workspaces' in foundation_sql
     assert 'CREATE TABLE IF NOT EXISTS workspace_members' in foundation_sql
+    assert 'CREATE TABLE IF NOT EXISTS analysis_runs' in foundation_sql
+    assert 'CREATE TABLE IF NOT EXISTS alerts' in foundation_sql
+    assert 'CREATE TABLE IF NOT EXISTS governance_actions' in foundation_sql
+    assert 'CREATE TABLE IF NOT EXISTS incidents' in foundation_sql
+    assert 'CREATE TABLE IF NOT EXISTS audit_logs' in foundation_sql
     assert 'CREATE TABLE IF NOT EXISTS auth_sessions' in auth_sessions_sql
     assert 'CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_sessions_token_hash_unique' in auth_sessions_sql

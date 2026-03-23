@@ -163,6 +163,7 @@ def test_health_details_reports_pilot_and_embedded_readiness_flags(api_main, mon
     diagnostics = api_main.fixture_diagnostics()
 
     assert diagnostics['pilotSchemaReady'] is True
+    assert diagnostics['missingPilotTables'] == []
     assert diagnostics['demoSeedPresent'] is True
     assert diagnostics['pilotSchemaDiagnostics']['required_tables'] == ['users', 'workspaces']
     assert diagnostics['demoSeedDiagnostics']['membership_present'] is True
@@ -171,3 +172,33 @@ def test_health_details_reports_pilot_and_embedded_readiness_flags(api_main, mon
     assert diagnostics['embeddedResilienceReady'] is True
     assert diagnostics['embeddedRiskReady'] is True
     assert diagnostics['lastEmbeddedFailureReason']['threat'] == 'embedded threat failure'
+
+
+def test_health_details_route_reports_readiness_flags_and_missing_tables(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        api_main,
+        'pilot_schema_status',
+        lambda: {
+            'ready': False,
+            'status': 'missing_tables',
+            'missing_tables': ['users', 'workspaces'],
+            'required_tables': ['users', 'workspaces'],
+        },
+    )
+    monkeypatch.setattr(
+        api_main,
+        'demo_seed_status',
+        lambda email='demo@decoda.app': {'present': False, 'status': 'missing', 'email': email},
+    )
+    monkeypatch.setattr(api_main, 'STARTUP_BOOTSTRAP_STATUS', {'enabled': True, 'ran': True, 'applied_versions': ['0001_pilot_foundation.sql']})
+    monkeypatch.setattr(api_main, 'embedded_service_health', lambda service_slug, operation: {'ready': True, 'reason': None})
+
+    client = TestClient(api_main.app)
+    response = client.get('/health/details')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['pilotSchemaReady'] is False
+    assert payload['demoSeedPresent'] is False
+    assert payload['missingPilotTables'] == ['users', 'workspaces']
+    assert payload['startupBootstrap'] == {'enabled': True, 'ran': True, 'applied_versions': ['0001_pilot_foundation.sql']}

@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 );
 
 ALTER TABLE auth_sessions
+    ADD COLUMN IF NOT EXISTS id UUID,
     ADD COLUMN IF NOT EXISTS user_id UUID,
     ADD COLUMN IF NOT EXISTS workspace_id UUID NULL,
     ADD COLUMN IF NOT EXISTS session_token_hash TEXT,
@@ -24,6 +25,9 @@ ALTER TABLE auth_sessions
 
 DO $$
 BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'auth_sessions' AND column_name = 'id') THEN
+        ALTER TABLE auth_sessions ALTER COLUMN id SET NOT NULL;
+    END IF;
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'auth_sessions' AND column_name = 'user_id') THEN
         ALTER TABLE auth_sessions ALTER COLUMN user_id SET NOT NULL;
     END IF;
@@ -34,6 +38,11 @@ END $$;
 
 DO $$
 BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conrelid = 'auth_sessions'::regclass AND contype = 'p'
+    ) THEN
+        ALTER TABLE auth_sessions ADD CONSTRAINT auth_sessions_pkey PRIMARY KEY (id);
+    END IF;
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint WHERE conname = 'auth_sessions_user_fk'
     ) THEN
