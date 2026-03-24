@@ -564,7 +564,7 @@ def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             INSERT INTO users (id, email, password_hash, full_name, current_workspace_id, created_at, updated_at, last_sign_in_at)
             VALUES (%s, %s, %s, %s, %s, NOW(), NOW(), NOW())
             ''',
-            (user_id, email, password_hash, full_name, workspace_id),
+            (user_id, email, password_hash, full_name, None),
         )
         connection.execute(
             '''
@@ -579,6 +579,10 @@ def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             VALUES (%s, %s, %s, %s, NOW())
             ''',
             (str(uuid.uuid4()), workspace_id, user_id, 'workspace_owner'),
+        )
+        connection.execute(
+            'UPDATE users SET current_workspace_id = %s, updated_at = NOW() WHERE id = %s',
+            (workspace_id, user_id),
         )
         log_audit(
             connection,

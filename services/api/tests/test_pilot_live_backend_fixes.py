@@ -245,6 +245,61 @@ def test_seed_demo_workspace_backfills_existing_demo_login(pilot_module, monkeyp
     assert any('UPDATE users SET password_hash' in statement for statement, _ in executed)
 
 
+def test_signup_user_inserts_user_with_null_workspace_then_backfills_current_workspace(
+    pilot_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executed: list[tuple[str, object]] = []
+
+    class _Request:
+        headers = {}
+        client = None
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            executed.append((normalized, params))
+            if 'SELECT required.table_name FROM unnest' in normalized:
+                return _Result([])
+            if 'SELECT id FROM users WHERE email = %s' in normalized:
+                return _Result([])
+            if 'SELECT 1 FROM workspaces WHERE slug = %s' in normalized:
+                return _Result([])
+            return _Result()
+
+        def commit(self):
+            executed.append(('COMMIT', None))
+
+    @contextmanager
+    def fake_pg_connection():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
+    monkeypatch.setattr(pilot_module, 'hash_password', lambda _: 'hashed-password')
+    monkeypatch.setattr(pilot_module, 'build_user_response', lambda connection, user_id: {'id': user_id})
+    monkeypatch.setattr(pilot_module, 'create_access_token', lambda user_id: f'token-{user_id}')
+    monkeypatch.setattr(pilot_module, 'log_audit', lambda *args, **kwargs: None)
+    ids = iter(['user-1', 'workspace-1', 'membership-1'])
+    monkeypatch.setattr(pilot_module.uuid, 'uuid4', lambda: next(ids))
+
+    payload = pilot_module.signup_user(
+        {
+            'email': 'new@decoda.app',
+            'password': 'PilotDemoPass123!',
+            'full_name': 'Decoda User',
+            'workspace_name': 'Decoda Workspace',
+        },
+        _Request(),
+    )
+
+    assert payload['token_type'] == 'bearer'
+    user_insert = next(params for statement, params in executed if 'INSERT INTO users' in statement)
+    assert user_insert == ('user-1', 'new@decoda.app', 'hashed-password', 'Decoda User', None)
+    assert any('INSERT INTO workspaces' in statement for statement, _ in executed)
+    assert any('INSERT INTO workspace_members' in statement for statement, _ in executed)
+    assert ('UPDATE users SET current_workspace_id = %s, updated_at = NOW() WHERE id = %s', ('workspace-1', 'user-1')) in executed
+
+
 def test_demo_seed_status_requires_workspace_and_membership_for_present_state(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
     class _Connection:
         def execute(self, statement, params=None):
