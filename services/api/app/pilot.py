@@ -612,26 +612,27 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             ).fetchone()
             if user is None or not verify_password(password, user['password_hash']):
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid email or password.')
-            connection.execute('UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = %s', (user['id'],))
+            user_id = str(user['id'])
+            connection.execute('UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = %s', (user_id,))
             log_audit(
                 connection,
                 action='auth.signin',
                 entity_type='user',
-                entity_id=user['id'],
+                entity_id=user_id,
                 request=request,
-                user_id=user['id'],
+                user_id=user_id,
                 workspace_id=None,
                 metadata={'email': email},
             )
             connection.commit()
-            hydrated_user = build_user_response(connection, user['id'])
+            hydrated_user = build_user_response(connection, user_id)
     except HTTPException:
         raise
     except Exception as exc:
         if _missing_relation_error(exc):
             raise _schema_missing_http_exception(('users',)) from exc
         raise
-    return {'access_token': create_access_token(user['id']), 'token_type': 'bearer', 'user': hydrated_user}
+    return {'access_token': create_access_token(user_id), 'token_type': 'bearer', 'user': hydrated_user}
 
 
 def signout_user(request: Request) -> dict[str, Any]:
