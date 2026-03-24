@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import threading
@@ -34,6 +35,7 @@ CORE_PILOT_TABLES = (
 DEFAULT_DEMO_EMAIL = 'demo@decoda.app'
 _rate_limit_lock = threading.Lock()
 _rate_limit_state: dict[str, list[float]] = {}
+logger = logging.getLogger(__name__)
 
 
 STARTUP_BOOTSTRAP_ENV = 'RUN_MIGRATIONS_ON_STARTUP'
@@ -330,6 +332,7 @@ def verify_password(password: str, encoded_password: str) -> bool:
 
 
 def create_access_token(user_id: str) -> str:
+    user_id = str(user_id)
     payload = {
         'sub': user_id,
         'exp': int((utc_now() + timedelta(hours=24)).timestamp()),
@@ -390,7 +393,24 @@ def _slugify(value: str) -> str:
 
 
 def _json_dumps(value: Any) -> str:
-    return json.dumps(value, separators=(',', ':'), default=str)
+    return json.dumps(_json_safe_value(value), separators=(',', ':'))
+
+
+def _json_safe_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if hasattr(value, 'isoformat'):
+        try:
+            return value.isoformat()
+        except Exception:
+            return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_value(item) for item in value]
+    return str(value)
 
 
 def _ensure_membership(connection: Any, user_id: str, workspace_id: str) -> dict[str, Any]:
@@ -458,29 +478,35 @@ def build_user_response(connection: psycopg.Connection, user_id: str) -> dict[st
         ''',
         (user_id,),
     ).fetchall()
-    membership_payload = [
-        {
-            'workspace_id': membership['workspace_id'],
-            'role': membership['role'],
-            'created_at': membership['created_at'].isoformat() if hasattr(membership['created_at'], 'isoformat') else str(membership['created_at']),
-            'workspace': {
-                'id': membership['workspace_id'],
-                'name': membership['name'],
-                'slug': membership['slug'],
-            },
-        }
-        for membership in memberships
-    ]
+    membership_payload = []
+    for membership in memberships:
+        workspace_id = str(membership['workspace_id'])
+        membership_payload.append(
+            {
+                'workspace_id': workspace_id,
+                'role': membership['role'],
+                'created_at': (
+                    membership['created_at'].isoformat() if hasattr(membership['created_at'], 'isoformat') else str(membership['created_at'])
+                ),
+                'workspace': {
+                    'id': workspace_id,
+                    'name': membership['name'],
+                    'slug': membership['slug'],
+                },
+            }
+        )
+    current_workspace_id = str(user['current_workspace_id']) if user['current_workspace_id'] else None
     current_workspace = next(
         (
             membership['workspace']
             for membership in membership_payload
-            if membership['workspace_id'] == user['current_workspace_id']
+            if membership['workspace_id'] == current_workspace_id
         ),
         membership_payload[0]['workspace'] if membership_payload else None,
     )
-    return {
-        'id': user['id'],
+    return _json_safe_value(
+        {
+        'id': str(user['id']),
         'email': user['email'],
         'full_name': user['full_name'],
         'created_at': user['created_at'].isoformat() if hasattr(user['created_at'], 'isoformat') else str(user['created_at']),
@@ -489,6 +515,7 @@ def build_user_response(connection: psycopg.Connection, user_id: str) -> dict[st
         'current_workspace': current_workspace,
         'memberships': membership_payload,
     }
+    )
 
 
 def authenticate_request(request: Request) -> dict[str, Any]:
@@ -606,33 +633,55 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     try:
         with pg_connection() as connection:
             ensure_pilot_schema(connection)
-            user = connection.execute(
-                'SELECT id, password_hash FROM users WHERE email = %s',
-                (email,),
-            ).fetchone()
+            try:
+                user = connection.execute(
+                    'SELECT id, password_hash FROM users WHERE email = %s',
+                    (email,),
+                ).fetchone()
+            except Exception:
+                logger.exception('signin_user failed during user lookup', extra={'step': 'fetch_user_by_email', 'email': email})
+                raise
             if user is None or not verify_password(password, user['password_hash']):
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid email or password.')
             user_id = str(user['id'])
-            connection.execute('UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = %s', (user_id,))
-            log_audit(
-                connection,
-                action='auth.signin',
-                entity_type='user',
-                entity_id=user_id,
-                request=request,
-                user_id=user_id,
-                workspace_id=None,
-                metadata={'email': email},
-            )
+            try:
+                connection.execute('UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = %s', (user_id,))
+            except Exception:
+                logger.exception('signin_user failed during last_sign_in_at update', extra={'step': 'update_last_sign_in_at', 'user_id': user_id})
+                raise
+            try:
+                log_audit(
+                    connection,
+                    action='auth.signin',
+                    entity_type='user',
+                    entity_id=user_id,
+                    request=request,
+                    user_id=user_id,
+                    workspace_id=None,
+                    metadata={'email': email},
+                )
+            except Exception:
+                logger.exception('signin_user failed during audit log insert', extra={'step': 'insert_audit_log', 'user_id': user_id})
+                raise
             connection.commit()
-            hydrated_user = build_user_response(connection, user_id)
+            try:
+                hydrated_user = build_user_response(connection, user_id)
+            except Exception:
+                logger.exception('signin_user failed during user hydration', extra={'step': 'build_user_response', 'user_id': user_id})
+                raise
     except HTTPException:
         raise
     except Exception as exc:
         if _missing_relation_error(exc):
             raise _schema_missing_http_exception(('users',)) from exc
+        logger.exception('signin_user failed due to unexpected backend exception', extra={'step': 'unexpected'})
         raise
-    return {'access_token': create_access_token(user_id), 'token_type': 'bearer', 'user': hydrated_user}
+    try:
+        access_token = create_access_token(user_id)
+    except Exception:
+        logger.exception('signin_user failed during token creation', extra={'step': 'create_access_token', 'user_id': user_id})
+        raise
+    return {'access_token': access_token, 'token_type': 'bearer', 'user': hydrated_user}
 
 
 def signout_user(request: Request) -> dict[str, Any]:

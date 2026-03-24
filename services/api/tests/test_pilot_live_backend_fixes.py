@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import sys
+import uuid
 from contextlib import contextmanager, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -409,3 +412,163 @@ def test_migration_sql_creates_core_pilot_auth_tables() -> None:
     assert 'CREATE TABLE IF NOT EXISTS audit_logs' in foundation_sql
     assert 'CREATE TABLE IF NOT EXISTS auth_sessions' in auth_sessions_sql
     assert 'CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_sessions_token_hash_unique' in auth_sessions_sql
+
+
+def test_signin_user_success_with_uuid_user_id(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Request:
+        headers = {}
+        client = None
+
+    user_uuid = uuid.uuid4()
+    executed: list[str] = []
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            executed.append(normalized)
+            if 'SELECT required.table_name FROM unnest' in normalized:
+                return _Result([])
+            if 'SELECT id, password_hash FROM users WHERE email = %s' in normalized:
+                return _Result([{'id': user_uuid, 'password_hash': 'stored-hash'}])
+            return _Result()
+
+        def commit(self):
+            executed.append('COMMIT')
+
+    @contextmanager
+    def fake_pg_connection():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
+    monkeypatch.setattr(pilot_module, 'verify_password', lambda password, encoded: encoded == 'stored-hash')
+    monkeypatch.setattr(pilot_module, 'log_audit', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        pilot_module,
+        'build_user_response',
+        lambda connection, user_id: {'id': user_id, 'memberships': [], 'current_workspace': None},
+    )
+    monkeypatch.setattr(pilot_module, 'create_access_token', lambda user_id: f'token-for-{user_id}')
+
+    payload = pilot_module.signin_user({'email': 'demo@decoda.app', 'password': 'PilotDemoPass123!'}, _Request())
+
+    assert payload['token_type'] == 'bearer'
+    assert payload['access_token'] == f'token-for-{user_uuid}'
+    assert payload['user']['id'] == str(user_uuid)
+    assert any('UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = %s' in statement for statement in executed)
+
+
+def test_signin_user_success_returns_json_safe_payload(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Request:
+        headers = {}
+        client = None
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT required.table_name FROM unnest' in normalized:
+                return _Result([])
+            if 'SELECT id, password_hash FROM users WHERE email = %s' in normalized:
+                return _Result([{'id': 'user-123', 'password_hash': 'stored-hash'}])
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def fake_pg_connection():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
+    monkeypatch.setattr(pilot_module, 'verify_password', lambda password, encoded: encoded == 'stored-hash')
+    monkeypatch.setattr(pilot_module, 'log_audit', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        pilot_module,
+        'build_user_response',
+        lambda connection, user_id: {
+            'id': user_id,
+            'email': 'demo@decoda.app',
+            'current_workspace': None,
+            'memberships': [],
+            'created_at': '2026-03-24T00:00:00+00:00',
+            'updated_at': '2026-03-24T00:00:00+00:00',
+            'last_sign_in_at': '2026-03-24T00:00:00+00:00',
+        },
+    )
+    monkeypatch.setattr(pilot_module, 'create_access_token', lambda user_id: f'token-for-{user_id}')
+
+    payload = pilot_module.signin_user({'email': 'demo@decoda.app', 'password': 'PilotDemoPass123!'}, _Request())
+    assert payload['user']['id'] == 'user-123'
+    json.dumps(payload)
+
+
+def test_build_user_response_handles_null_current_workspace_id(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    user_uuid = uuid.uuid4()
+    workspace_uuid = uuid.uuid4()
+    timestamp = datetime(2026, 3, 24, 12, 0, tzinfo=timezone.utc)
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT id, email, full_name, current_workspace_id, created_at, updated_at, last_sign_in_at FROM users WHERE id = %s' in normalized:
+                return _Result(
+                    [
+                        {
+                            'id': user_uuid,
+                            'email': 'demo@decoda.app',
+                            'full_name': 'Decoda Demo',
+                            'current_workspace_id': None,
+                            'created_at': timestamp,
+                            'updated_at': timestamp,
+                            'last_sign_in_at': timestamp,
+                        }
+                    ]
+                )
+            if 'SELECT wm.workspace_id, wm.role, wm.created_at, w.name, w.slug FROM workspace_members wm JOIN workspaces w ON w.id = wm.workspace_id WHERE wm.user_id = %s' in normalized:
+                return _Result([{'workspace_id': workspace_uuid, 'role': 'workspace_member', 'created_at': timestamp, 'name': 'Workspace', 'slug': 'workspace'}])
+            raise AssertionError(f'unexpected SQL: {statement}')
+
+    user_payload = pilot_module.build_user_response(_Connection(), str(user_uuid))
+
+    assert user_payload['id'] == str(user_uuid)
+    assert user_payload['current_workspace'] == {'id': str(workspace_uuid), 'name': 'Workspace', 'slug': 'workspace'}
+    assert user_payload['memberships'][0]['workspace_id'] == str(workspace_uuid)
+
+
+def test_create_access_token_coerces_non_string_user_id(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pilot_module, 'token_secret', lambda: 'super-secret-token')
+
+    token = pilot_module.create_access_token(uuid.uuid4())
+    payload = pilot_module.decode_access_token(token)
+
+    assert isinstance(payload['sub'], str)
+    assert payload['sub']
+
+
+def test_log_audit_serializes_uuid_datetime_metadata(pilot_module) -> None:
+    captured: list[tuple[str, object]] = []
+    now = datetime(2026, 3, 24, 12, 30, tzinfo=timezone.utc)
+    request_id = uuid.uuid4()
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            captured.append((statement, params))
+            return _Result()
+
+    pilot_module.log_audit(
+        _Connection(),
+        action='auth.signin',
+        entity_type='user',
+        entity_id='user-1',
+        request=None,
+        user_id='user-1',
+        workspace_id=None,
+        metadata={'request_id': request_id, 'at': now, 'nested': {'workspace_id': uuid.uuid4()}},
+    )
+
+    metadata_json = captured[0][1][-1]
+    metadata_payload = json.loads(metadata_json)
+    assert metadata_payload['request_id'] == str(request_id)
+    assert metadata_payload['at'] == now.isoformat()
+    assert isinstance(metadata_payload['nested']['workspace_id'], str)
