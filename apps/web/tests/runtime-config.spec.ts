@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
-import { shouldRedirectUnauthenticatedProductAccess } from '../app/(product)/layout';
+import { shouldRedirectUnauthenticatedProductAccess } from '../app/auth-guards';
 import { GET as getBuildInfoRoute } from '../app/api/build-info/route';
 import { GET as getRuntimeConfigRoute } from '../app/api/runtime-config/route';
 import { resolveAuthFormState } from '../app/auth-form-state';
