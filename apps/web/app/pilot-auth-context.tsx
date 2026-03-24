@@ -83,8 +83,23 @@ type PilotAuthContextValue = {
 
 const PilotAuthContext = createContext<PilotAuthContextValue | null>(null);
 
-async function readJson<T>(response: Response): Promise<T> {
-  return (await response.json()) as T;
+async function readApiResponse<T>(response: Response): Promise<Partial<T> & { detail?: string; message?: string }> {
+  const contentType = response.headers.get('content-type') || '';
+
+  if (contentType.includes('application/json')) {
+    try {
+      return (await response.json()) as Partial<T> & { detail?: string; message?: string };
+    } catch {
+      return { detail: `Request failed with HTTP ${response.status}` } as Partial<T> & { detail?: string; message?: string };
+    }
+  }
+
+  try {
+    const text = await response.text();
+    return { detail: text || `Request failed with HTTP ${response.status}` } as Partial<T> & { detail?: string; message?: string };
+  } catch {
+    return { detail: `Request failed with HTTP ${response.status}` } as Partial<T> & { detail?: string; message?: string };
+  }
 }
 
 export async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
@@ -96,7 +111,13 @@ export async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
     throw new Error(`Runtime config request failed with HTTP ${response.status}.`);
   }
 
-  return readJson<RuntimeConfig>(response);
+  const data = await readApiResponse<RuntimeConfig>(response);
+
+  if (!('configured' in data) || !('source' in data) || !('liveModeEnabled' in data)) {
+    throw new Error(data.detail ?? `Runtime config request failed with HTTP ${response.status}.`);
+  }
+
+  return data as RuntimeConfig;
 }
 
 export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
@@ -156,7 +177,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     if (!response.ok) {
-      const data = await readJson<{ detail?: string }>(response).catch(() => ({ detail: 'Your session expired. Please sign in again.' }));
+      const data = await readApiResponse<{ detail?: string }>(response).catch(() => ({ detail: 'Your session expired. Please sign in again.' }));
       window.localStorage.removeItem(TOKEN_STORAGE_KEY);
       writeTokenCookie(null);
       setToken(null);
@@ -166,7 +187,16 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       return null;
     }
 
-    const payload = await readJson<{ user: PilotUser }>(response);
+    const payload = await readApiResponse<{ user?: PilotUser; detail?: string }>(response);
+    if (!payload.user) {
+      window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+      writeTokenCookie(null);
+      setToken(null);
+      setUser(null);
+      setError(payload.detail ?? 'Your session expired. Please sign in again.');
+      setSessionLoading(false);
+      return null;
+    }
     setUser(payload.user);
     setSessionLoading(false);
     return payload.user;
@@ -250,7 +280,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(classifyAuthTransportError('sign in', proxyUrl, submitError));
     }
 
-    const data = await readJson<{
+    const data = await readApiResponse<{
       access_token?: string;
       user?: PilotUser;
       detail?: string;
@@ -280,7 +310,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(classifyAuthTransportError('create an account', proxyUrl, submitError));
     }
 
-    const data = await readJson<{
+    const data = await readApiResponse<{
       access_token?: string;
       user?: PilotUser;
       detail?: string;
@@ -322,7 +352,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       },
       body: JSON.stringify({ name }),
     });
-    const data = await readJson<{ user?: PilotUser; detail?: string }>(response);
+    const data = await readApiResponse<{ user?: PilotUser; detail?: string }>(response);
     if (!response.ok || !data.user) {
       throw new Error(data.detail ?? 'Unable to create workspace.');
     }
@@ -339,7 +369,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       },
       body: JSON.stringify({ workspace_id: workspaceId }),
     });
-    const data = await readJson<{ user?: PilotUser; detail?: string }>(response);
+    const data = await readApiResponse<{ user?: PilotUser; detail?: string }>(response);
     if (!response.ok || !data.user) {
       throw new Error(data.detail ?? 'Unable to select workspace.');
     }
