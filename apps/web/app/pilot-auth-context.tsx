@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
-import { classifyAuthResponseError, classifyAuthTransportError } from './auth-diagnostics';
+import { classifyAuthTransportError } from './auth-diagnostics';
 import type { RuntimeConfig } from './runtime-config-schema';
 
 const TOKEN_STORAGE_KEY = 'decoda-pilot-access-token';
@@ -85,6 +85,50 @@ const PilotAuthContext = createContext<PilotAuthContextValue | null>(null);
 
 async function readJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
+}
+
+type ApiResponseData = {
+  detail?: string;
+  message?: string;
+};
+
+export async function readApiResponse<T extends ApiResponseData>(response: Response): Promise<T> {
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+
+  if (contentType.includes('application/json')) {
+    const fallbackResponse = response.clone();
+
+    try {
+      return (await response.json()) as T;
+    } catch {
+      const fallbackText = (await fallbackResponse.text().catch(() => '')).trim();
+
+      if (fallbackText) {
+        return { detail: fallbackText } as T;
+      }
+
+      return {
+        detail: response.ok ? 'Unable to read server response.' : `Request failed with HTTP ${response.status}`,
+      } as T;
+    }
+  }
+
+  const text = (await response.text().catch(() => '')).trim();
+  if (text) {
+    return { detail: text } as T;
+  }
+
+  return { detail: `Request failed with HTTP ${response.status}` } as T;
+}
+
+function getApiErrorMessage(data: ApiResponseData) {
+  const detail = typeof data.detail === 'string' ? data.detail.trim() : '';
+  if (detail) {
+    return detail;
+  }
+
+  const message = typeof data.message === 'string' ? data.message.trim() : '';
+  return message || null;
 }
 
 export async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
@@ -250,17 +294,30 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(classifyAuthTransportError('sign in', proxyUrl, submitError));
     }
 
-    const data = await readJson<{
+    let data: {
       access_token?: string;
       user?: PilotUser;
       detail?: string;
+      message?: string;
       authTransport?: string;
       backendApiUrl?: string | null;
       configured?: boolean;
       code?: string;
-    }>(response);
-    if (!response.ok || !data.access_token || !data.user) {
-      throw new Error(classifyAuthResponseError('sign in', proxyUrl, response.status, data.detail, data));
+    };
+
+    try {
+      data = await readApiResponse(response);
+    } catch {
+      throw new Error('Authentication request failed');
+    }
+
+    const errorMessage = getApiErrorMessage(data);
+    if (!response.ok) {
+      throw new Error(errorMessage ?? 'Authentication request failed');
+    }
+
+    if (!data.access_token || !data.user) {
+      throw new Error(errorMessage ?? 'Authentication request failed');
     }
     saveAuthPayload(data.access_token, data.user);
     return data.user;
@@ -280,17 +337,30 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(classifyAuthTransportError('create an account', proxyUrl, submitError));
     }
 
-    const data = await readJson<{
+    let data: {
       access_token?: string;
       user?: PilotUser;
       detail?: string;
+      message?: string;
       authTransport?: string;
       backendApiUrl?: string | null;
       configured?: boolean;
       code?: string;
-    }>(response);
-    if (!response.ok || !data.access_token || !data.user) {
-      throw new Error(classifyAuthResponseError('create an account', proxyUrl, response.status, data.detail, data));
+    };
+
+    try {
+      data = await readApiResponse(response);
+    } catch {
+      throw new Error('Authentication request failed');
+    }
+
+    const errorMessage = getApiErrorMessage(data);
+    if (!response.ok) {
+      throw new Error(errorMessage ?? 'Authentication request failed');
+    }
+
+    if (!data.access_token || !data.user) {
+      throw new Error(errorMessage ?? 'Authentication request failed');
     }
     saveAuthPayload(data.access_token, data.user);
     return data.user;
