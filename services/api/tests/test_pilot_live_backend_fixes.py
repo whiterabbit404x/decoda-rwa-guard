@@ -205,7 +205,7 @@ def test_seed_demo_workspace_creates_demo_user_workspace_and_membership(pilot_mo
     assert payload['user_created'] is True
     assert payload['workspace_created'] is True
     assert payload['membership_created'] is True
-    assert any('INSERT INTO users' in statement for statement, _ in executed)
+    assert any('INSERT INTO users' in statement and 'email_verified_at' in statement for statement, _ in executed)
     assert any('INSERT INTO workspaces' in statement for statement, _ in executed)
     assert any('INSERT INTO workspace_members' in statement for statement, _ in executed)
 
@@ -245,7 +245,46 @@ def test_seed_demo_workspace_backfills_existing_demo_login(pilot_module, monkeyp
     assert payload['workspace_created'] is True
     assert any('INSERT INTO workspaces' in statement for statement, _ in executed)
     assert any('INSERT INTO workspace_members' in statement for statement, _ in executed)
-    assert any('UPDATE users SET password_hash' in statement for statement, _ in executed)
+    assert any(
+        'UPDATE users' in statement and 'email_verified_at = COALESCE(email_verified_at, NOW())' in statement
+        for statement, _ in executed
+    )
+
+
+def test_seed_demo_workspace_marks_seeded_demo_user_as_verified_for_signin(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    executed: list[tuple[str, object]] = []
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            executed.append((normalized, params))
+            if 'SELECT required.table_name FROM unnest' in normalized:
+                return _Result([])
+            if 'SELECT id, current_workspace_id FROM users WHERE email = %s' in normalized:
+                return _Result([])
+            if 'SELECT wm.workspace_id, w.name, w.slug' in normalized:
+                return _Result([])
+            if 'SELECT 1 FROM workspaces WHERE slug = %s' in normalized:
+                return _Result([])
+            return _Result()
+
+        def commit(self):
+            executed.append(('COMMIT', None))
+
+    @contextmanager
+    def fake_pg_connection():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
+    monkeypatch.setattr(pilot_module, 'build_user_response', lambda connection, user_id: {'id': user_id, 'email': 'demo@decoda.app'})
+
+    pilot_module.seed_demo_workspace('demo@decoda.app', 'PilotDemoPass123!', 'Decoda Demo Workspace', 'Decoda Demo User')
+
+    assert any(
+        'INSERT INTO users' in statement and 'email_verified_at' in statement and 'NULL, NOW(), NOW(), NOW(), NOW()' in statement
+        for statement, _ in executed
+    )
 
 
 def test_signup_user_inserts_user_with_null_workspace_then_backfills_current_workspace(

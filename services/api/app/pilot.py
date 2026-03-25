@@ -1343,8 +1343,8 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
             user_id = str(uuid.uuid4())
             connection.execute(
                 '''
-                INSERT INTO users (id, email, password_hash, full_name, current_workspace_id, created_at, updated_at, last_sign_in_at)
-                VALUES (%s, %s, %s, %s, NULL, NOW(), NOW(), NOW())
+                INSERT INTO users (id, email, password_hash, full_name, current_workspace_id, email_verified_at, created_at, updated_at, last_sign_in_at)
+                VALUES (%s, %s, %s, %s, NULL, NOW(), NOW(), NOW(), NOW())
                 ''',
                 (user_id, normalized_email, password_hash, normalized_full_name),
             )
@@ -1394,7 +1394,16 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
             )
             membership_created = True
         connection.execute(
-            'UPDATE users SET password_hash = %s, full_name = %s, current_workspace_id = %s, updated_at = NOW(), last_sign_in_at = NOW() WHERE id = %s',
+            '''
+            UPDATE users
+            SET password_hash = %s,
+                full_name = %s,
+                current_workspace_id = %s,
+                email_verified_at = COALESCE(email_verified_at, NOW()),
+                updated_at = NOW(),
+                last_sign_in_at = NOW()
+            WHERE id = %s
+            ''',
             (password_hash, normalized_full_name, workspace_id, user_id),
         )
         connection.commit()
