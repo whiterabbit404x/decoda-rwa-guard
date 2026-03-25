@@ -41,7 +41,7 @@ export type WorkspaceSummary = {
 
 export type WorkspaceMembership = {
   workspace_id: string;
-  role: 'workspace_owner' | 'workspace_admin' | 'workspace_member';
+  role: 'workspace_owner' | 'workspace_admin' | 'workspace_member' | 'workspace_viewer';
   created_at: string;
   workspace: WorkspaceSummary;
 };
@@ -54,6 +54,8 @@ export type PilotUser = {
   created_at: string;
   updated_at: string;
   last_sign_in_at: string | null;
+  email_verified: boolean;
+  email_verified_at: string | null;
   current_workspace: WorkspaceSummary | null;
   memberships: WorkspaceMembership[];
 };
@@ -78,6 +80,10 @@ type PilotAuthContextValue = {
   refreshUser: () => Promise<PilotUser | null>;
   createWorkspace: (name: string) => Promise<PilotUser>;
   selectWorkspace: (workspaceId: string) => Promise<PilotUser>;
+  verifyEmail: (token: string) => Promise<void>;
+  resendVerification: () => Promise<{ sent: boolean; mail_configured?: boolean }>;
+  requestPasswordReset: (email: string) => Promise<void>;
+  resetPassword: (token: string, password: string) => Promise<void>;
   authHeaders: () => Record<string, string>;
   setError: (value: string | null) => void;
 };
@@ -397,6 +403,56 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     return data.user;
   }, [authHeaders, signOut]);
 
+  const verifyEmail = useCallback(async (tokenValue: string) => {
+    const response = await fetch('/api/auth/verify-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: tokenValue }),
+    });
+    const data = await readApiResponse<{ detail?: string }>(response);
+    if (!response.ok) {
+      throw new Error(data.detail ?? 'Unable to verify email.');
+    }
+  }, []);
+
+  const resendVerification = useCallback(async () => {
+    const response = await fetch('/api/auth/resend-verification', {
+      method: 'POST',
+      headers: {
+        ...authHeaders(),
+      },
+    });
+    const data = await readApiResponse<{ detail?: string; sent?: boolean; mail_configured?: boolean }>(response);
+    if (!response.ok) {
+      throw new Error(data.detail ?? 'Unable to resend verification email.');
+    }
+    return { sent: Boolean(data.sent), mail_configured: data.mail_configured };
+  }, [authHeaders]);
+
+  const requestPasswordReset = useCallback(async (email: string) => {
+    const response = await fetch('/api/auth/forgot-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await readApiResponse<{ detail?: string }>(response);
+    if (!response.ok) {
+      throw new Error(data.detail ?? 'Unable to request password reset.');
+    }
+  }, []);
+
+  const resetPassword = useCallback(async (tokenValue: string, password: string) => {
+    const response = await fetch('/api/auth/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: tokenValue, password }),
+    });
+    const data = await readApiResponse<{ detail?: string }>(response);
+    if (!response.ok) {
+      throw new Error(data.detail ?? 'Unable to reset password.');
+    }
+  }, []);
+
   const loading = configLoading || sessionLoading;
 
   const value = useMemo<PilotAuthContextValue>(() => ({
@@ -419,9 +475,13 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     refreshUser,
     createWorkspace,
     selectWorkspace,
+    verifyEmail,
+    resendVerification,
+    requestPasswordReset,
+    resetPassword,
     authHeaders,
     setError,
-  }), [authHeaders, configLoading, createWorkspace, error, loading, refreshUser, runtimeConfig, selectWorkspace, signIn, signOut, signUp, token, user]);
+  }), [authHeaders, configLoading, createWorkspace, error, loading, refreshUser, requestPasswordReset, resendVerification, resetPassword, runtimeConfig, selectWorkspace, signIn, signOut, signUp, token, user, verifyEmail]);
 
   return <PilotAuthContext.Provider value={value}>{children}</PilotAuthContext.Provider>;
 }

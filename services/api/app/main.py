@@ -31,6 +31,11 @@ from services.api.app.pilot import (
     create_governance_action_record,
     create_incident_record,
     create_workspace_for_user,
+    create_workspace_invite,
+    accept_workspace_invite,
+    create_billing_checkout_session,
+    create_billing_portal_session,
+    get_billing_status,
     enforce_auth_rate_limit,
     ensure_pilot_schema,
     list_user_workspaces,
@@ -42,7 +47,9 @@ from services.api.app.pilot import (
     persist_analysis_run,
     pilot_mode,
     pg_connection,
+    resend_verification_email,
     resolve_workspace,
+    request_password_reset,
     run_startup_migrations_if_enabled,
     select_workspace_for_user,
     demo_seed_status,
@@ -50,6 +57,9 @@ from services.api.app.pilot import (
     signin_user,
     signout_user,
     signup_user,
+    verify_email_token,
+    reset_password,
+    list_workspace_members,
 )
 
 
@@ -965,11 +975,28 @@ def bootstrap_live_pilot() -> dict[str, Any]:
     return STARTUP_BOOTSTRAP_STATUS
 
 
+def emit_startup_config_validation() -> None:
+    required_when_live = {
+        'DATABASE_URL': bool(os.getenv('DATABASE_URL', '').strip()),
+        'AUTH_TOKEN_SECRET': auth_token_secret_configured(),
+        'APP_BASE_URL': bool(os.getenv('APP_BASE_URL', '').strip() or os.getenv('WEB_APP_URL', '').strip()),
+    }
+    missing = [name for name, present in required_when_live.items() if not present]
+    logger.info(
+        'startup config validation live_mode=%s missing_required=%s stripe_configured=%s mail_configured=%s',
+        live_mode_enabled(),
+        ','.join(missing) or 'none',
+        bool(os.getenv('STRIPE_SECRET_KEY', '').strip() and os.getenv('STRIPE_PRICE_ID', '').strip()),
+        bool(os.getenv('MAIL_PROVIDER_API_KEY', '').strip()),
+    )
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
     seed_embedded_dependency_registry()
     bootstrap_live_pilot()
+    emit_startup_config_validation()
     emit_startup_fixture_diagnostics()
     yield
 
@@ -1236,6 +1263,27 @@ def auth_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: signin_user(payload, request))
 
 
+@app.post('/auth/verify-email', summary='Verify email token')
+def auth_verify_email(payload: dict[str, Any]) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: verify_email_token(payload))
+
+
+@app.post('/auth/resend-verification', summary='Resend verification email')
+def auth_resend_verification(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: resend_verification_email(request))
+
+
+@app.post('/auth/forgot-password', summary='Request password reset')
+def auth_forgot_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'forgot_password')
+    return with_auth_schema_json(lambda: request_password_reset(payload, request))
+
+
+@app.post('/auth/reset-password', summary='Reset password')
+def auth_reset_password(payload: dict[str, Any]) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: reset_password(payload))
+
+
 @app.post('/auth/signout', summary='Sign out a live-mode pilot user')
 def auth_signout(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: signout_user(request))
@@ -1256,12 +1304,42 @@ def workspace_create(payload: dict[str, Any], request: Request) -> dict[str, Any
     return with_auth_schema_json(lambda: {'user': create_workspace_for_user(payload, request)})
 
 
+@app.get('/workspaces/members', summary='List workspace members')
+def workspace_members(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_workspace_members(request))
+
+
+@app.post('/workspaces/invites', summary='Invite workspace teammate')
+def workspace_invites(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_workspace_invite(payload, request))
+
+
+@app.post('/workspaces/invites/accept', summary='Accept workspace invite')
+def workspace_invites_accept(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: accept_workspace_invite(payload, request))
+
+
 @app.post('/auth/select-workspace', summary='Select the active workspace for the authenticated user')
 def auth_select_workspace(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     workspace_id = str(payload.get('workspace_id', '')).strip()
     if not workspace_id:
         raise HTTPException(status_code=400, detail='workspace_id is required')
     return with_auth_schema_json(lambda: {'user': select_workspace_for_user(workspace_id, request)})
+
+
+@app.get('/billing/status', summary='Get billing status for current workspace')
+def billing_status(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_billing_status(request))
+
+
+@app.post('/billing/checkout-session', summary='Create Stripe checkout session')
+def billing_checkout(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_billing_checkout_session(request))
+
+
+@app.post('/billing/portal-session', summary='Create Stripe portal session')
+def billing_portal(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_billing_portal_session(request))
 
 
 @app.get('/pilot/history', summary='Workspace-scoped persisted live-mode history')

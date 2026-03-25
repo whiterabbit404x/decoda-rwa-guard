@@ -9,12 +9,15 @@ import { usePilotAuth } from '../../pilot-auth-context';
 export default function WorkspacesPageClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { loading, isAuthenticated, user, createWorkspace, selectWorkspace } = usePilotAuth();
+  const { loading, isAuthenticated, user, createWorkspace, selectWorkspace, authHeaders } = usePilotAuth();
   const [workspaceName, setWorkspaceName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [selectionLoading, setSelectionLoading] = useState(false);
   const [selectionError, setSelectionError] = useState<string | null>(null);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState('workspace_member');
+  const [members, setMembers] = useState<Array<{ email: string; role: string }>>([]);
   const nextPath = searchParams?.get('next');
 
   useEffect(() => {
@@ -40,6 +43,14 @@ export default function WorkspacesPageClient() {
         setSelectionLoading(false);
       });
   }, [isAuthenticated, loading, nextPath, router, selectWorkspace, user?.current_workspace, user?.memberships]);
+
+  useEffect(() => {
+    if (!user?.current_workspace?.id) return;
+    void fetch('/api/auth/workspaces/members', { headers: authHeaders(), cache: 'no-store' })
+      .then((response) => response.json())
+      .then((data: { members?: Array<{ email: string; role: string }> }) => setMembers(data.members ?? []))
+      .catch(() => setMembers([]));
+  }, [authHeaders, user?.current_workspace?.id]);
 
   async function handleCreateWorkspace(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -108,6 +119,22 @@ export default function WorkspacesPageClient() {
           <p className="muted">After selecting a workspace, return to the dashboard to review live status, recent alerts, recent incidents, and saved history in one place.</p>
           <Link href="/dashboard">Back to dashboard</Link>
         </div>
+      </section>
+      <section className="threeColumnSection">
+        <form className="dataCard authForm" onSubmit={(event) => {event.preventDefault(); void fetch('/api/auth/workspaces/invites', { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ email: inviteEmail, role: inviteRole }) }).then(() => setInviteEmail(''));}}>
+          <h2>Invite teammate</h2>
+          <input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} required />
+          <select value={inviteRole} onChange={(event) => setInviteRole(event.target.value)}>
+            <option value="workspace_admin">Admin</option>
+            <option value="workspace_member">Member</option>
+            <option value="workspace_viewer">Viewer</option>
+          </select>
+          <button type="submit">Send invite</button>
+        </form>
+        <article className="dataCard">
+          <h2>Organization members</h2>
+          {members.map((member) => <p key={`${member.email}-${member.role}`}><span>{member.email}</span> {member.role}</p>)}
+        </article>
       </section>
     </main>
   );

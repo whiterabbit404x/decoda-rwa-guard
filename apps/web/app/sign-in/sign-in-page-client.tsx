@@ -90,7 +90,9 @@ export default function SignInPageClient({
           <button type="submit" disabled={formState.submitDisabled}>{loading ? 'Signing in…' : 'Sign in'}</button>
           {error ? <p className="statusLine">{error}</p> : null}
           {!configLoading && !configured ? <p className="statusLine">Auth is disabled until this deployment exposes a valid API_URL.</p> : null}
+          <p className="muted"><Link href="/forgot-password">Forgot password?</Link></p>
           <p className="muted">Need an account? <Link href="/sign-up">Create one</Link>.</p>
+          <p className="muted"><Link href="/privacy">Privacy</Link> · <Link href="/terms">Terms</Link> · <Link href="/security">Security</Link></p>
         </form>
         <AuthDiagnosticCard loading={configLoading} runtimeConfig={runtimeConfig} />
       </div>

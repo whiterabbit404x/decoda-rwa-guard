@@ -90,6 +90,7 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
           {error ? <p className="statusLine">{error}</p> : null}
           {!configLoading && !configured ? <p className="statusLine">Auth is disabled until this deployment exposes a valid API_URL.</p> : null}
           <p className="muted">Already have an account? <Link href="/sign-in">Sign in</Link>.</p>
+          <p className="muted"><Link href="/privacy">Privacy</Link> · <Link href="/terms">Terms</Link> · <Link href="/security">Security</Link></p>
         </form>
         <AuthDiagnosticCard loading={configLoading} runtimeConfig={runtimeConfig} />
       </div>

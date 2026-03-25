@@ -59,3 +59,30 @@ test('auth context and threat workflow guard session and workspace edge cases', 
   expect(threatPanel).toContain('Select or create a workspace before running a saved analysis.');
   expect(threatPanel).toContain("const livePrefix = isAuthenticated ? '/pilot' : '';");
 });
+
+test('self-serve auth, billing, invite, and legal surfaces exist', async () => {
+  const authContext = read('pilot-auth-context.tsx');
+  const workspaces = read('(product)/workspaces/workspaces-page-client.tsx');
+  const signin = read('sign-in/sign-in-page-client.tsx');
+  const billing = read('(product)/settings/billing/page.tsx');
+  const verifyPage = read('verify-email/page.tsx');
+  const forgotPage = read('forgot-password/page.tsx');
+  const resetPage = read('reset-password/page.tsx');
+  const privacy = read('privacy/page.tsx');
+  const terms = read('terms/page.tsx');
+  const security = read('security/page.tsx');
+
+  expect(authContext).toContain('verifyEmail');
+  expect(authContext).toContain('requestPasswordReset');
+  expect(workspaces).toContain('/api/auth/workspaces/invites');
+  expect(workspaces).toContain('/api/auth/workspaces/members');
+  expect(signin).toContain('/forgot-password');
+  expect(billing).toContain('/api/auth/billing/status');
+  expect(billing).toContain('billing_configured');
+  expect(verifyPage).toContain('Verify email');
+  expect(forgotPage).toContain('Forgot password');
+  expect(resetPage).toContain('Reset password');
+  expect(privacy).toContain('Privacy Policy');
+  expect(terms).toContain('Terms of Service');
+  expect(security).toContain('Security & Trust');
+});

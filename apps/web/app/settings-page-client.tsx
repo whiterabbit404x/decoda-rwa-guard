@@ -1,11 +1,12 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { usePilotAuth } from './pilot-auth-context';
 
 export default function SettingsPageClient() {
-  const { apiUrl, authHeaders, error, liveModeConfigured, loading, selectWorkspace, user } = usePilotAuth();
+  const { apiUrl, authHeaders, error, liveModeConfigured, loading, selectWorkspace, resendVerification, user } = usePilotAuth();
   const [healthDetails, setHealthDetails] = useState<Record<string, unknown> | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
 
@@ -65,6 +66,8 @@ export default function SettingsPageClient() {
             <p className="sectionEyebrow">Current user</p>
             <h2>{user?.full_name ?? 'Unknown user'}</h2>
             <p className="muted">{user?.email}</p>
+            {!user?.email_verified ? <p className="statusLine">Email verification pending.</p> : <p className="muted">Email verified.</p>}
+            {!user?.email_verified ? <button type="button" onClick={() => void resendVerification()}>Resend verification email</button> : null}
             <div className="kvGrid compactKvGrid">
               <p><span>Created</span>{user?.created_at ? new Date(user.created_at).toLocaleString() : '—'}</p>
               <p><span>Last sign in</span>{user?.last_sign_in_at ? new Date(user.last_sign_in_at).toLocaleString() : '—'}</p>
@@ -88,6 +91,7 @@ export default function SettingsPageClient() {
             <h2>{liveModeConfigured ? 'Live mode configured' : 'Sample mode only'}</h2>
             <p className="muted">{apiUrl || 'NEXT_PUBLIC_API_URL not configured'}</p>
             {error ? <p className="statusLine">{error}</p> : <p className="muted">Authentication errors and session expiry messages appear here.</p>}
+            <p className="muted"><Link href="/settings/billing">Billing and plan</Link></p>
           </article>
         </div>
       </section>
