@@ -14,6 +14,8 @@ test('auth pages include guarded submit and authenticated redirect handling', as
   const signUp = read('sign-up/sign-up-page-client.tsx');
   const signInPage = read('sign-in/page.tsx');
   const signUpPage = read('sign-up/page.tsx');
+  const forgotPasswordPage = read('forgot-password/page.tsx');
+  const verifyEmailPage = read('verify-email/page.tsx');
 
   expect(signIn).toContain('if (loading) {');
   expect(signIn).toContain('setError(null);');
@@ -23,6 +25,10 @@ test('auth pages include guarded submit and authenticated redirect handling', as
   expect(signUp).toContain("router.replace('/dashboard')");
   expect(signInPage).toContain("redirect('/dashboard')");
   expect(signUpPage).toContain("redirect('/dashboard')");
+  expect(signIn).toContain("Link href=\"/forgot-password\"");
+  expect(signUp).toContain("Link href=\"/verify-email\"");
+  expect(forgotPasswordPage).toContain('/api/auth/forgot-password');
+  expect(verifyEmailPage).toContain('/api/auth/verify-email');
 });
 
 test('authenticated route guards unauthenticated and missing-workspace users', async () => {
@@ -45,6 +51,18 @@ test('dashboard and history expose self-serve onboarding and first-run empty sta
   expect(history).toContain('No analyses yet');
   expect(history).toContain('history.workspace.name');
   expect(history).toContain('item.status');
+});
+
+test('settings and billing expose team invitation and plan surfaces', async () => {
+  const settings = read('settings-page-client.tsx');
+  const billing = read('(product)/billing/page.tsx');
+  const productNav = read('product-nav.ts');
+
+  expect(settings).toContain('/api/workspace-members');
+  expect(settings).toContain('/api/workspace-invitations');
+  expect(settings).toContain('Only owners/admins can invite teammates.');
+  expect(billing).toContain('/api/billing/summary');
+  expect(productNav).toContain("{ href: '/billing', label: 'Billing' }");
 });
 
 test('auth context and threat workflow guard session and workspace edge cases', async () => {

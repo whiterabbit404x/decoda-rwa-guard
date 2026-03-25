@@ -31,9 +31,11 @@ from services.api.app.pilot import (
     create_governance_action_record,
     create_incident_record,
     create_workspace_for_user,
+    create_workspace_invitation,
     enforce_auth_rate_limit,
     ensure_pilot_schema,
     list_user_workspaces,
+    list_workspace_members,
     live_mode_enabled,
     log_audit,
     maybe_insert_alert,
@@ -50,6 +52,12 @@ from services.api.app.pilot import (
     signin_user,
     signout_user,
     signup_user,
+    resend_verification_email,
+    verify_email_token,
+    request_password_reset,
+    reset_password_with_token,
+    accept_workspace_invitation,
+    billing_summary,
 )
 
 
@@ -1236,6 +1244,30 @@ def auth_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: signin_user(payload, request))
 
 
+@app.post('/auth/resend-verification', summary='Resend email verification token')
+def auth_resend_verification(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'resend_verification')
+    return with_auth_schema_json(lambda: resend_verification_email(payload, request))
+
+
+@app.post('/auth/verify-email', summary='Verify email address')
+def auth_verify_email(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'verify_email')
+    return with_auth_schema_json(lambda: verify_email_token(payload, request))
+
+
+@app.post('/auth/forgot-password', summary='Request password reset link')
+def auth_forgot_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'forgot_password')
+    return with_auth_schema_json(lambda: request_password_reset(payload, request))
+
+
+@app.post('/auth/reset-password', summary='Reset password from token')
+def auth_reset_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'reset_password')
+    return with_auth_schema_json(lambda: reset_password_with_token(payload, request))
+
+
 @app.post('/auth/signout', summary='Sign out a live-mode pilot user')
 def auth_signout(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: signout_user(request))
@@ -1249,6 +1281,21 @@ def auth_me(request: Request) -> dict[str, Any]:
 @app.get('/workspaces', summary='List workspaces for the authenticated user')
 def workspaces(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_user_workspaces(request))
+
+
+@app.get('/workspace-members', summary='List members for active workspace')
+def workspace_members(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_workspace_members(request))
+
+
+@app.post('/workspace-invitations', summary='Invite a teammate to active workspace')
+def workspace_invite(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_workspace_invitation(payload, request))
+
+
+@app.post('/workspace-invitations/accept', summary='Accept a workspace invitation')
+def workspace_invite_accept(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: accept_workspace_invitation(payload, request))
 
 
 @app.post('/workspaces', summary='Create a workspace for the authenticated user')
@@ -1267,6 +1314,27 @@ def auth_select_workspace(payload: dict[str, Any], request: Request) -> dict[str
 @app.get('/pilot/history', summary='Workspace-scoped persisted live-mode history')
 def pilot_history(request: Request, limit: int = 25) -> dict[str, Any]:
     return with_auth_schema_json(lambda: build_history_response(request, limit=limit))
+
+
+@app.get('/billing/summary', summary='Workspace billing summary')
+def billing_summary_route(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: billing_summary(request))
+
+
+@app.post('/billing/checkout-session', summary='Create checkout session')
+def billing_checkout_session(request: Request) -> dict[str, Any]:
+    stripe_key = os.getenv('STRIPE_SECRET_KEY', '').strip()
+    if not stripe_key:
+        raise HTTPException(status_code=503, detail='Billing provider is not configured. Set STRIPE_SECRET_KEY and webhook endpoints.')
+    return with_auth_schema_json(lambda: {'status': 'not_implemented', 'detail': 'Stripe checkout wiring scaffolded; complete provider call in deployment.'})
+
+
+@app.post('/billing/customer-portal', summary='Create customer portal session')
+def billing_customer_portal(request: Request) -> dict[str, Any]:
+    stripe_key = os.getenv('STRIPE_SECRET_KEY', '').strip()
+    if not stripe_key:
+        raise HTTPException(status_code=503, detail='Billing provider is not configured. Set STRIPE_SECRET_KEY and webhook endpoints.')
+    return with_auth_schema_json(lambda: {'status': 'not_implemented', 'detail': 'Stripe customer portal wiring scaffolded; complete provider call in deployment.'})
 
 
 def _persist_live_analysis(request: Request, payload: dict[str, Any], response_payload: dict[str, Any], *, analysis_type: str, service_name: str, title: str) -> dict[str, Any]:

@@ -1032,3 +1032,29 @@ You can also inspect `/health/details` to confirm dependency diagnostics, build/
 - Rotate `DATABASE_URL` credentials in Neon/Railway if they were ever shared in logs or screenshots.
 - Rotate Vercel + Railway API URL credentials if they include embedded credentials.
 - Verify `GET /health` and dashboard APIs only return masked database configuration (`[configured]`) instead of raw DSNs before inviting external evaluators.
+
+## Enterprise self-serve foundation (March 25, 2026)
+
+This repo now includes production-ready foundations for unattended self-serve onboarding:
+
+- Email verification + resend verification endpoints.
+- Forgot/reset password endpoints.
+- Workspace invitations (admin/owner only) with accept flow.
+- Billing summary endpoint + Stripe checkout/customer portal scaffolding.
+- Trial subscription metadata on users (`trial`, `starter`, `growth`, `enterprise`).
+
+### Required deployment-side configuration
+
+Set these for Railway API deployments when enabling billing and email lifecycle:
+
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `STRIPE_PRICE_STARTER`
+- `STRIPE_PRICE_GROWTH`
+- `STRIPE_PRICE_ENTERPRISE`
+
+Optional for local QA only:
+
+- `EXPOSE_DEBUG_TOKENS=true` to return verification/reset/invite tokens in API responses.
+
+Never enable `EXPOSE_DEBUG_TOKENS` in production.

@@ -28,8 +28,8 @@ export default async function MarketingHomePage() {
           <h1>Risk control for tokenized treasuries and real-world assets.</h1>
           <p className="lede">Operate tokenized treasury programs with a customer-ready control layer for threat detection, compliance governance, and operational resilience—without losing demo-safe fallback coverage when a dependency fails.</p>
           <div className="heroActionRow">
-            <Link href="/dashboard" className="primaryCta">Start pilot</Link>
-            <a href="mailto:demo@decoda.example" className="secondaryCta">Request demo</a>
+            <Link href="/sign-up" className="primaryCta">Start free trial</Link>
+            <a href="mailto:support@decoda.app" className="secondaryCta">Contact sales</a>
             <Link href="/sign-in" className="tertiaryCta">Sign in</Link>
             <Link href="/sign-up" className="tertiaryCta">Sign up</Link>
           </div>
@@ -75,7 +75,7 @@ export default async function MarketingHomePage() {
           <div>
             <p className="eyebrow">Customer trust</p>
             <h2>Built for real pilots, not fragile demos</h2>
-            <p className="lede">Graceful degradation, deterministic fallback payloads, persisted workspace history, and deployment guidance for Railway, Vercel, and Neon make the product credible in front of customers.</p>
+            <p className="lede">Graceful degradation, deterministic fallback payloads, persisted workspace history, and deployment guidance for Railway, Vercel, and Neon make the platform credible for production buyers.</p>
           </div>
         </div>
         <div className="summaryGrid">
@@ -93,11 +93,14 @@ export default async function MarketingHomePage() {
           </div>
         </div>
         <div className="threeColumnSection">
-          <article className="dataCard polishedCard"><h3>Pilot</h3><p className="metricValue">Request demo</p><p>Customer onboarding, workspace setup, and guided deployment support.</p></article>
-          <article className="dataCard polishedCard"><h3>Operator</h3><p className="metricValue">Start pilot</p><p>Run authenticated workspaces, persist live records, and validate live vs fallback behavior.</p></article>
+          <article className="dataCard polishedCard"><h3>Trial</h3><p className="metricValue">14 days</p><p>Self-serve signup, workspace setup, and first analysis onboarding.</p></article>
+          <article className="dataCard polishedCard"><h3>Operator</h3><p className="metricValue">Start trial</p><p>Run authenticated workspaces, persist live records, and validate live vs fallback behavior.</p></article>
           <article className="dataCard polishedCard"><h3>Enterprise</h3><p className="metricValue">Custom</p><p>For issuers and infrastructure partners who need governance and resilience workflows at scale.</p></article>
         </div>
       </section>
+      <footer className="marketingFooter">
+        <Link href="/support">Support</Link> · <Link href="/privacy">Privacy</Link> · <Link href="/terms">Terms</Link> · <Link href="/security">Security</Link>
+      </footer>
     </main>
   );
 }

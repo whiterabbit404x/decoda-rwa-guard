@@ -1106,3 +1106,13 @@ td .tableMeta {
     text-align: center;
   }
 }
+
+.marketingFooter {
+  margin-top: 1.5rem;
+  color: #9ba9b8;
+}
+
+.marketingFooter a {
+  color: #8cc7ff;
+  text-decoration: none;
+}

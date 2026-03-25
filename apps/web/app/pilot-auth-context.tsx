@@ -41,7 +41,7 @@ export type WorkspaceSummary = {
 
 export type WorkspaceMembership = {
   workspace_id: string;
-  role: 'workspace_owner' | 'workspace_admin' | 'workspace_member';
+  role: 'workspace_owner' | 'workspace_admin' | 'workspace_member' | 'workspace_viewer';
   created_at: string;
   workspace: WorkspaceSummary;
 };
@@ -54,6 +54,13 @@ export type PilotUser = {
   created_at: string;
   updated_at: string;
   last_sign_in_at: string | null;
+  email_verified?: boolean;
+  email_verified_at?: string | null;
+  subscription?: {
+    plan: 'trial' | 'starter' | 'growth' | 'enterprise';
+    status: 'trialing' | 'active' | 'past_due' | 'canceled' | 'incomplete';
+    trial_ends_at: string | null;
+  };
   current_workspace: WorkspaceSummary | null;
   memberships: WorkspaceMembership[];
 };
