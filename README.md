@@ -105,6 +105,60 @@ Fast operator checks:
 - Background jobs, webhooks, and more granular per-record dashboards instead of summary persistence only.
 - Managed observability, secret rotation, and tenant billing / provisioning workflows.
 
+## Self-serve public beta foundations (this pass)
+
+The API now includes real self-serve security foundations intended for public-beta usage:
+
+- **Transactional email provider abstraction** (`EMAIL_PROVIDER=console|resend`) for verification/reset flows.
+- **TOTP MFA backend flows**:
+  - `POST /auth/mfa/enroll`
+  - `POST /auth/mfa/confirm`
+  - `POST /auth/mfa/complete-signin`
+  - `POST /auth/mfa/disable`
+- **Session controls**:
+  - `GET /auth/sessions`
+  - `POST /auth/sessions/revoke`
+  - existing `POST /auth/signout-all`
+- **Background jobs foundation**:
+  - database-backed `background_jobs` queue
+  - `python services/api/scripts/run_worker.py` worker loop
+  - `POST /ops/jobs/run` operator one-shot job execution
+- **Distributed auth rate limiting** with Redis when `REDIS_URL` is configured, with safe in-memory fallback for local/dev only.
+- **Startup runtime validation** for production-like environments (fails fast for missing critical auth config, warns on unsafe production settings).
+
+### New API environment variables
+
+- `APP_ENV=development|production`
+- `APP_PUBLIC_URL=https://your-app.example.com`
+- `AUTH_EXPOSE_DEBUG_TOKENS=false`
+- `MFA_ISSUER=Decoda RWA Guard`
+- `EMAIL_PROVIDER=console|resend`
+- `EMAIL_FROM=no-reply@decoda.app`
+- `EMAIL_BRAND_NAME=Decoda RWA Guard`
+- `EMAIL_RESEND_API_KEY=...` (required when `EMAIL_PROVIDER=resend`)
+- `REDIS_URL=redis://...` (required for distributed rate limiting)
+- `BACKGROUND_JOBS_MODE=inline|queued`
+
+### Worker process
+
+Run a dedicated API worker process in production when using queued jobs:
+
+```bash
+python services/api/scripts/run_worker.py --worker-id railway-worker-1 --interval-seconds 2
+```
+
+For operator-triggered one-shot execution from the API service:
+
+```bash
+curl -X POST "$API_URL/ops/jobs/run" -H "Content-Type: application/json" -d '{"worker_id":"ops","limit":25}'
+```
+
+### Honest remaining gaps before true GA / enterprise claims
+
+- Frontend MFA enrollment/challenge UX is not fully wired end-to-end yet.
+- Workspace invitations, webhook management UI, and billing/subscription automation remain incomplete.
+- Formal SOC 2 control evidence, key rotation automation, and full incident-response runbooks are still required for enterprise procurement.
+
 ## Repository Layout
 
 - `apps/web` — Next.js dashboard UI.
