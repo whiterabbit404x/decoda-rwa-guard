@@ -1,0 +1,1 @@
+export default function TermsPage() { return <main className="container"><div className="dataCard"><h1>Terms of Service</h1><p>Use of the service is governed by your subscription agreement. Customers are responsible for authorized access and lawful usage.</p></div></main>; }

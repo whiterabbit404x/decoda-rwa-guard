@@ -54,6 +54,10 @@ export type PilotUser = {
   created_at: string;
   updated_at: string;
   last_sign_in_at: string | null;
+  email_verified: boolean;
+  email_verified_at: string | null;
+  billing_subscription_status: string;
+  trial_ends_at: string | null;
   current_workspace: WorkspaceSummary | null;
   memberships: WorkspaceMembership[];
 };
@@ -73,7 +77,7 @@ type PilotAuthContextValue = {
   runtimeConfigSource: RuntimeConfig['source'];
   isAuthenticated: boolean;
   signIn: (payload: { email: string; password: string }) => Promise<PilotUser>;
-  signUp: (payload: { email: string; password: string; full_name: string; workspace_name: string }) => Promise<PilotUser>;
+  signUp: (payload: { email: string; password: string; full_name: string; workspace_name: string }) => Promise<{ user: PilotUser; requiresVerification: boolean }>;
   signOut: () => Promise<void>;
   refreshUser: () => Promise<PilotUser | null>;
   createWorkspace: (name: string) => Promise<PilotUser>;
@@ -324,20 +328,22 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     const data = await readApiResponse<{
-      access_token?: string;
       user?: PilotUser;
+      requires_verification?: boolean;
       detail?: string;
       authTransport?: string;
       backendApiUrl?: string | null;
       configured?: boolean;
       code?: string;
     }>(response);
-    if (!response.ok || !data.access_token || !data.user) {
+    if (!response.ok || !data.user) {
       throw new Error(classifyAuthResponseError('create an account', proxyUrl, response.status, data.detail, data));
     }
-    saveAuthPayload(data.access_token, data.user);
-    return data.user;
-  }, [saveAuthPayload]);
+    if (!data.requires_verification) {
+      throw new Error('Account creation succeeded, but verification flow response was incomplete.');
+    }
+    return { user: data.user, requiresVerification: true };
+  }, []);
 
   const signOut = useCallback(async () => {
     const storedToken = window.localStorage.getItem(TOKEN_STORAGE_KEY);

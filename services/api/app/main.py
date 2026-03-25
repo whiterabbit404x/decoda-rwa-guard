@@ -24,15 +24,21 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.pilot import (
+    accept_workspace_invite,
     auth_token_secret_configured,
+    billing_status,
     authenticate_request,
     authenticate_with_connection,
     build_history_response,
     create_governance_action_record,
     create_incident_record,
+    create_billing_portal_session,
+    create_checkout_session,
+    create_workspace_invite,
     create_workspace_for_user,
     enforce_auth_rate_limit,
     ensure_pilot_schema,
+    list_workspace_members,
     list_user_workspaces,
     live_mode_enabled,
     log_audit,
@@ -44,9 +50,13 @@ from services.api.app.pilot import (
     pg_connection,
     resolve_workspace,
     run_startup_migrations_if_enabled,
+    request_password_reset,
+    resend_verification_email,
+    reset_password,
     select_workspace_for_user,
     demo_seed_status,
     schema_missing_error_payload,
+    verify_email_token,
     signin_user,
     signout_user,
     signup_user,
@@ -1236,6 +1246,28 @@ def auth_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: signin_user(payload, request))
 
 
+@app.post('/auth/verify-email', summary='Verify a user email token')
+def auth_verify_email(payload: dict[str, Any]) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: verify_email_token(payload))
+
+
+@app.post('/auth/resend-verification', summary='Resend an email verification link')
+def auth_resend_verification(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'resend-verification')
+    return with_auth_schema_json(lambda: resend_verification_email(payload))
+
+
+@app.post('/auth/forgot-password', summary='Request a password reset email')
+def auth_forgot_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'forgot-password')
+    return with_auth_schema_json(lambda: request_password_reset(payload))
+
+
+@app.post('/auth/reset-password', summary='Reset a password using one-time token')
+def auth_reset_password(payload: dict[str, Any]) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: reset_password(payload))
+
+
 @app.post('/auth/signout', summary='Sign out a live-mode pilot user')
 def auth_signout(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: signout_user(request))
@@ -1262,6 +1294,36 @@ def auth_select_workspace(payload: dict[str, Any], request: Request) -> dict[str
     if not workspace_id:
         raise HTTPException(status_code=400, detail='workspace_id is required')
     return with_auth_schema_json(lambda: {'user': select_workspace_for_user(workspace_id, request)})
+
+
+@app.get('/workspace/members', summary='List members for the active workspace')
+def workspace_members(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_workspace_members(request))
+
+
+@app.post('/workspace/invites', summary='Invite a teammate to the active workspace')
+def workspace_invites(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_workspace_invite(payload, request))
+
+
+@app.post('/workspace/invites/accept', summary='Accept a workspace invite token')
+def workspace_invites_accept(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: accept_workspace_invite(payload, request))
+
+
+@app.get('/billing/status', summary='Billing status for the signed-in user')
+def billing_state(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: billing_status(request))
+
+
+@app.post('/billing/checkout', summary='Create a billing checkout session')
+def billing_checkout(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_checkout_session(request))
+
+
+@app.post('/billing/portal', summary='Create a billing portal session')
+def billing_portal(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_billing_portal_session(request))
 
 
 @app.get('/pilot/history', summary='Workspace-scoped persisted live-mode history')

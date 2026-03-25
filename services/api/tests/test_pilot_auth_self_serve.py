@@ -56,7 +56,8 @@ def test_signup_success_returns_token_and_user(pilot_module, monkeypatch: pytest
     monkeypatch.setattr(pilot_module, 'hash_password', lambda password: 'hashed-value')
     monkeypatch.setattr(pilot_module, 'build_user_response', lambda connection, user_id: {'id': user_id, 'current_workspace': {'id': 'ws-1'}})
     monkeypatch.setattr(pilot_module, 'log_audit', lambda *args, **kwargs: None)
-    monkeypatch.setattr(pilot_module, 'create_access_token', lambda user_id: f'token-{user_id}')
+    monkeypatch.setattr(pilot_module, '_create_email_verification_token', lambda connection, user_id: 'verify-token')
+    monkeypatch.setattr(pilot_module, 'send_email', lambda **kwargs: None)
 
     response = pilot_module.signup_user(
         {
@@ -68,8 +69,7 @@ def test_signup_success_returns_token_and_user(pilot_module, monkeypatch: pytest
         _request(),
     )
 
-    assert response['token_type'] == 'bearer'
-    assert response['access_token'].startswith('token-')
+    assert response['requires_verification'] is True
     assert response['user']['current_workspace']['id'] == 'ws-1'
 
 
@@ -113,6 +113,8 @@ def test_signin_success_returns_hydrated_user(pilot_module, monkeypatch: pytest.
         def execute(self, statement, params=None):
             if 'SELECT id, password_hash FROM users WHERE email' in statement:
                 return _Result({'id': 'user-1', 'password_hash': 'stored'})
+            if 'SELECT email_verified_at FROM users WHERE id' in statement:
+                return _Result({'email_verified_at': datetime(2026, 3, 20, tzinfo=timezone.utc)})
             return _Result(None)
 
         def commit(self):
@@ -176,6 +178,47 @@ def test_json_safe_value_serializes_uuid_and_datetime(pilot_module) -> None:
     json.loads(json.dumps(serialized))
     assert isinstance(serialized['id'], str)
     assert serialized['created_at'].endswith('+00:00')
+
+
+def test_verify_email_token_invalid_raises_400(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def fetchone(self):
+            return None
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            return _Result()
+
+    @contextmanager
+    def fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg)
+    monkeypatch.setattr(pilot_module, 'ensure_pilot_schema', lambda connection: None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot_module.verify_email_token({'token': 'bad'})
+    assert exc_info.value.status_code == 400
+
+
+def test_password_reset_request_does_not_enumerate_missing_email(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def fetchone(self):
+            return None
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            return _Result()
+
+    @contextmanager
+    def fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg)
+    monkeypatch.setattr(pilot_module, 'ensure_pilot_schema', lambda connection: None)
+    assert pilot_module.request_password_reset({'email': 'nobody@example.com'}) == {'sent': True}
 
 
 def test_build_user_response_backfills_null_current_workspace_from_membership(

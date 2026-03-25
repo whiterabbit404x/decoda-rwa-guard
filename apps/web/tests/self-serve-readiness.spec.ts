@@ -57,3 +57,25 @@ test('auth context and threat workflow guard session and workspace edge cases', 
   expect(threatPanel).toContain('Select or create a workspace before running a saved analysis.');
   expect(threatPanel).toContain("const livePrefix = isAuthenticated ? '/pilot' : '';");
 });
+
+test('enterprise self-serve routes exist for verification, reset, billing, support, and legal', async () => {
+  const verify = read('verify-email/page.tsx');
+  const forgot = read('forgot-password/page.tsx');
+  const reset = read('reset-password/page.tsx');
+  const billing = read('(product)/billing/page.tsx');
+  const support = read('(product)/support/page.tsx');
+  const privacy = read('privacy/page.tsx');
+  const terms = read('terms/page.tsx');
+  const security = read('security/page.tsx');
+  const settings = read('settings-page-client.tsx');
+
+  expect(verify).toContain('/api/auth/verify-email');
+  expect(forgot).toContain('/api/auth/forgot-password');
+  expect(reset).toContain('/api/auth/reset-password');
+  expect(billing).toContain('/api/billing/status');
+  expect(support).toContain('support@decoda.app');
+  expect(privacy).toContain('Privacy Policy');
+  expect(terms).toContain('Terms of Service');
+  expect(security).toContain('Security / Trust');
+  expect(settings).toContain('/api/workspace/invites');
+});
