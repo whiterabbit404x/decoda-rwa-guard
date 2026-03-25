@@ -35,7 +35,7 @@ export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApi
         ))}
       </div>
       <div className="heroActionRow">
-        <Link href="/threat">Run threat analysis</Link>
+        <Link href="/threat">Run your first threat analysis</Link>
         {!user?.current_workspace ? <Link href="/workspaces">Set up workspace</Link> : null}
       </div>
     </section>

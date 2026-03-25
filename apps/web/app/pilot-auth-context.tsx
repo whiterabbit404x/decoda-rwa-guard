@@ -97,7 +97,7 @@ async function readApiResponse<T>(response: Response): Promise<Partial<T> & { de
 
   try {
     const text = await response.text();
-    return { detail: text || `Request failed with HTTP ${response.status}` } as Partial<T> & { detail?: string; message?: string };
+    return { detail: text ? 'Request failed. Please try again.' : `Request failed with HTTP ${response.status}` } as Partial<T> & { detail?: string; message?: string };
   } catch {
     return { detail: `Request failed with HTTP ${response.status}` } as Partial<T> & { detail?: string; message?: string };
   }
@@ -342,10 +342,11 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null);
     setUser(null);
     setError(null);
+    setSessionLoading(false);
   }, []);
 
   const createWorkspace = useCallback(async (name: string) => {
-    const response = await fetch(`${requireApiUrl()}/workspaces`, {
+    const response = await fetch('/api/auth/workspaces', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -359,7 +360,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     }
     setUser(data.user);
     return data.user;
-  }, [authHeaders, requireApiUrl]);
+  }, [authHeaders]);
 
   const selectWorkspace = useCallback(async (workspaceId: string) => {
     const response = await fetch('/api/auth/select-workspace', {
@@ -376,7 +377,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     }
     setUser(data.user);
     return data.user;
-  }, [authHeaders, requireApiUrl]);
+  }, [authHeaders]);
 
   const loading = configLoading || sessionLoading;
 

@@ -176,3 +176,49 @@ def test_json_safe_value_serializes_uuid_and_datetime(pilot_module) -> None:
     json.loads(json.dumps(serialized))
     assert isinstance(serialized['id'], str)
     assert serialized['created_at'].endswith('+00:00')
+
+
+def test_build_user_response_backfills_null_current_workspace_from_membership(
+    pilot_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    statements: list[tuple[str, object]] = []
+
+    class _Result:
+        def __init__(self, rows=None):
+            self._rows = rows or []
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+        def fetchall(self):
+            return self._rows
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            statements.append((normalized, params))
+            if 'FROM users' in normalized:
+                return _Result([{
+                    'id': 'user-1',
+                    'email': 'team@example.com',
+                    'full_name': 'Team Owner',
+                    'current_workspace_id': None,
+                    'created_at': datetime(2026, 3, 20, tzinfo=timezone.utc),
+                    'updated_at': datetime(2026, 3, 20, tzinfo=timezone.utc),
+                    'last_sign_in_at': None,
+                }])
+            if 'FROM workspace_members' in normalized:
+                return _Result([{
+                    'workspace_id': 'ws-1',
+                    'role': 'workspace_owner',
+                    'created_at': datetime(2026, 3, 20, tzinfo=timezone.utc),
+                    'name': 'Treasury Ops',
+                    'slug': 'treasury-ops',
+                }])
+            return _Result([])
+
+    payload = pilot_module.build_user_response(_Connection(), 'user-1')
+
+    assert payload['current_workspace_id'] == 'ws-1'
+    assert payload['current_workspace']['id'] == 'ws-1'
+    assert any('UPDATE users SET current_workspace_id' in statement for statement, _ in statements)

@@ -69,13 +69,15 @@ async function buildBackendResponse(response: Response) {
     });
   }
 
-  const bodyText = await response.text();
-  return new Response(bodyText, {
+  const bodyText = await response.text().catch(() => '');
+  const fallbackMessage = response.ok
+    ? 'Request completed.'
+    : 'Request failed. Please try again.';
+  return Response.json({
+    detail: bodyText?.trim() || fallbackMessage,
+  }, {
     status: response.status,
-    headers: {
-      ...cacheControlHeaders,
-      'Content-Type': contentType || 'text/plain; charset=utf-8',
-    },
+    headers: cacheControlHeaders,
   });
 }
 
@@ -137,7 +139,7 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
       : 'Unknown error while contacting backend API.';
 
     return errorResponse(502, {
-      detail: `The web auth proxy could not reach the backend API at ${backendApiUrl}. ${detail}`,
+      detail: 'We could not reach the authentication service. Please try again shortly.',
       code: 'backend_unreachable',
       authTransport: 'same-origin proxy',
       backendApiUrl,

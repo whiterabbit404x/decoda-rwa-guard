@@ -507,10 +507,12 @@ def test_build_user_response_handles_null_current_workspace_id(pilot_module, mon
     user_uuid = uuid.uuid4()
     workspace_uuid = uuid.uuid4()
     timestamp = datetime(2026, 3, 24, 12, 0, tzinfo=timezone.utc)
+    executed: list[str] = []
 
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
+            executed.append(normalized)
             if 'SELECT id, email, full_name, current_workspace_id, created_at, updated_at, last_sign_in_at FROM users WHERE id = %s' in normalized:
                 return _Result(
                     [
@@ -527,13 +529,17 @@ def test_build_user_response_handles_null_current_workspace_id(pilot_module, mon
                 )
             if 'SELECT wm.workspace_id, wm.role, wm.created_at, w.name, w.slug FROM workspace_members wm JOIN workspaces w ON w.id = wm.workspace_id WHERE wm.user_id = %s' in normalized:
                 return _Result([{'workspace_id': workspace_uuid, 'role': 'workspace_member', 'created_at': timestamp, 'name': 'Workspace', 'slug': 'workspace'}])
+            if 'UPDATE users SET current_workspace_id = %s, updated_at = NOW() WHERE id = %s' in normalized:
+                return _Result([])
             raise AssertionError(f'unexpected SQL: {statement}')
 
     user_payload = pilot_module.build_user_response(_Connection(), str(user_uuid))
 
     assert user_payload['id'] == str(user_uuid)
+    assert user_payload['current_workspace_id'] == str(workspace_uuid)
     assert user_payload['current_workspace'] == {'id': str(workspace_uuid), 'name': 'Workspace', 'slug': 'workspace'}
     assert user_payload['memberships'][0]['workspace_id'] == str(workspace_uuid)
+    assert any('UPDATE users SET current_workspace_id = %s, updated_at = NOW() WHERE id = %s' in statement for statement in executed)
 
 
 def test_create_access_token_coerces_non_string_user_id(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:

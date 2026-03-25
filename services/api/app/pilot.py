@@ -496,6 +496,23 @@ def build_user_response(connection: psycopg.Connection, user_id: str) -> dict[st
             }
         )
     current_workspace_id = str(user['current_workspace_id']) if user['current_workspace_id'] else None
+    membership_workspace_ids = {membership['workspace_id'] for membership in membership_payload}
+    if current_workspace_id and current_workspace_id not in membership_workspace_ids:
+        logger.warning(
+            'user has stale current_workspace_id without membership',
+            extra={'event': 'workspace.hydration.stale_current_workspace', 'user_id': str(user['id'])},
+        )
+        current_workspace_id = None
+    if current_workspace_id is None and membership_payload:
+        current_workspace_id = membership_payload[0]['workspace_id']
+        connection.execute(
+            'UPDATE users SET current_workspace_id = %s, updated_at = NOW() WHERE id = %s',
+            (current_workspace_id, user_id),
+        )
+        logger.info(
+            'user current workspace hydrated from first membership',
+            extra={'event': 'workspace.hydration.backfilled_current_workspace', 'user_id': str(user['id'])},
+        )
     current_workspace = next(
         (
             membership['workspace']
@@ -747,8 +764,8 @@ def create_workspace_for_user(payload: dict[str, Any], request: Request) -> dict
         )
         connection.commit()
         logger.info(
-            'workspace selected',
-            extra={'event': 'workspace.select.success', 'user_id': user['id'], 'workspace_id': str(workspace_id), 'role': membership['role']},
+            'workspace created and selected',
+            extra={'event': 'workspace.create.success', 'user_id': user['id'], 'workspace_id': str(workspace_id), 'role': role},
         )
         return build_user_response(connection, user['id'])
 
@@ -771,6 +788,10 @@ def select_workspace_for_user(workspace_id: str, request: Request) -> dict[str, 
             metadata={'role': membership['role']},
         )
         connection.commit()
+        logger.info(
+            'workspace selected',
+            extra={'event': 'workspace.select.success', 'user_id': user['id'], 'workspace_id': str(workspace_id), 'role': membership['role']},
+        )
         return build_user_response(connection, user['id'])
 
 
