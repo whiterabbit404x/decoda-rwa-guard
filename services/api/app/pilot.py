@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Any, Iterable
+from urllib.error import HTTPError, URLError
+from urllib.request import Request as UrlRequest, urlopen
 
 import importlib
 from fastapi import HTTPException, Request, status
@@ -52,6 +54,8 @@ MFA_RECOVERY_CODE_COUNT = 8
 _rate_limit_lock = threading.Lock()
 _rate_limit_state: dict[str, list[float]] = {}
 logger = logging.getLogger(__name__)
+_redis_rate_limiter: Any | None = None
+_redis_rate_limiter_lock = threading.Lock()
 
 
 STARTUP_BOOTSTRAP_ENV = 'RUN_MIGRATIONS_ON_STARTUP'
@@ -151,6 +155,25 @@ def run_startup_migrations_if_enabled() -> dict[str, Any]:
     require_live_mode()
     applied_versions = run_migrations()
     return {'enabled': True, 'ran': True, 'applied_versions': applied_versions}
+
+
+def validate_runtime_configuration() -> dict[str, Any]:
+    mode = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
+    errors: list[str] = []
+    warnings: list[str] = []
+    is_production_like = mode in {'production', 'prod'}
+    if is_production_like and live_mode_enabled():
+        if not database_url():
+            errors.append('DATABASE_URL must be configured when LIVE_MODE_ENABLED=true in production.')
+        if not auth_token_secret_configured():
+            errors.append('AUTH_TOKEN_SECRET must be configured in production.')
+        if _email_provider() != 'console' and not os.getenv('EMAIL_FROM', '').strip():
+            errors.append('EMAIL_FROM must be set when using a real email provider in production.')
+        if _email_provider() == 'console':
+            warnings.append('EMAIL_PROVIDER=console is not suitable for production.')
+        if not os.getenv('REDIS_URL', '').strip():
+            warnings.append('REDIS_URL missing: falling back to in-memory auth rate limiting.')
+    return {'mode': mode, 'errors': errors, 'warnings': warnings}
 
 
 def run_migrations() -> list[str]:
@@ -348,13 +371,22 @@ def _require_strong_password(password: str) -> None:
         )
 
 
-def _store_session(connection: Any, user_id: str, token: str, workspace_id: str | None = None) -> None:
+def _store_session(connection: Any, user_id: str, token: str, workspace_id: str | None = None, request: Request | None = None) -> None:
     connection.execute(
         '''
-        INSERT INTO auth_sessions (id, user_id, workspace_id, session_token_hash, auth_mode, created_at, updated_at, expires_at, metadata)
-        VALUES (%s, %s, %s, %s, %s, NOW(), NOW(), NOW() + (%s || ' hours')::interval, '{}'::jsonb)
+        INSERT INTO auth_sessions (id, user_id, workspace_id, session_token_hash, auth_mode, created_at, updated_at, expires_at, metadata, ip_address, user_agent)
+        VALUES (%s, %s, %s, %s, %s, NOW(), NOW(), NOW() + (%s || ' hours')::interval, '{}'::jsonb, %s, %s)
         ''',
-        (str(uuid.uuid4()), user_id, workspace_id, _auth_token_hash(token), 'bearer_token', SESSION_TTL_HOURS),
+        (
+            str(uuid.uuid4()),
+            user_id,
+            workspace_id,
+            _auth_token_hash(token),
+            'bearer_token',
+            SESSION_TTL_HOURS,
+            request.client.host if request and request.client else None,
+            request.headers.get('user-agent') if request else None,
+        ),
     )
 
 
@@ -375,6 +407,104 @@ def _create_user_token(connection: Any, user_id: str, purpose: str, ttl_minutes:
         ),
     )
     return raw_token
+
+
+def _queue_background_job(connection: Any, *, job_type: str, payload: dict[str, Any], max_attempts: int = 5) -> str:
+    job_id = str(uuid.uuid4())
+    connection.execute(
+        '''
+        INSERT INTO background_jobs (id, job_type, payload, status, attempts, max_attempts, run_after, created_at, updated_at)
+        VALUES (%s, %s, %s::jsonb, 'queued', 0, %s, NOW(), NOW(), NOW())
+        ''',
+        (job_id, job_type, _json_dumps(payload), max_attempts),
+    )
+    return job_id
+
+
+def _email_provider() -> str:
+    return os.getenv('EMAIL_PROVIDER', 'console').strip().lower() or 'console'
+
+
+def _email_from() -> str:
+    return os.getenv('EMAIL_FROM', 'no-reply@decoda.app').strip() or 'no-reply@decoda.app'
+
+
+def _email_brand_name() -> str:
+    return os.getenv('EMAIL_BRAND_NAME', 'Decoda RWA Guard').strip() or 'Decoda RWA Guard'
+
+
+def _send_email(to_email: str, subject: str, text_body: str, html_body: str | None = None) -> None:
+    provider = _email_provider()
+    if provider == 'console':
+        logger.info(
+            'console email provider delivered message',
+            extra={'event': 'email.delivered.console', 'to': to_email, 'subject': subject, 'text': text_body},
+        )
+        return
+    if provider == 'resend':
+        api_key = os.getenv('EMAIL_RESEND_API_KEY', '').strip()
+        if not api_key:
+            raise RuntimeError('EMAIL_RESEND_API_KEY is required when EMAIL_PROVIDER=resend.')
+        payload = {
+            'from': _email_from(),
+            'to': [to_email],
+            'subject': subject,
+            'text': text_body,
+        }
+        if html_body:
+            payload['html'] = html_body
+        request = UrlRequest(
+            'https://api.resend.com/emails',
+            method='POST',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'},
+        )
+        try:
+            with urlopen(request, timeout=8):
+                return
+        except (HTTPError, URLError) as exc:
+            raise RuntimeError(f'Failed to deliver email via Resend: {exc}') from exc
+    raise RuntimeError('EMAIL_PROVIDER must be one of: console, resend')
+
+
+def _email_message(purpose: str, *, token: str | None = None) -> tuple[str, str]:
+    brand = _email_brand_name()
+    app_url = os.getenv('APP_PUBLIC_URL', 'http://localhost:3000').rstrip('/')
+    if purpose == 'email_verification':
+        url = f'{app_url}/verify-email?token={token}'
+        return (f'[{brand}] Verify your email', f'Welcome to {brand}. Verify your email: {url}')
+    if purpose == 'password_reset':
+        url = f'{app_url}/reset-password?token={token}'
+        return (f'[{brand}] Reset your password', f'Reset your {brand} password: {url}')
+    if purpose == 'password_reset_confirmation':
+        return (f'[{brand}] Password changed', f'Your {brand} password was changed successfully.')
+    raise RuntimeError(f'Unsupported email purpose: {purpose}')
+
+
+def _dispatch_transactional_email(
+    connection: Any,
+    *,
+    to_email: str,
+    purpose: str,
+    token: str | None = None,
+    request: Request | None = None,
+) -> None:
+    subject, text_body = _email_message(purpose, token=token)
+    mode = os.getenv('BACKGROUND_JOBS_MODE', 'inline').strip().lower() or 'inline'
+    if mode == 'inline':
+        _send_email(to_email, subject, text_body)
+        return
+    _queue_background_job(
+        connection,
+        job_type='send_email',
+        payload={
+            'to_email': to_email,
+            'subject': subject,
+            'text_body': text_body,
+            'workspace_id': None,
+            'request_ip': request.client.host if request and request.client else None,
+        },
+    )
 
 
 def hash_password(password: str) -> str:
@@ -442,10 +572,36 @@ def _validate_session(connection: Any, token: str, payload: dict[str, Any]) -> N
     user_session_version = connection.execute('SELECT session_version FROM users WHERE id = %s', (payload.get('sub'),)).fetchone()
     if not user_session_version or int(payload.get('sv', 0)) != int(user_session_version['session_version']):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Session version is no longer valid.')
+    connection.execute(
+        'UPDATE auth_sessions SET last_seen_at = NOW(), updated_at = NOW() WHERE session_token_hash = %s',
+        (session_hash,),
+    )
 
 
 def enforce_auth_rate_limit(request: Request, action: str) -> None:
     client_host = request.client.host if request.client else 'unknown'
+    redis_url = os.getenv('REDIS_URL', '').strip()
+    if redis_url:
+        global _redis_rate_limiter
+        with _redis_rate_limiter_lock:
+            if _redis_rate_limiter is None:
+                redis_module = importlib.import_module('redis')
+                _redis_rate_limiter = redis_module.Redis.from_url(redis_url, decode_responses=True)
+        key = f'pilot:rate:{action}:{client_host}'
+        try:
+            attempts = int(_redis_rate_limiter.incr(key))
+            if attempts == 1:
+                _redis_rate_limiter.expire(key, AUTH_WINDOW_SECONDS)
+            if attempts > AUTH_MAX_ATTEMPTS:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail='Too many authentication attempts. Please retry shortly.',
+                )
+            return
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception('redis rate limiter unavailable; falling back to in-memory limiter', extra={'event': 'rate_limit.fallback'})
     key = f'{action}:{client_host}'
     cutoff = monotonic() - AUTH_WINDOW_SECONDS
     with _rate_limit_lock:
@@ -731,6 +887,7 @@ def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             metadata={'email': email, 'workspace_name': workspace_name},
         )
         verification_token = _create_user_token(connection, user_id, 'email_verification', EMAIL_VERIFICATION_TTL_MINUTES, request=request)
+        _dispatch_transactional_email(connection, to_email=email, purpose='email_verification', token=verification_token, request=request)
         connection.commit()
         user = build_user_response(connection, user_id)
     return {
@@ -761,6 +918,10 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             user_id = str(user['id'])
             if not user['email_verified_at']:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Verify your email before signing in.')
+            if user['mfa_enabled_at']:
+                challenge_token = _create_user_token(connection, user_id, 'mfa_challenge', 10, request=request)
+                connection.commit()
+                return {'mfa_required': True, 'mfa_token': challenge_token}
             try:
                 connection.execute('UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = %s', (user_id,))
             except Exception:
@@ -799,13 +960,47 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         access_token = create_access_token(user_id, int(user.get('session_version') or 1))
         with pg_connection() as connection:
             ensure_pilot_schema(connection)
-            _store_session(connection, user_id, access_token, hydrated_user.get('current_workspace_id'))
+            _store_session(connection, user_id, access_token, hydrated_user.get('current_workspace_id'), request=request)
             connection.commit()
     except Exception:
         logger.exception('signin_user failed during token creation', extra={'step': 'create_access_token', 'user_id': user_id})
         raise
     logger.info('signin_user succeeded', extra={'event': 'auth.signin.success', 'user_id': user_id})
     return {'access_token': access_token, 'token_type': 'bearer', 'user': hydrated_user}
+
+
+def mfa_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    challenge_token = str(payload.get('mfa_token', '')).strip()
+    code = str(payload.get('code', '')).strip()
+    if not challenge_token or not code:
+        raise HTTPException(status_code=400, detail='mfa_token and code are required.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        token_row = connection.execute(
+            "SELECT id, user_id, expires_at, used_at FROM auth_tokens WHERE token_hash = %s AND purpose = 'mfa_challenge'",
+            (_auth_token_hash(challenge_token),),
+        ).fetchone()
+        if token_row is None or token_row['used_at'] is not None or token_row['expires_at'] < utc_now():
+            raise HTTPException(status_code=400, detail='Invalid or expired MFA challenge.')
+        user = connection.execute('SELECT id, session_version, mfa_totp_secret FROM users WHERE id = %s', (token_row['user_id'],)).fetchone()
+        if user is None:
+            raise HTTPException(status_code=401, detail='Unknown user.')
+        secret = str(user['mfa_totp_secret'] or '')
+        if not secret or not _verify_totp(secret, code):
+            recovery = connection.execute(
+                'SELECT id FROM mfa_recovery_codes WHERE user_id = %s AND code_hash = %s AND consumed_at IS NULL',
+                (token_row['user_id'], _auth_token_hash(code)),
+            ).fetchone()
+            if recovery is None:
+                raise HTTPException(status_code=401, detail='Invalid MFA code.')
+            connection.execute('UPDATE mfa_recovery_codes SET consumed_at = NOW() WHERE id = %s', (recovery['id'],))
+        connection.execute('UPDATE auth_tokens SET used_at = NOW() WHERE id = %s', (token_row['id'],))
+        hydrated_user = build_user_response(connection, str(user['id']))
+        access_token = create_access_token(str(user['id']), int(user.get('session_version') or 1))
+        _store_session(connection, str(user['id']), access_token, hydrated_user.get('current_workspace_id'), request=request)
+        connection.commit()
+        return {'access_token': access_token, 'token_type': 'bearer', 'user': hydrated_user}
 
 
 def signout_user(request: Request) -> dict[str, Any]:
@@ -852,6 +1047,124 @@ def signout_all_sessions(request: Request) -> dict[str, Any]:
         return {'signed_out_all': True}
 
 
+def list_active_sessions(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        rows = connection.execute(
+            '''
+            SELECT id, auth_mode, created_at, updated_at, expires_at, last_seen_at, revoked_at, ip_address, user_agent
+            FROM auth_sessions
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            ''',
+            (user['id'],),
+        ).fetchall()
+        return {'sessions': [_json_safe_value(row) for row in rows]}
+
+
+def revoke_session(request: Request, session_id: str) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        result = connection.execute(
+            '''
+            UPDATE auth_sessions
+            SET revoked_at = NOW(), updated_at = NOW()
+            WHERE id = %s AND user_id = %s AND revoked_at IS NULL
+            ''',
+            (session_id, user['id']),
+        )
+        connection.commit()
+        return {'revoked': bool(getattr(result, 'rowcount', 0))}
+
+
+def _totp_code(secret: str, at_time: datetime | None = None, digits: int = 6, period: int = 30) -> str:
+    current_time = at_time or utc_now()
+    counter = int(current_time.timestamp()) // period
+    digest = hmac.new(_b64url_decode(secret), counter.to_bytes(8, 'big'), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    binary = ((digest[offset] & 0x7F) << 24) | ((digest[offset + 1] & 0xFF) << 16) | ((digest[offset + 2] & 0xFF) << 8) | (digest[offset + 3] & 0xFF)
+    return str(binary % (10 ** digits)).zfill(digits)
+
+
+def _verify_totp(secret: str, code: str) -> bool:
+    candidate = re.sub(r'\s+', '', code or '')
+    now = utc_now()
+    for drift in (-30, 0, 30):
+        if hmac.compare_digest(_totp_code(secret, now + timedelta(seconds=drift)), candidate):
+            return True
+    return False
+
+
+def mfa_begin_enrollment(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        secret = _b64url(secrets.token_bytes(20))
+        connection.execute(
+            'UPDATE users SET mfa_totp_secret = %s, updated_at = NOW() WHERE id = %s',
+            (secret, user['id']),
+        )
+        issuer = os.getenv('MFA_ISSUER', 'Decoda RWA Guard')
+        uri = f'otpauth://totp/{issuer}:{user["email"]}?secret={secret}&issuer={issuer}&digits=6&period=30'
+        connection.commit()
+        return {'secret': secret if env_flag('AUTH_EXPOSE_DEBUG_TOKENS', default=False) else None, 'otpauth_uri': uri}
+
+
+def mfa_confirm_enrollment(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    code = str(payload.get('code', '')).strip()
+    if not code:
+        raise HTTPException(status_code=400, detail='MFA code is required.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        row = connection.execute('SELECT mfa_totp_secret FROM users WHERE id = %s', (user['id'],)).fetchone()
+        secret = str(row['mfa_totp_secret'] or '') if row else ''
+        if not secret or not _verify_totp(secret, code):
+            raise HTTPException(status_code=400, detail='Invalid MFA code.')
+        recovery_codes = [secrets.token_hex(4) for _ in range(MFA_RECOVERY_CODE_COUNT)]
+        connection.execute('DELETE FROM mfa_recovery_codes WHERE user_id = %s', (user['id'],))
+        for recovery_code in recovery_codes:
+            connection.execute(
+                'INSERT INTO mfa_recovery_codes (id, user_id, code_hash, created_at) VALUES (%s, %s, %s, NOW())',
+                (str(uuid.uuid4()), user['id'], _auth_token_hash(recovery_code)),
+            )
+        connection.execute(
+            'UPDATE users SET mfa_enabled_at = NOW(), session_version = session_version + 1, updated_at = NOW() WHERE id = %s',
+            (user['id'],),
+        )
+        connection.execute('UPDATE auth_sessions SET revoked_at = NOW(), updated_at = NOW() WHERE user_id = %s AND revoked_at IS NULL', (user['id'],))
+        log_audit(connection, action='auth.mfa_enabled', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user['current_workspace_id'], metadata={})
+        connection.commit()
+        return {'mfa_enabled': True, 'recovery_codes': recovery_codes}
+
+
+def mfa_disable(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    code = str(payload.get('code', '')).strip()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        row = connection.execute('SELECT mfa_totp_secret, mfa_enabled_at FROM users WHERE id = %s', (user['id'],)).fetchone()
+        secret = str(row['mfa_totp_secret'] or '') if row else ''
+        if not row or not row['mfa_enabled_at'] or not secret or not _verify_totp(secret, code):
+            raise HTTPException(status_code=400, detail='Valid MFA code is required to disable MFA.')
+        connection.execute(
+            'UPDATE users SET mfa_totp_secret = NULL, mfa_enabled_at = NULL, session_version = session_version + 1, updated_at = NOW() WHERE id = %s',
+            (user['id'],),
+        )
+        connection.execute('DELETE FROM mfa_recovery_codes WHERE user_id = %s', (user['id'],))
+        connection.execute('UPDATE auth_sessions SET revoked_at = NOW(), updated_at = NOW() WHERE user_id = %s AND revoked_at IS NULL', (user['id'],))
+        log_audit(connection, action='auth.mfa_disabled', entity_type='user', entity_id=user['id'], request=request, user_id=user['id'], workspace_id=user['current_workspace_id'], metadata={})
+        connection.commit()
+        return {'mfa_enabled': False}
+
+
 def request_email_verification(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     email = _normalize_email(str(payload.get('email', '')))
@@ -863,6 +1176,7 @@ def request_email_verification(payload: dict[str, Any], request: Request) -> dic
         if user['email_verified_at']:
             return {'sent': True, 'already_verified': True}
         token = _create_user_token(connection, str(user['id']), 'email_verification', EMAIL_VERIFICATION_TTL_MINUTES, request=request)
+        _dispatch_transactional_email(connection, to_email=email, purpose='email_verification', token=token, request=request)
         connection.commit()
         return {'sent': True, 'verification_token': token if env_flag('AUTH_EXPOSE_DEBUG_TOKENS', default=False) else None}
 
@@ -900,6 +1214,7 @@ def request_password_reset(payload: dict[str, Any], request: Request) -> dict[st
         if user is None:
             return {'sent': True}
         token = _create_user_token(connection, str(user['id']), 'password_reset', PASSWORD_RESET_TTL_MINUTES, request=request)
+        _dispatch_transactional_email(connection, to_email=email, purpose='password_reset', token=token, request=request)
         connection.commit()
         return {'sent': True, 'reset_token': token if env_flag('AUTH_EXPOSE_DEBUG_TOKENS', default=False) else None}
 
@@ -923,6 +1238,9 @@ def reset_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             (hash_password(password), token_row['user_id']),
         )
         connection.execute('UPDATE auth_sessions SET revoked_at = NOW(), updated_at = NOW() WHERE user_id = %s AND revoked_at IS NULL', (token_row['user_id'],))
+        user_email_row = connection.execute('SELECT email FROM users WHERE id = %s', (token_row['user_id'],)).fetchone()
+        if user_email_row and user_email_row['email']:
+            _dispatch_transactional_email(connection, to_email=str(user_email_row['email']), purpose='password_reset_confirmation', request=request)
         log_audit(connection, action='auth.password_reset', entity_type='user', entity_id=str(token_row['user_id']), request=request, user_id=str(token_row['user_id']), workspace_id=None, metadata={})
         connection.commit()
         return {'password_reset': True}
@@ -1090,6 +1408,58 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
             'membership_created': membership_created,
             'user_created': created_user,
         }
+
+
+def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[str, Any]:
+    require_live_mode()
+    processed = 0
+    failed = 0
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        rows = connection.execute(
+            '''
+            SELECT id, job_type, payload, attempts, max_attempts
+            FROM background_jobs
+            WHERE status = 'queued' AND run_after <= NOW()
+            ORDER BY created_at ASC
+            LIMIT %s
+            ''',
+            (limit,),
+        ).fetchall()
+        for row in rows:
+            job_id = str(row['id'])
+            payload = row['payload'] or {}
+            connection.execute(
+                "UPDATE background_jobs SET status = 'running', locked_at = NOW(), locked_by = %s, updated_at = NOW() WHERE id = %s",
+                (worker_id, job_id),
+            )
+            try:
+                if row['job_type'] == 'send_email':
+                    _send_email(str(payload.get('to_email', '')), str(payload.get('subject', '')), str(payload.get('text_body', '')))
+                else:
+                    raise RuntimeError(f'Unsupported job type {row["job_type"]}')
+                connection.execute("UPDATE background_jobs SET status = 'succeeded', updated_at = NOW() WHERE id = %s", (job_id,))
+                processed += 1
+            except Exception as exc:
+                failed += 1
+                next_attempt = int(row.get('attempts') or 0) + 1
+                backoff_seconds = min(900, 2 ** next_attempt)
+                terminal = next_attempt >= int(row.get('max_attempts') or 5)
+                connection.execute(
+                    '''
+                    UPDATE background_jobs
+                    SET status = %s,
+                        attempts = %s,
+                        run_after = NOW() + (%s || ' seconds')::interval,
+                        last_error = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    ''',
+                    ('failed' if terminal else 'queued', next_attempt, backoff_seconds, str(exc), job_id),
+                )
+                logger.exception('background job failed', extra={'event': 'jobs.failed', 'job_id': job_id, 'job_type': row['job_type']})
+        connection.commit()
+    return {'processed': processed, 'failed': failed}
 
 
 def persist_analysis_run(

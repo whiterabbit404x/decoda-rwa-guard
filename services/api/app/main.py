@@ -44,8 +44,16 @@ from services.api.app.pilot import (
     pg_connection,
     resolve_workspace,
     run_startup_migrations_if_enabled,
+    validate_runtime_configuration,
     request_email_verification,
     request_password_reset,
+    list_active_sessions,
+    revoke_session,
+    mfa_begin_enrollment,
+    mfa_confirm_enrollment,
+    mfa_complete_signin,
+    mfa_disable,
+    run_background_jobs,
     select_workspace_for_user,
     demo_seed_status,
     schema_missing_error_payload,
@@ -961,6 +969,12 @@ def emit_startup_fixture_diagnostics() -> None:
 
 def bootstrap_live_pilot() -> dict[str, Any]:
     global STARTUP_BOOTSTRAP_STATUS
+    runtime_validation = validate_runtime_configuration()
+    for warning in runtime_validation.get('warnings', []):
+        logger.warning('startup configuration warning: %s', warning)
+    errors = runtime_validation.get('errors', [])
+    if errors:
+        raise RuntimeError('; '.join(errors))
     STARTUP_BOOTSTRAP_STATUS = run_startup_migrations_if_enabled()
     applied_versions = STARTUP_BOOTSTRAP_STATUS.get('applied_versions', [])
     if STARTUP_BOOTSTRAP_STATUS.get('ran'):
@@ -1241,6 +1255,12 @@ def auth_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: signin_user(payload, request))
 
 
+@app.post('/auth/mfa/complete-signin', summary='Complete MFA challenge for sign in')
+def auth_mfa_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'mfa_complete_signin')
+    return with_auth_schema_json(lambda: mfa_complete_signin(payload, request))
+
+
 @app.post('/auth/signout', summary='Sign out a live-mode pilot user')
 def auth_signout(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: signout_user(request))
@@ -1249,6 +1269,19 @@ def auth_signout(request: Request) -> dict[str, Any]:
 @app.post('/auth/signout-all', summary='Sign out all sessions for authenticated user')
 def auth_signout_all(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: signout_all_sessions(request))
+
+
+@app.get('/auth/sessions', summary='List active sessions for authenticated user')
+def auth_sessions(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_active_sessions(request))
+
+
+@app.post('/auth/sessions/revoke', summary='Revoke an individual session')
+def auth_sessions_revoke(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    session_id = str(payload.get('session_id', '')).strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail='session_id is required')
+    return with_auth_schema_json(lambda: revoke_session(request, session_id))
 
 
 @app.get('/auth/me', summary='Current authenticated live-mode user')
@@ -1277,6 +1310,30 @@ def auth_forgot_password(payload: dict[str, Any], request: Request) -> dict[str,
 def auth_reset_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     enforce_auth_rate_limit(request, 'reset_password')
     return with_auth_schema_json(lambda: reset_password(payload, request))
+
+
+@app.post('/auth/mfa/enroll', summary='Begin TOTP MFA enrollment')
+def auth_mfa_enroll(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: mfa_begin_enrollment(request))
+
+
+@app.post('/auth/mfa/confirm', summary='Confirm TOTP MFA enrollment')
+def auth_mfa_confirm(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'mfa_confirm')
+    return with_auth_schema_json(lambda: mfa_confirm_enrollment(payload, request))
+
+
+@app.post('/auth/mfa/disable', summary='Disable TOTP MFA')
+def auth_mfa_disable(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'mfa_disable')
+    return with_auth_schema_json(lambda: mfa_disable(payload, request))
+
+
+@app.post('/ops/jobs/run', summary='Run queued background jobs (operator)')
+def ops_run_jobs(payload: dict[str, Any]) -> dict[str, Any]:
+    worker_id = str(payload.get('worker_id', 'api-sync-worker')).strip() or 'api-sync-worker'
+    limit = int(payload.get('limit', 20))
+    return with_auth_schema_json(lambda: run_background_jobs(worker_id=worker_id, limit=max(1, min(limit, 100))))
 
 
 @app.get('/workspaces', summary='List workspaces for the authenticated user')
