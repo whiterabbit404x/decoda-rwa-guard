@@ -27,10 +27,12 @@ test('auth pages include guarded submit and authenticated redirect handling', as
 
 test('authenticated route guards unauthenticated and missing-workspace users', async () => {
   const guard = read('authenticated-route.tsx');
+  const productLayout = read('(product)/layout.tsx');
 
   expect(guard).toContain("router.replace(`/sign-in?next=${next}`)");
   expect(guard).toContain("router.replace(`/workspaces?next=${next}`)");
   expect(guard).toContain('Preparing your workspace…');
+  expect(productLayout).toContain('<Suspense fallback={<ProductLayoutLoading>{children}</ProductLayoutLoading>}>');
 });
 
 test('dashboard and history expose self-serve onboarding and first-run empty states', async () => {
