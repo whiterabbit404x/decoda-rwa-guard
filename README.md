@@ -96,9 +96,17 @@ Fast operator checks:
 4. Open `/api/build-info` on the preview deployment and verify `vercelEnv`, `branch`, `commitSha`, and the runtime config summary.
 5. If `/api/build-info` is healthy but auth still fails, the next place to check is the backend API / Railway deployment rather than the same-origin auth proxy.
 
+### Enterprise self-serve additions in this phase
+
+- Email verification lifecycle (`/auth/verify-email`, `/auth/resend-verification`) with one-time tokens and expiry handling.
+- Password reset lifecycle (`/auth/forgot-password`, `/auth/reset-password`) with non-enumerating request responses.
+- Workspace teammate invite + acceptance flow (`/workspace/invites`, `/workspace/invites/accept`) and workspace member listing (`/workspace/members`).
+- Billing foundation (`/billing/status`, `/billing/checkout`, `/billing/portal`) with trial/subscription state persisted on `users`.
+- Support + legal/trust pages in the web app (`/support`, `/privacy`, `/terms`, `/security`).
+
 ### What remains for full production later
 
-- Email verification, password reset, MFA, and server-side session invalidation.
+- MFA, SSO/SAML, and server-side token/session invalidation.
 - Stronger distributed rate limiting / shared cache instead of in-memory auth throttling.
 - Richer RBAC enforcement across every workflow action.
 - Background jobs, webhooks, and more granular per-record dashboards instead of summary persistence only.

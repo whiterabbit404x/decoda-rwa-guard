@@ -8,6 +8,9 @@ export default function SettingsPageClient() {
   const { apiUrl, authHeaders, error, liveModeConfigured, loading, selectWorkspace, user } = usePilotAuth();
   const [healthDetails, setHealthDetails] = useState<Record<string, unknown> | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  const [members, setMembers] = useState<Array<Record<string, unknown>>>([]);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [teamMessage, setTeamMessage] = useState<string | null>(null);
 
   const currentMembership = useMemo(
     () => user?.memberships.find((membership) => membership.workspace_id === user.current_workspace?.id) ?? null,
@@ -50,8 +53,57 @@ export default function SettingsPageClient() {
     };
   }, [apiUrl, authHeaders, isAdmin]);
 
+  useEffect(() => {
+    if (!isAdmin) {
+      return;
+    }
+    void fetch('/api/workspace/members', { headers: authHeaders() })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.detail ?? 'Unable to load workspace members.');
+        }
+        setMembers(Array.isArray(payload.members) ? payload.members : []);
+      })
+      .catch((loadError) => setTeamMessage(loadError instanceof Error ? loadError.message : String(loadError)));
+  }, [authHeaders, isAdmin]);
+
   return (
     <main className="productPage">
+      <section className="featureSection">
+        <div className="sectionHeader">
+          <div>
+            <p className="eyebrow">Organization admin</p>
+            <h2>Teammates and invites</h2>
+          </div>
+        </div>
+        <div className="twoColumnSection">
+          <article className="dataCard">
+            <h3>Members</h3>
+            {(members ?? []).map((member) => <p key={String(member.id)} className="muted">{String(member.email)} — {String(member.role)}</p>)}
+          </article>
+          <form className="dataCard authForm" onSubmit={(event) => {
+            event.preventDefault();
+            void fetch('/api/workspace/invites', { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ email: inviteEmail, role: 'workspace_member' }) })
+              .then(async (response) => {
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                  throw new Error(payload.detail ?? 'Unable to send invite.');
+                }
+                setInviteEmail('');
+                setTeamMessage('Invite sent.');
+              })
+              .catch((inviteError) => setTeamMessage(inviteError instanceof Error ? inviteError.message : String(inviteError)));
+          }}>
+            <h3>Invite teammate</h3>
+            <label className="label">Work email</label>
+            <input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} required />
+            <button type="submit">Send invite</button>
+            {teamMessage ? <p className="statusLine">{teamMessage}</p> : null}
+          </form>
+        </div>
+      </section>
+
       <section className="featureSection">
         <div className="sectionHeader">
           <div>

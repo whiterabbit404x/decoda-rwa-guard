@@ -1,0 +1,1 @@
+export default function SecurityPage() { return <main className="container"><div className="dataCard"><h1>Security / Trust</h1><p>Decoda enforces authenticated access, workspace scoping, and audit logging. Security controls depend on configured providers and deployment posture.</p></div></main>; }

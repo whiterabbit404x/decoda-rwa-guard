@@ -1,0 +1,1 @@
+export default function PrivacyPage() { return <main className="container"><div className="dataCard"><h1>Privacy Policy</h1><p>Decoda processes account identity, workspace metadata, and workflow records to operate the service. We do not sell customer data.</p></div></main>; }
