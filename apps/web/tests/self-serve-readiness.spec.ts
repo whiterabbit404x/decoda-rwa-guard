@@ -12,11 +12,17 @@ function read(relativePath: string) {
 test('auth pages include guarded submit and authenticated redirect handling', async () => {
   const signIn = read('sign-in/sign-in-page-client.tsx');
   const signUp = read('sign-up/sign-up-page-client.tsx');
+  const signInPage = read('sign-in/page.tsx');
+  const signUpPage = read('sign-up/page.tsx');
 
   expect(signIn).toContain('if (loading) {');
+  expect(signIn).toContain('setError(null);');
   expect(signIn).toContain('router.replace(nextPath ?? \'/dashboard\')');
   expect(signUp).toContain('if (loading) {');
+  expect(signUp).toContain('setError(null);');
   expect(signUp).toContain("router.replace('/dashboard')");
+  expect(signInPage).toContain("redirect('/dashboard')");
+  expect(signUpPage).toContain("redirect('/dashboard')");
 });
 
 test('authenticated route guards unauthenticated and missing-workspace users', async () => {
@@ -33,7 +39,7 @@ test('dashboard and history expose self-serve onboarding and first-run empty sta
   const history = read('history-records-view.tsx');
 
   expect(dashboard).toContain('DashboardOnboardingPanel');
-  expect(onboarding).toContain('Run threat analysis');
+  expect(onboarding).toContain('Run your first threat analysis');
   expect(onboarding).toContain('First analysis run');
-  expect(history).toContain('No analyses yet. Run your first threat analysis.');
+  expect(history).toContain('Run your first threat analysis');
 });

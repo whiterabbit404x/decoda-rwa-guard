@@ -72,11 +72,11 @@ export function classifyAuthResponseError(
   const authTransport = diagnostics.authTransport ?? (isSameOriginProxyTarget(apiUrl) ? 'same-origin proxy' : null);
 
   if (diagnostics.code === 'invalid_runtime_config') {
-    return `The ${authTransport ?? 'web auth proxy'} is reachable, but the web server runtime config is invalid. ${safeDetail ?? 'Set a valid API_URL on the web server and redeploy.'}`;
+    return safeDetail ?? 'Authentication is temporarily unavailable for this deployment. Please contact support.';
   }
 
   if (diagnostics.code === 'backend_unreachable') {
-    return `The ${authTransport ?? 'web auth proxy'} is reachable, but the web server could not reach ${normalizedBackendApiUrl ?? 'the configured backend API'}. ${safeDetail ?? 'Check backend availability and server egress connectivity.'}`;
+    return safeDetail ?? 'Authentication service is temporarily unreachable. Please try again shortly.';
   }
 
   if (status === 401 && safeDetail === 'Invalid email or password.') {
@@ -92,21 +92,11 @@ export function classifyAuthResponseError(
   }
 
   if (status === 500) {
-    if (safeDetail?.includes('AUTH_TOKEN_SECRET')) {
-      return `The API at ${normalizedBackendApiUrl ?? normalizedApiUrl ?? 'the configured backend'} reached the auth handler, but backend authentication is misconfigured because AUTH_TOKEN_SECRET is missing.`;
-    }
-
-    if (authTransport) {
-      return `The ${authTransport} reached ${normalizedBackendApiUrl ?? 'the configured backend API'}, but the backend returned HTTP 500 during ${actionLabel}. ${safeDetail ?? 'This usually indicates a backend authentication configuration issue.'}`;
-    }
-
-    return `The API at ${normalizedApiUrl ?? 'the configured backend'} returned HTTP 500 during ${actionLabel}. This usually indicates a backend authentication configuration issue.`;
+    return 'Authentication is temporarily unavailable. Please retry in a moment.';
   }
 
   if (authTransport && status >= 400) {
-    return safeDetail
-      ? `The ${authTransport} reached ${normalizedBackendApiUrl ?? 'the configured backend API'}, but the backend returned HTTP ${status} during ${actionLabel}. ${safeDetail}`
-      : `The ${authTransport} reached ${normalizedBackendApiUrl ?? 'the configured backend API'}, but the backend returned HTTP ${status} during ${actionLabel}.`;
+    return safeDetail ?? `Unable to ${actionLabel}. Please try again.`;
   }
 
   return safeDetail ?? `Unable to ${actionLabel}.`;

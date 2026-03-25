@@ -36,9 +36,9 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
     <main className="container productPage">
       <section className="hero">
         <div>
-          <p className="eyebrow">Authenticated product workspace</p>
+          <p className="eyebrow">Operational workspace</p>
           <h1>Tokenized treasury control dashboard</h1>
-          <p className="lede">A production-ready operating surface for threat monitoring, compliance governance, and resilience workflows with graceful fallback when live dependencies degrade.</p>
+          <p className="lede">Monitor threats, compliance posture, and resilience readiness with clear outcomes and graceful fallback continuity.</p>
           <div className="heroActionRow">
             <StatusBadge state={diagnostics.experienceState === 'live_degraded' ? 'live_degraded' : diagnostics.experienceState} />
             <span className="ruleChip">Gateway: {diagnostics.endpoints.dashboard.ok ? 'reachable' : 'needs attention'}</span>
@@ -48,7 +48,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
         <div className="heroPanel">
           <p><strong>Platform state:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Live (degraded)' : 'Sample / fallback coverage'}</p>
           <p><strong>Readable explanation:</strong> {backendBanner}</p>
-          <p><strong>Protected routes:</strong> Dashboard, threat, compliance, resilience, history, and settings live inside the authenticated app shell.</p>
+          <p><strong>Product areas:</strong> Dashboard, threat, compliance, resilience, history, and settings.</p>
         </div>
       </section>
 

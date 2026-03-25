@@ -33,6 +33,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <Link href="/workspaces">Switch workspace</Link>
             <button type="button" onClick={() => void handleSignOut()}>Sign out</button>
           </div>
+          <p className="muted">Need help? <a href="mailto:support@decoda.app">support@decoda.app</a></p>
+          <p className="tableMeta">© {new Date().getFullYear()} Decoda · Privacy · Terms</p>
         </div>
         {error ? <p className="statusLine">{error}</p> : null}
       </aside>

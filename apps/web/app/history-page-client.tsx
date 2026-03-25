@@ -29,7 +29,7 @@ export default function HistoryPageClient() {
           headers: authHeaders(),
           cache: 'no-store',
         });
-        const payload = (await response.json()) as HistoryPayload | { detail?: string };
+        const payload = (await response.json().catch(() => ({ detail: 'Unable to load history right now.' }))) as HistoryPayload | { detail?: string };
         if (!response.ok) {
           const detail = typeof (payload as { detail?: unknown }).detail === 'string' ? (payload as { detail?: string }).detail : undefined;
           throw new Error(detail ?? 'Unable to load history.');

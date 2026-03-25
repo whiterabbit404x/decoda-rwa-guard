@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useMemo, useState } from 'react';
 
 import { determineHistoryCategory, filterRecordsByRecentActivity, HistoryPayload } from './pilot-history';
@@ -61,7 +62,10 @@ export default function HistoryRecordsView({ history, loading = false, error, wo
       {!loading && !error && history && history.analysis_runs.length === 0 ? (
         <div className="emptyStatePanel">
           <h2>No analyses yet</h2>
-          <p>No analyses yet. Run your first threat analysis.</p>
+          <p>Your workspace is ready. Run your first threat analysis to create a reviewable audit trail.</p>
+          <div className="heroActionRow">
+            <Link href="/threat">Run your first threat analysis</Link>
+          </div>
         </div>
       ) : null}
 
