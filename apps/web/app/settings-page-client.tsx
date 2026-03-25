@@ -8,6 +8,10 @@ export default function SettingsPageClient() {
   const { apiUrl, authHeaders, error, liveModeConfigured, loading, selectWorkspace, user } = usePilotAuth();
   const [healthDetails, setHealthDetails] = useState<Record<string, unknown> | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  const [memberRows, setMemberRows] = useState<Array<Record<string, unknown>>>([]);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState('workspace_member');
+  const [teamMessage, setTeamMessage] = useState<string | null>(null);
 
   const currentMembership = useMemo(
     () => user?.memberships.find((membership) => membership.workspace_id === user.current_workspace?.id) ?? null,
@@ -50,8 +54,72 @@ export default function SettingsPageClient() {
     };
   }, [apiUrl, authHeaders, isAdmin]);
 
+  useEffect(() => {
+    if (!user?.current_workspace?.id) {
+      setMemberRows([]);
+      return;
+    }
+    void fetch('/api/workspace-members', { headers: authHeaders(), cache: 'no-store' })
+      .then(async (response) => {
+        const payload = (await response.json().catch(() => ({}))) as { members?: Array<Record<string, unknown>>; detail?: string };
+        if (!response.ok) {
+          throw new Error(payload.detail ?? 'Unable to load members.');
+        }
+        setMemberRows(payload.members ?? []);
+      })
+      .catch((fetchError: unknown) => setTeamMessage(fetchError instanceof Error ? fetchError.message : String(fetchError)));
+  }, [authHeaders, user?.current_workspace?.id]);
+
+  async function inviteTeammate(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setTeamMessage(null);
+    const response = await fetch('/api/workspace-invitations', {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as { detail?: string; invite_token?: string };
+    if (!response.ok) {
+      setTeamMessage(payload.detail ?? 'Unable to send invitation.');
+      return;
+    }
+    setInviteEmail('');
+    setTeamMessage(payload.invite_token ? `Invitation token (debug mode): ${payload.invite_token}` : 'Invitation created and queued for delivery.');
+  }
+
   return (
     <main className="productPage">
+      <section className="featureSection">
+        <div className="sectionHeader">
+          <div>
+            <p className="eyebrow">Team</p>
+            <h2>Members and invitations</h2>
+            <p className="lede">Invite teammates and assign roles for your current workspace.</p>
+          </div>
+        </div>
+        <div className="threeColumnSection">
+          <article className="dataCard">
+            <h2>Members</h2>
+            {memberRows.length === 0 ? <p className="muted">No members found for this workspace yet.</p> : null}
+            {memberRows.map((item) => <p key={String(item.id)}>{String(item.full_name)} ({String(item.email)}) · {String(item.role)}</p>)}
+          </article>
+          <form className="dataCard authForm" onSubmit={inviteTeammate}>
+            <h2>Invite teammate</h2>
+            <label className="label">Email</label>
+            <input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} required />
+            <label className="label">Role</label>
+            <select value={inviteRole} onChange={(event) => setInviteRole(event.target.value)}>
+              <option value="workspace_admin">Admin</option>
+              <option value="workspace_member">Member</option>
+              <option value="workspace_viewer">Viewer</option>
+            </select>
+            <button type="submit" disabled={!isAdmin}>Send invite</button>
+            {!isAdmin ? <p className="statusLine">Only owners/admins can invite teammates.</p> : null}
+          </form>
+        </div>
+        {teamMessage ? <p className="statusLine">{teamMessage}</p> : null}
+      </section>
+
       <section className="featureSection">
         <div className="sectionHeader">
           <div>
