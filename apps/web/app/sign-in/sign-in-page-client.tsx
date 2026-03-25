@@ -91,6 +91,7 @@ export default function SignInPageClient({
           {error ? <p className="statusLine">{error}</p> : null}
           {!configLoading && !configured ? <p className="statusLine">Auth is disabled until this deployment exposes a valid API_URL.</p> : null}
           <p className="muted">Need an account? <Link href="/sign-up">Create one</Link>.</p>
+          <p className="muted"><Link href="/forgot-password">Forgot password?</Link> · <Link href="/verify-email">Verify email</Link></p>
         </form>
         <AuthDiagnosticCard loading={configLoading} runtimeConfig={runtimeConfig} />
       </div>

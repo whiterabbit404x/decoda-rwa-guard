@@ -111,8 +111,8 @@ def test_signin_success_returns_hydrated_user(pilot_module, monkeypatch: pytest.
 
     class _Connection:
         def execute(self, statement, params=None):
-            if 'SELECT id, password_hash FROM users WHERE email' in statement:
-                return _Result({'id': 'user-1', 'password_hash': 'stored'})
+            if 'SELECT id, password_hash, email_verified_at FROM users WHERE email' in statement:
+                return _Result({'id': 'user-1', 'password_hash': 'stored', 'email_verified_at': datetime(2026, 3, 24, tzinfo=timezone.utc)})
             return _Result(None)
 
         def commit(self):
@@ -147,8 +147,8 @@ def test_signin_invalid_credentials_returns_401(pilot_module, monkeypatch: pytes
 
     class _Connection:
         def execute(self, statement, params=None):
-            if 'SELECT id, password_hash FROM users WHERE email' in statement:
-                return _Result({'id': 'user-1', 'password_hash': 'stored'})
+            if 'SELECT id, password_hash, email_verified_at FROM users WHERE email' in statement:
+                return _Result({'id': 'user-1', 'password_hash': 'stored', 'email_verified_at': datetime(2026, 3, 24, tzinfo=timezone.utc)})
             return _Result(None)
 
     @contextmanager
