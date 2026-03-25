@@ -41,7 +41,7 @@ export type WorkspaceSummary = {
 
 export type WorkspaceMembership = {
   workspace_id: string;
-  role: 'workspace_owner' | 'workspace_admin' | 'workspace_member';
+  role: 'workspace_owner' | 'workspace_admin' | 'workspace_member' | 'workspace_viewer';
   created_at: string;
   workspace: WorkspaceSummary;
 };

@@ -1,0 +1,1 @@
+export default function TermsPage() { return <main className="container marketingPage"><h1>Terms of Service</h1><p>Use of Decoda RWA Guard is governed by your signed commercial order form and these platform terms.</p></main>; }

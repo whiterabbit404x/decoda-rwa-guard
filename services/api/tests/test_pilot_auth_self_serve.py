@@ -57,6 +57,7 @@ def test_signup_success_returns_token_and_user(pilot_module, monkeypatch: pytest
     monkeypatch.setattr(pilot_module, 'build_user_response', lambda connection, user_id: {'id': user_id, 'current_workspace': {'id': 'ws-1'}})
     monkeypatch.setattr(pilot_module, 'log_audit', lambda *args, **kwargs: None)
     monkeypatch.setattr(pilot_module, 'create_access_token', lambda user_id: f'token-{user_id}')
+    monkeypatch.setattr(pilot_module, '_email_verification_required', lambda: False)
 
     response = pilot_module.signup_user(
         {
@@ -111,8 +112,8 @@ def test_signin_success_returns_hydrated_user(pilot_module, monkeypatch: pytest.
 
     class _Connection:
         def execute(self, statement, params=None):
-            if 'SELECT id, password_hash FROM users WHERE email' in statement:
-                return _Result({'id': 'user-1', 'password_hash': 'stored'})
+            if 'SELECT id, password_hash, email_verified_at FROM users WHERE email' in statement:
+                return _Result({'id': 'user-1', 'password_hash': 'stored', 'email_verified_at': datetime(2026, 3, 24, tzinfo=timezone.utc)})
             return _Result(None)
 
         def commit(self):
@@ -129,6 +130,7 @@ def test_signin_success_returns_hydrated_user(pilot_module, monkeypatch: pytest.
     monkeypatch.setattr(pilot_module, 'build_user_response', lambda connection, user_id: {'id': user_id, 'current_workspace': None})
     monkeypatch.setattr(pilot_module, 'log_audit', lambda *args, **kwargs: None)
     monkeypatch.setattr(pilot_module, 'create_access_token', lambda user_id: f'token-{user_id}')
+    monkeypatch.setattr(pilot_module, '_email_verification_required', lambda: False)
 
     response = pilot_module.signin_user({'email': 'team@example.com', 'password': 'StrongPass1234'}, _request())
 
@@ -302,3 +304,40 @@ def test_build_history_response_returns_json_safe_workspace_records(
     assert payload['analysis_runs'][0]['id']
     assert payload['analysis_runs'][0]['created_at'].endswith('+00:00')
     assert isinstance(payload['counts'], dict)
+
+
+def test_signup_returns_verification_pending_when_required(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            if 'SELECT id FROM users WHERE email' in statement:
+                return _Result(None)
+            if 'SELECT 1 FROM workspaces WHERE slug' in statement:
+                return _Result(None)
+            return _Result(None)
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg)
+    monkeypatch.setattr(pilot_module, 'ensure_pilot_schema', lambda connection: None)
+    monkeypatch.setattr(pilot_module, '_email_verification_required', lambda: True)
+    monkeypatch.setattr(pilot_module, '_create_verification_token', lambda connection, user_id: 'verify-token')
+    monkeypatch.setattr(pilot_module, 'hash_password', lambda password: 'hashed-value')
+    monkeypatch.setattr(pilot_module, 'build_user_response', lambda connection, user_id: {'id': user_id})
+    monkeypatch.setattr(pilot_module, 'log_audit', lambda *args, **kwargs: None)
+
+    response = pilot_module.signup_user({'email': 'verify@example.com', 'password': 'StrongPass1234'}, _request())
+    assert response['verification_required'] is True
+    assert response['verification_token'] == 'verify-token'

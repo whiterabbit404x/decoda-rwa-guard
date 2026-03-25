@@ -56,6 +56,7 @@ export default function SignUpPageClient({ previewNotice }: { previewNotice?: Re
     try {
       const result = await signUp({ email, password, full_name: fullName, workspace_name: workspaceName });
       if (result.verificationRequired) {
+        setError('Account created. Check your email for a verification link, then continue to sign in.');
         return;
       }
       router.push('/dashboard');

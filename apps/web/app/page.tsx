@@ -98,6 +98,14 @@ export default async function MarketingHomePage() {
           <article className="dataCard polishedCard"><h3>Enterprise</h3><p className="metricValue">Custom</p><p>For issuers and infrastructure partners who need governance and resilience workflows at scale.</p></article>
         </div>
       </section>
+      <section className="marketingSection">
+        <div className="chipRow">
+          <Link href="/privacy" className="tertiaryCta">Privacy</Link>
+          <Link href="/terms" className="tertiaryCta">Terms</Link>
+          <Link href="/security" className="tertiaryCta">Security</Link>
+          <Link href="/support" className="tertiaryCta">Support</Link>
+        </div>
+      </section>
     </main>
   );
 }

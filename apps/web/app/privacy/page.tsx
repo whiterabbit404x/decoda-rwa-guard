@@ -1,0 +1,1 @@
+export default function PrivacyPage() { return <main className="container marketingPage"><h1>Privacy Policy</h1><p>Decoda RWA Guard processes account and operational telemetry required to provide the service. Contact support for data requests.</p></main>; }

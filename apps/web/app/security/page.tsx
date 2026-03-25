@@ -1,0 +1,1 @@
+export default function SecurityPage() { return <main className="container marketingPage"><h1>Security / Trust</h1><p>We provide secure-by-default controls, tenant scoping, audit logs, and incident response workflows. Reach out for architecture details.</p></main>; }

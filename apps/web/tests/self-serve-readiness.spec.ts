@@ -59,3 +59,22 @@ test('auth context and threat workflow guard session and workspace edge cases', 
   expect(threatPanel).toContain('Select or create a workspace before running a saved analysis.');
   expect(threatPanel).toContain("const livePrefix = isAuthenticated ? '/pilot' : '';");
 });
+
+test('enterprise self-serve routes exist for recovery, billing, and trust', async () => {
+  const signIn = read('sign-in/sign-in-page-client.tsx');
+  const verifyEmail = read('verify-email/page.tsx');
+  const forgotPassword = read('forgot-password/page.tsx');
+  const resetPassword = read('reset-password/page.tsx');
+  const billingPage = read('(product)/billing/page.tsx');
+  const homePage = read('page.tsx');
+
+  expect(signIn).toContain('/forgot-password');
+  expect(verifyEmail).toContain('Verify email');
+  expect(forgotPassword).toContain('Send reset link');
+  expect(resetPassword).toContain('Reset password');
+  expect(billingPage).toContain('/api/billing/state');
+  expect(homePage).toContain('/privacy');
+  expect(homePage).toContain('/terms');
+  expect(homePage).toContain('/security');
+  expect(homePage).toContain('/support');
+});

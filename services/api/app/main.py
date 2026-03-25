@@ -24,16 +24,21 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.pilot import (
+    accept_workspace_invite,
     auth_token_secret_configured,
     authenticate_request,
     authenticate_with_connection,
     build_history_response,
     create_governance_action_record,
+    create_workspace_invite,
     create_incident_record,
     create_workspace_for_user,
     enforce_auth_rate_limit,
     ensure_pilot_schema,
+    forgot_password,
+    get_workspace_billing_state,
     list_user_workspaces,
+    list_workspace_members,
     live_mode_enabled,
     log_audit,
     maybe_insert_alert,
@@ -45,11 +50,14 @@ from services.api.app.pilot import (
     resolve_workspace,
     run_startup_migrations_if_enabled,
     select_workspace_for_user,
+    resend_verification_email,
+    reset_password,
     demo_seed_status,
     schema_missing_error_payload,
     signin_user,
     signout_user,
     signup_user,
+    verify_email_token,
 )
 
 
@@ -1241,6 +1249,29 @@ def auth_signout(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: signout_user(request))
 
 
+@app.post('/auth/verify-email', summary='Verify a newly created account email token')
+def auth_verify_email(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: verify_email_token(payload, request))
+
+
+@app.post('/auth/resend-verification', summary='Resend email verification token')
+def auth_resend_verification(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'resend_verification')
+    return with_auth_schema_json(lambda: resend_verification_email(payload, request))
+
+
+@app.post('/auth/forgot-password', summary='Issue password reset token')
+def auth_forgot_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'forgot_password')
+    return with_auth_schema_json(lambda: forgot_password(payload, request))
+
+
+@app.post('/auth/reset-password', summary='Complete password reset')
+def auth_reset_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    enforce_auth_rate_limit(request, 'reset_password')
+    return with_auth_schema_json(lambda: reset_password(payload, request))
+
+
 @app.get('/auth/me', summary='Current authenticated live-mode user')
 def auth_me(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: {'mode': pilot_mode(), 'user': authenticate_request(request)})
@@ -1262,6 +1293,26 @@ def auth_select_workspace(payload: dict[str, Any], request: Request) -> dict[str
     if not workspace_id:
         raise HTTPException(status_code=400, detail='workspace_id is required')
     return with_auth_schema_json(lambda: {'user': select_workspace_for_user(workspace_id, request)})
+
+
+@app.get('/workspace/members', summary='List members for active workspace')
+def workspace_members(request: Request, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_workspace_members(request, limit=limit, offset=offset))
+
+
+@app.post('/workspace/invites', summary='Invite a teammate to active workspace')
+def workspace_invite_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_workspace_invite(payload, request))
+
+
+@app.post('/workspace/invites/accept', summary='Accept a workspace invite')
+def workspace_invite_accept(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: accept_workspace_invite(payload, request))
+
+
+@app.get('/billing/state', summary='Workspace billing and plan state')
+def billing_state(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_workspace_billing_state(request))
 
 
 @app.get('/pilot/history', summary='Workspace-scoped persisted live-mode history')
