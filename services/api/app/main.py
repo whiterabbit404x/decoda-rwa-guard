@@ -20,7 +20,7 @@ from urllib.request import Request as UrlRequest, urlopen
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.pilot import (
@@ -36,6 +36,9 @@ from services.api.app.pilot import (
     create_portal_session,
     create_webhook,
     create_workspace_invitation,
+    update_workspace_member,
+    remove_workspace_member,
+    get_team_seats,
     enforce_auth_rate_limit,
     ensure_pilot_schema,
     list_user_workspaces,
@@ -94,9 +97,15 @@ from services.api.app.pilot import (
     create_export_job,
     list_exports,
     get_export,
+    get_export_artifact_path,
     get_history_item,
     list_templates,
     apply_template,
+    create_finding_decision,
+    create_finding_action,
+    patch_finding_action,
+    list_finding_actions,
+    list_finding_decisions,
 )
 
 
@@ -1403,6 +1412,21 @@ def workspace_invite_accept(payload: dict[str, Any], request: Request) -> dict[s
     return with_auth_schema_json(lambda: accept_workspace_invitation(payload, request))
 
 
+@app.patch('/workspace/members/{member_id}', summary='Update workspace member')
+def workspace_member_patch(member_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: update_workspace_member(member_id, payload, request))
+
+
+@app.delete('/workspace/members/{member_id}', summary='Remove workspace member')
+def workspace_member_delete(member_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: remove_workspace_member(member_id, request))
+
+
+@app.get('/team/seats', summary='Workspace seat usage')
+def team_seats(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_team_seats(request))
+
+
 @app.get('/billing/plans', summary='List billing plans')
 def billing_plans() -> dict[str, Any]:
     return with_auth_schema_json(list_plan_entitlements)
@@ -1560,6 +1584,12 @@ def exports_get(export_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_export(export_id, request))
 
 
+@app.get('/exports/{export_id}/download', summary='Download export artifact')
+def exports_download(export_id: str, request: Request) -> FileResponse:
+    path = with_auth_schema_json(lambda: get_export_artifact_path(export_id, request))
+    return FileResponse(path)
+
+
 @app.get('/integrations/webhooks', summary='List outbound integration webhooks')
 def integrations_webhooks_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_webhooks(request))
@@ -1607,6 +1637,31 @@ def history_list(request: Request, limit: int = 25) -> dict[str, Any]:
 @app.get('/history/{history_id}', summary='History detail')
 def history_get(history_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_history_item(history_id, request))
+
+
+@app.post('/findings/{finding_id}/decision', summary='Create a finding decision')
+def findings_decision(finding_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_finding_decision(finding_id, payload, request))
+
+
+@app.post('/findings/{finding_id}/actions', summary='Create a finding action item')
+def findings_action_create(finding_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_finding_action(finding_id, payload, request))
+
+
+@app.patch('/actions/{action_id}', summary='Update finding action item')
+def findings_action_update(action_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: patch_finding_action(action_id, payload, request))
+
+
+@app.get('/actions', summary='List finding action items')
+def findings_action_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_finding_actions(request))
+
+
+@app.get('/decisions', summary='List finding decisions')
+def findings_decision_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_finding_decisions(request))
 
 
 def _persist_live_analysis(request: Request, payload: dict[str, Any], response_payload: dict[str, Any], *, analysis_type: str, service_name: str, title: str) -> dict[str, Any]:

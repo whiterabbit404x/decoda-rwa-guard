@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
 import hmac
+import io
 import json
 import logging
 import os
@@ -16,6 +18,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request as UrlRequest, urlopen
 
 import importlib
@@ -1374,6 +1377,10 @@ def create_workspace_invitation(payload: dict[str, Any], request: Request) -> di
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
+        entitlements = _workspace_plan(connection, workspace_context['workspace_id'])
+        member_count = connection.execute('SELECT COUNT(*) AS count FROM workspace_members WHERE workspace_id = %s', (workspace_context['workspace_id'],)).fetchone()
+        if int((member_count or {}).get('count') or 0) >= int(entitlements.get('max_members') or 0):
+            raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Seat limit reached for current plan.')
         token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
         invitation_id = str(uuid.uuid4())
@@ -1421,6 +1428,43 @@ def accept_workspace_invitation(payload: dict[str, Any], request: Request) -> di
         log_audit(connection, action='invitation.accept', entity_type='workspace_invitation', entity_id=str(invitation['id']), request=request, user_id=user['id'], workspace_id=str(invitation['workspace_id']), metadata={})
         connection.commit()
         return {'accepted': True, 'workspace_id': str(invitation['workspace_id']), 'role': _normalize_workspace_role(str(invitation['role'])), 'user': build_user_response(connection, user['id'])}
+
+
+def update_workspace_member(member_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    role = _normalize_workspace_role(str(payload.get('role', '')))
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        row = connection.execute('SELECT id, user_id, role FROM workspace_members WHERE id = %s AND workspace_id = %s', (member_id, workspace_context['workspace_id'])).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Member not found.')
+        connection.execute('UPDATE workspace_members SET role = %s WHERE id = %s', (role, member_id))
+        log_audit(connection, action='member.role_update', entity_type='workspace_member', entity_id=member_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'role': role})
+        connection.commit()
+        return {'id': member_id, 'role': role}
+
+
+def remove_workspace_member(member_id: str, request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        row = connection.execute('SELECT id, user_id FROM workspace_members WHERE id = %s AND workspace_id = %s', (member_id, workspace_context['workspace_id'])).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Member not found.')
+        connection.execute('DELETE FROM workspace_members WHERE id = %s', (member_id,))
+        log_audit(connection, action='member.remove', entity_type='workspace_member', entity_id=member_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'removed': True, 'id': member_id}
+
+
+def get_team_seats(request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        count = connection.execute('SELECT COUNT(*) AS count FROM workspace_members WHERE workspace_id = %s', (workspace_context['workspace_id'],)).fetchone()
+        entitlements = _workspace_plan(connection, workspace_context['workspace_id'])
+        return {'used': int((count or {}).get('count') or 0), 'limit': int(entitlements.get('max_members') or 0), 'plan_key': entitlements.get('plan_key')}
 
 
 def seed_demo_workspace(email: str, password: str, workspace_name: str, full_name: str = 'Pilot Demo User') -> dict[str, Any]:
@@ -1546,6 +1590,15 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
             try:
                 if row['job_type'] == 'send_email':
                     _send_email(str(payload.get('to_email', '')), str(payload.get('subject', '')), str(payload.get('text_body', '')))
+                elif row['job_type'] == 'send_webhook':
+                    _deliver_webhook_attempt(payload)
+                    if payload.get('delivery_id'):
+                        connection.execute(
+                            "UPDATE webhook_deliveries SET status = 'succeeded', response_status = 200, updated_at = NOW() WHERE id = %s",
+                            (str(payload['delivery_id']),),
+                        )
+                elif row['job_type'] == 'send_alert_email':
+                    _deliver_alert_email_attempt(payload)
                 else:
                     raise RuntimeError(f'Unsupported job type {row["job_type"]}')
                 connection.execute("UPDATE background_jobs SET status = 'succeeded', updated_at = NOW() WHERE id = %s", (job_id,))
@@ -1567,9 +1620,56 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
                     ''',
                     ('failed' if terminal else 'queued', next_attempt, backoff_seconds, str(exc), job_id),
                 )
+                if row['job_type'] == 'send_webhook' and payload.get('delivery_id'):
+                    connection.execute(
+                        '''
+                        UPDATE webhook_deliveries
+                        SET status = %s,
+                            error_message = %s,
+                            attempt = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        ''',
+                        ('failed' if terminal else 'queued', str(exc), next_attempt, str(payload['delivery_id'])),
+                    )
                 logger.exception('background job failed', extra={'event': 'jobs.failed', 'job_id': job_id, 'job_type': row['job_type']})
         connection.commit()
     return {'processed': processed, 'failed': failed}
+
+
+def _deliver_webhook_attempt(payload: dict[str, Any]) -> None:
+    webhook_id = str(payload.get('webhook_id', ''))
+    delivery_id = str(payload.get('delivery_id', ''))
+    target_url = str(payload.get('target_url', ''))
+    secret = str(payload.get('secret', ''))
+    body_payload = payload.get('payload') if isinstance(payload.get('payload'), dict) else {}
+    if not webhook_id or not delivery_id or not target_url or not secret:
+        raise RuntimeError('Webhook delivery payload missing required fields.')
+    encoded = _json_dumps(body_payload).encode('utf-8')
+    signature = hmac.new(secret.encode('utf-8'), encoded, hashlib.sha256).hexdigest()
+    request = UrlRequest(
+        target_url,
+        method='POST',
+        data=encoded,
+        headers={
+            'Content-Type': 'application/json',
+            'X-Decoda-Signature': signature,
+            'X-Decoda-Webhook-Id': webhook_id,
+            'X-Decoda-Delivery-Id': delivery_id,
+        },
+    )
+    with urlopen(request, timeout=8):
+        return
+
+
+def _deliver_alert_email_attempt(payload: dict[str, Any]) -> None:
+    to_email = str(payload.get('to_email', ''))
+    title = str(payload.get('title', ''))
+    summary = str(payload.get('summary', ''))
+    if not to_email:
+        raise RuntimeError('Missing to_email for alert delivery.')
+    subject = f'[{_email_brand_name()}] Alert: {title}'
+    _send_email(to_email, subject, summary or 'A new alert requires attention.')
 
 
 def list_plan_entitlements() -> dict[str, Any]:
@@ -1609,39 +1709,66 @@ def get_workspace_subscription(request: Request) -> dict[str, Any]:
 def create_checkout_session(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     plan_key = str(payload.get('plan_key', 'starter')).strip().lower()
+    stripe_key = os.getenv('STRIPE_SECRET_KEY', '').strip()
+    if not stripe_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Stripe is not configured.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
-        plan = connection.execute('SELECT plan_key, trial_days FROM plan_entitlements WHERE plan_key = %s', (plan_key,)).fetchone()
+        plan = connection.execute('SELECT plan_key, trial_days, stripe_price_id FROM plan_entitlements WHERE plan_key = %s', (plan_key,)).fetchone()
         if plan is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown plan.')
-        placeholder_subscription_id = f'sub_local_{uuid.uuid4().hex[:18]}'
-        connection.execute(
-            '''
-            INSERT INTO billing_subscriptions (id, workspace_id, provider_subscription_id, plan_key, status, trial_ends_at, current_period_ends_at, metadata)
-            VALUES (%s, %s, %s, %s, 'trialing', NOW() + (%s || ' days')::interval, NOW() + interval '1 month', %s::jsonb)
-            ON CONFLICT (provider_subscription_id) DO NOTHING
-            ''',
-            (str(uuid.uuid4()), workspace_context['workspace_id'], placeholder_subscription_id, plan_key, int(plan['trial_days']), _json_dumps({'source': 'self_serve_checkout'})),
-        )
+        price_id = str(plan.get('stripe_price_id') or '').strip()
+        if not price_id:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f'Stripe price is not configured for plan {plan_key}.')
+        customer = connection.execute('SELECT provider_customer_id FROM billing_customers WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1', (workspace_context['workspace_id'],)).fetchone()
+        checkout_payload = {
+            'mode': 'subscription',
+            'line_items[0][price]': price_id,
+            'line_items[0][quantity]': '1',
+            'success_url': f"{os.getenv('APP_PUBLIC_URL', 'http://localhost:3000').rstrip('/')}/settings?billing=success",
+            'cancel_url': f"{os.getenv('APP_PUBLIC_URL', 'http://localhost:3000').rstrip('/')}/settings?billing=cancelled",
+            'metadata[workspace_id]': workspace_context['workspace_id'],
+            'metadata[plan_key]': plan_key,
+        }
+        if customer and customer.get('provider_customer_id'):
+            checkout_payload['customer'] = str(customer['provider_customer_id'])
+        request_data = urlencode(checkout_payload).encode('utf-8')
+        stripe_request = UrlRequest('https://api.stripe.com/v1/checkout/sessions', method='POST', data=request_data, headers={'Authorization': f'Bearer {stripe_key}', 'Content-Type': 'application/x-www-form-urlencoded'})
+        try:
+            with urlopen(stripe_request, timeout=10) as response:
+                checkout_session = json.loads(response.read().decode('utf-8'))
+        except (HTTPError, URLError) as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f'Unable to create Stripe checkout session: {exc}')
         log_audit(connection, action='billing.checkout_session_created', entity_type='workspace', entity_id=workspace_context['workspace_id'], request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'plan_key': plan_key})
         connection.commit()
         return {
-            'checkout_url': f"{os.getenv('APP_PUBLIC_URL', 'http://localhost:3000')}/settings?billing=success&plan={plan_key}",
+            'checkout_url': checkout_session.get('url'),
+            'session_id': checkout_session.get('id'),
             'plan_key': plan_key,
-            'mode': 'placeholder',
-            'message': 'Stripe checkout wiring placeholder created. Configure STRIPE_SECRET_KEY and Stripe price IDs for hosted checkout in production.',
         }
 
 
 def create_portal_session(request: Request) -> dict[str, Any]:
     require_live_mode()
+    stripe_key = os.getenv('STRIPE_SECRET_KEY', '').strip()
+    if not stripe_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Stripe is not configured.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
+        customer = connection.execute('SELECT provider_customer_id FROM billing_customers WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1', (workspace_context['workspace_id'],)).fetchone()
+        if customer is None or not customer.get('provider_customer_id'):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Workspace does not have a billing customer yet.')
+        request_data = urlencode({'customer': str(customer['provider_customer_id']), 'return_url': f"{os.getenv('APP_PUBLIC_URL', 'http://localhost:3000').rstrip('/')}/settings"}).encode('utf-8')
+        stripe_request = UrlRequest('https://api.stripe.com/v1/billing_portal/sessions', method='POST', data=request_data, headers={'Authorization': f'Bearer {stripe_key}', 'Content-Type': 'application/x-www-form-urlencoded'})
+        try:
+            with urlopen(stripe_request, timeout=10) as response:
+                portal_session = json.loads(response.read().decode('utf-8'))
+        except (HTTPError, URLError) as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f'Unable to create Stripe portal session: {exc}')
         return {
-            'portal_url': f"{os.getenv('APP_PUBLIC_URL', 'http://localhost:3000')}/settings",
-            'mode': 'placeholder',
+            'portal_url': portal_session.get('url'),
             'workspace_id': workspace_context['workspace_id'],
             'requested_by_user_id': user['id'],
         }
@@ -1661,7 +1788,31 @@ def process_stripe_webhook(payload: dict[str, Any], signature_header: str | None
         existing = connection.execute('SELECT processing_status FROM billing_events WHERE provider_event_id = %s', (event_id,)).fetchone()
         if existing is not None:
             return {'received': True, 'duplicate': True, 'event_id': event_id, 'status': existing['processing_status']}
-        workspace_id = str(((payload.get('data') or {}).get('object') or {}).get('metadata', {}).get('workspace_id', '')).strip() or None
+        data_object = ((payload.get('data') or {}).get('object') or {})
+        metadata = data_object.get('metadata') if isinstance(data_object.get('metadata'), dict) else {}
+        workspace_id = str(metadata.get('workspace_id', '')).strip() or None
+        customer_id = str(data_object.get('customer', '')).strip() or None
+        subscription_id = str(data_object.get('subscription', '')).strip() or str(data_object.get('id', '')).strip() or None
+        plan_key = str(metadata.get('plan_key', '')).strip().lower() or 'starter'
+        subscription_status = str(data_object.get('status', '')).strip().lower() or ('active' if event_type == 'checkout.session.completed' else 'trialing')
+        if workspace_id and customer_id:
+            connection.execute(
+                '''
+                INSERT INTO billing_customers (id, workspace_id, provider, provider_customer_id, metadata)
+                VALUES (%s, %s, 'stripe', %s, %s::jsonb)
+                ON CONFLICT (provider_customer_id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id, metadata = EXCLUDED.metadata, updated_at = NOW()
+                ''',
+                (str(uuid.uuid4()), workspace_id, customer_id, _json_dumps({'event_id': event_id})),
+            )
+        if workspace_id and subscription_id:
+            connection.execute(
+                '''
+                INSERT INTO billing_subscriptions (id, workspace_id, provider, provider_subscription_id, plan_key, status, metadata)
+                VALUES (%s, %s, 'stripe', %s, %s, %s, %s::jsonb)
+                ON CONFLICT (provider_subscription_id) DO UPDATE SET plan_key = EXCLUDED.plan_key, status = EXCLUDED.status, metadata = EXCLUDED.metadata, updated_at = NOW()
+                ''',
+                (str(uuid.uuid4()), workspace_id, subscription_id, plan_key, subscription_status, _json_dumps({'event_type': event_type})),
+            )
         connection.execute(
             '''
             INSERT INTO billing_events (id, provider, provider_event_id, workspace_id, event_type, payload, processing_status, processed_at)
@@ -1704,8 +1855,8 @@ def create_webhook(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         webhook_id = str(uuid.uuid4())
         connection.execute(
             '''
-            INSERT INTO workspace_webhooks (id, workspace_id, target_url, description, event_types, secret_hash, secret_last4, enabled, created_by_user_id)
-            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, TRUE, %s)
+            INSERT INTO workspace_webhooks (id, workspace_id, target_url, description, event_types, secret_hash, secret_last4, secret_token, enabled, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, TRUE, %s)
             ''',
             (
                 webhook_id,
@@ -1715,6 +1866,7 @@ def create_webhook(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 _json_dumps(event_types),
                 hashlib.sha256(secret.encode('utf-8')).hexdigest(),
                 secret[-4:],
+                secret,
                 user['id'],
             ),
         )
@@ -1751,8 +1903,8 @@ def rotate_webhook_secret(webhook_id: str, request: Request) -> dict[str, Any]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Webhook not found.')
         secret = secrets.token_urlsafe(32)
         connection.execute(
-            'UPDATE workspace_webhooks SET secret_hash = %s, secret_last4 = %s, updated_at = NOW() WHERE id = %s',
-            (hashlib.sha256(secret.encode('utf-8')).hexdigest(), secret[-4:], webhook_id),
+            'UPDATE workspace_webhooks SET secret_hash = %s, secret_last4 = %s, secret_token = %s, updated_at = NOW() WHERE id = %s',
+            (hashlib.sha256(secret.encode('utf-8')).hexdigest(), secret[-4:], secret, webhook_id),
         )
         log_audit(connection, action='webhook.rotate_secret', entity_type='workspace_webhook', entity_id=webhook_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
         connection.commit()
@@ -1860,7 +2012,86 @@ def maybe_insert_alert(
             _json_dumps(response_payload),
         ),
     )
+    _queue_alert_deliveries(
+        connection,
+        workspace_id=workspace_id,
+        alert_id=alert_id,
+        title=title,
+        severity=severity or 'medium',
+        summary=str(response_payload.get('explanation') or response_payload.get('explainability_summary') or title),
+        payload=response_payload,
+    )
     return alert_id
+
+
+def _queue_alert_deliveries(
+    connection: Any,
+    *,
+    workspace_id: str,
+    alert_id: str,
+    title: str,
+    severity: str,
+    summary: str,
+    payload: dict[str, Any],
+) -> None:
+    event_payload = {
+        'event': 'alert.created',
+        'alert_id': alert_id,
+        'title': title,
+        'severity': severity,
+        'summary': summary,
+        'payload': payload,
+        'occurred_at': utc_now_iso(),
+    }
+    webhooks = connection.execute(
+        '''
+        SELECT id, target_url, secret_token
+        FROM workspace_webhooks
+        WHERE workspace_id = %s AND enabled = TRUE
+        ''',
+        (workspace_id,),
+    ).fetchall()
+    for webhook in webhooks:
+        delivery_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO webhook_deliveries (id, workspace_id, webhook_id, event_type, request_body, status, response_status, response_body, error_message, attempt, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s::jsonb, 'queued', NULL, NULL, NULL, 0, NOW(), NOW())
+            ''',
+            (delivery_id, workspace_id, webhook['id'], 'alert.created', _json_dumps(event_payload)),
+        )
+        _queue_background_job(
+            connection,
+            job_type='send_webhook',
+            payload={
+                'webhook_id': str(webhook['id']),
+                'delivery_id': delivery_id,
+                'target_url': str(webhook['target_url']),
+                'secret': str(webhook.get('secret_token') or ''),
+                'payload': event_payload,
+            },
+            max_attempts=4,
+        )
+    if severity in {'high', 'critical'}:
+        recipients = connection.execute(
+            '''
+            SELECT DISTINCT u.email
+            FROM workspace_members wm
+            JOIN users u ON u.id = wm.user_id
+            WHERE wm.workspace_id = %s AND u.email IS NOT NULL
+            ''',
+            (workspace_id,),
+        ).fetchall()
+        for recipient in recipients:
+            email = str(recipient.get('email') or '').strip().lower()
+            if not email:
+                continue
+            _queue_background_job(
+                connection,
+                job_type='send_alert_email',
+                payload={'to_email': email, 'title': title, 'summary': summary, 'alert_id': alert_id},
+                max_attempts=4,
+            )
 
 
 def create_governance_action_record(
@@ -2530,10 +2761,106 @@ def patch_alert(alert_id: str, payload: dict[str, Any], request: Request) -> dic
         return {'id': alert_id, 'status': next_status}
 
 
+def create_finding_decision(finding_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    decision_type = str(payload.get('decision_type', '')).strip().lower()
+    if decision_type not in {'accepted_risk', 'suppress', 'exception_approved', 'escalated'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid decision_type.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        exists = connection.execute('SELECT id FROM alerts WHERE id = %s AND workspace_id = %s', (finding_id, workspace_context['workspace_id'])).fetchone()
+        if exists is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Finding not found.')
+        decision_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO finding_decisions (id, workspace_id, finding_id, actor_user_id, decision_type, reason, notes, status, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'open', NOW(), NOW())
+            ''',
+            (decision_id, workspace_context['workspace_id'], finding_id, user['id'], decision_type, str(payload.get('reason', '')).strip() or None, str(payload.get('notes', '')).strip() or None),
+        )
+        log_audit(connection, action='finding.decision', entity_type='finding_decision', entity_id=decision_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'finding_id': finding_id, 'decision_type': decision_type})
+        connection.commit()
+        return {'id': decision_id, 'finding_id': finding_id, 'decision_type': decision_type}
+
+
+def create_finding_action(finding_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        exists = connection.execute('SELECT id FROM alerts WHERE id = %s AND workspace_id = %s', (finding_id, workspace_context['workspace_id'])).fetchone()
+        if exists is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Finding not found.')
+        action_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO finding_actions (id, workspace_id, finding_id, owner_user_id, created_by_user_id, action_type, status, title, notes, due_at, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::timestamptz, NOW(), NOW())
+            ''',
+            (
+                action_id,
+                workspace_context['workspace_id'],
+                finding_id,
+                payload.get('owner_user_id'),
+                user['id'],
+                str(payload.get('action_type', 'remediation')).strip(),
+                str(payload.get('status', 'open')).strip(),
+                str(payload.get('title', 'Remediation task')).strip(),
+                str(payload.get('notes', '')).strip() or None,
+                str(payload.get('due_at')) if payload.get('due_at') else None,
+            ),
+        )
+        log_audit(connection, action='finding.action.create', entity_type='finding_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'finding_id': finding_id})
+        connection.commit()
+        return {'id': action_id, 'finding_id': finding_id}
+
+
+def patch_finding_action(action_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        found = connection.execute('SELECT id FROM finding_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Action item not found.')
+        connection.execute(
+            '''
+            UPDATE finding_actions
+            SET status = COALESCE(%s, status),
+                owner_user_id = COALESCE(%s::uuid, owner_user_id),
+                notes = COALESCE(%s, notes),
+                due_at = COALESCE(%s::timestamptz, due_at),
+                updated_at = NOW()
+            WHERE id = %s
+            ''',
+            (payload.get('status'), payload.get('owner_user_id'), payload.get('notes'), payload.get('due_at'), action_id),
+        )
+        log_audit(connection, action='finding.action.update', entity_type='finding_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'id': action_id, 'updated': True}
+
+
+def list_finding_actions(request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute('SELECT * FROM finding_actions WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 200', (workspace_context['workspace_id'],)).fetchall()
+        return {'actions': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def list_finding_decisions(request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute('SELECT * FROM finding_decisions WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 200', (workspace_context['workspace_id'],)).fetchall()
+        return {'decisions': [_json_safe_value(dict(row)) for row in rows]}
+
+
 def create_export_job(export_type: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     fmt = str(payload.get('format', 'csv')).strip().lower()
-    if fmt not in {'csv', 'json', 'html', 'pdf'}:
+    if fmt not in {'csv', 'json'}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export format.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -2543,16 +2870,52 @@ def create_export_job(export_type: str, payload: dict[str, Any], request: Reques
         if not bool(entitlements.get('exports_enabled')):
             raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Exports are not available on this plan.')
         job_id = str(uuid.uuid4())
-        output_path = f'/exports/{workspace_context["workspace_id"]}/{job_id}.{fmt}'
+        output_path = f'{workspace_context["workspace_id"]}/{job_id}.{fmt}'
         connection.execute(
             '''
             INSERT INTO export_jobs (id, workspace_id, requested_by_user_id, export_type, format, filters, status, output_path)
-            VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'completed', %s)
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'queued', %s)
             ''',
             (job_id, workspace_context['workspace_id'], user['id'], export_type, fmt, _json_dumps(payload.get('filters') if isinstance(payload.get('filters'), dict) else {}), output_path),
         )
+        _generate_export_artifact(connection, workspace_id=workspace_context['workspace_id'], export_id=job_id)
+        log_audit(connection, action='export.generate', entity_type='export_job', entity_id=job_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'export_type': export_type, 'format': fmt})
         connection.commit()
-        return {'job_id': job_id, 'status': 'completed', 'download_url': output_path}
+        completed = connection.execute('SELECT status, error_message FROM export_jobs WHERE id = %s', (job_id,)).fetchone()
+        return {'job_id': job_id, 'status': str(completed['status']), 'download_url': f'/exports/{job_id}/download' if str(completed['status']) == 'completed' else None, 'error_message': completed.get('error_message')}
+
+
+def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: str) -> None:
+    job = connection.execute('SELECT id, export_type, format, filters FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_id)).fetchone()
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export not found.')
+    rows: list[dict[str, Any]]
+    match str(job['export_type']):
+        case 'history':
+            rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, analysis_type, service_name, status, title, summary, created_at FROM analysis_runs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
+        case 'alerts':
+            rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, alert_type, title, severity, status, module_key, target_id, created_at FROM alerts WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
+        case 'findings' | 'report':
+            rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, analysis_type, status, title, summary, created_at FROM analysis_runs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
+        case _:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export type.')
+    export_root = Path(os.getenv('EXPORTS_DIR', '/tmp/decoda-exports')).resolve()
+    workspace_dir = export_root / workspace_id
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    destination = workspace_dir / f'{export_id}.{job["format"]}'
+    try:
+        if str(job['format']) == 'json':
+            destination.write_text(json.dumps({'rows': rows}, indent=2), encoding='utf-8')
+        else:
+            headers = sorted({key for row in rows for key in row.keys()})
+            with destination.open('w', encoding='utf-8', newline='') as handle:
+                writer = csv.DictWriter(handle, fieldnames=headers)
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow({key: _json_safe_value(row.get(key)) for key in headers})
+        connection.execute("UPDATE export_jobs SET status = 'completed', error_message = NULL, updated_at = NOW() WHERE id = %s", (export_id,))
+    except Exception as exc:
+        connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(exc), export_id))
 
 
 def list_exports(request: Request) -> dict[str, Any]:
@@ -2571,7 +2934,12 @@ def list_exports(request: Request) -> dict[str, Any]:
             ''',
             (workspace_context['workspace_id'],),
         ).fetchall()
-        return {'exports': [_json_safe_value(dict(row)) for row in rows]}
+        exports = []
+        for row in rows:
+            item = _json_safe_value(dict(row))
+            item['download_url'] = f"/exports/{item['id']}/download" if item.get('status') == 'completed' else None
+            exports.append(item)
+        return {'exports': exports}
 
 
 def get_export(export_id: str, request: Request) -> dict[str, Any]:
@@ -2586,7 +2954,26 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export not found.')
-        return {'export': _json_safe_value(dict(row))}
+        item = _json_safe_value(dict(row))
+        item['download_url'] = f'/exports/{export_id}/download' if item.get('status') == 'completed' else None
+        return {'export': item}
+
+
+def get_export_artifact_path(export_id: str, request: Request) -> Path:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        row = connection.execute('SELECT id, workspace_id, format, status FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_context['workspace_id'])).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export not found.')
+        if str(row['status']) != 'completed':
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Export is not ready yet.')
+        path = Path(os.getenv('EXPORTS_DIR', '/tmp/decoda-exports')).resolve() / str(row['workspace_id']) / f"{row['id']}.{row['format']}"
+        if not path.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export artifact missing.')
+        return path
 
 
 def get_history_item(history_id: str, request: Request) -> dict[str, Any]:
