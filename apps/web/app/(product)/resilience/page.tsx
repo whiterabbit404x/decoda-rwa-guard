@@ -15,7 +15,7 @@ export default async function ResiliencePage() {
         <div>
           <p className="eyebrow">Resilience operations</p>
           <h1>Operational resilience for tokenized treasury programs</h1>
-          <p className="lede">Track reconciliation health, backstop decisions, and incident handling with visible fallback behavior when live dependencies degrade.</p>
+          <p className="lede">Track reconciliation health, backstop decisions, and incident handling for your workspace operations.</p>
         </div>
         <div className="heroPanel"><StatusBadge state={resilienceDashboard.source === 'live' && !resilienceDashboard.degraded ? 'live' : 'fallback'} /><p>{resilienceDashboard.message}</p></div>
       </section>

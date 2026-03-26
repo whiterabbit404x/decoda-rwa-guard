@@ -2018,3 +2018,371 @@ def build_history_response(request: Request, limit: int = 25) -> dict[str, Any]:
         'incidents': serialize(incidents),
         'audit_logs': serialize(audit_logs),
     }
+
+TARGET_TYPES = {'contract', 'wallet', 'oracle', 'treasury-linked asset', 'settlement component', 'admin-controlled module'}
+MODULE_KEYS = {'threat', 'compliance', 'resilience'}
+
+
+def _workspace_plan(connection: Any, workspace_id: str) -> dict[str, Any]:
+    subscription = connection.execute(
+        '''
+        SELECT plan_key
+        FROM billing_subscriptions
+        WHERE workspace_id = %s AND status IN ('trialing', 'active')
+        ORDER BY created_at DESC
+        LIMIT 1
+        ''',
+        (workspace_id,),
+    ).fetchone()
+    plan_key = str((subscription or {}).get('plan_key') or 'free_trial')
+    plan = connection.execute(
+        '''
+        SELECT plan_key, max_members, max_webhooks, max_targets, exports_enabled, alert_retention_days, features
+        FROM plan_entitlements
+        WHERE plan_key = %s
+        ''',
+        (plan_key,),
+    ).fetchone()
+    if plan is None:
+        fallback = connection.execute(
+            '''
+            SELECT plan_key, max_members, max_webhooks, max_targets, exports_enabled, alert_retention_days, features
+            FROM plan_entitlements
+            WHERE plan_key = 'free_trial'
+            LIMIT 1
+            '''
+        ).fetchone()
+        plan = fallback or {
+            'plan_key': 'free_trial',
+            'max_members': 3,
+            'max_webhooks': 0,
+            'max_targets': 10,
+            'exports_enabled': False,
+            'alert_retention_days': 14,
+            'features': {},
+        }
+    return _json_safe_value(dict(plan))
+
+
+def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    name = str(payload.get('name', '')).strip()
+    target_type = str(payload.get('target_type', '')).strip().lower()
+    chain_network = str(payload.get('chain_network', '')).strip()
+    if not name or len(name) > 120:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='name is required (max 120 chars).')
+    if target_type not in TARGET_TYPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid target_type.')
+    if not chain_network or len(chain_network) > 64:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='chain_network is required (max 64 chars).')
+    contract_identifier = str(payload.get('contract_identifier', '')).strip() or None
+    wallet_address = str(payload.get('wallet_address', '')).strip() or None
+    if contract_identifier and len(contract_identifier) > 150:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='contract_identifier exceeds 150 chars.')
+    if wallet_address and not re.match(r'^0x[a-fA-F0-9]{40}$', wallet_address):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='wallet_address must be an EVM-style address.')
+    severity_preference = str(payload.get('severity_preference', 'medium')).strip().lower()
+    if severity_preference not in {'low', 'medium', 'high', 'critical'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='severity_preference must be low/medium/high/critical.')
+    tags_raw = payload.get('tags')
+    tags = [str(item).strip().lower() for item in tags_raw] if isinstance(tags_raw, list) else []
+    tags = [item for item in tags if item]
+    return {
+        'name': name,
+        'target_type': target_type,
+        'chain_network': chain_network,
+        'contract_identifier': contract_identifier,
+        'wallet_address': wallet_address,
+        'asset_type': str(payload.get('asset_type', '')).strip() or None,
+        'owner_notes': str(payload.get('owner_notes', '')).strip() or None,
+        'severity_preference': severity_preference,
+        'enabled': bool(payload.get('enabled', True)),
+        'tags': tags,
+    }
+
+
+def list_targets(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        rows = connection.execute(
+            '''
+            SELECT id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled, created_at, updated_at
+            FROM targets
+            WHERE workspace_id = %s AND deleted_at IS NULL
+            ORDER BY created_at DESC
+            ''',
+            (workspace_id,),
+        ).fetchall()
+        target_ids = [str(row['id']) for row in rows]
+        tags_map: dict[str, list[str]] = {target_id: [] for target_id in target_ids}
+        if target_ids:
+            tag_rows = connection.execute(
+                'SELECT target_id, tag FROM target_tags WHERE workspace_id = %s AND target_id = ANY(%s::uuid[]) ORDER BY tag ASC',
+                (workspace_id, target_ids),
+            ).fetchall()
+            for row in tag_rows:
+                tags_map[str(row['target_id'])].append(str(row['tag']))
+        targets: list[dict[str, Any]] = []
+        for row in rows:
+            item = _json_safe_value(dict(row))
+            item['tags'] = tags_map.get(str(row['id']), [])
+            targets.append(item)
+        return {'targets': targets, 'workspace': workspace_context['workspace']}
+
+
+def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    validated = _validate_target_payload(payload)
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        entitlements = _workspace_plan(connection, workspace_id)
+        count_row = connection.execute('SELECT COUNT(*) AS count FROM targets WHERE workspace_id = %s AND deleted_at IS NULL', (workspace_id,)).fetchone()
+        if int((count_row or {}).get('count') or 0) >= int(entitlements.get('max_targets') or 0):
+            raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Target limit reached for current plan.')
+        target_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO targets (
+                id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled, created_by_user_id, updated_by_user_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''',
+            (
+                target_id,
+                workspace_id,
+                validated['name'],
+                validated['target_type'],
+                validated['chain_network'],
+                validated['contract_identifier'],
+                validated['wallet_address'],
+                validated['asset_type'],
+                validated['owner_notes'],
+                validated['severity_preference'],
+                validated['enabled'],
+                user['id'],
+                user['id'],
+            ),
+        )
+        for tag in validated['tags']:
+            connection.execute(
+                'INSERT INTO target_tags (id, workspace_id, target_id, tag) VALUES (%s, %s, %s, %s) ON CONFLICT (target_id, tag) DO NOTHING',
+                (str(uuid.uuid4()), workspace_id, target_id, tag),
+            )
+        log_audit(connection, action='target.create', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'target_type': validated['target_type']})
+        connection.commit()
+        return {'id': target_id, **validated}
+
+
+def get_target(target_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        row = connection.execute(
+            'SELECT * FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
+            (target_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
+        tags = connection.execute('SELECT tag FROM target_tags WHERE target_id = %s ORDER BY tag ASC', (target_id,)).fetchall()
+        item = _json_safe_value(dict(row))
+        item['tags'] = [str(tag['tag']) for tag in tags]
+        return {'target': item}
+
+
+def update_target(target_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    validated = _validate_target_payload(payload)
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        found = connection.execute('SELECT id FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (target_id, workspace_id)).fetchone()
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
+        connection.execute(
+            '''
+            UPDATE targets
+            SET name = %s, target_type = %s, chain_network = %s, contract_identifier = %s, wallet_address = %s, asset_type = %s, owner_notes = %s, severity_preference = %s, enabled = %s, updated_by_user_id = %s, updated_at = NOW()
+            WHERE id = %s
+            ''',
+            (
+                validated['name'], validated['target_type'], validated['chain_network'], validated['contract_identifier'], validated['wallet_address'], validated['asset_type'], validated['owner_notes'], validated['severity_preference'], validated['enabled'], user['id'], target_id,
+            ),
+        )
+        connection.execute('DELETE FROM target_tags WHERE target_id = %s', (target_id,))
+        for tag in validated['tags']:
+            connection.execute('INSERT INTO target_tags (id, workspace_id, target_id, tag) VALUES (%s, %s, %s, %s)', (str(uuid.uuid4()), workspace_id, target_id, tag))
+        log_audit(connection, action='target.update', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={})
+        connection.commit()
+        return {'id': target_id, **validated}
+
+
+def delete_target(target_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        row = connection.execute('SELECT id FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (target_id, workspace_context['workspace_id'])).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
+        connection.execute('UPDATE targets SET deleted_at = NOW(), updated_by_user_id = %s, updated_at = NOW() WHERE id = %s', (user['id'], target_id))
+        log_audit(connection, action='target.delete', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'deleted': True, 'id': target_id}
+
+
+def get_module_config(module_key: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    if module_key not in MODULE_KEYS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown module.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        row = connection.execute('SELECT config, updated_at FROM module_configs WHERE workspace_id = %s AND module_key = %s', (workspace_context['workspace_id'], module_key)).fetchone()
+        return {'module': module_key, 'config': _json_safe_value((row or {}).get('config') or {}), 'updated_at': _json_safe_value((row or {}).get('updated_at'))}
+
+
+def put_module_config(module_key: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    if module_key not in MODULE_KEYS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown module.')
+    config = payload.get('config')
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='config must be an object.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        entitlements = _workspace_plan(connection, workspace_context['workspace_id'])
+        if module_key in {'threat', 'resilience'} and entitlements['plan_key'] == 'free_trial' and len(config.keys()) > 4:
+            raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Advanced module configuration requires Starter or higher.')
+        config_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO module_configs (id, workspace_id, module_key, config, updated_by_user_id)
+            VALUES (%s, %s, %s, %s::jsonb, %s)
+            ON CONFLICT (workspace_id, module_key)
+            DO UPDATE SET config = excluded.config, updated_by_user_id = excluded.updated_by_user_id, updated_at = NOW()
+            ''',
+            (config_id, workspace_context['workspace_id'], module_key, _json_dumps(config), user['id']),
+        )
+        log_audit(connection, action='module_config.update', entity_type='module_config', entity_id=module_key, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'module': module_key})
+        connection.commit()
+        return {'module': module_key, 'config': config, 'saved': True}
+
+
+def list_alerts(request: Request, *, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT id, alert_type, title, severity, status, summary, module_key, target_id, findings, acknowledged_at, resolved_at, created_at
+            FROM alerts
+            WHERE workspace_id = %s
+              AND (%s::text IS NULL OR severity = %s::text)
+              AND (%s::text IS NULL OR module_key = %s::text)
+              AND (%s::uuid IS NULL OR target_id = %s::uuid)
+              AND (%s::text IS NULL OR status = %s::text)
+            ORDER BY created_at DESC
+            LIMIT 200
+            ''',
+            (workspace_context['workspace_id'], severity, severity, module, module, target_id, target_id, status_value, status_value),
+        ).fetchall()
+        return {'alerts': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def get_alert(alert_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        row = connection.execute('SELECT * FROM alerts WHERE id = %s AND workspace_id = %s', (alert_id, workspace_context['workspace_id'])).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found.')
+        events = connection.execute('SELECT id, event_type, details, created_at FROM alert_events WHERE alert_id = %s ORDER BY created_at DESC', (alert_id,)).fetchall()
+        return {'alert': _json_safe_value(dict(row)), 'events': [_json_safe_value(dict(item)) for item in events]}
+
+
+def patch_alert(alert_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    next_status = str(payload.get('status', '')).strip().lower()
+    if next_status not in {'open', 'acknowledged', 'resolved'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='status must be open/acknowledged/resolved')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        found = connection.execute('SELECT id FROM alerts WHERE id = %s AND workspace_id = %s', (alert_id, workspace_context['workspace_id'])).fetchone()
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found.')
+        connection.execute(
+            '''
+            UPDATE alerts
+            SET status = %s,
+                acknowledged_at = CASE WHEN %s = 'acknowledged' THEN NOW() ELSE acknowledged_at END,
+                acknowledged_by_user_id = CASE WHEN %s = 'acknowledged' THEN %s ELSE acknowledged_by_user_id END,
+                resolved_at = CASE WHEN %s = 'resolved' THEN NOW() ELSE resolved_at END,
+                resolved_by_user_id = CASE WHEN %s = 'resolved' THEN %s ELSE resolved_by_user_id END
+            WHERE id = %s
+            ''',
+            (next_status, next_status, next_status, user['id'], next_status, next_status, user['id'], alert_id),
+        )
+        connection.execute('INSERT INTO alert_events (id, workspace_id, alert_id, actor_user_id, event_type, details) VALUES (%s, %s, %s, %s, %s, %s::jsonb)', (str(uuid.uuid4()), workspace_context['workspace_id'], alert_id, user['id'], f'alert.{next_status}', _json_dumps({'status': next_status})))
+        connection.commit()
+        return {'id': alert_id, 'status': next_status}
+
+
+def create_export_job(export_type: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    fmt = str(payload.get('format', 'csv')).strip().lower()
+    if fmt not in {'csv', 'json', 'html', 'pdf'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export format.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        entitlements = _workspace_plan(connection, workspace_context['workspace_id'])
+        if not bool(entitlements.get('exports_enabled')):
+            raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Exports are not available on this plan.')
+        job_id = str(uuid.uuid4())
+        output_path = f'/exports/{workspace_context["workspace_id"]}/{job_id}.{fmt}'
+        connection.execute(
+            '''
+            INSERT INTO export_jobs (id, workspace_id, requested_by_user_id, export_type, format, filters, status, output_path)
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'completed', %s)
+            ''',
+            (job_id, workspace_context['workspace_id'], user['id'], export_type, fmt, _json_dumps(payload.get('filters') if isinstance(payload.get('filters'), dict) else {}), output_path),
+        )
+        connection.commit()
+        return {'job_id': job_id, 'status': 'completed', 'download_url': output_path}
+
+
+def list_templates() -> dict[str, Any]:
+    return {
+        'templates': [
+            {'id': 'treasury-safe-mode', 'name': 'Treasury Safe Mode', 'module': 'threat', 'description': 'Baseline thresholds and allowlist policy for treasury operations.'},
+            {'id': 'compliance-us-eu', 'name': 'US/EU Compliance Starter', 'module': 'compliance', 'description': 'Transfer review checklist and residency controls for US/EU corridors.'},
+            {'id': 'oracle-dependency-monitoring', 'name': 'Oracle Dependency Monitoring', 'module': 'resilience', 'description': 'Sensitivity controls for oracle concentration and emergency thresholds.'},
+        ]
+    }
+
+
+def apply_template(template_id: str, request: Request) -> dict[str, Any]:
+    template_map = {
+        'treasury-safe-mode': ('threat', {'unknown_target_threshold': 2, 'unlimited_approval_block_rule': True, 'large_transfer_threshold': 250000}),
+        'compliance-us-eu': ('compliance', {'required_review_checklist': ['kyc', 'jurisdiction', 'accreditation'], 'evidence_retention_period_days': 90}),
+        'oracle-dependency-monitoring': ('resilience', {'oracle_dependency_sensitivity': 'high', 'control_concentration_alerts': True, 'emergency_action_threshold': 'high'}),
+    }
+    if template_id not in template_map:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Template not found.')
+    module_key, config = template_map[template_id]
+    return put_module_config(module_key, {'config': config}, request)

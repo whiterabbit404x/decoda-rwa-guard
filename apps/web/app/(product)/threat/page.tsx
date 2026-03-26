@@ -23,8 +23,8 @@ export default async function ThreatPage() {
       <section className="threeColumnSection">
         <div className="stack compactStack">
           <div className="workflowHeader">
-            <p className="sectionEyebrow">Scenario library</p>
-            <p className="muted workflowHelp">Review active patterns and choose the threat path to evaluate.</p>
+            <p className="sectionEyebrow">Monitoring overview</p>
+            <p className="muted workflowHelp">Review active detections and select a workspace target to monitor.</p>
           </div>
           {threatDashboard.active_alerts.map((alert) => (
             <article key={alert.id} className="dataCard decisionOutputCard">
@@ -38,7 +38,7 @@ export default async function ThreatPage() {
         <div className="stack compactStack">
           <div className="workflowHeader">
             <p className="sectionEyebrow">Decision output</p>
-            <p className="muted workflowHelp">Operational outcomes generated from recent analyses.</p>
+            <p className="muted workflowHelp">Operational outcomes generated from recent workspace analyses.</p>
           </div>
           {threatDashboard.recent_detections.map((detection) => (
             <article key={detection.id} className="dataCard decisionOutputCard">

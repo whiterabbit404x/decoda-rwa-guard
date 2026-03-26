@@ -76,6 +76,19 @@ from services.api.app.pilot import (
     verify_email_token,
     reset_password,
     update_webhook,
+    list_targets,
+    create_target,
+    get_target,
+    update_target,
+    delete_target,
+    get_module_config,
+    put_module_config,
+    list_alerts,
+    get_alert,
+    patch_alert,
+    create_export_job,
+    list_templates,
+    apply_template,
 )
 
 
@@ -1428,10 +1441,110 @@ def webhooks_rotate_secret(webhook_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: rotate_webhook_secret(webhook_id, request))
 
 
+
 @app.get('/webhooks/{webhook_id}/deliveries', summary='List webhook deliveries')
 def webhooks_deliveries(webhook_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_webhook_deliveries(webhook_id, request))
 
+
+@app.get('/targets', summary='List workspace targets')
+def targets_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_targets(request))
+
+
+@app.post('/targets', summary='Create workspace target')
+def targets_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_target(payload, request))
+
+
+@app.get('/targets/{target_id}', summary='Get workspace target')
+def targets_get(target_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_target(target_id, request))
+
+
+@app.patch('/targets/{target_id}', summary='Update workspace target')
+def targets_patch(target_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: update_target(target_id, payload, request))
+
+
+@app.delete('/targets/{target_id}', summary='Delete workspace target')
+def targets_delete(target_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: delete_target(target_id, request))
+
+
+@app.get('/modules/{module_key}/config', summary='Get module config')
+def modules_get_config(module_key: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_module_config(module_key, request))
+
+
+@app.put('/modules/{module_key}/config', summary='Save module config')
+def modules_put_config(module_key: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: put_module_config(module_key, payload, request))
+
+
+@app.get('/alerts', summary='List alerts')
+def alerts_list(request: Request, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_alerts(request, severity=severity, module=module, target_id=target_id, status_value=status_value))
+
+
+@app.get('/alerts/{alert_id}', summary='Alert detail')
+def alerts_get(alert_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_alert(alert_id, request))
+
+
+@app.patch('/alerts/{alert_id}', summary='Acknowledge or resolve alert')
+def alerts_patch(alert_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: patch_alert(alert_id, payload, request))
+
+
+@app.post('/exports/history', summary='Export analysis history')
+def exports_history(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_export_job('history', payload, request))
+
+
+@app.post('/exports/alerts', summary='Export alerts')
+def exports_alerts(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_export_job('alerts', payload, request))
+
+
+@app.post('/exports/report', summary='Export report')
+def exports_report(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_export_job('report', payload, request))
+
+
+@app.get('/integrations/webhooks', summary='List outbound integration webhooks')
+def integrations_webhooks_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_webhooks(request))
+
+
+@app.post('/integrations/webhooks', summary='Create outbound integration webhook')
+def integrations_webhooks_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_webhook(payload, request))
+
+
+@app.patch('/integrations/webhooks/{webhook_id}', summary='Update outbound integration webhook')
+def integrations_webhooks_patch(webhook_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: update_webhook(webhook_id, payload, request))
+
+
+@app.post('/integrations/webhooks/{webhook_id}/rotate-secret', summary='Rotate integration webhook secret')
+def integrations_webhooks_rotate(webhook_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: rotate_webhook_secret(webhook_id, request))
+
+
+@app.get('/integrations/webhooks/{webhook_id}/deliveries', summary='List integration webhook deliveries')
+def integrations_webhooks_deliveries(webhook_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_webhook_deliveries(webhook_id, request))
+
+
+@app.get('/templates', summary='List onboarding templates')
+def templates_list() -> dict[str, Any]:
+    return with_auth_schema_json(list_templates)
+
+
+@app.post('/templates/{template_id}/apply', summary='Apply onboarding template to current workspace')
+def templates_apply(template_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: apply_template(template_id, request))
 
 @app.get('/pilot/history', summary='Workspace-scoped persisted live-mode history')
 def pilot_history(request: Request, limit: int = 25) -> dict[str, Any]:

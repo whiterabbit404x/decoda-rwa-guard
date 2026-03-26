@@ -1117,3 +1117,34 @@ You can also inspect `/health/details` to confirm dependency diagnostics, build/
 - Legal/privacy policy and DPA reviews.
 - Incident-response tabletop exercises and documented runbooks.
 - Key-rotation and backup/restore drill operations.
+
+## Customer-usable SaaS workflow modules (March 2026)
+
+Authenticated product routes now prioritize **live customer operations** over guided scenario walkthroughs.
+
+### Operational modules
+
+- Threat Monitoring (`/threat`) with workspace target selection plus persisted module config.
+- Compliance Controls (`/compliance`) with persisted review/evidence policy config and exports hook.
+- Resilience Monitoring (`/resilience`) with saved monitoring thresholds and alert acknowledgement workflow.
+
+### New customer data workflows
+
+- Target Manager (`/targets`) for workspace-scoped targets and monitored actors.
+- Alerts Center (`/alerts`) for workspace alert listing and lifecycle actions.
+- Integrations (`/integrations`) for outbound webhook management and delivery visibility.
+- Exports (`/exports`) for operational report export actions.
+- Templates (`/templates`) as onboarding helpers only; templates are separate from live target/module records.
+
+### Backend SaaS additions
+
+- `targets` + `target_tags` workspace data model and CRUD endpoints.
+- Workspace `module_configs` endpoints for threat/compliance/resilience policy persistence.
+- Alert API endpoints for list/detail/status mutation with `alert_events` audit trail.
+- Export job endpoints (`/exports/history`, `/exports/alerts`, `/exports/report`) backed by `export_jobs`.
+- Integration webhook endpoints under `/integrations/webhooks/*` with secret rotation and delivery logs.
+- Plan enforcement for target limits, exports availability, and advanced module-config controls.
+
+### New/updated environment expectations
+
+No required new env vars were introduced for this pass beyond existing billing/email/auth vars. Existing billing entitlements now include additional limits (`max_targets`, `exports_enabled`, `alert_retention_days`) via migrations.
