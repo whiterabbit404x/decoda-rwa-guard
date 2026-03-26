@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.pilot import (
+    accept_workspace_invitation,
     auth_token_secret_configured,
     authenticate_request,
     authenticate_with_connection,
@@ -31,6 +32,10 @@ from services.api.app.pilot import (
     create_governance_action_record,
     create_incident_record,
     create_workspace_for_user,
+    create_checkout_session,
+    create_portal_session,
+    create_webhook,
+    create_workspace_invitation,
     enforce_auth_rate_limit,
     ensure_pilot_schema,
     list_user_workspaces,
@@ -48,12 +53,19 @@ from services.api.app.pilot import (
     request_email_verification,
     request_password_reset,
     list_active_sessions,
+    list_plan_entitlements,
     revoke_session,
     mfa_begin_enrollment,
     mfa_confirm_enrollment,
     mfa_complete_signin,
     mfa_disable,
     run_background_jobs,
+    get_workspace_subscription,
+    list_workspace_members,
+    list_webhook_deliveries,
+    list_webhooks,
+    process_stripe_webhook,
+    rotate_webhook_secret,
     select_workspace_for_user,
     demo_seed_status,
     schema_missing_error_payload,
@@ -63,6 +75,7 @@ from services.api.app.pilot import (
     signup_user,
     verify_email_token,
     reset_password,
+    update_webhook,
 )
 
 
@@ -1352,6 +1365,72 @@ def auth_select_workspace(payload: dict[str, Any], request: Request) -> dict[str
     if not workspace_id:
         raise HTTPException(status_code=400, detail='workspace_id is required')
     return with_auth_schema_json(lambda: {'user': select_workspace_for_user(workspace_id, request)})
+
+
+@app.get('/workspace/members', summary='List members for current workspace')
+def workspace_members(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_workspace_members(request))
+
+
+@app.post('/workspace/invitations', summary='Create workspace invitation')
+def workspace_invite(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_workspace_invitation(payload, request))
+
+
+@app.post('/workspace/invitations/accept', summary='Accept workspace invitation')
+def workspace_invite_accept(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: accept_workspace_invitation(payload, request))
+
+
+@app.get('/billing/plans', summary='List billing plans')
+def billing_plans() -> dict[str, Any]:
+    return with_auth_schema_json(list_plan_entitlements)
+
+
+@app.get('/billing/subscription', summary='Get workspace subscription')
+def billing_subscription(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_workspace_subscription(request))
+
+
+@app.post('/billing/checkout-session', summary='Create checkout session')
+def billing_checkout(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_checkout_session(payload, request))
+
+
+@app.post('/billing/portal-session', summary='Create billing portal session')
+def billing_portal(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_portal_session(request))
+
+
+@app.post('/billing/webhooks/stripe', summary='Stripe billing webhook')
+def billing_webhook_stripe(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    signature = request.headers.get('stripe-signature')
+    return with_auth_schema_json(lambda: process_stripe_webhook(payload, signature))
+
+
+@app.get('/webhooks', summary='List workspace webhooks')
+def webhooks_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_webhooks(request))
+
+
+@app.post('/webhooks', summary='Create workspace webhook')
+def webhooks_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_webhook(payload, request))
+
+
+@app.patch('/webhooks/{webhook_id}', summary='Update workspace webhook')
+def webhooks_patch(webhook_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: update_webhook(webhook_id, payload, request))
+
+
+@app.post('/webhooks/{webhook_id}/rotate-secret', summary='Rotate webhook secret')
+def webhooks_rotate_secret(webhook_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: rotate_webhook_secret(webhook_id, request))
+
+
+@app.get('/webhooks/{webhook_id}/deliveries', summary='List webhook deliveries')
+def webhooks_deliveries(webhook_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_webhook_deliveries(webhook_id, request))
 
 
 @app.get('/pilot/history', summary='Workspace-scoped persisted live-mode history')

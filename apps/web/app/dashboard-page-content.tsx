@@ -1,12 +1,12 @@
-import ComplianceDemoPanel from './compliance-demo-panel';
+import ComplianceOperationsPanel from './compliance-operations-panel';
 import DashboardOnboardingPanel from './dashboard-onboarding-panel';
 import PilotHistoryPanel from './pilot-history-panel';
 import PilotModeBanner from './pilot-mode-banner';
 import PilotOverviewPanel from './pilot-overview-panel';
-import ResilienceDemoPanel from './resilience-demo-panel';
+import ResilienceOperationsPanel from './resilience-operations-panel';
 import StatusBadge from './status-badge';
 import SystemStatusPanel from './system-status-panel';
-import ThreatDemoPanel from './threat-demo-panel';
+import ThreatOperationsPanel from './threat-operations-panel';
 import {
   buildDashboardViewModel,
   DashboardPageData,
@@ -46,7 +46,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           </div>
         </div>
         <div className="heroPanel">
-          <p><strong>Platform state:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Live (degraded)' : 'Sample / fallback coverage'}</p>
+          <p><strong>Platform state:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Live (degraded)' : 'Limited data mode'}</p>
           <p><strong>Readable explanation:</strong> {backendBanner}</p>
           <p><strong>Product areas:</strong> Dashboard, threat, compliance, resilience, history, and settings.</p>
         </div>
@@ -77,7 +77,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
         <div className="sectionHeader">
           <div>
             <p className="eyebrow">Threat</p>
-            <h2>Feature 2 · Preemptive Cybersecurity &amp; AI Threat Defense</h2>
+            <h2>Threat Operations</h2>
             <p>Visible exploit and anomaly detections with deterministic explainability and preserved fallback behavior.</p>
           </div>
           <StatusBadge state={resolveBadgeState(threatDashboard.source, threatDashboard.degraded)} />
@@ -92,7 +92,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
               </article>
             ))}
           </div>
-          <ThreatDemoPanel apiUrl={apiUrl} />
+          <ThreatOperationsPanel apiUrl={apiUrl} />
           <div className="stack compactStack">
             {threatDashboard.recent_detections.map((detection) => (
               <article key={detection.id} className="dataCard">
@@ -108,7 +108,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
         <div className="sectionHeader">
           <div>
             <p className="eyebrow">Compliance</p>
-            <h2>Feature 3 · Sovereign-Grade Compliance &amp; Governance</h2>
+            <h2>Compliance Operations</h2>
             <p>Screen transfers, record governance actions, and keep policy context readable for customers.</p>
           </div>
           <StatusBadge state={resolveBadgeState(complianceDashboard.source, complianceDashboard.degraded)} />
@@ -124,7 +124,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
               <p className="explanation small">{complianceDashboard.residency_screening.explainability_summary}</p>
             </article>
           </div>
-          <ComplianceDemoPanel apiUrl={apiUrl} />
+          <ComplianceOperationsPanel apiUrl={apiUrl} />
           <div className="stack compactStack">
             {complianceDashboard.latest_governance_actions.map((action) => (
               <article key={action.action_id} className="dataCard">
@@ -140,7 +140,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
         <div className="sectionHeader">
           <div>
             <p className="eyebrow">Resilience</p>
-            <h2>Feature 4 · Resilience and recovery readiness</h2>
+            <h2>Resilience Operations</h2>
             <p>Reconciliation, backstop posture, and incident management remain explorable even in degraded states.</p>
           </div>
           <StatusBadge state={resolveBadgeState(resilienceDashboard.source, resilienceDashboard.degraded)} />
@@ -154,7 +154,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
               </article>
             ))}
           </div>
-          <ResilienceDemoPanel apiUrl={apiUrl} />
+          <ResilienceOperationsPanel apiUrl={apiUrl} />
           <div className="stack compactStack">
             {resilienceDashboard.reconciliation_result.ledger_assessments.map((assessment) => (
               <article key={assessment.ledger_name} className="dataCard">

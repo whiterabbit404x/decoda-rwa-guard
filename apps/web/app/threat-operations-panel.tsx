@@ -5,7 +5,7 @@ import { useMemo, useState } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
 
-type DemoPanelProps = {
+type OperationsPanelProps = {
   apiUrl: string;
 };
 
@@ -273,7 +273,7 @@ function getBusinessImpact(result: DemoResult) {
   return 'Operational throughput remains high with low residual threat exposure.';
 }
 
-export default function ThreatDemoPanel({ apiUrl }: DemoPanelProps) {
+export default function ThreatOperationsPanel({ apiUrl }: OperationsPanelProps) {
   const { isAuthenticated, user, authHeaders } = usePilotAuth();
   const [selected, setSelected] = useState<ScenarioKey>('flash_loan_transaction');
   const [result, setResult] = useState<DemoResult | null>(null);

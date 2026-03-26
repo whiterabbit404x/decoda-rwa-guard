@@ -6,116 +6,58 @@ import { usePilotAuth } from 'app/pilot-auth-context';
 
 export default function SettingsPageClient() {
   const { apiUrl, authHeaders, error, liveModeConfigured, loading, selectWorkspace, user } = usePilotAuth();
-  const [sessionMessage, setSessionMessage] = useState<string | null>(null);
-  const [healthDetails, setHealthDetails] = useState<Record<string, unknown> | null>(null);
-  const [healthError, setHealthError] = useState<string | null>(null);
-
-  const currentMembership = useMemo(
-    () => user?.memberships.find((membership) => membership.workspace_id === user.current_workspace?.id) ?? null,
-    [user]
-  );
-  const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
+  const [billingSummary, setBillingSummary] = useState('Loading billing status…');
+  const [teamSummary, setTeamSummary] = useState('Loading team members…');
+  const currentMembership = useMemo(() => user?.memberships.find((m) => m.workspace_id === user.current_workspace?.id) ?? null, [user]);
 
   useEffect(() => {
     let active = true;
-
-    async function loadHealth() {
-      if (!apiUrl || !isAdmin) {
-        setHealthDetails(null);
-        return;
-      }
+    async function loadPanels() {
+      if (!apiUrl || !user?.current_workspace?.id) return;
       try {
-        const response = await fetch(`${apiUrl}/health/details`, {
-          headers: authHeaders(),
-          cache: 'no-store',
-        });
-        const payload = (await response.json()) as Record<string, unknown> | { detail?: string };
-        if (!response.ok) {
-          const detail = typeof (payload as { detail?: unknown }).detail === 'string' ? (payload as { detail?: string }).detail : undefined;
-          throw new Error(detail ?? 'Unable to load diagnostics.');
+        const [subscription, members] = await Promise.all([
+          fetch(`${apiUrl}/billing/subscription`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/workspace/members`, { headers: authHeaders(), cache: 'no-store' }),
+        ]);
+        if (!active) return;
+        if (subscription.ok) {
+          const payload = (await subscription.json()) as { subscription?: { status?: string; plan_key?: string } | null };
+          setBillingSummary(`Plan: ${payload.subscription?.plan_key ?? 'none'} · Status: ${payload.subscription?.status ?? 'no subscription'}`);
         }
-        if (active) {
-          setHealthDetails(payload as Record<string, unknown>);
-          setHealthError(null);
+        if (members.ok) {
+          const payload = (await members.json()) as { members?: unknown[] };
+          setTeamSummary(`${payload.members?.length ?? 0} members in current workspace.`);
         }
-      } catch (fetchError) {
+      } catch {
         if (active) {
-          setHealthError(fetchError instanceof Error ? fetchError.message : String(fetchError));
+          setBillingSummary('Billing status unavailable.');
+          setTeamSummary('Team members unavailable.');
         }
       }
     }
-
-    void loadHealth();
+    void loadPanels();
     return () => {
       active = false;
     };
-  }, [apiUrl, authHeaders, isAdmin]);
+  }, [apiUrl, authHeaders, user?.current_workspace?.id]);
 
   return (
     <main className="productPage">
       <section className="featureSection">
-        <div className="sectionHeader">
-          <div>
-            <p className="eyebrow">Settings</p>
-            <h1>Workspace and live-mode management</h1>
-            <p className="lede">Manage your profile, switch the active workspace, and verify whether the deployment is running live, degraded, fallback, or sample-safe flows.</p>
-          </div>
-        </div>
+        <div className="sectionHeader"><div><p className="eyebrow">Settings</p><h1>Workspace management</h1><p className="lede">Manage workspace membership, subscription status, and session controls.</p></div></div>
         <div className="threeColumnSection">
-          <article className="dataCard">
-            <p className="sectionEyebrow">Current user</p>
-            <h2>{user?.full_name ?? 'Unknown user'}</h2>
-            <p className="muted">{user?.email}</p>
-            <div className="kvGrid compactKvGrid">
-              <p><span>Created</span>{user?.created_at ? new Date(user.created_at).toLocaleString() : '—'}</p>
-              <p><span>Last sign in</span>{user?.last_sign_in_at ? new Date(user.last_sign_in_at).toLocaleString() : '—'}</p>
-            </div>
-          </article>
-          <article className="dataCard">
-            <p className="sectionEyebrow">Workspace</p>
-            <h2>{user?.current_workspace?.name ?? 'No workspace selected'}</h2>
-            <p className="muted">Role: {currentMembership?.role ?? 'unknown'}</p>
-            <label className="label compactLabel">
-              Switch workspace
-              <select value={user?.current_workspace?.id ?? ''} onChange={(event) => void selectWorkspace(event.target.value)} disabled={loading}>
-                {(user?.memberships ?? []).map((membership) => (
-                  <option key={membership.workspace_id} value={membership.workspace_id}>{membership.workspace.name}</option>
-                ))}
-              </select>
-            </label>
-          </article>
-          <article className="dataCard">
-            <p className="sectionEyebrow">API diagnostics</p>
-            <h2>{liveModeConfigured ? 'Live mode configured' : 'Sample mode only'}</h2>
-            <p className="muted">{apiUrl || 'NEXT_PUBLIC_API_URL not configured'}</p>
-            {error ? <p className="statusLine">{error}</p> : <p className="muted">Authentication errors and session expiry messages appear here.</p>}
-            <button
-              type="button"
-              onClick={() => {
-                void fetch('/api/auth/signout-all', { method: 'POST', headers: authHeaders() })
-                  .then((response) => response.json().then((payload) => ({ ok: response.ok, payload })))
-                  .then(({ ok, payload }) => setSessionMessage(ok ? 'All sessions revoked. Sign in again on other devices.' : (payload.detail ?? 'Unable to revoke sessions.')))
-                  .catch(() => setSessionMessage('Unable to revoke sessions.'));
-              }}
-            >
-              Sign out all sessions
-            </button>
-            {sessionMessage ? <p className="statusLine">{sessionMessage}</p> : null}
-          </article>
+          <article className="dataCard"><p className="sectionEyebrow">Current user</p><h2>{user?.full_name ?? 'Unknown user'}</h2><p className="muted">{user?.email}</p><p className="muted">Role: {currentMembership?.role ?? 'unknown'}</p></article>
+          <article className="dataCard"><p className="sectionEyebrow">Workspace</p><h2>{user?.current_workspace?.name ?? 'No workspace selected'}</h2><label className="label compactLabel">Switch workspace<select value={user?.current_workspace?.id ?? ''} onChange={(event) => void selectWorkspace(event.target.value)} disabled={loading}>{(user?.memberships ?? []).map((membership) => (<option key={membership.workspace_id} value={membership.workspace_id}>{membership.workspace.name}</option>))}</select></label></article>
+          <article className="dataCard"><p className="sectionEyebrow">API diagnostics</p><h2>{liveModeConfigured ? 'Live mode configured' : 'Sample mode only'}</h2><p className="muted">{apiUrl || 'NEXT_PUBLIC_API_URL not configured'}</p>{error ? <p className="statusLine">{error}</p> : null}</article>
         </div>
       </section>
-
       <section className="featureSection">
-        <div className="sectionHeader">
-          <div>
-            <p className="eyebrow">Diagnostics / admin</p>
-            <h2>/health/details snapshot</h2>
-            <p className="lede">Detailed deployment diagnostics are only shown to workspace owners and admins.</p>
-          </div>
+        <div className="sectionHeader"><div><p className="eyebrow">Self-serve SaaS</p><h2>Billing and team controls</h2></div></div>
+        <div className="threeColumnSection">
+          <article className="dataCard"><p className="sectionEyebrow">Subscription</p><p className="muted">{billingSummary}</p></article>
+          <article className="dataCard"><p className="sectionEyebrow">Team</p><p className="muted">{teamSummary}</p></article>
+          <article className="dataCard"><p className="sectionEyebrow">Sessions</p><button type="button" onClick={() => void fetch('/api/auth/signout-all', { method: 'POST', headers: authHeaders() })}>Sign out all sessions</button></article>
         </div>
-        {!isAdmin ? <div className="emptyStatePanel"><h2>Restricted diagnostics</h2><p>You need workspace owner or admin access to view detailed dependency diagnostics.</p></div> : null}
-        {isAdmin && healthError ? <div className="emptyStatePanel"><h2>Diagnostics unavailable</h2><p>{healthError}</p></div> : null}
-        {isAdmin && !healthError ? <article className="dataCard"><pre>{JSON.stringify(healthDetails, null, 2)}</pre></article> : null}
       </section>
     </main>
   );

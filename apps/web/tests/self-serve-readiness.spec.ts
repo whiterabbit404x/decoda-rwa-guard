@@ -51,7 +51,7 @@ test('dashboard and history expose self-serve onboarding and first-run empty sta
 
 test('auth context and threat workflow guard session and workspace edge cases', async () => {
   const authContext = read('pilot-auth-context.tsx');
-  const threatPanel = read('threat-demo-panel.tsx');
+  const threatPanel = read('threat-operations-panel.tsx');
 
   expect(authContext).toContain('if (response.status === 401) {');
   expect(authContext).toContain('await signOut();');

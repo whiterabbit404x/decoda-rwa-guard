@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
 
-type DemoPanelProps = {
+type OperationsPanelProps = {
   apiUrl: string;
 };
 
@@ -117,7 +117,7 @@ const incidentScenarios = {
   }
 } as const;
 
-export default function ResilienceDemoPanel({ apiUrl }: DemoPanelProps) {
+export default function ResilienceOperationsPanel({ apiUrl }: OperationsPanelProps) {
   const { isAuthenticated, user, authHeaders } = usePilotAuth();
   const [reconcileScenario, setReconcileScenario] = useState<keyof typeof reconcileScenarios>('critical_supply_divergence_double_count_risk');
   const [backstopScenario, setBackstopScenario] = useState<keyof typeof backstopScenarios>('critical_mismatch_paused_bridge');
@@ -193,10 +193,10 @@ export default function ResilienceDemoPanel({ apiUrl }: DemoPanelProps) {
     <div className="dataCard complianceDemoPanel">
       <div className="sectionHeader compact">
         <div>
-          <h3>Feature 4 demo interactions</h3>
+          <h3>Resilience Operations</h3>
           <p>Run reconciliation, evaluate backstops, and append resilience incidents from the browser.</p>
         </div>
-        <span className="pill">{isAuthenticated && user?.current_workspace ? `Live workspace: ${user.current_workspace.name}` : 'Demo / live API'}</span>
+        <span className="pill">{isAuthenticated && user?.current_workspace ? `Live workspace: ${user.current_workspace.name}` : 'Workspace records'}</span>
       </div>
 
       <label htmlFor="reconcile-scenario">Reconciliation scenario</label>

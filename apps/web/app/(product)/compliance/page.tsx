@@ -1,4 +1,4 @@
-import ComplianceDemoPanel from '../../compliance-demo-panel';
+import ComplianceOperationsPanel from '../../compliance-operations-panel';
 import { fetchDashboardPageData, formatRules, statusTone } from '../../dashboard-data';
 import StatusBadge from '../../status-badge';
 import SystemStatusPanel from '../../system-status-panel';
@@ -32,7 +32,7 @@ export default async function CompliancePage() {
             <p className="explanation small">{complianceDashboard.residency_screening.explainability_summary}</p>
           </article>
         </div>
-        <ComplianceDemoPanel apiUrl={data.apiUrl} />
+        <ComplianceOperationsPanel apiUrl={data.apiUrl} />
         <div className="stack compactStack">
           {complianceDashboard.latest_governance_actions.map((action) => (
             <article key={action.action_id} className="dataCard">

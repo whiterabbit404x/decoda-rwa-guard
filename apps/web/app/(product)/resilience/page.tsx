@@ -1,4 +1,4 @@
-import ResilienceDemoPanel from '../../resilience-demo-panel';
+import ResilienceOperationsPanel from '../../resilience-operations-panel';
 import { fetchDashboardPageData, statusTone } from '../../dashboard-data';
 import StatusBadge from '../../status-badge';
 import SystemStatusPanel from '../../system-status-panel';
@@ -30,7 +30,7 @@ export default async function ResiliencePage() {
             </article>
           ))}
         </div>
-        <ResilienceDemoPanel apiUrl={data.apiUrl} />
+        <ResilienceOperationsPanel apiUrl={data.apiUrl} />
         <div className="stack compactStack">
           {resilienceDashboard.reconciliation_result.ledger_assessments.map((assessment) => (
             <article key={assessment.ledger_name} className="dataCard">
