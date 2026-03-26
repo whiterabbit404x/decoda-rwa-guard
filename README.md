@@ -1167,16 +1167,17 @@ Authenticated product routes now prioritize **live customer operations** over gu
 - Slack integration endpoints under `/integrations/slack*` (list/create/update/delete/test + delivery history) with webhook URLs masked in API responses.
 - Alert routing endpoints under `/integrations/routing*` for per-channel severity thresholds and enable/disable controls.
 
-### Slack setup (v1 incoming webhooks)
+### Slack setup (webhook + bot mode)
 
-1. In Slack, create an **Incoming Webhook** app destination for your workspace/channel.
-2. Copy the webhook URL (`https://hooks.slack.com/services/...`).
-3. In Decoda UI (`/integrations`), create a Slack integration with that URL.
-4. Run **Test send** to queue a safe test notification.
-5. Start worker processing (`python services/api/scripts/run_worker.py`) so queued jobs are delivered.
+1. Open Decoda UI (`/integrations`) and choose Slack mode:
+   - **Incoming webhook** for compatibility
+   - **Bot token** (`xoxb-...`) for richer `chat.postMessage` delivery (**recommended**)
+2. Configure destination channel (`#alerts` or channel ID) and save.
+3. Run **Test send** to queue a safe test notification.
+4. Start worker processing (`python services/api/scripts/run_worker.py`) so queued jobs are delivered.
 
 Notes:
-- Slack v1 uses incoming webhooks only (no bot-token `chat.postMessage` mode yet).
+- OAuth install flow is not implemented yet; bot mode currently uses secure manual token setup.
 - Slack callback/interactivity endpoints are not implemented in this release.
 - Slack payloads always include top-level `text` plus Block Kit sections (fallback/accessibility safe).
 
@@ -1201,3 +1202,58 @@ The live workflow now supports:
 ### New/updated environment expectations
 
 No required new env vars were introduced for this pass beyond existing billing/email/auth vars. Existing billing entitlements now include additional limits (`max_targets`, `exports_enabled`, `alert_retention_days`) via migrations.
+
+## Production readiness and UX polish upgrades (March 2026)
+
+### Guided policy builder UX
+
+Policy configuration for Threat Monitoring, Compliance Controls, and Resilience Monitoring now supports:
+
+- guided fields, toggles, thresholds, and checklists by module
+- inline summaries of effective policy behavior
+- **Advanced policy configuration (JSON)** as an optional collapsible expert mode
+- backend normalization for backwards compatibility with existing stored config keys
+
+### Asset/target management UX
+
+Assets and targets now include polished management workflows:
+
+- search and filtering
+- richer create/edit forms for metadata, owner/team, risk, notes, and tags
+- enable/disable, duplicate (targets), and archive/delete actions
+- clearer empty states and next-step guidance
+
+### Slack integration modes
+
+Slack now supports two workspace modes:
+
+1. **Incoming webhook** (legacy-compatible)
+2. **Bot token / chat.postMessage** (**recommended** for production)
+
+Bot mode is currently a secure manual setup (OAuth install flow is not yet implemented).
+
+### Integration health diagnostics
+
+New admin-only diagnostics endpoints:
+
+- `GET /system/integrations/health`
+- `POST /system/integrations/test-email`
+- `POST /system/integrations/test-slack`
+
+These surface actionable readiness checks for Stripe, email, and Slack without exposing secret values.
+
+### New/updated env vars
+
+- `STRICT_PRODUCTION_BILLING=true` (optional strict fail-fast mode for production billing env validation)
+- Existing Stripe vars remain required in production billing flows:
+  - `STRIPE_SECRET_KEY`
+  - `STRIPE_WEBHOOK_SECRET`
+
+### “System ready” criteria for production
+
+Before declaring production fully ready:
+
+1. Stripe health checks pass (secret + webhook secret + configured plan price IDs).
+2. Email provider is configured with valid sender/from address and test-send succeeds.
+3. At least one Slack integration is configured and test-send succeeds.
+4. Startup validation reports no production errors.

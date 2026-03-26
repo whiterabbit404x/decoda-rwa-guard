@@ -183,7 +183,83 @@ def validate_runtime_configuration() -> dict[str, Any]:
             warnings.append('EMAIL_PROVIDER=console is not suitable for production.')
         if not os.getenv('REDIS_URL', '').strip():
             warnings.append('REDIS_URL missing: falling back to in-memory auth rate limiting.')
+        strict_billing = env_flag('STRICT_PRODUCTION_BILLING')
+        if strict_billing:
+            if not os.getenv('STRIPE_SECRET_KEY', '').strip():
+                errors.append('Stripe billing is not ready because STRIPE_SECRET_KEY is missing in production.')
+            if not os.getenv('STRIPE_WEBHOOK_SECRET', '').strip():
+                errors.append('Stripe billing is not ready because STRIPE_WEBHOOK_SECRET is missing in production.')
     return {'mode': mode, 'errors': errors, 'warnings': warnings}
+
+
+def integration_health_snapshot(connection: Any | None = None) -> dict[str, Any]:
+    stripe_key = bool(os.getenv('STRIPE_SECRET_KEY', '').strip())
+    stripe_hook = bool(os.getenv('STRIPE_WEBHOOK_SECRET', '').strip())
+    plan_prices_configured = False
+    if connection is not None:
+        row = connection.execute("SELECT COUNT(*) AS count FROM plan_entitlements WHERE stripe_price_id IS NOT NULL AND stripe_price_id <> ''").fetchone()
+        plan_prices_configured = int((row or {}).get('count') or 0) > 0
+
+    email_provider = _email_provider()
+    email_ready = email_provider == 'console' or bool(os.getenv('EMAIL_RESEND_API_KEY', '').strip())
+
+    return {
+        'stripe': {
+            'status': 'healthy' if stripe_key and stripe_hook and plan_prices_configured else 'warning',
+            'mode': 'live' if os.getenv('STRIPE_SECRET_KEY', '').strip().startswith('sk_live_') else 'test',
+            'checks': {
+                'secret_key_present': stripe_key,
+                'webhook_secret_present': stripe_hook,
+                'price_ids_configured': plan_prices_configured,
+            },
+            'message': 'Stripe billing is not ready because STRIPE_SECRET_KEY or STRIPE_WEBHOOK_SECRET is missing in production.' if not (stripe_key and stripe_hook) else 'Stripe configuration looks healthy.',
+        },
+        'email': {
+            'status': 'healthy' if email_ready and bool(_email_from()) else 'warning',
+            'provider': email_provider,
+            'checks': {'from_address_present': bool(_email_from()), 'provider_key_present': email_ready},
+            'message': 'Email delivery is disabled or incomplete. Configure EMAIL_PROVIDER, EMAIL_FROM, and provider credentials.' if not email_ready else 'Email configuration looks healthy.',
+        },
+        'slack': {
+            'status': 'healthy',
+            'message': 'Slack integrations are configured per workspace. Use test delivery to validate channels.',
+            'checks': {'webhook_mode_supported': True, 'bot_mode_supported': True},
+        },
+    }
+
+
+def get_integration_health(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        health = integration_health_snapshot(connection)
+        health['workspace'] = workspace_context['workspace']
+        health['checked_by'] = user['id']
+        health['checked_at'] = utc_now_iso()
+        return health
+
+
+def test_integration_email(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        user_row = connection.execute('SELECT email FROM users WHERE id = %s', (user['id'],)).fetchone()
+        to_email = str((user_row or {}).get('email') or '').strip()
+        if not to_email:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Current admin account has no email address.')
+        _send_email(to_email, f'[{_email_brand_name()}] Integration health test', 'This is a safe integration test message from Decoda RWA Guard.')
+        log_audit(connection, action='integration.email.test', entity_type='workspace', entity_id=workspace_context['workspace_id'], request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'sent': True, 'to': to_email}
+
+
+def test_integration_slack(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    integration_id = str(payload.get('integration_id', '')).strip()
+    if not integration_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='integration_id is required.')
+    return test_slack_integration(integration_id, request)
 
 
 def run_migrations() -> list[str]:
@@ -1771,11 +1847,31 @@ def _deliver_alert_email_attempt(payload: dict[str, Any]) -> None:
 
 
 def _deliver_slack_attempt(payload: dict[str, Any]) -> None:
-    webhook_url = str(payload.get('webhook_url', ''))
+    mode = str(payload.get('mode') or 'webhook').strip().lower()
     body_payload = payload.get('payload') if isinstance(payload.get('payload'), dict) else {}
+    encoded = _json_dumps(body_payload).encode('utf-8')
+    if mode == 'bot':
+        bot_token = str(payload.get('bot_token', ''))
+        channel = str(payload.get('default_channel', '')).strip()
+        if not bot_token or not channel:
+            raise RuntimeError('Slack bot delivery payload missing bot_token or default_channel.')
+        bot_payload = dict(body_payload)
+        bot_payload['channel'] = channel
+        request = UrlRequest(
+            'https://slack.com/api/chat.postMessage',
+            method='POST',
+            data=_json_dumps(bot_payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json; charset=utf-8', 'Authorization': f'Bearer {bot_token}'},
+        )
+        with urlopen(request, timeout=8) as response:
+            body = json.loads(response.read().decode('utf-8'))
+            if not bool(body.get('ok')):
+                raise RuntimeError(f"Slack bot send failed: {body.get('error')}")
+        return
+
+    webhook_url = str(payload.get('webhook_url', ''))
     if not webhook_url:
         raise RuntimeError('Slack delivery payload missing webhook_url.')
-    encoded = _json_dumps(body_payload).encode('utf-8')
     request = UrlRequest(
         webhook_url,
         method='POST',
@@ -2086,6 +2182,24 @@ def list_webhook_deliveries(webhook_id: str, request: Request) -> dict[str, Any]
         return {'deliveries': [_json_safe_value(dict(row)) for row in rows]}
 
 
+def _normalize_slack_mode(payload: dict[str, Any]) -> str:
+    mode = str(payload.get('mode') or payload.get('slack_mode') or 'webhook').strip().lower()
+    if mode not in {'webhook', 'bot'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Slack mode must be webhook or bot.')
+    return mode
+
+
+def _normalize_slack_severity_routing(payload: dict[str, Any]) -> dict[str, str]:
+    incoming = payload.get('severity_routing')
+    if not isinstance(incoming, dict):
+        return {'low': 'default', 'medium': 'default', 'high': 'default', 'critical': 'default'}
+    normalized: dict[str, str] = {}
+    for level in ('low', 'medium', 'high', 'critical'):
+        value = str(incoming.get(level) or 'default').strip()
+        normalized[level] = value[:80] if value else 'default'
+    return normalized
+
+
 def list_slack_integrations(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -2094,7 +2208,7 @@ def list_slack_integrations(request: Request) -> dict[str, Any]:
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, display_name, webhook_last4, default_channel, enabled, created_at, updated_at
+            SELECT id, display_name, slack_mode, webhook_last4, bot_token_last4, default_channel, severity_routing, enabled, created_at, updated_at
             FROM workspace_slack_integrations
             WHERE workspace_id = %s
             ORDER BY created_at DESC
@@ -2106,32 +2220,41 @@ def list_slack_integrations(request: Request) -> dict[str, Any]:
 
 def create_slack_integration(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
+    mode = _normalize_slack_mode(payload)
     webhook_url = str(payload.get('webhook_url', '')).strip()
+    bot_token = str(payload.get('bot_token', '')).strip()
+    default_channel = str(payload.get('default_channel', '')).strip() or None
     display_name = str(payload.get('display_name', '')).strip() or 'Workspace Slack'
-    if not webhook_url.startswith('https://hooks.slack.com/'):
+    if mode == 'webhook' and not webhook_url.startswith('https://hooks.slack.com/'):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='webhook_url must be a valid Slack incoming webhook URL.')
+    if mode == 'bot' and not bot_token.startswith('xoxb-'):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='bot_token must be a valid Slack bot token (xoxb-...).')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         integration_id = str(uuid.uuid4())
         connection.execute(
             '''
-            INSERT INTO workspace_slack_integrations (id, workspace_id, display_name, webhook_url_encrypted, webhook_last4, default_channel, enabled, created_by_user_id)
-            VALUES (%s, %s, %s, %s, %s, %s, TRUE, %s)
+            INSERT INTO workspace_slack_integrations (id, workspace_id, display_name, slack_mode, webhook_url_encrypted, webhook_last4, bot_token_encrypted, bot_token_last4, default_channel, severity_routing, enabled, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, TRUE, %s)
             ''',
             (
                 integration_id,
                 workspace_context['workspace_id'],
                 display_name,
-                _encode_secret_value(webhook_url),
-                webhook_url[-4:],
-                str(payload.get('default_channel', '')).strip() or None,
+                mode,
+                (_encode_secret_value(webhook_url) if webhook_url else None),
+                (webhook_url[-4:] if webhook_url else None),
+                (_encode_secret_value(bot_token) if bot_token else None),
+                (bot_token[-4:] if bot_token else None),
+                default_channel,
+                _json_dumps(_normalize_slack_severity_routing(payload)),
                 user['id'],
             ),
         )
-        log_audit(connection, action='integration.slack.create', entity_type='workspace_slack_integration', entity_id=integration_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'display_name': display_name, 'webhook_mask': _mask_url(webhook_url)})
+        log_audit(connection, action='integration.slack.create', entity_type='workspace_slack_integration', entity_id=integration_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'display_name': display_name, 'mode': mode})
         connection.commit()
-        return {'id': integration_id, 'display_name': display_name, 'enabled': True, 'webhook_last4': webhook_url[-4:]}
+        return {'id': integration_id, 'display_name': display_name, 'enabled': True, 'mode': mode, 'webhook_last4': webhook_url[-4:] if webhook_url else None, 'bot_token_last4': bot_token[-4:] if bot_token else None}
 
 
 def update_slack_integration(integration_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -2140,38 +2263,51 @@ def update_slack_integration(integration_id: str, payload: dict[str, Any], reque
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         integration = connection.execute(
-            'SELECT id, webhook_last4 FROM workspace_slack_integrations WHERE id = %s AND workspace_id = %s',
+            'SELECT id FROM workspace_slack_integrations WHERE id = %s AND workspace_id = %s',
             (integration_id, workspace_context['workspace_id']),
         ).fetchone()
         if integration is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Slack integration not found.')
         next_url = str(payload.get('webhook_url', '')).strip()
-        encoded_value = _encode_secret_value(next_url) if next_url else None
+        next_bot_token = str(payload.get('bot_token', '')).strip()
+        next_mode = str(payload.get('mode') or payload.get('slack_mode') or '').strip().lower() or None
         if next_url and not next_url.startswith('https://hooks.slack.com/'):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='webhook_url must be a valid Slack incoming webhook URL.')
+        if next_bot_token and not next_bot_token.startswith('xoxb-'):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='bot_token must be a valid Slack bot token (xoxb-...).')
+        if next_mode and next_mode not in {'webhook', 'bot'}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Slack mode must be webhook or bot.')
         connection.execute(
             '''
             UPDATE workspace_slack_integrations
             SET display_name = COALESCE(%s, display_name),
+                slack_mode = COALESCE(%s, slack_mode),
                 default_channel = COALESCE(%s, default_channel),
                 enabled = COALESCE(%s, enabled),
                 webhook_url_encrypted = COALESCE(%s, webhook_url_encrypted),
                 webhook_last4 = COALESCE(%s, webhook_last4),
+                bot_token_encrypted = COALESCE(%s, bot_token_encrypted),
+                bot_token_last4 = COALESCE(%s, bot_token_last4),
+                severity_routing = COALESCE(%s::jsonb, severity_routing),
                 updated_at = NOW()
             WHERE id = %s
             ''',
             (
                 str(payload.get('display_name')).strip() if payload.get('display_name') is not None else None,
+                next_mode,
                 str(payload.get('default_channel')).strip() if payload.get('default_channel') is not None else None,
                 payload.get('enabled') if payload.get('enabled') is not None else None,
-                encoded_value,
+                _encode_secret_value(next_url) if next_url else None,
                 (next_url[-4:] if next_url else None),
+                _encode_secret_value(next_bot_token) if next_bot_token else None,
+                (next_bot_token[-4:] if next_bot_token else None),
+                _json_dumps(_normalize_slack_severity_routing(payload)) if payload.get('severity_routing') is not None else None,
                 integration_id,
             ),
         )
         log_audit(connection, action='integration.slack.update', entity_type='workspace_slack_integration', entity_id=integration_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
         connection.commit()
-        row = connection.execute('SELECT id, display_name, enabled, webhook_last4, default_channel FROM workspace_slack_integrations WHERE id = %s', (integration_id,)).fetchone()
+        row = connection.execute('SELECT id, display_name, slack_mode, enabled, webhook_last4, bot_token_last4, default_channel, severity_routing FROM workspace_slack_integrations WHERE id = %s', (integration_id,)).fetchone()
         return _json_safe_value(dict(row))
 
 
@@ -2196,7 +2332,7 @@ def list_slack_deliveries(integration_id: str, request: Request) -> dict[str, An
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, event_type, status, response_status, error_message, attempt, created_at
+            SELECT id, event_type, status, response_status, error_message, attempt, provider_mode, created_at
             FROM slack_deliveries
             WHERE slack_integration_id = %s AND workspace_id = %s
             ORDER BY created_at DESC
@@ -2213,7 +2349,7 @@ def test_slack_integration(integration_id: str, request: Request) -> dict[str, A
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         integration = connection.execute(
-            'SELECT id, display_name, webhook_url_encrypted FROM workspace_slack_integrations WHERE id = %s AND workspace_id = %s',
+            'SELECT id, display_name, slack_mode, default_channel, webhook_url_encrypted, bot_token_encrypted FROM workspace_slack_integrations WHERE id = %s AND workspace_id = %s',
             (integration_id, workspace_context['workspace_id']),
         ).fetchone()
         if integration is None:
@@ -2225,10 +2361,10 @@ def test_slack_integration(integration_id: str, request: Request) -> dict[str, A
         delivery_id = str(uuid.uuid4())
         connection.execute(
             '''
-            INSERT INTO slack_deliveries (id, workspace_id, slack_integration_id, event_type, request_body, status, response_status, response_body, error_message, attempt)
-            VALUES (%s, %s, %s, 'alert.test', %s::jsonb, 'queued', NULL, NULL, NULL, 0)
+            INSERT INTO slack_deliveries (id, workspace_id, slack_integration_id, event_type, request_body, status, provider_mode, response_status, response_body, error_message, attempt)
+            VALUES (%s, %s, %s, 'alert.test', %s::jsonb, 'queued', %s, NULL, NULL, NULL, 0)
             ''',
-            (delivery_id, workspace_context['workspace_id'], integration_id, _json_dumps(slack_payload)),
+            (delivery_id, workspace_context['workspace_id'], integration_id, _json_dumps(slack_payload), str(integration.get('slack_mode') or 'webhook')),
         )
         _queue_background_job(
             connection,
@@ -2236,7 +2372,10 @@ def test_slack_integration(integration_id: str, request: Request) -> dict[str, A
             payload={
                 'slack_integration_id': integration_id,
                 'delivery_id': delivery_id,
-                'webhook_url': _decode_secret_value(str(integration['webhook_url_encrypted'])),
+                'mode': str(integration.get('slack_mode') or 'webhook'),
+                'default_channel': str(integration.get('default_channel') or ''),
+                'webhook_url': _decode_secret_value(str(integration['webhook_url_encrypted'])) if integration.get('webhook_url_encrypted') else '',
+                'bot_token': _decode_secret_value(str(integration['bot_token_encrypted'])) if integration.get('bot_token_encrypted') else '',
                 'payload': slack_payload,
             },
             max_attempts=4,
@@ -2505,7 +2644,7 @@ def _queue_alert_deliveries(
     if route_enabled('slack'):
         integrations = connection.execute(
             '''
-            SELECT id, webhook_url_encrypted
+            SELECT id, slack_mode, default_channel, webhook_url_encrypted, bot_token_encrypted
             FROM workspace_slack_integrations
             WHERE workspace_id = %s AND enabled = TRUE
             ''',
@@ -2537,12 +2676,13 @@ def _queue_alert_deliveries(
         }
         for integration in integrations:
             delivery_id = str(uuid.uuid4())
+            provider_mode = str(integration.get('slack_mode') or 'webhook')
             connection.execute(
                 '''
-                INSERT INTO slack_deliveries (id, workspace_id, slack_integration_id, event_type, request_body, status, response_status, response_body, error_message, attempt, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s::jsonb, 'queued', NULL, NULL, NULL, 0, NOW(), NOW())
+                INSERT INTO slack_deliveries (id, workspace_id, slack_integration_id, event_type, request_body, status, provider_mode, response_status, response_body, error_message, attempt, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s::jsonb, 'queued', %s, NULL, NULL, NULL, 0, NOW(), NOW())
                 ''',
-                (delivery_id, workspace_id, integration['id'], 'alert.created', _json_dumps(slack_payload)),
+                (delivery_id, workspace_id, integration['id'], 'alert.created', _json_dumps(slack_payload), provider_mode),
             )
             _queue_background_job(
                 connection,
@@ -2550,11 +2690,15 @@ def _queue_alert_deliveries(
                 payload={
                     'slack_integration_id': str(integration['id']),
                     'delivery_id': delivery_id,
+                    'mode': provider_mode,
+                    'default_channel': str(integration.get('default_channel') or ''),
                     'webhook_url': _decode_secret_value(str(integration.get('webhook_url_encrypted') or '')),
+                    'bot_token': _decode_secret_value(str(integration.get('bot_token_encrypted') or '')),
                     'payload': slack_payload,
                 },
                 max_attempts=4,
             )
+
 
 
 def create_governance_action_record(
@@ -2712,6 +2856,61 @@ def build_history_response(request: Request, limit: int = 25) -> dict[str, Any]:
         'incidents': serialize(incidents),
         'audit_logs': serialize(audit_logs),
     }
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    return bool(value) if isinstance(value, bool) else default
+
+
+def _coerce_number(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_module_config(module_key: str, config: dict[str, Any]) -> dict[str, Any]:
+    if module_key == 'threat':
+        return {
+            'risky_approvals_enabled': _coerce_bool(config.get('risky_approvals_enabled'), True),
+            'unlimited_approval_detection_enabled': _coerce_bool(config.get('unlimited_approval_detection_enabled'), True),
+            'unknown_target_threshold': max(0, int(_coerce_number(config.get('unknown_target_threshold'), 2))),
+            'privileged_function_sensitivity': str(config.get('privileged_function_sensitivity') or 'high').lower() if str(config.get('privileged_function_sensitivity') or 'high').lower() in {'low', 'medium', 'high', 'critical'} else 'high',
+            'large_transfer_threshold': max(1, _coerce_number(config.get('large_transfer_threshold'), 250000)),
+            'allowlist': [str(item).strip() for item in (config.get('allowlist') or []) if str(item).strip()] if isinstance(config.get('allowlist'), list) else [],
+            'denylist': [str(item).strip() for item in (config.get('denylist') or []) if str(item).strip()] if isinstance(config.get('denylist'), list) else [],
+            'escalation_map': config.get('escalation_map') if isinstance(config.get('escalation_map'), dict) else {'low': 'low', 'medium': 'medium', 'high': 'high', 'critical': 'critical'},
+        }
+    if module_key == 'compliance':
+        return {
+            'evidence_retention_period_days': max(30, int(_coerce_number(config.get('evidence_retention_period_days'), 90))),
+            'required_review_checklist': [str(item).strip() for item in (config.get('required_review_checklist') or []) if str(item).strip()] if isinstance(config.get('required_review_checklist'), list) else [],
+            'required_approvers_count': max(1, int(_coerce_number(config.get('required_approvers_count'), 2))),
+            'classification_mapping': config.get('classification_mapping') if isinstance(config.get('classification_mapping'), dict) else {'pii': 'restricted', 'transaction': 'confidential'},
+            'exception_policy': str(config.get('exception_policy') or 'manual_review'),
+            'reporting_profile': str(config.get('reporting_profile') or 'standard'),
+        }
+    if module_key == 'resilience':
+        return {
+            'oracle_dependency_checks_enabled': _coerce_bool(config.get('oracle_dependency_checks_enabled'), True),
+            'oracle_sensitivity_threshold': max(1, int(_coerce_number(config.get('oracle_sensitivity_threshold'), 70))),
+            'settlement_control_checks_enabled': _coerce_bool(config.get('settlement_control_checks_enabled'), True),
+            'control_concentration_threshold': max(1, int(_coerce_number(config.get('control_concentration_threshold'), 65))),
+            'privileged_role_change_alerts': _coerce_bool(config.get('privileged_role_change_alerts'), True),
+            'emergency_trigger_threshold': str(config.get('emergency_trigger_threshold') or 'high'),
+            'monitoring_cadence_minutes': max(1, int(_coerce_number(config.get('monitoring_cadence_minutes'), 15))),
+        }
+    return config
+
+
+def summarize_module_config(module_key: str, config: dict[str, Any]) -> str:
+    if module_key == 'threat':
+        return f"Unlimited approvals={'on' if config.get('unlimited_approval_detection_enabled') else 'off'}, large transfer>{config.get('large_transfer_threshold')}"
+    if module_key == 'compliance':
+        return f"Retention={config.get('evidence_retention_period_days')} days, approvers={config.get('required_approvers_count')}"
+    if module_key == 'resilience':
+        return f"Oracle checks={'on' if config.get('oracle_dependency_checks_enabled') else 'off'}, emergency={config.get('emergency_trigger_threshold')}"
+    return 'Configured'
+
 
 TARGET_TYPES = {'contract', 'wallet', 'oracle', 'treasury-linked asset', 'settlement component', 'admin-controlled module'}
 MODULE_KEYS = {'threat', 'compliance', 'resilience'}
@@ -3129,7 +3328,8 @@ def get_module_config(module_key: str, request: Request) -> dict[str, Any]:
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         row = connection.execute('SELECT config, updated_at FROM module_configs WHERE workspace_id = %s AND module_key = %s', (workspace_context['workspace_id'], module_key)).fetchone()
-        return {'module': module_key, 'config': _json_safe_value((row or {}).get('config') or {}), 'updated_at': _json_safe_value((row or {}).get('updated_at'))}
+        normalized = normalize_module_config(module_key, _json_safe_value((row or {}).get('config') or {}))
+        return {'module': module_key, 'config': normalized, 'summary': summarize_module_config(module_key, normalized), 'updated_at': _json_safe_value((row or {}).get('updated_at'))}
 
 
 def put_module_config(module_key: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -3142,8 +3342,9 @@ def put_module_config(module_key: str, payload: dict[str, Any], request: Request
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
+        normalized_config = normalize_module_config(module_key, config)
         entitlements = _workspace_plan(connection, workspace_context['workspace_id'])
-        if module_key in {'threat', 'resilience'} and entitlements['plan_key'] == 'free_trial' and len(config.keys()) > 4:
+        if module_key in {'threat', 'resilience'} and entitlements['plan_key'] == 'free_trial' and len(normalized_config.keys()) > 4:
             raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Advanced module configuration requires Starter or higher.')
         config_id = str(uuid.uuid4())
         connection.execute(
@@ -3153,11 +3354,11 @@ def put_module_config(module_key: str, payload: dict[str, Any], request: Request
             ON CONFLICT (workspace_id, module_key)
             DO UPDATE SET config = excluded.config, updated_by_user_id = excluded.updated_by_user_id, updated_at = NOW()
             ''',
-            (config_id, workspace_context['workspace_id'], module_key, _json_dumps(config), user['id']),
+            (config_id, workspace_context['workspace_id'], module_key, _json_dumps(normalized_config), user['id']),
         )
         log_audit(connection, action='module_config.update', entity_type='module_config', entity_id=module_key, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'module': module_key})
         connection.commit()
-        return {'module': module_key, 'config': config, 'saved': True}
+        return {'module': module_key, 'config': normalized_config, 'summary': summarize_module_config(module_key, normalized_config), 'saved': True}
 
 
 def list_alerts(request: Request, *, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None) -> dict[str, Any]:

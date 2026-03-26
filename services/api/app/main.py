@@ -117,6 +117,9 @@ from services.api.app.pilot import (
     patch_finding_action,
     list_finding_actions,
     list_finding_decisions,
+    get_integration_health,
+    test_integration_email,
+    test_integration_slack,
 )
 
 
@@ -1669,6 +1672,21 @@ def integrations_slack_test(integration_id: str, request: Request) -> dict[str, 
 @app.get('/integrations/slack/{integration_id}/deliveries', summary='List Slack delivery attempts')
 def integrations_slack_deliveries(integration_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_slack_deliveries(integration_id, request))
+
+
+@app.get('/system/integrations/health', summary='Integration health diagnostics')
+def system_integrations_health(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_integration_health(request))
+
+
+@app.post('/system/integrations/test-email', summary='Send integration test email')
+def system_integrations_test_email(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: test_integration_email(request))
+
+
+@app.post('/system/integrations/test-slack', summary='Send integration test Slack message')
+def system_integrations_test_slack(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: test_integration_slack(payload, request))
 
 
 @app.get('/integrations/routing', summary='List workspace alert routing rules')
