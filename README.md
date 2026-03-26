@@ -156,7 +156,7 @@ curl -X POST "$API_URL/ops/jobs/run" -H "Content-Type: application/json" -d '{"w
 ### Honest remaining gaps before true GA / enterprise claims
 
 - Frontend MFA enrollment/challenge UX is not fully wired end-to-end yet.
-- Workspace invitations, webhook management UI, and billing/subscription automation remain incomplete.
+- Core customer-operable flows are now live in product UI: workspace team admin (member role changes/removal/invites/revoke/resend), seat visibility, billing checkout + portal launch, webhook management (create/edit/enable/rotate/deliveries), and findings decisions/actions workflow.
 - Formal SOC 2 control evidence, key rotation automation, and full incident-response runbooks are still required for enterprise procurement.
 
 ## Workspace operations workflow (live mode)
@@ -172,7 +172,9 @@ Recent SaaS workflow upgrades now prioritize real customer records over scenario
 - Alert notifications now queue outbound webhook/email delivery attempts via `background_jobs`; run `python services/api/scripts/run_worker.py` to process queued deliveries.
 - Stripe checkout/portal endpoints now require live provider configuration (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, plus `plan_entitlements.stripe_price_id` per plan) and no longer create local placeholder subscriptions.
 - Team and seat administration endpoints: `PATCH/DELETE /workspace/members/{id}`, `GET /team/seats`.
+- Team invitation lifecycle endpoints: `GET/POST /workspace/invitations`, `POST /workspace/invitations/{id}/resend`, `DELETE /workspace/invitations/{id}`, `POST /workspace/invitations/accept`.
 - Finding action workflow endpoints: `POST /findings/{id}/decision`, `POST /findings/{id}/actions`, `PATCH /actions/{id}`, `GET /actions`, `GET /decisions`.
+- Protected pages now follow an auth-safe client fetch pattern using `usePilotAuth().authHeaders()` for workspace-scoped calls (`alerts`, `integrations`, `templates`, and settings subflows).
 
 Templates remain onboarding-only (`GET /templates`, `POST /templates/{id}/apply`) and do not replace live customer data in authenticated operations.
 

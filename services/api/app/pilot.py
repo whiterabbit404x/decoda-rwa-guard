@@ -1345,7 +1345,7 @@ def list_workspace_members(request: Request) -> dict[str, Any]:
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT wm.user_id, wm.role, wm.created_at, u.email, u.full_name
+            SELECT wm.id, wm.user_id, wm.role, wm.created_at, u.email, u.full_name
             FROM workspace_members wm
             JOIN users u ON u.id = wm.user_id
             WHERE wm.workspace_id = %s
@@ -1357,6 +1357,7 @@ def list_workspace_members(request: Request) -> dict[str, Any]:
             'workspace': workspace_context['workspace'],
             'members': [
                 {
+                    'id': str(row['id']),
                     'user_id': str(row['user_id']),
                     'email': str(row['email']),
                     'full_name': str(row['full_name']),
@@ -1365,6 +1366,27 @@ def list_workspace_members(request: Request) -> dict[str, Any]:
                 }
                 for row in rows
             ],
+        }
+
+
+def list_workspace_invitations(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        rows = connection.execute(
+            '''
+            SELECT id, email, role, status, expires_at, created_at, updated_at
+            FROM workspace_invitations
+            WHERE workspace_id = %s
+            ORDER BY created_at DESC
+            ''',
+            (workspace_context['workspace_id'],),
+        ).fetchall()
+        return {
+            'workspace': workspace_context['workspace'],
+            'requested_by_user_id': user['id'],
+            'invitations': [_json_safe_value(dict(row)) for row in rows],
         }
 
 
@@ -1396,6 +1418,47 @@ def create_workspace_invitation(payload: dict[str, Any], request: Request) -> di
         log_audit(connection, action='invitation.create', entity_type='workspace_invitation', entity_id=invitation_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'email': email, 'role': role})
         connection.commit()
         return {'invitation_id': invitation_id, 'workspace_id': workspace_context['workspace_id'], 'email': email, 'role': role, 'token': token, 'expires_in_days': 7}
+
+
+def revoke_workspace_invitation(invitation_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        invitation = connection.execute(
+            'SELECT id, status FROM workspace_invitations WHERE id = %s AND workspace_id = %s',
+            (invitation_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if invitation is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Invitation not found.')
+        if str(invitation.get('status', '')) == 'revoked':
+            return {'revoked': True, 'id': invitation_id}
+        connection.execute("UPDATE workspace_invitations SET status='revoked', updated_at=NOW() WHERE id=%s", (invitation_id,))
+        log_audit(connection, action='invitation.revoke', entity_type='workspace_invitation', entity_id=invitation_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'revoked': True, 'id': invitation_id}
+
+
+def resend_workspace_invitation(invitation_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        invitation = connection.execute(
+            'SELECT id, email, role FROM workspace_invitations WHERE id = %s AND workspace_id = %s',
+            (invitation_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if invitation is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Invitation not found.')
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
+        connection.execute(
+            "UPDATE workspace_invitations SET status='pending', token_hash=%s, invited_by_user_id=%s, expires_at=NOW() + interval '7 days', updated_at=NOW() WHERE id=%s",
+            (token_hash, user['id'], invitation_id),
+        )
+        log_audit(connection, action='invitation.resend', entity_type='workspace_invitation', entity_id=invitation_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'resent': True, 'id': invitation_id, 'email': str(invitation['email']), 'role': _normalize_workspace_role(str(invitation['role'])), 'token': token, 'expires_in_days': 7}
 
 
 def accept_workspace_invitation(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -1438,6 +1501,11 @@ def update_workspace_member(member_id: str, payload: dict[str, Any], request: Re
         row = connection.execute('SELECT id, user_id, role FROM workspace_members WHERE id = %s AND workspace_id = %s', (member_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Member not found.')
+        current_role = _normalize_workspace_role(str(row['role']))
+        if current_role == 'owner' and role != 'owner':
+            owner_count = connection.execute("SELECT COUNT(*) AS count FROM workspace_members WHERE workspace_id = %s AND role = 'owner'", (workspace_context['workspace_id'],)).fetchone()
+            if int((owner_count or {}).get('count') or 0) <= 1:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Workspace must keep at least one owner.')
         connection.execute('UPDATE workspace_members SET role = %s WHERE id = %s', (role, member_id))
         log_audit(connection, action='member.role_update', entity_type='workspace_member', entity_id=member_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'role': role})
         connection.commit()
@@ -1448,9 +1516,13 @@ def remove_workspace_member(member_id: str, request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
-        row = connection.execute('SELECT id, user_id FROM workspace_members WHERE id = %s AND workspace_id = %s', (member_id, workspace_context['workspace_id'])).fetchone()
+        row = connection.execute('SELECT id, user_id, role FROM workspace_members WHERE id = %s AND workspace_id = %s', (member_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Member not found.')
+        if _normalize_workspace_role(str(row['role'])) == 'owner':
+            owner_count = connection.execute("SELECT COUNT(*) AS count FROM workspace_members WHERE workspace_id = %s AND role = 'owner'", (workspace_context['workspace_id'],)).fetchone()
+            if int((owner_count or {}).get('count') or 0) <= 1:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Workspace must keep at least one owner.')
         connection.execute('DELETE FROM workspace_members WHERE id = %s', (member_id,))
         log_audit(connection, action='member.remove', entity_type='workspace_member', entity_id=member_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
         connection.commit()

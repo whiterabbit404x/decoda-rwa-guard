@@ -123,6 +123,8 @@ def test_auth_signin_route_returns_json_schema_error_instead_of_500(api_main, mo
                 'workspaces',
                 'workspace_members',
                 'auth_sessions',
+                'auth_tokens',
+                'mfa_recovery_codes',
                 'analysis_runs',
                 'alerts',
                 'governance_actions',

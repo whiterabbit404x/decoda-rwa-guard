@@ -36,6 +36,9 @@ from services.api.app.pilot import (
     create_portal_session,
     create_webhook,
     create_workspace_invitation,
+    list_workspace_invitations,
+    revoke_workspace_invitation,
+    resend_workspace_invitation,
     update_workspace_member,
     remove_workspace_member,
     get_team_seats,
@@ -1405,6 +1408,21 @@ def workspace_members(request: Request) -> dict[str, Any]:
 @app.post('/workspace/invitations', summary='Create workspace invitation')
 def workspace_invite(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_workspace_invitation(payload, request))
+
+
+@app.get('/workspace/invitations', summary='List workspace invitations')
+def workspace_invites_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_workspace_invitations(request))
+
+
+@app.post('/workspace/invitations/{invitation_id}/resend', summary='Resend workspace invitation')
+def workspace_invites_resend(invitation_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: resend_workspace_invitation(invitation_id, request))
+
+
+@app.delete('/workspace/invitations/{invitation_id}', summary='Revoke workspace invitation')
+def workspace_invites_revoke(invitation_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: revoke_workspace_invitation(invitation_id, request))
 
 
 @app.post('/workspace/invitations/accept', summary='Accept workspace invitation')
