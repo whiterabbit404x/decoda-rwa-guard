@@ -1,4 +1,4 @@
-import ThreatDemoPanel from '../../threat-demo-panel';
+import ThreatOperationsPanel from '../../threat-operations-panel';
 import { fetchDashboardPageData, formatRules } from '../../dashboard-data';
 import StatusBadge from '../../status-badge';
 import SystemStatusPanel from '../../system-status-panel';
@@ -34,7 +34,7 @@ export default async function ThreatPage() {
             </article>
           ))}
         </div>
-        <ThreatDemoPanel apiUrl={data.apiUrl} />
+        <ThreatOperationsPanel apiUrl={data.apiUrl} />
         <div className="stack compactStack">
           <div className="workflowHeader">
             <p className="sectionEyebrow">Decision output</p>

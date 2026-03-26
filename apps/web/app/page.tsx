@@ -28,7 +28,7 @@ export default async function MarketingHomePage() {
           <h1>Risk control for tokenized treasuries and real-world assets.</h1>
           <p className="lede">Operate tokenized treasury programs with a customer-ready control layer for threat detection, compliance governance, and operational resilience—without losing demo-safe fallback coverage when a dependency fails.</p>
           <div className="heroActionRow">
-            <Link href="/dashboard" className="primaryCta">Start pilot</Link>
+            <Link href="/dashboard" className="primaryCta">Start free trial</Link>
             <a href="mailto:demo@decoda.example" className="secondaryCta">Request demo</a>
             <Link href="/sign-in" className="tertiaryCta">Sign in</Link>
             <Link href="/sign-up" className="tertiaryCta">Sign up</Link>
@@ -46,7 +46,7 @@ export default async function MarketingHomePage() {
           <p>Decoda RWA Guard gives issuers, operators, and compliance teams a single experience for monitoring exploit paths, approving governance controls, and proving operational discipline across live and degraded states.</p>
           <div className="summaryGrid compactSummaryGrid">
             <article className="metricCard"><p className="metricLabel">Threat coverage</p><p className="metricValue">24/7</p><p className="metricMeta">Contract, transaction, and market monitoring</p></article>
-            <article className="metricCard"><p className="metricLabel">Governance trace</p><p className="metricValue">Saved</p><p className="metricMeta">Workspace-scoped records for pilot customers</p></article>
+            <article className="metricCard"><p className="metricLabel">Governance trace</p><p className="metricValue">Saved</p><p className="metricMeta">Workspace-scoped records for workspace customers</p></article>
           </div>
         </div>
       </section>
@@ -74,7 +74,7 @@ export default async function MarketingHomePage() {
         <div className="sectionHeader">
           <div>
             <p className="eyebrow">Customer trust</p>
-            <h2>Built for real pilots, not fragile demos</h2>
+            <h2>Production-ready controls</h2>
             <p className="lede">Graceful degradation, deterministic fallback payloads, persisted workspace history, and deployment guidance for Railway, Vercel, and Neon make the product credible in front of customers.</p>
           </div>
         </div>
@@ -89,12 +89,12 @@ export default async function MarketingHomePage() {
         <div className="sectionHeader">
           <div>
             <p className="eyebrow">Commercial motion</p>
-            <h2>Start with a pilot, grow into production operations</h2>
+            <h2>Start self-serve, scale into enterprise operations</h2>
           </div>
         </div>
         <div className="threeColumnSection">
           <article className="dataCard polishedCard"><h3>Pilot</h3><p className="metricValue">Request demo</p><p>Customer onboarding, workspace setup, and guided deployment support.</p></article>
-          <article className="dataCard polishedCard"><h3>Operator</h3><p className="metricValue">Start pilot</p><p>Run authenticated workspaces, persist live records, and validate live vs fallback behavior.</p></article>
+          <article className="dataCard polishedCard"><h3>Operator</h3><p className="metricValue">Start free trial</p><p>Run authenticated workspaces, persist live records, and validate live vs fallback behavior.</p></article>
           <article className="dataCard polishedCard"><h3>Enterprise</h3><p className="metricValue">Custom</p><p>For issuers and infrastructure partners who need governance and resilience workflows at scale.</p></article>
         </div>
       </section>

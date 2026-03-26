@@ -5,7 +5,7 @@ import { useMemo, useState } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
 
-type DemoPanelProps = {
+type OperationsPanelProps = {
   apiUrl: string;
 };
 
@@ -200,7 +200,7 @@ const governanceScenarios = {
   }
 } as const;
 
-export default function ComplianceDemoPanel({ apiUrl }: DemoPanelProps) {
+export default function ComplianceOperationsPanel({ apiUrl }: OperationsPanelProps) {
   const router = useRouter();
   const { isAuthenticated, user, authHeaders } = usePilotAuth();
   const [transferScenario, setTransferScenario] = useState<TransferScenarioKey>('compliant_transfer_approved');
@@ -278,7 +278,7 @@ export default function ComplianceDemoPanel({ apiUrl }: DemoPanelProps) {
     <div className="dataCard demoPanel complianceDemoPanel">
       <div className="sectionHeader compact">
         <div>
-          <h3>Feature 3 demo interactions</h3>
+          <h3>Compliance Operations</h3>
           <p>Run wrapper screening and governance actions through the API gateway.</p>
         </div>
         <span className="pill">{isAuthenticated && user?.current_workspace ? `Live workspace: ${user.current_workspace.name}` : apiUrl}</span>

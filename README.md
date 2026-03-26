@@ -2,9 +2,9 @@
 
 This repo now supports a reproducible local Phase 1 workflow without Docker as the primary path. The stable Phase 1 risk-engine remains intact, Feature 2 adds the `threat-engine` service for explainable zero-day exploit mitigation and treasury-token market anomaly detection, Feature 3 adds the `compliance-service` for sovereign-grade compliance wrappers, geopatriation controls, and governance actions, and Feature 4 expands the existing `reconciliation-service` into an interoperability and systemic resilience slice for deterministic cross-chain reconciliation, backstop controls, and local incident logging.
 
-## Pilot SaaS mode (Railway + Vercel + Neon)
+## Public self-serve SaaS mode (Railway + Vercel + Neon)
 
-The repo now supports a minimal **real pilot SaaS mode** alongside the existing local/demo mode. Demo endpoints and UI still work, but authenticated live-mode actions persist workspace-scoped data through `services/api` into Neon Postgres. The backend deployment model remains the same: Railway still runs the existing API Dockerfile, and Vercel still hosts the Next.js frontend.
+The repo now supports a production-oriented **public self-serve SaaS mode** alongside the existing local/demo mode. Demo endpoints and UI still work, but authenticated live-mode actions persist workspace-scoped data through `services/api` into Neon Postgres. The backend deployment model remains the same: Railway still runs the existing API Dockerfile, and Vercel still hosts the Next.js frontend.
 
 ### Pilot architecture changes
 
@@ -96,7 +96,7 @@ Fast operator checks:
 4. Open `/api/build-info` on the preview deployment and verify `vercelEnv`, `branch`, `commitSha`, and the runtime config summary.
 5. If `/api/build-info` is healthy but auth still fails, the next place to check is the backend API / Railway deployment rather than the same-origin auth proxy.
 
-### What remains for full production later
+### External requirements before enterprise claims
 
 - Email verification, password reset, and server-side session invalidation.
 - TOTP MFA, distributed/shared-store auth rate limiting, background workers, webhooks, and billing automation are still planned before GA.
@@ -341,7 +341,7 @@ These walkthroughs assume you started the services with the exact Windows CMD co
 ### Feature 3 demo walkthrough — compliance wrappers and governance
 
 1. Scroll to **Feature 3 · Sovereign-Grade Compliance & Governance**.
-2. In **Feature 3 demo interactions**, leave **Compliant transfer approved** selected and click **Run transfer screening**.
+2. In **Compliance Operations**, leave **Compliant transfer approved** selected and click **Run transfer screening**.
 3. Switch to **Blocked by sanctions** or **Review for incomplete KYC** and run the transfer screening again to compare deterministic wrapper reasons.
 4. In the residency section, run **Denied restricted region** to verify the geopatriation controls and routing recommendation.
 5. In the governance section, submit **Freeze wallet**, **Pause asset**, or **Allowlist wallet**.
@@ -350,7 +350,7 @@ These walkthroughs assume you started the services with the exact Windows CMD co
 ### Feature 4 demo walkthrough — reconciliation, backstops, and incidents
 
 1. Scroll to **Feature 4 · Interoperability & Systemic Resilience**.
-2. In **Feature 4 demo interactions**, run **Critical divergence** to compare expected supply vs. observed multi-ledger supply.
+2. In **Resilience Operations**, run **Critical divergence** to compare expected supply vs. observed multi-ledger supply.
 3. Run **Pause bridge** in the backstop section to exercise the deterministic restricted / paused safeguards.
 4. Run **Reconciliation failure** or **Market circuit breaker** in the incident section to append a new resilience incident record.
 5. Confirm the response payloads render in the demo panel and then review **Ledger assessments**, **Backstop decision**, and **Latest incident records** for the matching dashboard state.
@@ -1088,3 +1088,32 @@ You can also inspect `/health/details` to confirm dependency diagnostics, build/
 - Rotate `DATABASE_URL` credentials in Neon/Railway if they were ever shared in logs or screenshots.
 - Rotate Vercel + Railway API URL credentials if they include embedded credentials.
 - Verify `GET /health` and dashboard APIs only return masked database configuration (`[configured]`) instead of raw DSNs before inviting external evaluators.
+
+
+## Public self-serve SaaS additions (this pass)
+
+- Billing foundations added in code + schema (`billing_customers`, `billing_subscriptions`, `billing_events`, `plan_entitlements`) with endpoints for plan listing, checkout session, portal session, subscription lookup, and Stripe webhook ingestion.
+- Workspace team-management foundations added with invitation create/accept flows and workspace member listing.
+- Workspace webhook-management foundations added with create/update/list/rotate-secret plus delivery listing.
+- Dashboard fallback behavior is now strict in production/authenticated usage: demo payloads are only allowed when `ENABLE_DEMO_FALLBACKS=true` in non-production.
+
+### New environment variables
+
+- `ENABLE_DEMO_FALLBACKS=true|false` (non-production only; enables sample dashboard payloads)
+- `STRIPE_WEBHOOK_SECRET=...` (required to validate Stripe webhooks in production)
+- `STRIPE_SECRET_KEY=...` (required for real hosted checkout/portal wiring)
+
+### Manual setup required
+
+1. Run migrations: `python services/api/scripts/migrate.py`.
+2. Configure Stripe products/prices and wire real checkout/portal calls (code currently ships safe placeholders that persist subscription state and audit events).
+3. Configure webhook endpoint in Stripe to `POST /billing/webhooks/stripe` and set `STRIPE_WEBHOOK_SECRET`.
+4. Provision a dedicated worker process for queued jobs on Railway.
+
+### Honest external follow-up still required
+
+- Independent penetration testing.
+- SOC 2 evidence collection and audit execution.
+- Legal/privacy policy and DPA reviews.
+- Incident-response tabletop exercises and documented runbooks.
+- Key-rotation and backup/restore drill operations.

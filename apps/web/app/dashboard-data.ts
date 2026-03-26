@@ -989,6 +989,13 @@ export function resolveFetchTimeoutMs() {
   return value;
 }
 
+function demoFallbacksEnabled() {
+  if (process.env.ENABLE_DEMO_FALLBACKS?.toLowerCase() !== 'true') {
+    return false;
+  }
+  return process.env.NODE_ENV !== 'production';
+}
+
 export async function fetchJson<T>(path: string, apiUrl = resolveApiUrl()): Promise<T | null> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), resolveFetchTimeoutMs());
@@ -1229,20 +1236,30 @@ export async function getDashboard(apiUrl = resolveApiUrl()): Promise<DashboardR
 }
 
 export async function getRiskDashboard(apiUrl = resolveApiUrl()): Promise<RiskDashboardResponse> {
-  return (await fetchJson<RiskDashboardResponse>('/risk/dashboard', apiUrl)) ?? fallbackRiskDashboard;
+  const payload = await fetchJson<RiskDashboardResponse>('/risk/dashboard', apiUrl);
+  if (payload) return payload;
+  if (demoFallbacksEnabled()) return fallbackRiskDashboard;
+  return { ...fallbackRiskDashboard, source: 'fallback', degraded: true, message: 'Risk dashboard is unavailable. Connect the API to view live workspace records.', transaction_queue: [], risk_alerts: [], contract_scan_results: [], decisions_log: [], summary: { ...fallbackRiskDashboard.summary, total_transactions: 0, allow_count: 0, review_count: 0, block_count: 0, high_alert_count: 0 } };
 }
 
 export async function getThreatDashboard(apiUrl = resolveApiUrl()): Promise<ThreatDashboardResponse> {
-  const payload = (await fetchJson<ThreatDashboardResponse>('/threat/dashboard', apiUrl)) ?? fallbackThreatDashboard;
+  const payload = (await fetchJson<ThreatDashboardResponse>('/threat/dashboard', apiUrl))
+    ?? (demoFallbacksEnabled() ? fallbackThreatDashboard : { ...fallbackThreatDashboard, message: 'Threat dashboard is unavailable. Reconnect the API to restore threat operations data.', cards: [], active_alerts: [], recent_detections: [], summary: { ...fallbackThreatDashboard.summary, average_score: 0, critical_or_high_alerts: 0, blocked_actions: 0, review_actions: 0, market_anomaly_types: [] } });
   return normalizeThreatDashboardPayload(payload);
 }
 
 export async function getComplianceDashboard(apiUrl = resolveApiUrl()): Promise<ComplianceDashboardResponse> {
-  return (await fetchJson<ComplianceDashboardResponse>('/compliance/dashboard', apiUrl)) ?? fallbackComplianceDashboard;
+  return (await fetchJson<ComplianceDashboardResponse>('/compliance/dashboard', apiUrl))
+    ?? (demoFallbacksEnabled()
+      ? fallbackComplianceDashboard
+      : { ...fallbackComplianceDashboard, message: 'Compliance dashboard is unavailable. Reconnect the API to restore compliance operations data.', cards: [], latest_governance_actions: [], asset_transfer_status: [], summary: { ...fallbackComplianceDashboard.summary, allowlisted_wallet_count: 0, blocklisted_wallet_count: 0, frozen_wallet_count: 0, review_required_wallet_count: 0, paused_asset_count: 0, triggered_rule_count: 0 } });
 }
 
 export async function getResilienceDashboard(apiUrl = resolveApiUrl()): Promise<ResilienceDashboardResponse> {
-  return (await fetchJson<ResilienceDashboardResponse>('/resilience/dashboard', apiUrl)) ?? fallbackResilienceDashboard;
+  return (await fetchJson<ResilienceDashboardResponse>('/resilience/dashboard', apiUrl))
+    ?? (demoFallbacksEnabled()
+      ? fallbackResilienceDashboard
+      : { ...fallbackResilienceDashboard, message: 'Resilience dashboard is unavailable. Reconnect the API to restore resilience operations data.', cards: [], latest_incidents: [], summary: { ...fallbackResilienceDashboard.summary, mismatch_amount: 0, stale_ledger_count: 0, incident_count: 0 } });
 }
 
 function hasAllFeatureFeedsLive(endpoints: DashboardDiagnostics['endpoints']) {
@@ -1511,10 +1528,10 @@ export async function fetchDashboardPageData(requestedApiUrl?: string | null): P
   ]);
 
   const dashboard = normalizeDashboardResponse(dashboardResult.payload);
-  const riskDashboard = riskResult.payload ?? fallbackRiskDashboard;
-  const threatDashboard = normalizeThreatDashboardPayload(threatResult.payload ?? fallbackThreatDashboard);
-  const complianceDashboard = complianceResult.payload ?? fallbackComplianceDashboard;
-  const resilienceDashboard = resilienceResult.payload ?? fallbackResilienceDashboard;
+  const riskDashboard = riskResult.payload ?? (demoFallbacksEnabled() ? fallbackRiskDashboard : await getRiskDashboard(resolvedApiUrl));
+  const threatDashboard = normalizeThreatDashboardPayload(threatResult.payload ?? (demoFallbacksEnabled() ? fallbackThreatDashboard : await getThreatDashboard(resolvedApiUrl)));
+  const complianceDashboard = complianceResult.payload ?? (demoFallbacksEnabled() ? fallbackComplianceDashboard : await getComplianceDashboard(resolvedApiUrl));
+  const resilienceDashboard = resilienceResult.payload ?? (demoFallbacksEnabled() ? fallbackResilienceDashboard : await getResilienceDashboard(resolvedApiUrl));
 
   const sampleMode = !apiConfig.apiUrl;
   const endpoints: DashboardDiagnostics['endpoints'] = {

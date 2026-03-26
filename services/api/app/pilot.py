@@ -1322,6 +1322,107 @@ def list_user_workspaces(request: Request) -> dict[str, Any]:
         return {'workspaces': user['memberships'], 'current_workspace': user['current_workspace']}
 
 
+def _workspace_role_can_manage_members(role: str) -> bool:
+    return _normalize_workspace_role(role) in {'owner', 'admin'}
+
+
+def _require_workspace_admin(connection: Any, request: Request) -> tuple[dict[str, Any], dict[str, Any]]:
+    user = authenticate_with_connection(connection, request)
+    workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+    if not _workspace_role_can_manage_members(str(workspace_context['role'])):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Owner or admin role is required for this action.')
+    return user, workspace_context
+
+
+def list_workspace_members(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT wm.user_id, wm.role, wm.created_at, u.email, u.full_name
+            FROM workspace_members wm
+            JOIN users u ON u.id = wm.user_id
+            WHERE wm.workspace_id = %s
+            ORDER BY wm.created_at ASC
+            ''',
+            (workspace_context['workspace_id'],),
+        ).fetchall()
+        return {
+            'workspace': workspace_context['workspace'],
+            'members': [
+                {
+                    'user_id': str(row['user_id']),
+                    'email': str(row['email']),
+                    'full_name': str(row['full_name']),
+                    'role': _normalize_workspace_role(str(row['role'])),
+                    'created_at': row['created_at'].isoformat() if hasattr(row['created_at'], 'isoformat') else str(row['created_at']),
+                }
+                for row in rows
+            ],
+        }
+
+
+def create_workspace_invitation(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    email = _normalize_email(str(payload.get('email', '')))
+    role = _normalize_workspace_role(str(payload.get('role', 'viewer')))
+    if not email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invitation email is required.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
+        invitation_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO workspace_invitations (id, workspace_id, email, role, token_hash, invited_by_user_id, expires_at, status, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW() + interval '7 days', 'pending', NOW(), NOW())
+            ON CONFLICT (workspace_id, email, status)
+            DO UPDATE SET role = EXCLUDED.role, token_hash = EXCLUDED.token_hash, invited_by_user_id = EXCLUDED.invited_by_user_id, expires_at = EXCLUDED.expires_at, updated_at = NOW()
+            ''',
+            (invitation_id, workspace_context['workspace_id'], email, role, token_hash, user['id']),
+        )
+        log_audit(connection, action='invitation.create', entity_type='workspace_invitation', entity_id=invitation_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'email': email, 'role': role})
+        connection.commit()
+        return {'invitation_id': invitation_id, 'workspace_id': workspace_context['workspace_id'], 'email': email, 'role': role, 'token': token, 'expires_in_days': 7}
+
+
+def accept_workspace_invitation(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    token = str(payload.get('token', '')).strip()
+    if not token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invitation token is required.')
+    token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        invitation = connection.execute(
+            '''
+            SELECT * FROM workspace_invitations
+            WHERE token_hash = %s AND status = 'pending' AND expires_at > NOW()
+            ''',
+            (token_hash,),
+        ).fetchone()
+        if invitation is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Invitation is invalid or expired.')
+        connection.execute(
+            'INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (%s, %s, %s, %s, NOW()) ON CONFLICT (workspace_id, user_id) DO NOTHING',
+            (str(uuid.uuid4()), invitation['workspace_id'], user['id'], _normalize_workspace_role(str(invitation['role']))),
+        )
+        connection.execute(
+            "UPDATE workspace_invitations SET status='accepted', accepted_at=NOW(), accepted_by_user_id=%s, updated_at=NOW() WHERE id=%s",
+            (user['id'], invitation['id']),
+        )
+        connection.execute('UPDATE users SET current_workspace_id=%s, updated_at=NOW() WHERE id=%s', (invitation['workspace_id'], user['id']))
+        log_audit(connection, action='invitation.accept', entity_type='workspace_invitation', entity_id=str(invitation['id']), request=request, user_id=user['id'], workspace_id=str(invitation['workspace_id']), metadata={})
+        connection.commit()
+        return {'accepted': True, 'workspace_id': str(invitation['workspace_id']), 'role': _normalize_workspace_role(str(invitation['role'])), 'user': build_user_response(connection, user['id'])}
+
+
 def seed_demo_workspace(email: str, password: str, workspace_name: str, full_name: str = 'Pilot Demo User') -> dict[str, Any]:
     require_live_mode()
     normalized_email = _normalize_email(email)
@@ -1469,6 +1570,212 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
                 logger.exception('background job failed', extra={'event': 'jobs.failed', 'job_id': job_id, 'job_type': row['job_type']})
         connection.commit()
     return {'processed': processed, 'failed': failed}
+
+
+def list_plan_entitlements() -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        plans = connection.execute(
+            '''
+            SELECT plan_key, plan_name, monthly_price_cents, yearly_price_cents, trial_days, max_members, max_webhooks, features
+            FROM plan_entitlements
+            WHERE is_public = TRUE
+            ORDER BY monthly_price_cents ASC
+            '''
+        ).fetchall()
+        return {'plans': [_json_safe_value(dict(plan)) for plan in plans]}
+
+
+def get_workspace_subscription(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        subscription = connection.execute(
+            '''
+            SELECT plan_key, status, trial_ends_at, current_period_ends_at, cancel_at_period_end
+            FROM billing_subscriptions
+            WHERE workspace_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            ''',
+            (workspace_context['workspace_id'],),
+        ).fetchone()
+        return {'workspace': workspace_context['workspace'], 'subscription': _json_safe_value(dict(subscription)) if subscription else None}
+
+
+def create_checkout_session(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    plan_key = str(payload.get('plan_key', 'starter')).strip().lower()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        plan = connection.execute('SELECT plan_key, trial_days FROM plan_entitlements WHERE plan_key = %s', (plan_key,)).fetchone()
+        if plan is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown plan.')
+        placeholder_subscription_id = f'sub_local_{uuid.uuid4().hex[:18]}'
+        connection.execute(
+            '''
+            INSERT INTO billing_subscriptions (id, workspace_id, provider_subscription_id, plan_key, status, trial_ends_at, current_period_ends_at, metadata)
+            VALUES (%s, %s, %s, %s, 'trialing', NOW() + (%s || ' days')::interval, NOW() + interval '1 month', %s::jsonb)
+            ON CONFLICT (provider_subscription_id) DO NOTHING
+            ''',
+            (str(uuid.uuid4()), workspace_context['workspace_id'], placeholder_subscription_id, plan_key, int(plan['trial_days']), _json_dumps({'source': 'self_serve_checkout'})),
+        )
+        log_audit(connection, action='billing.checkout_session_created', entity_type='workspace', entity_id=workspace_context['workspace_id'], request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'plan_key': plan_key})
+        connection.commit()
+        return {
+            'checkout_url': f"{os.getenv('APP_PUBLIC_URL', 'http://localhost:3000')}/settings?billing=success&plan={plan_key}",
+            'plan_key': plan_key,
+            'mode': 'placeholder',
+            'message': 'Stripe checkout wiring placeholder created. Configure STRIPE_SECRET_KEY and Stripe price IDs for hosted checkout in production.',
+        }
+
+
+def create_portal_session(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        return {
+            'portal_url': f"{os.getenv('APP_PUBLIC_URL', 'http://localhost:3000')}/settings",
+            'mode': 'placeholder',
+            'workspace_id': workspace_context['workspace_id'],
+            'requested_by_user_id': user['id'],
+        }
+
+
+def process_stripe_webhook(payload: dict[str, Any], signature_header: str | None) -> dict[str, Any]:
+    require_live_mode()
+    event_id = str(payload.get('id', '')).strip()
+    event_type = str(payload.get('type', '')).strip()
+    if not event_id or not event_type:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Stripe webhook must include id and type.')
+    expected = os.getenv('STRIPE_WEBHOOK_SECRET', '').strip()
+    if expected and signature_header != expected:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid webhook signature.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        existing = connection.execute('SELECT processing_status FROM billing_events WHERE provider_event_id = %s', (event_id,)).fetchone()
+        if existing is not None:
+            return {'received': True, 'duplicate': True, 'event_id': event_id, 'status': existing['processing_status']}
+        workspace_id = str(((payload.get('data') or {}).get('object') or {}).get('metadata', {}).get('workspace_id', '')).strip() or None
+        connection.execute(
+            '''
+            INSERT INTO billing_events (id, provider, provider_event_id, workspace_id, event_type, payload, processing_status, processed_at)
+            VALUES (%s, 'stripe', %s, %s, %s, %s::jsonb, 'processed', NOW())
+            ''',
+            (str(uuid.uuid4()), event_id, workspace_id, event_type, _json_dumps(payload)),
+        )
+        connection.commit()
+        return {'received': True, 'duplicate': False, 'event_id': event_id, 'status': 'processed'}
+
+
+def list_webhooks(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT id, target_url, description, event_types, enabled, secret_last4, created_at, updated_at
+            FROM workspace_webhooks
+            WHERE workspace_id = %s
+            ORDER BY created_at DESC
+            ''',
+            (workspace_context['workspace_id'],),
+        ).fetchall()
+        return {'webhooks': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def create_webhook(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    target_url = str(payload.get('target_url', '')).strip()
+    if not target_url.startswith('http'):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='target_url must be an absolute http(s) URL.')
+    event_types = payload.get('event_types') if isinstance(payload.get('event_types'), list) else ['analysis.completed']
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        secret = secrets.token_urlsafe(32)
+        webhook_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO workspace_webhooks (id, workspace_id, target_url, description, event_types, secret_hash, secret_last4, enabled, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, TRUE, %s)
+            ''',
+            (
+                webhook_id,
+                workspace_context['workspace_id'],
+                target_url,
+                str(payload.get('description', '')).strip() or None,
+                _json_dumps(event_types),
+                hashlib.sha256(secret.encode('utf-8')).hexdigest(),
+                secret[-4:],
+                user['id'],
+            ),
+        )
+        log_audit(connection, action='webhook.create', entity_type='workspace_webhook', entity_id=webhook_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'target_url': target_url})
+        connection.commit()
+        return {'id': webhook_id, 'target_url': target_url, 'event_types': event_types, 'enabled': True, 'secret': secret}
+
+
+def update_webhook(webhook_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _, workspace_context = _require_workspace_admin(connection, request)
+        webhook = connection.execute('SELECT id FROM workspace_webhooks WHERE id = %s AND workspace_id = %s', (webhook_id, workspace_context['workspace_id'])).fetchone()
+        if webhook is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Webhook not found.')
+        enabled = bool(payload.get('enabled', True))
+        description = str(payload.get('description', '')).strip() or None
+        connection.execute(
+            'UPDATE workspace_webhooks SET enabled = %s, description = %s, updated_at = NOW() WHERE id = %s',
+            (enabled, description, webhook_id),
+        )
+        connection.commit()
+        return {'id': webhook_id, 'enabled': enabled, 'description': description}
+
+
+def rotate_webhook_secret(webhook_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        webhook = connection.execute('SELECT id FROM workspace_webhooks WHERE id = %s AND workspace_id = %s', (webhook_id, workspace_context['workspace_id'])).fetchone()
+        if webhook is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Webhook not found.')
+        secret = secrets.token_urlsafe(32)
+        connection.execute(
+            'UPDATE workspace_webhooks SET secret_hash = %s, secret_last4 = %s, updated_at = NOW() WHERE id = %s',
+            (hashlib.sha256(secret.encode('utf-8')).hexdigest(), secret[-4:], webhook_id),
+        )
+        log_audit(connection, action='webhook.rotate_secret', entity_type='workspace_webhook', entity_id=webhook_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'id': webhook_id, 'secret': secret}
+
+
+def list_webhook_deliveries(webhook_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT id, event_type, status, response_status, error_message, attempt, created_at
+            FROM webhook_deliveries
+            WHERE webhook_id = %s AND workspace_id = %s
+            ORDER BY created_at DESC
+            LIMIT 100
+            ''',
+            (webhook_id, workspace_context['workspace_id']),
+        ).fetchall()
+        return {'deliveries': [_json_safe_value(dict(row)) for row in rows]}
 
 
 def persist_analysis_run(
