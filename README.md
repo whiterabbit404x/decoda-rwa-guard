@@ -168,6 +168,11 @@ Recent SaaS workflow upgrades now prioritize real customer records over scenario
 - Module config persistence with workspace RBAC: `GET/PUT /modules/{threat|compliance|resilience}/config`.
 - History retrieval for operator review: `GET /history`, `GET /history/{id}`.
 - Export endpoints include findings plus list/detail status tracking: `POST /exports/findings`, `GET /exports`, `GET /exports/{id}`.
+- Export downloads now return real generated artifacts at `GET /exports/{id}/download` (CSV/JSON) with files stored under `EXPORTS_DIR` (`/tmp/decoda-exports` by default).
+- Alert notifications now queue outbound webhook/email delivery attempts via `background_jobs`; run `python services/api/scripts/run_worker.py` to process queued deliveries.
+- Stripe checkout/portal endpoints now require live provider configuration (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, plus `plan_entitlements.stripe_price_id` per plan) and no longer create local placeholder subscriptions.
+- Team and seat administration endpoints: `PATCH/DELETE /workspace/members/{id}`, `GET /team/seats`.
+- Finding action workflow endpoints: `POST /findings/{id}/decision`, `POST /findings/{id}/actions`, `PATCH /actions/{id}`, `GET /actions`, `GET /decisions`.
 
 Templates remain onboarding-only (`GET /templates`, `POST /templates/{id}/apply`) and do not replace live customer data in authenticated operations.
 

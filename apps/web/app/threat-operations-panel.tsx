@@ -12,6 +12,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const { isAuthenticated, authHeaders } = usePilotAuth();
   const [targets, setTargets] = useState<Target[]>([]);
   const [selectedTarget, setSelectedTarget] = useState<string>('');
+  const [analysisType, setAnalysisType] = useState<'contract' | 'transaction' | 'market'>('contract');
   const [config, setConfig] = useState('{"unknown_target_threshold": 2, "large_transfer_threshold": 250000}');
   const [history, setHistory] = useState<string>('');
   const [state, setState] = useState<'idle' | 'loading' | 'saving' | 'running' | 'error' | 'success'>('idle');
@@ -61,11 +62,32 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       return;
     }
     setState('running');
-    const response = await fetch(`${apiUrl}/pilot/history?limit=10`, { headers: { ...authHeaders() } });
-    const payload = await response.json();
-    setHistory(JSON.stringify(payload.analysis_runs ?? [], null, 2));
+    const target = targets.find((item) => item.id === selectedTarget);
+    const configResponse = await fetch(`${apiUrl}/modules/threat/config`, { headers: { ...authHeaders() } });
+    const configPayload = configResponse.ok ? await configResponse.json() : { config: {} };
+    const body = {
+      target_id: selectedTarget,
+      target_name: target?.name,
+      chain_network: target?.chain_network,
+      target_type: target?.target_type,
+      module_config: configPayload.config ?? {}
+    };
+    const response = await fetch(`${apiUrl}/pilot/threat/analyze/${analysisType}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(body)
+    });
+    const runPayload = await response.json();
+    if (!response.ok) {
+      setState('error');
+      setMessage(runPayload.detail ?? 'Threat run failed.');
+      return;
+    }
+    const historyResponse = await fetch(`${apiUrl}/pilot/history?limit=10`, { headers: { ...authHeaders() } });
+    const historyPayload = await historyResponse.json();
+    setHistory(JSON.stringify({ latest_run: runPayload, recent_runs: historyPayload.analysis_runs ?? [] }, null, 2));
     setState('success');
-    setMessage('Recent Threat Monitoring history loaded.');
+    setMessage('Threat Monitoring run completed and history refreshed.');
   }
 
   return (
@@ -79,6 +101,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       </select>
       <label htmlFor="threat-config">Policy JSON</label>
       <textarea id="threat-config" value={config} onChange={(event) => setConfig(event.target.value)} rows={7} />
+      <label htmlFor="threat-analysis">Analysis</label>
+      <select id="threat-analysis" value={analysisType} onChange={(event) => setAnalysisType(event.target.value as 'contract' | 'transaction' | 'market')}>
+        <option value="contract">Contract analysis</option>
+        <option value="transaction">Transaction simulation</option>
+        <option value="market">Market anomaly checks</option>
+      </select>
       <div className="buttonRow">
         <button type="button" onClick={saveConfig} disabled={state === 'saving'}>Save</button>
         <button type="button" onClick={run} disabled={state === 'running'}>Run</button>
