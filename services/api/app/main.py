@@ -77,6 +77,11 @@ from services.api.app.pilot import (
     reset_password,
     update_webhook,
     list_targets,
+    list_assets,
+    create_asset,
+    get_asset,
+    update_asset,
+    delete_asset,
     create_target,
     get_target,
     update_target,
@@ -87,6 +92,9 @@ from services.api.app.pilot import (
     get_alert,
     patch_alert,
     create_export_job,
+    list_exports,
+    get_export,
+    get_history_item,
     list_templates,
     apply_template,
 )
@@ -1452,6 +1460,31 @@ def targets_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_targets(request))
 
 
+@app.get('/assets', summary='List workspace assets')
+def assets_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_assets(request))
+
+
+@app.post('/assets', summary='Create workspace asset')
+def assets_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_asset(payload, request))
+
+
+@app.get('/assets/{asset_id}', summary='Get workspace asset')
+def assets_get(asset_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_asset(asset_id, request))
+
+
+@app.patch('/assets/{asset_id}', summary='Update workspace asset')
+def assets_patch(asset_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: update_asset(asset_id, payload, request))
+
+
+@app.delete('/assets/{asset_id}', summary='Delete workspace asset')
+def assets_delete(asset_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: delete_asset(asset_id, request))
+
+
 @app.post('/targets', summary='Create workspace target')
 def targets_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_target(payload, request))
@@ -1507,9 +1540,24 @@ def exports_alerts(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_export_job('alerts', payload, request))
 
 
+@app.post('/exports/findings', summary='Export findings')
+def exports_findings(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_export_job('findings', payload, request))
+
+
 @app.post('/exports/report', summary='Export report')
 def exports_report(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_export_job('report', payload, request))
+
+
+@app.get('/exports', summary='List workspace exports')
+def exports_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_exports(request))
+
+
+@app.get('/exports/{export_id}', summary='Export detail')
+def exports_get(export_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_export(export_id, request))
 
 
 @app.get('/integrations/webhooks', summary='List outbound integration webhooks')
@@ -1549,6 +1597,16 @@ def templates_apply(template_id: str, request: Request) -> dict[str, Any]:
 @app.get('/pilot/history', summary='Workspace-scoped persisted live-mode history')
 def pilot_history(request: Request, limit: int = 25) -> dict[str, Any]:
     return with_auth_schema_json(lambda: build_history_response(request, limit=limit))
+
+
+@app.get('/history', summary='Workspace history')
+def history_list(request: Request, limit: int = 25) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: build_history_response(request, limit=limit))
+
+
+@app.get('/history/{history_id}', summary='History detail')
+def history_get(history_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_history_item(history_id, request))
 
 
 def _persist_live_analysis(request: Request, payload: dict[str, Any], response_payload: dict[str, Any], *, analysis_type: str, service_name: str, title: str) -> dict[str, Any]:

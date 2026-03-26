@@ -1,5 +1,6 @@
 export const APP_NAV_ITEMS = [
   { href: '/dashboard', label: 'Dashboard' },
+  { href: '/assets', label: 'Assets' },
   { href: '/targets', label: 'Targets' },
   { href: '/threat', label: 'Threat Monitoring' },
   { href: '/compliance', label: 'Compliance Controls' },
