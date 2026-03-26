@@ -15,6 +15,8 @@ def test_new_live_workflow_routes_exist() -> None:
     assert "/findings/{finding_id}/actions" in source
     assert "/actions/{action_id}" in source
     assert "/integrations/webhooks/{webhook_id}/rotate-secret" in source
+    assert "/integrations/slack/{integration_id}/test" in source
+    assert "/integrations/routing/{channel_type}" in source
 
 
 def test_export_generation_is_not_placeholder_complete() -> None:
@@ -28,13 +30,18 @@ def test_protected_pages_use_authenticated_client_fetch_flow() -> None:
     alerts_page = (REPO_ROOT / 'apps/web/app/(product)/alerts/page.tsx').read_text(encoding='utf-8')
     integrations_page = (REPO_ROOT / 'apps/web/app/(product)/integrations/page.tsx').read_text(encoding='utf-8')
     templates_page = (REPO_ROOT / 'apps/web/app/(product)/templates/page.tsx').read_text(encoding='utf-8')
+    settings_page = (REPO_ROOT / 'apps/web/app/(product)/settings/page.tsx').read_text(encoding='utf-8')
     alerts_client = (REPO_ROOT / 'apps/web/app/(product)/alerts-page-client.tsx').read_text(encoding='utf-8')
     integrations_client = (REPO_ROOT / 'apps/web/app/(product)/integrations-page-client.tsx').read_text(encoding='utf-8')
     templates_client = (REPO_ROOT / 'apps/web/app/(product)/templates-page-client.tsx').read_text(encoding='utf-8')
+    settings_client = (REPO_ROOT / 'apps/web/app/settings-page-client.tsx').read_text(encoding='utf-8')
 
     assert 'fetch(`${apiUrl}/alerts`' not in alerts_page
     assert 'fetch(`${data.apiUrl}/integrations/webhooks`' not in integrations_page
+    assert 'fetch(`${data.apiUrl}/integrations/slack`' not in integrations_page
     assert 'fetch(`${data.apiUrl}/templates`' not in templates_page
+    assert 'fetch(`${data.apiUrl}/workspace/members`' not in settings_page
     assert 'authHeaders()' in alerts_client
     assert 'authHeaders()' in integrations_client
     assert 'authHeaders()' in templates_client
+    assert 'authHeaders()' in settings_client

@@ -83,6 +83,13 @@ def parse_csv_env(name: str, defaults: list[str]) -> list[str]:
     return values or defaults
 
 
+SEVERITY_RANK = {'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+
+
+def _severity_meets_threshold(value: str, threshold: str) -> bool:
+    return SEVERITY_RANK.get((value or 'medium').lower(), 2) >= SEVERITY_RANK.get((threshold or 'medium').lower(), 2)
+
+
 def database_url() -> str | None:
     value = os.getenv('DATABASE_URL', '').strip()
     return value or None
@@ -1671,6 +1678,13 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
                         )
                 elif row['job_type'] == 'send_alert_email':
                     _deliver_alert_email_attempt(payload)
+                elif row['job_type'] == 'send_slack':
+                    _deliver_slack_attempt(payload)
+                    if payload.get('delivery_id'):
+                        connection.execute(
+                            "UPDATE slack_deliveries SET status = 'succeeded', response_status = 200, updated_at = NOW() WHERE id = %s",
+                            (str(payload['delivery_id']),),
+                        )
                 else:
                     raise RuntimeError(f'Unsupported job type {row["job_type"]}')
                 connection.execute("UPDATE background_jobs SET status = 'succeeded', updated_at = NOW() WHERE id = %s", (job_id,))
@@ -1696,6 +1710,18 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
                     connection.execute(
                         '''
                         UPDATE webhook_deliveries
+                        SET status = %s,
+                            error_message = %s,
+                            attempt = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        ''',
+                        ('failed' if terminal else 'queued', str(exc), next_attempt, str(payload['delivery_id'])),
+                    )
+                if row['job_type'] == 'send_slack' and payload.get('delivery_id'):
+                    connection.execute(
+                        '''
+                        UPDATE slack_deliveries
                         SET status = %s,
                             error_message = %s,
                             attempt = %s,
@@ -1742,6 +1768,22 @@ def _deliver_alert_email_attempt(payload: dict[str, Any]) -> None:
         raise RuntimeError('Missing to_email for alert delivery.')
     subject = f'[{_email_brand_name()}] Alert: {title}'
     _send_email(to_email, subject, summary or 'A new alert requires attention.')
+
+
+def _deliver_slack_attempt(payload: dict[str, Any]) -> None:
+    webhook_url = str(payload.get('webhook_url', ''))
+    body_payload = payload.get('payload') if isinstance(payload.get('payload'), dict) else {}
+    if not webhook_url:
+        raise RuntimeError('Slack delivery payload missing webhook_url.')
+    encoded = _json_dumps(body_payload).encode('utf-8')
+    request = UrlRequest(
+        webhook_url,
+        method='POST',
+        data=encoded,
+        headers={'Content-Type': 'application/json'},
+    )
+    with urlopen(request, timeout=8):
+        return
 
 
 def list_plan_entitlements() -> dict[str, Any]:
@@ -1896,6 +1938,48 @@ def process_stripe_webhook(payload: dict[str, Any], signature_header: str | None
         return {'received': True, 'duplicate': False, 'event_id': event_id, 'status': 'processed'}
 
 
+def _mask_url(value: str) -> str:
+    trimmed = value.strip()
+    if len(trimmed) <= 8:
+        return '****'
+    return f'{trimmed[:5]}...{trimmed[-4:]}'
+
+
+def _encode_secret_value(value: str) -> str:
+    return base64.b64encode(value.encode('utf-8')).decode('ascii')
+
+
+def _decode_secret_value(value: str) -> str:
+    if not value:
+        return ''
+    try:
+        return base64.b64decode(value.encode('ascii')).decode('utf-8')
+    except Exception:
+        return value
+
+
+def _normalize_routing_payload(payload: dict[str, Any], *, channel_type: str) -> dict[str, Any]:
+    severity_threshold = str(payload.get('severity_threshold', 'medium')).strip().lower()
+    if severity_threshold not in SEVERITY_RANK:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='severity_threshold must be low/medium/high/critical.')
+    modules_include = payload.get('modules_include') if isinstance(payload.get('modules_include'), list) else []
+    modules_exclude = payload.get('modules_exclude') if isinstance(payload.get('modules_exclude'), list) else []
+    target_ids = payload.get('target_ids') if isinstance(payload.get('target_ids'), list) else []
+    event_types = payload.get('event_types') if isinstance(payload.get('event_types'), list) else ['alert.created']
+    enabled = bool(payload.get('enabled', True))
+    if channel_type not in {'dashboard', 'email', 'webhook', 'slack'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported channel type.')
+    return {
+        'channel_type': channel_type,
+        'severity_threshold': severity_threshold,
+        'modules_include': [str(value).strip().lower() for value in modules_include if str(value).strip()],
+        'modules_exclude': [str(value).strip().lower() for value in modules_exclude if str(value).strip()],
+        'target_ids': [str(value).strip() for value in target_ids if str(value).strip()],
+        'event_types': [str(value).strip() for value in event_types if str(value).strip()] or ['alert.created'],
+        'enabled': enabled,
+    }
+
+
 def list_webhooks(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -2002,6 +2086,223 @@ def list_webhook_deliveries(webhook_id: str, request: Request) -> dict[str, Any]
         return {'deliveries': [_json_safe_value(dict(row)) for row in rows]}
 
 
+def list_slack_integrations(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT id, display_name, webhook_last4, default_channel, enabled, created_at, updated_at
+            FROM workspace_slack_integrations
+            WHERE workspace_id = %s
+            ORDER BY created_at DESC
+            ''',
+            (workspace_context['workspace_id'],),
+        ).fetchall()
+        return {'integrations': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def create_slack_integration(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    webhook_url = str(payload.get('webhook_url', '')).strip()
+    display_name = str(payload.get('display_name', '')).strip() or 'Workspace Slack'
+    if not webhook_url.startswith('https://hooks.slack.com/'):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='webhook_url must be a valid Slack incoming webhook URL.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        integration_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO workspace_slack_integrations (id, workspace_id, display_name, webhook_url_encrypted, webhook_last4, default_channel, enabled, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, TRUE, %s)
+            ''',
+            (
+                integration_id,
+                workspace_context['workspace_id'],
+                display_name,
+                _encode_secret_value(webhook_url),
+                webhook_url[-4:],
+                str(payload.get('default_channel', '')).strip() or None,
+                user['id'],
+            ),
+        )
+        log_audit(connection, action='integration.slack.create', entity_type='workspace_slack_integration', entity_id=integration_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'display_name': display_name, 'webhook_mask': _mask_url(webhook_url)})
+        connection.commit()
+        return {'id': integration_id, 'display_name': display_name, 'enabled': True, 'webhook_last4': webhook_url[-4:]}
+
+
+def update_slack_integration(integration_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        integration = connection.execute(
+            'SELECT id, webhook_last4 FROM workspace_slack_integrations WHERE id = %s AND workspace_id = %s',
+            (integration_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if integration is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Slack integration not found.')
+        next_url = str(payload.get('webhook_url', '')).strip()
+        encoded_value = _encode_secret_value(next_url) if next_url else None
+        if next_url and not next_url.startswith('https://hooks.slack.com/'):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='webhook_url must be a valid Slack incoming webhook URL.')
+        connection.execute(
+            '''
+            UPDATE workspace_slack_integrations
+            SET display_name = COALESCE(%s, display_name),
+                default_channel = COALESCE(%s, default_channel),
+                enabled = COALESCE(%s, enabled),
+                webhook_url_encrypted = COALESCE(%s, webhook_url_encrypted),
+                webhook_last4 = COALESCE(%s, webhook_last4),
+                updated_at = NOW()
+            WHERE id = %s
+            ''',
+            (
+                str(payload.get('display_name')).strip() if payload.get('display_name') is not None else None,
+                str(payload.get('default_channel')).strip() if payload.get('default_channel') is not None else None,
+                payload.get('enabled') if payload.get('enabled') is not None else None,
+                encoded_value,
+                (next_url[-4:] if next_url else None),
+                integration_id,
+            ),
+        )
+        log_audit(connection, action='integration.slack.update', entity_type='workspace_slack_integration', entity_id=integration_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        row = connection.execute('SELECT id, display_name, enabled, webhook_last4, default_channel FROM workspace_slack_integrations WHERE id = %s', (integration_id,)).fetchone()
+        return _json_safe_value(dict(row))
+
+
+def delete_slack_integration(integration_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        deleted = connection.execute('DELETE FROM workspace_slack_integrations WHERE id = %s AND workspace_id = %s', (integration_id, workspace_context['workspace_id'])).rowcount
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Slack integration not found.')
+        log_audit(connection, action='integration.slack.delete', entity_type='workspace_slack_integration', entity_id=integration_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'deleted': True, 'id': integration_id}
+
+
+def list_slack_deliveries(integration_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT id, event_type, status, response_status, error_message, attempt, created_at
+            FROM slack_deliveries
+            WHERE slack_integration_id = %s AND workspace_id = %s
+            ORDER BY created_at DESC
+            LIMIT 100
+            ''',
+            (integration_id, workspace_context['workspace_id']),
+        ).fetchall()
+        return {'deliveries': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def test_slack_integration(integration_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        integration = connection.execute(
+            'SELECT id, display_name, webhook_url_encrypted FROM workspace_slack_integrations WHERE id = %s AND workspace_id = %s',
+            (integration_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if integration is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Slack integration not found.')
+        workspace_row = connection.execute('SELECT name FROM workspaces WHERE id = %s', (workspace_context['workspace_id'],)).fetchone()
+        now = utc_now_iso()
+        text = f'[{workspace_row["name"]}] Slack integration test from Decoda RWA Guard at {now}'
+        slack_payload = {'text': text, 'blocks': [{'type': 'section', 'text': {'type': 'mrkdwn', 'text': text}}]}
+        delivery_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO slack_deliveries (id, workspace_id, slack_integration_id, event_type, request_body, status, response_status, response_body, error_message, attempt)
+            VALUES (%s, %s, %s, 'alert.test', %s::jsonb, 'queued', NULL, NULL, NULL, 0)
+            ''',
+            (delivery_id, workspace_context['workspace_id'], integration_id, _json_dumps(slack_payload)),
+        )
+        _queue_background_job(
+            connection,
+            job_type='send_slack',
+            payload={
+                'slack_integration_id': integration_id,
+                'delivery_id': delivery_id,
+                'webhook_url': _decode_secret_value(str(integration['webhook_url_encrypted'])),
+                'payload': slack_payload,
+            },
+            max_attempts=4,
+        )
+        log_audit(connection, action='integration.slack.test', entity_type='workspace_slack_integration', entity_id=integration_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'queued': True, 'delivery_id': delivery_id}
+
+
+def list_alert_routing_rules(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT id, channel_type, severity_threshold, modules_include, modules_exclude, target_ids, event_types, enabled, created_at, updated_at
+            FROM alert_routing_rules
+            WHERE workspace_id = %s
+            ORDER BY channel_type ASC
+            ''',
+            (workspace_context['workspace_id'],),
+        ).fetchall()
+        return {'rules': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def upsert_alert_routing_rule(channel_type: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    normalized = _normalize_routing_payload(payload, channel_type=channel_type)
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        rule_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO alert_routing_rules (id, workspace_id, channel_type, severity_threshold, modules_include, modules_exclude, target_ids, event_types, enabled, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s)
+            ON CONFLICT (workspace_id, channel_type)
+            DO UPDATE SET severity_threshold = EXCLUDED.severity_threshold,
+                          modules_include = EXCLUDED.modules_include,
+                          modules_exclude = EXCLUDED.modules_exclude,
+                          target_ids = EXCLUDED.target_ids,
+                          event_types = EXCLUDED.event_types,
+                          enabled = EXCLUDED.enabled,
+                          updated_at = NOW()
+            ''',
+            (
+                rule_id,
+                workspace_context['workspace_id'],
+                normalized['channel_type'],
+                normalized['severity_threshold'],
+                _json_dumps(normalized['modules_include']),
+                _json_dumps(normalized['modules_exclude']),
+                _json_dumps(normalized['target_ids']),
+                _json_dumps(normalized['event_types']),
+                normalized['enabled'],
+                user['id'],
+            ),
+        )
+        row = connection.execute('SELECT id, channel_type, severity_threshold, modules_include, modules_exclude, target_ids, event_types, enabled FROM alert_routing_rules WHERE workspace_id = %s AND channel_type = %s', (workspace_context['workspace_id'], channel_type)).fetchone()
+        log_audit(connection, action='alert.routing.update', entity_type='alert_routing_rule', entity_id=str(row['id']), request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'channel_type': channel_type})
+        connection.commit()
+        return {'rule': _json_safe_value(dict(row))}
+
+
 def persist_analysis_run(
     connection: Any,
     *,
@@ -2106,6 +2407,40 @@ def _queue_alert_deliveries(
     summary: str,
     payload: dict[str, Any],
 ) -> None:
+    channel_rules = {
+        str(rule['channel_type']): dict(rule)
+        for rule in connection.execute(
+            '''
+            SELECT channel_type, severity_threshold, modules_include, modules_exclude, target_ids, event_types, enabled
+            FROM alert_routing_rules
+            WHERE workspace_id = %s
+            ''',
+            (workspace_id,),
+        ).fetchall()
+    }
+
+    def route_enabled(channel: str) -> bool:
+        rule = channel_rules.get(channel)
+        if rule is None:
+            return True
+        if not bool(rule.get('enabled')):
+            return False
+        if not _severity_meets_threshold(severity, str(rule.get('severity_threshold') or 'medium')):
+            return False
+        module_key = str(payload.get('module_name') or payload.get('module_key') or '').strip().lower()
+        modules_include = [str(item).strip().lower() for item in (rule.get('modules_include') or []) if str(item).strip()]
+        modules_exclude = [str(item).strip().lower() for item in (rule.get('modules_exclude') or []) if str(item).strip()]
+        if modules_include and module_key not in modules_include:
+            return False
+        if modules_exclude and module_key in modules_exclude:
+            return False
+        target_id = str(payload.get('target_id') or '').strip()
+        target_ids = [str(item).strip() for item in (rule.get('target_ids') or []) if str(item).strip()]
+        if target_ids and target_id and target_id not in target_ids:
+            return False
+        event_types = [str(item).strip() for item in (rule.get('event_types') or []) if str(item).strip()]
+        return 'alert.created' in event_types if event_types else True
+
     event_payload = {
         'event': 'alert.created',
         'alert_id': alert_id,
@@ -2115,36 +2450,38 @@ def _queue_alert_deliveries(
         'payload': payload,
         'occurred_at': utc_now_iso(),
     }
-    webhooks = connection.execute(
-        '''
-        SELECT id, target_url, secret_token
-        FROM workspace_webhooks
-        WHERE workspace_id = %s AND enabled = TRUE
-        ''',
-        (workspace_id,),
-    ).fetchall()
-    for webhook in webhooks:
-        delivery_id = str(uuid.uuid4())
-        connection.execute(
+    if route_enabled('webhook'):
+        webhooks = connection.execute(
             '''
-            INSERT INTO webhook_deliveries (id, workspace_id, webhook_id, event_type, request_body, status, response_status, response_body, error_message, attempt, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s::jsonb, 'queued', NULL, NULL, NULL, 0, NOW(), NOW())
+            SELECT id, target_url, secret_token
+            FROM workspace_webhooks
+            WHERE workspace_id = %s AND enabled = TRUE
             ''',
-            (delivery_id, workspace_id, webhook['id'], 'alert.created', _json_dumps(event_payload)),
-        )
-        _queue_background_job(
-            connection,
-            job_type='send_webhook',
-            payload={
-                'webhook_id': str(webhook['id']),
-                'delivery_id': delivery_id,
-                'target_url': str(webhook['target_url']),
-                'secret': str(webhook.get('secret_token') or ''),
-                'payload': event_payload,
-            },
-            max_attempts=4,
-        )
-    if severity in {'high', 'critical'}:
+            (workspace_id,),
+        ).fetchall()
+        for webhook in webhooks:
+            delivery_id = str(uuid.uuid4())
+            connection.execute(
+                '''
+                INSERT INTO webhook_deliveries (id, workspace_id, webhook_id, event_type, request_body, status, response_status, response_body, error_message, attempt, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s::jsonb, 'queued', NULL, NULL, NULL, 0, NOW(), NOW())
+                ''',
+                (delivery_id, workspace_id, webhook['id'], 'alert.created', _json_dumps(event_payload)),
+            )
+            _queue_background_job(
+                connection,
+                job_type='send_webhook',
+                payload={
+                    'webhook_id': str(webhook['id']),
+                    'delivery_id': delivery_id,
+                    'target_url': str(webhook['target_url']),
+                    'secret': str(webhook.get('secret_token') or ''),
+                    'payload': event_payload,
+                },
+                max_attempts=4,
+            )
+
+    if route_enabled('email') and severity in {'high', 'critical'}:
         recipients = connection.execute(
             '''
             SELECT DISTINCT u.email
@@ -2162,6 +2499,60 @@ def _queue_alert_deliveries(
                 connection,
                 job_type='send_alert_email',
                 payload={'to_email': email, 'title': title, 'summary': summary, 'alert_id': alert_id},
+                max_attempts=4,
+            )
+
+    if route_enabled('slack'):
+        integrations = connection.execute(
+            '''
+            SELECT id, webhook_url_encrypted
+            FROM workspace_slack_integrations
+            WHERE workspace_id = %s AND enabled = TRUE
+            ''',
+            (workspace_id,),
+        ).fetchall()
+        workspace = connection.execute('SELECT name FROM workspaces WHERE id = %s', (workspace_id,)).fetchone()
+        module_name = str(payload.get('module_name') or payload.get('module_key') or 'analysis').strip()
+        target_name = str(payload.get('target_name') or payload.get('target_id') or 'n/a').strip()
+        findings = payload.get('findings') if isinstance(payload.get('findings'), list) else []
+        top_reasons = '\n'.join([f'• {str(item)}' for item in findings[:3]]) if findings else '• Review the finding details in Decoda.'
+        app_url = os.getenv('APP_URL', 'http://localhost:3000').rstrip('/')
+        deep_link = f'{app_url}/alerts?alertId={alert_id}'
+        text = f'[{workspace["name"]}] {severity.upper()} alert in {module_name}: {title}'
+        slack_payload = {
+            'text': text,
+            'blocks': [
+                {'type': 'header', 'text': {'type': 'plain_text', 'text': f'{severity.upper()} alert: {title}'[:150]}},
+                {'type': 'section', 'fields': [
+                    {'type': 'mrkdwn', 'text': f'*Workspace*\n{workspace["name"]}'},
+                    {'type': 'mrkdwn', 'text': f'*Module*\n{module_name}'},
+                    {'type': 'mrkdwn', 'text': f'*Severity*\n{severity}'},
+                    {'type': 'mrkdwn', 'text': f'*Target*\n{target_name}'},
+                ]},
+                {'type': 'section', 'text': {'type': 'mrkdwn', 'text': f'*Summary*\n{summary[:700]}'}},
+                {'type': 'section', 'text': {'type': 'mrkdwn', 'text': f'*Top reasons/findings*\n{top_reasons[:900]}'}},
+                {'type': 'section', 'text': {'type': 'mrkdwn', 'text': f'*Timestamp*\n{event_payload["occurred_at"]}'}},
+                {'type': 'actions', 'elements': [{'type': 'button', 'text': {'type': 'plain_text', 'text': 'Open in Decoda'}, 'url': deep_link}]},
+            ],
+        }
+        for integration in integrations:
+            delivery_id = str(uuid.uuid4())
+            connection.execute(
+                '''
+                INSERT INTO slack_deliveries (id, workspace_id, slack_integration_id, event_type, request_body, status, response_status, response_body, error_message, attempt, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s::jsonb, 'queued', NULL, NULL, NULL, 0, NOW(), NOW())
+                ''',
+                (delivery_id, workspace_id, integration['id'], 'alert.created', _json_dumps(slack_payload)),
+            )
+            _queue_background_job(
+                connection,
+                job_type='send_slack',
+                payload={
+                    'slack_integration_id': str(integration['id']),
+                    'delivery_id': delivery_id,
+                    'webhook_url': _decode_secret_value(str(integration.get('webhook_url_encrypted') or '')),
+                    'payload': slack_payload,
+                },
                 max_attempts=4,
             )
 

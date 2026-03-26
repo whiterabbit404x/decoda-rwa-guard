@@ -170,6 +170,7 @@ Recent SaaS workflow upgrades now prioritize real customer records over scenario
 - Export endpoints include findings plus list/detail status tracking: `POST /exports/findings`, `GET /exports`, `GET /exports/{id}`.
 - Export downloads now return real generated artifacts at `GET /exports/{id}/download` (CSV/JSON) with files stored under `EXPORTS_DIR` (`/tmp/decoda-exports` by default).
 - Alert notifications now queue outbound webhook/email delivery attempts via `background_jobs`; run `python services/api/scripts/run_worker.py` to process queued deliveries.
+- Slack alerting is now supported via incoming webhooks (`/integrations/slack`) with delivery logs, test-send, retries, and routing preferences (`/integrations/routing/{channel_type}`).
 - Stripe checkout/portal endpoints now require live provider configuration (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, plus `plan_entitlements.stripe_price_id` per plan) and no longer create local placeholder subscriptions.
 - Team and seat administration endpoints: `PATCH/DELETE /workspace/members/{id}`, `GET /team/seats`.
 - Team invitation lifecycle endpoints: `GET/POST /workspace/invitations`, `POST /workspace/invitations/{id}/resend`, `DELETE /workspace/invitations/{id}`, `POST /workspace/invitations/accept`.
@@ -1121,6 +1122,7 @@ You can also inspect `/health/details` to confirm dependency diagnostics, build/
 - `ENABLE_DEMO_FALLBACKS=true|false` (non-production only; enables sample dashboard payloads)
 - `STRIPE_WEBHOOK_SECRET=...` (required to validate Stripe webhooks in production)
 - `STRIPE_SECRET_KEY=...` (required for real hosted checkout/portal wiring)
+- `APP_URL=https://your-product-domain` (recommended for Slack alert deep links back into `/alerts`)
 
 ### Manual setup required
 
@@ -1162,6 +1164,38 @@ Authenticated product routes now prioritize **live customer operations** over gu
 - Alert API endpoints for list/detail/status mutation with `alert_events` audit trail.
 - Export job endpoints (`/exports/history`, `/exports/alerts`, `/exports/report`) backed by `export_jobs`.
 - Integration webhook endpoints under `/integrations/webhooks/*` with secret rotation and delivery logs.
+- Slack integration endpoints under `/integrations/slack*` (list/create/update/delete/test + delivery history) with webhook URLs masked in API responses.
+- Alert routing endpoints under `/integrations/routing*` for per-channel severity thresholds and enable/disable controls.
+
+### Slack setup (v1 incoming webhooks)
+
+1. In Slack, create an **Incoming Webhook** app destination for your workspace/channel.
+2. Copy the webhook URL (`https://hooks.slack.com/services/...`).
+3. In Decoda UI (`/integrations`), create a Slack integration with that URL.
+4. Run **Test send** to queue a safe test notification.
+5. Start worker processing (`python services/api/scripts/run_worker.py`) so queued jobs are delivered.
+
+Notes:
+- Slack v1 uses incoming webhooks only (no bot-token `chat.postMessage` mode yet).
+- Slack callback/interactivity endpoints are not implemented in this release.
+- Slack payloads always include top-level `text` plus Block Kit sections (fallback/accessibility safe).
+
+### Alert routing behavior
+
+- Routing is workspace-scoped and channel-scoped (`dashboard`, `email`, `webhook`, `slack`).
+- Each channel rule supports:
+  - `enabled` on/off,
+  - `severity_threshold` (`low`/`medium`/`high`/`critical`),
+  - optional module include/exclude lists,
+  - optional target filters,
+  - event type filters (currently `alert.created`).
+- Dashboard persistence remains on by default (alerts are still saved); routing controls outbound channel fan-out at alert generation time.
+
+### End-to-end operator loop
+
+The live workflow now supports:
+
+`analyze -> persist finding -> route alert (dashboard/email/webhook/slack) -> assign/escalate/suppress/accept -> create/update action -> export evidence`
 - Plan enforcement for target limits, exports availability, and advanced module-config controls.
 
 ### New/updated environment expectations

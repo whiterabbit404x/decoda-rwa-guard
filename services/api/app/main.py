@@ -35,6 +35,7 @@ from services.api.app.pilot import (
     create_checkout_session,
     create_portal_session,
     create_webhook,
+    create_slack_integration,
     create_workspace_invitation,
     list_workspace_invitations,
     revoke_workspace_invitation,
@@ -69,9 +70,13 @@ from services.api.app.pilot import (
     get_workspace_subscription,
     list_workspace_members,
     list_webhook_deliveries,
+    list_slack_integrations,
+    list_slack_deliveries,
+    list_alert_routing_rules,
     list_webhooks,
     process_stripe_webhook,
     rotate_webhook_secret,
+    test_slack_integration,
     select_workspace_for_user,
     demo_seed_status,
     schema_missing_error_payload,
@@ -82,6 +87,9 @@ from services.api.app.pilot import (
     verify_email_token,
     reset_password,
     update_webhook,
+    update_slack_integration,
+    delete_slack_integration,
+    upsert_alert_routing_rule,
     list_targets,
     list_assets,
     create_asset,
@@ -1631,6 +1639,46 @@ def integrations_webhooks_rotate(webhook_id: str, request: Request) -> dict[str,
 @app.get('/integrations/webhooks/{webhook_id}/deliveries', summary='List integration webhook deliveries')
 def integrations_webhooks_deliveries(webhook_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_webhook_deliveries(webhook_id, request))
+
+
+@app.get('/integrations/slack', summary='List workspace Slack integrations')
+def integrations_slack_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_slack_integrations(request))
+
+
+@app.post('/integrations/slack', summary='Create workspace Slack integration')
+def integrations_slack_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_slack_integration(payload, request))
+
+
+@app.patch('/integrations/slack/{integration_id}', summary='Update workspace Slack integration')
+def integrations_slack_patch(integration_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: update_slack_integration(integration_id, payload, request))
+
+
+@app.delete('/integrations/slack/{integration_id}', summary='Delete workspace Slack integration')
+def integrations_slack_delete(integration_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: delete_slack_integration(integration_id, request))
+
+
+@app.post('/integrations/slack/{integration_id}/test', summary='Queue Slack test notification')
+def integrations_slack_test(integration_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: test_slack_integration(integration_id, request))
+
+
+@app.get('/integrations/slack/{integration_id}/deliveries', summary='List Slack delivery attempts')
+def integrations_slack_deliveries(integration_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_slack_deliveries(integration_id, request))
+
+
+@app.get('/integrations/routing', summary='List workspace alert routing rules')
+def integrations_routing_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_alert_routing_rules(request))
+
+
+@app.put('/integrations/routing/{channel_type}', summary='Create or update a channel routing rule')
+def integrations_routing_upsert(channel_type: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: upsert_alert_routing_rule(channel_type, payload, request))
 
 
 @app.get('/templates', summary='List onboarding templates')

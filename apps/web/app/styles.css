@@ -367,6 +367,57 @@ p {
   margin-bottom: 0.75rem;
 }
 
+.statusBadge {
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.statusBadge--critical,
+.statusBadge--failed {
+  border-color: rgba(248, 81, 73, 0.55);
+  color: #ffb4af;
+}
+
+.statusBadge--high,
+.statusBadge--acknowledged {
+  border-color: rgba(242, 204, 96, 0.55);
+  color: #ffdca5;
+}
+
+.statusBadge--medium,
+.statusBadge--in_progress {
+  border-color: rgba(88, 166, 255, 0.55);
+  color: #9dd2ff;
+}
+
+.statusBadge--low,
+.statusBadge--open,
+.statusBadge--resolved,
+.statusBadge--closed,
+.statusBadge--succeeded {
+  border-color: rgba(46, 160, 67, 0.55);
+  color: #bff1c6;
+}
+
+.dataCard input,
+.dataCard select,
+.dataCard textarea {
+  width: 100%;
+  margin-bottom: 0.6rem;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  background: #0d1117;
+  color: #e6edf3;
+  padding: 0.55rem 0.7rem;
+}
+
+.dataCard textarea {
+  min-height: 84px;
+}
+
 .tableWrap {
   overflow-x: auto;
   border: 1px solid #30363d;

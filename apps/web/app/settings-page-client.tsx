@@ -68,18 +68,21 @@ export default function SettingsPageClient() {
   }
 
   async function removeMember(memberId: string) {
+    if (!window.confirm('Remove this member from the workspace?')) return;
     const response = await call(`/workspace/members/${memberId}`, { method: 'DELETE' });
     setMessage(response.ok ? 'Member removed.' : 'Member removal failed.');
     if (response.ok) void loadAll();
   }
 
   async function resendInvitation(invitationId: string) {
+    if (!window.confirm('Resend this pending invitation?')) return;
     const response = await call(`/workspace/invitations/${invitationId}/resend`, { method: 'POST' });
     setMessage(response.ok ? 'Invitation resent.' : 'Unable to resend invitation.');
     if (response.ok) void loadAll();
   }
 
   async function revokeInvitation(invitationId: string) {
+    if (!window.confirm('Revoke this pending invitation?')) return;
     const response = await call(`/workspace/invitations/${invitationId}`, { method: 'DELETE' });
     setMessage(response.ok ? 'Invitation revoked.' : 'Unable to revoke invitation.');
     if (response.ok) void loadAll();
@@ -109,6 +112,12 @@ export default function SettingsPageClient() {
 
   const billingStatus = subscription?.status ?? 'none';
   const nearSeatLimit = seatSummary ? seatSummary.used >= seatSummary.limit : false;
+  const roleDescriptions: Record<string, string> = {
+    owner: 'Full billing + workspace control. At least one owner must remain.',
+    admin: 'Can manage members, integrations, and workflow operations.',
+    analyst: 'Can run analysis and operate findings/actions.',
+    viewer: 'Read-only access for reporting and dashboards.',
+  };
 
   return (
     <main className="productPage">
@@ -129,7 +138,11 @@ export default function SettingsPageClient() {
             <p className="muted">Plan: {subscription?.plan_key ?? 'none'}</p>
             <p className="muted">Status: {billingStatus}</p>
             <p className="muted">Seats: {seatSummary ? `${seatSummary.used}/${seatSummary.limit}` : 'loading'}</p>
+            <p className="muted">Seat policy: {nearSeatLimit ? 'At limit' : 'Within limit'}</p>
             {nearSeatLimit ? <p className="statusLine">Seat limit reached. Upgrade to invite more teammates.</p> : null}
+            {billingStatus === 'trialing' ? <p className="statusLine">Trialing plan active. Review limits before launch.</p> : null}
+            {billingStatus === 'past_due' ? <p className="statusLine">Billing is past_due. Update billing details to avoid disruption.</p> : null}
+            {billingStatus === 'canceled' ? <p className="statusLine">Subscription canceled. Re-activate to retain premium features.</p> : null}
             <div className="buttonRow"><button type="button" onClick={openPortal}>Manage billing</button></div>
           </article>
           <article className="dataCard">
@@ -152,6 +165,7 @@ export default function SettingsPageClient() {
           <article className="dataCard">
             <p className="sectionEyebrow">Invite teammate</p>
             <div className="buttonRow"><input value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="invite@company.com" /><select value={inviteRole} onChange={(event) => setInviteRole(event.target.value)}><option value="owner">owner</option><option value="admin">admin</option><option value="analyst">analyst</option><option value="viewer">viewer</option></select><button type="button" disabled={submitting} onClick={() => void inviteMember()}>Invite</button></div>
+            <p className="muted">{roleDescriptions[inviteRole]}</p>
             {message ? <p className="statusLine">{message}</p> : null}
           </article>
           <article className="dataCard">
@@ -159,6 +173,7 @@ export default function SettingsPageClient() {
             {members.length === 0 ? <p className="muted">No members yet.</p> : members.map((member) => (
               <div key={member.id} style={{ marginBottom: 10 }}>
                 <p>{member.full_name || member.email} · {member.email}</p>
+                <p className="muted">{roleDescriptions[member.role]}{member.role === 'owner' ? ' Owner protection: keep at least one owner in this workspace.' : ''}</p>
                 <div className="buttonRow"><select value={member.role} onChange={(event) => void updateRole(member.id, event.target.value)}><option value="owner">owner</option><option value="admin">admin</option><option value="analyst">analyst</option><option value="viewer">viewer</option></select><button type="button" onClick={() => void removeMember(member.id)}>Remove</button></div>
               </div>
             ))}
@@ -168,6 +183,7 @@ export default function SettingsPageClient() {
             {invitations.length === 0 ? <p className="muted">No invitations.</p> : invitations.map((invitation) => (
               <div key={invitation.id} style={{ marginBottom: 10 }}>
                 <p>{invitation.email} · {invitation.role} · {invitation.status}</p>
+                <p className="muted">Expires {new Date(invitation.expires_at).toLocaleString()}</p>
                 <div className="buttonRow"><button type="button" onClick={() => void resendInvitation(invitation.id)}>Resend</button><button type="button" onClick={() => void revokeInvitation(invitation.id)}>Revoke</button></div>
               </div>
             ))}
