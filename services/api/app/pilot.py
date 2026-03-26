@@ -2021,6 +2021,17 @@ def build_history_response(request: Request, limit: int = 25) -> dict[str, Any]:
 
 TARGET_TYPES = {'contract', 'wallet', 'oracle', 'treasury-linked asset', 'settlement component', 'admin-controlled module'}
 MODULE_KEYS = {'threat', 'compliance', 'resilience'}
+ASSET_TYPES = {
+    'contract',
+    'wallet',
+    'treasury-linked asset',
+    'oracle',
+    'custody component',
+    'settlement component',
+    'admin-controlled module',
+    'monitored counterparty',
+    'policy-controlled workflow object',
+}
 
 
 def _workspace_plan(connection: Any, workspace_id: str) -> dict[str, Any]:
@@ -2098,6 +2109,184 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
         'enabled': bool(payload.get('enabled', True)),
         'tags': tags,
     }
+
+
+def _validate_asset_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    name = str(payload.get('name', '')).strip()
+    description = str(payload.get('description', '')).strip() or None
+    asset_type = str(payload.get('asset_type', '')).strip().lower()
+    chain_network = str(payload.get('chain_network', '')).strip()
+    identifier = str(payload.get('identifier', '')).strip()
+    asset_class = str(payload.get('asset_class', '')).strip() or None
+    risk_tier = str(payload.get('risk_tier', 'medium')).strip().lower()
+    owner_team = str(payload.get('owner_team', '')).strip() or None
+    notes = str(payload.get('notes', '')).strip() or None
+    if not name or len(name) > 120:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='name is required (max 120 chars).')
+    if asset_type not in ASSET_TYPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid asset_type.')
+    if not chain_network or len(chain_network) > 64:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='chain_network is required (max 64 chars).')
+    if not identifier or len(identifier) > 180:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='identifier is required (max 180 chars).')
+    if risk_tier not in {'low', 'medium', 'high', 'critical'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='risk_tier must be low/medium/high/critical.')
+    tags_raw = payload.get('tags')
+    tags = [str(item).strip().lower() for item in tags_raw] if isinstance(tags_raw, list) else []
+    tags = [item for item in tags if item][:25]
+    return {
+        'name': name,
+        'description': description,
+        'asset_type': asset_type,
+        'chain_network': chain_network,
+        'identifier': identifier,
+        'asset_class': asset_class,
+        'risk_tier': risk_tier,
+        'owner_team': owner_team,
+        'notes': notes,
+        'enabled': bool(payload.get('enabled', True)),
+        'tags': tags,
+    }
+
+
+def list_assets(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        rows = connection.execute(
+            '''
+            SELECT id, name, description, asset_type, chain_network, identifier, asset_class, risk_tier, owner_team, notes, enabled, created_at, updated_at
+            FROM assets
+            WHERE workspace_id = %s AND deleted_at IS NULL
+            ORDER BY created_at DESC
+            ''',
+            (workspace_id,),
+        ).fetchall()
+        asset_ids = [str(row['id']) for row in rows]
+        tags_map: dict[str, list[str]] = {asset_id: [] for asset_id in asset_ids}
+        if asset_ids:
+            tag_rows = connection.execute(
+                'SELECT asset_id, tag FROM asset_tags WHERE workspace_id = %s AND asset_id = ANY(%s::uuid[]) ORDER BY tag ASC',
+                (workspace_id, asset_ids),
+            ).fetchall()
+            for row in tag_rows:
+                tags_map[str(row['asset_id'])].append(str(row['tag']))
+        assets: list[dict[str, Any]] = []
+        for row in rows:
+            item = _json_safe_value(dict(row))
+            item['tags'] = tags_map.get(str(row['id']), [])
+            assets.append(item)
+        return {'assets': assets, 'workspace': workspace_context['workspace']}
+
+
+def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    validated = _validate_asset_payload(payload)
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        entitlements = _workspace_plan(connection, workspace_id)
+        max_targets = int(entitlements.get('max_targets') or 0)
+        max_assets = max(5, max_targets)
+        count_row = connection.execute('SELECT COUNT(*) AS count FROM assets WHERE workspace_id = %s AND deleted_at IS NULL', (workspace_id,)).fetchone()
+        if int((count_row or {}).get('count') or 0) >= max_assets:
+            raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Asset limit reached for current plan.')
+        asset_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO assets (
+                id, workspace_id, name, description, asset_type, chain_network, identifier, asset_class, risk_tier, owner_team, notes, enabled, created_by_user_id, updated_by_user_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''',
+            (
+                asset_id,
+                workspace_id,
+                validated['name'],
+                validated['description'],
+                validated['asset_type'],
+                validated['chain_network'],
+                validated['identifier'],
+                validated['asset_class'],
+                validated['risk_tier'],
+                validated['owner_team'],
+                validated['notes'],
+                validated['enabled'],
+                user['id'],
+                user['id'],
+            ),
+        )
+        for tag in validated['tags']:
+            connection.execute(
+                'INSERT INTO asset_tags (id, workspace_id, asset_id, tag) VALUES (%s, %s, %s, %s) ON CONFLICT (asset_id, tag) DO NOTHING',
+                (str(uuid.uuid4()), workspace_id, asset_id, tag),
+            )
+        log_audit(connection, action='asset.create', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'asset_type': validated['asset_type']})
+        connection.commit()
+        return {'id': asset_id, **validated}
+
+
+def get_asset(asset_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        row = connection.execute(
+            'SELECT * FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
+            (asset_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Asset not found.')
+        tags = connection.execute('SELECT tag FROM asset_tags WHERE asset_id = %s ORDER BY tag ASC', (asset_id,)).fetchall()
+        item = _json_safe_value(dict(row))
+        item['tags'] = [str(tag['tag']) for tag in tags]
+        return {'asset': item}
+
+
+def update_asset(asset_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    validated = _validate_asset_payload(payload)
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        found = connection.execute('SELECT id FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (asset_id, workspace_id)).fetchone()
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Asset not found.')
+        connection.execute(
+            '''
+            UPDATE assets
+            SET name = %s, description = %s, asset_type = %s, chain_network = %s, identifier = %s, asset_class = %s, risk_tier = %s, owner_team = %s, notes = %s, enabled = %s, updated_by_user_id = %s, updated_at = NOW()
+            WHERE id = %s
+            ''',
+            (
+                validated['name'], validated['description'], validated['asset_type'], validated['chain_network'], validated['identifier'], validated['asset_class'], validated['risk_tier'], validated['owner_team'], validated['notes'], validated['enabled'], user['id'], asset_id,
+            ),
+        )
+        connection.execute('DELETE FROM asset_tags WHERE asset_id = %s', (asset_id,))
+        for tag in validated['tags']:
+            connection.execute('INSERT INTO asset_tags (id, workspace_id, asset_id, tag) VALUES (%s, %s, %s, %s)', (str(uuid.uuid4()), workspace_id, asset_id, tag))
+        log_audit(connection, action='asset.update', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={})
+        connection.commit()
+        return {'id': asset_id, **validated}
+
+
+def delete_asset(asset_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        row = connection.execute('SELECT id FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (asset_id, workspace_context['workspace_id'])).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Asset not found.')
+        connection.execute('UPDATE assets SET deleted_at = NOW(), updated_by_user_id = %s, updated_at = NOW() WHERE id = %s', (user['id'], asset_id))
+        log_audit(connection, action='asset.delete', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'deleted': True, 'id': asset_id}
 
 
 def list_targets(request: Request) -> dict[str, Any]:
@@ -2364,6 +2553,63 @@ def create_export_job(export_type: str, payload: dict[str, Any], request: Reques
         )
         connection.commit()
         return {'job_id': job_id, 'status': 'completed', 'download_url': output_path}
+
+
+def list_exports(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT id, export_type, format, status, output_path, error_message, created_at, updated_at
+            FROM export_jobs
+            WHERE workspace_id = %s
+            ORDER BY created_at DESC
+            LIMIT 200
+            ''',
+            (workspace_context['workspace_id'],),
+        ).fetchall()
+        return {'exports': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def get_export(export_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        row = connection.execute(
+            'SELECT * FROM export_jobs WHERE id = %s AND workspace_id = %s',
+            (export_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export not found.')
+        return {'export': _json_safe_value(dict(row))}
+
+
+def get_history_item(history_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        run = connection.execute(
+            '''
+            SELECT id, analysis_type, service_name, status, title, source, summary, request_payload, response_payload, created_at
+            FROM analysis_runs
+            WHERE workspace_id = %s AND id = %s
+            ''',
+            (workspace_context['workspace_id'], history_id),
+        ).fetchone()
+        if run is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='History record not found.')
+        alerts = connection.execute(
+            'SELECT id, severity, status, title, summary, created_at FROM alerts WHERE workspace_id = %s AND analysis_run_id = %s ORDER BY created_at DESC',
+            (workspace_context['workspace_id'], history_id),
+        ).fetchall()
+        return {'history': _json_safe_value(dict(run)), 'alerts': [_json_safe_value(dict(row)) for row in alerts]}
 
 
 def list_templates() -> dict[str, Any]:

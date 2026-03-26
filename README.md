@@ -159,6 +159,18 @@ curl -X POST "$API_URL/ops/jobs/run" -H "Content-Type: application/json" -d '{"w
 - Workspace invitations, webhook management UI, and billing/subscription automation remain incomplete.
 - Formal SOC 2 control evidence, key rotation automation, and full incident-response runbooks are still required for enterprise procurement.
 
+## Workspace operations workflow (live mode)
+
+Recent SaaS workflow upgrades now prioritize real customer records over scenario-only data in authenticated routes:
+
+- Workspace-scoped **Assets CRUD**: `GET/POST /assets`, `GET/PATCH/DELETE /assets/{id}`.
+- Workspace-scoped **Targets CRUD**: `GET/POST /targets`, `GET/PATCH/DELETE /targets/{id}`.
+- Module config persistence with workspace RBAC: `GET/PUT /modules/{threat|compliance|resilience}/config`.
+- History retrieval for operator review: `GET /history`, `GET /history/{id}`.
+- Export endpoints include findings plus list/detail status tracking: `POST /exports/findings`, `GET /exports`, `GET /exports/{id}`.
+
+Templates remain onboarding-only (`GET /templates`, `POST /templates/{id}/apply`) and do not replace live customer data in authenticated operations.
+
 ## Repository Layout
 
 - `apps/web` — Next.js dashboard UI.
