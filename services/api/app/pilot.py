@@ -1234,18 +1234,40 @@ def mfa_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, 
         if user is None:
             raise HTTPException(status_code=401, detail='Unknown user.')
         secret = str(user['mfa_totp_secret'] or '')
+        used_recovery_code = False
         if not secret or not _verify_totp(secret, code):
             recovery = connection.execute(
                 'SELECT id FROM mfa_recovery_codes WHERE user_id = %s AND code_hash = %s AND consumed_at IS NULL',
                 (token_row['user_id'], _auth_token_hash(code)),
             ).fetchone()
             if recovery is None:
+                log_audit(
+                    connection,
+                    action='auth.mfa_challenge_failed',
+                    entity_type='user',
+                    entity_id=str(user['id']),
+                    request=request,
+                    user_id=str(user['id']),
+                    workspace_id=None,
+                    metadata={},
+                )
                 raise HTTPException(status_code=401, detail='Invalid MFA code.')
             connection.execute('UPDATE mfa_recovery_codes SET consumed_at = NOW() WHERE id = %s', (recovery['id'],))
+            used_recovery_code = True
         connection.execute('UPDATE auth_tokens SET used_at = NOW() WHERE id = %s', (token_row['id'],))
         hydrated_user = build_user_response(connection, str(user['id']))
         access_token = create_access_token(str(user['id']), int(user.get('session_version') or 1))
         _store_session(connection, str(user['id']), access_token, hydrated_user.get('current_workspace_id'), request=request)
+        log_audit(
+            connection,
+            action='auth.mfa_challenge_succeeded',
+            entity_type='user',
+            entity_id=str(user['id']),
+            request=request,
+            user_id=str(user['id']),
+            workspace_id=hydrated_user.get('current_workspace_id'),
+            metadata={'used_recovery_code': used_recovery_code},
+        )
         connection.commit()
         return {'access_token': access_token, 'token_type': 'bearer', 'user': hydrated_user}
 
@@ -1394,11 +1416,16 @@ def mfa_confirm_enrollment(payload: dict[str, Any], request: Request) -> dict[st
 def mfa_disable(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     code = str(payload.get('code', '')).strip()
+    password = str(payload.get('password', ''))
+    if not password:
+        raise HTTPException(status_code=400, detail='Current password is required to disable MFA.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
-        row = connection.execute('SELECT mfa_totp_secret, mfa_enabled_at FROM users WHERE id = %s', (user['id'],)).fetchone()
+        row = connection.execute('SELECT mfa_totp_secret, mfa_enabled_at, password_hash FROM users WHERE id = %s', (user['id'],)).fetchone()
         secret = str(row['mfa_totp_secret'] or '') if row else ''
+        if not row or not verify_password(password, str(row.get('password_hash') or '')):
+            raise HTTPException(status_code=401, detail='Current password is incorrect.')
         if not row or not row['mfa_enabled_at'] or not secret or not _verify_totp(secret, code):
             raise HTTPException(status_code=400, detail='Valid MFA code is required to disable MFA.')
         connection.execute(

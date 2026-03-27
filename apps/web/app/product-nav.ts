@@ -10,6 +10,7 @@ export const APP_NAV_ITEMS = [
   { href: '/exports', label: 'Exports' },
   { href: '/integrations', label: 'Integrations' },
   { href: '/templates', label: 'Templates' },
+  { href: '/security', label: 'Security' },
   { href: '/settings', label: 'Settings' },
   { href: '/help', label: 'Help' },
 ] as const;

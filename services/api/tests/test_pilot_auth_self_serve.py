@@ -304,3 +304,67 @@ def test_build_history_response_returns_json_safe_workspace_records(
     assert payload['analysis_runs'][0]['id']
     assert payload['analysis_runs'][0]['created_at'].endswith('+00:00')
     assert isinstance(payload['counts'], dict)
+
+
+def test_mfa_disable_requires_current_password(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT mfa_totp_secret, mfa_enabled_at, password_hash FROM users WHERE id =' in normalized:
+                return _Result({'mfa_totp_secret': 'totp-secret', 'mfa_enabled_at': datetime(2026, 3, 1, tzinfo=timezone.utc), 'password_hash': 'stored-hash'})
+            return _Result(None)
+
+    @contextmanager
+    def fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg)
+    monkeypatch.setattr(pilot_module, 'ensure_pilot_schema', lambda connection: None)
+    monkeypatch.setattr(pilot_module, 'authenticate_with_connection', lambda connection, request: {'id': 'user-1', 'current_workspace_id': 'ws-1'})
+    monkeypatch.setattr(pilot_module, 'verify_password', lambda password, encoded: False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot_module.mfa_disable({'code': '123456', 'password': 'wrong-password'}, _request())
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == 'Current password is incorrect.'
+
+
+def test_mfa_disable_requires_mfa_code(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT mfa_totp_secret, mfa_enabled_at, password_hash FROM users WHERE id =' in normalized:
+                return _Result({'mfa_totp_secret': 'totp-secret', 'mfa_enabled_at': datetime(2026, 3, 1, tzinfo=timezone.utc), 'password_hash': 'stored-hash'})
+            return _Result(None)
+
+    @contextmanager
+    def fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg)
+    monkeypatch.setattr(pilot_module, 'ensure_pilot_schema', lambda connection: None)
+    monkeypatch.setattr(pilot_module, 'authenticate_with_connection', lambda connection, request: {'id': 'user-1', 'current_workspace_id': 'ws-1'})
+    monkeypatch.setattr(pilot_module, 'verify_password', lambda password, encoded: True)
+    monkeypatch.setattr(pilot_module, '_verify_totp', lambda secret, code: False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot_module.mfa_disable({'code': 'bad-code', 'password': 'CorrectPass123'}, _request())
+
+    assert exc_info.value.status_code == 400

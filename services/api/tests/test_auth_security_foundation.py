@@ -39,3 +39,16 @@ def test_auth_signout_all_route_delegates(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {'signed_out_all': True}
+
+
+def test_auth_mfa_complete_signin_route_applies_rate_limit(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda request, action: calls.append(action))
+    monkeypatch.setattr(api_main, 'mfa_complete_signin', lambda payload, request: {'access_token': 'token', 'token_type': 'bearer', 'user': {'id': 'user-1'}})
+
+    response = client.post('/auth/mfa/complete-signin', json={'mfa_token': 'token-1', 'code': '123456'})
+
+    assert response.status_code == 200
+    assert response.json()['token_type'] == 'bearer'
+    assert calls == ['mfa_complete_signin']

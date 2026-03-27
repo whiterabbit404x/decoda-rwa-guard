@@ -25,6 +25,7 @@ export default function SignInPageClient({
     runtimeConfigDiagnostic,
     runtimeConfigSource,
     signIn,
+    completeMfaSignIn,
     apiUrl,
     isAuthenticated,
     loading: authLoading,
@@ -32,6 +33,8 @@ export default function SignInPageClient({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [mfaToken, setMfaToken] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState('');
   const [loading, setLoading] = useState(false);
 
   const runtimeConfig = useMemo(() => ({
@@ -58,7 +61,29 @@ export default function SignInPageClient({
     setLoading(true);
     setError(null);
     try {
-      await signIn({ email, password });
+      const result = await signIn({ email, password });
+      if (result.mfaRequired && result.mfaToken) {
+        setMfaToken(result.mfaToken);
+        setError('Multi-factor authentication is required. Enter your authenticator code or a recovery code.');
+        return;
+      }
+      router.push(nextPath ?? '/dashboard');
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleMfaSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (loading || !mfaToken) {
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      await completeMfaSignIn({ mfaToken, code: mfaCode });
       router.push(nextPath ?? '/dashboard');
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
@@ -82,12 +107,23 @@ export default function SignInPageClient({
       {nextPath ? <p className="muted">Sign in to continue to {nextPath}.</p> : null}
       {previewNotice}
       <div className="twoColumnSection authPageGrid">
-        <form className="dataCard authForm" onSubmit={handleSubmit}>
-          <label className="label">Email</label>
-          <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
-          <label className="label">Password</label>
-          <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" required />
-          <button type="submit" disabled={formState.submitDisabled}>{loading ? 'Signing in…' : 'Sign in'}</button>
+        <form className="dataCard authForm" onSubmit={mfaToken ? handleMfaSubmit : handleSubmit}>
+          {!mfaToken ? (
+            <>
+              <label className="label">Email</label>
+              <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
+              <label className="label">Password</label>
+              <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" required />
+              <button type="submit" disabled={formState.submitDisabled}>{loading ? 'Signing in…' : 'Sign in'}</button>
+            </>
+          ) : (
+            <>
+              <label className="label">Multi-factor code</label>
+              <input value={mfaCode} onChange={(event) => setMfaCode(event.target.value)} inputMode="numeric" placeholder="123456 or recovery code" required />
+              <button type="submit" disabled={loading || !mfaCode.trim()}>{loading ? 'Verifying…' : 'Verify and continue'}</button>
+              <button type="button" className="secondaryButton" onClick={() => { setMfaToken(null); setMfaCode(''); setError(null); }} disabled={loading}>Use a different account</button>
+            </>
+          )}
           {error ? <p className="statusLine">{error}</p> : null}
           {!configLoading && !configured ? <p className="statusLine">Auth is disabled until this deployment exposes a valid API_URL.</p> : null}
           <p className="muted"><Link href="/reset-password">Forgot password?</Link></p>

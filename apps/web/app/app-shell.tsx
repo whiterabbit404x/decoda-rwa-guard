@@ -22,7 +22,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <Link href="/dashboard" className="brandBlock">
           <span className="brandEyebrow">Decoda RWA Guard</span>
           <strong>Tokenized treasury command</strong>
-          <span>Threat, compliance, and resilience oversight for live pilots.</span>
+          <span>Threat, compliance, and resilience oversight for production operations.</span>
         </Link>
         <AppNavigation currentPath={pathname} />
         <div className="sidebarMetaCard">
