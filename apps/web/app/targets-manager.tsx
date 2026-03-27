@@ -8,7 +8,23 @@ import { parseTagInput } from './policy-builders';
 type Props = { apiUrl: string };
 type Target = any;
 
-const EMPTY_TARGET = { name: '', target_type: 'contract', chain_network: 'ethereum', contract_identifier: '', wallet_address: '', asset_type: '', owner_notes: '', severity_preference: 'medium', enabled: true, tags: [] as string[] };
+const EMPTY_TARGET = {
+  name: '',
+  target_type: 'contract',
+  chain_network: 'ethereum',
+  contract_identifier: '',
+  wallet_address: '',
+  asset_type: '',
+  owner_notes: '',
+  severity_preference: 'medium',
+  enabled: true,
+  monitoring_enabled: false,
+  monitoring_interval_seconds: 300,
+  severity_threshold: 'medium',
+  auto_create_alerts: true,
+  auto_create_incidents: false,
+  tags: [] as string[],
+};
 
 export default function TargetsManager({ apiUrl }: Props) {
   const { authHeaders } = usePilotAuth();
@@ -47,6 +63,24 @@ export default function TargetsManager({ apiUrl }: Props) {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ ...target, enabled: !target.enabled })
+    });
+    void load();
+  }
+
+  async function toggleMonitoring(target: Target) {
+    await fetch(`${apiUrl}/monitoring/targets/${target.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        monitoring_enabled: !target.monitoring_enabled,
+        monitoring_mode: target.monitoring_mode || 'poll',
+        monitoring_interval_seconds: target.monitoring_interval_seconds || 300,
+        severity_threshold: target.severity_threshold || 'medium',
+        auto_create_alerts: target.auto_create_alerts ?? true,
+        auto_create_incidents: target.auto_create_incidents ?? false,
+        notification_channels: target.notification_channels || [],
+        is_active: target.is_active ?? true,
+      }),
     });
     void load();
   }
@@ -91,6 +125,18 @@ export default function TargetsManager({ apiUrl }: Props) {
       <select value={form.severity_preference} onChange={(event) => setForm({ ...form, severity_preference: event.target.value })}>
         <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option>
       </select>
+      <label className="muted">Automatic monitoring</label>
+      <div className="buttonRow">
+        <label><input type="checkbox" checked={form.monitoring_enabled} onChange={(event) => setForm({ ...form, monitoring_enabled: event.target.checked })} /> Enabled</label>
+        <label><input type="checkbox" checked={form.auto_create_alerts} onChange={(event) => setForm({ ...form, auto_create_alerts: event.target.checked })} /> Auto alerts</label>
+        <label><input type="checkbox" checked={form.auto_create_incidents} onChange={(event) => setForm({ ...form, auto_create_incidents: event.target.checked })} /> Auto incidents</label>
+      </div>
+      <div className="buttonRow">
+        <input type="number" min={30} step={30} value={form.monitoring_interval_seconds} onChange={(event) => setForm({ ...form, monitoring_interval_seconds: Number(event.target.value) || 300 })} />
+        <select value={form.severity_threshold} onChange={(event) => setForm({ ...form, severity_threshold: event.target.value })}>
+          <option value="low">Threshold: low</option><option value="medium">Threshold: medium</option><option value="high">Threshold: high</option><option value="critical">Threshold: critical</option>
+        </select>
+      </div>
       <input placeholder="Tags (comma-separated)" value={form.tags.join(', ')} onChange={(event) => setForm({ ...form, tags: parseTagInput(event.target.value) })} />
       <textarea placeholder="Notes" rows={3} value={form.owner_notes} onChange={(event) => setForm({ ...form, owner_notes: event.target.value })} />
       <div className="buttonRow">
@@ -102,8 +148,8 @@ export default function TargetsManager({ apiUrl }: Props) {
       <h3>Target registry</h3>
       {filtered.length === 0 ? <p className="muted">Create your first target to run live analysis and start alerting.</p> : filtered.map((target) => (
         <div key={target.id} className="listHeader" style={{ marginBottom: 8 }}>
-          <span>{target.name} · {target.target_type} · {target.chain_network} · {target.enabled ? 'enabled' : 'disabled'}</span>
-          <div className="buttonRow"><button type="button" onClick={() => { setEditing(target); setForm({ ...target, tags: target.tags ?? [] }); }}>Edit</button><button type="button" onClick={() => duplicate(target)}>Duplicate</button><button type="button" onClick={() => void toggleEnabled(target)}>{target.enabled ? 'Disable' : 'Enable'}</button><button type="button" onClick={() => void remove(target)}>Delete</button></div>
+          <span>{target.name} · {target.target_type} · {target.chain_network} · {target.enabled ? 'enabled' : 'disabled'} · monitoring: {target.monitoring_enabled ? 'active' : 'paused'} · interval: {target.monitoring_interval_seconds ?? 300}s · last check: {target.last_checked_at ? new Date(target.last_checked_at).toLocaleString() : 'never'}</span>
+          <div className="buttonRow"><button type="button" onClick={() => { setEditing(target); setForm({ ...target, tags: target.tags ?? [] }); }}>Edit</button><button type="button" onClick={() => duplicate(target)}>Duplicate</button><button type="button" onClick={() => void toggleEnabled(target)}>{target.enabled ? 'Disable' : 'Enable'}</button><button type="button" onClick={() => void toggleMonitoring(target)}>{target.monitoring_enabled ? 'Pause monitoring' : 'Enable monitoring'}</button><button type="button" onClick={() => void remove(target)}>Delete</button></div>
         </div>
       ))}
     </div>

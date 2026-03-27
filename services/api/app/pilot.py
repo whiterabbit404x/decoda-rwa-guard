@@ -3148,6 +3148,15 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
     severity_preference = str(payload.get('severity_preference', 'medium')).strip().lower()
     if severity_preference not in {'low', 'medium', 'high', 'critical'}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='severity_preference must be low/medium/high/critical.')
+    monitoring_mode = str(payload.get('monitoring_mode', 'poll')).strip().lower()
+    if monitoring_mode not in {'poll', 'stream'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='monitoring_mode must be poll/stream.')
+    severity_threshold = str(payload.get('severity_threshold', severity_preference)).strip().lower()
+    if severity_threshold not in {'low', 'medium', 'high', 'critical'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='severity_threshold must be low/medium/high/critical.')
+    notification_channels = payload.get('notification_channels')
+    channels = [str(item).strip().lower() for item in notification_channels] if isinstance(notification_channels, list) else []
+    channels = [item for item in channels if item]
     tags_raw = payload.get('tags')
     tags = [str(item).strip().lower() for item in tags_raw] if isinstance(tags_raw, list) else []
     tags = [item for item in tags if item]
@@ -3161,6 +3170,14 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
         'owner_notes': str(payload.get('owner_notes', '')).strip() or None,
         'severity_preference': severity_preference,
         'enabled': bool(payload.get('enabled', True)),
+        'monitoring_enabled': bool(payload.get('monitoring_enabled', False)),
+        'monitoring_mode': monitoring_mode,
+        'monitoring_interval_seconds': max(30, int(_coerce_number(payload.get('monitoring_interval_seconds'), 300))),
+        'severity_threshold': severity_threshold,
+        'auto_create_alerts': bool(payload.get('auto_create_alerts', True)),
+        'auto_create_incidents': bool(payload.get('auto_create_incidents', False)),
+        'notification_channels': channels,
+        'is_active': bool(payload.get('is_active', True)),
         'tags': tags,
     }
 
@@ -3352,7 +3369,10 @@ def list_targets(request: Request) -> dict[str, Any]:
         workspace_id = workspace_context['workspace_id']
         rows = connection.execute(
             '''
-            SELECT id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled, created_at, updated_at
+            SELECT id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
+                   monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents,
+                   notification_channels, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
+                   created_at, updated_at
             FROM targets
             WHERE workspace_id = %s AND deleted_at IS NULL
             ORDER BY created_at DESC
@@ -3391,8 +3411,10 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         connection.execute(
             '''
             INSERT INTO targets (
-                id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled, created_by_user_id, updated_by_user_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
+                monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents, notification_channels,
+                monitored_by_workspace_id, is_active, created_by_user_id, updated_by_user_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
             ''',
             (
                 target_id,
@@ -3406,6 +3428,15 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 validated['owner_notes'],
                 validated['severity_preference'],
                 validated['enabled'],
+                validated['monitoring_enabled'],
+                validated['monitoring_mode'],
+                validated['monitoring_interval_seconds'],
+                validated['severity_threshold'],
+                validated['auto_create_alerts'],
+                validated['auto_create_incidents'],
+                _json_dumps(validated['notification_channels']),
+                workspace_id,
+                validated['is_active'],
                 user['id'],
                 user['id'],
             ),
@@ -3451,11 +3482,15 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
         connection.execute(
             '''
             UPDATE targets
-            SET name = %s, target_type = %s, chain_network = %s, contract_identifier = %s, wallet_address = %s, asset_type = %s, owner_notes = %s, severity_preference = %s, enabled = %s, updated_by_user_id = %s, updated_at = NOW()
+            SET name = %s, target_type = %s, chain_network = %s, contract_identifier = %s, wallet_address = %s, asset_type = %s, owner_notes = %s, severity_preference = %s, enabled = %s,
+                monitoring_enabled = %s, monitoring_mode = %s, monitoring_interval_seconds = %s, severity_threshold = %s, auto_create_alerts = %s, auto_create_incidents = %s,
+                notification_channels = %s::jsonb, monitored_by_workspace_id = %s, is_active = %s, updated_by_user_id = %s, updated_at = NOW()
             WHERE id = %s
             ''',
             (
-                validated['name'], validated['target_type'], validated['chain_network'], validated['contract_identifier'], validated['wallet_address'], validated['asset_type'], validated['owner_notes'], validated['severity_preference'], validated['enabled'], user['id'], target_id,
+                validated['name'], validated['target_type'], validated['chain_network'], validated['contract_identifier'], validated['wallet_address'], validated['asset_type'], validated['owner_notes'], validated['severity_preference'], validated['enabled'],
+                validated['monitoring_enabled'], validated['monitoring_mode'], validated['monitoring_interval_seconds'], validated['severity_threshold'], validated['auto_create_alerts'], validated['auto_create_incidents'],
+                _json_dumps(validated['notification_channels']), workspace_id, validated['is_active'], user['id'], target_id,
             ),
         )
         connection.execute('DELETE FROM target_tags WHERE target_id = %s', (target_id,))
@@ -3522,7 +3557,7 @@ def put_module_config(module_key: str, payload: dict[str, Any], request: Request
         return {'module': module_key, 'config': normalized_config, 'summary': summarize_module_config(module_key, normalized_config), 'saved': True}
 
 
-def list_alerts(request: Request, *, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None) -> dict[str, Any]:
+def list_alerts(request: Request, *, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None, source: str | None = None) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -3530,17 +3565,18 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, alert_type, title, severity, status, summary, module_key, target_id, findings, acknowledged_at, resolved_at, created_at
+            SELECT id, alert_type, title, severity, status, summary, module_key, target_id, source, source_service, recommended_action, degraded, occurrence_count, last_seen_at, findings, acknowledged_at, resolved_at, created_at, updated_at
             FROM alerts
             WHERE workspace_id = %s
               AND (%s::text IS NULL OR severity = %s::text)
               AND (%s::text IS NULL OR module_key = %s::text)
               AND (%s::uuid IS NULL OR target_id = %s::uuid)
               AND (%s::text IS NULL OR status = %s::text)
+              AND (%s::text IS NULL OR source = %s::text OR source_service = %s::text)
             ORDER BY created_at DESC
             LIMIT 200
             ''',
-            (workspace_context['workspace_id'], severity, severity, module, module, target_id, target_id, status_value, status_value),
+            (workspace_context['workspace_id'], severity, severity, module, module, target_id, target_id, status_value, status_value, source, source, source),
         ).fetchall()
         return {'alerts': [_json_safe_value(dict(row)) for row in rows]}
 
@@ -3584,6 +3620,50 @@ def patch_alert(alert_id: str, payload: dict[str, Any], request: Request) -> dic
         connection.execute('INSERT INTO alert_events (id, workspace_id, alert_id, actor_user_id, event_type, details) VALUES (%s, %s, %s, %s, %s, %s::jsonb)', (str(uuid.uuid4()), workspace_context['workspace_id'], alert_id, user['id'], f'alert.{next_status}', _json_dumps({'status': next_status})))
         connection.commit()
         return {'id': alert_id, 'status': next_status}
+
+
+def list_incidents(request: Request, *, severity: str | None = None, target_id: str | None = None, status_value: str | None = None) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT id, event_type, title, severity, status, target_id, linked_alert_ids, owner_user_id, summary, timeline, created_at, updated_at
+            FROM incidents
+            WHERE workspace_id = %s
+              AND (%s::text IS NULL OR severity = %s::text)
+              AND (%s::uuid IS NULL OR target_id = %s::uuid)
+              AND (%s::text IS NULL OR status = %s::text)
+            ORDER BY created_at DESC
+            LIMIT 200
+            ''',
+            (workspace_context['workspace_id'], severity, severity, target_id, target_id, status_value, status_value),
+        ).fetchall()
+        return {'incidents': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    next_status = str(payload.get('status', '')).strip().lower()
+    if next_status not in {'open', 'acknowledged', 'resolved'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='status must be open/acknowledged/resolved.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        found = connection.execute('SELECT id, timeline FROM incidents WHERE id = %s AND workspace_id = %s', (incident_id, workspace_context['workspace_id'])).fetchone()
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Incident not found.')
+        timeline = found.get('timeline') if isinstance(found.get('timeline'), list) else []
+        timeline.append({'event': f'incident.{next_status}', 'at': utc_now_iso(), 'actor_user_id': user['id']})
+        connection.execute(
+            'UPDATE incidents SET status = %s, owner_user_id = COALESCE(%s, owner_user_id), timeline = %s::jsonb, updated_at = NOW() WHERE id = %s',
+            (next_status, payload.get('owner_user_id'), _json_dumps(timeline), incident_id),
+        )
+        log_audit(connection, action='incident.update', entity_type='incident', entity_id=incident_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'status': next_status})
+        connection.commit()
+        return {'id': incident_id, 'status': next_status}
 
 
 def create_finding_decision(finding_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:

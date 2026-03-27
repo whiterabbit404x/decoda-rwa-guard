@@ -1,5 +1,6 @@
 import ComplianceOperationsPanel from './compliance-operations-panel';
 import DashboardOnboardingPanel from './dashboard-onboarding-panel';
+import MonitoringOverviewPanel from './monitoring-overview-panel';
 import PilotHistoryPanel from './pilot-history-panel';
 import PilotModeBanner from './pilot-mode-banner';
 import PilotOverviewPanel from './pilot-overview-panel';
@@ -62,6 +63,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
         resilienceDashboard={resilienceDashboard}
         diagnostics={diagnostics}
       />
+      <MonitoringOverviewPanel apiUrl={apiUrl} />
 
       <section className="summaryGrid">
         {summaryCards.map((card, index) => (
