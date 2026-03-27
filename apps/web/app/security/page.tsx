@@ -1,0 +1,1 @@
+export default function SecurityPage() { return <main className="container authPage"><h1>Security</h1><p>Decoda uses workspace-scoped access controls, audit logging, encrypted transport, and least-privilege roles. Contact support for security questionnaires.</p></main>; }

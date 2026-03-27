@@ -120,6 +120,8 @@ from services.api.app.pilot import (
     get_integration_health,
     test_integration_email,
     test_integration_slack,
+    get_onboarding_state,
+    update_onboarding_state,
 )
 
 
@@ -1454,6 +1456,16 @@ def workspace_member_delete(member_id: str, request: Request) -> dict[str, Any]:
 @app.get('/team/seats', summary='Workspace seat usage')
 def team_seats(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_team_seats(request))
+
+
+@app.get('/onboarding/state', summary='Get onboarding checklist status for current workspace')
+def onboarding_state(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_onboarding_state(request))
+
+
+@app.patch('/onboarding/state', summary='Update onboarding checklist step for current workspace')
+def onboarding_state_patch(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: update_onboarding_state(payload, request))
 
 
 @app.get('/billing/plans', summary='List billing plans')

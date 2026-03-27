@@ -62,3 +62,18 @@ test('auth context and operational module pages use live customer workflow langu
   expect(nav).toContain('Targets');
   expect(nav).toContain('Integrations');
 });
+
+
+test('onboarding wizard and help/legal pages are present for self-serve setup', async () => {
+  const onboarding = read('(product)/onboarding-page-client.tsx');
+  const help = read('(product)/help/page.tsx');
+  const nav = read('product-nav.ts');
+  const security = read('security/page.tsx');
+
+  expect(onboarding).toContain('Self-serve setup wizard');
+  expect(onboarding).toContain('/onboarding/state');
+  expect(help).toContain('self-serve workspace onboarding');
+  expect(nav).toContain("{ href: '/onboarding', label: 'Onboarding' }");
+  expect(nav).toContain("{ href: '/help', label: 'Help' }");
+  expect(security).toContain('workspace-scoped access controls');
+});

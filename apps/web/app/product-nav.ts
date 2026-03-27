@@ -1,5 +1,6 @@
 export const APP_NAV_ITEMS = [
   { href: '/dashboard', label: 'Dashboard' },
+  { href: '/onboarding', label: 'Onboarding' },
   { href: '/assets', label: 'Assets' },
   { href: '/targets', label: 'Targets' },
   { href: '/threat', label: 'Threat Monitoring' },
@@ -10,4 +11,5 @@ export const APP_NAV_ITEMS = [
   { href: '/integrations', label: 'Integrations' },
   { href: '/templates', label: 'Templates' },
   { href: '/settings', label: 'Settings' },
+  { href: '/help', label: 'Help' },
 ] as const;

@@ -1,0 +1,1 @@
+export default function PrivacyPage() { return <main className="container authPage"><h1>Privacy</h1><p>Decoda processes customer workspace data to provide monitoring, alerting, and reporting. See contract terms for retention and subprocessors.</p></main>; }

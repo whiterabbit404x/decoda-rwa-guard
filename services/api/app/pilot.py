@@ -48,6 +48,7 @@ CORE_PILOT_TABLES = (
     'governance_actions',
     'incidents',
     'audit_logs',
+    'workspace_onboarding_states',
 )
 DEFAULT_DEMO_EMAIL = 'demo@decoda.app'
 EMAIL_VERIFICATION_TTL_MINUTES = 60 * 24
@@ -84,6 +85,17 @@ def parse_csv_env(name: str, defaults: list[str]) -> list[str]:
 
 
 SEVERITY_RANK = {'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+
+ONBOARDING_STEP_ORDER = [
+    'workspace_created',
+    'industry_profile',
+    'asset_added',
+    'policy_configured',
+    'integration_connected',
+    'teammates_invited',
+    'analysis_run',
+]
+ONBOARDING_MANUAL_STEPS = {'industry_profile', 'policy_configured'}
 
 
 def _severity_meets_threshold(value: str, threshold: str) -> bool:
@@ -862,10 +874,159 @@ def build_user_response(connection: psycopg.Connection, user_id: str) -> dict[st
         'email_verified_at': user['email_verified_at'].isoformat() if user['email_verified_at'] else None,
         'mfa_enabled': bool(user['mfa_enabled_at']),
         'current_workspace': current_workspace,
+        'onboarding_summary': (_build_onboarding_response(connection, workspace_id=current_workspace['id'], user_id=str(user['id']), workspace_name=current_workspace['name']) if current_workspace else None),
         'memberships': membership_payload,
     }
     )
 
+
+
+def _default_onboarding_state() -> dict[str, bool]:
+    return {step: False for step in ONBOARDING_STEP_ORDER}
+
+
+def _parse_onboarding_state(raw_state: Any) -> dict[str, bool]:
+    baseline = _default_onboarding_state()
+    if not isinstance(raw_state, dict):
+        return baseline
+    for step in ONBOARDING_STEP_ORDER:
+        baseline[step] = bool(raw_state.get(step))
+    return baseline
+
+
+def _auto_onboarding_state(connection: Any, workspace_id: str) -> dict[str, bool]:
+    counts = connection.execute(
+        '''
+        SELECT
+            (SELECT COUNT(*) FROM assets WHERE workspace_id = %(workspace_id)s) AS assets_count,
+            (SELECT COUNT(*) FROM targets WHERE workspace_id = %(workspace_id)s) AS targets_count,
+            (SELECT COUNT(*) FROM analysis_runs WHERE workspace_id = %(workspace_id)s) AS analysis_count,
+            (SELECT COUNT(*) FROM workspace_invitations WHERE workspace_id = %(workspace_id)s) AS invites_count,
+            (SELECT COUNT(*) FROM workspace_webhooks WHERE workspace_id = %(workspace_id)s AND enabled = TRUE) AS webhook_count,
+            (SELECT COUNT(*) FROM workspace_slack_integrations WHERE workspace_id = %(workspace_id)s AND enabled = TRUE) AS slack_count,
+            (SELECT COUNT(*) FROM module_configs WHERE workspace_id = %(workspace_id)s) AS module_config_count
+        ''',
+        {'workspace_id': workspace_id},
+    ).fetchone() or {}
+    return {
+        'workspace_created': True,
+        'industry_profile': False,
+        'asset_added': int(counts.get('assets_count') or 0) > 0 or int(counts.get('targets_count') or 0) > 0,
+        'policy_configured': int(counts.get('module_config_count') or 0) > 0,
+        'integration_connected': int(counts.get('webhook_count') or 0) > 0 or int(counts.get('slack_count') or 0) > 0,
+        'teammates_invited': int(counts.get('invites_count') or 0) > 0,
+        'analysis_run': int(counts.get('analysis_count') or 0) > 0,
+    }
+
+
+def _ensure_onboarding_record(connection: Any, workspace_id: str, user_id: str) -> dict[str, Any]:
+    row = connection.execute(
+        'SELECT workspace_id, state, completed_at, updated_at FROM workspace_onboarding_states WHERE workspace_id = %s',
+        (workspace_id,),
+    ).fetchone()
+    if row is not None:
+        return row
+    initial_state = _json_dumps(_default_onboarding_state())
+    connection.execute(
+        '''
+        INSERT INTO workspace_onboarding_states (workspace_id, state, created_by_user_id, updated_by_user_id, created_at, updated_at)
+        VALUES (%s, %s::jsonb, %s, %s, NOW(), NOW())
+        ''',
+        (workspace_id, initial_state, user_id, user_id),
+    )
+    return connection.execute(
+        'SELECT workspace_id, state, completed_at, updated_at FROM workspace_onboarding_states WHERE workspace_id = %s',
+        (workspace_id,),
+    ).fetchone()
+
+
+def _build_onboarding_response(connection: Any, *, workspace_id: str, user_id: str, workspace_name: str | None = None) -> dict[str, Any]:
+    row = _ensure_onboarding_record(connection, workspace_id, user_id)
+    manual_state = _parse_onboarding_state(row.get('state') if row else {})
+    auto_state = _auto_onboarding_state(connection, workspace_id)
+    merged_state = {step: bool(manual_state.get(step)) or bool(auto_state.get(step)) for step in ONBOARDING_STEP_ORDER}
+    completed_steps = sum(1 for step in ONBOARDING_STEP_ORDER if merged_state.get(step))
+    total_steps = len(ONBOARDING_STEP_ORDER)
+    complete = completed_steps == total_steps
+    if complete and row and not row.get('completed_at'):
+        connection.execute(
+            'UPDATE workspace_onboarding_states SET completed_at = NOW(), updated_at = NOW() WHERE workspace_id = %s',
+            (workspace_id,),
+        )
+    return {
+        'workspace_id': workspace_id,
+        'workspace_name': workspace_name,
+        'steps': [{
+            'key': step,
+            'complete': bool(merged_state.get(step)),
+            'source': 'manual' if bool(manual_state.get(step)) else ('automatic' if bool(auto_state.get(step)) else 'pending'),
+        } for step in ONBOARDING_STEP_ORDER],
+        'completed_steps': completed_steps,
+        'total_steps': total_steps,
+        'progress_percent': int((completed_steps / total_steps) * 100),
+        'completed': complete,
+        'completed_at': row['completed_at'].isoformat() if row and row.get('completed_at') else None,
+        'updated_at': row['updated_at'].isoformat() if row and row.get('updated_at') else utc_now_iso(),
+    }
+
+
+def get_onboarding_state(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        payload = _build_onboarding_response(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            user_id=user['id'],
+            workspace_name=workspace_context['workspace']['name'],
+        )
+        connection.commit()
+        return payload
+
+
+def update_onboarding_state(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    step_key = str(payload.get('step', '')).strip().lower()
+    if step_key not in ONBOARDING_STEP_ORDER:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid onboarding step.')
+    complete = bool(payload.get('complete', True))
+    if step_key not in ONBOARDING_MANUAL_STEPS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Step is system-managed and cannot be updated manually.')
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        row = _ensure_onboarding_record(connection, workspace_context['workspace_id'], user['id'])
+        state = _parse_onboarding_state(row.get('state') if row else {})
+        state[step_key] = complete
+        connection.execute(
+            '''
+            UPDATE workspace_onboarding_states
+            SET state = %s::jsonb, updated_by_user_id = %s, updated_at = NOW(), completed_at = CASE WHEN completed_at IS NOT NULL AND %s = FALSE THEN NULL ELSE completed_at END
+            WHERE workspace_id = %s
+            ''',
+            (_json_dumps(state), user['id'], complete, workspace_context['workspace_id']),
+        )
+        log_audit(
+            connection,
+            action='onboarding.step_updated',
+            entity_type='workspace',
+            entity_id=workspace_context['workspace_id'],
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_context['workspace_id'],
+            metadata={'step': step_key, 'complete': complete},
+        )
+        response = _build_onboarding_response(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            user_id=user['id'],
+            workspace_name=workspace_context['workspace']['name'],
+        )
+        connection.commit()
+        return response
 
 def authenticate_request(request: Request) -> dict[str, Any]:
     require_live_mode()

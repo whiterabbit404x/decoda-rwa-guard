@@ -1,23 +1,44 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
 
 export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApiReachable: boolean }) {
-  const { user } = usePilotAuth();
+  const { user, apiUrl, authHeaders } = usePilotAuth();
+  const [onboardingProgress, setOnboardingProgress] = useState<{ completed_steps: number; total_steps: number; progress_percent: number } | null>(null);
+
+  useEffect(() => {
+    if (!apiUrl || !user?.current_workspace?.id) {
+      setOnboardingProgress(null);
+      return;
+    }
+    void fetch(`${apiUrl}/onboarding/state`, { headers: authHeaders(), cache: 'no-store' })
+      .then(async (response) => response.ok ? response.json() : null)
+      .then((payload) => {
+        if (!payload) {
+          return;
+        }
+        setOnboardingProgress({
+          completed_steps: Number(payload.completed_steps ?? 0),
+          total_steps: Number(payload.total_steps ?? 7),
+          progress_percent: Number(payload.progress_percent ?? 0),
+        });
+      })
+      .catch(() => setOnboardingProgress(null));
+  }, [apiUrl, authHeaders, user?.current_workspace?.id]);
 
   const checklist = useMemo(() => {
     const hasWorkspace = Boolean(user?.current_workspace);
-    const firstRunAt = typeof window !== 'undefined' ? window.localStorage.getItem('decoda-first-analysis-run-at') : null;
     return [
       { label: 'Account created', complete: Boolean(user?.id) },
       { label: 'Workspace ready', complete: hasWorkspace },
       { label: 'Live API reachable', complete: liveApiReachable },
-      { label: 'First analysis run', complete: Boolean(firstRunAt) },
+      { label: 'First analysis run', complete: Boolean(onboardingProgress && onboardingProgress.completed_steps > 0) },
+      { label: onboardingProgress ? `Setup progress ${onboardingProgress.completed_steps}/${onboardingProgress.total_steps}` : 'Setup progress pending', complete: Boolean(onboardingProgress && onboardingProgress.completed_steps > 0) },
     ];
-  }, [liveApiReachable, user?.current_workspace, user?.id]);
+  }, [liveApiReachable, onboardingProgress, user?.current_workspace, user?.id]);
 
   return (
     <section className="dataCard">
@@ -34,7 +55,9 @@ export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApi
           <span key={item.label} className="ruleChip">{item.complete ? '✓' : '○'} {item.label}</span>
         ))}
       </div>
+      <p className="muted">{onboardingProgress ? `Workspace onboarding completion: ${onboardingProgress.progress_percent}%` : 'Load onboarding checklist to track setup completion.'}</p>
       <div className="heroActionRow">
+        <Link href="/onboarding">Open setup wizard</Link>
         <Link href="/threat">Run your first threat analysis</Link>
         {!user?.current_workspace ? <Link href="/workspaces">Set up workspace</Link> : null}
       </div>

@@ -159,6 +159,17 @@ curl -X POST "$API_URL/ops/jobs/run" -H "Content-Type: application/json" -d '{"w
 - Core customer-operable flows are now live in product UI: workspace team admin (member role changes/removal/invites/revoke/resend), seat visibility, billing checkout + portal launch, webhook management (create/edit/enable/rotate/deliveries), and findings decisions/actions workflow.
 - Formal SOC 2 control evidence, key rotation automation, and full incident-response runbooks are still required for enterprise procurement.
 
+## Self-serve onboarding wizard (this pass)
+
+The product now includes a persisted, resumable onboarding checklist for each workspace:
+
+- API endpoints: `GET /onboarding/state`, `PATCH /onboarding/state`.
+- Database-backed state table: `workspace_onboarding_states` (migration `0010_onboarding_state.sql`).
+- Checklist merges **automatic milestones** (asset added, integration connected, invited teammates, analysis run) with **manual setup confirmations** (industry profile and policy baseline).
+- UI entry points: `/onboarding`, dashboard onboarding panel progress, and in-app `/help` start-here guide.
+
+This closes a core founder-led gap by making first-run setup resumable and visible to the customer from within the product.
+
 ## Workspace operations workflow (live mode)
 
 Recent SaaS workflow upgrades now prioritize real customer records over scenario-only data in authenticated routes:
