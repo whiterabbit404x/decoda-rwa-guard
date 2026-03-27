@@ -69,6 +69,8 @@ test('onboarding wizard and help/legal pages are present for self-serve setup', 
   const help = read('(product)/help/page.tsx');
   const nav = read('product-nav.ts');
   const security = read('security/page.tsx');
+  const securitySettingsRoute = read('(product)/settings/security/page.tsx');
+  const settingsPage = read('settings-page-client.tsx');
 
   expect(onboarding).toContain('Self-serve setup wizard');
   expect(onboarding).toContain('/onboarding/state');
@@ -76,4 +78,6 @@ test('onboarding wizard and help/legal pages are present for self-serve setup', 
   expect(nav).toContain("{ href: '/onboarding', label: 'Onboarding' }");
   expect(nav).toContain("{ href: '/help', label: 'Help' }");
   expect(security).toContain('workspace-scoped access controls');
+  expect(settingsPage).toContain('href="/settings/security"');
+  expect(securitySettingsRoute).toContain('SecuritySettingsPageClient');
 });

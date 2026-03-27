@@ -1040,7 +1040,8 @@ python scripts\smoke_feature4.py
 This repo now ships with a **split experience**:
 
 - `/` is a public marketing homepage for Decoda RWA Guard.
-- `/dashboard`, `/threat`, `/compliance`, `/resilience`, `/history`, and `/settings` are the authenticated product routes.
+- `/security` is the public trust/security page.
+- `/dashboard`, `/threat`, `/compliance`, `/resilience`, `/history`, `/settings`, and `/settings/security` are the authenticated product routes.
 - The product always prefers live data first, but it preserves the existing deterministic fallback and sample-safe behavior so the UI never blanks when a dependency is unavailable.
 
 ### Railway requirements (API)
