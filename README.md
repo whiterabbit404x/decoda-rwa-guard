@@ -1269,3 +1269,19 @@ Before declaring production fully ready:
 2. Email provider is configured with valid sender/from address and test-send succeeds.
 3. At least one Slack integration is configured and test-send succeeds.
 4. Startup validation reports no production errors.
+
+## Always-on monitoring worker
+
+Run migrations and start the monitoring worker in a separate process:
+
+```bash
+python services/api/scripts/migrate.py
+python -m services.api.app.run_monitoring_worker --interval-seconds 15
+```
+
+Optional env vars:
+- `MONITORING_WORKER_NAME` (default: `monitoring-worker`)
+- `MONITORING_ALERT_DEDUPE_WINDOW_SECONDS` (default: `900`)
+- `THREAT_ENGINE_URL` and `THREAT_ENGINE_TIMEOUT_SECONDS`
+
+In production deploy three processes: web app, API, and monitoring worker (`python -m services.api.app.run_monitoring_worker`).

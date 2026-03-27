@@ -105,6 +105,8 @@ from services.api.app.pilot import (
     list_alerts,
     get_alert,
     patch_alert,
+    list_incidents,
+    patch_incident,
     create_export_job,
     list_exports,
     get_export,
@@ -122,6 +124,13 @@ from services.api.app.pilot import (
     test_integration_slack,
     get_onboarding_state,
     update_onboarding_state,
+)
+from services.api.app.monitoring_runner import (
+    get_monitoring_health,
+    list_monitoring_targets,
+    patch_monitoring_target,
+    run_monitoring_cycle,
+    run_monitoring_once,
 )
 from services.api.app.threat_payloads import normalize_threat_payload
 
@@ -1399,6 +1408,18 @@ def ops_run_jobs(payload: dict[str, Any]) -> dict[str, Any]:
     return with_auth_schema_json(lambda: run_background_jobs(worker_id=worker_id, limit=max(1, min(limit, 100))))
 
 
+@app.post('/ops/monitoring/run', summary='Run monitoring worker cycle (operator)')
+def ops_run_monitoring(payload: dict[str, Any]) -> dict[str, Any]:
+    worker_name = str(payload.get('worker_name', 'monitoring-worker')).strip() or 'monitoring-worker'
+    limit = int(payload.get('limit', 50))
+    return with_auth_schema_json(lambda: run_monitoring_cycle(worker_name=worker_name, limit=max(1, min(limit, 200))))
+
+
+@app.get('/ops/monitoring/health', summary='Monitoring worker health snapshot')
+def ops_monitoring_health() -> dict[str, Any]:
+    return with_auth_schema_json(get_monitoring_health)
+
+
 @app.get('/workspaces', summary='List workspaces for the authenticated user')
 def workspaces(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_user_workspaces(request))
@@ -1529,6 +1550,21 @@ def targets_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_targets(request))
 
 
+@app.get('/monitoring/targets', summary='List target monitoring settings')
+def monitoring_targets_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_monitoring_targets(request))
+
+
+@app.patch('/monitoring/targets/{target_id}', summary='Update target monitoring settings')
+def monitoring_targets_patch(target_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: patch_monitoring_target(target_id, payload, request))
+
+
+@app.post('/monitoring/run-once/{target_id}', summary='Trigger one monitoring run for target')
+def monitoring_run_once(target_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: run_monitoring_once(target_id, request))
+
+
 @app.get('/assets', summary='List workspace assets')
 def assets_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_assets(request))
@@ -1585,8 +1621,8 @@ def modules_put_config(module_key: str, payload: dict[str, Any], request: Reques
 
 
 @app.get('/alerts', summary='List alerts')
-def alerts_list(request: Request, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: list_alerts(request, severity=severity, module=module, target_id=target_id, status_value=status_value))
+def alerts_list(request: Request, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None, source: str | None = None) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_alerts(request, severity=severity, module=module, target_id=target_id, status_value=status_value, source=source))
 
 
 @app.get('/alerts/{alert_id}', summary='Alert detail')
@@ -1597,6 +1633,16 @@ def alerts_get(alert_id: str, request: Request) -> dict[str, Any]:
 @app.patch('/alerts/{alert_id}', summary='Acknowledge or resolve alert')
 def alerts_patch(alert_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: patch_alert(alert_id, payload, request))
+
+
+@app.get('/incidents', summary='List incidents')
+def incidents_list(request: Request, severity: str | None = None, target_id: str | None = None, status_value: str | None = None) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_incidents(request, severity=severity, target_id=target_id, status_value=status_value))
+
+
+@app.patch('/incidents/{incident_id}', summary='Update incident status/owner')
+def incidents_patch(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: patch_incident(incident_id, payload, request))
 
 
 @app.post('/exports/history', summary='Export analysis history')

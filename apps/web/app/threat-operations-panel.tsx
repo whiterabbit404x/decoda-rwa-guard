@@ -31,6 +31,16 @@ type RunResult = {
   degraded: boolean;
   matched_patterns?: Array<{ label?: string }>;
 };
+type MonitoringConfig = {
+  monitoring_enabled: boolean;
+  monitoring_interval_seconds: number;
+  severity_threshold: Severity;
+  auto_create_alerts: boolean;
+  auto_create_incidents: boolean;
+  last_checked_at?: string | null;
+  last_run_status?: string | null;
+  last_run_id?: string | null;
+};
 
 function toCsv(values: string[]) {
   return values.join(', ');
@@ -60,6 +70,16 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [state, setState] = useState<'idle' | 'loading' | 'saving' | 'running' | 'error' | 'success'>('idle');
   const [message, setMessage] = useState('Configure your threat policy with guided controls, then run analysis on any saved target.');
   const [result, setResult] = useState<RunResult | null>(null);
+  const [monitoringConfig, setMonitoringConfig] = useState<MonitoringConfig>({
+    monitoring_enabled: false,
+    monitoring_interval_seconds: 300,
+    severity_threshold: 'medium',
+    auto_create_alerts: true,
+    auto_create_incidents: false,
+    last_checked_at: null,
+    last_run_status: null,
+    last_run_id: null,
+  });
 
   const [transactionScenario, setTransactionScenario] = useState<TransactionScenarioInput>(transactionPresets[0].scenario);
   const [contractScenario, setContractScenario] = useState<ContractScenarioInput>(contractPresets[0].scenario);
@@ -123,6 +143,18 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const nextTargetId = loadedTargets[0]?.id ?? '';
     setSelectedTarget(nextTargetId);
     const nextTarget = loadedTargets.find((item) => item.id === nextTargetId);
+    if (nextTarget) {
+      setMonitoringConfig({
+        monitoring_enabled: Boolean((nextTarget as any).monitoring_enabled),
+        monitoring_interval_seconds: Number((nextTarget as any).monitoring_interval_seconds ?? 300),
+        severity_threshold: (((nextTarget as any).severity_threshold as Severity) || 'medium'),
+        auto_create_alerts: Boolean((nextTarget as any).auto_create_alerts ?? true),
+        auto_create_incidents: Boolean((nextTarget as any).auto_create_incidents ?? false),
+        last_checked_at: (nextTarget as any).last_checked_at ?? null,
+        last_run_status: (nextTarget as any).last_run_status ?? null,
+        last_run_id: (nextTarget as any).last_run_id ?? null,
+      });
+    }
     const nextType = suggestedThreatAnalysisType(nextTarget);
     setAnalysisType(nextType);
     hydrateTargetDrivenScenario(nextTarget, nextType);
@@ -131,6 +163,24 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const normalized = normalizeThreatPolicy(configPayload.config ?? {});
     updatePolicy(normalized);
     setState('success');
+  }
+
+  async function saveMonitoringConfig() {
+    if (!selectedTargetRecord) return;
+    const response = await fetch(`${apiUrl}/monitoring/targets/${selectedTargetRecord.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ ...monitoringConfig, monitoring_mode: 'poll', notification_channels: [] }),
+    });
+    setMessage(response.ok ? 'Automatic monitoring settings saved.' : 'Unable to save automatic monitoring settings.');
+    if (response.ok) void loadTargetsAndPolicy();
+  }
+
+  async function runMonitoringOnce() {
+    if (!selectedTargetRecord) return;
+    const response = await fetch(`${apiUrl}/monitoring/run-once/${selectedTargetRecord.id}`, { method: 'POST', headers: { ...authHeaders() } });
+    setMessage(response.ok ? 'Automatic monitoring run completed for target.' : 'Unable to trigger automatic monitoring run.');
+    if (response.ok) void loadTargetsAndPolicy();
   }
 
   useEffect(() => {
@@ -243,6 +293,24 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       <h3>Threat Monitoring</h3>
       <p className="muted">Use a guided policy builder for approvals, transfer thresholds, and escalation behavior.</p>
       <p className="statusLine">Effective policy summary: {summary}</p>
+      <div className="dataCard" style={{ marginBottom: 12 }}>
+        <h4>Always-on monitoring</h4>
+        <p className="muted">Enable scheduled backend monitoring for this target while preserving manual run workflows.</p>
+        <div className="buttonRow">
+          <label><input type="checkbox" checked={monitoringConfig.monitoring_enabled} onChange={(event) => setMonitoringConfig((prev) => ({ ...prev, monitoring_enabled: event.target.checked }))} /> Enable monitoring</label>
+          <label><input type="checkbox" checked={monitoringConfig.auto_create_alerts} onChange={(event) => setMonitoringConfig((prev) => ({ ...prev, auto_create_alerts: event.target.checked }))} /> Auto alerts</label>
+          <label><input type="checkbox" checked={monitoringConfig.auto_create_incidents} onChange={(event) => setMonitoringConfig((prev) => ({ ...prev, auto_create_incidents: event.target.checked }))} /> Auto incidents</label>
+        </div>
+        <div className="buttonRow">
+          <input type="number" min={30} step={30} value={monitoringConfig.monitoring_interval_seconds} onChange={(event) => setMonitoringConfig((prev) => ({ ...prev, monitoring_interval_seconds: Number(event.target.value) || 300 }))} />
+          <select value={monitoringConfig.severity_threshold} onChange={(event) => setMonitoringConfig((prev) => ({ ...prev, severity_threshold: event.target.value as Severity }))}>
+            <option value="low">threshold: low</option><option value="medium">threshold: medium</option><option value="high">threshold: high</option><option value="critical">threshold: critical</option>
+          </select>
+          <button type="button" onClick={() => void saveMonitoringConfig()}>Save monitoring</button>
+          <button type="button" onClick={() => void runMonitoringOnce()}>Run once now</button>
+        </div>
+        <p className="tableMeta">Status: {monitoringConfig.monitoring_enabled ? 'active' : 'paused'} · last checked: {monitoringConfig.last_checked_at ? new Date(monitoringConfig.last_checked_at).toLocaleString() : 'never'} · last run: {monitoringConfig.last_run_status ?? 'n/a'}</p>
+      </div>
       <label htmlFor="threat-target">Target</label>
       <select
         id="threat-target"
@@ -253,6 +321,18 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           setSelectedTarget(event.target.value);
           setAnalysisType(nextType);
           hydrateTargetDrivenScenario(nextTarget, nextType);
+          if (nextTarget) {
+            setMonitoringConfig({
+              monitoring_enabled: Boolean((nextTarget as any).monitoring_enabled),
+              monitoring_interval_seconds: Number((nextTarget as any).monitoring_interval_seconds ?? 300),
+              severity_threshold: (((nextTarget as any).severity_threshold as Severity) || 'medium'),
+              auto_create_alerts: Boolean((nextTarget as any).auto_create_alerts ?? true),
+              auto_create_incidents: Boolean((nextTarget as any).auto_create_incidents ?? false),
+              last_checked_at: (nextTarget as any).last_checked_at ?? null,
+              last_run_status: (nextTarget as any).last_run_status ?? null,
+              last_run_id: (nextTarget as any).last_run_id ?? null,
+            });
+          }
         }}
       >
         <option value="">Select target</option>
