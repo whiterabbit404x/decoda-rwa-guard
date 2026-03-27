@@ -53,13 +53,20 @@ test('auth context and operational module pages use live customer workflow langu
   const authContext = read('pilot-auth-context.tsx');
   const threatPanel = read('threat-operations-panel.tsx');
   const nav = read('product-nav.ts');
+  const signIn = read('sign-in/sign-in-page-client.tsx');
+  const mfaCompleteRoute = read('api/auth/mfa/complete-signin/route.ts');
 
   expect(authContext).toContain('if (response.status === 401) {');
   expect(authContext).toContain('await signOut();');
+  expect(authContext).toContain('completeMfaSignIn');
   expect(authContext).toContain('safeAuthFailureMessage');
+  expect(signIn).toContain('mfaRequired');
+  expect(signIn).toContain('Verify and continue');
+  expect(mfaCompleteRoute).toContain("'/auth/mfa/complete-signin'");
   expect(threatPanel).toContain('Threat Monitoring');
   expect(threatPanel).not.toContain('scenario');
   expect(nav).toContain('Targets');
+  expect(nav).toContain('Security');
   expect(nav).toContain('Integrations');
 });
 
@@ -69,11 +76,15 @@ test('onboarding wizard and help/legal pages are present for self-serve setup', 
   const help = read('(product)/help/page.tsx');
   const nav = read('product-nav.ts');
   const security = read('security/page.tsx');
+  const securitySettings = read('security-settings-page-client.tsx');
 
   expect(onboarding).toContain('Self-serve setup wizard');
   expect(onboarding).toContain('/onboarding/state');
-  expect(help).toContain('self-serve workspace onboarding');
+  expect(help).toContain('Start here: self-serve workspace onboarding');
+  expect(help).toContain('configure and operate Decoda RWA Guard independently');
   expect(nav).toContain("{ href: '/onboarding', label: 'Onboarding' }");
   expect(nav).toContain("{ href: '/help', label: 'Help' }");
   expect(security).toContain('workspace-scoped access controls');
+  expect(securitySettings).toContain('Account security and session controls');
+  expect(securitySettings).toContain('/auth/mfa/disable');
 });

@@ -10,7 +10,7 @@ export default function HelpPage() {
           <div>
             <p className="eyebrow">Help center</p>
             <h1>Start here: self-serve workspace onboarding</h1>
-            <p className="lede">Everything customers need to configure Decoda RWA Guard without founder-led setup.</p>
+            <p className="lede">Everything teams need to configure and operate Decoda RWA Guard independently.</p>
           </div>
         </div>
         <div className="threeColumnSection">

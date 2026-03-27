@@ -6,9 +6,9 @@ This repo now supports a reproducible local Phase 1 workflow without Docker as t
 
 The repo now supports a production-oriented **public self-serve SaaS mode** alongside the existing local/demo mode. Demo endpoints and UI still work, but authenticated live-mode actions persist workspace-scoped data through `services/api` into Neon Postgres. The backend deployment model remains the same: Railway still runs the existing API Dockerfile, and Vercel still hosts the Next.js frontend.
 
-### Pilot architecture changes
+### SaaS architecture changes
 
-- `services/api` remains the gateway and now also owns auth, workspace membership, audit logging, and persisted pilot records.
+- `services/api` remains the gateway and now also owns auth, workspace membership, audit logging, and persisted workspace records.
 - Existing backend services (`risk-engine`, `threat-engine`, `compliance-service`, `reconciliation-service`) remain computation/demo providers; the gateway persists live summaries and workflow records after it calls them.
 - Live mode writes Neon-backed `users`, `workspaces`, `workspace_members`, `analysis_runs`, `alerts`, `governance_actions`, `incidents`, and `audit_logs`.
 - Demo mode remains separate from live mode. Existing dashboard fallback/demo data never mixes with live customer records.
@@ -155,9 +155,37 @@ curl -X POST "$API_URL/ops/jobs/run" -H "Content-Type: application/json" -d '{"w
 
 ### Honest remaining gaps before true GA / enterprise claims
 
-- Frontend MFA enrollment/challenge UX is not fully wired end-to-end yet.
+- Frontend MFA enrollment/challenge UX is wired with TOTP + recovery code flows, but enterprise SSO/SAML and hardware key support are still pending.
 - Core customer-operable flows are now live in product UI: workspace team admin (member role changes/removal/invites/revoke/resend), seat visibility, billing checkout + portal launch, webhook management (create/edit/enable/rotate/deliveries), and findings decisions/actions workflow.
 - Formal SOC 2 control evidence, key rotation automation, and full incident-response runbooks are still required for enterprise procurement.
+
+## Production readiness checklist (operator-focused)
+
+- [ ] `LIVE_MODE_ENABLED=true` and `DATABASE_URL` set to production Postgres (no SQLite fallback for authenticated flows).
+- [ ] `AUTH_TOKEN_SECRET`, `STRIPE_SECRET_KEY`, and `STRIPE_WEBHOOK_SECRET` are configured in production.
+- [ ] `APP_PUBLIC_URL`, `EMAIL_PROVIDER`, and provider credentials (`EMAIL_RESEND_API_KEY` when using Resend) are configured.
+- [ ] `REDIS_URL` is configured for distributed auth rate limiting.
+- [ ] A worker process is running (`python services/api/scripts/run_worker.py ...`) when `BACKGROUND_JOBS_MODE=queued`.
+- [ ] Run migrations before deploy (`python services/api/scripts/migrate.py`) and validate `/health` + `/health/details` after deploy.
+- [ ] Confirm Stripe webhook delivery by posting a signed event to `/billing/webhooks/stripe` and verifying `billing_events` rows.
+- [ ] Confirm audit log writes for critical actions: MFA enable/disable/challenge, member role changes, billing checkout, and integration edits.
+
+## What remains before enterprise GA
+
+1. **Identity & access**: Add SSO/SAML, SCIM, and optional WebAuthn/FIDO2 MFA.
+2. **RBAC depth**: Introduce finer-grained permissions beyond role bundles for policy/edit/export scopes.
+3. **Billing operations**: Add dunning automation and provider reconciliation dashboards for finance ops.
+4. **Security operations**: Implement formal key rotation playbooks and automated secret expiry checks.
+5. **Compliance evidence**: Publish control mappings and evidence collection workflows (without over-claiming certification).
+
+## Support runbook (minimum operations)
+
+1. Check `/health` and `/health/details` on API before debugging UI failures.
+2. Validate runtime config from web: `/api/runtime-config` and `/api/build-info`.
+3. For auth issues: inspect `auth_sessions`, `auth_tokens`, and `audit_logs` rows for the affected user/workspace.
+4. For billing issues: inspect `billing_events`, `billing_customers`, and `billing_subscriptions` after webhook delivery.
+5. For integration delivery issues: inspect `background_jobs`, `webhook_deliveries`, and `slack_deliveries`.
+6. If job backlog grows, scale worker count and re-run one-shot drain via `/ops/jobs/run`.
 
 ## Self-serve onboarding wizard (this pass)
 

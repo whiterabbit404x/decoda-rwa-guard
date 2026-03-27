@@ -16,3 +16,9 @@
 - Maintain strict separation between demo/fallback behavior and workspace live data.
 - Use self-serve language in product copy (avoid founder-led or manual-setup assumptions).
 - When adding onboarding or admin workflows, ensure resumable state persists through API + database.
+
+## Enterprise-hardening expectations
+- For account security changes, prefer end-to-end flows (API route + UI + tests) over backend-only wiring.
+- Security-sensitive mutations (MFA disable, billing actions, member role changes, integration secrets) must enforce server-side authorization and audit logging.
+- When touching billing or auth behavior, add/update tests in `services/api/tests` and source assertions in `apps/web/tests`.
+- Keep operator docs current in `README.md` when adding env vars, runbook steps, or production-readiness checks.

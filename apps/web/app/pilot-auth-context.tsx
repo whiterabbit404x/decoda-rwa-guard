@@ -75,7 +75,8 @@ type PilotAuthContextValue = {
   runtimeConfigDiagnostic: string | null;
   runtimeConfigSource: RuntimeConfig['source'];
   isAuthenticated: boolean;
-  signIn: (payload: { email: string; password: string }) => Promise<PilotUser>;
+  signIn: (payload: { email: string; password: string }) => Promise<{ user: PilotUser | null; mfaRequired: boolean; mfaToken?: string }>;
+  completeMfaSignIn: (payload: { mfaToken: string; code: string }) => Promise<PilotUser>;
   signUp: (payload: { email: string; password: string; full_name: string; workspace_name: string }) => Promise<{ user: PilotUser | null; verificationRequired: boolean }>;
   signOut: () => Promise<void>;
   refreshUser: () => Promise<PilotUser | null>;
@@ -299,6 +300,40 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     const data = await readApiResponse<{
       access_token?: string;
       user?: PilotUser;
+      mfa_required?: boolean;
+      mfa_token?: string;
+      detail?: string;
+      authTransport?: string;
+      backendApiUrl?: string | null;
+      configured?: boolean;
+      code?: string;
+    }>(response);
+    if (response.ok && data.mfa_required && data.mfa_token) {
+      return { user: null, mfaRequired: true, mfaToken: data.mfa_token };
+    }
+    if (!response.ok || !data.access_token || !data.user) {
+      throw new Error(classifyAuthResponseError('sign in', proxyUrl, response.status, data.detail, data));
+    }
+    saveAuthPayload(data.access_token, data.user);
+    return { user: data.user, mfaRequired: false };
+  }, [saveAuthPayload]);
+
+  const completeMfaSignIn = useCallback(async (payload: { mfaToken: string; code: string }) => {
+    const proxyUrl = '/api/auth/mfa/complete-signin';
+    let response: Response;
+    try {
+      response = await fetch(proxyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mfa_token: payload.mfaToken, code: payload.code }),
+      });
+    } catch (submitError) {
+      throw new Error(classifyAuthTransportError('complete MFA sign in', proxyUrl, submitError));
+    }
+
+    const data = await readApiResponse<{
+      access_token?: string;
+      user?: PilotUser;
       detail?: string;
       authTransport?: string;
       backendApiUrl?: string | null;
@@ -306,7 +341,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       code?: string;
     }>(response);
     if (!response.ok || !data.access_token || !data.user) {
-      throw new Error(classifyAuthResponseError('sign in', proxyUrl, response.status, data.detail, data));
+      throw new Error(classifyAuthResponseError('complete MFA sign in', proxyUrl, response.status, data.detail, data));
     }
     saveAuthPayload(data.access_token, data.user);
     return data.user;
@@ -431,6 +466,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     runtimeConfigSource: runtimeConfig.source,
     isAuthenticated: Boolean(token && user),
     signIn,
+    completeMfaSignIn,
     signUp,
     signOut,
     refreshUser,
@@ -438,7 +474,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     selectWorkspace,
     authHeaders,
     setError,
-  }), [authHeaders, configLoading, createWorkspace, error, loading, refreshUser, runtimeConfig, selectWorkspace, signIn, signOut, signUp, token, user]);
+  }), [authHeaders, completeMfaSignIn, configLoading, createWorkspace, error, loading, refreshUser, runtimeConfig, selectWorkspace, signIn, signOut, signUp, token, user]);
 
   return <PilotAuthContext.Provider value={value}>{children}</PilotAuthContext.Provider>;
 }
