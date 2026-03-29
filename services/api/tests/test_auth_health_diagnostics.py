@@ -130,6 +130,7 @@ def test_auth_signin_route_returns_json_schema_error_instead_of_500(api_main, mo
                 'governance_actions',
                 'incidents',
                 'audit_logs',
+                'workspace_onboarding_states',
             ],
         },
     }

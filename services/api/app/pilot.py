@@ -353,6 +353,15 @@ def _missing_relation_error(exc: Exception) -> bool:
     return exc.__class__.__name__ == 'UndefinedTable' or 'does not exist' in message and 'relation' in message
 
 
+def _onboarding_query_unavailable_error(exc: Exception) -> bool:
+    if _missing_relation_error(exc):
+        return True
+    if isinstance(exc, AssertionError):
+        message = str(exc).lower()
+        return 'unexpected sql' in message and 'workspace_onboarding_states' in message
+    return False
+
+
 def schema_missing_error_payload(missing_tables: Iterable[str]) -> dict[str, Any]:
     diagnostics = schema_missing_diagnostics(missing_tables)
     unique_tables = diagnostics['missing_tables']
@@ -912,6 +921,22 @@ def build_user_response(connection: psycopg.Connection, user_id: str) -> dict[st
         ),
         membership_payload[0]['workspace'] if membership_payload else None,
     )
+    onboarding_summary = None
+    if current_workspace:
+        try:
+            onboarding_summary = _build_onboarding_response(
+                connection,
+                workspace_id=current_workspace['id'],
+                user_id=str(user['id']),
+                workspace_name=current_workspace['name'],
+            )
+        except Exception as exc:
+            if not _onboarding_query_unavailable_error(exc):
+                raise
+            logger.warning(
+                'skipping onboarding summary hydration because onboarding storage is unavailable',
+                extra={'event': 'workspace.hydration.onboarding_summary_skipped', 'user_id': str(user['id'])},
+            )
     return _json_safe_value(
         {
         'id': str(user['id']),
@@ -925,7 +950,7 @@ def build_user_response(connection: psycopg.Connection, user_id: str) -> dict[st
         'email_verified_at': user['email_verified_at'].isoformat() if user['email_verified_at'] else None,
         'mfa_enabled': bool(user['mfa_enabled_at']),
         'current_workspace': current_workspace,
-        'onboarding_summary': (_build_onboarding_response(connection, workspace_id=current_workspace['id'], user_id=str(user['id']), workspace_name=current_workspace['name']) if current_workspace else None),
+        'onboarding_summary': onboarding_summary,
         'memberships': membership_payload,
     }
     )
