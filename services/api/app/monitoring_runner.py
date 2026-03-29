@@ -222,6 +222,20 @@ def _upsert_alert(
     response: dict[str, Any],
     signature: str,
 ) -> str:
+    suppression = connection.execute(
+        '''
+        SELECT id
+        FROM alert_suppression_rules
+        WHERE workspace_id = %s
+          AND (target_id IS NULL OR target_id = %s::uuid)
+          AND (dedupe_signature IS NULL OR dedupe_signature = %s)
+          AND (mute_until IS NULL OR mute_until >= NOW())
+        LIMIT 1
+        ''',
+        (workspace_id, target_id, signature),
+    ).fetchone()
+    if suppression is not None:
+        return ''
     cutoff = utc_now() - timedelta(seconds=ALERT_DEDUPE_WINDOW_SECONDS)
     existing = connection.execute(
         '''
@@ -329,6 +343,8 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     events = fetch_target_activity(target, checkpoint)
 
     alerts_generated = 0
+    fallback_count = 0
+    incidents_created = 0
     run_ids: list[str] = []
     last_status = 'no_events'
     last_run_id: str | None = None
@@ -360,6 +376,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         kind, normalized = _normalize_event(target, event, monitoring_run_id, workspace)
         response, diagnostics = _threat_call(kind, normalized, target_id=str(target['id']))
         if response is None:
+            fallback_count += 1
             response = _fallback_response(kind, normalized, diagnostics=diagnostics)
         response_metadata = response.get('metadata') if isinstance(response.get('metadata'), dict) else {}
         response_metadata.update(
@@ -409,6 +426,8 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
                 response=response,
                 signature=signature,
             )
+            if not alert_id:
+                continue
             alerts_generated += 1
             last_alert_at = utc_now()
             logger.info(
@@ -418,7 +437,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
                 str(response.get('severity') or 'unknown'),
                 configured_scenario or 'default',
             )
-            _maybe_create_incident(
+            incident_id = _maybe_create_incident(
                 connection,
                 workspace_id=str(target['workspace_id']),
                 user_id=user_id,
@@ -428,6 +447,8 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
                 response=response,
                 auto_create=bool(target.get('auto_create_incidents')) and _severity_meets_threshold(str(response.get('severity') or 'low'), severity_threshold),
             )
+            if incident_id:
+                incidents_created += 1
 
     connection.execute(
         '''
@@ -445,8 +466,8 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         ''',
         (last_status, last_run_id, last_alert_at, checkpoint_at, checkpoint_cursor, target['id']),
     )
-    logger.info('checked target %s %s status=%s runs=%s alerts=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated)
-    return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'status': last_status}
+    logger.info('checked target %s %s status=%s runs=%s alerts=%s fallback=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, fallback_count, incidents_created)
+    return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'fallback_count': fallback_count, 'status': last_status}
 
 
 def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int = 50) -> dict[str, Any]:
@@ -456,6 +477,10 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     checked = 0
     due_count = 0
     alerts_generated = 0
+    live_targets_checked = 0
+    events_ingested = 0
+    incidents_created = 0
+    fallback_count = 0
     runs: list[dict[str, Any]] = []
     error_message: str | None = None
     cycle_started_at = utc_now()
@@ -467,6 +492,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             INSERT INTO monitoring_worker_state (
                 worker_name,
                 running,
+                status,
+                last_started_at,
+                last_heartbeat_at,
                 last_cycle_at,
                 last_cycle_due_targets,
                 last_cycle_targets_checked,
@@ -474,9 +502,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 last_error,
                 updated_at
             )
-            VALUES (%s, TRUE, NOW(), 0, 0, 0, NULL, NOW())
+            VALUES (%s, TRUE, 'running', NOW(), NOW(), NOW(), 0, 0, 0, NULL, NOW())
             ON CONFLICT (worker_name)
-            DO UPDATE SET running = TRUE, last_cycle_at = NOW(), last_error = NULL, updated_at = NOW()
+            DO UPDATE SET running = TRUE, status = 'running', last_started_at = COALESCE(monitoring_worker_state.last_started_at, NOW()), last_heartbeat_at = NOW(), last_cycle_at = NOW(), last_error = NULL, updated_at = NOW()
             ''',
             (worker_name,),
         )
@@ -568,6 +596,10 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     connection.execute('UPDATE targets SET monitoring_claimed_by = %s, monitoring_claimed_at = NOW() WHERE id = %s', (worker_name, target['id']))
                     result = process_monitoring_target(connection, target)
                 alerts_generated += int(result['alerts_generated'])
+                live_targets_checked += 1 if str(target.get('target_type') or '').lower() in {'wallet','contract'} else 0
+                events_ingested += int(result.get('events_ingested', 0))
+                incidents_created += int(result.get('incidents_created', 0))
+                fallback_count += int(result.get('fallback_count', 0))
                 runs.append(result)
                 checked += 1
             except Exception as exc:
@@ -581,6 +613,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             '''
             UPDATE monitoring_worker_state
             SET running = FALSE,
+                status = CASE WHEN %s IS NULL THEN 'idle' ELSE 'error' END,
+                last_heartbeat_at = NOW(),
                 last_cycle_at = NOW(),
                 last_cycle_due_targets = %s,
                 last_cycle_targets_checked = %s,
@@ -589,7 +623,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 updated_at = NOW()
             WHERE worker_name = %s
             ''',
-            (due_count, checked, alerts_generated, error_message, worker_name),
+            (error_message, due_count, checked, alerts_generated, error_message, worker_name),
         )
         connection.commit()
     WORKER_STATE.update(
@@ -603,8 +637,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             'last_error': error_message,
         }
     )
-    logger.info('monitoring cycle finished worker=%s due=%s checked=%s alerts=%s', worker_name, due_count, checked, alerts_generated)
-    return {'due_targets': due_count, 'checked': checked, 'alerts_generated': alerts_generated, 'runs': runs, 'live_mode': True}
+    cycle_duration_ms = int((utc_now() - cycle_started_at).total_seconds() * 1000)
+    logger.info('monitoring cycle finished worker=%s due=%s checked=%s live_targets=%s events=%s alerts=%s incidents=%s fallback=%s duration_ms=%s', worker_name, due_count, checked, live_targets_checked, events_ingested, alerts_generated, incidents_created, fallback_count, cycle_duration_ms)
+    return {'due_targets': due_count, 'checked': checked, 'live_targets_checked': live_targets_checked, 'events_ingested': events_ingested, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'fallback_count': fallback_count, 'cycle_duration_ms': cycle_duration_ms, 'runs': runs, 'live_mode': True}
 
 
 def list_monitoring_targets(request: Request) -> dict[str, Any]:
@@ -806,7 +841,7 @@ def get_monitoring_health() -> dict[str, Any]:
         worker_name = WORKER_STATE['worker_name']
         row = connection.execute(
             '''
-            SELECT worker_name, running, last_cycle_at, last_cycle_due_targets,
+            SELECT worker_name, running, status, last_started_at, last_heartbeat_at, last_cycle_at, last_cycle_due_targets,
                    last_cycle_targets_checked, last_cycle_alerts_generated, last_error, updated_at
             FROM monitoring_worker_state
             WHERE worker_name = %s
@@ -823,4 +858,27 @@ def get_monitoring_health() -> dict[str, Any]:
         normalized['worker_running'] = worker_running
         normalized['last_cycle_checked_targets'] = normalized.get('last_cycle_targets_checked', 0)
         normalized['last_cycle_alerts_created'] = normalized.get('last_cycle_alerts_generated', 0)
+        overdue = connection.execute(
+            '''
+            SELECT COUNT(*) AS overdue_count
+            FROM targets
+            WHERE deleted_at IS NULL
+              AND monitoring_enabled = TRUE
+              AND enabled = TRUE
+              AND is_active = TRUE
+              AND last_checked_at IS NOT NULL
+              AND last_checked_at < NOW() - (GREATEST(monitoring_interval_seconds, 30) * INTERVAL '1 second')
+            '''
+        ).fetchone()
+        job_state = connection.execute(
+            '''
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'queued') AS queued,
+                COUNT(*) FILTER (WHERE status = 'running') AS running,
+                COUNT(*) FILTER (WHERE status = 'failed') AS failed
+            FROM background_jobs
+            '''
+        ).fetchone()
+        normalized['overdue_targets'] = int((overdue or {}).get('overdue_count') or 0)
+        normalized['job_delivery_state'] = _json_safe_value(dict(job_state)) if job_state is not None else {'queued': 0, 'running': 0, 'failed': 0}
         return {**normalized, 'live_mode': True}

@@ -42,17 +42,24 @@ class _FakeConnection:
             return _Result(rows=self.due_targets)
         if 'FROM targets' in normalized and 'FOR UPDATE SKIP LOCKED' in normalized:
             return _Result(rows=self.due_targets)
-        if normalized.startswith('SELECT worker_name, running, last_cycle_at'):
+        if normalized.startswith('SELECT worker_name, running, status, last_started_at'):
             return _Result(row=self.health_row)
+        if normalized.startswith('SELECT COUNT(*) AS overdue_count'):
+            return _Result(row={'overdue_count': 0})
+        if "COUNT(*) FILTER (WHERE status = 'queued')" in normalized:
+            return _Result(row={'queued': 0, 'running': 0, 'failed': 0})
         if normalized.startswith('UPDATE monitoring_worker_state'):
             self.health_row = {
-                'worker_name': params[4],
+                'worker_name': params[5],
                 'running': False,
+                'status': 'error' if params[0] else 'idle',
+                'last_started_at': datetime.now(timezone.utc),
+                'last_heartbeat_at': datetime.now(timezone.utc),
                 'last_cycle_at': datetime.now(timezone.utc),
-                'last_cycle_due_targets': params[0],
-                'last_cycle_targets_checked': params[1],
-                'last_cycle_alerts_generated': params[2],
-                'last_error': params[3],
+                'last_cycle_due_targets': params[1],
+                'last_cycle_targets_checked': params[2],
+                'last_cycle_alerts_generated': params[3],
+                'last_error': params[4],
                 'updated_at': datetime.now(timezone.utc),
             }
             return _Result()
