@@ -620,6 +620,7 @@ def list_monitoring_targets(request: Request) -> dict[str, Any]:
         targets: list[dict[str, Any]] = []
         for row in rows:
             item = _json_safe_value(dict(row))
+            item['monitoring_scenario'] = item.get('monitoring_demo_scenario')
             item['monitoring_profile'] = item.get('monitoring_demo_scenario')
             targets.append(item)
         return {'targets': targets, 'workspace': workspace_context['workspace']}
@@ -649,8 +650,10 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='severity_threshold must be low/medium/high/critical.')
         channels = payload.get('notification_channels') if 'notification_channels' in payload else current.get('notification_channels')
         channels = channels if isinstance(channels, list) else []
-        scenario_field_provided = 'monitoring_demo_scenario' in payload or 'monitoring_profile' in payload
-        if 'monitoring_demo_scenario' in payload:
+        scenario_field_provided = 'monitoring_demo_scenario' in payload or 'monitoring_profile' in payload or 'monitoring_scenario' in payload
+        if 'monitoring_scenario' in payload:
+            raw_demo_scenario = payload.get('monitoring_scenario')
+        elif 'monitoring_demo_scenario' in payload:
             raw_demo_scenario = payload.get('monitoring_demo_scenario')
         elif 'monitoring_profile' in payload:
             raw_demo_scenario = payload.get('monitoring_profile')
@@ -658,7 +661,7 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
             raw_demo_scenario = current.get('monitoring_demo_scenario')
         demo_scenario = str(raw_demo_scenario or '').strip().lower() or None
         if demo_scenario is not None and demo_scenario not in SCENARIO_EXPECTED_RISK:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='monitoring_demo_scenario must be safe/low_risk/medium_risk/high_risk/flash_loan_like/admin_abuse_like/risky_approval_like.')
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='monitoring_scenario must be safe/low_risk/medium_risk/high_risk/flash_loan_like/admin_abuse_like/risky_approval_like.')
         monitoring_enabled = bool(payload.get('monitoring_enabled')) if 'monitoring_enabled' in payload else bool(current.get('monitoring_enabled'))
         interval_seconds_raw = payload.get('monitoring_interval_seconds') if 'monitoring_interval_seconds' in payload else current.get('monitoring_interval_seconds')
         interval_seconds = max(30, int(interval_seconds_raw or 300))
@@ -718,6 +721,7 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
         connection.commit()
         updated = connection.execute('SELECT * FROM targets WHERE id = %s', (target_id,)).fetchone()
         updated_target = _json_safe_value(dict(updated))
+        updated_target['monitoring_scenario'] = updated_target.get('monitoring_demo_scenario')
         updated_target['monitoring_profile'] = updated_target.get('monitoring_demo_scenario')
         return {'target': updated_target}
 

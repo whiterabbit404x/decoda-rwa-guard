@@ -40,7 +40,12 @@ class ActivityEvent:
 
 
 def monitoring_demo_scenario(target: dict[str, Any]) -> str | None:
-    value = str(target.get('monitoring_demo_scenario') or '').strip().lower()
+    value = str(
+        target.get('monitoring_scenario')
+        or target.get('monitoring_demo_scenario')
+        or target.get('monitoring_profile')
+        or ''
+    ).strip().lower()
     if value in MONITORING_DEMO_SCENARIOS:
         return value
     return None

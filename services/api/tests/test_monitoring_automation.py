@@ -311,6 +311,7 @@ def test_patch_monitoring_target_preserves_scenario_on_unrelated_updates(monkeyp
         request,
     )
     assert response['target']['monitoring_demo_scenario'] == 'flash_loan_like'
+    assert response['target']['monitoring_scenario'] == 'flash_loan_like'
     assert response['target']['monitoring_profile'] == 'flash_loan_like'
     assert response['target']['monitoring_interval_seconds'] == 90
     assert response['target']['severity_threshold'] == 'high'
@@ -406,11 +407,80 @@ def test_patch_monitoring_target_accepts_monitoring_profile_alias(monkeypatch: p
         request,
     )
     assert response['target']['monitoring_demo_scenario'] == 'high_risk'
+    assert response['target']['monitoring_scenario'] == 'high_risk'
     assert response['target']['monitoring_profile'] == 'high_risk'
 
     listed = monitoring_runner.list_monitoring_targets(request)
     assert listed['targets'][0]['monitoring_demo_scenario'] == 'high_risk'
+    assert listed['targets'][0]['monitoring_scenario'] == 'high_risk'
     assert listed['targets'][0]['monitoring_profile'] == 'high_risk'
+
+
+def test_patch_monitoring_target_accepts_monitoring_scenario_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _PatchResult:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _PatchConnection:
+        def __init__(self):
+            self.row: dict[str, object] = {
+                'id': 'target-1',
+                'monitoring_enabled': True,
+                'monitoring_mode': 'poll',
+                'monitoring_interval_seconds': 300,
+                'severity_threshold': 'medium',
+                'auto_create_alerts': True,
+                'auto_create_incidents': False,
+                'notification_channels': [],
+                'monitoring_demo_scenario': 'safe',
+                'is_active': True,
+            }
+
+        def execute(self, query, params=None):
+            normalized = ' '.join(str(query).split())
+            if normalized.startswith('SELECT id, monitoring_enabled'):
+                return _PatchResult(self.row.copy())
+            if normalized.startswith('UPDATE targets SET monitoring_enabled'):
+                self.row.update({'monitoring_demo_scenario': params[7]})
+                return _PatchResult()
+            if normalized.startswith('SELECT * FROM targets WHERE id = %s'):
+                return _PatchResult(self.row.copy())
+            raise AssertionError(f'Unexpected query: {normalized}')
+
+        def commit(self):
+            return None
+
+    class _ConnCtx:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __enter__(self):
+            return self.connection
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    connection = _PatchConnection()
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _ConnCtx(connection))
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(
+        monitoring_runner,
+        '_require_workspace_admin',
+        lambda _connection, _request: ({'id': 'user-1'}, {'workspace_id': 'workspace-1'}),
+    )
+    monkeypatch.setattr(monitoring_runner, 'log_audit', lambda *args, **kwargs: None)
+
+    request = Request({'type': 'http', 'headers': []})
+    response = monitoring_runner.patch_monitoring_target(
+        'target-1',
+        {'monitoring_scenario': 'medium_risk'},
+        request,
+    )
+    assert response['target']['monitoring_demo_scenario'] == 'medium_risk'
+    assert response['target']['monitoring_scenario'] == 'medium_risk'
 
 
 def test_update_target_preserves_existing_monitoring_scenario_when_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -506,6 +576,7 @@ def test_update_target_preserves_existing_monitoring_scenario_when_omitted(monke
     )
     assert captured_payload['monitoring_demo_scenario'] == 'flash_loan_like'
     assert response['monitoring_demo_scenario'] == 'flash_loan_like'
+    assert response['monitoring_scenario'] == 'flash_loan_like'
     assert connection.updated is True
 
 

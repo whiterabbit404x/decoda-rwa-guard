@@ -40,7 +40,7 @@ type MonitoringConfig = {
   last_checked_at?: string | null;
   last_run_status?: string | null;
   last_run_id?: string | null;
-  monitoring_demo_scenario?: string | null;
+  monitoring_scenario?: string | null;
 };
 const MONITORING_DEMO_SCENARIOS = ['safe', 'low_risk', 'medium_risk', 'high_risk', 'flash_loan_like', 'admin_abuse_like', 'risky_approval_like'] as const;
 
@@ -81,7 +81,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     last_checked_at: null,
     last_run_status: null,
     last_run_id: null,
-    monitoring_demo_scenario: null,
+    monitoring_scenario: null,
   });
 
   const [transactionScenario, setTransactionScenario] = useState<TransactionScenarioInput>(transactionPresets[0].scenario);
@@ -156,7 +156,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         last_checked_at: (nextTarget as any).last_checked_at ?? null,
         last_run_status: (nextTarget as any).last_run_status ?? null,
         last_run_id: (nextTarget as any).last_run_id ?? null,
-        monitoring_demo_scenario: (nextTarget as any).monitoring_demo_scenario ?? null,
+        monitoring_scenario: (nextTarget as any).monitoring_scenario ?? (nextTarget as any).monitoring_demo_scenario ?? null,
       });
     }
     const nextType = suggestedThreatAnalysisType(nextTarget);
@@ -174,7 +174,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const response = await fetch(`${apiUrl}/monitoring/targets/${selectedTargetRecord.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ ...monitoringConfig, monitoring_mode: 'poll', notification_channels: [] }),
+      body: JSON.stringify({ ...monitoringConfig, monitoring_mode: 'poll', notification_channels: [], monitoring_demo_scenario: monitoringConfig.monitoring_scenario }),
     });
     setMessage(response.ok ? 'Automatic monitoring settings saved.' : 'Unable to save automatic monitoring settings.');
     if (response.ok) void loadTargetsAndPolicy();
@@ -310,7 +310,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <select value={monitoringConfig.severity_threshold} onChange={(event) => setMonitoringConfig((prev) => ({ ...prev, severity_threshold: event.target.value as Severity }))}>
             <option value="low">threshold: low</option><option value="medium">threshold: medium</option><option value="high">threshold: high</option><option value="critical">threshold: critical</option>
           </select>
-          <select value={monitoringConfig.monitoring_demo_scenario ?? ''} onChange={(event) => setMonitoringConfig((prev) => ({ ...prev, monitoring_demo_scenario: event.target.value || null }))}>
+          <select value={monitoringConfig.monitoring_scenario ?? ''} onChange={(event) => setMonitoringConfig((prev) => ({ ...prev, monitoring_scenario: event.target.value || null }))}>
             <option value="">demo scenario: off (default live-like)</option>
             {MONITORING_DEMO_SCENARIOS.map((scenario) => <option key={scenario} value={scenario}>demo scenario: {scenario}</option>)}
           </select>
@@ -339,7 +339,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               last_checked_at: (nextTarget as any).last_checked_at ?? null,
               last_run_status: (nextTarget as any).last_run_status ?? null,
               last_run_id: (nextTarget as any).last_run_id ?? null,
-              monitoring_demo_scenario: (nextTarget as any).monitoring_demo_scenario ?? null,
+              monitoring_scenario: (nextTarget as any).monitoring_scenario ?? (nextTarget as any).monitoring_demo_scenario ?? null,
             });
           }
         }}
