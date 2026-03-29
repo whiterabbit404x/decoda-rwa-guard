@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from services.api.app import pilot
 from services.api.app.activity_providers import fetch_contract_activity, fetch_market_activity, fetch_wallet_activity
+from services.api.app import monitoring_runner
 from services.api.app.monitoring_runner import _fallback_response, _normalize_event
 
 
@@ -68,7 +71,59 @@ def test_monitoring_normalization_and_fallback_shape() -> None:
     assert payload['metadata']['monitoring_run_id'] == 'run-id'
     assert payload['metadata']['ingestion_source'] == 'demo'
 
-    fallback = _fallback_response('contract', payload)
+    fallback = _fallback_response(
+        'contract',
+        payload,
+        diagnostics={
+            'fallback_reason': 'live_engine_exception',
+            'fallback_exception_type': 'TimeoutError',
+            'fallback_exception_message': 'timed out',
+        },
+    )
     assert fallback['analysis_type'] == 'contract'
     assert fallback['source'] == 'fallback'
     assert 'severity' in fallback
+    assert fallback['metadata']['fallback_reason'] == 'live_engine_exception'
+    assert fallback['metadata']['fallback_exception_type'] == 'TimeoutError'
+
+
+def test_monitoring_threat_call_reuses_manual_proxy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        'wallet': '0x1111111111111111111111111111111111111111',
+        'actor': 'Treasury Ops',
+        'action_type': 'transfer',
+        'protocol': 'erc20',
+        'amount': 25000,
+        'asset': 'USDC',
+        'call_sequence': ['transfer'],
+        'flags': {},
+        'counterparty_reputation': 75,
+        'actor_role': 'wallet',
+        'expected_actor_roles': ['wallet'],
+        'burst_actions_last_5m': 0,
+        'metadata': {'event_id': 'evt-1'},
+    }
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _proxy(kind: str, body: dict[str, object]) -> dict[str, object]:
+        calls.append((kind, body))
+        return {
+            'analysis_type': kind,
+            'score': 18,
+            'severity': 'low',
+            'matched_patterns': [],
+            'explanation': 'live',
+            'recommended_action': 'allow',
+            'reasons': [],
+            'source': 'live',
+            'degraded': False,
+            'metadata': {'source': 'live'},
+        }
+
+    monkeypatch.setattr('services.api.app.main.proxy_threat', _proxy)
+    response, diagnostics = monitoring_runner._threat_call('transaction', payload, target_id='target-1')
+    assert response is not None
+    assert response['source'] == 'live'
+    assert diagnostics['live_invocation'] == 'proxy_threat'
+    assert diagnostics['live_invocation_succeeded'] is True
+    assert calls and calls[0][0] == 'transaction'

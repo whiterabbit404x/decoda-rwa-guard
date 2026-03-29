@@ -6,9 +6,6 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request as UrlRequest, urlopen
-
 from fastapi import HTTPException, Request, status
 
 from services.api.app.activity_providers import ActivityEvent, fetch_target_activity
@@ -28,7 +25,6 @@ from services.api.app.pilot import (
 from services.api.app.threat_payloads import ThreatKind, normalize_threat_payload
 
 THREAT_ENGINE_URL = (os.getenv('THREAT_ENGINE_URL') or 'http://localhost:8002').rstrip('/')
-THREAT_ENGINE_TIMEOUT_SECONDS = float(os.getenv('THREAT_ENGINE_TIMEOUT_SECONDS', '1.5'))
 ALERT_DEDUPE_WINDOW_SECONDS = int(os.getenv('MONITORING_ALERT_DEDUPE_WINDOW_SECONDS', '900'))
 WORKER_HEARTBEAT_TTL_SECONDS = int(os.getenv('MONITORING_WORKER_HEARTBEAT_TTL_SECONDS', '180'))
 
@@ -64,27 +60,58 @@ def _parse_ts(value: Any) -> datetime | None:
         return None
 
 
-def _threat_call(kind: ThreatKind, payload: dict[str, Any]) -> dict[str, Any] | None:
-    body = json.dumps(payload).encode('utf-8')
-    req = UrlRequest(
-        f'{THREAT_ENGINE_URL}/analyze/{kind}',
-        data=body,
-        headers={'content-type': 'application/json', 'accept': 'application/json'},
-        method='POST',
-    )
+def _safe_error_message(exc: Exception) -> str:
+    text = str(exc).strip() or exc.__class__.__name__
+    return text[:240]
+
+
+def _payload_shape(payload: dict[str, Any]) -> dict[str, Any]:
+    metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+    return {
+        'top_level_keys': sorted(payload.keys()),
+        'metadata_keys': sorted(metadata.keys()),
+    }
+
+
+def _threat_call(kind: ThreatKind, payload: dict[str, Any], *, target_id: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    logger.info('monitoring live analysis request target=%s analysis_type=%s payload_shape=%s', target_id, kind, _payload_shape(payload))
     try:
-        with urlopen(req, timeout=THREAT_ENGINE_TIMEOUT_SECONDS) as response:
-            if response.status >= 400:
-                return None
-            parsed = json.loads(response.read().decode('utf-8'))
-            if isinstance(parsed, dict):
-                return parsed
-            return None
-    except (HTTPError, URLError, TimeoutError, ValueError):
-        return None
+        from services.api.app import main as api_main
+
+        response = api_main.proxy_threat(kind, payload)
+        if isinstance(response, dict):
+            logger.info(
+                'monitoring live analysis succeeded target=%s source=%s score=%s',
+                target_id,
+                str(response.get('source') or 'live'),
+                response.get('score'),
+            )
+            return response, {'live_invocation': 'proxy_threat', 'live_invocation_succeeded': True}
+        logger.warning(
+            'monitoring live analysis failed target=%s reason=%s; using fallback',
+            target_id,
+            'proxy_threat returned no payload',
+        )
+        return None, {
+            'live_invocation': 'proxy_threat',
+            'live_invocation_succeeded': False,
+            'fallback_reason': 'live_engine_unavailable',
+            'fallback_exception_type': 'NoLiveResponse',
+            'fallback_exception_message': 'proxy_threat returned no payload',
+        }
+    except Exception as exc:  # pragma: no cover - defensive logging around runtime import/invocation
+        logger.exception('monitoring live analysis failed target=%s reason=%s; using fallback', target_id, exc.__class__.__name__)
+        return None, {
+            'live_invocation': 'proxy_threat',
+            'live_invocation_succeeded': False,
+            'fallback_reason': 'live_engine_exception',
+            'fallback_exception_type': exc.__class__.__name__,
+            'fallback_exception_message': _safe_error_message(exc),
+        }
 
 
-def _fallback_response(kind: ThreatKind, payload: dict[str, Any]) -> dict[str, Any]:
+def _fallback_response(kind: ThreatKind, payload: dict[str, Any], *, diagnostics: dict[str, Any] | None = None) -> dict[str, Any]:
+    diagnostics = diagnostics or {}
     flags = payload.get('flags') if isinstance(payload.get('flags'), dict) else {}
     if kind == 'transaction':
         score = min(95, int(payload.get('amount') or 0) // 25000 + int(payload.get('burst_actions_last_5m') or 0) * 3 + (20 if flags.get('flash_loan_pattern') else 0))
@@ -114,7 +141,14 @@ def _fallback_response(kind: ThreatKind, payload: dict[str, Any]) -> dict[str, A
         'reasons': ['fallback mode', f'score={score}'],
         'source': 'fallback',
         'degraded': True,
-        'metadata': {'ingestion_source': payload.get('metadata', {}).get('ingestion_source', 'demo')},
+        'metadata': {
+            'ingestion_source': payload.get('metadata', {}).get('ingestion_source', 'demo'),
+            'fallback_reason': diagnostics.get('fallback_reason') or 'live_engine_unavailable',
+            'fallback_exception_type': diagnostics.get('fallback_exception_type'),
+            'fallback_exception_message': diagnostics.get('fallback_exception_message'),
+            'live_invocation': diagnostics.get('live_invocation') or 'proxy_threat',
+            'live_invocation_succeeded': bool(diagnostics.get('live_invocation_succeeded', False)),
+        },
     }
 
 
@@ -147,6 +181,13 @@ def _normalize_event(target: dict[str, Any], event: ActivityEvent, monitoring_ru
         },
     }
     normalized, _ = normalize_threat_payload(kind, payload, include_original=False)
+    logger.info(
+        'monitoring payload built target=%s event=%s analysis_type=%s payload_shape=%s',
+        target.get('id'),
+        event.event_id,
+        kind,
+        _payload_shape(normalized),
+    )
     return kind, normalized
 
 
@@ -289,7 +330,18 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
 
     for event in events:
         kind, normalized = _normalize_event(target, event, monitoring_run_id, workspace)
-        response = _threat_call(kind, normalized) or _fallback_response(kind, normalized)
+        response, diagnostics = _threat_call(kind, normalized, target_id=str(target['id']))
+        if response is None:
+            response = _fallback_response(kind, normalized, diagnostics=diagnostics)
+        response_metadata = response.get('metadata') if isinstance(response.get('metadata'), dict) else {}
+        response_metadata.update(
+            {
+                'monitoring_analysis_type': f'monitoring_{kind}',
+                'monitoring_request_keys': sorted(normalized.keys()),
+                'monitoring_request_metadata_keys': sorted((normalized.get('metadata') or {}).keys()) if isinstance(normalized.get('metadata'), dict) else [],
+            }
+        )
+        response['metadata'] = response_metadata
         last_status = 'completed'
         analysis_run_id = persist_analysis_run(
             connection,
