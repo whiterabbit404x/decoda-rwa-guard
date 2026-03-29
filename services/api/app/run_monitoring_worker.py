@@ -6,6 +6,7 @@ import os
 import time
 
 from services.api.app.monitoring_runner import run_monitoring_cycle
+from services.api.app.pilot import runtime_environment_identity
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,6 +23,15 @@ def main() -> int:
     logger = logging.getLogger(__name__)
     args = parse_args()
     logger.info('monitoring worker starting')
+    identity = runtime_environment_identity()
+    logger.info(
+        'monitoring worker runtime identity app_mode=%s live_mode=%s railway_environment=%s railway_service=%s database_fingerprint=%s',
+        identity['app_mode'],
+        identity['live_mode_enabled'],
+        identity['railway_environment'] or 'unknown',
+        identity['railway_service'] or 'unknown',
+        identity['database_fingerprint'],
+    )
     logger.info(
         'monitoring worker config worker_name=%s interval_seconds=%s limit=%s once=%s',
         args.worker_name,

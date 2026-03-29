@@ -107,6 +107,18 @@ def database_url() -> str | None:
     return value or None
 
 
+def runtime_environment_identity() -> dict[str, Any]:
+    db_url = database_url()
+    db_fingerprint = hashlib.sha256(db_url.encode('utf-8')).hexdigest()[:12] if db_url else 'missing'
+    return {
+        'app_mode': os.getenv('APP_MODE', 'local'),
+        'live_mode_enabled': live_mode_enabled(),
+        'railway_environment': os.getenv('RAILWAY_ENVIRONMENT_NAME', '').strip() or None,
+        'railway_service': os.getenv('RAILWAY_SERVICE_NAME', '').strip() or None,
+        'database_fingerprint': db_fingerprint,
+    }
+
+
 def live_mode_enabled() -> bool:
     return env_flag('LIVE_MODE_ENABLED') and database_url() is not None
 

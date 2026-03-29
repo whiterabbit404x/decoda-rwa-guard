@@ -55,6 +55,7 @@ from services.api.app.pilot import (
     pilot_mode,
     pg_connection,
     resolve_workspace,
+    runtime_environment_identity,
     run_startup_migrations_if_enabled,
     validate_runtime_configuration,
     request_email_verification,
@@ -1016,6 +1017,7 @@ def fixture_diagnostics() -> dict[str, Any]:
 
 def emit_startup_fixture_diagnostics() -> None:
     diagnostics = fixture_diagnostics()
+    identity = runtime_environment_identity()
     logger.info(
         'startup version=%s risk_dir=%s exists=%s sample_risk_request=%s '
         'reconciliation_dir=%s exists=%s critical_supply_divergence=%s '
@@ -1033,6 +1035,14 @@ def emit_startup_fixture_diagnostics() -> None:
         diagnostics['modes']['pilot_mode'],
         diagnostics['modes']['live_mode_enabled'],
         diagnostics['modes']['demo_mode'],
+    )
+    logger.info(
+        'api runtime identity app_mode=%s live_mode=%s railway_environment=%s railway_service=%s database_fingerprint=%s',
+        identity['app_mode'],
+        identity['live_mode_enabled'],
+        identity['railway_environment'] or 'unknown',
+        identity['railway_service'] or 'unknown',
+        identity['database_fingerprint'],
     )
 
 
