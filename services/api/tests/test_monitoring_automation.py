@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import Request
 
 from services.api.app import pilot
 from services.api.app.activity_providers import fetch_contract_activity, fetch_market_activity, fetch_wallet_activity
@@ -233,3 +234,100 @@ def test_monitoring_alert_dedupe_for_repeated_demo_scenario(monkeypatch: pytest.
     assert first['alerts_generated'] == 1
     assert second['alerts_generated'] == 1
     assert len(connection.alert_rows) == 1
+
+
+def test_patch_monitoring_target_preserves_scenario_on_unrelated_updates(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _PatchResult:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _PatchConnection:
+        def __init__(self):
+            self.row: dict[str, object] = {
+                'id': 'target-1',
+                'monitoring_enabled': True,
+                'monitoring_mode': 'poll',
+                'monitoring_interval_seconds': 300,
+                'severity_threshold': 'medium',
+                'auto_create_alerts': True,
+                'auto_create_incidents': False,
+                'notification_channels': [],
+                'monitoring_demo_scenario': 'flash_loan_like',
+                'is_active': True,
+            }
+
+        def execute(self, query, params=None):
+            normalized = ' '.join(str(query).split())
+            if normalized.startswith('SELECT id, monitoring_enabled'):
+                return _PatchResult(self.row.copy())
+            if normalized.startswith('UPDATE targets SET monitoring_enabled'):
+                self.row.update(
+                    {
+                        'monitoring_enabled': bool(params[0]),
+                        'monitoring_mode': str(params[1]),
+                        'monitoring_interval_seconds': int(params[2]),
+                        'severity_threshold': str(params[3]),
+                        'auto_create_alerts': bool(params[4]),
+                        'auto_create_incidents': bool(params[5]),
+                        'monitoring_demo_scenario': params[7],
+                        'is_active': bool(params[9]),
+                    }
+                )
+                return _PatchResult()
+            if normalized.startswith('SELECT * FROM targets WHERE id = %s'):
+                return _PatchResult(self.row.copy())
+            raise AssertionError(f'Unexpected query: {normalized}')
+
+        def commit(self):
+            return None
+
+    class _ConnCtx:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __enter__(self):
+            return self.connection
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    connection = _PatchConnection()
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _ConnCtx(connection))
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(
+        monitoring_runner,
+        '_require_workspace_admin',
+        lambda _connection, _request: ({'id': 'user-1'}, {'workspace_id': 'workspace-1'}),
+    )
+    monkeypatch.setattr(monitoring_runner, 'log_audit', lambda *args, **kwargs: None)
+
+    request = Request({'type': 'http', 'headers': []})
+    response = monitoring_runner.patch_monitoring_target(
+        'target-1',
+        {'monitoring_interval_seconds': 90, 'severity_threshold': 'high'},
+        request,
+    )
+    assert response['target']['monitoring_demo_scenario'] == 'flash_loan_like'
+    assert response['target']['monitoring_interval_seconds'] == 90
+    assert response['target']['severity_threshold'] == 'high'
+
+
+def test_flash_loan_like_fallback_scores_higher_than_safe() -> None:
+    safe_target = _build_target('safe')
+    flash_target = _build_target('flash_loan_like')
+    workspace = {'name': 'Workspace'}
+    run_id = 'run-1'
+    safe_event = fetch_wallet_activity(safe_target, datetime.now(timezone.utc) - timedelta(hours=1))[0]
+    flash_event = fetch_wallet_activity(flash_target, datetime.now(timezone.utc) - timedelta(hours=1))[0]
+
+    _, safe_payload = _normalize_event(safe_target, safe_event, run_id, workspace)
+    _, flash_payload = _normalize_event(flash_target, flash_event, run_id, workspace)
+
+    safe_result = _fallback_response('transaction', safe_payload)
+    flash_result = _fallback_response('transaction', flash_payload)
+    assert flash_result['score'] > safe_result['score']
+    assert flash_result['severity'] in {'high', 'critical'}
+    assert safe_result['severity'] == 'low'

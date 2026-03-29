@@ -335,6 +335,13 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
     checkpoint_at = checkpoint
     configured_scenario = monitoring_demo_scenario(target)
+    logger.info(
+        'monitoring target fetched target=%s scenario=%s threshold=%s auto_create_alerts=%s',
+        target.get('id'),
+        configured_scenario or 'default',
+        str(target.get('severity_threshold') or 'medium'),
+        bool(target.get('auto_create_alerts', True)),
+    )
 
     for event in events:
         logger.info(
@@ -358,6 +365,13 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             }
         )
         response['metadata'] = response_metadata
+        logger.info(
+            'monitoring live result target=%s score=%s severity=%s source=%s',
+            target.get('id'),
+            response.get('score'),
+            response.get('severity'),
+            str(response.get('source') or 'live'),
+        )
         last_status = 'completed'
         analysis_run_id = persist_analysis_run(
             connection,
@@ -610,19 +624,36 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
-        row = connection.execute('SELECT id FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (target_id, workspace_context['workspace_id'])).fetchone()
+        row = connection.execute(
+            '''
+            SELECT id, monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold,
+                   auto_create_alerts, auto_create_incidents, notification_channels, monitoring_demo_scenario, is_active
+            FROM targets
+            WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL
+            ''',
+            (target_id, workspace_context['workspace_id']),
+        ).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
-        mode = str(payload.get('monitoring_mode') or 'poll').strip().lower()
+        current = dict(row)
+        mode = str(payload.get('monitoring_mode') if 'monitoring_mode' in payload else current.get('monitoring_mode') or 'poll').strip().lower()
         if mode not in {'poll', 'stream'}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='monitoring_mode must be poll or stream.')
-        threshold = str(payload.get('severity_threshold') or 'medium').strip().lower()
+        threshold = str(payload.get('severity_threshold') if 'severity_threshold' in payload else current.get('severity_threshold') or 'medium').strip().lower()
         if threshold not in {'low', 'medium', 'high', 'critical'}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='severity_threshold must be low/medium/high/critical.')
-        channels = payload.get('notification_channels') if isinstance(payload.get('notification_channels'), list) else []
-        demo_scenario = str(payload.get('monitoring_demo_scenario') or '').strip().lower() or None
+        channels = payload.get('notification_channels') if 'notification_channels' in payload else current.get('notification_channels')
+        channels = channels if isinstance(channels, list) else []
+        raw_demo_scenario = payload.get('monitoring_demo_scenario') if 'monitoring_demo_scenario' in payload else current.get('monitoring_demo_scenario')
+        demo_scenario = str(raw_demo_scenario or '').strip().lower() or None
         if demo_scenario is not None and demo_scenario not in SCENARIO_EXPECTED_RISK:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='monitoring_demo_scenario must be safe/low_risk/medium_risk/high_risk/flash_loan_like/admin_abuse_like/risky_approval_like.')
+        monitoring_enabled = bool(payload.get('monitoring_enabled')) if 'monitoring_enabled' in payload else bool(current.get('monitoring_enabled'))
+        interval_seconds_raw = payload.get('monitoring_interval_seconds') if 'monitoring_interval_seconds' in payload else current.get('monitoring_interval_seconds')
+        interval_seconds = max(30, int(interval_seconds_raw or 300))
+        auto_create_alerts = bool(payload.get('auto_create_alerts')) if 'auto_create_alerts' in payload else bool(current.get('auto_create_alerts', True))
+        auto_create_incidents = bool(payload.get('auto_create_incidents')) if 'auto_create_incidents' in payload else bool(current.get('auto_create_incidents', False))
+        is_active = bool(payload.get('is_active')) if 'is_active' in payload else bool(current.get('is_active', True))
         connection.execute(
             '''
             UPDATE targets
@@ -641,20 +672,21 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
             WHERE id = %s
             ''',
             (
-                bool(payload.get('monitoring_enabled', False)),
+                monitoring_enabled,
                 mode,
-                max(30, int(payload.get('monitoring_interval_seconds') or 300)),
+                interval_seconds,
                 threshold,
-                bool(payload.get('auto_create_alerts', True)),
-                bool(payload.get('auto_create_incidents', False)),
+                auto_create_alerts,
+                auto_create_incidents,
                 _json_dumps(channels),
                 demo_scenario,
                 workspace_context['workspace_id'],
-                bool(payload.get('is_active', True)),
+                is_active,
                 user['id'],
                 target_id,
             ),
         )
+        logger.info('monitoring config persisted target=%s scenario=%s monitoring_enabled=%s threshold=%s', target_id, demo_scenario or 'default', monitoring_enabled, threshold)
         log_audit(
             connection,
             action='target.monitoring.update',
@@ -663,7 +695,7 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
             request=request,
             user_id=user['id'],
             workspace_id=workspace_context['workspace_id'],
-            metadata={'monitoring_enabled': bool(payload.get('monitoring_enabled', False)), 'monitoring_demo_scenario': demo_scenario},
+            metadata={'monitoring_enabled': monitoring_enabled, 'monitoring_demo_scenario': demo_scenario},
         )
         connection.commit()
         updated = connection.execute('SELECT * FROM targets WHERE id = %s', (target_id,)).fetchone()

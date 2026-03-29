@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -24,6 +25,8 @@ SCENARIO_EXPECTED_RISK = {
     'admin_abuse_like': 'high',
     'risky_approval_like': 'medium',
 }
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -140,7 +143,22 @@ def fetch_wallet_activity(target: dict[str, Any], since_ts: datetime | None) -> 
     scenario = monitoring_demo_scenario(target)
     if scenario is not None:
         observed_at = now - timedelta(minutes=2)
-        return [_build_event(target, kind='transaction', observed_at=observed_at, payload=_wallet_payload_for_scenario(target, scenario))]
+        logger.info(
+            'monitoring scenario applied target=%s target_type=wallet scenario=%s expected_risk=%s',
+            target.get('id'),
+            scenario,
+            SCENARIO_EXPECTED_RISK.get(scenario, 'low'),
+        )
+        payload = _wallet_payload_for_scenario(target, scenario)
+        event = _build_event(target, kind='transaction', observed_at=observed_at, payload=payload)
+        logger.info(
+            'generated deterministic monitoring event target=%s scenario=%s expected_risk=%s event_id=%s',
+            target.get('id'),
+            scenario,
+            SCENARIO_EXPECTED_RISK.get(scenario, 'low'),
+            event.event_id,
+        )
+        return [event]
     seed = _seed(str(target['id']), 'wallet')
     amount = float(50000 + (seed % 250000))
     burst = seed % 14
@@ -178,8 +196,13 @@ def fetch_contract_activity(target: dict[str, Any], since_ts: datetime | None) -
     if scenario is not None:
         observed_at = now - timedelta(minutes=5)
         risky = scenario in {'medium_risk', 'high_risk', 'flash_loan_like', 'admin_abuse_like', 'risky_approval_like'}
-        return [
-            _build_event(
+        logger.info(
+            'monitoring scenario applied target=%s target_type=contract scenario=%s expected_risk=%s',
+            target.get('id'),
+            scenario,
+            SCENARIO_EXPECTED_RISK.get(scenario, 'low'),
+        )
+        event = _build_event(
                 target,
                 kind='contract',
                 observed_at=observed_at,
@@ -208,7 +231,14 @@ def fetch_contract_activity(target: dict[str, Any], since_ts: datetime | None) -
                     },
                 },
             )
-        ]
+        logger.info(
+            'generated deterministic monitoring event target=%s scenario=%s expected_risk=%s event_id=%s',
+            target.get('id'),
+            scenario,
+            SCENARIO_EXPECTED_RISK.get(scenario, 'low'),
+            event.event_id,
+        )
+        return [event]
     seed = _seed(str(target['id']), 'contract')
     risky = seed % 2 == 0
     observed_at = now - timedelta(minutes=5)
@@ -255,8 +285,13 @@ def fetch_market_activity(target: dict[str, Any], since_ts: datetime | None) -> 
             'flash_loan_like': 4.0,
         }.get(scenario, 1.1)
         current = baseline * multiplier
-        return [
-            _build_event(
+        logger.info(
+            'monitoring scenario applied target=%s target_type=market scenario=%s expected_risk=%s',
+            target.get('id'),
+            scenario,
+            SCENARIO_EXPECTED_RISK.get(scenario, 'low'),
+        )
+        event = _build_event(
                 target,
                 kind='market',
                 observed_at=observed_at,
@@ -290,7 +325,14 @@ def fetch_market_activity(target: dict[str, Any], since_ts: datetime | None) -> 
                     },
                 },
             )
-        ]
+        logger.info(
+            'generated deterministic monitoring event target=%s scenario=%s expected_risk=%s event_id=%s',
+            target.get('id'),
+            scenario,
+            SCENARIO_EXPECTED_RISK.get(scenario, 'low'),
+            event.event_id,
+        )
+        return [event]
     seed = _seed(str(target['id']), 'market')
     observed_at = now - timedelta(minutes=3)
     baseline = 120000.0 + (seed % 20000)
