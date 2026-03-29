@@ -39,7 +39,7 @@ class ActivityEvent:
     payload: dict[str, Any]
 
 
-def monitoring_demo_scenario(target: dict[str, Any]) -> str | None:
+def monitoring_scenario(target: dict[str, Any]) -> str | None:
     value = str(
         target.get('monitoring_scenario')
         or target.get('monitoring_demo_scenario')
@@ -49,6 +49,11 @@ def monitoring_demo_scenario(target: dict[str, Any]) -> str | None:
     if value in MONITORING_DEMO_SCENARIOS:
         return value
     return None
+
+
+def monitoring_demo_scenario(target: dict[str, Any]) -> str | None:
+    # Backwards-compatible alias while `monitoring_scenario` is the canonical API field.
+    return monitoring_scenario(target)
 
 
 def _seed(target_id: str, slot: str) -> int:
@@ -145,7 +150,7 @@ def fetch_wallet_activity(target: dict[str, Any], since_ts: datetime | None) -> 
     window_start = since_ts or (now - timedelta(minutes=15))
     if window_start > now - timedelta(minutes=3):
         return []
-    scenario = monitoring_demo_scenario(target)
+    scenario = monitoring_scenario(target)
     if scenario is not None:
         observed_at = now - timedelta(minutes=2)
         logger.info(
@@ -197,7 +202,7 @@ def fetch_contract_activity(target: dict[str, Any], since_ts: datetime | None) -
     window_start = since_ts or (now - timedelta(minutes=30))
     if window_start > now - timedelta(minutes=10):
         return []
-    scenario = monitoring_demo_scenario(target)
+    scenario = monitoring_scenario(target)
     if scenario is not None:
         observed_at = now - timedelta(minutes=5)
         risky = scenario in {'medium_risk', 'high_risk', 'flash_loan_like', 'admin_abuse_like', 'risky_approval_like'}
@@ -276,7 +281,7 @@ def fetch_market_activity(target: dict[str, Any], since_ts: datetime | None) -> 
     window_start = since_ts or (now - timedelta(minutes=20))
     if window_start > now - timedelta(minutes=6):
         return []
-    scenario = monitoring_demo_scenario(target)
+    scenario = monitoring_scenario(target)
     if scenario is not None:
         observed_at = now - timedelta(minutes=3)
         baseline = 120000.0

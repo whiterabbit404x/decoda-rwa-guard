@@ -174,7 +174,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const response = await fetch(`${apiUrl}/monitoring/targets/${selectedTargetRecord.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ ...monitoringConfig, monitoring_mode: 'poll', notification_channels: [], monitoring_demo_scenario: monitoringConfig.monitoring_scenario }),
+      body: JSON.stringify({ ...monitoringConfig, monitoring_mode: 'poll', notification_channels: [] }),
     });
     setMessage(response.ok ? 'Automatic monitoring settings saved.' : 'Unable to save automatic monitoring settings.');
     if (response.ok) void loadTargetsAndPolicy();

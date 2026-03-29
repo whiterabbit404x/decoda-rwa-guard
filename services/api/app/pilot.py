@@ -3456,7 +3456,6 @@ def list_targets(request: Request) -> dict[str, Any]:
             item = _json_safe_value(dict(row))
             item['tags'] = tags_map.get(str(row['id']), [])
             item['monitoring_scenario'] = item.get('monitoring_demo_scenario')
-            item['monitoring_profile'] = item.get('monitoring_demo_scenario')
             targets.append(item)
         return {'targets': targets, 'workspace': workspace_context['workspace']}
 
@@ -3514,7 +3513,7 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             )
         log_audit(connection, action='target.create', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'target_type': validated['target_type']})
         connection.commit()
-        return {'id': target_id, **validated, 'monitoring_scenario': validated['monitoring_demo_scenario'], 'monitoring_profile': validated['monitoring_demo_scenario']}
+        return {'id': target_id, **validated, 'monitoring_scenario': validated['monitoring_demo_scenario']}
 
 
 def get_target(target_id: str, request: Request) -> dict[str, Any]:
@@ -3533,7 +3532,6 @@ def get_target(target_id: str, request: Request) -> dict[str, Any]:
         item = _json_safe_value(dict(row))
         item['tags'] = [str(tag['tag']) for tag in tags]
         item['monitoring_scenario'] = item.get('monitoring_demo_scenario')
-        item['monitoring_profile'] = item.get('monitoring_demo_scenario')
         return {'target': item}
 
 
@@ -3573,7 +3571,7 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
             connection.execute('INSERT INTO target_tags (id, workspace_id, target_id, tag) VALUES (%s, %s, %s, %s)', (str(uuid.uuid4()), workspace_id, target_id, tag))
         log_audit(connection, action='target.update', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={})
         connection.commit()
-        return {'id': target_id, **validated, 'monitoring_scenario': validated['monitoring_demo_scenario'], 'monitoring_profile': validated['monitoring_demo_scenario']}
+        return {'id': target_id, **validated, 'monitoring_scenario': validated['monitoring_demo_scenario']}
 
 
 def delete_target(target_id: str, request: Request) -> dict[str, Any]:
