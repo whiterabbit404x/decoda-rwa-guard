@@ -1054,12 +1054,16 @@ def bootstrap_live_pilot() -> dict[str, Any]:
     errors = runtime_validation.get('errors', [])
     if errors:
         raise RuntimeError('; '.join(errors))
-    STARTUP_BOOTSTRAP_STATUS = run_startup_migrations_if_enabled()
+    STARTUP_BOOTSTRAP_STATUS = run_startup_migrations_if_enabled(process_role='api')
     applied_versions = STARTUP_BOOTSTRAP_STATUS.get('applied_versions', [])
     if STARTUP_BOOTSTRAP_STATUS.get('ran'):
         logger.info('startup pilot bootstrap ran migrations: %s', ', '.join(applied_versions) or 'none')
     else:
-        logger.info('startup pilot bootstrap skipped; %s disabled', 'RUN_MIGRATIONS_ON_STARTUP')
+        logger.info(
+            'startup pilot bootstrap skipped for role=%s: %s',
+            STARTUP_BOOTSTRAP_STATUS.get('process_role', 'api'),
+            STARTUP_BOOTSTRAP_STATUS.get('reason', 'migration startup is disabled'),
+        )
     return STARTUP_BOOTSTRAP_STATUS
 
 

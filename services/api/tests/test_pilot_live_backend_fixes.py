@@ -384,11 +384,40 @@ def test_run_startup_migrations_if_enabled_respects_env_flag(pilot_module, monke
 
     payload = pilot_module.run_startup_migrations_if_enabled()
 
-    assert payload == {'enabled': True, 'ran': True, 'applied_versions': ['0001_pilot_foundation.sql']}
+    assert payload == {
+        'enabled': True,
+        'ran': True,
+        'applied_versions': ['0001_pilot_foundation.sql'],
+        'process_role': 'api',
+        'reason': 'RUN_MIGRATIONS_ON_STARTUP is enabled',
+    }
+
+
+def test_run_startup_migrations_if_enabled_skips_non_api_roles(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('RUN_MIGRATIONS_ON_STARTUP', 'true')
+    payload = pilot_module.run_startup_migrations_if_enabled(process_role='worker')
+
+    assert payload == {
+        'enabled': False,
+        'ran': False,
+        'applied_versions': [],
+        'process_role': 'worker',
+        'reason': 'schema init is disabled for non-api processes',
+    }
 
 
 def test_bootstrap_live_pilot_records_startup_status(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(api_main, 'run_startup_migrations_if_enabled', lambda: {'enabled': True, 'ran': True, 'applied_versions': ['0001_pilot_foundation.sql', '0002_pilot_auth_sessions.sql']})
+    monkeypatch.setattr(
+        api_main,
+        'run_startup_migrations_if_enabled',
+        lambda process_role='api': {
+            'enabled': True,
+            'ran': True,
+            'applied_versions': ['0001_pilot_foundation.sql', '0002_pilot_auth_sessions.sql'],
+            'process_role': process_role,
+            'reason': 'RUN_MIGRATIONS_ON_STARTUP is enabled',
+        },
+    )
 
     payload = api_main.bootstrap_live_pilot()
 
