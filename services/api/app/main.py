@@ -426,6 +426,21 @@ DEPENDENCY_CONFIG = {
 DEPENDENCY_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
 EMBEDDED_SERVICE_STATUS_DETAIL = 'Embedded local execution active'
 EMBEDDED_ALIAS_MODULE_NAMES = ('app', 'app.main', 'app.engine', 'app.schemas', 'app.store')
+
+
+def _is_embedded_alias_module(module: Any) -> bool:
+    module_name = str(getattr(module, '__name__', '') or '')
+    if module_name.startswith('_embedded_'):
+        return True
+    module_file = str(getattr(module, '__file__', '') or '')
+    return '/services/' in module_file and '/app/' in module_file and module_name.startswith('app')
+
+
+def _drop_embedded_alias_leaks() -> None:
+    for alias_name in EMBEDDED_ALIAS_MODULE_NAMES:
+        existing = sys.modules.get(alias_name)
+        if existing is not None and _is_embedded_alias_module(existing):
+            sys.modules.pop(alias_name, None)
 DEPENDENCY_SERVICE_REGISTRY = {
     'risk_engine': {
         'service_name': 'risk-engine',
@@ -595,7 +610,11 @@ def _ensure_embedded_service_package(service_slug: str) -> types.ModuleType:
 @contextmanager
 def embedded_service_import_context(service_slug: str):
     package_name = embedded_service_namespace(service_slug)
-    previous_aliases = {name: sys.modules.get(name) for name in EMBEDDED_ALIAS_MODULE_NAMES}
+    previous_aliases = {
+        name: module
+        for name in EMBEDDED_ALIAS_MODULE_NAMES
+        if (module := sys.modules.get(name)) is not None and not _is_embedded_alias_module(module)
+    }
     package = _ensure_embedded_service_package(service_slug)
     try:
         for alias_name in EMBEDDED_ALIAS_MODULE_NAMES:
@@ -621,6 +640,7 @@ def load_embedded_service_main(service_slug: str):
     service_app_dir = _embedded_service_app_dir(service_slug)
     package_name = embedded_service_namespace(service_slug)
     main_module_name = f'{package_name}.main'
+    _drop_embedded_alias_leaks()
     if main_module_name in sys.modules:
         return sys.modules[main_module_name]
 
