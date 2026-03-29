@@ -386,24 +386,85 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             ''',
             (worker_name,),
         )
-        due_targets = connection.execute(
+        candidate_targets = connection.execute(
             '''
-            SELECT *
+            SELECT targets.*,
+                   workspace.id AS workspace_exists_id,
+                   monitored_workspace.id AS monitored_workspace_exists_id
             FROM targets
-            WHERE deleted_at IS NULL
-              AND enabled = TRUE
-              AND is_active = TRUE
-              AND monitoring_enabled = TRUE
-              AND (
-                  last_checked_at IS NULL
-                  OR last_checked_at <= NOW() - make_interval(secs => GREATEST(monitoring_interval_seconds, 30))
-              )
-            ORDER BY COALESCE(last_checked_at, '1970-01-01'::timestamptz) ASC
-            LIMIT %s
-            FOR UPDATE SKIP LOCKED
+            LEFT JOIN workspaces AS workspace ON workspace.id = targets.workspace_id
+            LEFT JOIN workspaces AS monitored_workspace ON monitored_workspace.id = targets.monitored_by_workspace_id
+            WHERE targets.deleted_at IS NULL
+            ORDER BY COALESCE(targets.last_checked_at, '1970-01-01'::timestamptz) ASC, targets.created_at ASC
             ''',
-            (max(1, min(limit, 200)),),
         ).fetchall()
+        now = utc_now()
+        max_targets = max(1, min(limit, 200))
+        skipped_disabled = 0
+        skipped_inactive = 0
+        skipped_missing_workspace = 0
+        skipped_not_due = 0
+        skipped_null_handling = 0
+        due_target_ids: list[Any] = []
+        for row in candidate_targets:
+            target = dict(row)
+            if not bool(target.get('monitoring_enabled')) or not bool(target.get('enabled')):
+                skipped_disabled += 1
+                continue
+            if not bool(target.get('is_active')):
+                skipped_inactive += 1
+                continue
+            if target.get('workspace_exists_id') is None or (
+                target.get('monitored_by_workspace_id') is not None and target.get('monitored_workspace_exists_id') is None
+            ):
+                skipped_missing_workspace += 1
+                continue
+            last_checked_at = _parse_ts(target.get('last_checked_at'))
+            if last_checked_at is None:
+                due_target_ids.append(target['id'])
+            else:
+                interval_raw = target.get('monitoring_interval_seconds')
+                if interval_raw is None:
+                    skipped_null_handling += 1
+                    interval_seconds = 30
+                else:
+                    try:
+                        interval_seconds = max(30, int(interval_raw))
+                    except (TypeError, ValueError):
+                        skipped_null_handling += 1
+                        interval_seconds = 30
+                if last_checked_at <= now - timedelta(seconds=interval_seconds):
+                    due_target_ids.append(target['id'])
+                else:
+                    skipped_not_due += 1
+            if len(due_target_ids) >= max_targets:
+                break
+        logger.info(
+            'monitoring due selection total_candidate_targets=%s skipped_disabled=%s skipped_inactive=%s '
+            'skipped_missing_workspace=%s skipped_not_due=%s skipped_null_handling=%s due_target_ids=%s',
+            len(candidate_targets),
+            skipped_disabled,
+            skipped_inactive,
+            skipped_missing_workspace,
+            skipped_not_due,
+            skipped_null_handling,
+            [str(target_id) for target_id in due_target_ids],
+        )
+        due_targets = []
+        if due_target_ids:
+            due_targets = connection.execute(
+                '''
+                SELECT *
+                FROM targets
+                WHERE id = ANY(%s)
+                ORDER BY COALESCE(last_checked_at, '1970-01-01'::timestamptz) ASC, created_at ASC
+                FOR UPDATE SKIP LOCKED
+                ''',
+                (due_target_ids,),
+            ).fetchall()
+            due_targets = [dict(row) for row in due_targets]
+        else:
+            due_targets = []
         due_count = len(due_targets)
         logger.info('due targets: %s', due_count)
         for row in due_targets:

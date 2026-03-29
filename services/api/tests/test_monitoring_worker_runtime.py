@@ -38,6 +38,8 @@ class _FakeConnection:
 
     def execute(self, query, params=None):
         normalized = ' '.join(str(query).split())
+        if 'LEFT JOIN workspaces AS workspace' in normalized:
+            return _Result(rows=self.due_targets)
         if 'FROM targets' in normalized and 'FOR UPDATE SKIP LOCKED' in normalized:
             return _Result(rows=self.due_targets)
         if normalized.startswith('SELECT worker_name, running, last_cycle_at'):
@@ -66,9 +68,34 @@ def _fake_pg(connection):
 
 
 def test_monitoring_cycle_updates_health_and_handles_target_exception(monkeypatch):
+    now = datetime.now(timezone.utc)
     due_targets = [
-        {'id': 'bad-target', 'name': 'Bad Target'},
-        {'id': 'good-target', 'name': 'Good Target'},
+        {
+            'id': 'bad-target',
+            'name': 'Bad Target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'monitored_by_workspace_id': None,
+            'monitored_workspace_exists_id': None,
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        },
+        {
+            'id': 'good-target',
+            'name': 'Good Target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'monitored_by_workspace_id': None,
+            'monitored_workspace_exists_id': None,
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        },
     ]
     connection = _FakeConnection(due_targets)
     processed = []
@@ -121,6 +148,7 @@ def test_worker_once_mode_runs_single_cycle(monkeypatch):
 
 def test_due_target_selection_query_keeps_monitoring_filters() -> None:
     source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
-    assert 'monitoring_enabled = TRUE' in source
-    assert 'last_checked_at <= NOW() - make_interval' in source
+    assert 'total_candidate_targets=%s' in source
+    assert 'skipped_null_handling=%s' in source
+    assert 'last_checked_at is None' in source
     assert 'FOR UPDATE SKIP LOCKED' in source
