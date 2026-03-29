@@ -85,6 +85,15 @@ def parse_csv_env(name: str, defaults: list[str]) -> list[str]:
 
 
 SEVERITY_RANK = {'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+MONITORING_DEMO_SCENARIOS = {
+    'safe',
+    'low_risk',
+    'medium_risk',
+    'high_risk',
+    'flash_loan_like',
+    'admin_abuse_like',
+    'risky_approval_like',
+}
 
 ONBOARDING_STEP_ORDER = [
     'workspace_created',
@@ -3172,6 +3181,12 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
     tags_raw = payload.get('tags')
     tags = [str(item).strip().lower() for item in tags_raw] if isinstance(tags_raw, list) else []
     tags = [item for item in tags if item]
+    monitoring_demo_scenario = str(payload.get('monitoring_demo_scenario') or '').strip().lower() or None
+    if monitoring_demo_scenario is not None and monitoring_demo_scenario not in MONITORING_DEMO_SCENARIOS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='monitoring_demo_scenario must be safe/low_risk/medium_risk/high_risk/flash_loan_like/admin_abuse_like/risky_approval_like.',
+        )
     return {
         'name': name,
         'target_type': target_type,
@@ -3189,6 +3204,7 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
         'auto_create_alerts': bool(payload.get('auto_create_alerts', True)),
         'auto_create_incidents': bool(payload.get('auto_create_incidents', False)),
         'notification_channels': channels,
+        'monitoring_demo_scenario': monitoring_demo_scenario,
         'is_active': bool(payload.get('is_active', True)),
         'tags': tags,
     }
@@ -3383,7 +3399,7 @@ def list_targets(request: Request) -> dict[str, Any]:
             '''
             SELECT id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
                    monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents,
-                   notification_channels, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
+                   notification_channels, monitoring_demo_scenario, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
                    created_at, updated_at
             FROM targets
             WHERE workspace_id = %s AND deleted_at IS NULL
@@ -3425,8 +3441,8 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             INSERT INTO targets (
                 id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
                 monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents, notification_channels,
-                monitored_by_workspace_id, is_active, created_by_user_id, updated_by_user_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+                monitoring_demo_scenario, monitored_by_workspace_id, is_active, created_by_user_id, updated_by_user_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
             ''',
             (
                 target_id,
@@ -3447,6 +3463,7 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 validated['auto_create_alerts'],
                 validated['auto_create_incidents'],
                 _json_dumps(validated['notification_channels']),
+                validated['monitoring_demo_scenario'],
                 workspace_id,
                 validated['is_active'],
                 user['id'],
@@ -3496,13 +3513,13 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
             UPDATE targets
             SET name = %s, target_type = %s, chain_network = %s, contract_identifier = %s, wallet_address = %s, asset_type = %s, owner_notes = %s, severity_preference = %s, enabled = %s,
                 monitoring_enabled = %s, monitoring_mode = %s, monitoring_interval_seconds = %s, severity_threshold = %s, auto_create_alerts = %s, auto_create_incidents = %s,
-                notification_channels = %s::jsonb, monitored_by_workspace_id = %s, is_active = %s, updated_by_user_id = %s, updated_at = NOW()
+                notification_channels = %s::jsonb, monitoring_demo_scenario = %s, monitored_by_workspace_id = %s, is_active = %s, updated_by_user_id = %s, updated_at = NOW()
             WHERE id = %s
             ''',
             (
                 validated['name'], validated['target_type'], validated['chain_network'], validated['contract_identifier'], validated['wallet_address'], validated['asset_type'], validated['owner_notes'], validated['severity_preference'], validated['enabled'],
                 validated['monitoring_enabled'], validated['monitoring_mode'], validated['monitoring_interval_seconds'], validated['severity_threshold'], validated['auto_create_alerts'], validated['auto_create_incidents'],
-                _json_dumps(validated['notification_channels']), workspace_id, validated['is_active'], user['id'], target_id,
+                _json_dumps(validated['notification_channels']), validated['monitoring_demo_scenario'], workspace_id, validated['is_active'], user['id'], target_id,
             ),
         )
         connection.execute('DELETE FROM target_tags WHERE target_id = %s', (target_id,))

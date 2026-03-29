@@ -5,6 +5,26 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+MONITORING_DEMO_SCENARIOS = {
+    'safe',
+    'low_risk',
+    'medium_risk',
+    'high_risk',
+    'flash_loan_like',
+    'admin_abuse_like',
+    'risky_approval_like',
+}
+
+SCENARIO_EXPECTED_RISK = {
+    'safe': 'low',
+    'low_risk': 'low',
+    'medium_risk': 'medium',
+    'high_risk': 'high',
+    'flash_loan_like': 'high',
+    'admin_abuse_like': 'high',
+    'risky_approval_like': 'medium',
+}
+
 
 @dataclass
 class ActivityEvent:
@@ -14,6 +34,13 @@ class ActivityEvent:
     ingestion_source: str
     cursor: str
     payload: dict[str, Any]
+
+
+def monitoring_demo_scenario(target: dict[str, Any]) -> str | None:
+    value = str(target.get('monitoring_demo_scenario') or '').strip().lower()
+    if value in MONITORING_DEMO_SCENARIOS:
+        return value
+    return None
 
 
 def _seed(target_id: str, slot: str) -> int:
@@ -34,11 +61,86 @@ def _build_event(target: dict[str, Any], *, kind: str, observed_at: datetime, pa
     )
 
 
+def _wallet_payload_for_scenario(target: dict[str, Any], scenario: str) -> dict[str, Any]:
+    base = {
+        'wallet': target.get('wallet_address') or '0x0000000000000000000000000000000000000000',
+        'actor': target.get('name') or 'wallet-monitor',
+        'action_type': 'transfer',
+        'protocol': target.get('chain_network') or 'ethereum',
+        'asset': target.get('asset_type') or 'USDC',
+        'call_sequence': ['approve', 'swap', 'transfer'],
+        'actor_role': target.get('target_type') or 'wallet',
+        'expected_actor_roles': ['wallet', 'treasury'],
+        'metadata': {
+            'monitoring_demo_scenario': scenario,
+            'expected_risk_class': SCENARIO_EXPECTED_RISK.get(scenario, 'low'),
+            'deterministic_demo': True,
+        },
+    }
+    scenario_map = {
+        'safe': {
+            'amount': 25000.0,
+            'burst_actions_last_5m': 1,
+            'counterparty_reputation': 92,
+            'flags': {'flash_loan_pattern': False, 'contains_flash_loan': False, 'rapid_drain_indicator': False, 'untrusted_contract': False, 'new_counterparty': False},
+        },
+        'low_risk': {
+            'amount': 70000.0,
+            'burst_actions_last_5m': 2,
+            'counterparty_reputation': 74,
+            'flags': {'flash_loan_pattern': False, 'contains_flash_loan': False, 'rapid_drain_indicator': False, 'untrusted_contract': False, 'new_counterparty': True},
+        },
+        'medium_risk': {
+            'amount': 240000.0,
+            'burst_actions_last_5m': 8,
+            'counterparty_reputation': 39,
+            'call_sequence': ['approve', 'borrow', 'swap', 'bridge', 'transfer'],
+            'flags': {'flash_loan_pattern': False, 'contains_flash_loan': False, 'risky_multistep_sequence': True, 'rapid_drain_indicator': False, 'untrusted_contract': True, 'new_counterparty': True},
+        },
+        'high_risk': {
+            'amount': 900000.0,
+            'burst_actions_last_5m': 14,
+            'counterparty_reputation': 12,
+            'call_sequence': ['approve', 'flashLoan', 'swap', 'drain'],
+            'flags': {'flash_loan_pattern': True, 'contains_flash_loan': True, 'rapid_drain_indicator': True, 'untrusted_contract': True, 'new_counterparty': True},
+        },
+        'flash_loan_like': {
+            'amount': 1250000.0,
+            'burst_actions_last_5m': 18,
+            'counterparty_reputation': 8,
+            'call_sequence': ['approve', 'flashLoan', 'swap', 'swap', 'bridge', 'drain'],
+            'flags': {'flash_loan_pattern': True, 'contains_flash_loan': True, 'rapid_drain_indicator': True, 'untrusted_contract': True, 'new_counterparty': True},
+        },
+        'admin_abuse_like': {
+            'amount': 420000.0,
+            'burst_actions_last_5m': 10,
+            'counterparty_reputation': 24,
+            'actor_role': 'operator',
+            'expected_actor_roles': ['wallet'],
+            'call_sequence': ['grantRole', 'setAdmin', 'upgradeTo', 'transfer'],
+            'flags': {'unexpected_admin_call': True, 'actor_role_mismatch': True, 'privileged_action_sequence': True, 'flash_loan_pattern': False, 'contains_flash_loan': False, 'rapid_drain_indicator': False, 'untrusted_contract': True},
+        },
+        'risky_approval_like': {
+            'amount': 350000.0,
+            'burst_actions_last_5m': 9,
+            'counterparty_reputation': 30,
+            'call_sequence': ['approve', 'increaseAllowance', 'transferFrom'],
+            'flags': {'unlimited_approval': True, 'risky_approval_target': True, 'flash_loan_pattern': False, 'contains_flash_loan': False, 'rapid_drain_indicator': False, 'untrusted_contract': True},
+        },
+    }
+    overrides = scenario_map.get(scenario, scenario_map['safe'])
+    return {**base, **overrides}
+
+
 def fetch_wallet_activity(target: dict[str, Any], since_ts: datetime | None) -> list[ActivityEvent]:
     now = datetime.now(timezone.utc)
     window_start = since_ts or (now - timedelta(minutes=15))
     if window_start > now - timedelta(minutes=3):
         return []
+    scenario = monitoring_demo_scenario(target)
+    if scenario is not None:
+        observed_at = now - timedelta(minutes=2)
+        return [_build_event(target, kind='transaction', observed_at=observed_at, payload=_wallet_payload_for_scenario(target, scenario))]
     seed = _seed(str(target['id']), 'wallet')
     amount = float(50000 + (seed % 250000))
     burst = seed % 14
@@ -72,6 +174,41 @@ def fetch_contract_activity(target: dict[str, Any], since_ts: datetime | None) -
     window_start = since_ts or (now - timedelta(minutes=30))
     if window_start > now - timedelta(minutes=10):
         return []
+    scenario = monitoring_demo_scenario(target)
+    if scenario is not None:
+        observed_at = now - timedelta(minutes=5)
+        risky = scenario in {'medium_risk', 'high_risk', 'flash_loan_like', 'admin_abuse_like', 'risky_approval_like'}
+        return [
+            _build_event(
+                target,
+                kind='contract',
+                observed_at=observed_at,
+                payload={
+                    'contract_name': target.get('name') or 'Monitored contract',
+                    'address': target.get('contract_identifier') or target.get('wallet_address') or target.get('id'),
+                    'verified_source': scenario in {'safe', 'low_risk'},
+                    'audit_count': 2 if scenario in {'safe', 'low_risk'} else 0,
+                    'created_days_ago': 140 if scenario in {'safe', 'low_risk'} else 9,
+                    'admin_roles': ['owner', 'guardian'],
+                    'calling_actor': target.get('name') or 'automation-worker',
+                    'function_summaries': [
+                        {'name': 'upgradeTo', 'summary': 'Upgrades implementation contract.', 'risk_flags': ['privileged-role-change'] if risky else []},
+                        {'name': 'approve', 'summary': 'Token approval call path.', 'risk_flags': ['unlimited-approval'] if scenario == 'risky_approval_like' else []},
+                    ],
+                    'findings': ['Unexpected privileged workflow observed.'] if risky else ['No critical findings.'],
+                    'flags': {
+                        'privileged_role_change': scenario in {'admin_abuse_like', 'high_risk'},
+                        'unexpected_admin_call': scenario == 'admin_abuse_like',
+                        'unlimited_approval': scenario in {'risky_approval_like', 'high_risk'},
+                    },
+                    'metadata': {
+                        'monitoring_demo_scenario': scenario,
+                        'expected_risk_class': SCENARIO_EXPECTED_RISK.get(scenario, 'low'),
+                        'deterministic_demo': True,
+                    },
+                },
+            )
+        ]
     seed = _seed(str(target['id']), 'contract')
     risky = seed % 2 == 0
     observed_at = now - timedelta(minutes=5)
@@ -104,6 +241,56 @@ def fetch_market_activity(target: dict[str, Any], since_ts: datetime | None) -> 
     window_start = since_ts or (now - timedelta(minutes=20))
     if window_start > now - timedelta(minutes=6):
         return []
+    scenario = monitoring_demo_scenario(target)
+    if scenario is not None:
+        observed_at = now - timedelta(minutes=3)
+        baseline = 120000.0
+        multiplier = {
+            'safe': 1.08,
+            'low_risk': 1.3,
+            'medium_risk': 2.2,
+            'risky_approval_like': 2.0,
+            'admin_abuse_like': 2.6,
+            'high_risk': 3.4,
+            'flash_loan_like': 4.0,
+        }.get(scenario, 1.1)
+        current = baseline * multiplier
+        return [
+            _build_event(
+                target,
+                kind='market',
+                observed_at=observed_at,
+                payload={
+                    'asset': target.get('asset_type') or target.get('name') or 'RWA-TOKEN',
+                    'venue': target.get('chain_network') or 'ethereum',
+                    'timeframe_minutes': 15,
+                    'current_volume': current,
+                    'baseline_volume': baseline,
+                    'participant_diversity': 28 if scenario in {'safe', 'low_risk'} else 8,
+                    'dominant_cluster_share': 0.38 if scenario in {'safe', 'low_risk'} else 0.86,
+                    'order_flow_summary': {
+                        'large_orders': 1 if scenario in {'safe', 'low_risk'} else 9,
+                        'rapid_cancellations': 1 if scenario in {'safe', 'low_risk'} else 6,
+                        'rapid_swings': 1 if scenario in {'safe', 'low_risk'} else 5,
+                        'circular_trade_loops': 0 if scenario in {'safe', 'low_risk'} else 4,
+                        'self_trade_markers': 0 if scenario in {'safe', 'low_risk'} else 3,
+                    },
+                    'candles': [
+                        {'timestamp': (observed_at - timedelta(minutes=15)).isoformat(), 'open': 100, 'high': 104, 'low': 99, 'close': 102, 'volume': baseline},
+                        {'timestamp': observed_at.isoformat(), 'open': 102, 'high': 121, 'low': 91, 'close': 117 if scenario in {'high_risk', 'flash_loan_like'} else 108, 'volume': current},
+                    ],
+                    'wallet_activity': [
+                        {'cluster_id': 'cluster-a', 'trade_count': 9 if scenario in {'safe', 'low_risk'} else 29, 'net_volume': current * 0.52},
+                        {'cluster_id': 'cluster-b', 'trade_count': 7 if scenario in {'safe', 'low_risk'} else 22, 'net_volume': current * 0.34},
+                    ],
+                    'metadata': {
+                        'monitoring_demo_scenario': scenario,
+                        'expected_risk_class': SCENARIO_EXPECTED_RISK.get(scenario, 'low'),
+                        'deterministic_demo': True,
+                    },
+                },
+            )
+        ]
     seed = _seed(str(target['id']), 'market')
     observed_at = now - timedelta(minutes=3)
     baseline = 120000.0 + (seed % 20000)
