@@ -6,7 +6,7 @@ import os
 import time
 
 from services.api.app.monitoring_runner import run_monitoring_cycle
-from services.api.app.pilot import runtime_environment_identity
+from services.api.app.pilot import runtime_environment_identity, startup_schema_init_plan
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,6 +38,12 @@ def main() -> int:
         args.interval_seconds,
         args.limit,
         args.once,
+    )
+    schema_plan = startup_schema_init_plan(process_role='worker')
+    logger.info(
+        'monitoring worker schema init skipped for role=%s: %s',
+        schema_plan.get('process_role', 'worker'),
+        schema_plan.get('reason', 'schema init disabled'),
     )
     while True:
         try:

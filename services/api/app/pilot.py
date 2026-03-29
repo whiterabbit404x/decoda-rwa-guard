@@ -191,13 +191,43 @@ def should_run_startup_migrations() -> bool:
     return env_flag(STARTUP_BOOTSTRAP_ENV)
 
 
-def run_startup_migrations_if_enabled() -> dict[str, Any]:
+def startup_schema_init_plan(*, process_role: str = 'api') -> dict[str, Any]:
+    normalized_role = (process_role or 'unknown').strip().lower()
+    if normalized_role != 'api':
+        return {
+            'enabled': False,
+            'ran': False,
+            'applied_versions': [],
+            'process_role': normalized_role,
+            'reason': 'schema init is disabled for non-api processes',
+        }
     enabled = should_run_startup_migrations()
     if not enabled:
-        return {'enabled': False, 'ran': False, 'applied_versions': []}
+        return {
+            'enabled': False,
+            'ran': False,
+            'applied_versions': [],
+            'process_role': normalized_role,
+            'reason': f'{STARTUP_BOOTSTRAP_ENV} is disabled',
+        }
+    return {
+        'enabled': True,
+        'ran': False,
+        'applied_versions': [],
+        'process_role': normalized_role,
+        'reason': f'{STARTUP_BOOTSTRAP_ENV} is enabled',
+    }
+
+
+def run_startup_migrations_if_enabled(*, process_role: str = 'api') -> dict[str, Any]:
+    plan = startup_schema_init_plan(process_role=process_role)
+    if not plan.get('enabled'):
+        return plan
     require_live_mode()
     applied_versions = run_migrations()
-    return {'enabled': True, 'ran': True, 'applied_versions': applied_versions}
+    plan['ran'] = True
+    plan['applied_versions'] = applied_versions
+    return plan
 
 
 def validate_runtime_configuration() -> dict[str, Any]:
