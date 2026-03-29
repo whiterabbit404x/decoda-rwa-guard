@@ -12,7 +12,7 @@ from services.api.app.activity_providers import (
     ActivityEvent,
     SCENARIO_EXPECTED_RISK,
     fetch_target_activity,
-    monitoring_demo_scenario,
+    monitoring_scenario,
 )
 from services.api.app.pilot import (
     _json_dumps,
@@ -183,8 +183,9 @@ def _normalize_event(target: dict[str, Any], event: ActivityEvent, monitoring_ru
             },
             'provider_cursor': event.cursor,
             'event_id': event.event_id,
-            'monitoring_demo_scenario': monitoring_demo_scenario(target),
-            'expected_risk_class': SCENARIO_EXPECTED_RISK.get(monitoring_demo_scenario(target) or '', 'default'),
+            'monitoring_scenario': monitoring_scenario(target),
+            'monitoring_demo_scenario': monitoring_scenario(target),
+            'expected_risk_class': SCENARIO_EXPECTED_RISK.get(monitoring_scenario(target) or '', 'default'),
         },
     }
     normalized, _ = normalize_threat_payload(kind, payload, include_original=False)
@@ -334,7 +335,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     last_alert_at: datetime | None = None
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
     checkpoint_at = checkpoint
-    configured_scenario = monitoring_demo_scenario(target)
+    configured_scenario = monitoring_scenario(target)
     logger.info(
         'monitoring target fetched target=%s scenario=%s threshold=%s auto_create_alerts=%s',
         target.get('id'),
@@ -344,6 +345,11 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     )
 
     for event in events:
+        logger.info(
+            'monitoring scenario selected target=%s scenario=%s',
+            target.get('id'),
+            configured_scenario or 'default',
+        )
         logger.info(
             'monitoring event generated target_id=%s scenario=%s event_id=%s expected_risk_class=%s',
             target.get('id'),
@@ -621,7 +627,6 @@ def list_monitoring_targets(request: Request) -> dict[str, Any]:
         for row in rows:
             item = _json_safe_value(dict(row))
             item['monitoring_scenario'] = item.get('monitoring_demo_scenario')
-            item['monitoring_profile'] = item.get('monitoring_demo_scenario')
             targets.append(item)
         return {'targets': targets, 'workspace': workspace_context['workspace']}
 
@@ -722,7 +727,6 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
         updated = connection.execute('SELECT * FROM targets WHERE id = %s', (target_id,)).fetchone()
         updated_target = _json_safe_value(dict(updated))
         updated_target['monitoring_scenario'] = updated_target.get('monitoring_demo_scenario')
-        updated_target['monitoring_profile'] = updated_target.get('monitoring_demo_scenario')
         return {'target': updated_target}
 
 

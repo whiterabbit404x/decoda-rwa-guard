@@ -312,7 +312,6 @@ def test_patch_monitoring_target_preserves_scenario_on_unrelated_updates(monkeyp
     )
     assert response['target']['monitoring_demo_scenario'] == 'flash_loan_like'
     assert response['target']['monitoring_scenario'] == 'flash_loan_like'
-    assert response['target']['monitoring_profile'] == 'flash_loan_like'
     assert response['target']['monitoring_interval_seconds'] == 90
     assert response['target']['severity_threshold'] == 'high'
 
@@ -408,12 +407,9 @@ def test_patch_monitoring_target_accepts_monitoring_profile_alias(monkeypatch: p
     )
     assert response['target']['monitoring_demo_scenario'] == 'high_risk'
     assert response['target']['monitoring_scenario'] == 'high_risk'
-    assert response['target']['monitoring_profile'] == 'high_risk'
-
     listed = monitoring_runner.list_monitoring_targets(request)
     assert listed['targets'][0]['monitoring_demo_scenario'] == 'high_risk'
     assert listed['targets'][0]['monitoring_scenario'] == 'high_risk'
-    assert listed['targets'][0]['monitoring_profile'] == 'high_risk'
 
 
 def test_patch_monitoring_target_accepts_monitoring_scenario_alias(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -596,3 +592,39 @@ def test_flash_loan_like_fallback_scores_higher_than_safe() -> None:
     assert flash_result['score'] > safe_result['score']
     assert flash_result['severity'] in {'high', 'critical'}
     assert safe_result['severity'] == 'low'
+
+
+def test_medium_risk_provider_payload_contains_elevated_signals() -> None:
+    medium_target = _build_target('medium_risk')
+    medium_event = fetch_wallet_activity(medium_target, datetime.now(timezone.utc) - timedelta(hours=1))[0]
+    assert medium_event.payload['amount'] >= 200000
+    assert medium_event.payload['burst_actions_last_5m'] >= 8
+    assert medium_event.payload['flags']['untrusted_contract'] is True
+
+
+def test_process_monitoring_target_logs_selected_scenario(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    connection = _FakeConnection()
+    monkeypatch.setattr(monitoring_runner, 'persist_analysis_run', lambda *args, **kwargs: 'run-1')
+    monkeypatch.setattr(
+        monitoring_runner,
+        '_threat_call',
+        lambda *args, **kwargs: (
+            {
+                'analysis_type': 'transaction',
+                'score': 66,
+                'severity': 'high',
+                'matched_patterns': [],
+                'explanation': 'demo',
+                'recommended_action': 'review',
+                'reasons': ['demo'],
+                'source': 'live',
+                'degraded': False,
+                'metadata': {},
+            },
+            {'live_invocation_succeeded': True},
+        ),
+    )
+    with caplog.at_level('INFO'):
+        monitoring_runner.process_monitoring_target(connection, _build_target('flash_loan_like'))
+    assert 'monitoring target fetched' in caplog.text
+    assert 'monitoring scenario selected' in caplog.text
