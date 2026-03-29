@@ -5,6 +5,9 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+import os
+
+from services.api.app.evm_activity_provider import fetch_evm_activity
 
 MONITORING_DEMO_SCENARIOS = {
     'safe',
@@ -39,6 +42,15 @@ class ActivityEvent:
     payload: dict[str, Any]
 
 
+
+
+def monitoring_ingestion_mode() -> str:
+    mode = str(os.getenv('MONITORING_INGESTION_MODE', 'demo')).strip().lower()
+    return mode if mode in {'demo', 'live', 'hybrid'} else 'demo'
+
+
+def live_monitoring_enabled() -> bool:
+    return str(os.getenv('LIVE_MONITORING_ENABLED', 'false')).strip().lower() in {'1', 'true', 'yes', 'on'}
 def monitoring_scenario(target: dict[str, Any]) -> str | None:
     value = str(
         target.get('monitoring_scenario')
@@ -382,6 +394,14 @@ def fetch_market_activity(target: dict[str, Any], since_ts: datetime | None) -> 
 
 def fetch_target_activity(target: dict[str, Any], since_ts: datetime | None) -> list[ActivityEvent]:
     target_type = str(target.get('target_type') or '').lower()
+    mode = monitoring_ingestion_mode()
+    can_use_live = live_monitoring_enabled() and bool(os.getenv('EVM_RPC_URL')) and target_type in {'wallet', 'contract'}
+    if mode in {'live', 'hybrid'} and can_use_live:
+        live_events = fetch_evm_activity(target, since_ts)
+        if live_events:
+            return live_events
+        if mode == 'live':
+            return []
     if target_type == 'wallet':
         return fetch_wallet_activity(target, since_ts)
     if target_type == 'contract':

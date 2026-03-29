@@ -2299,6 +2299,7 @@ def _normalize_routing_payload(payload: dict[str, Any], *, channel_type: str) ->
     modules_exclude = payload.get('modules_exclude') if isinstance(payload.get('modules_exclude'), list) else []
     target_ids = payload.get('target_ids') if isinstance(payload.get('target_ids'), list) else []
     event_types = payload.get('event_types') if isinstance(payload.get('event_types'), list) else ['alert.created']
+    target_types = payload.get('target_types') if isinstance(payload.get('target_types'), list) else []
     enabled = bool(payload.get('enabled', True))
     if channel_type not in {'dashboard', 'email', 'webhook', 'slack'}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported channel type.')
@@ -2309,6 +2310,7 @@ def _normalize_routing_payload(payload: dict[str, Any], *, channel_type: str) ->
         'modules_exclude': [str(value).strip().lower() for value in modules_exclude if str(value).strip()],
         'target_ids': [str(value).strip() for value in target_ids if str(value).strip()],
         'event_types': [str(value).strip() for value in event_types if str(value).strip()] or ['alert.created'],
+        'target_types': [str(value).strip().lower() for value in target_types if str(value).strip()],
         'enabled': enabled,
     }
 
@@ -2630,7 +2632,7 @@ def list_alert_routing_rules(request: Request) -> dict[str, Any]:
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, channel_type, severity_threshold, modules_include, modules_exclude, target_ids, event_types, enabled, created_at, updated_at
+            SELECT id, channel_type, severity_threshold, modules_include, modules_exclude, target_ids, event_types, target_types, enabled, created_at, updated_at
             FROM alert_routing_rules
             WHERE workspace_id = %s
             ORDER BY channel_type ASC
@@ -2649,14 +2651,15 @@ def upsert_alert_routing_rule(channel_type: str, payload: dict[str, Any], reques
         rule_id = str(uuid.uuid4())
         connection.execute(
             '''
-            INSERT INTO alert_routing_rules (id, workspace_id, channel_type, severity_threshold, modules_include, modules_exclude, target_ids, event_types, enabled, created_by_user_id)
-            VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s)
+            INSERT INTO alert_routing_rules (id, workspace_id, channel_type, severity_threshold, modules_include, modules_exclude, target_ids, event_types, target_types, enabled, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s)
             ON CONFLICT (workspace_id, channel_type)
             DO UPDATE SET severity_threshold = EXCLUDED.severity_threshold,
                           modules_include = EXCLUDED.modules_include,
                           modules_exclude = EXCLUDED.modules_exclude,
                           target_ids = EXCLUDED.target_ids,
                           event_types = EXCLUDED.event_types,
+                          target_types = EXCLUDED.target_types,
                           enabled = EXCLUDED.enabled,
                           updated_at = NOW()
             ''',
@@ -2669,11 +2672,12 @@ def upsert_alert_routing_rule(channel_type: str, payload: dict[str, Any], reques
                 _json_dumps(normalized['modules_exclude']),
                 _json_dumps(normalized['target_ids']),
                 _json_dumps(normalized['event_types']),
+                _json_dumps(normalized['target_types']),
                 normalized['enabled'],
                 user['id'],
             ),
         )
-        row = connection.execute('SELECT id, channel_type, severity_threshold, modules_include, modules_exclude, target_ids, event_types, enabled FROM alert_routing_rules WHERE workspace_id = %s AND channel_type = %s', (workspace_context['workspace_id'], channel_type)).fetchone()
+        row = connection.execute('SELECT id, channel_type, severity_threshold, modules_include, modules_exclude, target_ids, event_types, target_types, enabled FROM alert_routing_rules WHERE workspace_id = %s AND channel_type = %s', (workspace_context['workspace_id'], channel_type)).fetchone()
         log_audit(connection, action='alert.routing.update', entity_type='alert_routing_rule', entity_id=str(row['id']), request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'channel_type': channel_type})
         connection.commit()
         return {'rule': _json_safe_value(dict(row))}
@@ -2787,7 +2791,7 @@ def _queue_alert_deliveries(
         str(rule['channel_type']): dict(rule)
         for rule in connection.execute(
             '''
-            SELECT channel_type, severity_threshold, modules_include, modules_exclude, target_ids, event_types, enabled
+            SELECT channel_type, severity_threshold, modules_include, modules_exclude, target_ids, event_types, target_types, enabled
             FROM alert_routing_rules
             WHERE workspace_id = %s
             ''',
@@ -2813,6 +2817,10 @@ def _queue_alert_deliveries(
         target_id = str(payload.get('target_id') or '').strip()
         target_ids = [str(item).strip() for item in (rule.get('target_ids') or []) if str(item).strip()]
         if target_ids and target_id and target_id not in target_ids:
+            return False
+        target_type = str(payload.get('target_type') or '').strip().lower()
+        target_types = [str(item).strip().lower() for item in (rule.get('target_types') or []) if str(item).strip()]
+        if target_types and target_type and target_type not in target_types:
             return False
         event_types = [str(item).strip() for item in (rule.get('event_types') or []) if str(item).strip()]
         return 'alert.created' in event_types if event_types else True
@@ -3663,7 +3671,7 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, alert_type, title, severity, status, summary, module_key, target_id, source, source_service, recommended_action, degraded, occurrence_count, last_seen_at, findings, acknowledged_at, resolved_at, created_at, updated_at
+            SELECT id, alert_type, title, severity, status, summary, module_key, target_id, source, source_service, recommended_action, degraded, occurrence_count, last_seen_at, findings, owner_user_id, triage_status, resolution_note, suppressed_until, acknowledged_at, resolved_at, created_at, updated_at
             FROM alerts
             WHERE workspace_id = %s
               AND (%s::text IS NULL OR severity = %s::text)
@@ -3695,8 +3703,8 @@ def get_alert(alert_id: str, request: Request) -> dict[str, Any]:
 def patch_alert(alert_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     next_status = str(payload.get('status', '')).strip().lower()
-    if next_status not in {'open', 'acknowledged', 'resolved'}:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='status must be open/acknowledged/resolved')
+    if next_status not in {'open', 'acknowledged', 'investigating', 'resolved', 'suppressed'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='status must be open/acknowledged/investigating/resolved/suppressed')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
@@ -3710,14 +3718,73 @@ def patch_alert(alert_id: str, payload: dict[str, Any], request: Request) -> dic
                 acknowledged_at = CASE WHEN %s = 'acknowledged' THEN NOW() ELSE acknowledged_at END,
                 acknowledged_by_user_id = CASE WHEN %s = 'acknowledged' THEN %s ELSE acknowledged_by_user_id END,
                 resolved_at = CASE WHEN %s = 'resolved' THEN NOW() ELSE resolved_at END,
-                resolved_by_user_id = CASE WHEN %s = 'resolved' THEN %s ELSE resolved_by_user_id END
+                resolved_by_user_id = CASE WHEN %s = 'resolved' THEN %s ELSE resolved_by_user_id END,
+                owner_user_id = COALESCE(%s::uuid, owner_user_id),
+                triage_status = CASE WHEN %s IN ('open', 'investigating', 'resolved', 'suppressed') THEN %s ELSE triage_status END,
+                resolution_note = COALESCE(%s, resolution_note),
+                suppressed_until = COALESCE(%s::timestamptz, suppressed_until),
+                updated_at = NOW()
             WHERE id = %s
             ''',
-            (next_status, next_status, next_status, user['id'], next_status, next_status, user['id'], alert_id),
+            (next_status, next_status, next_status, user['id'], next_status, next_status, user['id'], payload.get('owner_user_id'), next_status, next_status, payload.get('resolution_note'), payload.get('suppressed_until'), alert_id),
         )
-        connection.execute('INSERT INTO alert_events (id, workspace_id, alert_id, actor_user_id, event_type, details) VALUES (%s, %s, %s, %s, %s, %s::jsonb)', (str(uuid.uuid4()), workspace_context['workspace_id'], alert_id, user['id'], f'alert.{next_status}', _json_dumps({'status': next_status})))
+        connection.execute('INSERT INTO alert_events (id, workspace_id, alert_id, actor_user_id, event_type, details) VALUES (%s, %s, %s, %s, %s, %s::jsonb)', (str(uuid.uuid4()), workspace_context['workspace_id'], alert_id, user['id'], f'alert.{next_status}', _json_dumps({'status': next_status, 'owner_user_id': payload.get('owner_user_id'), 'suppressed_until': payload.get('suppressed_until')})))
         connection.commit()
         return {'id': alert_id, 'status': next_status}
+
+
+def create_alert_suppression(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        suppression_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO alert_suppression_rules (id, workspace_id, target_id, dedupe_signature, trusted_sender, trusted_spender, trusted_contract, mute_until, reason, created_by_user_id)
+            VALUES (%s, %s, %s::uuid, %s, %s, %s, %s, %s::timestamptz, %s, %s)
+            ''',
+            (
+                suppression_id,
+                workspace_context['workspace_id'],
+                payload.get('target_id'),
+                payload.get('dedupe_signature'),
+                payload.get('trusted_sender'),
+                payload.get('trusted_spender'),
+                payload.get('trusted_contract'),
+                payload.get('mute_until'),
+                payload.get('reason'),
+                user['id'],
+            ),
+        )
+        log_audit(connection, action='alert.suppression.create', entity_type='alert_suppression_rule', entity_id=suppression_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'id': suppression_id, 'created': True}
+
+
+def list_alert_evidence(alert_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        row = connection.execute('SELECT id, target_id, payload, reasons, matched_patterns FROM alerts WHERE id = %s AND workspace_id = %s', (alert_id, workspace_context['workspace_id'])).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found.')
+        payload = row['payload'] if isinstance(row['payload'], dict) else {}
+        target = connection.execute('SELECT id, name FROM targets WHERE id = %s', (row['target_id'],)).fetchone() if row.get('target_id') else None
+        return {
+            'alert_id': alert_id,
+            'evidence': {
+                'tx_hash': payload.get('tx_hash'),
+                'block_number': payload.get('block_number'),
+                'target_id': str(row.get('target_id') or ''),
+                'target_name': str(target['name']) if target is not None else '',
+                'matched_patterns': row.get('matched_patterns') or [],
+                'reasons': row.get('reasons') or [],
+                'raw_payload_excerpt': payload,
+            },
+        }
 
 
 def list_incidents(request: Request, *, severity: str | None = None, target_id: str | None = None, status_value: str | None = None) -> dict[str, Any]:

@@ -106,6 +106,8 @@ from services.api.app.pilot import (
     list_alerts,
     get_alert,
     patch_alert,
+    create_alert_suppression,
+    list_alert_evidence,
     list_incidents,
     patch_incident,
     create_export_job,
@@ -1667,6 +1669,16 @@ def alerts_get(alert_id: str, request: Request) -> dict[str, Any]:
 @app.patch('/alerts/{alert_id}', summary='Acknowledge or resolve alert')
 def alerts_patch(alert_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: patch_alert(alert_id, payload, request))
+
+
+@app.get('/alerts/{alert_id}/evidence', summary='List alert evidence payload')
+def alerts_evidence(alert_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_alert_evidence(alert_id, request))
+
+
+@app.post('/alerts/suppressions', summary='Create alert suppression rule')
+def alerts_suppressions_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_alert_suppression(payload, request))
 
 
 @app.get('/incidents', summary='List incidents')
