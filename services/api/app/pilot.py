@@ -3500,14 +3500,17 @@ def get_target(target_id: str, request: Request) -> dict[str, Any]:
 
 def update_target(target_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
-    validated = _validate_target_payload(payload)
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         workspace_id = workspace_context['workspace_id']
-        found = connection.execute('SELECT id FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (target_id, workspace_id)).fetchone()
+        found = connection.execute('SELECT * FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (target_id, workspace_id)).fetchone()
         if found is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
+        merged_payload = dict(payload)
+        if 'monitoring_demo_scenario' not in merged_payload:
+            merged_payload['monitoring_demo_scenario'] = dict(found).get('monitoring_demo_scenario')
+        validated = _validate_target_payload(merged_payload)
         connection.execute(
             '''
             UPDATE targets

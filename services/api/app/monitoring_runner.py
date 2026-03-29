@@ -617,7 +617,12 @@ def list_monitoring_targets(request: Request) -> dict[str, Any]:
             ''',
             (workspace_context['workspace_id'],),
         ).fetchall()
-        return {'targets': [_json_safe_value(dict(row)) for row in rows], 'workspace': workspace_context['workspace']}
+        targets: list[dict[str, Any]] = []
+        for row in rows:
+            item = _json_safe_value(dict(row))
+            item['monitoring_profile'] = item.get('monitoring_demo_scenario')
+            targets.append(item)
+        return {'targets': targets, 'workspace': workspace_context['workspace']}
 
 
 def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -644,7 +649,13 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='severity_threshold must be low/medium/high/critical.')
         channels = payload.get('notification_channels') if 'notification_channels' in payload else current.get('notification_channels')
         channels = channels if isinstance(channels, list) else []
-        raw_demo_scenario = payload.get('monitoring_demo_scenario') if 'monitoring_demo_scenario' in payload else current.get('monitoring_demo_scenario')
+        scenario_field_provided = 'monitoring_demo_scenario' in payload or 'monitoring_profile' in payload
+        if 'monitoring_demo_scenario' in payload:
+            raw_demo_scenario = payload.get('monitoring_demo_scenario')
+        elif 'monitoring_profile' in payload:
+            raw_demo_scenario = payload.get('monitoring_profile')
+        else:
+            raw_demo_scenario = current.get('monitoring_demo_scenario')
         demo_scenario = str(raw_demo_scenario or '').strip().lower() or None
         if demo_scenario is not None and demo_scenario not in SCENARIO_EXPECTED_RISK:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='monitoring_demo_scenario must be safe/low_risk/medium_risk/high_risk/flash_loan_like/admin_abuse_like/risky_approval_like.')
@@ -686,7 +697,14 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
                 target_id,
             ),
         )
-        logger.info('monitoring config persisted target=%s scenario=%s monitoring_enabled=%s threshold=%s', target_id, demo_scenario or 'default', monitoring_enabled, threshold)
+        logger.info(
+            'monitoring config persisted target=%s scenario=%s scenario_field_provided=%s monitoring_enabled=%s threshold=%s',
+            target_id,
+            demo_scenario or 'default',
+            scenario_field_provided,
+            monitoring_enabled,
+            threshold,
+        )
         log_audit(
             connection,
             action='target.monitoring.update',
@@ -699,7 +717,9 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
         )
         connection.commit()
         updated = connection.execute('SELECT * FROM targets WHERE id = %s', (target_id,)).fetchone()
-        return {'target': _json_safe_value(dict(updated))}
+        updated_target = _json_safe_value(dict(updated))
+        updated_target['monitoring_profile'] = updated_target.get('monitoring_demo_scenario')
+        return {'target': updated_target}
 
 
 def run_monitoring_once(target_id: str, request: Request) -> dict[str, Any]:
