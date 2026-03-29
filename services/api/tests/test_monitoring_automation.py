@@ -311,8 +311,202 @@ def test_patch_monitoring_target_preserves_scenario_on_unrelated_updates(monkeyp
         request,
     )
     assert response['target']['monitoring_demo_scenario'] == 'flash_loan_like'
+    assert response['target']['monitoring_profile'] == 'flash_loan_like'
     assert response['target']['monitoring_interval_seconds'] == 90
     assert response['target']['severity_threshold'] == 'high'
+
+
+def test_patch_monitoring_target_accepts_monitoring_profile_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _PatchResult:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+        def fetchall(self):
+            if self._row is None:
+                return []
+            return [self._row]
+
+    class _PatchConnection:
+        def __init__(self):
+            self.row: dict[str, object] = {
+                'id': 'target-1',
+                'workspace_id': 'workspace-1',
+                'name': 'Treasury Ops Hot Wallet',
+                'target_type': 'wallet',
+                'chain_network': 'ethereum',
+                'enabled': True,
+                'monitoring_enabled': True,
+                'monitoring_mode': 'poll',
+                'monitoring_interval_seconds': 300,
+                'severity_threshold': 'medium',
+                'auto_create_alerts': True,
+                'auto_create_incidents': False,
+                'notification_channels': [],
+                'monitoring_demo_scenario': 'safe',
+                'last_checked_at': None,
+                'last_run_status': None,
+                'last_run_id': None,
+                'last_alert_at': None,
+                'is_active': True,
+            }
+
+        def execute(self, query, params=None):
+            normalized = ' '.join(str(query).split())
+            if normalized.startswith('SELECT id, monitoring_enabled'):
+                return _PatchResult(self.row.copy())
+            if normalized.startswith('UPDATE targets SET monitoring_enabled'):
+                self.row.update({'monitoring_demo_scenario': params[7]})
+                return _PatchResult()
+            if normalized.startswith('SELECT * FROM targets WHERE id = %s'):
+                return _PatchResult(self.row.copy())
+            if normalized.startswith('SELECT id, workspace_id, name, target_type'):
+                return _PatchResult(self.row.copy())
+            raise AssertionError(f'Unexpected query: {normalized}')
+
+        def commit(self):
+            return None
+
+    class _ConnCtx:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __enter__(self):
+            return self.connection
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    connection = _PatchConnection()
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _ConnCtx(connection))
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(
+        monitoring_runner,
+        '_require_workspace_admin',
+        lambda _connection, _request: ({'id': 'user-1'}, {'workspace_id': 'workspace-1'}),
+    )
+    monkeypatch.setattr(monitoring_runner, 'log_audit', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'authenticate_with_connection',
+        lambda _connection, _request: {'id': 'user-1'},
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace',
+        lambda _connection, _user_id, _workspace_header: {'workspace_id': 'workspace-1', 'workspace': {'id': 'workspace-1'}},
+    )
+
+    request = Request({'type': 'http', 'headers': []})
+    response = monitoring_runner.patch_monitoring_target(
+        'target-1',
+        {'monitoring_profile': 'high_risk'},
+        request,
+    )
+    assert response['target']['monitoring_demo_scenario'] == 'high_risk'
+    assert response['target']['monitoring_profile'] == 'high_risk'
+
+    listed = monitoring_runner.list_monitoring_targets(request)
+    assert listed['targets'][0]['monitoring_demo_scenario'] == 'high_risk'
+    assert listed['targets'][0]['monitoring_profile'] == 'high_risk'
+
+
+def test_update_target_preserves_existing_monitoring_scenario_when_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def __init__(self):
+            self.updated = False
+
+        def execute(self, query, params=None):
+            normalized = ' '.join(str(query).split())
+            if normalized.startswith('SELECT * FROM targets WHERE id = %s'):
+                return _Result(
+                    {
+                        'id': 'target-1',
+                        'workspace_id': 'workspace-1',
+                        'monitoring_demo_scenario': 'flash_loan_like',
+                    }
+                )
+            if normalized.startswith('UPDATE targets SET name = %s'):
+                self.updated = True
+                return _Result()
+            if normalized.startswith('DELETE FROM target_tags WHERE target_id = %s'):
+                return _Result()
+            raise AssertionError(f'Unexpected query: {normalized}')
+
+        def commit(self):
+            return None
+
+    class _ConnCtx:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __enter__(self):
+            return self.connection
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    captured_payload: dict[str, object] = {}
+
+    def _fake_validate(payload: dict[str, object]) -> dict[str, object]:
+        captured_payload.update(payload)
+        return {
+            'name': 'Treasury Ops Hot Wallet',
+            'target_type': 'wallet',
+            'chain_network': 'ethereum',
+            'contract_identifier': None,
+            'wallet_address': '0x1111111111111111111111111111111111111111',
+            'asset_type': None,
+            'owner_notes': None,
+            'severity_preference': 'medium',
+            'enabled': True,
+            'monitoring_enabled': True,
+            'monitoring_mode': 'poll',
+            'monitoring_interval_seconds': 300,
+            'severity_threshold': 'high',
+            'auto_create_alerts': True,
+            'auto_create_incidents': False,
+            'notification_channels': [],
+            'monitoring_demo_scenario': str(payload.get('monitoring_demo_scenario') or ''),
+            'is_active': True,
+            'tags': [],
+        }
+
+    connection = _Connection()
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _ConnCtx(connection))
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(
+        pilot,
+        '_require_workspace_admin',
+        lambda _connection, _request: ({'id': 'user-1'}, {'workspace_id': 'workspace-1'}),
+    )
+    monkeypatch.setattr(pilot, '_validate_target_payload', _fake_validate)
+    monkeypatch.setattr(pilot, 'log_audit', lambda *args, **kwargs: None)
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+
+    request = Request({'type': 'http', 'headers': []})
+    response = pilot.update_target(
+        'target-1',
+        {
+            'name': 'Treasury Ops Hot Wallet',
+            'target_type': 'wallet',
+            'chain_network': 'ethereum',
+            'wallet_address': '0x1111111111111111111111111111111111111111',
+        },
+        request,
+    )
+    assert captured_payload['monitoring_demo_scenario'] == 'flash_loan_like'
+    assert response['monitoring_demo_scenario'] == 'flash_loan_like'
+    assert connection.updated is True
 
 
 def test_flash_loan_like_fallback_scores_higher_than_safe() -> None:
