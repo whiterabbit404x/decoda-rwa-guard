@@ -8,7 +8,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from fastapi import HTTPException, Request, status
 
-from services.api.app.activity_providers import ActivityEvent, fetch_target_activity
+from services.api.app.activity_providers import (
+    ActivityEvent,
+    SCENARIO_EXPECTED_RISK,
+    fetch_target_activity,
+    monitoring_demo_scenario,
+)
 from services.api.app.pilot import (
     _json_dumps,
     _json_safe_value,
@@ -178,6 +183,8 @@ def _normalize_event(target: dict[str, Any], event: ActivityEvent, monitoring_ru
             },
             'provider_cursor': event.cursor,
             'event_id': event.event_id,
+            'monitoring_demo_scenario': monitoring_demo_scenario(target),
+            'expected_risk_class': SCENARIO_EXPECTED_RISK.get(monitoring_demo_scenario(target) or '', 'default'),
         },
     }
     normalized, _ = normalize_threat_payload(kind, payload, include_original=False)
@@ -327,8 +334,16 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     last_alert_at: datetime | None = None
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
     checkpoint_at = checkpoint
+    configured_scenario = monitoring_demo_scenario(target)
 
     for event in events:
+        logger.info(
+            'monitoring event generated target_id=%s scenario=%s event_id=%s expected_risk_class=%s',
+            target.get('id'),
+            configured_scenario or 'default',
+            event.event_id,
+            SCENARIO_EXPECTED_RISK.get(configured_scenario or '', 'default'),
+        )
         kind, normalized = _normalize_event(target, event, monitoring_run_id, workspace)
         response, diagnostics = _threat_call(kind, normalized, target_id=str(target['id']))
         if response is None:
@@ -339,6 +354,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
                 'monitoring_analysis_type': f'monitoring_{kind}',
                 'monitoring_request_keys': sorted(normalized.keys()),
                 'monitoring_request_metadata_keys': sorted((normalized.get('metadata') or {}).keys()) if isinstance(normalized.get('metadata'), dict) else [],
+                'monitoring_demo_scenario': configured_scenario,
             }
         )
         response['metadata'] = response_metadata
@@ -375,7 +391,13 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             )
             alerts_generated += 1
             last_alert_at = utc_now()
-            logger.info('created alert %s for target %s (%s)', alert_id, target['id'], target.get('name') or 'unknown')
+            logger.info(
+                'monitoring alert created alert_id=%s target_id=%s severity=%s scenario=%s',
+                alert_id,
+                target['id'],
+                str(response.get('severity') or 'unknown'),
+                configured_scenario or 'default',
+            )
             _maybe_create_incident(
                 connection,
                 workspace_id=str(target['workspace_id']),
@@ -574,7 +596,7 @@ def list_monitoring_targets(request: Request) -> dict[str, Any]:
             '''
             SELECT id, workspace_id, name, target_type, chain_network, enabled, monitoring_enabled, monitoring_mode,
                    monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents,
-                   notification_channels, last_checked_at, last_run_status, last_run_id, last_alert_at, is_active
+                   notification_channels, monitoring_demo_scenario, last_checked_at, last_run_status, last_run_id, last_alert_at, is_active
             FROM targets
             WHERE workspace_id = %s AND deleted_at IS NULL
             ORDER BY created_at DESC
@@ -598,6 +620,9 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
         if threshold not in {'low', 'medium', 'high', 'critical'}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='severity_threshold must be low/medium/high/critical.')
         channels = payload.get('notification_channels') if isinstance(payload.get('notification_channels'), list) else []
+        demo_scenario = str(payload.get('monitoring_demo_scenario') or '').strip().lower() or None
+        if demo_scenario is not None and demo_scenario not in SCENARIO_EXPECTED_RISK:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='monitoring_demo_scenario must be safe/low_risk/medium_risk/high_risk/flash_loan_like/admin_abuse_like/risky_approval_like.')
         connection.execute(
             '''
             UPDATE targets
@@ -608,6 +633,7 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
                 auto_create_alerts = %s,
                 auto_create_incidents = %s,
                 notification_channels = %s::jsonb,
+                monitoring_demo_scenario = %s,
                 monitored_by_workspace_id = %s,
                 is_active = %s,
                 updated_by_user_id = %s,
@@ -622,13 +648,23 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
                 bool(payload.get('auto_create_alerts', True)),
                 bool(payload.get('auto_create_incidents', False)),
                 _json_dumps(channels),
+                demo_scenario,
                 workspace_context['workspace_id'],
                 bool(payload.get('is_active', True)),
                 user['id'],
                 target_id,
             ),
         )
-        log_audit(connection, action='target.monitoring.update', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'monitoring_enabled': bool(payload.get('monitoring_enabled', False))})
+        log_audit(
+            connection,
+            action='target.monitoring.update',
+            entity_type='target',
+            entity_id=target_id,
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_context['workspace_id'],
+            metadata={'monitoring_enabled': bool(payload.get('monitoring_enabled', False)), 'monitoring_demo_scenario': demo_scenario},
+        )
         connection.commit()
         updated = connection.execute('SELECT * FROM targets WHERE id = %s', (target_id,)).fetchone()
         return {'target': _json_safe_value(dict(updated))}

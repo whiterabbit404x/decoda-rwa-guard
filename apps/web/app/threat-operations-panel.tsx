@@ -40,7 +40,9 @@ type MonitoringConfig = {
   last_checked_at?: string | null;
   last_run_status?: string | null;
   last_run_id?: string | null;
+  monitoring_demo_scenario?: string | null;
 };
+const MONITORING_DEMO_SCENARIOS = ['safe', 'low_risk', 'medium_risk', 'high_risk', 'flash_loan_like', 'admin_abuse_like', 'risky_approval_like'] as const;
 
 function toCsv(values: string[]) {
   return values.join(', ');
@@ -79,6 +81,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     last_checked_at: null,
     last_run_status: null,
     last_run_id: null,
+    monitoring_demo_scenario: null,
   });
 
   const [transactionScenario, setTransactionScenario] = useState<TransactionScenarioInput>(transactionPresets[0].scenario);
@@ -153,6 +156,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         last_checked_at: (nextTarget as any).last_checked_at ?? null,
         last_run_status: (nextTarget as any).last_run_status ?? null,
         last_run_id: (nextTarget as any).last_run_id ?? null,
+        monitoring_demo_scenario: (nextTarget as any).monitoring_demo_scenario ?? null,
       });
     }
     const nextType = suggestedThreatAnalysisType(nextTarget);
@@ -306,6 +310,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <select value={monitoringConfig.severity_threshold} onChange={(event) => setMonitoringConfig((prev) => ({ ...prev, severity_threshold: event.target.value as Severity }))}>
             <option value="low">threshold: low</option><option value="medium">threshold: medium</option><option value="high">threshold: high</option><option value="critical">threshold: critical</option>
           </select>
+          <select value={monitoringConfig.monitoring_demo_scenario ?? ''} onChange={(event) => setMonitoringConfig((prev) => ({ ...prev, monitoring_demo_scenario: event.target.value || null }))}>
+            <option value="">demo scenario: off (default live-like)</option>
+            {MONITORING_DEMO_SCENARIOS.map((scenario) => <option key={scenario} value={scenario}>demo scenario: {scenario}</option>)}
+          </select>
           <button type="button" onClick={() => void saveMonitoringConfig()}>Save monitoring</button>
           <button type="button" onClick={() => void runMonitoringOnce()}>Run once now</button>
         </div>
@@ -331,6 +339,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               last_checked_at: (nextTarget as any).last_checked_at ?? null,
               last_run_status: (nextTarget as any).last_run_status ?? null,
               last_run_id: (nextTarget as any).last_run_id ?? null,
+              monitoring_demo_scenario: (nextTarget as any).monitoring_demo_scenario ?? null,
             });
           }
         }}
