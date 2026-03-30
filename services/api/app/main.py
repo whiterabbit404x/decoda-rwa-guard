@@ -993,6 +993,13 @@ def with_auth_schema_json(handler):
 
 
 def fixture_diagnostics() -> dict[str, Any]:
+    ingestion_runtime: dict[str, Any] = {}
+    try:
+        from services.api.app.activity_providers import monitoring_ingestion_runtime
+        ingestion_runtime = monitoring_ingestion_runtime()
+    except Exception as exc:  # pragma: no cover - defensive startup guard
+        logger.warning('failed to compute monitoring ingestion runtime diagnostics: %s', exc)
+
     directories = {
         'risk_engine': {
             'path': str(RISK_ENGINE_DATA_DIR),
@@ -1034,41 +1041,44 @@ def fixture_diagnostics() -> dict[str, Any]:
         **pilot_runtime_diagnostics(),
         'startupBootstrap': STARTUP_BOOTSTRAP_STATUS,
         'dependencies': dependency_diagnostics(),
-        'monitoring_ingestion_mode': ingestion_runtime.get('source'),
+        'monitoring_ingestion_mode': ingestion_runtime.get('source', 'unknown'),
         'monitoring_ingestion_degraded': ingestion_runtime.get('degraded'),
         'monitoring_ingestion_reason': ingestion_runtime.get('reason'),
     }
 
 
 def emit_startup_fixture_diagnostics() -> None:
-    diagnostics = fixture_diagnostics()
-    identity = runtime_environment_identity()
-    logger.info(
-        'startup version=%s risk_dir=%s exists=%s sample_risk_request=%s '
-        'reconciliation_dir=%s exists=%s critical_supply_divergence=%s '
-        'critical_mismatch_paused_bridge=%s git_commit=%s app_mode=%s pilot_mode=%s live_mode=%s demo_mode=%s',
-        diagnostics['backend_build_id'],
-        diagnostics['directories']['risk_engine']['path'],
-        diagnostics['directories']['risk_engine']['exists'],
-        diagnostics['files']['risk_engine']['sample_risk_request.json']['exists'],
-        diagnostics['directories']['reconciliation']['path'],
-        diagnostics['directories']['reconciliation']['exists'],
-        diagnostics['files']['reconciliation']['critical_supply_divergence_double_count_risk.json']['exists'],
-        diagnostics['files']['reconciliation']['critical_mismatch_paused_bridge.json']['exists'],
-        diagnostics['backend_git_commit'],
-        diagnostics['modes']['app_mode'],
-        diagnostics['modes']['pilot_mode'],
-        diagnostics['modes']['live_mode_enabled'],
-        diagnostics['modes']['demo_mode'],
-    )
-    logger.info(
-        'api runtime identity app_mode=%s live_mode=%s railway_environment=%s railway_service=%s database_fingerprint=%s',
-        identity['app_mode'],
-        identity['live_mode_enabled'],
-        identity['railway_environment'] or 'unknown',
-        identity['railway_service'] or 'unknown',
-        identity['database_fingerprint'],
-    )
+    try:
+        diagnostics = fixture_diagnostics()
+        identity = runtime_environment_identity()
+        logger.info(
+            'startup version=%s risk_dir=%s exists=%s sample_risk_request=%s '
+            'reconciliation_dir=%s exists=%s critical_supply_divergence=%s '
+            'critical_mismatch_paused_bridge=%s git_commit=%s app_mode=%s pilot_mode=%s live_mode=%s demo_mode=%s',
+            diagnostics['backend_build_id'],
+            diagnostics['directories']['risk_engine']['path'],
+            diagnostics['directories']['risk_engine']['exists'],
+            diagnostics['files']['risk_engine']['sample_risk_request.json']['exists'],
+            diagnostics['directories']['reconciliation']['path'],
+            diagnostics['directories']['reconciliation']['exists'],
+            diagnostics['files']['reconciliation']['critical_supply_divergence_double_count_risk.json']['exists'],
+            diagnostics['files']['reconciliation']['critical_mismatch_paused_bridge.json']['exists'],
+            diagnostics['backend_git_commit'],
+            diagnostics['modes']['app_mode'],
+            diagnostics['modes']['pilot_mode'],
+            diagnostics['modes']['live_mode_enabled'],
+            diagnostics['modes']['demo_mode'],
+        )
+        logger.info(
+            'api runtime identity app_mode=%s live_mode=%s railway_environment=%s railway_service=%s database_fingerprint=%s',
+            identity['app_mode'],
+            identity['live_mode_enabled'],
+            identity['railway_environment'] or 'unknown',
+            identity['railway_service'] or 'unknown',
+            identity['database_fingerprint'],
+        )
+    except Exception as exc:  # pragma: no cover - defensive startup guard
+        logger.warning('startup fixture diagnostics emission skipped: %s', exc)
 
 
 def bootstrap_live_pilot() -> dict[str, Any]:

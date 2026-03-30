@@ -189,6 +189,27 @@ def test_health_details_reports_pilot_and_embedded_readiness_flags(api_main, mon
     assert diagnostics['lastEmbeddedFailureReason']['threat'] == 'embedded threat failure'
 
 
+def test_fixture_diagnostics_falls_back_when_monitoring_runtime_fails(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    import services.api.app.activity_providers as activity_providers
+
+    def _raise_runtime_error():
+        raise RuntimeError('monitoring helper unavailable')
+
+    monkeypatch.setattr(activity_providers, 'monitoring_ingestion_runtime', _raise_runtime_error)
+
+    diagnostics = api_main.fixture_diagnostics()
+
+    assert diagnostics['monitoring_ingestion_mode'] == 'unknown'
+    assert diagnostics['monitoring_ingestion_degraded'] is None
+    assert diagnostics['monitoring_ingestion_reason'] is None
+
+
+def test_emit_startup_fixture_diagnostics_never_raises(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api_main, 'fixture_diagnostics', lambda: (_ for _ in ()).throw(RuntimeError('broken diagnostics')))
+
+    api_main.emit_startup_fixture_diagnostics()
+
+
 def test_health_details_route_reports_readiness_flags_and_missing_tables(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         api_main,
