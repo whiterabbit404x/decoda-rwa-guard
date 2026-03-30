@@ -15,7 +15,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -63,6 +63,12 @@ _redis_rate_limiter_lock = threading.Lock()
 
 
 STARTUP_BOOTSTRAP_ENV = 'RUN_MIGRATIONS_ON_STARTUP'
+MIGRATION_LOCK_KEY = 840174210431559231
+MIGRATION_LOCK_WAIT_SECONDS_ENV = 'MIGRATION_LOCK_WAIT_SECONDS'
+MIGRATION_LOCK_RETRY_INTERVAL_SECONDS_ENV = 'MIGRATION_LOCK_RETRY_INTERVAL_SECONDS'
+MIGRATION_RETRY_ATTEMPTS_ENV = 'MIGRATION_RETRY_ATTEMPTS'
+MIGRATION_RETRY_BACKOFF_SECONDS_ENV = 'MIGRATION_RETRY_BACKOFF_SECONDS'
+MIGRATION_RETRYABLE_ERROR_NAMES = {'DeadlockDetected', 'LockNotAvailable', 'SerializationFailure', 'OperationalError'}
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -336,24 +342,128 @@ def test_integration_slack(payload: dict[str, Any], request: Request) -> dict[st
 
 def run_migrations() -> list[str]:
     require_live_mode()
-    applied_versions: list[str] = []
     with pg_connection() as connection:
-        ensure_migration_table(connection)
-        already_applied = {
-            row['version'] for row in connection.execute('SELECT version FROM schema_migrations').fetchall()
-        }
-        for path in sorted(migration_dir().glob('*.sql')):
-            connection.execute(path.read_text())
-            connection.execute(
-                'INSERT INTO schema_migrations (version) VALUES (%s) ON CONFLICT (version) DO NOTHING',
-                (path.name,),
+        lock_state = _acquire_migration_lock(connection)
+        if not lock_state['acquired']:
+            logger.warning(
+                'migration runner skipped: another process is holding migration lock key=%s after waiting %.2fs',
+                MIGRATION_LOCK_KEY,
+                lock_state['waited_seconds'],
             )
-            if path.name not in already_applied:
-                applied_versions.append(path.name)
-        missing_tables = _fetch_missing_pilot_tables(connection)
-        if missing_tables:
-            raise _schema_missing_http_exception(missing_tables)
-        connection.commit()
+            return []
+        try:
+            attempts = _migration_int_setting(MIGRATION_RETRY_ATTEMPTS_ENV, default=3, minimum=1)
+            retry_backoff_seconds = _migration_float_setting(MIGRATION_RETRY_BACKOFF_SECONDS_ENV, default=1.0, minimum=0.0)
+            for attempt in range(1, attempts + 1):
+                try:
+                    applied_versions = _run_migrations_once(connection)
+                    logger.info(
+                        'migration runner finished: applied=%s waited_for_lock=%.2fs attempts=%s',
+                        len(applied_versions),
+                        lock_state['waited_seconds'],
+                        attempt,
+                    )
+                    return applied_versions
+                except Exception as exc:
+                    if attempt >= attempts or not _is_transient_migration_error(exc):
+                        raise
+                    _rollback_connection_safely(connection)
+                    delay = retry_backoff_seconds * attempt
+                    logger.warning(
+                        'migration runner transient error (%s) attempt=%s/%s, retrying in %.2fs',
+                        exc.__class__.__name__,
+                        attempt,
+                        attempts,
+                        delay,
+                    )
+                    if delay > 0:
+                        sleep(delay)
+        finally:
+            _release_migration_lock(connection)
+
+
+def _migration_int_setting(name: str, *, default: int, minimum: int) -> int:
+    raw_value = os.getenv(name, '').strip()
+    if not raw_value:
+        return default
+    try:
+        return max(minimum, int(raw_value))
+    except ValueError:
+        logger.warning('invalid migration setting %s=%r, using default=%s', name, raw_value, default)
+        return default
+
+
+def _migration_float_setting(name: str, *, default: float, minimum: float) -> float:
+    raw_value = os.getenv(name, '').strip()
+    if not raw_value:
+        return default
+    try:
+        return max(minimum, float(raw_value))
+    except ValueError:
+        logger.warning('invalid migration setting %s=%r, using default=%s', name, raw_value, default)
+        return default
+
+
+def _acquire_migration_lock(connection: Any) -> dict[str, Any]:
+    wait_timeout_seconds = _migration_float_setting(MIGRATION_LOCK_WAIT_SECONDS_ENV, default=45.0, minimum=0.0)
+    retry_interval_seconds = _migration_float_setting(MIGRATION_LOCK_RETRY_INTERVAL_SECONDS_ENV, default=1.0, minimum=0.05)
+    started = monotonic()
+    while True:
+        row = connection.execute('SELECT pg_try_advisory_lock(%s) AS locked', (MIGRATION_LOCK_KEY,)).fetchone() or {}
+        if bool(row.get('locked')):
+            waited = monotonic() - started
+            if waited > 0:
+                logger.info('migration lock acquired after waiting %.2fs (key=%s)', waited, MIGRATION_LOCK_KEY)
+            return {'acquired': True, 'waited_seconds': waited}
+        elapsed = monotonic() - started
+        if elapsed >= wait_timeout_seconds:
+            return {'acquired': False, 'waited_seconds': elapsed}
+        sleep(min(retry_interval_seconds, max(0.01, wait_timeout_seconds - elapsed)))
+
+
+def _release_migration_lock(connection: Any) -> None:
+    try:
+        connection.execute('SELECT pg_advisory_unlock(%s)', (MIGRATION_LOCK_KEY,))
+    except Exception:
+        logger.exception('failed to release migration advisory lock key=%s', MIGRATION_LOCK_KEY)
+
+
+def _rollback_connection_safely(connection: Any) -> None:
+    rollback = getattr(connection, 'rollback', None)
+    if not callable(rollback):
+        return
+    try:
+        rollback()
+    except Exception:
+        logger.exception('migration rollback failed after transient error')
+
+
+def _is_transient_migration_error(exc: Exception) -> bool:
+    error_name = exc.__class__.__name__
+    if error_name in MIGRATION_RETRYABLE_ERROR_NAMES:
+        return True
+    message = str(exc).lower()
+    return 'deadlock detected' in message or 'could not obtain lock on relation' in message
+
+
+def _run_migrations_once(connection: Any) -> list[str]:
+    applied_versions: list[str] = []
+    ensure_migration_table(connection)
+    already_applied = {
+        row['version'] for row in connection.execute('SELECT version FROM schema_migrations').fetchall()
+    }
+    for path in sorted(migration_dir().glob('*.sql')):
+        connection.execute(path.read_text())
+        connection.execute(
+            'INSERT INTO schema_migrations (version) VALUES (%s) ON CONFLICT (version) DO NOTHING',
+            (path.name,),
+        )
+        if path.name not in already_applied:
+            applied_versions.append(path.name)
+    missing_tables = _fetch_missing_pilot_tables(connection)
+    if missing_tables:
+        raise _schema_missing_http_exception(missing_tables)
+    connection.commit()
     return applied_versions
 
 

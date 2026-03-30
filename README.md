@@ -70,14 +70,16 @@ Run **two Railway services** from this monorepo for production monitoring:
    - Dockerfile path: `services/api/Dockerfile`
    - Root/build context: repository root
    - `APP_START_COMMAND` (optional, default): `uvicorn services.api.app.main:app --host 0.0.0.0 --port ${PORT:-8000}`
+   - Optional startup migration toggle: `RUN_MIGRATIONS_ON_STARTUP=true` **only on this API service** when you intentionally want API boot to run migrations.
 2. Create `decoda-monitoring-worker` service from the same repo:
    - Dockerfile path: `services/api/Dockerfile`
    - Root/build context: repository root
    - Start command env override:
      - `APP_START_COMMAND=python -m services.api.app.run_monitoring_worker --worker-name railway-monitoring-worker --interval-seconds 15 --limit 50`
+   - Keep `RUN_MIGRATIONS_ON_STARTUP=false` here so worker boot never attempts schema migration.
 3. Keep the Docker build context at the repo root so `services/api/Dockerfile` can `COPY` sibling fixture folders such as `services/risk-engine/data` and `services/reconciliation-service/data`.
 4. Set Railway env vars from `services/api/.env.example` on **both** services, including monitoring worker vars (`MONITORING_WORKER_NAME`, `MONITORING_WORKER_INTERVAL_SECONDS`, `MONITORING_WORKER_LIMIT`, optional `MONITORING_WORKER_HEARTBEAT_TTL_SECONDS`).
-5. Run migrations against Neon with `python services/api/scripts/migrate.py` in Railway's shell or a one-off command using the same image/env.
+5. Run migrations in exactly one place (`python services/api/scripts/migrate.py`) using Railway shell or a one-off command tied to the API service image/env. Do not add `migrate.py` to worker/event-watcher startup commands.
 6. Optionally run `python services/api/scripts/seed.py --pilot-demo` once for a demo tenant.
 7. Verify worker heartbeat via `GET /ops/monitoring/health` on the API service.
 8. For manual one-shot verification in Railway shell, run `python -m services.api.app.run_monitoring_worker --once` (or `python services/api/scripts/run_monitoring_worker.py --once`).
