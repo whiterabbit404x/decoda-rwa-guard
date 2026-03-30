@@ -128,6 +128,11 @@ class AnalysisResponse(BaseModel):
     explanation: str
     recommended_action: Action
     reasons: list[str]
+    source: Literal['live', 'fallback', 'degraded'] = 'live'
+    rule_pack_version: str = 'evm-rules-v2'
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    coverage: float = Field(default=0.0, ge=0, le=1)
+    coverage_limits: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

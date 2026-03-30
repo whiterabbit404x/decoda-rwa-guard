@@ -5,6 +5,7 @@ import logging
 import os
 import time
 
+from services.api.app.activity_providers import validate_monitoring_config_or_raise
 from services.api.app.monitoring_runner import run_monitoring_cycle
 from services.api.app.pilot import runtime_environment_identity, startup_schema_init_plan
 
@@ -39,6 +40,7 @@ def main() -> int:
         args.limit,
         args.once,
     )
+    validate_monitoring_config_or_raise()
     schema_plan = startup_schema_init_plan(process_role='worker')
     logger.info(
         'monitoring worker schema init skipped for role=%s: %s',

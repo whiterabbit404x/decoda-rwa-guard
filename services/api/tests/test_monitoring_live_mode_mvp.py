@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from services.api.app import activity_providers
 from services.api.app.activity_providers import ActivityEvent
 
@@ -17,11 +19,10 @@ def test_hybrid_mode_prefers_live(monkeypatch):
     assert events[0].ingestion_source == 'evm_rpc'
 
 
-def test_live_mode_no_rpc_uses_demo_fallback(monkeypatch):
+def test_live_mode_no_rpc_fails_fast(monkeypatch):
     monkeypatch.setenv('MONITORING_INGESTION_MODE', 'live')
     monkeypatch.setenv('LIVE_MONITORING_ENABLED', 'true')
     monkeypatch.delenv('EVM_RPC_URL', raising=False)
     target = {'id': 't1', 'target_type': 'wallet', 'wallet_address': '0xabc', 'chain_network': 'ethereum'}
-    events = activity_providers.fetch_target_activity(target, None)
-    assert events
-    assert events[0].ingestion_source == 'demo'
+    with pytest.raises(RuntimeError, match='EVM_RPC_URL missing'):
+        activity_providers.fetch_target_activity(target, None)
