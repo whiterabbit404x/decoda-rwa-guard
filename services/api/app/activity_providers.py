@@ -45,12 +45,39 @@ class ActivityEvent:
 
 
 def monitoring_ingestion_mode() -> str:
-    mode = str(os.getenv('MONITORING_INGESTION_MODE', 'demo')).strip().lower()
-    return mode if mode in {'demo', 'live', 'hybrid'} else 'demo'
+    mode = str(os.getenv('MONITORING_INGESTION_MODE', 'live')).strip().lower()
+    return mode if mode in {'demo', 'live', 'hybrid'} else 'live'
 
 
 def live_monitoring_enabled() -> bool:
-    return str(os.getenv('LIVE_MONITORING_ENABLED', 'false')).strip().lower() in {'1', 'true', 'yes', 'on'}
+    return str(os.getenv('LIVE_MONITORING_ENABLED', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def live_monitoring_requirements() -> dict[str, bool]:
+    return {
+        'evm_rpc_url': bool((os.getenv('EVM_RPC_URL') or '').strip()),
+    }
+
+
+def monitoring_ingestion_runtime() -> dict[str, Any]:
+    mode = monitoring_ingestion_mode()
+    req = live_monitoring_requirements()
+    live_enabled = live_monitoring_enabled()
+    ws_url = bool((os.getenv('EVM_WS_URL') or '').strip())
+    if mode == 'demo':
+        return {'mode': mode, 'source': 'demo', 'degraded': False, 'reason': None}
+    if not live_enabled:
+        return {'mode': mode, 'source': 'degraded', 'degraded': True, 'reason': 'LIVE_MONITORING_ENABLED=false'}
+    if not req['evm_rpc_url']:
+        return {'mode': mode, 'source': 'degraded', 'degraded': True, 'reason': 'EVM_RPC_URL missing'}
+    source = 'hybrid' if mode == 'hybrid' else ('live-ws' if ws_url else 'live-rpc')
+    return {'mode': mode, 'source': source, 'degraded': False, 'reason': None}
+
+
+def validate_monitoring_config_or_raise() -> None:
+    runtime = monitoring_ingestion_runtime()
+    if runtime['mode'] == 'live' and runtime['degraded']:
+        raise RuntimeError(f"Live monitoring mode is misconfigured: {runtime['reason']}")
 def monitoring_scenario(target: dict[str, Any]) -> str | None:
     value = str(
         target.get('monitoring_scenario')
@@ -394,14 +421,17 @@ def fetch_market_activity(target: dict[str, Any], since_ts: datetime | None) -> 
 
 def fetch_target_activity(target: dict[str, Any], since_ts: datetime | None) -> list[ActivityEvent]:
     target_type = str(target.get('target_type') or '').lower()
-    mode = monitoring_ingestion_mode()
-    can_use_live = live_monitoring_enabled() and bool(os.getenv('EVM_RPC_URL')) and target_type in {'wallet', 'contract'}
+    runtime = monitoring_ingestion_runtime()
+    mode = runtime['mode']
+    can_use_live = (not runtime['degraded']) and target_type in {'wallet', 'contract'}
     if mode in {'live', 'hybrid'} and can_use_live:
         live_events = fetch_evm_activity(target, since_ts)
         if live_events:
             return live_events
         if mode == 'live':
             return []
+    if mode == 'live' and runtime['degraded']:
+        raise RuntimeError(str(runtime.get('reason') or 'live ingestion degraded'))
     if target_type == 'wallet':
         return fetch_wallet_activity(target, since_ts)
     if target_type == 'contract':

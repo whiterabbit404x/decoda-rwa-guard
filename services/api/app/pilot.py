@@ -235,6 +235,15 @@ def validate_runtime_configuration() -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
     is_production_like = mode in {'production', 'prod'}
+    try:
+        from services.api.app.activity_providers import monitoring_ingestion_runtime
+
+        monitoring_runtime = monitoring_ingestion_runtime()
+        if monitoring_runtime.get('mode') == 'live' and monitoring_runtime.get('degraded'):
+            errors.append(f"MONITORING_INGESTION_MODE=live requires RPC config: {monitoring_runtime.get('reason')}")
+    except Exception as exc:
+        warnings.append(f'monitoring ingestion runtime check failed: {exc}')
+
     if is_production_like and live_mode_enabled():
         if not database_url():
             errors.append('DATABASE_URL must be configured when LIVE_MODE_ENABLED=true in production.')
@@ -2699,10 +2708,13 @@ def persist_analysis_run(
     analysis_run_id = str(uuid.uuid4())
     summary = str(response_payload.get('explanation') or response_payload.get('explainability_summary') or response_payload.get('summary') or title)
     source = str(response_payload.get('source') or 'live')
+    analysis_source = str(response_payload.get('analysis_source') or source)
+    analysis_status = str(response_payload.get('analysis_status') or 'completed')
+    degraded_reason = response_payload.get('degraded_reason')
     connection.execute(
         '''
-        INSERT INTO analysis_runs (id, workspace_id, user_id, analysis_type, service_name, status, title, source, summary, request_payload, response_payload, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, NOW())
+        INSERT INTO analysis_runs (id, workspace_id, user_id, analysis_type, service_name, status, title, source, summary, analysis_source, analysis_status, degraded_reason, request_payload, response_payload, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, NOW())
         ''',
         (
             analysis_run_id,
@@ -2714,6 +2726,9 @@ def persist_analysis_run(
             title,
             source,
             summary,
+            analysis_source,
+            analysis_status,
+            degraded_reason,
             _json_dumps(request_payload),
             _json_dumps(response_payload),
         ),

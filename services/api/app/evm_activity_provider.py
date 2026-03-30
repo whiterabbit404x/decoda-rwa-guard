@@ -10,7 +10,6 @@ from typing import Any, Protocol
 from urllib import request
 
 
-
 @dataclass
 class ActivityEvent:
     event_id: str
@@ -101,6 +100,7 @@ def _iso_from_block_ts(ts_hex: str | None) -> datetime:
 
 
 def _build_base_payload(*, target: dict[str, Any], network: str, chain_id: int, block_number: int, block_hash: str | None, tx: dict[str, Any], tx_hash: str, raw_reference: str) -> dict[str, Any]:
+    selector = _extract_selector(tx.get('input'))
     return {
         'chain_id': chain_id,
         'chain_network': network,
@@ -110,9 +110,9 @@ def _build_base_payload(*, target: dict[str, Any], network: str, chain_id: int, 
         'from': str(tx.get('from') or '').lower() or None,
         'to': str(tx.get('to') or '').lower() or None,
         'amount': str(_hex_to_int(tx.get('value')) or 0),
-        'function_selector': _extract_selector(tx.get('input')),
-        'decoded_function_name': SELECTOR_NAMES.get(_extract_selector(tx.get('input')) or '', None),
-        'decode_status': 'decoded' if SELECTOR_NAMES.get(_extract_selector(tx.get('input')) or '') else 'partial',
+        'function_selector': selector,
+        'decoded_function_name': SELECTOR_NAMES.get(selector or '', None),
+        'decode_status': 'decoded' if SELECTOR_NAMES.get(selector or '') else ('partial' if selector else 'none'),
         'raw_reference': raw_reference,
         'contract_address': str(target.get('contract_identifier') or '').lower() or None,
         'asset_address': None,
@@ -140,6 +140,16 @@ def _fetch_logs(client: RpcClient, address: str, from_block: int, to_block: int)
     return list(seen.values())
 
 
+def _iter_block_ranges(from_block: int, to_block: int, chunk_size: int) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    cursor = from_block
+    while cursor <= to_block:
+        end = min(to_block, cursor + chunk_size - 1)
+        ranges.append((cursor, end))
+        cursor = end + 1
+    return ranges
+
+
 def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc_client: RpcClient | None = None) -> list[ActivityEvent]:
     rpc_url = (os.getenv('EVM_RPC_URL') or '').strip()
     if not rpc_url:
@@ -150,6 +160,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
 
     confirmations = max(0, int(os.getenv('EVM_CONFIRMATIONS_REQUIRED', '3')))
     lookback = max(5, int(os.getenv('EVM_BLOCK_LOOKBACK', '25')))
+    block_scan_chunk = max(1, int(os.getenv('EVM_BLOCK_SCAN_CHUNK_SIZE', '25')))
     target_address = str(target.get('wallet_address') or target.get('contract_identifier') or '').lower()
     if not target_address.startswith('0x'):
         return []
@@ -171,45 +182,56 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
 
     events: list[ActivityEvent] = []
     chain_id = CHAIN_MAP.get(network, {}).get('chain_id', 1)
+    block_ts_cache: dict[str, datetime] = {}
 
     logs: list[dict[str, Any]] = []
-    if str(target.get('target_type') or '').lower() == 'wallet':
-        logs = _fetch_logs(client, target_address, from_block, safe_to)
+    target_type = str(target.get('target_type') or '').lower()
+    if target_type == 'wallet':
+        for chunk_from, chunk_to in _iter_block_ranges(from_block, safe_to, block_scan_chunk):
+            logs.extend(_fetch_logs(client, target_address, chunk_from, chunk_to))
 
-    blocks = client.call('eth_getBlockByNumber', [hex(safe_to), True]) if safe_to >= from_block else None
-    txs = (blocks or {}).get('transactions') or []
-    for tx in txs:
-        tx_to = str(tx.get('to') or '').lower()
-        tx_from = str(tx.get('from') or '').lower()
-        block_number = _hex_to_int(tx.get('blockNumber')) or safe_to
-        if str(target.get('target_type') or '').lower() == 'wallet' and target_address not in {tx_to, tx_from}:
-            continue
-        if str(target.get('target_type') or '').lower() == 'contract' and tx_to != target_address:
-            continue
-        block = client.call('eth_getBlockByHash', [tx.get('blockHash'), False]) if tx.get('blockHash') else {}
-        observed_at = _iso_from_block_ts((block or {}).get('timestamp'))
-        tx_hash = str(tx.get('hash') or '')
-        cursor_value = _event_cursor(block_number, tx_hash, None)
-        payload = _build_base_payload(
-            target=target,
-            network=network,
-            chain_id=chain_id,
-            block_number=block_number,
-            block_hash=tx.get('blockHash'),
-            tx=tx,
-            tx_hash=tx_hash,
-            raw_reference=f'{network}:{tx_hash}',
-        )
-        kind = 'transaction' if str(target.get('target_type') or '').lower() == 'wallet' else 'contract'
-        events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, kind), kind=kind, observed_at=observed_at, ingestion_source='evm_rpc', cursor=cursor_value, payload=payload))
+    for chunk_from, chunk_to in _iter_block_ranges(from_block, safe_to, block_scan_chunk):
+        for block_number in range(chunk_from, chunk_to + 1):
+            block = client.call('eth_getBlockByNumber', [hex(block_number), True]) or {}
+            block_hash = str(block.get('hash') or '')
+            if block_hash and block_hash not in block_ts_cache:
+                block_ts_cache[block_hash] = _iso_from_block_ts(block.get('timestamp'))
+            txs = block.get('transactions') or []
+            for tx in txs:
+                tx_to = str(tx.get('to') or '').lower()
+                tx_from = str(tx.get('from') or '').lower()
+                if target_type == 'wallet' and target_address not in {tx_to, tx_from}:
+                    continue
+                if target_type == 'contract' and tx_to != target_address:
+                    continue
+                tx_hash = str(tx.get('hash') or '')
+                observed_at = block_ts_cache.get(block_hash) or _iso_from_block_ts(block.get('timestamp'))
+                cursor_value = _event_cursor(block_number, tx_hash, None)
+                payload = _build_base_payload(
+                    target=target,
+                    network=network,
+                    chain_id=chain_id,
+                    block_number=block_number,
+                    block_hash=block_hash or tx.get('blockHash'),
+                    tx=tx,
+                    tx_hash=tx_hash,
+                    raw_reference=f'{network}:{tx_hash}',
+                )
+                kind = 'transaction' if target_type == 'wallet' else 'contract'
+                events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, kind), kind=kind, observed_at=observed_at, ingestion_source='evm_rpc', cursor=cursor_value, payload=payload))
 
     for log in logs:
         tx_hash = str(log.get('transactionHash') or '')
         tx = client.call('eth_getTransactionByHash', [tx_hash]) or {}
         block_number = _hex_to_int(log.get('blockNumber')) or safe_to
         log_index = _hex_to_int(log.get('logIndex'))
-        block = client.call('eth_getBlockByHash', [log.get('blockHash'), False]) if log.get('blockHash') else {}
-        observed_at = _iso_from_block_ts((block or {}).get('timestamp'))
+        block_hash = str(log.get('blockHash') or '')
+        observed_at = block_ts_cache.get(block_hash)
+        if observed_at is None:
+            block = client.call('eth_getBlockByHash', [log.get('blockHash'), False]) if log.get('blockHash') else {}
+            observed_at = _iso_from_block_ts((block or {}).get('timestamp'))
+            if block_hash:
+                block_ts_cache[block_hash] = observed_at
         topic0 = str((log.get('topics') or [''])[0]).lower()
         owner = _topic_to_address((log.get('topics') or [None, None])[1])
         spender_or_to = _topic_to_address((log.get('topics') or [None, None, None])[2])

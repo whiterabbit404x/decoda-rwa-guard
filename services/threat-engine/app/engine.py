@@ -57,7 +57,7 @@ class ThreatEngine:
                 {'flag': request.flags.get('delegatecall', False)},
             ))
 
-        if request.flags.get('unsafe_admin_action') or any('privileged-admin' in flag for flag in risk_flags):
+        if request.flags.get('unsafe_admin_action') or request.flags.get('privileged_admin_call') or any('privileged-admin' in flag for flag in risk_flags):
             matches.append(self._rule(
                 'contract:privilege-escalation',
                 'Unsafe admin action',
@@ -65,6 +65,26 @@ class ThreatEngine:
                 'critical',
                 'Privileged logic can be exercised by an unexpected actor or without a governance checkpoint.',
                 {'calling_actor': request.calling_actor, 'admin_roles': request.admin_roles},
+            ))
+
+        if request.flags.get('upgrade_invocation'):
+            matches.append(self._rule(
+                'contract:upgrade-invocation',
+                'Upgrade invocation',
+                22,
+                'critical',
+                'Contract upgrade function invocation detected.',
+                {'address': request.address},
+            ))
+
+        if request.flags.get('ownership_transfer'):
+            matches.append(self._rule(
+                'contract:ownership-transfer',
+                'Ownership transfer',
+                20,
+                'high',
+                'Ownership transfer path detected and requires governance approval evidence.',
+                {'address': request.address},
             ))
 
         if (
@@ -219,6 +239,45 @@ class ThreatEngine:
                 'Multiple risky actions were attempted within a short time window.',
                 {'burst_actions_last_5m': request.burst_actions_last_5m},
             ))
+        if request.flags.get('unknown_spender_approval'):
+            matches.append(self._rule(
+                'transaction:unknown-spender-approval',
+                'Unknown spender approval',
+                22,
+                'high',
+                'Approval granted to spender outside trusted allowlist context.',
+                {'wallet': request.wallet},
+            ))
+
+        if request.flags.get('unlimited_approval'):
+            matches.append(self._rule(
+                'transaction:unlimited-approval',
+                'Unlimited approval',
+                24,
+                'critical',
+                'Unlimited allowance approval elevates theft blast radius if spender is compromised.',
+                {'wallet': request.wallet},
+            ))
+
+        if request.flags.get('allowlist_bypass'):
+            matches.append(self._rule(
+                'transaction:allowlist-bypass',
+                'Trusted allowlist bypass',
+                20,
+                'high',
+                'Observed transfer path bypassed trusted allowlist controls.',
+                {'protocol': request.protocol},
+            ))
+
+        if request.flags.get('suspicious_native_transfer'):
+            matches.append(self._rule(
+                'transaction:suspicious-native-transfer',
+                'Suspicious native transfer',
+                18,
+                'high',
+                'Native-value transfer exceeded risk threshold for monitored treasury policy.',
+                {'amount': request.amount, 'asset': request.asset},
+            ))
 
         return self._build_response('transaction', matches)
 
@@ -367,6 +426,11 @@ class ThreatEngine:
             + ('Primary drivers: ' + '; '.join(reasons[:3]) if reasons else 'No suspicious patterns matched the current rule set.')
         )
         metadata: dict[str, Any] = {'normalized_score': score}
+        coverage_limits: list[str] = []
+        if any((match.evidence or {}).get('decode_status') in {'partial', 'none'} for match in materialized):
+            coverage_limits.append('partial_decode')
+        if not materialized:
+            coverage_limits.append('no_rules_matched')
         if anomaly_types is not None:
             metadata['anomaly_types'] = anomaly_types
         return AnalysisResponse(
@@ -377,6 +441,11 @@ class ThreatEngine:
             explanation=explanation,
             recommended_action=action,  # type: ignore[arg-type]
             reasons=reasons,
+            source='live',
+            rule_pack_version='evm-rules-v2',
+            confidence=round(min(1.0, 0.35 + (len(materialized) * 0.12)), 2),
+            coverage=round(min(1.0, 0.4 + (len(materialized) * 0.08)), 2),
+            coverage_limits=coverage_limits,
             metadata=metadata,
         )
 

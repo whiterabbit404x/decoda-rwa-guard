@@ -1034,6 +1034,9 @@ def fixture_diagnostics() -> dict[str, Any]:
         **pilot_runtime_diagnostics(),
         'startupBootstrap': STARTUP_BOOTSTRAP_STATUS,
         'dependencies': dependency_diagnostics(),
+        'monitoring_ingestion_mode': ingestion_runtime.get('source'),
+        'monitoring_ingestion_degraded': ingestion_runtime.get('degraded'),
+        'monitoring_ingestion_reason': ingestion_runtime.get('reason'),
     }
 
 
@@ -1115,6 +1118,8 @@ app.add_middleware(
 
 @app.get('/health', summary='API health check', description='Returns the API runtime mode and local persistence configuration.')
 def health() -> dict[str, object]:
+    from services.api.app.activity_providers import monitoring_ingestion_runtime
+    ingestion_runtime = monitoring_ingestion_runtime()
     return {
         'status': 'ok',
         'service': SERVICE_NAME,
@@ -1132,6 +1137,9 @@ def health() -> dict[str, object]:
         'backend_build_id': BACKEND_BUILD_ID,
         'backend_git_commit': BACKEND_GIT_COMMIT,
         'dependencies': dependency_diagnostics(),
+        'monitoring_ingestion_mode': ingestion_runtime.get('source'),
+        'monitoring_ingestion_degraded': ingestion_runtime.get('degraded'),
+        'monitoring_ingestion_reason': ingestion_runtime.get('reason'),
     }
 
 

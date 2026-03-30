@@ -13,6 +13,7 @@ from services.api.app.activity_providers import (
     SCENARIO_EXPECTED_RISK,
     fetch_target_activity,
     monitoring_scenario,
+    monitoring_ingestion_runtime,
 )
 from services.api.app.pilot import (
     _json_dumps,
@@ -44,6 +45,16 @@ WORKER_STATE: dict[str, Any] = {
     'last_cycle_targets_checked': 0,
     'last_cycle_alerts_generated': 0,
     'last_error': None,
+    'ingestion_mode': None,
+    'degraded': False,
+    'metrics': {
+        'live_events_ingested': 0,
+        'analysis_failures': 0,
+        'degraded_runs': 0,
+        'fallback_runs_demo': 0,
+        'fallback_runs_hybrid': 0,
+        'fallback_runs_live': 0,
+    },
 }
 
 
@@ -375,9 +386,45 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         )
         kind, normalized = _normalize_event(target, event, monitoring_run_id, workspace)
         response, diagnostics = _threat_call(kind, normalized, target_id=str(target['id']))
+        ingestion_runtime = monitoring_ingestion_runtime()
         if response is None:
             fallback_count += 1
-            response = _fallback_response(kind, normalized, diagnostics=diagnostics)
+            WORKER_STATE['metrics']['analysis_failures'] += 1
+            if ingestion_runtime['mode'] == 'demo':
+                WORKER_STATE['metrics']['fallback_runs_demo'] += 1
+                response = _fallback_response(kind, normalized, diagnostics=diagnostics)
+            elif ingestion_runtime['mode'] == 'hybrid':
+                WORKER_STATE['metrics']['fallback_runs_hybrid'] += 1
+                response = _fallback_response(kind, normalized, diagnostics=diagnostics)
+                response['analysis_source'] = 'fallback'
+                response['analysis_status'] = 'degraded'
+                response['degraded_reason'] = diagnostics.get('fallback_reason') or 'threat_engine_unavailable'
+            else:
+                WORKER_STATE['metrics']['fallback_runs_live'] += 1
+                WORKER_STATE['metrics']['degraded_runs'] += 1
+                response = {
+                    'analysis_type': kind,
+                    'score': 0,
+                    'severity': 'high',
+                    'matched_patterns': [],
+                    'explanation': 'Threat analysis failed in live mode; evidence persisted for operator review.',
+                    'recommended_action': 'review',
+                    'reasons': ['analysis_failed_live_mode'],
+                    'source': 'live',
+                    'degraded': True,
+                    'analysis_source': 'live',
+                    'analysis_status': 'analysis_failed',
+                    'degraded_reason': diagnostics.get('fallback_reason') or 'threat_engine_unavailable',
+                    'metadata': {
+                        'ingestion_source': normalized.get('metadata', {}).get('ingestion_source', 'live'),
+                        'fallback_exception_type': diagnostics.get('fallback_exception_type'),
+                        'fallback_exception_message': diagnostics.get('fallback_exception_message'),
+                    },
+                }
+        else:
+            response['analysis_source'] = str(response.get('source') or 'live')
+            response['analysis_status'] = 'completed'
+            response['degraded_reason'] = None
         response_metadata = response.get('metadata') if isinstance(response.get('metadata'), dict) else {}
         response_metadata.update(
             {
@@ -467,12 +514,14 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         (last_status, last_run_id, last_alert_at, checkpoint_at, checkpoint_cursor, target['id']),
     )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s fallback=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, fallback_count, incidents_created)
+    WORKER_STATE['metrics']['live_events_ingested'] += len(events)
     return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'fallback_count': fallback_count, 'status': last_status}
 
 
 def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int = 50) -> dict[str, Any]:
+    ingestion_runtime = monitoring_ingestion_runtime()
     if not live_mode_enabled():
-        return {'checked': 0, 'alerts_generated': 0, 'runs': [], 'live_mode': False}
+        return {'checked': 0, 'alerts_generated': 0, 'runs': [], 'live_mode': False, 'ingestion_mode': ingestion_runtime.get('source', 'demo')}
 
     checked = 0
     due_count = 0
@@ -639,7 +688,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     )
     cycle_duration_ms = int((utc_now() - cycle_started_at).total_seconds() * 1000)
     logger.info('monitoring cycle finished worker=%s due=%s checked=%s live_targets=%s events=%s alerts=%s incidents=%s fallback=%s duration_ms=%s', worker_name, due_count, checked, live_targets_checked, events_ingested, alerts_generated, incidents_created, fallback_count, cycle_duration_ms)
-    return {'due_targets': due_count, 'checked': checked, 'live_targets_checked': live_targets_checked, 'events_ingested': events_ingested, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'fallback_count': fallback_count, 'cycle_duration_ms': cycle_duration_ms, 'runs': runs, 'live_mode': True}
+    WORKER_STATE['ingestion_mode'] = ingestion_runtime.get('source')
+    WORKER_STATE['degraded'] = bool(ingestion_runtime.get('degraded'))
+    return {'due_targets': due_count, 'checked': checked, 'live_targets_checked': live_targets_checked, 'events_ingested': events_ingested, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'fallback_count': fallback_count, 'cycle_duration_ms': cycle_duration_ms, 'runs': runs, 'live_mode': True, 'ingestion_mode': ingestion_runtime.get('source'), 'degraded': bool(ingestion_runtime.get('degraded'))}
 
 
 def list_monitoring_targets(request: Request) -> dict[str, Any]:
@@ -835,7 +886,8 @@ def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) 
 
 def get_monitoring_health() -> dict[str, Any]:
     if not live_mode_enabled():
-        return {**WORKER_STATE, 'live_mode': False}
+        runtime = monitoring_ingestion_runtime()
+        return {**WORKER_STATE, 'live_mode': False, 'ingestion_mode': runtime.get('source'), 'degraded': runtime.get('degraded')}
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         worker_name = WORKER_STATE['worker_name']
@@ -881,4 +933,7 @@ def get_monitoring_health() -> dict[str, Any]:
         ).fetchone()
         normalized['overdue_targets'] = int((overdue or {}).get('overdue_count') or 0)
         normalized['job_delivery_state'] = _json_safe_value(dict(job_state)) if job_state is not None else {'queued': 0, 'running': 0, 'failed': 0}
+        runtime = monitoring_ingestion_runtime()
+        normalized['ingestion_mode'] = runtime.get('source')
+        normalized['degraded'] = runtime.get('degraded')
         return {**normalized, 'live_mode': True}
