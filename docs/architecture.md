@@ -219,6 +219,33 @@ Every event should include:
 
 ## Data Ownership and Persistence Model
 
+## Live EVM Ingestion Modes and Production Claim Criteria
+
+- `demo`: deterministic fixtures only (local demo/testing only).
+- `live` + polling: continuously scans live `EVM_RPC_URL` blocks/logs with durable checkpoints.
+- `live` + websocket: subscribes to `newHeads` + `logs` on `EVM_WS_URL`, reconnects with exponential backoff, and backfills gaps over RPC.
+- `hybrid`: websocket-first with polling/RPC backfill fallback, while clearly marking degraded states.
+
+### Required runtime env vars
+
+- `EVM_RPC_URL`
+- `EVM_WS_URL` (for websocket mode)
+- `MONITORING_INGESTION_MODE` (`demo` | `live` | `hybrid`)
+- `LIVE_MONITORING_ENABLED`
+- `EVM_CONFIRMATIONS_REQUIRED`
+- `EVM_BLOCK_LOOKBACK`
+- `DATABASE_URL` (durable target loading + event receipts/checkpoints)
+
+### When the production claim is valid
+
+Claim “ingesting live on-chain activity and detecting real threats in production” only when:
+
+1. live ingestion mode is enabled (`live` or `hybrid`) and `LIVE_MONITORING_ENABLED=true`;
+2. event-watcher health is not degraded and source is active (`websocket` or `polling`);
+3. recent live blocks are being processed and per-target checkpoints are advancing;
+4. analysis failures are stored as failed/degraded (no silent fake-normal scoring in live mode);
+5. degraded rate remains within the operator-accepted threshold.
+
 SQLite is sufficient for Phase 1 local development, but the schemas below are designed so each table can later move into a service-owned operational database.
 
 ### Shared Operational Tables
