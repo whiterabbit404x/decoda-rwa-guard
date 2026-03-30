@@ -345,6 +345,115 @@ def _maybe_create_incident(connection: Any, *, workspace_id: str, user_id: str, 
     return incident_id
 
 
+def _process_single_event(
+    connection: Any,
+    *,
+    target: dict[str, Any],
+    workspace: dict[str, Any],
+    user_id: str,
+    monitoring_run_id: str,
+    event: ActivityEvent,
+    configured_scenario: str | None,
+) -> dict[str, Any]:
+    kind, normalized = _normalize_event(target, event, monitoring_run_id, workspace)
+    response, diagnostics = _threat_call(kind, normalized, target_id=str(target['id']))
+    ingestion_runtime = monitoring_ingestion_runtime()
+    fallback_count = 0
+    if response is None:
+        fallback_count = 1
+        WORKER_STATE['metrics']['analysis_failures'] += 1
+        if ingestion_runtime['mode'] == 'demo':
+            WORKER_STATE['metrics']['fallback_runs_demo'] += 1
+            response = _fallback_response(kind, normalized, diagnostics=diagnostics)
+        elif ingestion_runtime['mode'] == 'hybrid':
+            WORKER_STATE['metrics']['fallback_runs_hybrid'] += 1
+            response = _fallback_response(kind, normalized, diagnostics=diagnostics)
+            response['analysis_source'] = 'fallback'
+            response['analysis_status'] = 'degraded'
+            response['degraded_reason'] = diagnostics.get('fallback_reason') or 'threat_engine_unavailable'
+        else:
+            WORKER_STATE['metrics']['fallback_runs_live'] += 1
+            WORKER_STATE['metrics']['degraded_runs'] += 1
+            response = {
+                'analysis_type': kind,
+                'score': 0,
+                'severity': 'high',
+                'matched_patterns': [],
+                'explanation': 'Threat analysis failed in live mode; evidence persisted for operator review.',
+                'recommended_action': 'review',
+                'reasons': ['analysis_failed_live_mode'],
+                'source': 'live',
+                'degraded': True,
+                'analysis_source': 'live',
+                'analysis_status': 'analysis_failed',
+                'degraded_reason': diagnostics.get('fallback_reason') or 'threat_engine_unavailable',
+                'metadata': {
+                    'ingestion_source': normalized.get('metadata', {}).get('ingestion_source', 'live'),
+                    'fallback_exception_type': diagnostics.get('fallback_exception_type'),
+                    'fallback_exception_message': diagnostics.get('fallback_exception_message'),
+                },
+            }
+    else:
+        response['analysis_source'] = str(response.get('source') or 'live')
+        response['analysis_status'] = 'completed'
+        response['degraded_reason'] = None
+    response['ingestion_mode'] = ingestion_runtime.get('mode')
+    response_metadata = response.get('metadata') if isinstance(response.get('metadata'), dict) else {}
+    response_metadata.update(
+        {
+            'monitoring_analysis_type': f'monitoring_{kind}',
+            'monitoring_request_keys': sorted(normalized.keys()),
+            'monitoring_request_metadata_keys': sorted((normalized.get('metadata') or {}).keys()) if isinstance(normalized.get('metadata'), dict) else [],
+            'monitoring_demo_scenario': configured_scenario,
+        }
+    )
+    response['metadata'] = response_metadata
+    analysis_run_id = persist_analysis_run(
+        connection,
+        workspace_id=str(target['workspace_id']),
+        user_id=user_id,
+        analysis_type=f'monitoring_{kind}',
+        service_name='threat-engine',
+        title=f'Automatic {kind} monitoring run',
+        status_value='completed',
+        request_payload=normalized,
+        response_payload=response,
+        request=None,
+    )
+    alert_id = None
+    incident_id = None
+    severity_threshold = str(target.get('severity_threshold') or 'medium')
+    if bool(target.get('auto_create_alerts', True)) and _severity_meets_threshold(str(response.get('severity') or 'low'), severity_threshold):
+        signature = _signature(str(target['id']), normalized, response)
+        alert_id = _upsert_alert(
+            connection,
+            workspace_id=str(target['workspace_id']),
+            user_id=user_id,
+            target_id=str(target['id']),
+            analysis_run_id=analysis_run_id,
+            title=f"{target.get('name')}: {response.get('severity', 'medium')} risk",
+            response=response,
+            signature=signature,
+        )
+        if alert_id:
+            incident_id = _maybe_create_incident(
+                connection,
+                workspace_id=str(target['workspace_id']),
+                user_id=user_id,
+                target_id=str(target['id']),
+                analysis_run_id=analysis_run_id,
+                alert_id=alert_id,
+                response=response,
+                auto_create=bool(target.get('auto_create_incidents')) and _severity_meets_threshold(str(response.get('severity') or 'low'), severity_threshold),
+            )
+    return {
+        'analysis_run_id': analysis_run_id,
+        'alert_id': alert_id,
+        'incident_id': incident_id,
+        'fallback_count': fallback_count,
+    }
+
+
 def process_monitoring_target(connection: Any, target: dict[str, Any], *, triggered_by_user_id: str | None = None) -> dict[str, Any]:
     workspace_row = connection.execute('SELECT id, name FROM workspaces WHERE id = %s', (target['workspace_id'],)).fetchone() or {'id': target['workspace_id'], 'name': 'Workspace'}
     workspace = _json_safe_value(dict(workspace_row))
@@ -384,118 +493,28 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             event.event_id,
             SCENARIO_EXPECTED_RISK.get(configured_scenario or '', 'default'),
         )
-        kind, normalized = _normalize_event(target, event, monitoring_run_id, workspace)
-        response, diagnostics = _threat_call(kind, normalized, target_id=str(target['id']))
-        ingestion_runtime = monitoring_ingestion_runtime()
-        if response is None:
-            fallback_count += 1
-            WORKER_STATE['metrics']['analysis_failures'] += 1
-            if ingestion_runtime['mode'] == 'demo':
-                WORKER_STATE['metrics']['fallback_runs_demo'] += 1
-                response = _fallback_response(kind, normalized, diagnostics=diagnostics)
-            elif ingestion_runtime['mode'] == 'hybrid':
-                WORKER_STATE['metrics']['fallback_runs_hybrid'] += 1
-                response = _fallback_response(kind, normalized, diagnostics=diagnostics)
-                response['analysis_source'] = 'fallback'
-                response['analysis_status'] = 'degraded'
-                response['degraded_reason'] = diagnostics.get('fallback_reason') or 'threat_engine_unavailable'
-            else:
-                WORKER_STATE['metrics']['fallback_runs_live'] += 1
-                WORKER_STATE['metrics']['degraded_runs'] += 1
-                response = {
-                    'analysis_type': kind,
-                    'score': 0,
-                    'severity': 'high',
-                    'matched_patterns': [],
-                    'explanation': 'Threat analysis failed in live mode; evidence persisted for operator review.',
-                    'recommended_action': 'review',
-                    'reasons': ['analysis_failed_live_mode'],
-                    'source': 'live',
-                    'degraded': True,
-                    'analysis_source': 'live',
-                    'analysis_status': 'analysis_failed',
-                    'degraded_reason': diagnostics.get('fallback_reason') or 'threat_engine_unavailable',
-                    'metadata': {
-                        'ingestion_source': normalized.get('metadata', {}).get('ingestion_source', 'live'),
-                        'fallback_exception_type': diagnostics.get('fallback_exception_type'),
-                        'fallback_exception_message': diagnostics.get('fallback_exception_message'),
-                    },
-                }
-        else:
-            response['analysis_source'] = str(response.get('source') or 'live')
-            response['analysis_status'] = 'completed'
-            response['degraded_reason'] = None
-        response_metadata = response.get('metadata') if isinstance(response.get('metadata'), dict) else {}
-        response_metadata.update(
-            {
-                'monitoring_analysis_type': f'monitoring_{kind}',
-                'monitoring_request_keys': sorted(normalized.keys()),
-                'monitoring_request_metadata_keys': sorted((normalized.get('metadata') or {}).keys()) if isinstance(normalized.get('metadata'), dict) else [],
-                'monitoring_demo_scenario': configured_scenario,
-            }
-        )
-        response['metadata'] = response_metadata
-        logger.info(
-            'monitoring live result target=%s score=%s severity=%s source=%s',
-            target.get('id'),
-            response.get('score'),
-            response.get('severity'),
-            str(response.get('source') or 'live'),
-        )
-        last_status = 'completed'
-        analysis_run_id = persist_analysis_run(
+        processed = _process_single_event(
             connection,
-            workspace_id=str(target['workspace_id']),
+            target=target,
+            workspace=workspace,
             user_id=user_id,
-            analysis_type=f'monitoring_{kind}',
-            service_name='threat-engine',
-            title=f'Automatic {kind} monitoring run',
-            status_value='completed',
-            request_payload=normalized,
-            response_payload=response,
-            request=None,
+            monitoring_run_id=monitoring_run_id,
+            event=event,
+            configured_scenario=configured_scenario,
         )
+        fallback_count += int(processed['fallback_count'])
+        analysis_run_id = str(processed['analysis_run_id'])
         run_ids.append(analysis_run_id)
+        last_status = 'completed'
         last_run_id = analysis_run_id
         checkpoint_at = event.observed_at
         checkpoint_cursor = event.cursor
-
-        severity_threshold = str(target.get('severity_threshold') or 'medium')
-        if bool(target.get('auto_create_alerts', True)) and _severity_meets_threshold(str(response.get('severity') or 'low'), severity_threshold):
-            signature = _signature(str(target['id']), normalized, response)
-            alert_id = _upsert_alert(
-                connection,
-                workspace_id=str(target['workspace_id']),
-                user_id=user_id,
-                target_id=str(target['id']),
-                analysis_run_id=analysis_run_id,
-                title=f"{target.get('name')}: {response.get('severity', 'medium')} risk",
-                response=response,
-                signature=signature,
-            )
-            if not alert_id:
-                continue
+        alert_id = processed.get('alert_id')
+        if alert_id:
             alerts_generated += 1
             last_alert_at = utc_now()
-            logger.info(
-                'monitoring alert created alert_id=%s target_id=%s severity=%s scenario=%s',
-                alert_id,
-                target['id'],
-                str(response.get('severity') or 'unknown'),
-                configured_scenario or 'default',
-            )
-            incident_id = _maybe_create_incident(
-                connection,
-                workspace_id=str(target['workspace_id']),
-                user_id=user_id,
-                target_id=str(target['id']),
-                analysis_run_id=analysis_run_id,
-                alert_id=alert_id,
-                response=response,
-                auto_create=bool(target.get('auto_create_incidents')) and _severity_meets_threshold(str(response.get('severity') or 'low'), severity_threshold),
-            )
-            if incident_id:
-                incidents_created += 1
+        if processed.get('incident_id'):
+            incidents_created += 1
 
     connection.execute(
         '''
@@ -516,6 +535,54 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     logger.info('checked target %s %s status=%s runs=%s alerts=%s fallback=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, fallback_count, incidents_created)
     WORKER_STATE['metrics']['live_events_ingested'] += len(events)
     return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'fallback_count': fallback_count, 'status': last_status}
+
+
+def process_ingested_event(connection: Any, *, target: dict[str, Any], event: ActivityEvent, ingestion_mode: str = 'live') -> dict[str, Any]:
+    workspace_row = connection.execute('SELECT id, name FROM workspaces WHERE id = %s', (target['workspace_id'],)).fetchone() or {'id': target['workspace_id'], 'name': 'Workspace'}
+    workspace = _json_safe_value(dict(workspace_row))
+    user_id = str(target.get('updated_by_user_id') or target.get('created_by_user_id'))
+    monitoring_run_id = str(uuid.uuid4())
+    receipt = connection.execute(
+        '''
+        SELECT id FROM monitoring_event_receipts WHERE target_id = %s AND event_id = %s
+        ''',
+        (target['id'], event.event_id),
+    ).fetchone()
+    if receipt is not None:
+        return {'status': 'duplicate_suppressed', 'event_id': event.event_id}
+    processed = _process_single_event(connection, target=target, workspace=workspace, user_id=user_id, monitoring_run_id=monitoring_run_id, event=event, configured_scenario=monitoring_scenario(target))
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    connection.execute(
+        '''
+        INSERT INTO monitoring_event_receipts (id, workspace_id, target_id, event_id, event_cursor, tx_hash, block_number, log_index, ingestion_source)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''',
+        (
+            str(uuid.uuid4()),
+            target['workspace_id'],
+            target['id'],
+            event.event_id,
+            event.cursor,
+            payload.get('tx_hash'),
+            payload.get('block_number'),
+            payload.get('log_index'),
+            event.ingestion_source,
+        ),
+    )
+    connection.execute(
+        '''
+        UPDATE targets
+        SET monitoring_checkpoint_at = %s,
+            monitoring_checkpoint_cursor = %s,
+            last_checked_at = NOW(),
+            last_run_status = 'completed',
+            last_run_id = %s,
+            updated_at = NOW()
+        WHERE id = %s
+        ''',
+        (event.observed_at, event.cursor, processed['analysis_run_id'], target['id']),
+    )
+    return {'status': 'processed', 'event_id': event.event_id, 'analysis_run_id': processed['analysis_run_id'], 'alert_id': processed.get('alert_id')}
 
 
 def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int = 50) -> dict[str, Any]:
