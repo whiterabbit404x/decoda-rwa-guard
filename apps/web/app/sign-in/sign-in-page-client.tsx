@@ -25,6 +25,8 @@ export default function SignInPageClient({
     runtimeConfigDiagnostic,
     runtimeConfigSource,
     signIn,
+    completeMfaSignIn,
+    mfaChallengeToken,
     apiUrl,
     isAuthenticated,
     loading: authLoading,
@@ -32,6 +34,8 @@ export default function SignInPageClient({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaRequired, setMfaRequired] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const runtimeConfig = useMemo(() => ({
@@ -61,6 +65,29 @@ export default function SignInPageClient({
       await signIn({ email, password });
       router.push(nextPath ?? '/dashboard');
     } catch (submitError) {
+      const message = submitError instanceof Error ? submitError.message : String(submitError);
+      if (message === 'MFA_REQUIRED') {
+        setMfaRequired(true);
+        setError(null);
+      } else {
+        setError(message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleMfaSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (loading) {
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      await completeMfaSignIn(mfaCode);
+      router.push(nextPath ?? '/dashboard');
+    } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {
       setLoading(false);
@@ -82,17 +109,28 @@ export default function SignInPageClient({
       {nextPath ? <p className="muted">Sign in to continue to {nextPath}.</p> : null}
       {previewNotice}
       <div className="twoColumnSection authPageGrid">
-        <form className="dataCard authForm" onSubmit={handleSubmit}>
-          <label className="label">Email</label>
-          <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
-          <label className="label">Password</label>
-          <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" required />
-          <button type="submit" disabled={formState.submitDisabled}>{loading ? 'Signing in…' : 'Sign in'}</button>
-          {error ? <p className="statusLine">{error}</p> : null}
-          {!configLoading && !configured ? <p className="statusLine">Auth is disabled until this deployment exposes a valid API_URL.</p> : null}
-          <p className="muted"><Link href="/reset-password">Forgot password?</Link></p>
-          <p className="muted">Need an account? <Link href="/sign-up">Create one</Link>.</p>
-        </form>
+        {mfaRequired ? (
+          <form className="dataCard authForm" onSubmit={handleMfaSubmit}>
+            <label className="label">Authenticator code</label>
+            <input value={mfaCode} onChange={(event) => setMfaCode(event.target.value)} inputMode="numeric" pattern="[0-9 ]*" required />
+            <button type="submit" disabled={loading || !mfaChallengeToken}>{loading ? 'Verifying…' : 'Complete sign in'}</button>
+            {error ? <p className="statusLine">{error}</p> : null}
+            <p className="muted">Enter a 6-digit TOTP code or one recovery code.</p>
+            <button type="button" onClick={() => { setMfaRequired(false); setMfaCode(''); }} disabled={loading}>Use a different account</button>
+          </form>
+        ) : (
+          <form className="dataCard authForm" onSubmit={handleSubmit}>
+            <label className="label">Email</label>
+            <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
+            <label className="label">Password</label>
+            <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" required />
+            <button type="submit" disabled={formState.submitDisabled}>{loading ? 'Signing in…' : 'Sign in'}</button>
+            {error ? <p className="statusLine">{error}</p> : null}
+            {!configLoading && !configured ? <p className="statusLine">Auth is disabled until this deployment exposes a valid API_URL.</p> : null}
+            <p className="muted"><Link href="/reset-password">Forgot password?</Link></p>
+            <p className="muted">Need an account? <Link href="/sign-up">Create one</Link>.</p>
+          </form>
+        )}
         <AuthDiagnosticCard loading={configLoading} runtimeConfig={runtimeConfig} />
       </div>
     </main>

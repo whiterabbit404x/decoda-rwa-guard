@@ -258,9 +258,9 @@ def validate_runtime_configuration() -> dict[str, Any]:
         if _email_provider() != 'console' and not os.getenv('EMAIL_FROM', '').strip():
             errors.append('EMAIL_FROM must be set when using a real email provider in production.')
         if _email_provider() == 'console':
-            warnings.append('EMAIL_PROVIDER=console is not suitable for production.')
+            errors.append('EMAIL_PROVIDER=console is not allowed in production. Configure EMAIL_PROVIDER=resend and EMAIL_RESEND_API_KEY.')
         if not os.getenv('REDIS_URL', '').strip():
-            warnings.append('REDIS_URL missing: falling back to in-memory auth rate limiting.')
+            errors.append('REDIS_URL is required in production for shared auth rate limiting.')
         strict_billing = env_flag('STRICT_PRODUCTION_BILLING')
         if strict_billing:
             if not os.getenv('STRIPE_SECRET_KEY', '').strip():
@@ -279,7 +279,9 @@ def integration_health_snapshot(connection: Any | None = None) -> dict[str, Any]
         plan_prices_configured = int((row or {}).get('count') or 0) > 0
 
     email_provider = _email_provider()
-    email_ready = email_provider == 'console' or bool(os.getenv('EMAIL_RESEND_API_KEY', '').strip())
+    production = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower() in {'production', 'prod'}
+    email_ready = (email_provider == 'resend' and bool(os.getenv('EMAIL_RESEND_API_KEY', '').strip())) if production else (email_provider == 'console' or bool(os.getenv('EMAIL_RESEND_API_KEY', '').strip()))
+    redis_ready = bool(os.getenv('REDIS_URL', '').strip())
 
     return {
         'stripe': {
@@ -297,6 +299,11 @@ def integration_health_snapshot(connection: Any | None = None) -> dict[str, Any]
             'provider': email_provider,
             'checks': {'from_address_present': bool(_email_from()), 'provider_key_present': email_ready},
             'message': 'Email delivery is disabled or incomplete. Configure EMAIL_PROVIDER, EMAIL_FROM, and provider credentials.' if not email_ready else 'Email configuration looks healthy.',
+        },
+        'auth_rate_limiter': {
+            'status': 'healthy' if redis_ready else ('warning' if not production else 'degraded'),
+            'checks': {'redis_url_present': redis_ready, 'shared_limiter': redis_ready},
+            'message': 'Redis-backed auth rate limiting configured.' if redis_ready else ('REDIS_URL missing in production: auth throttling is not safely shared.' if production else 'REDIS_URL missing: using in-memory limiter for local development only.'),
         },
         'slack': {
             'status': 'healthy',

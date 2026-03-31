@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import types
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from copy import deepcopy
 from functools import lru_cache
@@ -1150,6 +1151,28 @@ def health() -> dict[str, object]:
         'monitoring_ingestion_mode': ingestion_runtime.get('source'),
         'monitoring_ingestion_degraded': ingestion_runtime.get('degraded'),
         'monitoring_ingestion_reason': ingestion_runtime.get('reason'),
+    }
+
+
+@app.get('/health/readiness', summary='Production readiness health check', description='Returns readiness status and remediation guidance for production-only dependencies.')
+def health_readiness() -> dict[str, Any]:
+    validation = validate_runtime_configuration()
+    mode = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
+    extra_errors: list[str] = []
+    if mode in {'production', 'prod'}:
+        if str(os.getenv('EMAIL_PROVIDER', 'console')).strip().lower() == 'console':
+            extra_errors.append('EMAIL_PROVIDER=console is not allowed in production. Configure EMAIL_PROVIDER=resend and EMAIL_RESEND_API_KEY.')
+        if not os.getenv('REDIS_URL', '').strip():
+            extra_errors.append('REDIS_URL is required in production for shared auth rate limiting.')
+    errors = [*validation.get('errors', []), *extra_errors]
+    status_value = 'ready' if not errors else 'not_ready'
+    return {
+        'status': status_value,
+        'service': SERVICE_NAME,
+        'app_mode': os.getenv('APP_MODE', 'local'),
+        'errors': errors,
+        'warnings': validation.get('warnings', []),
+        'checked_at': datetime.now(timezone.utc).isoformat(),
     }
 
 

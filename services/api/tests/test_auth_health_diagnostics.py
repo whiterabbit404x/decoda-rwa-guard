@@ -41,6 +41,7 @@ def test_health_details_reports_safe_config_booleans_when_auth_secret_is_missing
     monkeypatch.delenv('JWT_SECRET', raising=False)
     monkeypatch.delenv('DATABASE_URL', raising=False)
     monkeypatch.setenv('APP_MODE', 'production')
+    monkeypatch.setenv('APP_ENV', 'production')
     monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
     monkeypatch.setattr(api_main, 'ALLOWED_ORIGINS', ['https://web.decoda.example', 'https://ops.decoda.example'])
     monkeypatch.setattr(api_main, 'database_url', lambda: None)
@@ -208,6 +209,25 @@ def test_emit_startup_fixture_diagnostics_never_raises(api_main, monkeypatch: py
     monkeypatch.setattr(api_main, 'fixture_diagnostics', lambda: (_ for _ in ()).throw(RuntimeError('broken diagnostics')))
 
     api_main.emit_startup_fixture_diagnostics()
+
+
+def test_health_readiness_reports_not_ready_when_production_dependencies_missing(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('APP_MODE', 'production')
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('EMAIL_PROVIDER', 'console')
+    monkeypatch.delenv('REDIS_URL', raising=False)
+    monkeypatch.delenv('DATABASE_URL', raising=False)
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'secret')
+
+    client = TestClient(api_main.app)
+    response = client.get('/health/readiness')
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload['status'] == 'not_ready'
+    assert any('EMAIL_PROVIDER=console is not allowed in production' in error for error in payload['errors'])
+    assert any('REDIS_URL is required in production' in error for error in payload['errors'])
 
 
 def test_health_details_route_reports_readiness_flags_and_missing_tables(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
