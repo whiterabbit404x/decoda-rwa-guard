@@ -1309,3 +1309,41 @@ Optional env vars:
 - `THREAT_ENGINE_URL` and `THREAT_ENGINE_TIMEOUT_SECONDS`
 
 In production deploy three processes: web app, API, and monitoring worker (`python -m services.api.app.run_monitoring_worker`).
+
+## Production hardening updates (March 31, 2026)
+
+### Deterministic-by-default test split
+- Default suite: `pytest -q` (no `EVM_RPC_URL` required).
+- Opt-in live monitoring verification:
+  - `MONITORING_INGESTION_MODE=live EVM_RPC_URL=https://... pytest -q services/api/tests/test_monitoring_config_modes.py`
+
+### MFA end-user flows
+Frontend now supports:
+- MFA challenge completion during sign-in.
+- MFA enrollment in **Settings → Security**.
+- Copyable `otpauth://` URI + secret.
+- Recovery codes displayed once at enrollment confirmation.
+- MFA disable with current TOTP code.
+
+### Production safety defaults
+- `/health/readiness` now reports production readiness with blocking errors.
+- Production now treats these as blocking misconfiguration:
+  - `EMAIL_PROVIDER=console`
+  - missing `REDIS_URL` (shared auth throttling required)
+
+### One-command production validation
+Run:
+
+```bash
+make validate-production
+```
+
+This executes deterministic auth/MFA, monitoring, Slack/webhook routing, export/operability, and readiness checks via backend tests plus frontend MFA source assertions.
+
+### Ops hardening artifacts
+- Incident + rotation runbook: `docs/OPERATIONS_RUNBOOK.md`
+- Readiness endpoint: `GET /health/readiness`
+- Monitoring worker health: `GET /ops/monitoring/health`
+
+### Next.js / npm note
+This repository currently pins `next@14.2.5`. In this environment, npm registry access is blocked (HTTP 403), so dependency upgrades and `npm audit` remediation must be run in CI or a network-enabled workstation.

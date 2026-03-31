@@ -75,7 +75,12 @@ type PilotAuthContextValue = {
   runtimeConfigDiagnostic: string | null;
   runtimeConfigSource: RuntimeConfig['source'];
   isAuthenticated: boolean;
+  mfaChallengeToken: string | null;
   signIn: (payload: { email: string; password: string }) => Promise<PilotUser>;
+  completeMfaSignIn: (code: string) => Promise<PilotUser>;
+  enrollMfa: () => Promise<{ otpauth_uri: string; secret: string | null }>;
+  confirmMfaEnrollment: (code: string) => Promise<{ recovery_codes: string[] }>;
+  disableMfa: (code: string) => Promise<void>;
   signUp: (payload: { email: string; password: string; full_name: string; workspace_name: string }) => Promise<{ user: PilotUser | null; verificationRequired: boolean }>;
   signOut: () => Promise<void>;
   refreshUser: () => Promise<PilotUser | null>;
@@ -142,6 +147,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<PilotUser | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [mfaChallengeToken, setMfaChallengeToken] = useState<string | null>(null);
 
   const requireApiUrl = useCallback(() => {
     if (configLoading) {
@@ -179,6 +185,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     if (!storedToken) {
       setToken(null);
       setUser(null);
+      setMfaChallengeToken(null);
       setSessionLoading(false);
       return null;
     }
@@ -197,6 +204,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       writeTokenCookie(null);
       setToken(null);
       setUser(null);
+      setMfaChallengeToken(null);
       setError(response.status === 401 ? 'Your session expired. Please sign in again.' : (data.detail ?? 'Unable to restore your session. Please sign in again.'));
       setSessionLoading(false);
       return null;
@@ -208,6 +216,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       writeTokenCookie(null);
       setToken(null);
       setUser(null);
+      setMfaChallengeToken(null);
       setError(payload.detail ?? 'Your session expired. Please sign in again.');
       setSessionLoading(false);
       return null;
@@ -299,18 +308,89 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     const data = await readApiResponse<{
       access_token?: string;
       user?: PilotUser;
+      mfa_required?: boolean;
+      mfa_token?: string;
       detail?: string;
       authTransport?: string;
       backendApiUrl?: string | null;
       configured?: boolean;
       code?: string;
     }>(response);
-    if (!response.ok || !data.access_token || !data.user) {
+    if (!response.ok) {
       throw new Error(classifyAuthResponseError('sign in', proxyUrl, response.status, data.detail, data));
     }
+    if (data.mfa_required) {
+      if (!data.mfa_token) {
+        throw new Error('MFA challenge could not be created. Please try signing in again.');
+      }
+      setMfaChallengeToken(data.mfa_token);
+      throw new Error('MFA_REQUIRED');
+    }
+    if (!data.access_token || !data.user) {
+      throw new Error(classifyAuthResponseError('sign in', proxyUrl, response.status, data.detail, data));
+    }
+    setMfaChallengeToken(null);
     saveAuthPayload(data.access_token, data.user);
     return data.user;
   }, [saveAuthPayload]);
+
+  const completeMfaSignIn = useCallback(async (code: string) => {
+    if (!mfaChallengeToken) {
+      throw new Error('MFA challenge expired. Sign in again.');
+    }
+    const proxyUrl = '/api/auth/mfa/complete-signin';
+    const response = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mfa_token: mfaChallengeToken, code }),
+    });
+    const data = await readApiResponse<{ access_token?: string; user?: PilotUser; detail?: string }>(response);
+    if (!response.ok || !data.access_token || !data.user) {
+      throw new Error(data.detail ?? 'Invalid MFA code.');
+    }
+    setMfaChallengeToken(null);
+    saveAuthPayload(data.access_token, data.user);
+    return data.user;
+  }, [mfaChallengeToken, saveAuthPayload]);
+
+  const enrollMfa = useCallback(async () => {
+    const response = await fetch('/api/auth/mfa/enroll', {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    const data = await readApiResponse<{ otpauth_uri?: string; secret?: string | null; detail?: string }>(response);
+    if (!response.ok || !data.otpauth_uri) {
+      throw new Error(data.detail ?? 'Unable to start MFA enrollment.');
+    }
+    return { otpauth_uri: data.otpauth_uri, secret: data.secret ?? null };
+  }, [authHeaders]);
+
+  const confirmMfaEnrollment = useCallback(async (code: string) => {
+    const response = await fetch('/api/auth/mfa/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ code }),
+    });
+    const data = await readApiResponse<{ mfa_enabled?: boolean; recovery_codes?: string[]; detail?: string }>(response);
+    if (!response.ok || !data.mfa_enabled) {
+      throw new Error(data.detail ?? 'Unable to confirm MFA enrollment.');
+    }
+    await refreshUser();
+    return { recovery_codes: data.recovery_codes ?? [] };
+  }, [authHeaders, refreshUser]);
+
+  const disableMfa = useCallback(async (code: string) => {
+    const response = await fetch('/api/auth/mfa/disable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ code }),
+    });
+    const data = await readApiResponse<{ detail?: string }>(response);
+    if (!response.ok) {
+      throw new Error(data.detail ?? 'Unable to disable MFA.');
+    }
+    await refreshUser();
+  }, [authHeaders, refreshUser]);
 
   const signUp = useCallback(async (payload: { email: string; password: string; full_name: string; workspace_name: string }) => {
     const proxyUrl = '/api/auth/signup';
@@ -370,6 +450,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     writeTokenCookie(null);
     setToken(null);
     setUser(null);
+    setMfaChallengeToken(null);
     setError(null);
     setSessionLoading(false);
   }, []);
@@ -430,7 +511,12 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     runtimeConfigDiagnostic: runtimeConfig.diagnostic,
     runtimeConfigSource: runtimeConfig.source,
     isAuthenticated: Boolean(token && user),
+    mfaChallengeToken,
     signIn,
+    completeMfaSignIn,
+    enrollMfa,
+    confirmMfaEnrollment,
+    disableMfa,
     signUp,
     signOut,
     refreshUser,
@@ -438,7 +524,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     selectWorkspace,
     authHeaders,
     setError,
-  }), [authHeaders, configLoading, createWorkspace, error, loading, refreshUser, runtimeConfig, selectWorkspace, signIn, signOut, signUp, token, user]);
+  }), [authHeaders, completeMfaSignIn, configLoading, confirmMfaEnrollment, createWorkspace, disableMfa, enrollMfa, error, loading, mfaChallengeToken, refreshUser, runtimeConfig, selectWorkspace, signIn, signOut, signUp, token, user]);
 
   return <PilotAuthContext.Provider value={value}>{children}</PilotAuthContext.Provider>;
 }

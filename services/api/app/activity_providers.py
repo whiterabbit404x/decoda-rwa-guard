@@ -45,8 +45,8 @@ class ActivityEvent:
 
 
 def monitoring_ingestion_mode() -> str:
-    mode = str(os.getenv('MONITORING_INGESTION_MODE', 'live')).strip().lower()
-    return mode if mode in {'demo', 'live', 'hybrid'} else 'live'
+    mode = str(os.getenv('MONITORING_INGESTION_MODE', 'hybrid')).strip().lower()
+    return mode if mode in {'demo', 'live', 'hybrid'} else 'hybrid'
 
 
 def live_monitoring_enabled() -> bool:
