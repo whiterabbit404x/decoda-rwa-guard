@@ -20,8 +20,13 @@ def main() -> int:
     else:
         results.append(check('email', False, 'Set EMAIL_PROVIDER=resend, EMAIL_FROM, and EMAIL_RESEND_API_KEY for live smoke'))
 
-    stripe_ready = bool(os.getenv('STRIPE_SECRET_KEY', '').strip() and os.getenv('STRIPE_WEBHOOK_SECRET', '').strip())
-    results.append(check('stripe', stripe_ready, 'Stripe keys present for webhook and checkout checks' if stripe_ready else 'Missing STRIPE_SECRET_KEY or STRIPE_WEBHOOK_SECRET'))
+    provider = os.getenv('BILLING_PROVIDER', 'paddle').strip().lower() or 'paddle'
+    if provider == 'paddle':
+        paddle_ready = bool(os.getenv('PADDLE_API_KEY', '').strip() and os.getenv('PADDLE_WEBHOOK_SECRET', '').strip())
+        results.append(check('billing_paddle', paddle_ready, 'Paddle API + webhook secrets are configured' if paddle_ready else 'Missing PADDLE_API_KEY or PADDLE_WEBHOOK_SECRET'))
+    else:
+        stripe_ready = bool(os.getenv('STRIPE_SECRET_KEY', '').strip() and os.getenv('STRIPE_WEBHOOK_SECRET', '').strip())
+        results.append(check('billing_stripe', stripe_ready, 'Stripe keys present for webhook and checkout checks' if stripe_ready else 'Missing STRIPE_SECRET_KEY or STRIPE_WEBHOOK_SECRET'))
 
     redis_ready = bool(os.getenv('REDIS_URL', '').strip())
     results.append(check('redis', redis_ready, 'REDIS_URL configured for distributed throttling' if redis_ready else 'Missing REDIS_URL'))

@@ -8,6 +8,7 @@ import { usePilotAuth } from 'app/pilot-auth-context';
 type Member = { id: string; user_id: string; email: string; full_name: string; role: 'owner' | 'admin' | 'analyst' | 'viewer'; created_at: string };
 type Invitation = { id: string; email: string; role: 'owner' | 'admin' | 'analyst' | 'viewer'; status: string; expires_at: string; created_at: string; updated_at: string };
 type SeatSummary = { used: number; limit: number; plan_key?: string };
+type BillingRuntime = { provider?: string; available?: boolean };
 
 export default function SettingsPageClient() {
   const { apiUrl, authHeaders, error, liveModeConfigured, loading, selectWorkspace, user } = usePilotAuth();
@@ -15,6 +16,7 @@ export default function SettingsPageClient() {
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [plans, setPlans] = useState<Array<{ plan_key: string; plan_name: string; max_members: number; features?: Record<string, unknown> }>>([]);
   const [subscription, setSubscription] = useState<any>(null);
+  const [billingRuntime, setBillingRuntime] = useState<BillingRuntime>({ provider: 'paddle', available: false });
   const [seatSummary, setSeatSummary] = useState<SeatSummary | null>(null);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('viewer');
@@ -38,7 +40,11 @@ export default function SettingsPageClient() {
     if (membersResponse.ok) setMembers((await membersResponse.json()).members ?? []);
     if (inviteResponse.ok) setInvitations((await inviteResponse.json()).invitations ?? []);
     if (seatsResponse.ok) setSeatSummary(await seatsResponse.json());
-    if (subscriptionResponse.ok) setSubscription((await subscriptionResponse.json()).subscription ?? null);
+    if (subscriptionResponse.ok) {
+      const payload = await subscriptionResponse.json();
+      setSubscription(payload.subscription ?? null);
+      setBillingRuntime(payload.billing ?? { provider: 'paddle', available: false });
+    }
     if (plansResponse.ok) setPlans((await plansResponse.json()).plans ?? []);
   }
 
@@ -101,16 +107,6 @@ export default function SettingsPageClient() {
     window.location.href = payload.checkout_url;
   }
 
-  async function openPortal() {
-    const response = await call('/billing/portal-session', { method: 'POST' });
-    if (!response.ok) {
-      setMessage('Billing portal is unavailable until a billing customer exists.');
-      return;
-    }
-    const payload = await response.json();
-    window.location.href = payload.portal_url;
-  }
-
   const billingStatus = subscription?.status ?? 'none';
   const nearSeatLimit = seatSummary ? seatSummary.used >= seatSummary.limit : false;
   const roleDescriptions: Record<string, string> = {
@@ -152,7 +148,8 @@ export default function SettingsPageClient() {
             {billingStatus === 'trialing' ? <p className="statusLine">Trialing plan active. Review limits before launch.</p> : null}
             {billingStatus === 'past_due' ? <p className="statusLine">Billing is past_due. Update billing details to avoid disruption.</p> : null}
             {billingStatus === 'canceled' ? <p className="statusLine">Subscription canceled. Re-activate to retain premium features.</p> : null}
-            <div className="buttonRow"><button type="button" onClick={openPortal}>Manage billing</button></div>
+            <p className="muted">Provider: {billingRuntime.provider ?? 'unknown'}</p>
+            {billingRuntime.available ? null : <p className="statusLine">Billing unavailable. Configure Paddle API key, webhook secret, and plan price IDs.</p>}
           </article>
           <article className="dataCard">
             <p className="sectionEyebrow">Plan catalog</p>
@@ -160,7 +157,7 @@ export default function SettingsPageClient() {
               <div key={plan.plan_key} style={{ marginBottom: 12 }}>
                 <strong>{plan.plan_name}</strong>
                 <p className="muted">{plan.plan_key} · max seats {plan.max_members}</p>
-                <button type="button" onClick={() => void startCheckout(plan.plan_key)}>Choose {plan.plan_name}</button>
+                <button type="button" onClick={() => void startCheckout(plan.plan_key)} disabled={!billingRuntime.available}>Choose {plan.plan_name}</button>
               </div>
             ))}
           </article>

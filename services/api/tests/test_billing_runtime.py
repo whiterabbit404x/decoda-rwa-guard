@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -18,9 +21,8 @@ class FakeResult:
 
 
 class FakeConnection:
-    def __init__(self, *, event_exists=False, customer_exists=False):
+    def __init__(self, *, event_exists=False):
         self.event_exists = event_exists
-        self.customer_exists = customer_exists
         self.commit_called = False
         self.executed: list[tuple[str, tuple]] = []
 
@@ -28,10 +30,8 @@ class FakeConnection:
         self.executed.append((query, params))
         if 'FROM billing_events WHERE provider_event_id' in query:
             return FakeResult({'processing_status': 'processed'} if self.event_exists else None)
-        if 'FROM billing_customers WHERE workspace_id' in query:
-            return FakeResult({'provider_customer_id': 'cus_123'} if self.customer_exists else None)
         if 'FROM plan_entitlements WHERE plan_key' in query:
-            return FakeResult({'plan_key': 'pro', 'trial_days': 14, 'stripe_price_id': 'price_123'})
+            return FakeResult({'plan_key': 'pro', 'trial_days': 14})
         return FakeResult(None)
 
     def commit(self):
@@ -53,67 +53,70 @@ def _patch_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_webhook_signature_validation_rejects_invalid_signature(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv('STRIPE_WEBHOOK_SECRET', 'whsec_expected')
-    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+def _paddle_headers(secret: str, payload: dict[str, object]) -> tuple[str, str, bytes]:
+    raw = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+    timestamp = '1717000000'
+    signature = hmac.new(secret.encode('utf-8'), f'{timestamp}:{raw.decode("utf-8")}'.encode('utf-8'), hashlib.sha256).hexdigest()
+    return signature, timestamp, raw
 
+
+def test_paddle_signature_validation_rejects_invalid_signature(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_secret')
     with pytest.raises(HTTPException) as exc:
-        pilot.process_stripe_webhook({'id': 'evt_1', 'type': 'checkout.session.completed'}, signature_header='wrong')
-
+        pilot.verify_paddle_webhook_signature(raw_body=b'{}', signature_header='wrong', timestamp_header='1717')
     assert exc.value.status_code == 400
-    assert 'Invalid webhook signature.' in str(exc.value.detail)
 
 
-def test_webhook_replay_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_paddle_webhook_replay_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     connection = FakeConnection(event_exists=True)
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda conn: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: fake_pg_connection(connection))
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_secret')
 
-    response = pilot.process_stripe_webhook({'id': 'evt_1', 'type': 'checkout.session.completed'}, signature_header=None)
+    payload = {'event_id': 'evt_1', 'event_type': 'subscription.updated', 'data': {'id': 'sub_1'}}
+    signature, timestamp, raw = _paddle_headers('pdl_secret', payload)
+    response = pilot.process_paddle_webhook(payload, signature_header=signature, timestamp_header=timestamp, raw_body=raw)
 
     assert response['duplicate'] is True
-    assert response['status'] == 'processed'
     assert connection.commit_called is False
 
 
-def test_webhook_reconciliation_upserts_subscription_and_customer(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_paddle_webhook_reconciliation_upserts_subscription_customer_and_transaction(monkeypatch: pytest.MonkeyPatch) -> None:
     connection = FakeConnection(event_exists=False)
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda conn: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: fake_pg_connection(connection))
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_secret')
 
     payload = {
-        'id': 'evt_2',
-        'type': 'checkout.session.completed',
-        'data': {'object': {'customer': 'cus_123', 'subscription': 'sub_123', 'metadata': {'workspace_id': 'ws-1', 'plan_key': 'pro'}}},
+        'event_id': 'evt_2',
+        'event_type': 'subscription.created',
+        'data': {
+            'id': 'sub_123',
+            'status': 'active',
+            'transaction_id': 'txn_123',
+            'customer_id': 'ctm_123',
+            'custom_data': {'workspace_id': 'ws-1', 'plan_key': 'pro'},
+        },
     }
-    response = pilot.process_stripe_webhook(payload, signature_header=None)
+    signature, timestamp, raw = _paddle_headers('pdl_secret', payload)
+    response = pilot.process_paddle_webhook(payload, signature_header=signature, timestamp_header=timestamp, raw_body=raw)
 
     assert response['duplicate'] is False
     assert connection.commit_called is True
     joined = '\n'.join(query for query, _ in connection.executed)
     assert 'INSERT INTO billing_customers' in joined
-    assert 'INSERT INTO billing_subscriptions' in joined
+    assert 'provider_transaction_id' in joined
 
 
-def test_portal_session_fails_when_customer_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    connection = FakeConnection(customer_exists=False)
+def test_checkout_session_returns_paddle_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    connection = FakeConnection(event_exists=False)
     _patch_auth(monkeypatch)
-    monkeypatch.setenv('STRIPE_SECRET_KEY', 'sk_test_123')
-    monkeypatch.setattr(pilot, 'pg_connection', lambda: fake_pg_connection(connection))
-
-    with pytest.raises(HTTPException) as exc:
-        pilot.create_portal_session(SimpleNamespace(headers={}))
-
-    assert exc.value.status_code == 404
-    assert 'billing customer' in str(exc.value.detail)
-
-
-def test_checkout_session_returns_stripe_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    connection = FakeConnection(customer_exists=True)
-    _patch_auth(monkeypatch)
-    monkeypatch.setenv('STRIPE_SECRET_KEY', 'sk_test_123')
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_123')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_123')
+    monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_123')
     monkeypatch.setattr(pilot, 'pg_connection', lambda: fake_pg_connection(connection))
     monkeypatch.setattr(pilot, 'log_audit', lambda *args, **kwargs: None)
 
@@ -125,11 +128,17 @@ def test_checkout_session_returns_stripe_url(monkeypatch: pytest.MonkeyPatch) ->
             return False
 
         def read(self):
-            return b'{"id":"cs_123","url":"https://checkout.stripe.test/session"}'
+            return b'{"data":{"id":"che_123","url":"https://checkout.paddle.test/session"}}'
 
     monkeypatch.setattr(pilot, 'urlopen', lambda *args, **kwargs: _Resp())
 
     response = pilot.create_checkout_session({'plan_key': 'pro'}, SimpleNamespace(headers={}))
 
-    assert response['session_id'] == 'cs_123'
-    assert response['checkout_url'].startswith('https://checkout.stripe.test/')
+    assert response['provider'] == 'paddle'
+    assert response['session_id'] == 'che_123'
+    assert response['checkout_url'].startswith('https://checkout.paddle.test/')
+
+
+def test_subscription_status_mapping_handles_pause_and_cancel() -> None:
+    assert pilot._paddle_to_subscription_status('subscription.paused', 'paused') == 'past_due'
+    assert pilot._paddle_to_subscription_status('subscription.canceled', 'canceled') == 'canceled'

@@ -17,6 +17,7 @@ def test_new_live_workflow_routes_exist() -> None:
     assert "/integrations/webhooks/{webhook_id}/rotate-secret" in source
     assert "/integrations/slack/{integration_id}/test" in source
     assert "/integrations/routing/{channel_type}" in source
+    assert "/billing/webhooks/paddle" in source
 
 
 def test_export_generation_is_not_placeholder_complete() -> None:

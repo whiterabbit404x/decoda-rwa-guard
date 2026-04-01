@@ -206,7 +206,7 @@ Recent SaaS workflow upgrades now prioritize real customer records over scenario
 - Export downloads now return real generated artifacts at `GET /exports/{id}/download` (CSV/JSON) with files stored under `EXPORTS_DIR` (`/tmp/decoda-exports` by default).
 - Alert notifications now queue outbound webhook/email delivery attempts via `background_jobs`; run `python services/api/scripts/run_worker.py` to process queued deliveries.
 - Slack alerting is now supported via incoming webhooks (`/integrations/slack`) with delivery logs, test-send, retries, and routing preferences (`/integrations/routing/{channel_type}`).
-- Stripe checkout/portal endpoints now require live provider configuration (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, plus `plan_entitlements.stripe_price_id` per plan) and no longer create local placeholder subscriptions.
+- Billing is now Paddle-first by default (`BILLING_PROVIDER=paddle`), with hosted checkout via Paddle and provisioning via `POST /billing/webhooks/paddle`. Stripe remains optional (`BILLING_PROVIDER=stripe`) for future/provider-specific flows.
 - Team and seat administration endpoints: `PATCH/DELETE /workspace/members/{id}`, `GET /team/seats`.
 - Team invitation lifecycle endpoints: `GET/POST /workspace/invitations`, `POST /workspace/invitations/{id}/resend`, `DELETE /workspace/invitations/{id}`, `POST /workspace/invitations/accept`.
 - Finding action workflow endpoints: `POST /findings/{id}/decision`, `POST /findings/{id}/actions`, `PATCH /actions/{id}`, `GET /actions`, `GET /decisions`.
@@ -1156,16 +1156,21 @@ You can also inspect `/health/details` to confirm dependency diagnostics, build/
 ### New environment variables
 
 - `ENABLE_DEMO_FALLBACKS=true|false` (non-production only; enables sample dashboard payloads)
-- `STRIPE_WEBHOOK_SECRET=...` (required to validate Stripe webhooks in production)
-- `STRIPE_SECRET_KEY=...` (required for real hosted checkout/portal wiring)
+- `BILLING_PROVIDER=paddle|stripe` (defaults to `paddle`)
+- `PADDLE_API_KEY=...` (required for Paddle checkout API)
+- `PADDLE_WEBHOOK_SECRET=...` (required to validate Paddle webhooks)
+- `PADDLE_ENVIRONMENT=sandbox|live`
+- `PADDLE_PRICE_ID_PRO=...`, `PADDLE_PRICE_ID_TEAM=...` (and any other public plan keys)
+- Optional for frontend overlay checkout: `PADDLE_CLIENT_TOKEN=...`
 - `APP_URL=https://your-product-domain` (recommended for Slack alert deep links back into `/alerts`)
 
 ### Manual setup required
 
 1. Run migrations: `python services/api/scripts/migrate.py`.
-2. Configure Stripe products/prices and wire real checkout/portal calls (code currently ships safe placeholders that persist subscription state and audit events).
-3. Configure webhook endpoint in Stripe to `POST /billing/webhooks/stripe` and set `STRIPE_WEBHOOK_SECRET`.
-4. Provision a dedicated worker process for queued jobs on Railway.
+2. Configure Paddle products/prices and set one `PADDLE_PRICE_ID_<PLAN_KEY>` env var per plan (example: `PADDLE_PRICE_ID_PRO`).
+3. Configure Paddle webhook destination to `POST /billing/webhooks/paddle`, then set `PADDLE_WEBHOOK_SECRET`.
+4. Optional: keep Stripe as a secondary provider by setting `BILLING_PROVIDER=stripe` and configuring Stripe keys/webhook endpoint.
+5. Provision a dedicated worker process for queued jobs on Railway.
 
 ### Honest external follow-up still required
 

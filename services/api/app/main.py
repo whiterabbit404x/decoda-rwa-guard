@@ -77,6 +77,7 @@ from services.api.app.pilot import (
     list_alert_routing_rules,
     list_webhooks,
     process_stripe_webhook,
+    process_paddle_webhook,
     rotate_webhook_secret,
     test_slack_integration,
     select_workspace_for_user,
@@ -1608,6 +1609,15 @@ def billing_portal(request: Request) -> dict[str, Any]:
 def billing_webhook_stripe(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     signature = request.headers.get('stripe-signature')
     return with_auth_schema_json(lambda: process_stripe_webhook(payload, signature))
+
+
+@app.post('/billing/webhooks/paddle', summary='Paddle billing webhook')
+async def billing_webhook_paddle(request: Request) -> dict[str, Any]:
+    raw = await request.body()
+    payload = json.loads(raw.decode('utf-8') or '{}')
+    signature = request.headers.get('paddle-signature')
+    timestamp = request.headers.get('paddle-timestamp')
+    return with_auth_schema_json(lambda: process_paddle_webhook(payload, signature_header=signature, timestamp_header=timestamp, raw_body=raw))
 
 
 @app.get('/webhooks', summary='List workspace webhooks')
