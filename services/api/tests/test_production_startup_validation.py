@@ -64,7 +64,11 @@ def test_health_readiness_reports_healthy_when_production_requirements_are_met(a
     monkeypatch.setenv('EMAIL_FROM', 'ops@decoda.app')
     monkeypatch.setenv('EMAIL_RESEND_API_KEY', 're_123')
     monkeypatch.setenv('REDIS_URL', 'redis://localhost:6379/0')
-    monkeypatch.setenv('BILLING_ENABLED', 'false')
+    monkeypatch.setenv('BILLING_ENABLED', 'true')
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_123')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_123')
+    monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_123')
 
     client = TestClient(api_main.app)
     response = client.get('/health/readiness')

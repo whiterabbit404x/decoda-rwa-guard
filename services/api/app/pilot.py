@@ -295,10 +295,21 @@ def validate_runtime_configuration() -> dict[str, Any]:
 
         billing_enabled = env_flag('BILLING_ENABLED', default=True)
         strict_billing = env_flag('STRICT_PRODUCTION_BILLING') or billing_enabled
+        provider = billing_provider()
         _record_check('billing_enabled', billing_enabled, required=False, detail='Billing checks skipped because BILLING_ENABLED=false.', severity='warning' if not billing_enabled else 'error')
         if strict_billing:
-            _record_check('stripe_secret_key', bool(os.getenv('STRIPE_SECRET_KEY', '').strip()), required=True, detail='Stripe billing is not ready because STRIPE_SECRET_KEY is missing in production.')
-            _record_check('stripe_webhook_secret', bool(os.getenv('STRIPE_WEBHOOK_SECRET', '').strip()), required=True, detail='Stripe billing is not ready because STRIPE_WEBHOOK_SECRET is missing in production.')
+            if provider == 'paddle':
+                paddle_config = paddle_runtime_config()
+                _record_check('paddle_api_key', paddle_config['api_key_present'], required=True, detail='Paddle billing is not ready because PADDLE_API_KEY is missing in production.')
+                _record_check(
+                    'paddle_webhook_secret',
+                    paddle_config['webhook_secret_present'],
+                    required=True,
+                    detail='Paddle billing is not ready because PADDLE_WEBHOOK_SECRET is missing in production.',
+                )
+            elif provider == 'stripe':
+                _record_check('stripe_secret_key', bool(os.getenv('STRIPE_SECRET_KEY', '').strip()), required=True, detail='Stripe billing is not ready because STRIPE_SECRET_KEY is missing in production.')
+                _record_check('stripe_webhook_secret', bool(os.getenv('STRIPE_WEBHOOK_SECRET', '').strip()), required=True, detail='Stripe billing is not ready because STRIPE_WEBHOOK_SECRET is missing in production.')
 
     return {'mode': mode, 'errors': errors, 'warnings': warnings, 'checks': checks}
 
@@ -316,7 +327,19 @@ def integration_health_snapshot(connection: Any | None = None) -> dict[str, Any]
     email_ready = (email_provider == 'resend' and bool(os.getenv('EMAIL_RESEND_API_KEY', '').strip())) if production else (email_provider == 'console' or bool(os.getenv('EMAIL_RESEND_API_KEY', '').strip()))
     redis_ready = bool(os.getenv('REDIS_URL', '').strip())
 
+    paddle_config = paddle_runtime_config()
+    billing_message = 'Paddle configuration looks healthy.' if paddle_config['configured'] else 'Paddle billing is unavailable because required PADDLE_* variables are missing.'
     return {
+        'billing': {
+            'provider': billing_provider(),
+            'status': 'healthy' if paddle_config['configured'] else 'degraded',
+            'checks': {
+                'paddle_api_key_present': paddle_config['api_key_present'],
+                'paddle_webhook_secret_present': paddle_config['webhook_secret_present'],
+                'paddle_price_ids_configured': paddle_config['price_ids_configured'],
+            },
+            'message': billing_message,
+        },
         'stripe': {
             'status': 'healthy' if stripe_key and stripe_hook and plan_prices_configured else 'warning',
             'mode': 'live' if os.getenv('STRIPE_SECRET_KEY', '').strip().startswith('sk_live_') else 'test',
@@ -2309,12 +2332,19 @@ def get_workspace_subscription(request: Request) -> dict[str, Any]:
             ''',
             (workspace_context['workspace_id'],),
         ).fetchone()
-        return {'workspace': workspace_context['workspace'], 'subscription': _json_safe_value(dict(subscription)) if subscription else None}
+        return {
+            'workspace': workspace_context['workspace'],
+            'subscription': _json_safe_value(dict(subscription)) if subscription else None,
+            'billing': {'provider': billing_provider(), 'available': paddle_runtime_config()['configured'] if billing_provider() == 'paddle' else True},
+        }
 
 
 def create_checkout_session(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     plan_key = str(payload.get('plan_key', 'starter')).strip().lower()
+    provider = billing_provider()
+    if provider == 'paddle':
+        return create_paddle_checkout_session(payload, request)
     stripe_key = os.getenv('STRIPE_SECRET_KEY', '').strip()
     if not stripe_key:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Stripe is not configured.')
@@ -2357,6 +2387,8 @@ def create_checkout_session(payload: dict[str, Any], request: Request) -> dict[s
 
 def create_portal_session(request: Request) -> dict[str, Any]:
     require_live_mode()
+    if billing_provider() == 'paddle':
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Billing portal is not supported for Paddle. Use Paddle subscription links from checkout.')
     stripe_key = os.getenv('STRIPE_SECRET_KEY', '').strip()
     if not stripe_key:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Stripe is not configured.')
@@ -2378,6 +2410,142 @@ def create_portal_session(request: Request) -> dict[str, Any]:
             'workspace_id': workspace_context['workspace_id'],
             'requested_by_user_id': user['id'],
         }
+
+
+def _paddle_price_id_for_plan(plan_key: str) -> str:
+    env_key = f'PADDLE_PRICE_ID_{plan_key.upper()}'
+    return str(os.getenv(env_key, '')).strip()
+
+
+def create_paddle_checkout_session(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    plan_key = str(payload.get('plan_key', 'starter')).strip().lower()
+    paddle_config = paddle_runtime_config()
+    if not paddle_config['configured']:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Paddle billing is unavailable.')
+    price_id = _paddle_price_id_for_plan(plan_key)
+    if not price_id:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f'Paddle price is not configured for plan {plan_key}.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        plan = connection.execute('SELECT plan_key, trial_days FROM plan_entitlements WHERE plan_key = %s', (plan_key,)).fetchone()
+        if plan is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown plan.')
+        api_host = 'https://api.paddle.com' if paddle_config['environment'] == 'live' else 'https://sandbox-api.paddle.com'
+        request_payload = {
+            'items': [{'price_id': price_id, 'quantity': 1}],
+            'custom_data': {'workspace_id': workspace_context['workspace_id'], 'plan_key': plan_key},
+            'success_url': f"{os.getenv('APP_PUBLIC_URL', 'http://localhost:3000').rstrip('/')}/settings?billing=success",
+        }
+        paddle_request = UrlRequest(
+            f'{api_host}/checkouts',
+            method='POST',
+            data=_json_dumps(request_payload).encode('utf-8'),
+            headers={'Authorization': f"Bearer {os.getenv('PADDLE_API_KEY', '').strip()}", 'Content-Type': 'application/json'},
+        )
+        try:
+            with urlopen(paddle_request, timeout=10) as response:
+                checkout_session = json.loads(response.read().decode('utf-8'))
+        except (HTTPError, URLError) as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f'Unable to create Paddle checkout session: {exc}')
+        data = checkout_session.get('data') if isinstance(checkout_session.get('data'), dict) else checkout_session
+        checkout_url = data.get('url') or data.get('checkout_url')
+        log_audit(connection, action='billing.checkout_session_created', entity_type='workspace', entity_id=workspace_context['workspace_id'], request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'plan_key': plan_key, 'provider': 'paddle'})
+        connection.commit()
+        return {
+            'provider': 'paddle',
+            'checkout_url': checkout_url,
+            'session_id': data.get('id'),
+            'plan_key': plan_key,
+            'client_token': os.getenv('PADDLE_CLIENT_TOKEN', '').strip() or None,
+        }
+
+
+def _parse_paddle_timestamp(value: Any) -> datetime | None:
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+
+
+def _paddle_to_subscription_status(event_type: str, source_status: str) -> str:
+    normalized = source_status.strip().lower()
+    if normalized in {'active', 'trialing'}:
+        return normalized
+    if normalized in {'past_due', 'paused'}:
+        return 'past_due'
+    if normalized in {'canceled', 'cancelled', 'inactive'}:
+        return 'canceled'
+    if event_type.endswith('.canceled') or event_type.endswith('.cancelled') or event_type.endswith('.paused'):
+        return 'canceled'
+    return 'incomplete'
+
+
+def verify_paddle_webhook_signature(*, raw_body: bytes, signature_header: str | None, timestamp_header: str | None) -> None:
+    expected_secret = os.getenv('PADDLE_WEBHOOK_SECRET', '').strip()
+    if not expected_secret:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Paddle webhook secret is not configured.')
+    if not signature_header or not timestamp_header:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Missing Paddle webhook signature headers.')
+    signed_payload = f'{timestamp_header}:{raw_body.decode("utf-8")}'.encode('utf-8')
+    digest = hmac.new(expected_secret.encode('utf-8'), signed_payload, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature_header.strip(), digest):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid Paddle webhook signature.')
+
+
+def process_paddle_webhook(payload: dict[str, Any], *, signature_header: str | None, timestamp_header: str | None, raw_body: bytes) -> dict[str, Any]:
+    require_live_mode()
+    verify_paddle_webhook_signature(raw_body=raw_body, signature_header=signature_header, timestamp_header=timestamp_header)
+    event_id = str(payload.get('event_id') or payload.get('id') or '').strip()
+    event_type = str(payload.get('event_type') or payload.get('type') or '').strip().lower()
+    data = payload.get('data') if isinstance(payload.get('data'), dict) else {}
+    if not event_id or not event_type:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Paddle webhook must include event_id and event_type.')
+    custom_data = data.get('custom_data') if isinstance(data.get('custom_data'), dict) else {}
+    workspace_id = str(custom_data.get('workspace_id') or '').strip() or None
+    customer_id = str((data.get('customer') or {}).get('id') if isinstance(data.get('customer'), dict) else data.get('customer_id') or '').strip() or None
+    subscription_id = str(data.get('id') or data.get('subscription_id') or '').strip() or None
+    transaction_id = str(data.get('transaction_id') or ((payload.get('data') or {}).get('transaction_id')) or '').strip() or None
+    plan_key = str(custom_data.get('plan_key') or '').strip().lower() or 'starter'
+    source_status = str(data.get('status') or '').strip().lower()
+    mapped_status = _paddle_to_subscription_status(event_type, source_status)
+    period_end = _parse_paddle_timestamp(data.get('current_billing_period', {}).get('ends_at') if isinstance(data.get('current_billing_period'), dict) else None)
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        existing = connection.execute('SELECT processing_status FROM billing_events WHERE provider_event_id = %s', (event_id,)).fetchone()
+        if existing is not None:
+            return {'received': True, 'duplicate': True, 'event_id': event_id, 'status': existing['processing_status']}
+        if workspace_id and customer_id:
+            connection.execute(
+                '''
+                INSERT INTO billing_customers (id, workspace_id, provider, provider_customer_id, metadata)
+                VALUES (%s, %s, 'paddle', %s, %s::jsonb)
+                ON CONFLICT (provider_customer_id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id, metadata = EXCLUDED.metadata, updated_at = NOW()
+                ''',
+                (str(uuid.uuid4()), workspace_id, customer_id, _json_dumps({'event_id': event_id, 'provider': 'paddle'})),
+            )
+        if workspace_id and subscription_id:
+            connection.execute(
+                '''
+                INSERT INTO billing_subscriptions (id, workspace_id, provider, provider_subscription_id, provider_transaction_id, plan_key, status, current_period_ends_at, metadata)
+                VALUES (%s, %s, 'paddle', %s, %s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (provider_subscription_id) DO UPDATE SET provider_transaction_id = EXCLUDED.provider_transaction_id, plan_key = EXCLUDED.plan_key, status = EXCLUDED.status, current_period_ends_at = EXCLUDED.current_period_ends_at, metadata = EXCLUDED.metadata, updated_at = NOW()
+                ''',
+                (str(uuid.uuid4()), workspace_id, subscription_id, transaction_id, plan_key, mapped_status, period_end, _json_dumps({'event_type': event_type, 'source_status': source_status})),
+            )
+        connection.execute(
+            '''
+            INSERT INTO billing_events (id, provider, provider_event_id, workspace_id, event_type, payload, processing_status, processed_at)
+            VALUES (%s, 'paddle', %s, %s, %s, %s::jsonb, 'processed', NOW())
+            ''',
+            (str(uuid.uuid4()), event_id, workspace_id, event_type, _json_dumps(payload)),
+        )
+        connection.commit()
+    return {'received': True, 'duplicate': False, 'event_id': event_id, 'status': 'processed'}
 
 
 def process_stripe_webhook(payload: dict[str, Any], signature_header: str | None) -> dict[str, Any]:
@@ -3335,6 +3503,28 @@ ASSET_TYPES = {
     'monitored counterparty',
     'policy-controlled workflow object',
 }
+
+
+def billing_provider() -> str:
+    value = os.getenv('BILLING_PROVIDER', 'paddle').strip().lower()
+    if value in {'stripe', 'paddle'}:
+        return value
+    return 'paddle'
+
+
+def paddle_runtime_config() -> dict[str, Any]:
+    api_key_present = bool(os.getenv('PADDLE_API_KEY', '').strip())
+    webhook_secret_present = bool(os.getenv('PADDLE_WEBHOOK_SECRET', '').strip())
+    environment = os.getenv('PADDLE_ENVIRONMENT', 'sandbox').strip().lower()
+    price_id_names = [key for key, _ in os.environ.items() if key.startswith('PADDLE_PRICE_ID_')]
+    return {
+        'api_key_present': api_key_present,
+        'webhook_secret_present': webhook_secret_present,
+        'environment': environment if environment in {'sandbox', 'live'} else 'sandbox',
+        'price_ids_configured': bool(price_id_names),
+        'configured': api_key_present and webhook_secret_present and bool(price_id_names),
+        'client_token_present': bool(os.getenv('PADDLE_CLIENT_TOKEN', '').strip()),
+    }
 
 
 def _workspace_plan(connection: Any, workspace_id: str) -> dict[str, Any]:

@@ -2,11 +2,11 @@
 
 ## What is now verified in-repo
 
-- Production startup validation now enforces explicit required settings for database, auth secret, email provider/from/provider key, Redis, and Stripe keys when billing is enabled.
+- Production startup validation now enforces explicit required settings for database, auth secret, email provider/from/provider key, Redis, and billing-provider keys (Paddle-first by default).
 - Readiness now returns explicit operational status values (`healthy`, `degraded`, `not_ready`) and machine-readable diagnostics at `/health/diagnostics`.
-- Deterministic billing runtime tests now cover checkout contract behavior, webhook signature validation, replay/idempotency, reconciliation writes, and portal-session missing-customer failure.
+- Deterministic billing runtime tests now cover Paddle checkout contract behavior, webhook signature validation, replay/idempotency, reconciliation writes, and subscription lifecycle state mapping.
 - Canonical staging/prod validation command added: `make validate-staging`.
-- Optional live-provider smoke runner added for email, Stripe, Redis, and live-chain prereq checks.
+- Optional live-provider smoke runner added for email, billing provider health, Redis, and live-chain prereq checks.
 
 ## Go / No-Go recommendation
 
@@ -27,6 +27,7 @@ Reason:
 
 - Railway: set strict production env vars and confirm `/health/readiness` is `healthy`.
 - Vercel: ensure `API_URL`/`NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_LIVE_MODE_ENABLED` are set per environment.
-- Stripe: configure `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and forward webhook events to `/billing/webhooks/stripe`.
+- Paddle-first billing: configure `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_ENVIRONMENT=sandbox|live`, and `PADDLE_PRICE_ID_<PLAN>` values. Forward Paddle events to `POST /billing/webhooks/paddle`.
+- Stripe remains optional via `BILLING_PROVIDER=stripe` and `POST /billing/webhooks/stripe`.
 - Resend (or chosen provider): configure sending domain, `EMAIL_FROM`, and API key.
 - Redis: configure `REDIS_URL` and verify shared auth throttling behavior in staging.
