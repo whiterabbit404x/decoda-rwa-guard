@@ -293,23 +293,16 @@ def validate_runtime_configuration() -> dict[str, Any]:
 
         _record_check('redis_url', bool(os.getenv('REDIS_URL', '').strip()), required=True, detail='REDIS_URL is required in production for shared auth rate limiting.')
 
-        billing_enabled = env_flag('BILLING_ENABLED', default=True)
-        strict_billing = env_flag('STRICT_PRODUCTION_BILLING') or billing_enabled
-        provider = billing_provider()
-        _record_check('billing_enabled', billing_enabled, required=False, detail='Billing checks skipped because BILLING_ENABLED=false.', severity='warning' if not billing_enabled else 'error')
-        if strict_billing:
-            if provider == 'paddle':
-                paddle_config = paddle_runtime_config()
-                _record_check('paddle_api_key', paddle_config['api_key_present'], required=True, detail='Paddle billing is not ready because PADDLE_API_KEY is missing in production.')
-                _record_check(
-                    'paddle_webhook_secret',
-                    paddle_config['webhook_secret_present'],
-                    required=True,
-                    detail='Paddle billing is not ready because PADDLE_WEBHOOK_SECRET is missing in production.',
-                )
-            elif provider == 'stripe':
-                _record_check('stripe_secret_key', bool(os.getenv('STRIPE_SECRET_KEY', '').strip()), required=True, detail='Stripe billing is not ready because STRIPE_SECRET_KEY is missing in production.')
-                _record_check('stripe_webhook_secret', bool(os.getenv('STRIPE_WEBHOOK_SECRET', '').strip()), required=True, detail='Stripe billing is not ready because STRIPE_WEBHOOK_SECRET is missing in production.')
+        billing_status = billing_runtime_status()
+        strict_billing = env_flag('STRICT_PRODUCTION_BILLING')
+        _record_check(
+            'billing_runtime',
+            billing_status['available'],
+            required=strict_billing,
+            detail='Billing provider is unavailable in strict mode. Configure billing credentials or set BILLING_PROVIDER=none until launch.',
+            severity='error' if strict_billing else 'warning',
+        )
+        checks['billing'] = billing_status
 
     return {'mode': mode, 'errors': errors, 'warnings': warnings, 'checks': checks}
 
@@ -327,19 +320,9 @@ def integration_health_snapshot(connection: Any | None = None) -> dict[str, Any]
     email_ready = (email_provider == 'resend' and bool(os.getenv('EMAIL_RESEND_API_KEY', '').strip())) if production else (email_provider == 'console' or bool(os.getenv('EMAIL_RESEND_API_KEY', '').strip()))
     redis_ready = bool(os.getenv('REDIS_URL', '').strip())
 
-    paddle_config = paddle_runtime_config()
-    billing_message = 'Paddle configuration looks healthy.' if paddle_config['configured'] else 'Paddle billing is unavailable because required PADDLE_* variables are missing.'
+    billing_status = billing_runtime_status()
     return {
-        'billing': {
-            'provider': billing_provider(),
-            'status': 'healthy' if paddle_config['configured'] else 'degraded',
-            'checks': {
-                'paddle_api_key_present': paddle_config['api_key_present'],
-                'paddle_webhook_secret_present': paddle_config['webhook_secret_present'],
-                'paddle_price_ids_configured': paddle_config['price_ids_configured'],
-            },
-            'message': billing_message,
-        },
+        'billing': billing_status,
         'stripe': {
             'status': 'healthy' if stripe_key and stripe_hook and plan_prices_configured else 'warning',
             'mode': 'live' if os.getenv('STRIPE_SECRET_KEY', '').strip().startswith('sk_live_') else 'test',
@@ -2332,10 +2315,11 @@ def get_workspace_subscription(request: Request) -> dict[str, Any]:
             ''',
             (workspace_context['workspace_id'],),
         ).fetchone()
+        billing_status = billing_runtime_status()
         return {
             'workspace': workspace_context['workspace'],
             'subscription': _json_safe_value(dict(subscription)) if subscription else None,
-            'billing': {'provider': billing_provider(), 'available': paddle_runtime_config()['configured'] if billing_provider() == 'paddle' else True},
+            'billing': billing_status,
         }
 
 
@@ -2343,6 +2327,7 @@ def create_checkout_session(payload: dict[str, Any], request: Request) -> dict[s
     require_live_mode()
     plan_key = str(payload.get('plan_key', 'starter')).strip().lower()
     provider = billing_provider()
+    ensure_billing_available(operation='create_checkout_session')
     if provider == 'paddle':
         return create_paddle_checkout_session(payload, request)
     stripe_key = os.getenv('STRIPE_SECRET_KEY', '').strip()
@@ -2387,6 +2372,7 @@ def create_checkout_session(payload: dict[str, Any], request: Request) -> dict[s
 
 def create_portal_session(request: Request) -> dict[str, Any]:
     require_live_mode()
+    ensure_billing_available(operation='create_portal_session')
     if billing_provider() == 'paddle':
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Billing portal is not supported for Paddle. Use Paddle subscription links from checkout.')
     stripe_key = os.getenv('STRIPE_SECRET_KEY', '').strip()
@@ -2486,9 +2472,10 @@ def _paddle_to_subscription_status(event_type: str, source_status: str) -> str:
 
 
 def verify_paddle_webhook_signature(*, raw_body: bytes, signature_header: str | None, timestamp_header: str | None) -> None:
+    ensure_billing_available(operation='verify_paddle_webhook_signature', expected_provider='paddle')
     expected_secret = os.getenv('PADDLE_WEBHOOK_SECRET', '').strip()
     if not expected_secret:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Paddle webhook secret is not configured.')
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_billing_unavailable_detail(operation='verify_paddle_webhook_signature'))
     if not signature_header or not timestamp_header:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Missing Paddle webhook signature headers.')
     signed_payload = f'{timestamp_header}:{raw_body.decode("utf-8")}'.encode('utf-8')
@@ -2499,6 +2486,7 @@ def verify_paddle_webhook_signature(*, raw_body: bytes, signature_header: str | 
 
 def process_paddle_webhook(payload: dict[str, Any], *, signature_header: str | None, timestamp_header: str | None, raw_body: bytes) -> dict[str, Any]:
     require_live_mode()
+    ensure_billing_available(operation='process_paddle_webhook', expected_provider='paddle')
     verify_paddle_webhook_signature(raw_body=raw_body, signature_header=signature_header, timestamp_header=timestamp_header)
     event_id = str(payload.get('event_id') or payload.get('id') or '').strip()
     event_type = str(payload.get('event_type') or payload.get('type') or '').strip().lower()
@@ -2550,6 +2538,7 @@ def process_paddle_webhook(payload: dict[str, Any], *, signature_header: str | N
 
 def process_stripe_webhook(payload: dict[str, Any], signature_header: str | None) -> dict[str, Any]:
     require_live_mode()
+    ensure_billing_available(operation='process_stripe_webhook', expected_provider='stripe')
     event_id = str(payload.get('id', '')).strip()
     event_type = str(payload.get('type', '')).strip()
     if not event_id or not event_type:
@@ -3507,9 +3496,74 @@ ASSET_TYPES = {
 
 def billing_provider() -> str:
     value = os.getenv('BILLING_PROVIDER', 'paddle').strip().lower()
-    if value in {'stripe', 'paddle'}:
+    if value in {'none', 'stripe', 'paddle'}:
         return value
     return 'paddle'
+
+
+def billing_runtime_status() -> dict[str, Any]:
+    provider = billing_provider()
+    strict_billing = env_flag('STRICT_PRODUCTION_BILLING')
+    if provider == 'none':
+        return {
+            'provider': 'none',
+            'status': 'not_configured',
+            'available': False,
+            'checks': {'provider_selected': True, 'credentials_present': False},
+            'message': 'Billing is not configured yet because BILLING_PROVIDER=none.',
+            'strict_required': strict_billing,
+        }
+    if provider == 'paddle':
+        paddle_config = paddle_runtime_config()
+        status_value = 'healthy' if paddle_config['configured'] else 'degraded'
+        message = 'Paddle configuration looks healthy.' if paddle_config['configured'] else 'Paddle billing is unavailable because required PADDLE_* variables are missing.'
+        return {
+            'provider': provider,
+            'status': status_value,
+            'available': paddle_config['configured'],
+            'checks': {
+                'paddle_api_key_present': paddle_config['api_key_present'],
+                'paddle_webhook_secret_present': paddle_config['webhook_secret_present'],
+                'paddle_price_ids_configured': paddle_config['price_ids_configured'],
+            },
+            'message': message,
+            'strict_required': strict_billing,
+        }
+    stripe_key = bool(os.getenv('STRIPE_SECRET_KEY', '').strip())
+    stripe_hook = bool(os.getenv('STRIPE_WEBHOOK_SECRET', '').strip())
+    available = stripe_key and stripe_hook
+    return {
+        'provider': provider,
+        'status': 'healthy' if available else 'degraded',
+        'available': available,
+        'checks': {'stripe_secret_key_present': stripe_key, 'stripe_webhook_secret_present': stripe_hook},
+        'message': 'Stripe configuration looks healthy.' if available else 'Stripe billing is unavailable because STRIPE_SECRET_KEY or STRIPE_WEBHOOK_SECRET is missing.',
+        'strict_required': strict_billing,
+    }
+
+
+def _billing_unavailable_detail(*, operation: str, expected_provider: str | None = None) -> dict[str, Any]:
+    billing_status = billing_runtime_status()
+    message = billing_status['message']
+    if expected_provider and billing_status['provider'] != expected_provider:
+        message = f"Billing endpoint requires provider={expected_provider} but BILLING_PROVIDER={billing_status['provider']}."
+    return {
+        'error': 'billing_unavailable',
+        'code': 'billing_unavailable',
+        'operation': operation,
+        'provider': billing_status['provider'],
+        'status': billing_status['status'],
+        'message': message,
+        'checks': billing_status.get('checks', {}),
+    }
+
+
+def ensure_billing_available(*, operation: str, expected_provider: str | None = None) -> None:
+    billing_status = billing_runtime_status()
+    if expected_provider and billing_status['provider'] != expected_provider:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_billing_unavailable_detail(operation=operation, expected_provider=expected_provider))
+    if not billing_status['available']:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_billing_unavailable_detail(operation=operation))
 
 
 def paddle_runtime_config() -> dict[str, Any]:

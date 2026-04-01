@@ -1156,9 +1156,9 @@ You can also inspect `/health/details` to confirm dependency diagnostics, build/
 ### New environment variables
 
 - `ENABLE_DEMO_FALLBACKS=true|false` (non-production only; enables sample dashboard payloads)
-- `BILLING_PROVIDER=paddle|stripe` (defaults to `paddle`)
-- `PADDLE_API_KEY=...` (required for Paddle checkout API)
-- `PADDLE_WEBHOOK_SECRET=...` (required to validate Paddle webhooks)
+- `BILLING_PROVIDER=none|paddle|stripe` (defaults to `paddle`; use `none` for pre-launch no-billing mode)
+- `PADDLE_API_KEY=...` (required only when Paddle billing is enabled)
+- `PADDLE_WEBHOOK_SECRET=...` (required only when Paddle billing is enabled)
 - `PADDLE_ENVIRONMENT=sandbox|live`
 - `PADDLE_PRICE_ID_PRO=...`, `PADDLE_PRICE_ID_TEAM=...` (and any other public plan keys)
 - Optional for frontend overlay checkout: `PADDLE_CLIENT_TOKEN=...`
@@ -1167,9 +1167,10 @@ You can also inspect `/health/details` to confirm dependency diagnostics, build/
 ### Manual setup required
 
 1. Run migrations: `python services/api/scripts/migrate.py`.
-2. Configure Paddle products/prices and set one `PADDLE_PRICE_ID_<PLAN_KEY>` env var per plan (example: `PADDLE_PRICE_ID_PRO`).
-3. Configure Paddle webhook destination to `POST /billing/webhooks/paddle`, then set `PADDLE_WEBHOOK_SECRET`.
-4. Optional: keep Stripe as a secondary provider by setting `BILLING_PROVIDER=stripe` and configuring Stripe keys/webhook endpoint.
+2. (Optional pre-launch) Set `BILLING_PROVIDER=none` to boot the API and product without billing. Billing endpoints will return structured `billing_unavailable` JSON while core auth/dashboard/workspace flows continue to work.
+3. To enable Paddle later, configure products/prices and set one `PADDLE_PRICE_ID_<PLAN_KEY>` env var per plan (example: `PADDLE_PRICE_ID_PRO`).
+4. Configure Paddle webhook destination to `POST /billing/webhooks/paddle`, then set `PADDLE_WEBHOOK_SECRET` and `PADDLE_API_KEY`.
+5. Optional: keep Stripe as a secondary provider by setting `BILLING_PROVIDER=stripe` and configuring Stripe keys/webhook endpoint.
 5. Provision a dedicated worker process for queued jobs on Railway.
 
 ### Honest external follow-up still required
@@ -1285,7 +1286,8 @@ These surface actionable readiness checks for Stripe, email, and Slack without e
 
 ### New/updated env vars
 
-- `STRICT_PRODUCTION_BILLING=true` (optional strict fail-fast mode for production billing env validation)
+- `BILLING_PROVIDER=none|paddle|stripe` (`none` disables billing cleanly for pre-launch)
+- `STRICT_PRODUCTION_BILLING=true` (optional strict fail-fast mode; when enabled, missing provider credentials make readiness `not_ready`)
 - Existing Stripe vars remain required in production billing flows:
   - `STRIPE_SECRET_KEY`
   - `STRIPE_WEBHOOK_SECRET`
@@ -1363,14 +1365,13 @@ When `APP_ENV=production` and `LIVE_MODE_ENABLED=true`, startup validation now r
 - `EMAIL_FROM`
 - provider key(s): `EMAIL_RESEND_API_KEY` when `EMAIL_PROVIDER=resend`
 - `REDIS_URL`
-- billing keys when billing is enabled (`BILLING_ENABLED=true` default):
-  - `STRIPE_SECRET_KEY`
-  - `STRIPE_WEBHOOK_SECRET`
+- billing credentials are optional by default (startup remains healthy for core product when `BILLING_PROVIDER=none` or billing credentials are missing).
+- if strict billing is enabled (`STRICT_PRODUCTION_BILLING=true`), readiness becomes `not_ready` until provider credentials are present.
 
 Readiness + diagnostics endpoints:
 
-- `GET /health/readiness` → `healthy`, `degraded`, or `not_ready`
-- `GET /health/diagnostics` → machine-readable per-check pass/fail output (secret-safe)
+- `GET /health/readiness` → `healthy`, `degraded`, or `not_ready` + top-level `billing` diagnostics (`provider`, `status`, `available`, checks).
+- `GET /health/diagnostics` → machine-readable per-check pass/fail output (secret-safe), including billing diagnostics.
 
 ## Staging validation command
 

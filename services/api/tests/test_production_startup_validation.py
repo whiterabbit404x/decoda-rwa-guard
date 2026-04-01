@@ -75,3 +75,65 @@ def test_health_readiness_reports_healthy_when_production_requirements_are_met(a
 
     assert response.status_code == 200
     assert response.json()['status'] == 'healthy'
+
+
+def test_health_readiness_stays_healthy_when_billing_provider_none(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('APP_MODE', 'production')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://example')
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'secret')
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('EMAIL_FROM', 'ops@decoda.app')
+    monkeypatch.setenv('EMAIL_RESEND_API_KEY', 're_123')
+    monkeypatch.setenv('REDIS_URL', 'redis://localhost:6379/0')
+    monkeypatch.setenv('BILLING_PROVIDER', 'none')
+    monkeypatch.delenv('PADDLE_API_KEY', raising=False)
+    monkeypatch.delenv('PADDLE_WEBHOOK_SECRET', raising=False)
+    monkeypatch.delenv('PADDLE_PRICE_ID_PRO', raising=False)
+
+    client = TestClient(api_main.app)
+    response = client.get('/health/readiness')
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload['status'] == 'healthy'
+    assert payload['billing']['provider'] == 'none'
+    assert payload['billing']['status'] == 'not_configured'
+    assert payload['checks']['billing_runtime']['ok'] is False
+
+
+def test_strict_billing_mode_marks_readiness_not_ready_when_billing_missing(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('APP_MODE', 'production')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://example')
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'secret')
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('EMAIL_FROM', 'ops@decoda.app')
+    monkeypatch.setenv('EMAIL_RESEND_API_KEY', 're_123')
+    monkeypatch.setenv('REDIS_URL', 'redis://localhost:6379/0')
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('STRICT_PRODUCTION_BILLING', 'true')
+    monkeypatch.delenv('PADDLE_API_KEY', raising=False)
+    monkeypatch.delenv('PADDLE_WEBHOOK_SECRET', raising=False)
+
+    client = TestClient(api_main.app)
+    response = client.get('/health/readiness')
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload['status'] == 'not_ready'
+    assert payload['checks']['billing_runtime']['required'] is True
+
+
+def test_non_billing_health_endpoint_still_works_when_billing_unconfigured(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('BILLING_PROVIDER', 'none')
+    monkeypatch.delenv('PADDLE_API_KEY', raising=False)
+    monkeypatch.delenv('PADDLE_WEBHOOK_SECRET', raising=False)
+    client = TestClient(api_main.app)
+    response = client.get('/health')
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['status'] == 'ok'
+    assert payload['billing']['status'] == 'not_configured'

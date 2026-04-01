@@ -79,5 +79,7 @@ test('onboarding wizard and help/legal pages are present for self-serve setup', 
   expect(nav).toContain("{ href: '/help', label: 'Help' }");
   expect(security).toContain('workspace-scoped access controls');
   expect(settingsPage).toContain('href="/settings/security"');
+  expect(settingsPage).toContain('Billing is not configured yet.');
+  expect(settingsPage).toContain('disabled={!billingRuntime.available}');
   expect(securitySettingsRoute).toContain('SecuritySettingsPageClient');
 });

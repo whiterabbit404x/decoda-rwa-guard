@@ -61,7 +61,10 @@ def _paddle_headers(secret: str, payload: dict[str, object]) -> tuple[str, str, 
 
 
 def test_paddle_signature_validation_rejects_invalid_signature(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_123')
     monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_secret')
+    monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_123')
     with pytest.raises(HTTPException) as exc:
         pilot.verify_paddle_webhook_signature(raw_body=b'{}', signature_header='wrong', timestamp_header='1717')
     assert exc.value.status_code == 400
@@ -72,7 +75,10 @@ def test_paddle_webhook_replay_is_idempotent(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda conn: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: fake_pg_connection(connection))
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_123')
     monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_secret')
+    monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_123')
 
     payload = {'event_id': 'evt_1', 'event_type': 'subscription.updated', 'data': {'id': 'sub_1'}}
     signature, timestamp, raw = _paddle_headers('pdl_secret', payload)
@@ -87,7 +93,10 @@ def test_paddle_webhook_reconciliation_upserts_subscription_customer_and_transac
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda conn: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: fake_pg_connection(connection))
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_123')
     monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_secret')
+    monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_123')
 
     payload = {
         'event_id': 'evt_2',
@@ -142,3 +151,39 @@ def test_checkout_session_returns_paddle_url(monkeypatch: pytest.MonkeyPatch) ->
 def test_subscription_status_mapping_handles_pause_and_cancel() -> None:
     assert pilot._paddle_to_subscription_status('subscription.paused', 'paused') == 'past_due'
     assert pilot._paddle_to_subscription_status('subscription.canceled', 'canceled') == 'canceled'
+
+
+def test_checkout_session_fails_with_structured_error_when_billing_provider_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_auth(monkeypatch)
+    monkeypatch.setenv('BILLING_PROVIDER', 'none')
+
+    with pytest.raises(HTTPException) as exc:
+        pilot.create_checkout_session({'plan_key': 'pro'}, SimpleNamespace(headers={}))
+
+    assert exc.value.status_code == 503
+    assert isinstance(exc.value.detail, dict)
+    assert exc.value.detail['code'] == 'billing_unavailable'
+    assert exc.value.detail['provider'] == 'none'
+
+
+def test_checkout_session_fails_with_structured_error_when_paddle_missing_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_auth(monkeypatch)
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.delenv('PADDLE_API_KEY', raising=False)
+    monkeypatch.delenv('PADDLE_WEBHOOK_SECRET', raising=False)
+    monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_123')
+
+    with pytest.raises(HTTPException) as exc:
+        pilot.create_checkout_session({'plan_key': 'pro'}, SimpleNamespace(headers={}))
+
+    assert exc.value.status_code == 503
+    assert isinstance(exc.value.detail, dict)
+    assert exc.value.detail['code'] == 'billing_unavailable'
+    assert exc.value.detail['provider'] == 'paddle'
+
+
+def test_billing_runtime_status_reports_not_configured_for_provider_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('BILLING_PROVIDER', 'none')
+    payload = pilot.billing_runtime_status()
+    assert payload['status'] == 'not_configured'
+    assert payload['available'] is False
