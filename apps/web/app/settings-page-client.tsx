@@ -149,7 +149,7 @@ export default function SettingsPageClient() {
             {billingStatus === 'past_due' ? <p className="statusLine">Billing is past_due. Update billing details to avoid disruption.</p> : null}
             {billingStatus === 'canceled' ? <p className="statusLine">Subscription canceled. Re-activate to retain premium features.</p> : null}
             <p className="muted">Provider: {billingRuntime.provider ?? 'unknown'}</p>
-            {billingRuntime.available ? null : <p className="statusLine">Billing unavailable. Configure Paddle API key, webhook secret, and plan price IDs.</p>}
+            {billingRuntime.available ? null : <p className="statusLine">Billing is not configured yet.</p>}
           </article>
           <article className="dataCard">
             <p className="sectionEyebrow">Plan catalog</p>

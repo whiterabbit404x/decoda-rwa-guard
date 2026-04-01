@@ -59,6 +59,7 @@ from services.api.app.pilot import (
     runtime_environment_identity,
     run_startup_migrations_if_enabled,
     validate_runtime_configuration,
+    billing_runtime_status,
     request_email_verification,
     request_password_reset,
     list_active_sessions,
@@ -1152,6 +1153,7 @@ def health() -> dict[str, object]:
         'monitoring_ingestion_mode': ingestion_runtime.get('source'),
         'monitoring_ingestion_degraded': ingestion_runtime.get('degraded'),
         'monitoring_ingestion_reason': ingestion_runtime.get('reason'),
+        'billing': billing_runtime_status(),
     }
 
 
@@ -1175,6 +1177,7 @@ def health_readiness() -> dict[str, Any]:
         'errors': errors,
         'warnings': warnings,
         'checks': validation.get('checks', {}),
+        'billing': billing_runtime_status(),
         'checked_at': datetime.now(timezone.utc).isoformat(),
     }
 
@@ -1188,6 +1191,7 @@ def health_diagnostics() -> dict[str, Any]:
         'app_mode': readiness['app_mode'],
         'checked_at': readiness['checked_at'],
         'checks': readiness['checks'],
+        'billing': readiness['billing'],
     }
 
 
