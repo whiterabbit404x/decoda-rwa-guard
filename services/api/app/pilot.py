@@ -240,34 +240,67 @@ def validate_runtime_configuration() -> dict[str, Any]:
     mode = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
     errors: list[str] = []
     warnings: list[str] = []
+    checks: dict[str, dict[str, Any]] = {}
     is_production_like = mode in {'production', 'prod'}
+
+    def _record_check(name: str, ok: bool, *, required: bool = False, detail: str | None = None, severity: str = 'error') -> None:
+        checks[name] = {'ok': ok, 'required': required, 'severity': severity, 'detail': detail}
+        if required and not ok and detail:
+            if severity == 'warning':
+                warnings.append(detail)
+            else:
+                errors.append(detail)
+
     try:
         from services.api.app.activity_providers import monitoring_ingestion_runtime
 
         monitoring_runtime = monitoring_ingestion_runtime()
-        if monitoring_runtime.get('mode') == 'live' and monitoring_runtime.get('degraded'):
-            errors.append(f"MONITORING_INGESTION_MODE=live requires RPC config: {monitoring_runtime.get('reason')}")
+        monitoring_live_degraded = monitoring_runtime.get('mode') == 'live' and bool(monitoring_runtime.get('degraded'))
+        _record_check(
+            'monitoring_live_rpc_config',
+            not monitoring_live_degraded,
+            required=bool(monitoring_runtime.get('mode') == 'live'),
+            detail=f"MONITORING_INGESTION_MODE=live requires RPC config: {monitoring_runtime.get('reason')}",
+        )
     except Exception as exc:
-        warnings.append(f'monitoring ingestion runtime check failed: {exc}')
+        _record_check('monitoring_live_rpc_config', False, required=False, detail=f'monitoring ingestion runtime check failed: {exc}', severity='warning')
 
-    if is_production_like and live_mode_enabled():
-        if not database_url():
-            errors.append('DATABASE_URL must be configured when LIVE_MODE_ENABLED=true in production.')
-        if not auth_token_secret_configured():
-            errors.append('AUTH_TOKEN_SECRET must be configured in production.')
-        if _email_provider() != 'console' and not os.getenv('EMAIL_FROM', '').strip():
-            errors.append('EMAIL_FROM must be set when using a real email provider in production.')
-        if _email_provider() == 'console':
-            errors.append('EMAIL_PROVIDER=console is not allowed in production. Configure EMAIL_PROVIDER=resend and EMAIL_RESEND_API_KEY.')
-        if not os.getenv('REDIS_URL', '').strip():
-            errors.append('REDIS_URL is required in production for shared auth rate limiting.')
-        strict_billing = env_flag('STRICT_PRODUCTION_BILLING')
+    if is_production_like:
+        _record_check('database_url', bool(database_url()), required=True, detail='DATABASE_URL must be configured when LIVE_MODE_ENABLED=true in production.')
+        _record_check('auth_token_secret', auth_token_secret_configured(), required=True, detail='AUTH_TOKEN_SECRET must be configured in production.')
+
+        email_provider = _email_provider()
+        _record_check('email_provider_set', bool(email_provider), required=True, detail='EMAIL_PROVIDER must be configured in production.')
+        _record_check(
+            'email_provider_not_console',
+            email_provider != 'console',
+            required=True,
+            detail='EMAIL_PROVIDER=console is not allowed in production. Configure EMAIL_PROVIDER=resend and EMAIL_RESEND_API_KEY.',
+        )
+        _record_check(
+            'email_from',
+            bool(os.getenv('EMAIL_FROM', '').strip()),
+            required=True,
+            detail='EMAIL_FROM must be configured in production.',
+        )
+        if email_provider == 'resend':
+            _record_check(
+                'email_resend_api_key',
+                bool(os.getenv('EMAIL_RESEND_API_KEY', '').strip()),
+                required=True,
+                detail='EMAIL_RESEND_API_KEY is required when EMAIL_PROVIDER=resend in production.',
+            )
+
+        _record_check('redis_url', bool(os.getenv('REDIS_URL', '').strip()), required=True, detail='REDIS_URL is required in production for shared auth rate limiting.')
+
+        billing_enabled = env_flag('BILLING_ENABLED', default=True)
+        strict_billing = env_flag('STRICT_PRODUCTION_BILLING') or billing_enabled
+        _record_check('billing_enabled', billing_enabled, required=False, detail='Billing checks skipped because BILLING_ENABLED=false.', severity='warning' if not billing_enabled else 'error')
         if strict_billing:
-            if not os.getenv('STRIPE_SECRET_KEY', '').strip():
-                errors.append('Stripe billing is not ready because STRIPE_SECRET_KEY is missing in production.')
-            if not os.getenv('STRIPE_WEBHOOK_SECRET', '').strip():
-                errors.append('Stripe billing is not ready because STRIPE_WEBHOOK_SECRET is missing in production.')
-    return {'mode': mode, 'errors': errors, 'warnings': warnings}
+            _record_check('stripe_secret_key', bool(os.getenv('STRIPE_SECRET_KEY', '').strip()), required=True, detail='Stripe billing is not ready because STRIPE_SECRET_KEY is missing in production.')
+            _record_check('stripe_webhook_secret', bool(os.getenv('STRIPE_WEBHOOK_SECRET', '').strip()), required=True, detail='Stripe billing is not ready because STRIPE_WEBHOOK_SECRET is missing in production.')
+
+    return {'mode': mode, 'errors': errors, 'warnings': warnings, 'checks': checks}
 
 
 def integration_health_snapshot(connection: Any | None = None) -> dict[str, Any]:

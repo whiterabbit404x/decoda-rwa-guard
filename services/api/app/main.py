@@ -1157,22 +1157,36 @@ def health() -> dict[str, object]:
 @app.get('/health/readiness', summary='Production readiness health check', description='Returns readiness status and remediation guidance for production-only dependencies.')
 def health_readiness() -> dict[str, Any]:
     validation = validate_runtime_configuration()
-    mode = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
-    extra_errors: list[str] = []
-    if mode in {'production', 'prod'}:
-        if str(os.getenv('EMAIL_PROVIDER', 'console')).strip().lower() == 'console':
-            extra_errors.append('EMAIL_PROVIDER=console is not allowed in production. Configure EMAIL_PROVIDER=resend and EMAIL_RESEND_API_KEY.')
-        if not os.getenv('REDIS_URL', '').strip():
-            extra_errors.append('REDIS_URL is required in production for shared auth rate limiting.')
-    errors = [*validation.get('errors', []), *extra_errors]
-    status_value = 'ready' if not errors else 'not_ready'
+    errors = validation.get('errors', [])
+    warnings = validation.get('warnings', [])
+
+    if errors:
+        status_value = 'not_ready'
+    elif warnings:
+        status_value = 'degraded'
+    else:
+        status_value = 'healthy'
+
     return {
         'status': status_value,
         'service': SERVICE_NAME,
         'app_mode': os.getenv('APP_MODE', 'local'),
         'errors': errors,
-        'warnings': validation.get('warnings', []),
+        'warnings': warnings,
+        'checks': validation.get('checks', {}),
         'checked_at': datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get('/health/diagnostics', summary='Machine-readable startup diagnostics', description='Returns explicit pass/fail checks for production startup dependencies without leaking secret values.')
+def health_diagnostics() -> dict[str, Any]:
+    readiness = health_readiness()
+    return {
+        'status': readiness['status'],
+        'service': readiness['service'],
+        'app_mode': readiness['app_mode'],
+        'checked_at': readiness['checked_at'],
+        'checks': readiness['checks'],
     }
 
 
