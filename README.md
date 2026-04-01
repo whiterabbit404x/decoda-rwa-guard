@@ -1347,3 +1347,69 @@ This executes deterministic auth/MFA, monitoring, Slack/webhook routing, export/
 
 ### Next.js / npm note
 This repository currently pins `next@14.2.5`. In this environment, npm registry access is blocked (HTTP 403), so dependency upgrades and `npm audit` remediation must be run in CI or a network-enabled workstation.
+
+## Strict production-required API environment variables
+
+When `APP_ENV=production` and `LIVE_MODE_ENABLED=true`, startup validation now requires:
+
+- `DATABASE_URL`
+- `AUTH_TOKEN_SECRET`
+- `EMAIL_PROVIDER` (must not be `console`)
+- `EMAIL_FROM`
+- provider key(s): `EMAIL_RESEND_API_KEY` when `EMAIL_PROVIDER=resend`
+- `REDIS_URL`
+- billing keys when billing is enabled (`BILLING_ENABLED=true` default):
+  - `STRIPE_SECRET_KEY`
+  - `STRIPE_WEBHOOK_SECRET`
+
+Readiness + diagnostics endpoints:
+
+- `GET /health/readiness` → `healthy`, `degraded`, or `not_ready`
+- `GET /health/diagnostics` → machine-readable per-check pass/fail output (secret-safe)
+
+## Staging validation command
+
+Canonical readiness command:
+
+```bash
+make validate-staging
+```
+
+This runs backend readiness tests, billing runtime tests, web build/audit checks, and optional browser/provider smoke checks.
+
+Optional flags:
+
+- `ENABLE_PLAYWRIGHT_E2E=false` to skip browser suite in constrained CI.
+- `ENABLE_LIVE_PROVIDER_SMOKE=true` to run live/provider smoke checks.
+
+## Billing verification notes
+
+Deterministic billing tests now cover:
+
+- checkout session creation contract
+- webhook signature validation
+- webhook replay/idempotency behavior
+- subscription/customer reconciliation writes
+- portal session failure when customer linkage is missing
+
+Run with:
+
+```bash
+pytest -q services/api/tests/test_billing_runtime.py
+```
+
+For live webhook checks in staging, forward Stripe events to `/billing/webhooks/stripe` and confirm events show as processed without duplicate state updates.
+
+## Live-provider smoke checks
+
+Run:
+
+```bash
+python services/api/scripts/smoke_live_providers.py
+```
+
+This validates configured readiness for email, Stripe, Redis, and optional live-chain monitoring (`EVM_RPC_URL`).
+
+## E2E browser test path
+
+Playwright remains opt-in for staging validation via `ENABLE_PLAYWRIGHT_E2E=true` in `make validate-staging`. Failed runs keep traces/screenshots per Playwright defaults.

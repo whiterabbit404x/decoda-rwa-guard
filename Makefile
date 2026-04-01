@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web smoke-phase1 validate-production
+.PHONY: up down logs install-python install-web init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web smoke-phase1 validate-production validate-staging
 
 up:
 	docker compose up -d
@@ -56,3 +56,7 @@ smoke-phase1:
 
 validate-production:
 	python services/api/scripts/validate_production_readiness.py
+
+
+validate-staging:
+	python services/api/scripts/validate_staging.py
