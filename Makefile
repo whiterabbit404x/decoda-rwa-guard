@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web smoke-phase1 validate-production validate-staging
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web smoke-phase1 validate-production validate-staging validate-launch
 
 up:
 	docker compose up -d
@@ -14,6 +14,10 @@ install-python:
 
 install-web:
 	npm install --workspace apps/web
+
+install-web-test-runtime:
+	npm ci
+	npx playwright install chromium
 
 init-local:
 	mkdir -p .data
@@ -60,3 +64,7 @@ validate-production:
 
 validate-staging:
 	python services/api/scripts/validate_staging.py
+
+validate-launch:
+	$(MAKE) validate-production
+	$(MAKE) validate-staging
