@@ -6,7 +6,13 @@ export default function AppNavigation({ currentPath }: { currentPath: string }) 
   return (
     <nav className="appNav" aria-label="Product navigation">
       {APP_NAV_ITEMS.map((item) => (
-        <Link key={item.href} href={item.href} className={currentPath === item.href ? 'active' : ''}>
+        <Link
+          key={item.href}
+          href={item.href}
+          prefetch={false}
+          // Prevent automatic background prefetch from fanning out all product route loaders right after sign-in.
+          className={currentPath === item.href ? 'active' : ''}
+        >
           {item.label}
         </Link>
       ))}

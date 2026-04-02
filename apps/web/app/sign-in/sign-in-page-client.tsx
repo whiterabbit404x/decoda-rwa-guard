@@ -63,7 +63,6 @@ export default function SignInPageClient({
     setError(null);
     try {
       await signIn({ email, password });
-      router.push(nextPath ?? '/dashboard');
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : String(submitError);
       if (message === 'MFA_REQUIRED') {
@@ -86,7 +85,6 @@ export default function SignInPageClient({
     setError(null);
     try {
       await completeMfaSignIn(mfaCode);
-      router.push(nextPath ?? '/dashboard');
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {

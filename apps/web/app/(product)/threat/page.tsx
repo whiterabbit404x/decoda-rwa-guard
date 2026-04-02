@@ -6,7 +6,7 @@ import SystemStatusPanel from '../../system-status-panel';
 export const dynamic = 'force-dynamic';
 
 export default async function ThreatPage() {
-  const data = await fetchDashboardPageData();
+  const data = await fetchDashboardPageData(undefined, { featureFeeds: ['threatDashboard'] });
   const { threatDashboard } = data;
 
   return (

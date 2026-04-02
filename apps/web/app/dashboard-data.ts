@@ -1421,6 +1421,10 @@ export type DashboardPageData = {
   diagnostics: DashboardDiagnostics;
 };
 
+type DashboardPageDataOptions = {
+  featureFeeds?: Array<Exclude<DashboardEndpointKey, 'dashboard'>>;
+};
+
 export type ThreatDashboardRuntimeDiagnostics = {
   source: ThreatDashboardResponse['source'];
   degraded: boolean;
@@ -1515,16 +1519,53 @@ function resolveEndpointPayloadState(
   return options.sampleMode ? 'sample' : 'fallback';
 }
 
-export async function fetchDashboardPageData(requestedApiUrl?: string | null): Promise<DashboardPageData> {
+export async function fetchDashboardPageData(
+  requestedApiUrl?: string | null,
+  options: DashboardPageDataOptions = {}
+): Promise<DashboardPageData> {
   const apiConfig = resolveApiConfig({ requestedApiUrl });
   const resolvedApiUrl = apiConfig.apiUrl ?? '';
+  const requestedFeatureFeeds = options.featureFeeds ?? ['riskDashboard', 'threatDashboard', 'complianceDashboard', 'resilienceDashboard'];
+  const shouldFetchFeature = (key: Exclude<DashboardEndpointKey, 'dashboard'>) => requestedFeatureFeeds.includes(key);
 
   const [dashboardResult, riskResult, threatResult, complianceResult, resilienceResult] = await Promise.all([
     fetchEndpointJson<unknown>('dashboard', apiConfig.apiUrl),
-    fetchEndpointJson<RiskDashboardResponse>('riskDashboard', apiConfig.apiUrl),
-    fetchEndpointJson<ThreatDashboardResponse>('threatDashboard', apiConfig.apiUrl),
-    fetchEndpointJson<ComplianceDashboardResponse>('complianceDashboard', apiConfig.apiUrl),
-    fetchEndpointJson<ResilienceDashboardResponse>('resilienceDashboard', apiConfig.apiUrl),
+    shouldFetchFeature('riskDashboard')
+      ? fetchEndpointJson<RiskDashboardResponse>('riskDashboard', apiConfig.apiUrl)
+      : Promise.resolve({
+        payload: null as RiskDashboardResponse | null,
+        meta: buildEndpointMeta('riskDashboard', {
+          transport: 'skipped',
+          error: 'Skipped on this route to avoid unnecessary backend fan-out.',
+        }),
+      }),
+    shouldFetchFeature('threatDashboard')
+      ? fetchEndpointJson<ThreatDashboardResponse>('threatDashboard', apiConfig.apiUrl)
+      : Promise.resolve({
+        payload: null as ThreatDashboardResponse | null,
+        meta: buildEndpointMeta('threatDashboard', {
+          transport: 'skipped',
+          error: 'Skipped on this route to avoid unnecessary backend fan-out.',
+        }),
+      }),
+    shouldFetchFeature('complianceDashboard')
+      ? fetchEndpointJson<ComplianceDashboardResponse>('complianceDashboard', apiConfig.apiUrl)
+      : Promise.resolve({
+        payload: null as ComplianceDashboardResponse | null,
+        meta: buildEndpointMeta('complianceDashboard', {
+          transport: 'skipped',
+          error: 'Skipped on this route to avoid unnecessary backend fan-out.',
+        }),
+      }),
+    shouldFetchFeature('resilienceDashboard')
+      ? fetchEndpointJson<ResilienceDashboardResponse>('resilienceDashboard', apiConfig.apiUrl)
+      : Promise.resolve({
+        payload: null as ResilienceDashboardResponse | null,
+        meta: buildEndpointMeta('resilienceDashboard', {
+          transport: 'skipped',
+          error: 'Skipped on this route to avoid unnecessary backend fan-out.',
+        }),
+      }),
   ]);
 
   const dashboard = normalizeDashboardResponse(dashboardResult.payload);
@@ -1542,30 +1583,38 @@ export async function fetchDashboardPageData(requestedApiUrl?: string | null): P
     },
     riskDashboard: {
       ...riskResult.meta,
-      source: riskResult.payload ? riskDashboard.source : 'fallback',
-      payloadState: resolveEndpointPayloadState(riskResult.payload ?? null, { sampleMode: !riskResult.payload && sampleMode }),
-      usedFallback: !riskResult.payload || riskDashboard.source !== 'live' || riskDashboard.degraded,
+      source: shouldFetchFeature('riskDashboard') ? (riskResult.payload ? riskDashboard.source : 'fallback') : 'unavailable',
+      payloadState: shouldFetchFeature('riskDashboard')
+        ? resolveEndpointPayloadState(riskResult.payload ?? null, { sampleMode: !riskResult.payload && sampleMode })
+        : 'unavailable',
+      usedFallback: shouldFetchFeature('riskDashboard') && (!riskResult.payload || riskDashboard.source !== 'live' || riskDashboard.degraded),
       error: riskResult.payload ? null : riskResult.meta.error,
     },
     threatDashboard: {
       ...threatResult.meta,
-      source: threatResult.payload ? threatDashboard.source : 'fallback',
-      payloadState: resolveEndpointPayloadState(threatResult.payload ?? null, { sampleMode: !threatResult.payload && sampleMode }),
-      usedFallback: !threatResult.payload || threatDashboard.source !== 'live' || threatDashboard.degraded,
+      source: shouldFetchFeature('threatDashboard') ? (threatResult.payload ? threatDashboard.source : 'fallback') : 'unavailable',
+      payloadState: shouldFetchFeature('threatDashboard')
+        ? resolveEndpointPayloadState(threatResult.payload ?? null, { sampleMode: !threatResult.payload && sampleMode })
+        : 'unavailable',
+      usedFallback: shouldFetchFeature('threatDashboard') && (!threatResult.payload || threatDashboard.source !== 'live' || threatDashboard.degraded),
       error: threatResult.payload ? null : threatResult.meta.error,
     },
     complianceDashboard: {
       ...complianceResult.meta,
-      source: complianceResult.payload ? complianceDashboard.source : 'fallback',
-      payloadState: resolveEndpointPayloadState(complianceResult.payload ?? null, { sampleMode: !complianceResult.payload && sampleMode }),
-      usedFallback: !complianceResult.payload || complianceDashboard.source !== 'live' || complianceDashboard.degraded,
+      source: shouldFetchFeature('complianceDashboard') ? (complianceResult.payload ? complianceDashboard.source : 'fallback') : 'unavailable',
+      payloadState: shouldFetchFeature('complianceDashboard')
+        ? resolveEndpointPayloadState(complianceResult.payload ?? null, { sampleMode: !complianceResult.payload && sampleMode })
+        : 'unavailable',
+      usedFallback: shouldFetchFeature('complianceDashboard') && (!complianceResult.payload || complianceDashboard.source !== 'live' || complianceDashboard.degraded),
       error: complianceResult.payload ? null : complianceResult.meta.error,
     },
     resilienceDashboard: {
       ...resilienceResult.meta,
-      source: resilienceResult.payload ? resilienceDashboard.source : 'fallback',
-      payloadState: resolveEndpointPayloadState(resilienceResult.payload ?? null, { sampleMode: !resilienceResult.payload && sampleMode }),
-      usedFallback: !resilienceResult.payload || resilienceDashboard.source !== 'live' || resilienceDashboard.degraded,
+      source: shouldFetchFeature('resilienceDashboard') ? (resilienceResult.payload ? resilienceDashboard.source : 'fallback') : 'unavailable',
+      payloadState: shouldFetchFeature('resilienceDashboard')
+        ? resolveEndpointPayloadState(resilienceResult.payload ?? null, { sampleMode: !resilienceResult.payload && sampleMode })
+        : 'unavailable',
+      usedFallback: shouldFetchFeature('resilienceDashboard') && (!resilienceResult.payload || resilienceDashboard.source !== 'live' || resilienceDashboard.degraded),
       error: resilienceResult.payload ? null : resilienceResult.meta.error,
     },
   };
