@@ -21,6 +21,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request as UrlRequest, urlopen
 
+from services.api.app.secrets_crypto import LEGACY_SCHEME, decrypt_secret, encrypt_secret, needs_reencrypt
+from services.api.app.storage_backends import load_storage_backend
+
 import importlib
 from fastapi import HTTPException, Request, status
 
@@ -292,6 +295,7 @@ def validate_runtime_configuration() -> dict[str, Any]:
             )
 
         _record_check('redis_url', bool(os.getenv('REDIS_URL', '').strip()), required=True, detail='REDIS_URL is required in production for shared auth rate limiting.')
+        _record_check('secrets_master_key', bool(os.getenv('SECRETS_MASTER_KEY', '').strip()), required=True, detail='SECRETS_MASTER_KEY is required in production for integration secret encryption at rest.')
 
         billing_status = billing_runtime_status()
         strict_billing = env_flag('STRICT_PRODUCTION_BILLING')
@@ -2127,23 +2131,27 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
     failed = 0
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
+        lease_seconds = max(30, int(os.getenv('BACKGROUND_JOB_LEASE_SECONDS', '300')))
         rows = connection.execute(
             '''
             SELECT id, job_type, payload, attempts, max_attempts
             FROM background_jobs
-            WHERE status = 'queued' AND run_after <= NOW()
+            WHERE (status = 'queued' OR (status = 'running' AND locked_at < NOW() - (%s || ' seconds')::interval))
+              AND run_after <= NOW()
             ORDER BY created_at ASC
             LIMIT %s
             ''',
-            (limit,),
+            (lease_seconds, limit),
         ).fetchall()
         for row in rows:
             job_id = str(row['id'])
             payload = row['payload'] or {}
-            connection.execute(
-                "UPDATE background_jobs SET status = 'running', locked_at = NOW(), locked_by = %s, updated_at = NOW() WHERE id = %s",
-                (worker_id, job_id),
-            )
+            claimed = connection.execute(
+                "UPDATE background_jobs SET status = 'running', locked_at = NOW(), locked_by = %s, updated_at = NOW() WHERE id = %s AND (status = 'queued' OR (status='running' AND locked_at < NOW() - (%s || ' seconds')::interval))",
+                (worker_id, job_id, lease_seconds),
+            ).rowcount
+            if claimed == 0:
+                continue
             try:
                 if row['job_type'] == 'send_email':
                     _send_email(str(payload.get('to_email', '')), str(payload.get('subject', '')), str(payload.get('text_body', '')))
@@ -2595,16 +2603,19 @@ def _mask_url(value: str) -> str:
 
 
 def _encode_secret_value(value: str) -> str:
-    return base64.b64encode(value.encode('utf-8')).decode('ascii')
+    return encrypt_secret(value)
 
 
 def _decode_secret_value(value: str) -> str:
-    if not value:
-        return ''
-    try:
-        return base64.b64decode(value.encode('ascii')).decode('utf-8')
-    except Exception:
-        return value
+    plaintext, _scheme = decrypt_secret(value)
+    return plaintext
+
+
+def _decode_secret_with_migration(connection: Any, table: str, row_id: str, column: str, encoded: str) -> str:
+    plaintext, scheme = decrypt_secret(encoded)
+    if scheme == LEGACY_SCHEME:
+        connection.execute(f"UPDATE {table} SET {column} = %s, updated_at = NOW() WHERE id = %s", (encrypt_secret(plaintext), row_id))
+    return plaintext
 
 
 def _normalize_routing_payload(payload: dict[str, Any], *, channel_type: str) -> dict[str, Any]:
@@ -2929,8 +2940,8 @@ def test_slack_integration(integration_id: str, request: Request) -> dict[str, A
                 'delivery_id': delivery_id,
                 'mode': str(integration.get('slack_mode') or 'webhook'),
                 'default_channel': str(integration.get('default_channel') or ''),
-                'webhook_url': _decode_secret_value(str(integration['webhook_url_encrypted'])) if integration.get('webhook_url_encrypted') else '',
-                'bot_token': _decode_secret_value(str(integration['bot_token_encrypted'])) if integration.get('bot_token_encrypted') else '',
+                'webhook_url': _decode_secret_with_migration(connection, 'workspace_slack_integrations', integration_id, 'webhook_url_encrypted', str(integration['webhook_url_encrypted'])) if integration.get('webhook_url_encrypted') else '',
+                'bot_token': _decode_secret_with_migration(connection, 'workspace_slack_integrations', integration_id, 'bot_token_encrypted', str(integration['bot_token_encrypted'])) if integration.get('bot_token_encrypted') else '',
                 'payload': slack_payload,
             },
             max_attempts=4,
@@ -3259,8 +3270,8 @@ def _queue_alert_deliveries(
                     'delivery_id': delivery_id,
                     'mode': provider_mode,
                     'default_channel': str(integration.get('default_channel') or ''),
-                    'webhook_url': _decode_secret_value(str(integration.get('webhook_url_encrypted') or '')),
-                    'bot_token': _decode_secret_value(str(integration.get('bot_token_encrypted') or '')),
+                    'webhook_url': _decode_secret_with_migration(connection, 'workspace_slack_integrations', str(integration['id']), 'webhook_url_encrypted', str(integration.get('webhook_url_encrypted') or '')),
+                    'bot_token': _decode_secret_with_migration(connection, 'workspace_slack_integrations', str(integration['id']), 'bot_token_encrypted', str(integration.get('bot_token_encrypted') or '')),
                     'payload': slack_payload,
                 },
                 max_attempts=4,
@@ -4378,21 +4389,24 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, analysis_type, status, title, summary, created_at FROM analysis_runs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
         case _:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export type.')
-    export_root = Path(os.getenv('EXPORTS_DIR', '/tmp/decoda-exports')).resolve()
-    workspace_dir = export_root / workspace_id
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    destination = workspace_dir / f'{export_id}.{job["format"]}'
+
     try:
         if str(job['format']) == 'json':
-            destination.write_text(json.dumps({'rows': rows}, indent=2), encoding='utf-8')
+            content = json.dumps({'rows': rows}, indent=2).encode('utf-8')
+            content_type = 'application/json'
         else:
+            output = io.StringIO()
             headers = sorted({key for row in rows for key in row.keys()})
-            with destination.open('w', encoding='utf-8', newline='') as handle:
-                writer = csv.DictWriter(handle, fieldnames=headers)
-                writer.writeheader()
-                for row in rows:
-                    writer.writerow({key: _json_safe_value(row.get(key)) for key in headers})
-        connection.execute("UPDATE export_jobs SET status = 'completed', error_message = NULL, updated_at = NOW() WHERE id = %s", (export_id,))
+            writer = csv.DictWriter(output, fieldnames=headers)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({key: _json_safe_value(row.get(key)) for key in headers})
+            content = output.getvalue().encode('utf-8')
+            content_type = 'text/csv'
+        backend = load_storage_backend()
+        key = f'{workspace_id}/{export_id}.{job["format"]}'
+        ref = backend.put_bytes(key, content, content_type)
+        connection.execute("UPDATE export_jobs SET status = 'completed', error_message = NULL, output_path = %s, updated_at = NOW() WHERE id = %s", (f'{ref.backend}:{ref.key}', export_id))
     except Exception as exc:
         connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(exc), export_id))
 
@@ -4438,21 +4452,31 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
         return {'export': item}
 
 
-def get_export_artifact_path(export_id: str, request: Request) -> Path:
+def get_export_download(export_id: str, request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
-        row = connection.execute('SELECT id, workspace_id, format, status FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_context['workspace_id'])).fetchone()
+        row = connection.execute('SELECT id, workspace_id, format, status, output_path FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export not found.')
         if str(row['status']) != 'completed':
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Export is not ready yet.')
-        path = Path(os.getenv('EXPORTS_DIR', '/tmp/decoda-exports')).resolve() / str(row['workspace_id']) / f"{row['id']}.{row['format']}"
-        if not path.exists():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export artifact missing.')
-        return path
+        output_path = str(row.get('output_path') or '')
+        if ':' in output_path:
+            backend_name, key = output_path.split(':', 1)
+        else:
+            backend_name, key = ('local', output_path)
+        backend = load_storage_backend()
+        if backend.backend_name != backend_name:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Configured export storage backend does not match stored artifact backend.')
+        ttl = int(os.getenv('EXPORTS_SIGNED_URL_TTL_SECONDS', '300'))
+        signed_url = backend.signed_download_url(key, ttl)
+        if signed_url:
+            return {'signed_url': signed_url, 'filename': f"{row['id']}.{row['format']}"}
+        payload = backend.read_bytes(key)
+        return {'bytes': payload, 'filename': f"{row['id']}.{row['format']}", 'format': str(row['format'])}
 
 
 def get_history_item(history_id: str, request: Request) -> dict[str, Any]:

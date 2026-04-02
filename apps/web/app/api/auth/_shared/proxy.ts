@@ -1,7 +1,7 @@
 import { normalizeApiBaseUrl } from '../../../api-config';
 import { getRuntimeConfig } from '../../../runtime-config';
+import { AUTH_COOKIE_NAME, CSRF_COOKIE_NAME } from './session';
 
-const TOKEN_COOKIE_NAME = 'decoda-pilot-access-token';
 const JSON_HEADERS = {
   'Cache-Control': 'no-store',
   'Content-Type': 'application/json',
@@ -19,32 +19,36 @@ function errorResponse(status: number, body: Record<string, unknown>) {
   });
 }
 
+function getCookieValue(request: Request, name: string) {
+  const cookieHeader = request.headers.get('cookie');
+  if (!cookieHeader) {
+    return null;
+  }
+  const tokenCookie = cookieHeader
+    .split(';')
+    .map((entry) => entry.trim())
+    .find((entry) => entry.startsWith(`${name}=`));
+  if (!tokenCookie) {
+    return null;
+  }
+  const tokenValue = tokenCookie.slice(name.length + 1).trim();
+  return tokenValue ? decodeURIComponent(tokenValue) : null;
+}
+
 function getAuthorizationHeader(request: Request) {
   const authorizationHeader = request.headers.get('authorization');
   if (authorizationHeader) {
     return authorizationHeader;
   }
 
-  const cookieHeader = request.headers.get('cookie');
-  if (!cookieHeader) {
-    return null;
-  }
+  const tokenValue = getCookieValue(request, AUTH_COOKIE_NAME);
+  return tokenValue ? `Bearer ${tokenValue}` : null;
+}
 
-  const tokenCookie = cookieHeader
-    .split(';')
-    .map((entry) => entry.trim())
-    .find((entry) => entry.startsWith(`${TOKEN_COOKIE_NAME}=`));
-
-  if (!tokenCookie) {
-    return null;
-  }
-
-  const tokenValue = tokenCookie.slice(TOKEN_COOKIE_NAME.length + 1).trim();
-  if (!tokenValue) {
-    return null;
-  }
-
-  return `Bearer ${decodeURIComponent(tokenValue)}`;
+function validateCsrf(request: Request): boolean {
+  const csrfHeader = request.headers.get('x-csrf-token')?.trim();
+  const csrfCookie = getCookieValue(request, CSRF_COOKIE_NAME);
+  return Boolean(csrfHeader && csrfCookie && csrfHeader === csrfCookie);
 }
 
 async function readJsonBody(request: Request) {
@@ -57,15 +61,12 @@ async function readJsonBody(request: Request) {
 
 async function buildBackendResponse(response: Response) {
   const contentType = response.headers.get('content-type') ?? '';
-  const cacheControlHeaders = {
-    'Cache-Control': 'no-store',
-  };
 
   if (contentType.toLowerCase().includes('application/json')) {
     const payload = await response.json().catch(() => ({ detail: 'Backend returned invalid JSON.' }));
     return Response.json(payload, {
       status: response.status,
-      headers: cacheControlHeaders,
+      headers: { 'Cache-Control': 'no-store' },
     });
   }
 
@@ -73,15 +74,13 @@ async function buildBackendResponse(response: Response) {
   const fallbackMessage = response.ok
     ? 'Request completed.'
     : 'Request failed. Please try again.';
-  return Response.json({
-    detail: bodyText?.trim() || fallbackMessage,
-  }, {
+  return Response.json({ detail: bodyText?.trim() || fallbackMessage }, {
     status: response.status,
-    headers: cacheControlHeaders,
+    headers: { 'Cache-Control': 'no-store' },
   });
 }
 
-export async function proxyAuthRequest(request: Request, backendPath: string, method: AuthProxyMethod, options?: { requireAuth?: boolean }) {
+export async function proxyAuthRequest(request: Request, backendPath: string, method: AuthProxyMethod, options?: { requireAuth?: boolean; requireCsrf?: boolean }) {
   const runtimeConfig = getRuntimeConfig();
   const backendApiUrl = normalizeApiBaseUrl(runtimeConfig.apiUrl);
 
@@ -95,9 +94,15 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
     });
   }
 
+  if (options?.requireCsrf && method !== 'GET' && !validateCsrf(request)) {
+    return errorResponse(403, {
+      detail: 'CSRF validation failed. Reload and try again.',
+      code: 'invalid_csrf',
+    });
+  }
+
   const headers = new Headers();
   headers.set('Accept', 'application/json');
-
   if (method !== 'GET') {
     headers.set('Content-Type', 'application/json');
   }
@@ -120,12 +125,7 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
     });
   }
 
-  const init: RequestInit = {
-    method,
-    headers,
-    cache: 'no-store',
-  };
-
+  const init: RequestInit = { method, headers, cache: 'no-store' };
   if (method !== 'GET') {
     init.body = JSON.stringify(await readJsonBody(request) ?? {});
   }
@@ -133,11 +133,7 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
   try {
     const response = await fetch(`${backendApiUrl}${backendPath}`, init);
     return await buildBackendResponse(response);
-  } catch (error) {
-    const detail = error instanceof Error
-      ? error.message
-      : 'Unknown error while contacting backend API.';
-
+  } catch {
     return errorResponse(502, {
       detail: 'We could not reach the authentication service. Please try again shortly.',
       code: 'backend_unreachable',
