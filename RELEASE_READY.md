@@ -7,7 +7,7 @@
 - Deterministic billing runtime tests cover checkout contract behavior, webhook signature validation, replay/idempotency, reconciliation writes, and subscription lifecycle state mapping.
 - `make validate-staging` and `make validate-production` run and correctly fail when critical verification checks fail (missing browser runtime for Playwright in this environment).
 - Staging validation now reports a dedicated `web_playwright_browser_runtime` check with an explicit install path/message before attempting Playwright E2E.
-- New staging validation check enforces `apps/web/package.json` `next` version matches the installed runtime dependency used by `next build`; this now **fails** in this environment because `apps/web/package.json`/`package-lock.json` declare `15.5.7` while the preinstalled runtime in `node_modules` is `15.5.9`.
+- New staging validation check enforces `apps/web/package.json` `next` version matches the installed runtime dependency used by `next build`; this now **passes** in this environment with both `apps/web/package.json`/`package-lock.json` and preinstalled `node_modules` on `15.5.9`.
 - Full backend test suite currently passes locally (`151 passed`), and web production build currently succeeds with staging-style env vars under the preinstalled runtime (`Next.js 15.5.9`).
 - A root `package-lock.json` is present for reproducible dependency capture, but `make install-web` currently fails in this environment with `403 Forbidden` when fetching npm tarballs.
 
@@ -25,7 +25,7 @@ Reason:
 1. Browser E2E validation is still not proven here because Playwright browser binaries are missing; run Playwright with installed browsers against staging.
 2. Dependency reproducibility is blocked locally: `make install-web` fails with `403 Forbidden` for npm tarballs and cannot currently refresh `node_modules` from lockfile.
 3. npm audit high-severity verification is still blocked in this environment: `npm audit --workspace apps/web --audit-level=high` returns `403 Forbidden` from `registry.npmjs.org/-/npm/v1/security/advisories/bulk`.
-4. Runtime drift remains unresolved locally: declared Next.js dependency is `15.5.7`, while installed `node_modules` runtime used by `next build` is `15.5.9`.
+4. Runtime drift check is currently aligned locally: declared Next.js dependency and installed `node_modules` runtime used by `next build` are both `15.5.9`.
 5. Execute full staging browser flow coverage for sign-up → verify email → sign-in → MFA → workspace/onboarding/target/analysis/alert/export/webhook and archive evidence.
 6. Execute live provider smoke in staging with real provider credentials and archive outputs for launch evidence.
 
