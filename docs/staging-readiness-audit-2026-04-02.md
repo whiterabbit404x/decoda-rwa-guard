@@ -16,12 +16,15 @@ Assess whether the product can support a first-customer staging journey **withou
 - FAIL: Validation now correctly detects frontend runtime dependency drift (`apps/web/package.json` declares `next=15.5.9` but installed runtime dependency is `next=14.2.5`).
 - PASS: `make validate-production` no longer fails with `ModuleNotFoundError: No module named 'services'`; it now executes the staging validation suite correctly.
 - FAIL/UNPROVEN: `make validate-staging` surfaces two hard gaps in this environment: Next.js runtime version drift and missing Playwright browser binaries; validation now flags the browser-runtime gap explicitly (`web_playwright_browser_runtime`) and skips E2E until binaries are installed.
+- FAIL/UNPROVEN: `make install-web` currently fails with `403 Forbidden` against `https://registry.npmjs.org/next`, so dependency refresh and lockfile regeneration cannot be proven in this execution environment.
+- UNPROVEN: `npm audit --workspace apps/web --audit-level=high` is skipped because no npm lockfile is present in repo.
 - UNPROVEN: Real staging sign-up/email verification/sign-in/MFA/workspace/onboarding/target/analysis/alert/export/webhook delivery.
 - UNPROVEN: Live provider integrations (email provider delivery, Paddle/Stripe webhooks, Redis-backed auth limits, chain provider ingestion) against staging infra.
 
 ## Evidence notes
 - Validation runner defaults to a non-localhost staging placeholder URL when `STAGING_API_URL` is unset, which avoids false negatives from localhost-only build safety checks.
 - Staging validation now includes an explicit check for declared-vs-installed Next.js runtime version sync to prevent false PASS when stale node_modules are present.
+- Full local backend test suite currently passes (`151 passed`), but this remains non-E2E evidence.
 - Backend routes and tests strongly indicate intended workflows, but no externally reachable staging URL/credentials were provided for end-to-end browser/API proof.
 - Exports and target creation can be plan-gated via entitlements; a billing-free first customer must use a trial/entitlement profile allowing required actions.
 
