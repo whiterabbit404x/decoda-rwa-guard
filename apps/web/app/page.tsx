@@ -26,10 +26,10 @@ export default async function MarketingHomePage() {
         <div>
           <p className="eyebrow">Decoda RWA Guard</p>
           <h1>Risk control for tokenized treasuries and real-world assets.</h1>
-          <p className="lede">Operate tokenized treasury programs with a customer-ready control layer for threat detection, compliance governance, and operational resilience—without losing demo-safe fallback coverage when a dependency fails.</p>
+          <p className="lede">Operate tokenized treasury programs with a customer-ready control layer for threat detection, compliance governance, and operational resilience—with reliable continuity when a dependency is temporarily unavailable.</p>
           <div className="heroActionRow">
             <Link href="/dashboard" className="primaryCta">Start free trial</Link>
-            <a href="mailto:demo@decoda.example" className="secondaryCta">Request demo</a>
+            <a href={`mailto:${process.env.NEXT_PUBLIC_CONTACT_EMAIL ?? "sales@decoda.app"}`} className="secondaryCta">Contact sales</a>
             <Link href="/sign-in" className="tertiaryCta">Sign in</Link>
             <Link href="/sign-up" className="tertiaryCta">Sign up</Link>
           </div>
@@ -37,7 +37,7 @@ export default async function MarketingHomePage() {
             <span className="ruleChip">Railway API</span>
             <span className="ruleChip">Vercel web</span>
             <span className="ruleChip">Neon Postgres</span>
-            <StatusBadge state="sample" compact />
+            <StatusBadge state="live" compact />
           </div>
         </div>
         <div className="heroPanel marketingPanel">
@@ -80,8 +80,8 @@ export default async function MarketingHomePage() {
         </div>
         <div className="summaryGrid">
           <article className="metricCard"><p className="metricLabel">Deployment posture</p><p className="metricValue">Production-ready</p><p className="metricMeta">Documented env vars, migrations, and verification flow</p></article>
-          <article className="metricCard"><p className="metricLabel">UX promise</p><p className="metricValue">Never blank</p><p className="metricMeta">Live, degraded, fallback, and sample states stay visible</p></article>
-          <article className="metricCard"><p className="metricLabel">Workspace controls</p><p className="metricValue">Scoped</p><p className="metricMeta">User, workspace, and role-aware pilot operations</p></article>
+          <article className="metricCard"><p className="metricLabel">UX promise</p><p className="metricValue">Never blank</p><p className="metricMeta">Live, degraded, fallback, states stay visible with clear operational context</p></article>
+          <article className="metricCard"><p className="metricLabel">Workspace controls</p><p className="metricValue">Scoped</p><p className="metricMeta">User, workspace, and role-aware operations</p></article>
         </div>
       </section>
 
@@ -93,7 +93,7 @@ export default async function MarketingHomePage() {
           </div>
         </div>
         <div className="threeColumnSection">
-          <article className="dataCard polishedCard"><h3>Pilot</h3><p className="metricValue">Request demo</p><p>Customer onboarding, workspace setup, and guided deployment support.</p></article>
+          <article className="dataCard polishedCard"><h3>Growth</h3><p className="metricValue">Start free trial</p><p>Self-serve onboarding, workspace setup, and guided security defaults.</p></article>
           <article className="dataCard polishedCard"><h3>Operator</h3><p className="metricValue">Start free trial</p><p>Run authenticated workspaces, persist live records, and validate live vs fallback behavior.</p></article>
           <article className="dataCard polishedCard"><h3>Enterprise</h3><p className="metricValue">Custom</p><p>For issuers and infrastructure partners who need governance and resilience workflows at scale.</p></article>
         </div>

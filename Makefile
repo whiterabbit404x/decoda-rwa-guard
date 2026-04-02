@@ -60,3 +60,7 @@ validate-production:
 
 validate-staging:
 	python services/api/scripts/validate_staging.py
+
+.PHONY: staging-evidence
+staging-evidence:
+	./scripts/staging_evidence/run_evidence.sh

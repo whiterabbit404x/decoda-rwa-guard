@@ -1419,3 +1419,30 @@ This validates configured readiness for email, Stripe, Redis, and optional live-
 ## E2E browser test path
 
 Playwright remains opt-in for staging validation via `ENABLE_PLAYWRIGHT_E2E=true` in `make validate-staging`. Failed runs keep traces/screenshots per Playwright defaults.
+
+## Production hardening updates (2026-04)
+
+### Secure session cookies
+- Auth session token is now stored only in an HttpOnly cookie managed by Next.js auth route handlers.
+- Browser localStorage token persistence has been removed.
+- Auth mutation routes require CSRF (`X-CSRF-Token` matching `decoda-csrf-token` cookie).
+
+### Integration secret encryption
+- Set `SECRETS_MASTER_KEY` (base64url-encoded 32-byte key) in all API environments.
+- Optional: `SECRETS_MASTER_KEY_ID` for key version labeling.
+- Convert legacy base64 secrets with:
+  - `python services/api/scripts/reencrypt_integration_secrets.py`
+
+### Durable export storage
+- `EXPORTS_STORAGE_BACKEND=local|s3`
+- For S3 backend set:
+  - `EXPORTS_S3_BUCKET`
+  - `EXPORTS_S3_REGION` (optional)
+  - `EXPORTS_S3_ENDPOINT` (optional for S3-compatible providers)
+  - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+  - `EXPORTS_SIGNED_URL_TTL_SECONDS` (default `300`)
+
+### Worker mode
+- Keep `BACKGROUND_JOBS_MODE=queued` in production.
+- Run separate worker process: `python services/api/scripts/run_worker.py --worker-id prod-worker-1 --interval-seconds 2`.
+- Inline mode is only for local development/tests.
