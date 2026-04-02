@@ -1,6 +1,6 @@
 # RELEASE_READY
 
-## What is now verified in-repo (rechecked 2026-04-02)
+## What is now verified in-repo (rechecked 2026-04-02, latest local rerun)
 
 - Production startup validation enforces required settings for database, auth secret, email provider/from/provider key, Redis, and billing-provider strict-mode checks.
 - Readiness returns explicit operational status values (`healthy`, `degraded`, `not_ready`) with machine-readable diagnostics at `/health/diagnostics`.
@@ -8,6 +8,8 @@
 - `make validate-staging` and `make validate-production` run and correctly fail when critical verification checks fail (web dependency mismatch and missing browser runtime for Playwright in this environment).
 - Staging validation now reports a dedicated `web_playwright_browser_runtime` check with an explicit install path/message before attempting Playwright E2E.
 - New staging validation check now enforces `apps/web/package.json` `next` version matches the installed runtime dependency used by `next build`.
+- Full backend test suite currently passes locally (`151 passed`), and web production build currently succeeds under the installed runtime (`Next.js 14.2.5`) while still failing the declared-version lockstep check (`15.5.9`).
+- npm dependency refresh remains unproven in this environment because `npm install --workspace apps/web` fails with `403 Forbidden` from `registry.npmjs.org`, and no npm lockfile is currently present in repo for auditable dependency capture.
 
 ## Go / No-Go recommendation
 
@@ -22,8 +24,9 @@ Reason:
 
 1. Dependency/runtime mismatch exists in this environment: `apps/web/package.json` declares `next=15.5.9` while installed runtime is `next=14.2.5`; reinstall with registry access and regenerate lockfile so runtime matches declared version.
 2. Browser E2E validation is still not proven here because Playwright browser binaries are missing; run Playwright with installed browsers against staging.
-3. Execute full staging browser flow coverage for sign-up → verify email → sign-in → MFA → workspace/onboarding/target/analysis/alert/export/webhook and archive evidence.
-4. Execute live provider smoke in staging with real provider credentials and archive outputs for launch evidence.
+3. npm lockfile-backed dependency auditing is not proven here because no lockfile exists in repo; generate and commit lockfile in a registry-enabled environment so `npm audit --workspace apps/web --audit-level=high` can run as a hard check.
+4. Execute full staging browser flow coverage for sign-up → verify email → sign-in → MFA → workspace/onboarding/target/analysis/alert/export/webhook and archive evidence.
+5. Execute live provider smoke in staging with real provider credentials and archive outputs for launch evidence.
 
 ## Deployment/operator steps still required
 
