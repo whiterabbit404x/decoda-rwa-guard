@@ -15,7 +15,7 @@ Assess whether the product can support a first-customer staging journey **withou
 - PASS: Next.js production build succeeds when staging-like env vars are set.
 - FAIL: Validation now correctly detects frontend runtime dependency drift (`apps/web/package.json` declares `next=15.5.9` but installed runtime dependency is `next=14.2.5`).
 - PASS: `make validate-production` no longer fails with `ModuleNotFoundError: No module named 'services'`; it now executes the staging validation suite correctly.
-- FAIL/UNPROVEN: `make validate-staging` surfaces two hard gaps in this environment: Next.js runtime version drift and missing Playwright browser binaries; live providers remain unproven without external access.
+- FAIL/UNPROVEN: `make validate-staging` surfaces two hard gaps in this environment: Next.js runtime version drift and missing Playwright browser binaries; validation now flags the browser-runtime gap explicitly (`web_playwright_browser_runtime`) and skips E2E until binaries are installed.
 - UNPROVEN: Real staging sign-up/email verification/sign-in/MFA/workspace/onboarding/target/analysis/alert/export/webhook delivery.
 - UNPROVEN: Live provider integrations (email provider delivery, Paddle/Stripe webhooks, Redis-backed auth limits, chain provider ingestion) against staging infra.
 
