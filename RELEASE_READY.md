@@ -1,33 +1,31 @@
 # RELEASE_READY
 
-## What is now verified in-repo
+## Release posture (billing disabled by default)
 
-- Production startup validation now enforces explicit required settings for database, auth secret, email provider/from/provider key, Redis, and billing-provider keys (Paddle-first by default).
-- Readiness now returns explicit operational status values (`healthy`, `degraded`, `not_ready`) and machine-readable diagnostics at `/health/diagnostics`.
-- Deterministic billing runtime tests now cover Paddle checkout contract behavior, webhook signature validation, replay/idempotency, reconciliation writes, and subscription lifecycle state mapping.
-- Canonical staging/prod validation command added: `make validate-staging`.
-- Optional live-provider smoke runner added for email, billing provider health, Redis, and live-chain prereq checks.
+This repository is now configured for broad pilot evaluation **without billing as a runtime blocker**.
 
-## Go / No-Go recommendation
+### What is now release-ready
 
-**Current recommendation: NO-GO for broad sale until external staging verification is completed.**
+- Billing is feature-flagged and defaults to disabled (`BILLING_ENABLED=false`, `BILLING_PROVIDER=none`) for local/staging operation.
+- Core workflows no longer depend on checkout/session portal/payment webhooks:
+  - sign-up/sign-in/email verification/MFA
+  - workspace setup and membership
+  - assets and targets
+  - analyses, alerts/incidents
+  - exports
+  - webhook destinations
+- Workspace plan enforcement is unmetered while billing is disabled, so exports/targets/seats are not blocked by subscription state.
+- Settings UI now presents billing as **Coming soon / Contact sales** when billing is disabled instead of blocking user progression.
+- Production safeguards remain in place for auth/email/redis/readiness diagnostics.
 
-Reason:
+## Intentionally deferred (for later re-enable)
 
-1. Next.js upgrade + audit remediation could not be completed in this execution environment because npm registry access is currently blocked (HTTP 403).
-2. Full browser E2E replacement and live-provider smoke execution still require running against a configured staging deployment with real provider credentials.
+- Paddle checkout wiring in real customer flows.
+- Subscription enforcement and invoice lifecycle logic.
+- Payment webhook-driven entitlement changes as a go-live requirement.
 
-## Remaining blockers for broad sale
+## Go / No-Go
 
-1. Upgrade Next.js in `apps/web` after registry access is restored, then rerun build + audit and document residual risks.
-2. Execute staging browser E2E flow coverage for sign-up → verify email → sign-in → MFA → workspace operations → export download.
-3. Execute live smoke in staging with real provider credentials and archive outputs for launch evidence.
+**Recommendation: GO for pilot evaluation with billing disabled.**
 
-## Deployment/operator steps still required
-
-- Railway: set strict production env vars and confirm `/health/readiness` is `healthy`.
-- Vercel: ensure `API_URL`/`NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_LIVE_MODE_ENABLED` are set per environment.
-- Paddle-first billing: configure `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_ENVIRONMENT=sandbox|live`, and `PADDLE_PRICE_ID_<PLAN>` values. Forward Paddle events to `POST /billing/webhooks/paddle`.
-- Stripe remains optional via `BILLING_PROVIDER=stripe` and `POST /billing/webhooks/stripe`.
-- Resend (or chosen provider): configure sending domain, `EMAIL_FROM`, and API key.
-- Redis: configure `REDIS_URL` and verify shared auth throttling behavior in staging.
+Use `BILLING_ENABLED=true` only when you are ready to validate provider checkout/webhook behavior.

@@ -58,7 +58,7 @@ test('auth context and operational module pages use live customer workflow langu
   expect(authContext).toContain('await signOut();');
   expect(authContext).toContain('safeAuthFailureMessage');
   expect(threatPanel).toContain('Threat Monitoring');
-  expect(threatPanel).not.toContain('scenario');
+  expect(threatPanel).not.toContain('Demo mode');
   expect(nav).toContain('Targets');
   expect(nav).toContain('Integrations');
 });
@@ -79,7 +79,7 @@ test('onboarding wizard and help/legal pages are present for self-serve setup', 
   expect(nav).toContain("{ href: '/help', label: 'Help' }");
   expect(security).toContain('workspace-scoped access controls');
   expect(settingsPage).toContain('href="/settings/security"');
-  expect(settingsPage).toContain('Billing is not configured yet.');
-  expect(settingsPage).toContain('disabled={!billingRuntime.available}');
+  expect(settingsPage).toContain("const billingEnabled = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';");
+  expect(settingsPage).toContain('Billing coming soon. Contact sales for pilot terms.');
   expect(securitySettingsRoute).toContain('SecuritySettingsPageClient');
 });

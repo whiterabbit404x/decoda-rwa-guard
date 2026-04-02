@@ -23,6 +23,7 @@ export default function SettingsPageClient() {
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const currentMembership = useMemo(() => user?.memberships.find((m) => m.workspace_id === user.current_workspace?.id) ?? null, [user]);
+  const billingEnabled = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';
 
   async function call(path: string, init?: RequestInit) {
     return fetch(`${apiUrl}${path}`, { cache: 'no-store', ...init, headers: { ...(init?.headers ?? {}), ...authHeaders() } });
@@ -30,22 +31,23 @@ export default function SettingsPageClient() {
 
   async function loadAll() {
     if (!apiUrl || !user?.current_workspace?.id) return;
-    const [membersResponse, inviteResponse, seatsResponse, subscriptionResponse, plansResponse] = await Promise.all([
+    const requests = [
       call('/workspace/members'),
       call('/workspace/invitations'),
       call('/team/seats'),
-      call('/billing/subscription'),
-      call('/billing/plans'),
-    ]);
+      billingEnabled ? call('/billing/subscription') : Promise.resolve(null),
+      billingEnabled ? call('/billing/plans') : Promise.resolve(null),
+    ] as const;
+    const [membersResponse, inviteResponse, seatsResponse, subscriptionResponse, plansResponse] = await Promise.all(requests);
     if (membersResponse.ok) setMembers((await membersResponse.json()).members ?? []);
     if (inviteResponse.ok) setInvitations((await inviteResponse.json()).invitations ?? []);
     if (seatsResponse.ok) setSeatSummary(await seatsResponse.json());
-    if (subscriptionResponse.ok) {
+    if (subscriptionResponse?.ok) {
       const payload = await subscriptionResponse.json();
       setSubscription(payload.subscription ?? null);
       setBillingRuntime(payload.billing ?? { provider: 'paddle', available: false });
     }
-    if (plansResponse.ok) setPlans((await plansResponse.json()).plans ?? []);
+    if (plansResponse?.ok) setPlans((await plansResponse.json()).plans ?? []);
   }
 
   useEffect(() => { void loadAll(); }, [apiUrl, user?.current_workspace?.id]);
@@ -149,11 +151,17 @@ export default function SettingsPageClient() {
             {billingStatus === 'past_due' ? <p className="statusLine">Billing is past_due. Update billing details to avoid disruption.</p> : null}
             {billingStatus === 'canceled' ? <p className="statusLine">Subscription canceled. Re-activate to retain premium features.</p> : null}
             <p className="muted">Provider: {billingRuntime.provider ?? 'unknown'}</p>
-            {billingRuntime.available ? null : <p className="statusLine">Billing is not configured yet.</p>}
+            {billingEnabled ? (
+              billingRuntime.available ? null : <p className="statusLine">Billing is not configured yet.</p>
+            ) : (
+              <p className="statusLine">Billing coming soon. Contact sales for pilot terms.</p>
+            )}
           </article>
           <article className="dataCard">
             <p className="sectionEyebrow">Plan catalog</p>
-            {plans.length === 0 ? <p className="muted">No plans available.</p> : plans.map((plan) => (
+            {!billingEnabled ? <p className="muted">Self-serve checkout is coming soon. Contact sales to discuss pilot pricing.</p> : null}
+            {billingEnabled && plans.length === 0 ? <p className="muted">No plans available.</p> : null}
+            {billingEnabled && plans.map((plan) => (
               <div key={plan.plan_key} style={{ marginBottom: 12 }}>
                 <strong>{plan.plan_name}</strong>
                 <p className="muted">{plan.plan_key} · max seats {plan.max_members}</p>

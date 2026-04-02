@@ -3495,10 +3495,16 @@ ASSET_TYPES = {
 
 
 def billing_provider() -> str:
-    value = os.getenv('BILLING_PROVIDER', 'paddle').strip().lower()
+    if not billing_enabled():
+        return 'none'
+    value = os.getenv('BILLING_PROVIDER', 'none').strip().lower()
     if value in {'none', 'stripe', 'paddle'}:
         return value
-    return 'paddle'
+    return 'none'
+
+
+def billing_enabled() -> bool:
+    return env_flag('BILLING_ENABLED')
 
 
 def billing_runtime_status() -> dict[str, Any]:
@@ -3582,6 +3588,19 @@ def paddle_runtime_config() -> dict[str, Any]:
 
 
 def _workspace_plan(connection: Any, workspace_id: str) -> dict[str, Any]:
+    if not billing_enabled():
+        return {
+            'plan_key': 'pilot_unmetered',
+            'max_members': 250,
+            'max_webhooks': 25,
+            'max_targets': 1000,
+            'exports_enabled': True,
+            'alert_retention_days': 180,
+            'features': {
+                'billing_mode': 'disabled',
+                'sales_motion': 'pilot',
+            },
+        }
     subscription = connection.execute(
         '''
         SELECT plan_key
