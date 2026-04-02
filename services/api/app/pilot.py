@@ -3615,7 +3615,7 @@ def _workspace_plan(connection: Any, workspace_id: str) -> dict[str, Any]:
             'max_members': 3,
             'max_webhooks': 0,
             'max_targets': 10,
-            'exports_enabled': False,
+            'exports_enabled': True,
             'alert_retention_days': 14,
             'features': {},
         }

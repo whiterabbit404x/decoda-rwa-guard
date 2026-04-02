@@ -187,3 +187,18 @@ def test_billing_runtime_status_reports_not_configured_for_provider_none(monkeyp
     payload = pilot.billing_runtime_status()
     assert payload['status'] == 'not_configured'
     assert payload['available'] is False
+
+
+def test_workspace_plan_fallback_keeps_exports_enabled_for_billing_free_trials() -> None:
+    class _Conn:
+        def execute(self, query, params=()):
+            if 'FROM billing_subscriptions' in query:
+                return FakeResult(None)
+            if "FROM plan_entitlements" in query:
+                return FakeResult(None)
+            return FakeResult(None)
+
+    plan = pilot._workspace_plan(_Conn(), 'ws-1')
+
+    assert plan['plan_key'] == 'free_trial'
+    assert plan['exports_enabled'] is True
