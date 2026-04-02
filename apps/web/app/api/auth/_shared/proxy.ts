@@ -1,7 +1,11 @@
+import { cookies } from 'next/headers';
+import { NextResponse } from 'next/server';
+
 import { normalizeApiBaseUrl } from '../../../api-config';
 import { getRuntimeConfig } from '../../../runtime-config';
 
-const TOKEN_COOKIE_NAME = 'decoda-pilot-access-token';
+const SESSION_COOKIE_NAME = 'decoda_session';
+const CSRF_COOKIE_NAME = 'decoda_csrf';
 const JSON_HEADERS = {
   'Cache-Control': 'no-store',
   'Content-Type': 'application/json',
@@ -12,6 +16,8 @@ export const revalidate = 0;
 
 export type AuthProxyMethod = 'GET' | 'POST';
 
+type AuthCookieAction = 'set-session' | 'clear-session' | 'none';
+
 function errorResponse(status: number, body: Record<string, unknown>) {
   return Response.json(body, {
     status,
@@ -19,32 +25,63 @@ function errorResponse(status: number, body: Record<string, unknown>) {
   });
 }
 
-function getAuthorizationHeader(request: Request) {
+function parseCookie(headerValue: string | null, cookieName: string) {
+  if (!headerValue) return null;
+  const match = headerValue
+    .split(';')
+    .map((entry) => entry.trim())
+    .find((entry) => entry.startsWith(`${cookieName}=`));
+
+  if (!match) return null;
+  const raw = match.slice(cookieName.length + 1).trim();
+  return raw ? decodeURIComponent(raw) : null;
+}
+
+function authCookieOptions() {
+  const isProd = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: 'lax' as const,
+    path: '/',
+    maxAge: 60 * 60 * 24,
+  };
+}
+
+function csrfCookieOptions() {
+  const isProd = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: false,
+    secure: isProd,
+    sameSite: 'lax' as const,
+    path: '/',
+    maxAge: 60 * 60 * 24,
+  };
+}
+
+function readRequestSessionToken(request: Request) {
   const authorizationHeader = request.headers.get('authorization');
   if (authorizationHeader) {
     return authorizationHeader;
   }
 
   const cookieHeader = request.headers.get('cookie');
-  if (!cookieHeader) {
+  const sessionToken = parseCookie(cookieHeader, SESSION_COOKIE_NAME);
+  if (!sessionToken) {
     return null;
   }
+  return `Bearer ${sessionToken}`;
+}
 
-  const tokenCookie = cookieHeader
-    .split(';')
-    .map((entry) => entry.trim())
-    .find((entry) => entry.startsWith(`${TOKEN_COOKIE_NAME}=`));
-
-  if (!tokenCookie) {
-    return null;
+function validateCsrf(request: Request) {
+  if (request.method === 'GET') {
+    return true;
   }
 
-  const tokenValue = tokenCookie.slice(TOKEN_COOKIE_NAME.length + 1).trim();
-  if (!tokenValue) {
-    return null;
-  }
-
-  return `Bearer ${decodeURIComponent(tokenValue)}`;
+  const cookieHeader = request.headers.get('cookie');
+  const cookieToken = parseCookie(cookieHeader, CSRF_COOKIE_NAME);
+  const headerToken = request.headers.get('x-csrf-token');
+  return Boolean(cookieToken && headerToken && cookieToken === headerToken);
 }
 
 async function readJsonBody(request: Request) {
@@ -55,33 +92,37 @@ async function readJsonBody(request: Request) {
   }
 }
 
-async function buildBackendResponse(response: Response) {
+async function buildBackendResponse(response: Response, cookieAction: AuthCookieAction = 'none') {
   const contentType = response.headers.get('content-type') ?? '';
-  const cacheControlHeaders = {
-    'Cache-Control': 'no-store',
-  };
+  const responseBody = contentType.toLowerCase().includes('application/json')
+    ? await response.json().catch(() => ({ detail: 'Backend returned invalid JSON.' }))
+    : {
+      detail: (await response.text().catch(() => '')).trim() || (response.ok ? 'Request completed.' : 'Request failed. Please try again.'),
+    };
 
-  if (contentType.toLowerCase().includes('application/json')) {
-    const payload = await response.json().catch(() => ({ detail: 'Backend returned invalid JSON.' }));
-    return Response.json(payload, {
-      status: response.status,
-      headers: cacheControlHeaders,
-    });
+  const proxyResponse = NextResponse.json(responseBody, {
+    status: response.status,
+    headers: {
+      'Cache-Control': 'no-store',
+    },
+  });
+
+  if (cookieAction === 'set-session' && typeof responseBody.access_token === 'string' && responseBody.access_token) {
+    const csrfToken = crypto.randomUUID().replace(/-/g, '');
+    proxyResponse.cookies.set(SESSION_COOKIE_NAME, responseBody.access_token, authCookieOptions());
+    proxyResponse.cookies.set(CSRF_COOKIE_NAME, csrfToken, csrfCookieOptions());
+    delete responseBody.access_token;
   }
 
-  const bodyText = await response.text().catch(() => '');
-  const fallbackMessage = response.ok
-    ? 'Request completed.'
-    : 'Request failed. Please try again.';
-  return Response.json({
-    detail: bodyText?.trim() || fallbackMessage,
-  }, {
-    status: response.status,
-    headers: cacheControlHeaders,
-  });
+  if (cookieAction === 'clear-session') {
+    proxyResponse.cookies.set(SESSION_COOKIE_NAME, '', { ...authCookieOptions(), maxAge: 0 });
+    proxyResponse.cookies.set(CSRF_COOKIE_NAME, '', { ...csrfCookieOptions(), maxAge: 0 });
+  }
+
+  return proxyResponse;
 }
 
-export async function proxyAuthRequest(request: Request, backendPath: string, method: AuthProxyMethod, options?: { requireAuth?: boolean }) {
+export async function proxyAuthRequest(request: Request, backendPath: string, method: AuthProxyMethod, options?: { requireAuth?: boolean; cookieAction?: AuthCookieAction }) {
   const runtimeConfig = getRuntimeConfig();
   const backendApiUrl = normalizeApiBaseUrl(runtimeConfig.apiUrl);
 
@@ -92,6 +133,13 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
       authTransport: 'same-origin proxy',
       backendApiUrl,
       configured: false,
+    });
+  }
+
+  if (options?.requireAuth && method !== 'GET' && !validateCsrf(request)) {
+    return errorResponse(403, {
+      detail: 'CSRF token missing or invalid.',
+      code: 'csrf_invalid',
     });
   }
 
@@ -107,7 +155,7 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
     headers.set('X-Workspace-Id', xWorkspaceId);
   }
 
-  const authorization = getAuthorizationHeader(request);
+  const authorization = readRequestSessionToken(request);
   if (authorization) {
     headers.set('Authorization', authorization);
   } else if (options?.requireAuth) {
@@ -132,12 +180,8 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
 
   try {
     const response = await fetch(`${backendApiUrl}${backendPath}`, init);
-    return await buildBackendResponse(response);
-  } catch (error) {
-    const detail = error instanceof Error
-      ? error.message
-      : 'Unknown error while contacting backend API.';
-
+    return await buildBackendResponse(response, options?.cookieAction ?? 'none');
+  } catch {
     return errorResponse(502, {
       detail: 'We could not reach the authentication service. Please try again shortly.',
       code: 'backend_unreachable',
@@ -146,4 +190,9 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
       configured: true,
     });
   }
+}
+
+export async function getCsrfToken() {
+  const cookieStore = await cookies();
+  return cookieStore.get(CSRF_COOKIE_NAME)?.value ?? null;
 }

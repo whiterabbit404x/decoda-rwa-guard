@@ -3,5 +3,5 @@ import { dynamic, proxyAuthRequest, revalidate } from 'app/api/auth/_shared/prox
 export { dynamic, revalidate };
 
 export async function POST(request: Request) {
-  return proxyAuthRequest(request, '/auth/signup', 'POST');
+  return proxyAuthRequest(request, '/auth/signup', 'POST', { cookieAction: 'set-session' });
 }

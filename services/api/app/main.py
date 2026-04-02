@@ -21,7 +21,7 @@ from urllib.request import Request as UrlRequest, urlopen
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.pilot import (
@@ -116,7 +116,7 @@ from services.api.app.pilot import (
     create_export_job,
     list_exports,
     get_export,
-    get_export_artifact_path,
+    get_export_artifact_content,
     get_history_item,
     list_templates,
     apply_template,
@@ -1791,9 +1791,10 @@ def exports_get(export_id: str, request: Request) -> dict[str, Any]:
 
 
 @app.get('/exports/{export_id}/download', summary='Download export artifact')
-def exports_download(export_id: str, request: Request) -> FileResponse:
-    path = with_auth_schema_json(lambda: get_export_artifact_path(export_id, request))
-    return FileResponse(path)
+def exports_download(export_id: str, request: Request) -> Response:
+    content, filename = with_auth_schema_json(lambda: get_export_artifact_content(export_id, request))
+    media_type = 'application/json' if filename.endswith('.json') else 'text/csv'
+    return Response(content=content, media_type=media_type, headers={'Content-Disposition': f'attachment; filename={filename}'})
 
 
 @app.get('/integrations/webhooks', summary='List outbound integration webhooks')
