@@ -6,6 +6,7 @@
 - Readiness returns explicit operational status values (`healthy`, `degraded`, `not_ready`) with machine-readable diagnostics at `/health/diagnostics`.
 - Deterministic billing runtime tests cover checkout contract behavior, webhook signature validation, replay/idempotency, reconciliation writes, and subscription lifecycle state mapping.
 - `make validate-staging` and `make validate-production` run and correctly fail when critical verification checks fail (web dependency mismatch and missing browser runtime for Playwright in this environment).
+- Staging validation now reports a dedicated `web_playwright_browser_runtime` check with an explicit install path/message before attempting Playwright E2E.
 - New staging validation check now enforces `apps/web/package.json` `next` version matches the installed runtime dependency used by `next build`.
 
 ## Go / No-Go recommendation

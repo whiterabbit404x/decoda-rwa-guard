@@ -65,6 +65,47 @@ def check_web_next_version_sync() -> Check:
     return Check(name='web_next_version_sync', command=command, passed=True, output=f'next dependency matches declared version ({installed}).')
 
 
+def check_playwright_browser_runtime() -> Check:
+    command = ['node', '-e', "const { chromium } = require('playwright'); process.stdout.write(chromium.executablePath());"]
+    process = subprocess.run(command, cwd=REPO_ROOT, text=True, capture_output=True)
+    output = (process.stdout + '\n' + process.stderr).strip()
+    if process.returncode != 0:
+        return Check(
+            name='web_playwright_browser_runtime',
+            command=command,
+            passed=False,
+            output=(
+                'Unable to resolve Playwright Chromium executable path. '
+                'Install Node dependencies and rerun. Details:\n'
+                f'{output}'
+            ),
+        )
+    executable_path = process.stdout.strip()
+    if not executable_path:
+        return Check(
+            name='web_playwright_browser_runtime',
+            command=command,
+            passed=False,
+            output='Playwright Chromium executable path is empty. Run `npx playwright install` and rerun validation.',
+        )
+    if not Path(executable_path).exists():
+        return Check(
+            name='web_playwright_browser_runtime',
+            command=command,
+            passed=False,
+            output=(
+                f'Playwright browser executable is missing at {executable_path}. '
+                'Run `npx playwright install` (or `npx playwright install chromium`) and rerun validation.'
+            ),
+        )
+    return Check(
+        name='web_playwright_browser_runtime',
+        command=command,
+        passed=True,
+        output=f'Playwright Chromium executable is available at {executable_path}.',
+    )
+
+
 def main() -> int:
     env = os.environ.copy()
     run_live_smoke = env.get('ENABLE_LIVE_PROVIDER_SMOKE', '').lower() == 'true'
@@ -82,19 +123,25 @@ def main() -> int:
         check_web_next_version_sync(),
         run_check('web_build', ['npm', 'run', 'build', '--workspace', 'apps/web'], env=web_env),
         run_check('web_audit', ['npm', 'audit', '--workspace', 'apps/web', '--audit-level=high'], skip=not lockfile_exists, skip_reason='No npm lockfile present; generate lockfile in CI with registry access before audit.'),
+    ]
+    playwright_runtime_check = check_playwright_browser_runtime()
+    checks.append(playwright_runtime_check)
+    checks.append(
         run_check(
             'web_playwright_e2e',
             ['npx', 'playwright', 'test', 'apps/web/tests/feature4-smoke.spec.ts'],
-            skip=not run_web_e2e,
-            skip_reason='ENABLE_PLAYWRIGHT_E2E=false',
-        ),
+            skip=(not run_web_e2e) or (not playwright_runtime_check.passed),
+            skip_reason='ENABLE_PLAYWRIGHT_E2E=false' if not run_web_e2e else 'Playwright browser runtime missing; run `npx playwright install`.',
+        )
+    )
+    checks.append(
         run_check(
             'live_provider_smoke',
             ['python', 'services/api/scripts/smoke_live_providers.py'],
             skip=not run_live_smoke,
             skip_reason='ENABLE_LIVE_PROVIDER_SMOKE is not true',
-        ),
-    ]
+        )
+    )
 
     payload = {
         'ok': all(check.passed for check in checks),
