@@ -92,22 +92,31 @@ type PilotAuthContextValue = {
 
 const PilotAuthContext = createContext<PilotAuthContextValue | null>(null);
 
-async function readApiResponse<T>(response: Response): Promise<Partial<T> & { detail?: string; message?: string }> {
+type ApiResponsePayload<T extends object = Record<string, never>> = Partial<T> & {
+  detail?: string;
+  message?: string;
+};
+
+function makeApiResponseFallback<T extends object>(detail: string): ApiResponsePayload<T> {
+  return { detail } as ApiResponsePayload<T>;
+}
+
+async function readApiResponse<T extends object = Record<string, never>>(response: Response): Promise<ApiResponsePayload<T>> {
   const contentType = response.headers.get('content-type') || '';
 
   if (contentType.includes('application/json')) {
     try {
-      return (await response.json()) as Partial<T> & { detail?: string; message?: string };
+      return (await response.json()) as ApiResponsePayload<T>;
     } catch {
-      return { detail: `Request failed with HTTP ${response.status}` } as Partial<T> & { detail?: string; message?: string };
+      return makeApiResponseFallback<T>(`Request failed with HTTP ${response.status}`);
     }
   }
 
   try {
     const text = await response.text();
-    return { detail: text ? 'Request failed. Please try again.' : `Request failed with HTTP ${response.status}` } as Partial<T> & { detail?: string; message?: string };
+    return makeApiResponseFallback<T>(text ? 'Request failed. Please try again.' : `Request failed with HTTP ${response.status}`);
   } catch {
-    return { detail: `Request failed with HTTP ${response.status}` } as Partial<T> & { detail?: string; message?: string };
+    return makeApiResponseFallback<T>(`Request failed with HTTP ${response.status}`);
   }
 }
 
@@ -199,7 +208,9 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     if (!response.ok) {
-      const data = await readApiResponse<{ detail?: string }>(response).catch(() => ({ detail: 'Your session expired. Please sign in again.' }));
+      const data = await readApiResponse<{ detail?: string }>(response).catch((): ApiResponsePayload<{ detail?: string }> => ({
+        detail: 'Your session expired. Please sign in again.',
+      }));
       window.localStorage.removeItem(TOKEN_STORAGE_KEY);
       writeTokenCookie(null);
       setToken(null);
