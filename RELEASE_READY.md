@@ -14,12 +14,12 @@
 
 Reason:
 
-1. Next.js upgrade + audit remediation could not be completed in this execution environment because npm registry access is currently blocked (HTTP 403).
+1. Fresh dependency installation and npm audit remediation still cannot be completed in this execution environment because npm registry access is blocked (HTTP 403).
 2. Full browser E2E replacement and live-provider smoke execution still require running against a configured staging deployment with real provider credentials.
 
 ## Remaining blockers for broad sale
 
-1. Upgrade Next.js in `apps/web` after registry access is restored, then rerun build + audit and document residual risks.
+1. Regenerate lockfile + reinstall dependencies with registry access restored, then rerun `npm audit` and confirm runtime build uses the expected pinned Next.js version.
 2. Execute staging browser E2E flow coverage for sign-up → verify email → sign-in → MFA → workspace operations → export download.
 3. Execute live smoke in staging with real provider credentials and archive outputs for launch evidence.
 

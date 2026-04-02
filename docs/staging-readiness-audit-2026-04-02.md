@@ -13,13 +13,13 @@ Assess whether the product can support a first-customer staging journey **withou
 - PASS: Monitoring worker runtime loop + health reporting tests pass.
 - PASS: Core backend validation suites pass for startup/billing/auth diagnostics.
 - PASS: Next.js production build succeeds when staging-like env vars are set.
-- FAIL: Canonical `make validate-staging` fails in this environment due strict build URL check (`API_URL=http://127.0.0.1:8000`), npm audit network 403, and missing Playwright browser binary.
-- FAIL: `make validate-production` target fails due import path bug (`ModuleNotFoundError: No module named 'services'`).
+- PASS: `make validate-production` no longer fails with `ModuleNotFoundError: No module named 'services'`; it now executes the staging validation suite correctly.
+- PASS/UNPROVEN: `make validate-staging` now passes deterministic API + web build checks in this environment, but still cannot prove browser E2E or live providers without extra access.
 - UNPROVEN: Real staging sign-up/email verification/sign-in/MFA/workspace/onboarding/target/analysis/alert/export/webhook delivery.
 - UNPROVEN: Live provider integrations (email provider delivery, Paddle/Stripe webhooks, Redis-backed auth limits, chain provider ingestion) against staging infra.
 
 ## Evidence notes
-- Build gate in web validation script blocks localhost API URLs for production/preview-like builds.
+- Validation runner now defaults to a non-localhost staging placeholder URL when `STAGING_API_URL` is unset, which avoids false negatives from localhost-only build safety checks.
 - Backend routes and tests strongly indicate intended workflows, but no externally reachable staging URL/credentials were provided for end-to-end browser/API proof.
 - Exports and target creation can be plan-gated via entitlements; a billing-free first customer must use a trial/entitlement profile allowing required actions.
 

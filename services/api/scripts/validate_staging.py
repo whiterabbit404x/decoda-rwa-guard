@@ -35,7 +35,7 @@ def main() -> int:
 
     web_env = env.copy()
     web_env.setdefault('NEXT_PUBLIC_LIVE_MODE_ENABLED', 'true')
-    web_env.setdefault('API_URL', env.get('STAGING_API_URL', 'http://127.0.0.1:8000'))
+    web_env.setdefault('API_URL', env.get('STAGING_API_URL', 'https://api.staging.example.com'))
     lockfile_exists = (REPO_ROOT / 'package-lock.json').exists() or (REPO_ROOT / 'apps/web/package-lock.json').exists()
 
     checks = [
