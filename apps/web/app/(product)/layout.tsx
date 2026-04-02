@@ -14,8 +14,9 @@ function ProductLayoutLoading({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-export default function ProductLayout({ children }: { children: React.ReactNode }) {
-  const token = cookies().get(TOKEN_COOKIE_NAME)?.value;
+export default async function ProductLayout({ children }: { children: React.ReactNode }) {
+  const cookieStore = await cookies();
+  const token = cookieStore.get(TOKEN_COOKIE_NAME)?.value;
   const runtimeConfig = getRuntimeConfig();
 
   if (shouldRedirectUnauthenticatedProductAccess(token, runtimeConfig)) {
