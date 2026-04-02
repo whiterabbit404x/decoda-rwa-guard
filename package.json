@@ -20,7 +20,7 @@
     "test:frontend:staging-evidence": "playwright test apps/web/tests/staging-evidence-flow.spec.ts"
   },
   "devDependencies": {
-    "@playwright/test": "1.55.0",
-    "playwright": "1.55.0"
+    "@playwright/test": "1.53.2",
+    "playwright": "1.53.2"
   }
 }

@@ -1353,7 +1353,7 @@ This executes deterministic auth/MFA, monitoring, Slack/webhook routing, export/
 - Monitoring worker health: `GET /ops/monitoring/health`
 
 ### Next.js / npm note
-This repository currently pins `next@15.5.7`. In this environment, npm registry access is blocked (HTTP 403), so dependency upgrades and `npm audit` remediation must be run in CI or a network-enabled workstation.
+This repository pins Next.js to the secure `15.5.x` line (`apps/web` currently uses `15.5.9`) and validates package/lockfile/runtime alignment with `python scripts/check_frontend_runtime_alignment.py`.
 
 ## Strict production-required API environment variables
 
@@ -1373,20 +1373,26 @@ Readiness + diagnostics endpoints:
 - `GET /health/readiness` → `healthy`, `degraded`, or `not_ready` + top-level `billing` diagnostics (`provider`, `status`, `available`, checks).
 - `GET /health/diagnostics` → machine-readable per-check pass/fail output (secret-safe), including billing diagnostics.
 
-## Staging validation command
+## Launch validation commands
 
-Canonical readiness command:
+Canonical launch-gate commands:
 
 ```bash
+make validate-production
 make validate-staging
+make validate-launch
 ```
 
-This runs backend readiness tests, billing runtime tests, web build/audit checks, and optional browser/provider smoke checks.
+These gates emit machine-readable JSON and an operator summary across six categories:
 
-Optional flags:
+1. `local_repo_integrity`
+2. `frontend_build_reproducibility`
+3. `browser_e2e_runtime`
+4. `api_runtime_readiness`
+5. `live_provider_configuration`
+6. `staging_evidence`
 
-- `ENABLE_PLAYWRIGHT_E2E=false` to skip browser suite in constrained CI.
-- `ENABLE_LIVE_PROVIDER_SMOKE=true` to run live/provider smoke checks.
+Use `make install-web-test-runtime` if Playwright package/browsers are missing.
 
 ## Billing verification notes
 
@@ -1414,8 +1420,47 @@ Run:
 python services/api/scripts/smoke_live_providers.py
 ```
 
-This validates configured readiness for email, Stripe, Redis, and optional live-chain monitoring (`EVM_RPC_URL`).
+The smoke report now classifies each provider check as `verified`, `configured_unverified`, `not_configured`, or `fail` for:
+
+- Email provider and sender domain setup
+- Billing provider coherence (Paddle/Stripe credentials + configuration)
+- Redis production requirement enforcement
+- Staging API `/health/readiness` response
+- EVM RPC reachability + `eth_chainId` probe when `EVM_RPC_URL` is set
 
 ## E2E browser test path
 
-Playwright remains opt-in for staging validation via `ENABLE_PLAYWRIGHT_E2E=true` in `make validate-staging`. Failed runs keep traces/screenshots per Playwright defaults.
+Use `make install-web-test-runtime` to install deterministic browser runtime prerequisites.
+
+Then run:
+
+```bash
+npx playwright test apps/web/tests/feature4-smoke.spec.ts
+python scripts/staging/run_evidence_flow.py
+```
+
+Validation explicitly separates dependency-missing, browser-binaries-missing, and true E2E execution failures.
+
+
+## Minimal launch runbook (Vercel + Railway)
+
+### Vercel (apps/web)
+- Set project root to `apps/web`.
+- Required envs: `NEXT_PUBLIC_LIVE_MODE_ENABLED`, and one of `API_URL` or `NEXT_PUBLIC_API_URL` (prefer `API_URL`).
+- Deploy and verify build output before running staging evidence.
+
+### Railway (services/api)
+- Required baseline envs: `APP_ENV=production`, `LIVE_MODE_ENABLED=true`, `DATABASE_URL`, `AUTH_TOKEN_SECRET`, `REDIS_URL`.
+- Email launch path: `EMAIL_PROVIDER=resend`, `EMAIL_FROM`, `EMAIL_RESEND_API_KEY`.
+- Billing launch path: `BILLING_PROVIDER=paddle|stripe` + matching webhook/API secrets.
+
+### Billing webhooks
+- Paddle: point to `POST /billing/webhooks/paddle`.
+- Stripe: point to `POST /billing/webhooks/stripe`.
+- Re-run `python services/api/scripts/smoke_live_providers.py` after webhook secret changes.
+
+### MFA status note
+- Backend MFA is implemented and validated.
+- Frontend MFA flows exist for sign-in challenge and settings enrollment; enterprise auth controls (for example SSO/SCIM) remain future work.
+
+See `docs/LAUNCH_VALIDATION_CHECKLIST.md` for pilot vs broad-sale vs enterprise gating criteria.
