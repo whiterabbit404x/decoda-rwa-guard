@@ -16,8 +16,8 @@ Assess whether the product can support a first-customer staging journey **withou
 - PASS: Frontend runtime dependency lockstep check now passes (`apps/web/package.json` and installed runtime both resolve `next=15.5.7`).
 - PASS: `make validate-production` no longer fails with `ModuleNotFoundError: No module named 'services'`; it now executes the staging validation suite correctly.
 - FAIL/UNPROVEN: `make validate-staging` now surfaces one hard gap in this environment: missing Playwright browser binaries; validation flags the browser-runtime gap explicitly (`web_playwright_browser_runtime`) and skips E2E until binaries are installed.
-- FAIL/UNPROVEN: `make install-web` currently fails with `403 Forbidden` against `https://registry.npmjs.org/next`, so dependency refresh and lockfile regeneration cannot be proven in this execution environment.
-- UNPROVEN: `npm audit --workspace apps/web --audit-level=high` is skipped because no npm lockfile is present in repo.
+- PASS: `make install-web` succeeds in this environment and produced a root `package-lock.json` for reproducible installs.
+- FAIL/UNPROVEN: `npm audit --workspace apps/web --audit-level=high` now runs but fails with `403 Forbidden` against `https://registry.npmjs.org/-/npm/v1/security/advisories/bulk`, so security advisory verification remains blocked by registry access policy.
 - UNPROVEN: Real staging sign-up/email verification/sign-in/MFA/workspace/onboarding/target/analysis/alert/export/webhook delivery.
 - UNPROVEN: Live provider integrations (email provider delivery, Paddle/Stripe webhooks, Redis-backed auth limits, chain provider ingestion) against staging infra.
 

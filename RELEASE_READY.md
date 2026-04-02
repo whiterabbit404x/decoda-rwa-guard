@@ -9,7 +9,7 @@
 - Staging validation now reports a dedicated `web_playwright_browser_runtime` check with an explicit install path/message before attempting Playwright E2E.
 - New staging validation check enforces `apps/web/package.json` `next` version matches the installed runtime dependency used by `next build`; this now passes after aligning the declared version to `15.5.7`.
 - Full backend test suite currently passes locally (`151 passed`), and web production build currently succeeds under the installed runtime (`Next.js 15.5.7`).
-- npm dependency refresh remains unproven in this environment because `npm install --workspace apps/web` fails with `403 Forbidden` from `registry.npmjs.org`, and no npm lockfile is currently present in repo for auditable dependency capture.
+- npm workspace install now succeeds locally (`make install-web`) and a root `package-lock.json` is present for reproducible dependency capture.
 
 ## Go / No-Go recommendation
 
@@ -17,16 +17,15 @@
 
 Reason:
 
-1. Fresh dependency installation and npm audit remediation still cannot be completed in this execution environment because npm registry access is blocked (HTTP 403).
+1. npm audit remediation still cannot be completed in this execution environment because `npm audit` returns `403 Forbidden` from `registry.npmjs.org/-/npm/v1/security/advisories/bulk`.
 2. Full browser E2E replacement and live-provider smoke execution still require running against a configured staging deployment with real provider credentials.
 
 ## Remaining blockers for broad sale
 
 1. Browser E2E validation is still not proven here because Playwright browser binaries are missing; run Playwright with installed browsers against staging.
-2. npm lockfile-backed dependency auditing is not proven here because no lockfile exists in repo; generate and commit lockfile in a registry-enabled environment so `npm audit --workspace apps/web --audit-level=high` can run as a hard check.
-3. Dependency refresh remains blocked in this environment: `make install-web` and `npm install --workspace apps/web --package-lock-only` fail with `403 Forbidden` from `registry.npmjs.org`, preventing lockfile regeneration.
-4. Execute full staging browser flow coverage for sign-up → verify email → sign-in → MFA → workspace/onboarding/target/analysis/alert/export/webhook and archive evidence.
-5. Execute live provider smoke in staging with real provider credentials and archive outputs for launch evidence.
+2. npm audit high-severity verification is still blocked in this environment: `npm audit --workspace apps/web --audit-level=high` returns `403 Forbidden` from `registry.npmjs.org/-/npm/v1/security/advisories/bulk`.
+3. Execute full staging browser flow coverage for sign-up → verify email → sign-in → MFA → workspace/onboarding/target/analysis/alert/export/webhook and archive evidence.
+4. Execute live provider smoke in staging with real provider credentials and archive outputs for launch evidence.
 
 ## Deployment/operator steps still required
 
