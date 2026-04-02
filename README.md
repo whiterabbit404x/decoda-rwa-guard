@@ -1419,3 +1419,12 @@ This validates configured readiness for email, Stripe, Redis, and optional live-
 ## E2E browser test path
 
 Playwright remains opt-in for staging validation via `ENABLE_PLAYWRIGHT_E2E=true` in `make validate-staging`. Failed runs keep traces/screenshots per Playwright defaults.
+
+## Running without billing (pilot mode)
+
+For pilot/staging environments where checkout is intentionally deferred:
+
+- API: set `BILLING_ENABLED=false` and `BILLING_PROVIDER=none`.
+- Web: set `NEXT_PUBLIC_BILLING_ENABLED=false`.
+
+With these settings, core auth/workspace/analysis/alerts/exports/webhook workflows stay available, and billing UI moves to a non-blocking "coming soon / contact sales" state.
