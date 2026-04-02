@@ -7,14 +7,25 @@ import SignInPageClient from './sign-in-page-client';
 
 export const dynamic = 'force-dynamic';
 
-export default function SignInPage({ searchParams }: { searchParams?: { next?: string } }) {
+export default async function SignInPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ next?: string }>;
+}) {
   const isPreviewDeployment = process.env.VERCEL_ENV === 'preview';
   const runtimeConfig = getRuntimeConfig();
-  const token = cookies().get('decoda-pilot-access-token')?.value;
+  const cookieStore = await cookies();
+  const token = cookieStore.get('decoda-pilot-access-token')?.value;
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
 
   if (runtimeConfig.liveModeEnabled && token) {
     redirect('/dashboard');
   }
 
-  return <SignInPageClient nextPath={searchParams?.next} previewNotice={isPreviewDeployment ? <PreviewDeploymentNotice /> : null} />;
+  return (
+    <SignInPageClient
+      nextPath={resolvedSearchParams?.next}
+      previewNotice={isPreviewDeployment ? <PreviewDeploymentNotice /> : null}
+    />
+  );
 }
