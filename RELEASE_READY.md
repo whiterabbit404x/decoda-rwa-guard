@@ -1,12 +1,12 @@
 # RELEASE_READY
 
-## What is now verified in-repo
+## What is now verified in-repo (rechecked 2026-04-02)
 
-- Production startup validation now enforces explicit required settings for database, auth secret, email provider/from/provider key, Redis, and billing-provider keys (Paddle-first by default).
-- Readiness now returns explicit operational status values (`healthy`, `degraded`, `not_ready`) and machine-readable diagnostics at `/health/diagnostics`.
-- Deterministic billing runtime tests now cover Paddle checkout contract behavior, webhook signature validation, replay/idempotency, reconciliation writes, and subscription lifecycle state mapping.
-- Canonical staging/prod validation command added: `make validate-staging`.
-- Optional live-provider smoke runner added for email, billing provider health, Redis, and live-chain prereq checks.
+- Production startup validation enforces required settings for database, auth secret, email provider/from/provider key, Redis, and billing-provider strict-mode checks.
+- Readiness returns explicit operational status values (`healthy`, `degraded`, `not_ready`) with machine-readable diagnostics at `/health/diagnostics`.
+- Deterministic billing runtime tests cover checkout contract behavior, webhook signature validation, replay/idempotency, reconciliation writes, and subscription lifecycle state mapping.
+- `make validate-staging` and `make validate-production` run and correctly fail when critical verification checks fail (web dependency mismatch and missing browser runtime for Playwright in this environment).
+- New staging validation check now enforces `apps/web/package.json` `next` version matches the installed runtime dependency used by `next build`.
 
 ## Go / No-Go recommendation
 
@@ -19,9 +19,10 @@ Reason:
 
 ## Remaining blockers for broad sale
 
-1. Regenerate lockfile + reinstall dependencies with registry access restored, then rerun `npm audit` and confirm runtime build uses the expected pinned Next.js version.
-2. Execute staging browser E2E flow coverage for sign-up → verify email → sign-in → MFA → workspace operations → export download.
-3. Execute live smoke in staging with real provider credentials and archive outputs for launch evidence.
+1. Dependency/runtime mismatch exists in this environment: `apps/web/package.json` declares `next=15.5.9` while installed runtime is `next=14.2.5`; reinstall with registry access and regenerate lockfile so runtime matches declared version.
+2. Browser E2E validation is still not proven here because Playwright browser binaries are missing; run Playwright with installed browsers against staging.
+3. Execute full staging browser flow coverage for sign-up → verify email → sign-in → MFA → workspace/onboarding/target/analysis/alert/export/webhook and archive evidence.
+4. Execute live provider smoke in staging with real provider credentials and archive outputs for launch evidence.
 
 ## Deployment/operator steps still required
 

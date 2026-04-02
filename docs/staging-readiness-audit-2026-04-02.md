@@ -13,13 +13,15 @@ Assess whether the product can support a first-customer staging journey **withou
 - PASS: Monitoring worker runtime loop + health reporting tests pass.
 - PASS: Core backend validation suites pass for startup/billing/auth diagnostics.
 - PASS: Next.js production build succeeds when staging-like env vars are set.
+- FAIL: Validation now correctly detects frontend runtime dependency drift (`apps/web/package.json` declares `next=15.5.9` but installed runtime dependency is `next=14.2.5`).
 - PASS: `make validate-production` no longer fails with `ModuleNotFoundError: No module named 'services'`; it now executes the staging validation suite correctly.
-- PASS/UNPROVEN: `make validate-staging` now passes deterministic API + web build checks in this environment, but still cannot prove browser E2E or live providers without extra access.
+- FAIL/UNPROVEN: `make validate-staging` surfaces two hard gaps in this environment: Next.js runtime version drift and missing Playwright browser binaries; live providers remain unproven without external access.
 - UNPROVEN: Real staging sign-up/email verification/sign-in/MFA/workspace/onboarding/target/analysis/alert/export/webhook delivery.
 - UNPROVEN: Live provider integrations (email provider delivery, Paddle/Stripe webhooks, Redis-backed auth limits, chain provider ingestion) against staging infra.
 
 ## Evidence notes
-- Validation runner now defaults to a non-localhost staging placeholder URL when `STAGING_API_URL` is unset, which avoids false negatives from localhost-only build safety checks.
+- Validation runner defaults to a non-localhost staging placeholder URL when `STAGING_API_URL` is unset, which avoids false negatives from localhost-only build safety checks.
+- Staging validation now includes an explicit check for declared-vs-installed Next.js runtime version sync to prevent false PASS when stale node_modules are present.
 - Backend routes and tests strongly indicate intended workflows, but no externally reachable staging URL/credentials were provided for end-to-end browser/API proof.
 - Exports and target creation can be plan-gated via entitlements; a billing-free first customer must use a trial/entitlement profile allowing required actions.
 
