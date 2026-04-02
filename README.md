@@ -1353,7 +1353,7 @@ This executes deterministic auth/MFA, monitoring, Slack/webhook routing, export/
 - Monitoring worker health: `GET /ops/monitoring/health`
 
 ### Next.js / npm note
-This repository currently pins `next@15.5.7`. In this environment, npm registry access is blocked (HTTP 403), so dependency upgrades and `npm audit` remediation must be run in CI or a network-enabled workstation.
+This repository currently pins `next@15.5.9`. In this environment, npm registry access is blocked (HTTP 403), so dependency upgrades and `npm audit` remediation must be run in CI or a network-enabled workstation.
 
 ## Strict production-required API environment variables
 
