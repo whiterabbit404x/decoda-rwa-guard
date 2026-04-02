@@ -13,9 +13,9 @@ Assess whether the product can support a first-customer staging journey **withou
 - PASS: Monitoring worker runtime loop + health reporting tests pass.
 - PASS: Core backend validation suites pass for startup/billing/auth diagnostics.
 - PASS: Next.js production build succeeds when staging-like env vars are set.
-- FAIL: Validation now correctly detects frontend runtime dependency drift (`apps/web/package.json` declares `next=15.5.9` but installed runtime dependency is `next=14.2.5`).
+- PASS: Frontend runtime dependency lockstep check now passes (`apps/web/package.json` and installed runtime both resolve `next=15.5.7`).
 - PASS: `make validate-production` no longer fails with `ModuleNotFoundError: No module named 'services'`; it now executes the staging validation suite correctly.
-- FAIL/UNPROVEN: `make validate-staging` surfaces two hard gaps in this environment: Next.js runtime version drift and missing Playwright browser binaries; validation now flags the browser-runtime gap explicitly (`web_playwright_browser_runtime`) and skips E2E until binaries are installed.
+- FAIL/UNPROVEN: `make validate-staging` now surfaces one hard gap in this environment: missing Playwright browser binaries; validation flags the browser-runtime gap explicitly (`web_playwright_browser_runtime`) and skips E2E until binaries are installed.
 - FAIL/UNPROVEN: `make install-web` currently fails with `403 Forbidden` against `https://registry.npmjs.org/next`, so dependency refresh and lockfile regeneration cannot be proven in this execution environment.
 - UNPROVEN: `npm audit --workspace apps/web --audit-level=high` is skipped because no npm lockfile is present in repo.
 - UNPROVEN: Real staging sign-up/email verification/sign-in/MFA/workspace/onboarding/target/analysis/alert/export/webhook delivery.
@@ -23,7 +23,7 @@ Assess whether the product can support a first-customer staging journey **withou
 
 ## Evidence notes
 - Validation runner defaults to a non-localhost staging placeholder URL when `STAGING_API_URL` is unset, which avoids false negatives from localhost-only build safety checks.
-- Staging validation now includes an explicit check for declared-vs-installed Next.js runtime version sync to prevent false PASS when stale node_modules are present.
+- Staging validation includes an explicit check for declared-vs-installed Next.js runtime version sync to prevent false PASS when stale node_modules are present; this check now passes locally after aligning `apps/web/package.json` to the installed runtime patch version.
 - Full local backend test suite currently passes (`151 passed`), but this remains non-E2E evidence.
 - Backend routes and tests strongly indicate intended workflows, but no externally reachable staging URL/credentials were provided for end-to-end browser/API proof.
 - Exports and target creation can be plan-gated via entitlements; a billing-free first customer must use a trial/entitlement profile allowing required actions.
