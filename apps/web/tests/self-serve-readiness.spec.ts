@@ -23,6 +23,8 @@ test('auth pages include guarded submit and authenticated redirect handling', as
   expect(signUp).toContain("router.replace('/dashboard')");
   expect(signInPage).toContain("redirect('/dashboard')");
   expect(signUpPage).toContain("redirect('/dashboard')");
+  expect(signInPage).toContain('const cookieStore = await cookies();');
+  expect(signUpPage).toContain('const cookieStore = await cookies();');
 });
 
 test('authenticated route guards unauthenticated and missing-workspace users', async () => {
@@ -32,6 +34,7 @@ test('authenticated route guards unauthenticated and missing-workspace users', a
   expect(guard).toContain("router.replace(`/sign-in?next=${next}`)");
   expect(guard).toContain("router.replace(`/workspaces?next=${next}`)");
   expect(guard).toContain('Preparing your workspace…');
+  expect(productLayout).toContain('const cookieStore = await cookies();');
   expect(productLayout).toContain('<Suspense fallback={<ProductLayoutLoading>{children}</ProductLayoutLoading>}>');
 });
 
