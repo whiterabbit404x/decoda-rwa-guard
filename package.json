@@ -15,9 +15,12 @@
     "smoke:feature3": "python scripts/smoke_feature3.py",
     "test:backend:feature4-smoke": "python -m pytest services/api/tests/test_feature4_smoke.py -q",
     "test:frontend:feature4-smoke": "playwright test apps/web/tests/feature4-smoke.spec.ts",
-    "smoke:feature4": "python scripts/smoke_feature4.py"
+    "smoke:feature4": "python scripts/smoke_feature4.py",
+    "evidence:staging": "python scripts/staging/run_evidence_flow.py",
+    "test:frontend:staging-evidence": "playwright test apps/web/tests/staging-evidence-flow.spec.ts"
   },
   "devDependencies": {
-    "@playwright/test": "1.53.2"
+    "@playwright/test": "1.55.0",
+    "playwright": "1.55.0"
   }
 }

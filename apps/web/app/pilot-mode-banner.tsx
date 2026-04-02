@@ -15,14 +15,14 @@ export default function PilotModeBanner() {
   return (
     <section className="banner banner-pilot">
       <div>
-        <strong>Pilot access:</strong>{' '}
+        <strong>Workspace access:</strong>{' '}
         {!liveModeConfigured
-          ? 'Sample mode is available now. Enable live workspace access after the deployment environment variables are added.'
+          ? 'Live feed temporarily unavailable. Configure deployment environment variables to restore workspace data.'
           : loading
             ? 'Checking your workspace session…'
             : isAuthenticated
               ? `Signed in as ${user?.email} in ${user?.current_workspace?.name ?? 'a workspace pending selection'}.`
-              : 'Live workspace access is available. Sign in to save activity and history for your team.'}
+              : 'Live workspace access is available. Sign in to save activity and investigation history for your team.'}
       </div>
       <div className="chipRow">
         <Link href="/">Dashboard</Link>

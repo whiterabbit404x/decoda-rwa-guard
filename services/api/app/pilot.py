@@ -23,6 +23,8 @@ from urllib.request import Request as UrlRequest, urlopen
 
 import importlib
 from fastapi import HTTPException, Request, status
+from services.api.app.secret_crypto import decrypt_secret, encrypt_secret, validate_encryption_bootstrap
+from services.api.app.export_storage import load_export_storage
 
 ROLE_VALUES = {'owner', 'admin', 'analyst', 'viewer', 'workspace_owner', 'workspace_admin', 'workspace_member'}
 ROLE_CANONICAL_MAP = {
@@ -268,6 +270,11 @@ def validate_runtime_configuration() -> dict[str, Any]:
     if is_production_like:
         _record_check('database_url', bool(database_url()), required=True, detail='DATABASE_URL must be configured when LIVE_MODE_ENABLED=true in production.')
         _record_check('auth_token_secret', auth_token_secret_configured(), required=True, detail='AUTH_TOKEN_SECRET must be configured in production.')
+        try:
+            validate_encryption_bootstrap()
+            _record_check('secret_encryption_key', True, required=True, detail='SECRET_ENCRYPTION_KEY is configured.')
+        except Exception as exc:
+            _record_check('secret_encryption_key', False, required=True, detail=str(exc))
 
         email_provider = _email_provider()
         _record_check('email_provider_set', bool(email_provider), required=True, detail='EMAIL_PROVIDER must be configured in production.')
@@ -2594,17 +2601,14 @@ def _mask_url(value: str) -> str:
     return f'{trimmed[:5]}...{trimmed[-4:]}'
 
 
-def _encode_secret_value(value: str) -> str:
-    return base64.b64encode(value.encode('utf-8')).decode('ascii')
+def _encode_secret_value(value: str, *, aad: str = '') -> str:
+    return encrypt_secret(value, aad=aad)
 
 
-def _decode_secret_value(value: str) -> str:
+def _decode_secret_value(value: str, *, aad: str = '') -> str:
     if not value:
         return ''
-    try:
-        return base64.b64decode(value.encode('ascii')).decode('utf-8')
-    except Exception:
-        return value
+    return decrypt_secret(value, aad=aad)
 
 
 def _normalize_routing_payload(payload: dict[str, Any], *, channel_type: str) -> dict[str, Any]:
@@ -2790,20 +2794,22 @@ def create_slack_integration(payload: dict[str, Any], request: Request) -> dict[
         integration_id = str(uuid.uuid4())
         connection.execute(
             '''
-            INSERT INTO workspace_slack_integrations (id, workspace_id, display_name, slack_mode, webhook_url_encrypted, webhook_last4, bot_token_encrypted, bot_token_last4, default_channel, severity_routing, enabled, created_by_user_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, TRUE, %s)
+            INSERT INTO workspace_slack_integrations (id, workspace_id, display_name, slack_mode, webhook_url_encrypted, webhook_last4, bot_token_encrypted, bot_token_last4, default_channel, severity_routing, secret_scheme, secret_key_id, enabled, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, TRUE, %s)
             ''',
             (
                 integration_id,
                 workspace_context['workspace_id'],
                 display_name,
                 mode,
-                (_encode_secret_value(webhook_url) if webhook_url else None),
+                (_encode_secret_value(webhook_url, aad=f'slack:{workspace_context["workspace_id"]}:webhook') if webhook_url else None),
                 (webhook_url[-4:] if webhook_url else None),
-                (_encode_secret_value(bot_token) if bot_token else None),
+                (_encode_secret_value(bot_token, aad=f'slack:{workspace_context["workspace_id"]}:bot') if bot_token else None),
                 (bot_token[-4:] if bot_token else None),
                 default_channel,
                 _json_dumps(_normalize_slack_severity_routing(payload)),
+                'aes256gcm:v1',
+                os.getenv('SECRET_ENCRYPTION_KEY_ID', 'env-default').strip() or 'env-default',
                 user['id'],
             ),
         )
@@ -2844,6 +2850,8 @@ def update_slack_integration(integration_id: str, payload: dict[str, Any], reque
                 bot_token_encrypted = COALESCE(%s, bot_token_encrypted),
                 bot_token_last4 = COALESCE(%s, bot_token_last4),
                 severity_routing = COALESCE(%s::jsonb, severity_routing),
+                secret_scheme = COALESCE(%s, secret_scheme),
+                secret_key_id = COALESCE(%s, secret_key_id),
                 updated_at = NOW()
             WHERE id = %s
             ''',
@@ -2852,11 +2860,13 @@ def update_slack_integration(integration_id: str, payload: dict[str, Any], reque
                 next_mode,
                 str(payload.get('default_channel')).strip() if payload.get('default_channel') is not None else None,
                 payload.get('enabled') if payload.get('enabled') is not None else None,
-                _encode_secret_value(next_url) if next_url else None,
+                _encode_secret_value(next_url, aad=f'slack:{workspace_context["workspace_id"]}:webhook') if next_url else None,
                 (next_url[-4:] if next_url else None),
-                _encode_secret_value(next_bot_token) if next_bot_token else None,
+                _encode_secret_value(next_bot_token, aad=f'slack:{workspace_context["workspace_id"]}:bot') if next_bot_token else None,
                 (next_bot_token[-4:] if next_bot_token else None),
                 _json_dumps(_normalize_slack_severity_routing(payload)) if payload.get('severity_routing') is not None else None,
+                'aes256gcm:v1' if (next_url or next_bot_token) else None,
+                os.getenv('SECRET_ENCRYPTION_KEY_ID', 'env-default').strip() or 'env-default' if (next_url or next_bot_token) else None,
                 integration_id,
             ),
         )
@@ -2929,8 +2939,8 @@ def test_slack_integration(integration_id: str, request: Request) -> dict[str, A
                 'delivery_id': delivery_id,
                 'mode': str(integration.get('slack_mode') or 'webhook'),
                 'default_channel': str(integration.get('default_channel') or ''),
-                'webhook_url': _decode_secret_value(str(integration['webhook_url_encrypted'])) if integration.get('webhook_url_encrypted') else '',
-                'bot_token': _decode_secret_value(str(integration['bot_token_encrypted'])) if integration.get('bot_token_encrypted') else '',
+                'webhook_url': _decode_secret_value(str(integration['webhook_url_encrypted']), aad=f'slack:{workspace_context["workspace_id"]}:webhook') if integration.get('webhook_url_encrypted') else '',
+                'bot_token': _decode_secret_value(str(integration['bot_token_encrypted']), aad=f'slack:{workspace_context["workspace_id"]}:bot') if integration.get('bot_token_encrypted') else '',
                 'payload': slack_payload,
             },
             max_attempts=4,
@@ -3259,8 +3269,8 @@ def _queue_alert_deliveries(
                     'delivery_id': delivery_id,
                     'mode': provider_mode,
                     'default_channel': str(integration.get('default_channel') or ''),
-                    'webhook_url': _decode_secret_value(str(integration.get('webhook_url_encrypted') or '')),
-                    'bot_token': _decode_secret_value(str(integration.get('bot_token_encrypted') or '')),
+                    'webhook_url': _decode_secret_value(str(integration.get('webhook_url_encrypted') or ''), aad=f'slack:{workspace_id}:webhook'),
+                    'bot_token': _decode_secret_value(str(integration.get('bot_token_encrypted') or ''), aad=f'slack:{workspace_id}:bot'),
                     'payload': slack_payload,
                 },
                 max_attempts=4,
@@ -4352,10 +4362,10 @@ def create_export_job(export_type: str, payload: dict[str, Any], request: Reques
         output_path = f'{workspace_context["workspace_id"]}/{job_id}.{fmt}'
         connection.execute(
             '''
-            INSERT INTO export_jobs (id, workspace_id, requested_by_user_id, export_type, format, filters, status, output_path)
-            VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'queued', %s)
+            INSERT INTO export_jobs (id, workspace_id, requested_by_user_id, export_type, format, filters, status, output_path, storage_backend, storage_object_key)
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'queued', %s, %s, %s)
             ''',
-            (job_id, workspace_context['workspace_id'], user['id'], export_type, fmt, _json_dumps(payload.get('filters') if isinstance(payload.get('filters'), dict) else {}), output_path),
+            (job_id, workspace_context['workspace_id'], user['id'], export_type, fmt, _json_dumps(payload.get('filters') if isinstance(payload.get('filters'), dict) else {}), output_path, 'pending', output_path),
         )
         _generate_export_artifact(connection, workspace_id=workspace_context['workspace_id'], export_id=job_id)
         log_audit(connection, action='export.generate', entity_type='export_job', entity_id=job_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'export_type': export_type, 'format': fmt})
@@ -4378,21 +4388,23 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, analysis_type, status, title, summary, created_at FROM analysis_runs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
         case _:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export type.')
-    export_root = Path(os.getenv('EXPORTS_DIR', '/tmp/decoda-exports')).resolve()
-    workspace_dir = export_root / workspace_id
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    destination = workspace_dir / f'{export_id}.{job["format"]}'
+    storage = load_export_storage()
     try:
         if str(job['format']) == 'json':
-            destination.write_text(json.dumps({'rows': rows}, indent=2), encoding='utf-8')
+            content = json.dumps({'rows': rows}, indent=2).encode('utf-8')
         else:
             headers = sorted({key for row in rows for key in row.keys()})
-            with destination.open('w', encoding='utf-8', newline='') as handle:
-                writer = csv.DictWriter(handle, fieldnames=headers)
-                writer.writeheader()
-                for row in rows:
-                    writer.writerow({key: _json_safe_value(row.get(key)) for key in headers})
-        connection.execute("UPDATE export_jobs SET status = 'completed', error_message = NULL, updated_at = NOW() WHERE id = %s", (export_id,))
+            buffer = io.StringIO()
+            writer = csv.DictWriter(buffer, fieldnames=headers)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({key: _json_safe_value(row.get(key)) for key in headers})
+            content = buffer.getvalue().encode('utf-8')
+        object_key = storage.write_bytes(object_key=f"{workspace_id}/{export_id}.{job['format']}", content=content)
+        connection.execute(
+            "UPDATE export_jobs SET status = 'completed', error_message = NULL, storage_backend = %s, storage_object_key = %s, updated_at = NOW() WHERE id = %s",
+            (storage.backend_name, object_key, export_id),
+        )
     except Exception as exc:
         connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(exc), export_id))
 
@@ -4405,7 +4417,7 @@ def list_exports(request: Request) -> dict[str, Any]:
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, export_type, format, status, output_path, error_message, created_at, updated_at
+            SELECT id, export_type, format, status, output_path, storage_backend, storage_object_key, error_message, created_at, updated_at
             FROM export_jobs
             WHERE workspace_id = %s
             ORDER BY created_at DESC
@@ -4438,21 +4450,24 @@ def get_export(export_id: str, request: Request) -> dict[str, Any]:
         return {'export': item}
 
 
-def get_export_artifact_path(export_id: str, request: Request) -> Path:
+def get_export_artifact_content(export_id: str, request: Request) -> tuple[bytes, str]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
-        row = connection.execute('SELECT id, workspace_id, format, status FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_context['workspace_id'])).fetchone()
+        row = connection.execute('SELECT id, workspace_id, format, status, storage_object_key FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export not found.')
         if str(row['status']) != 'completed':
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Export is not ready yet.')
-        path = Path(os.getenv('EXPORTS_DIR', '/tmp/decoda-exports')).resolve() / str(row['workspace_id']) / f"{row['id']}.{row['format']}"
-        if not path.exists():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export artifact missing.')
-        return path
+        object_key = str(row.get('storage_object_key') or f"{row['workspace_id']}/{row['id']}.{row['format']}")
+        storage = load_export_storage()
+        try:
+            content = storage.read_bytes(object_key=object_key)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export artifact missing.') from exc
+        return content, f"{row['id']}.{row['format']}"
 
 
 def get_history_item(history_id: str, request: Request) -> dict[str, Any]:
