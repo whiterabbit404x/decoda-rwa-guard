@@ -39,6 +39,7 @@ def main() -> int:
         installed_playwright = str(read_json(pw_package_json).get('version', '')).strip()
     if pw_test_package_json.exists():
         installed_playwright_test = str(read_json(pw_test_package_json).get('version', '')).strip()
+    next_bin_exists = (REPO_ROOT / 'node_modules' / '.bin' / 'next').exists()
 
     checks: list[tuple[str, str, str]] = [
         ('web.next declared vs lock workspace', web_next_declared, lock_next_workspace),
@@ -55,16 +56,28 @@ def main() -> int:
         checks.append(('root @playwright/test declared vs installed runtime', root_playwright_test_declared, installed_playwright_test))
 
     failures = [name for name, expected, actual in checks if not expected or not actual or expected != actual]
+    binary_checks = [
+        {
+            'name': 'next workspace binary available',
+            'expected': True,
+            'actual': next_bin_exists,
+            'ok': next_bin_exists,
+        }
+    ]
+    if not next_bin_exists:
+        failures.append('next workspace binary available')
     payload = {
         'ok': not failures,
         'checks': [
             {'name': name, 'expected': expected, 'actual': actual, 'ok': bool(expected and actual and expected == actual)}
             for name, expected, actual in checks
-        ],
+        ]
+        + binary_checks,
         'remediation': [
             'Update package.json versions to match the lockfile or regenerate package-lock.json from a trusted npm install.',
             'Run `npm install --package-lock-only` after adjusting versions, then rerun this check.',
             'If installed runtime differs, delete node_modules and run `npm ci`.',
+            'If `next` is missing at runtime (`next: not found`), run `npm ci` from repo root so workspace binaries are linked.',
         ],
     }
     print(json.dumps(payload, indent=2))

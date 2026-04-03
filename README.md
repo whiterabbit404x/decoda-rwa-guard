@@ -1267,8 +1267,8 @@ Authenticated product routes now prioritize **live customer operations** over gu
 4. Start worker processing (`python services/api/scripts/run_worker.py`) so queued jobs are delivered.
 
 Notes:
-- OAuth install flow is not implemented yet; bot mode currently uses secure manual token setup.
-- Slack callback/interactivity endpoints are not implemented in this release.
+- Slack OAuth install + callback are supported when `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, and `SLACK_OAUTH_REDIRECT_URI` are configured.
+- Slack interactivity endpoints are not implemented in this release.
 - Slack payloads always include top-level `text` plus Block Kit sections (fallback/accessibility safe).
 
 ### Alert routing behavior

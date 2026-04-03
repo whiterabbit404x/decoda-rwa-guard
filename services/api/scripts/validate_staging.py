@@ -59,6 +59,23 @@ def run_command(category: str, name: str, command: list[str], *, env: dict[str, 
     )
 
 
+def browser_download_blocked(detail: str) -> bool:
+    lowered = (detail or '').lower()
+    return any(
+        marker in lowered
+        for marker in (
+            'download failed',
+            'failed to download chromium',
+            'server returned code 403',
+            'forbidden',
+            'etimedout',
+            'enotfound',
+            'econnrefused',
+            'eai_again',
+        )
+    )
+
+
 def check_playwright_runtime() -> ValidationCheck:
     node_check = subprocess.run(
         [
@@ -246,22 +263,30 @@ def run_validation(mode: str) -> int:
         )
         install_failed = install_check.status == 'fail'
         allow_browser_runtime_skip = env.get(ALLOW_BROWSER_RUNTIME_SKIP_ENV, '').strip().lower() in {'1', 'true', 'yes'}
-        if pilot_mode and install_failed and allow_browser_runtime_skip:
+        auto_skip_browser_runtime = pilot_mode and install_failed and browser_download_blocked(install_check.detail)
+        if pilot_mode and install_failed and (allow_browser_runtime_skip or auto_skip_browser_runtime):
             install_check.status = 'skip'
             install_check.detail = (
                 install_check.detail
-                + '\n\nSkipped in no-billing pilot mode because browser-runtime skip is explicitly allowed by ALLOW_BROWSER_RUNTIME_SKIP.'
+                + (
+                    '\n\nSkipped in no-billing pilot mode because browser-runtime skip is explicitly allowed by ALLOW_BROWSER_RUNTIME_SKIP.'
+                    if allow_browser_runtime_skip
+                    else '\n\nSkipped in no-billing pilot mode because browser runtime download was blocked by network policy.'
+                )
             )
         checks.append(install_check)
         runtime_check = check_playwright_runtime()
-        if pilot_mode and install_failed and allow_browser_runtime_skip:
+        if pilot_mode and install_failed and (allow_browser_runtime_skip or auto_skip_browser_runtime):
             checks.append(
                 ValidationCheck(
                     category='browser_e2e_runtime',
                     name='playwright_runtime_policy',
                     command=['npx', 'playwright', 'install', 'chromium'],
                     status='pass',
-                    detail='No-billing pilot mode allows browser runtime to be skipped only when ALLOW_BROWSER_RUNTIME_SKIP is explicitly enabled.',
+                    detail=(
+                        'No-billing pilot mode allows browser runtime to be skipped when ALLOW_BROWSER_RUNTIME_SKIP=true '
+                        'or when Chromium download is blocked by network policy.'
+                    ),
                     remediation=['Provision browser runtime in CI/staging runners to execute browser smoke checks.'],
                 )
             )
@@ -270,7 +295,10 @@ def run_validation(mode: str) -> int:
                 name='playwright_runtime_detection',
                 command=['node', '-e', 'playwright runtime detection'],
                 status='skip',
-                detail='Skipped in no-billing pilot mode because Chromium runtime download is blocked and ALLOW_BROWSER_RUNTIME_SKIP=true.',
+                detail=(
+                    'Skipped in no-billing pilot mode because Chromium runtime is unavailable '
+                    'and browser runtime skip policy is active.'
+                ),
                 remediation=['Run `make install-web-test-runtime` on a network-enabled runner before broad-sale launch gates.'],
                 metadata=runtime_check.metadata,
             )

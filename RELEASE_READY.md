@@ -9,7 +9,7 @@ Last reconciled: **2026-04-03**.
 - `make proof-no-billing-launch` → deterministic artifact bundle for no-billing public beta evidence (`artifacts/launch-proof/latest/{summary.json,summary.md}`).
 
 Both commands emit machine-readable JSON and category summaries.
-Browser runtime checks are required by default. Only no-billing pilot runs may skip browser runtime when `ALLOW_BROWSER_RUNTIME_SKIP=true` is set explicitly.
+Browser runtime checks are required by default. In no-billing pilot mode only, browser checks can be recorded as `SKIP` when Chromium download is blocked by runner network policy (or when `ALLOW_BROWSER_RUNTIME_SKIP=true` is set explicitly).
 
 ## Validation categories
 
@@ -29,7 +29,7 @@ Pass criteria:
 - Billing may be `not_configured` only when `BILLING_PROVIDER=none`.
 - Auth/session/workspace/runtime checks still must pass.
 - Public/legal/support/trust pages are present and coherent.
-- Integrations are self-serve via manual Slack/webhook setup with masked secrets, test-send actions, delivery logs, and worker-health guidance.
+- Integrations are self-serve via webhook/bot setup, with optional Slack OAuth install+callback when Slack OAuth env vars are configured.
 
 ### 2) Broad self-serve launch (future)
 Pass criteria:
@@ -45,4 +45,5 @@ Requires all broad self-serve criteria plus formal compliance/control evidence a
 - **Pilot launch:** ready when `BILLING_PROVIDER=none` and no-billing validation passes.
 - **Public marketing traffic:** ready (site copy and legal/commercial pages align with pilot mode).
 - **Broad paid self-serve:** **not yet** (billing enablement intentionally deferred).
-- **Slack OAuth app install/callback/interactivity:** **not yet** in this pass; manual Slack setup is the supported launch path.
+- **Slack OAuth app install/callback:** supported when `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, and `SLACK_OAUTH_REDIRECT_URI` are configured.
+- **Slack interactivity endpoints:** **not yet** in this pass; manual webhook/bot posting remains the default supported alerting path.
