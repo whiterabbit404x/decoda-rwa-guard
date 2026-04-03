@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 
 import AuthBuildBadge from '../auth-build-badge';
 import AuthDiagnosticCard from '../auth-diagnostic-card';
@@ -26,10 +26,9 @@ export default function SignInPageClient({
     runtimeConfigSource,
     signIn,
     completeMfaSignIn,
+    refreshUser,
     mfaChallengeToken,
     apiUrl,
-    isAuthenticated,
-    loading: authLoading,
   } = usePilotAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -49,21 +48,30 @@ export default function SignInPageClient({
   }), [apiTimeoutMs, apiUrl, configured, liveModeEnabled, runtimeConfigDiagnostic, runtimeConfigSource]);
   const formState = resolveAuthFormState(runtimeConfig, configLoading, loading);
 
-  useEffect(() => {
-    if (!authLoading && isAuthenticated) {
-      const targetPath = nextPath ?? '/dashboard';
-      if (lastRedirectPath.current === targetPath) {
-        return;
-      }
-      lastRedirectPath.current = targetPath;
-      console.debug('[dashboard-page-data trace] source=post-signin-client-redirect', {
-        targetPath,
-        authLoading,
-        isAuthenticated,
+  async function confirmSessionAndRedirect(source: 'password-signin' | 'mfa-complete') {
+    const refreshedUser = await refreshUser();
+    if (!refreshedUser) {
+      console.debug('[dashboard-page-data trace] source=post-signin-session-confirmation', {
+        phase: 'refresh-failure',
+        trigger: source,
       });
-      router.replace(targetPath);
+      setError('Sign-in succeeded but the session cookie was not established. Please retry.');
+      return;
     }
-  }, [authLoading, isAuthenticated, nextPath, router]);
+
+    const targetPath = nextPath ?? '/dashboard';
+    if (lastRedirectPath.current === targetPath) {
+      return;
+    }
+    lastRedirectPath.current = targetPath;
+    console.debug('[dashboard-page-data trace] source=post-signin-client-redirect', {
+      phase: 'redirect-after-session-confirmation',
+      trigger: source,
+      targetPath,
+      userId: refreshedUser.id,
+    });
+    router.replace(targetPath);
+  }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -73,8 +81,12 @@ export default function SignInPageClient({
     setLoading(true);
     setError(null);
     try {
-      // Redirect is centralized in the auth state effect to avoid duplicate post-auth navigation.
       await signIn({ email, password });
+      console.debug('[dashboard-page-data trace] source=post-signin-session-confirmation', {
+        phase: 'signin-response-success',
+        trigger: 'password-signin',
+      });
+      await confirmSessionAndRedirect('password-signin');
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : String(submitError);
       if (message === 'MFA_REQUIRED') {
@@ -96,8 +108,12 @@ export default function SignInPageClient({
     setLoading(true);
     setError(null);
     try {
-      // Redirect is centralized in the auth state effect to avoid duplicate post-auth navigation.
       await completeMfaSignIn(mfaCode);
+      console.debug('[dashboard-page-data trace] source=post-signin-session-confirmation', {
+        phase: 'signin-response-success',
+        trigger: 'mfa-complete',
+      });
+      await confirmSessionAndRedirect('mfa-complete');
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {

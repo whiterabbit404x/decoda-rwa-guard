@@ -110,11 +110,33 @@ test.describe('same-origin auth proxy routes', () => {
       }, async () => {
         const response = await getAuthMeRoute(new Request('http://localhost/api/auth/me', {
           headers: {
-            cookie: 'decoda-pilot-access-token=cookie-token; theme=dark',
+            cookie: 'decoda_session=cookie-token; theme=dark',
           },
         }));
 
         expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toEqual({ user: { id: 'user-1' } });
+      });
+    });
+  });
+
+  test('signin proxy can establish session cookie from backend Set-Cookie when access_token is absent', async () => {
+    await withEnv({ NODE_ENV: 'production', API_URL: 'https://railway.decoda.example' }, async () => {
+      await withMockFetch(async () => new Response(JSON.stringify({ user: { id: 'user-1' } }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Set-Cookie': 'decoda_session=backend-cookie-token; Path=/; HttpOnly; Secure; SameSite=Lax',
+        },
+      }), async () => {
+        const response = await postAuthSigninRoute(new Request('http://localhost/api/auth/signin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: 'pilot@example.com', password: 'hunter2-hunter2' }),
+        }));
+
+        expect(response.status).toBe(200);
+        expect(response.headers.get('Set-Cookie')).toContain('decoda_session=backend-cookie-token');
         await expect(response.json()).resolves.toEqual({ user: { id: 'user-1' } });
       });
     });
