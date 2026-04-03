@@ -51,10 +51,6 @@ export default function SignInPageClient({
   async function confirmSessionAndRedirect(source: 'password-signin' | 'mfa-complete') {
     const refreshedUser = await refreshUser();
     if (!refreshedUser) {
-      console.debug('[dashboard-page-data trace] source=post-signin-session-confirmation', {
-        phase: 'refresh-failure',
-        trigger: source,
-      });
       setError('Sign-in succeeded but the session cookie was not established. Please retry.');
       return;
     }
@@ -64,12 +60,6 @@ export default function SignInPageClient({
       return;
     }
     lastRedirectPath.current = targetPath;
-    console.debug('[dashboard-page-data trace] source=post-signin-client-redirect', {
-      phase: 'redirect-after-session-confirmation',
-      trigger: source,
-      targetPath,
-      userId: refreshedUser.id,
-    });
     router.replace(targetPath);
   }
 
@@ -82,10 +72,6 @@ export default function SignInPageClient({
     setError(null);
     try {
       await signIn({ email, password });
-      console.debug('[dashboard-page-data trace] source=post-signin-session-confirmation', {
-        phase: 'signin-response-success',
-        trigger: 'password-signin',
-      });
       await confirmSessionAndRedirect('password-signin');
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : String(submitError);
@@ -109,10 +95,6 @@ export default function SignInPageClient({
     setError(null);
     try {
       await completeMfaSignIn(mfaCode);
-      console.debug('[dashboard-page-data trace] source=post-signin-session-confirmation', {
-        phase: 'signin-response-success',
-        trigger: 'mfa-complete',
-      });
       await confirmSessionAndRedirect('mfa-complete');
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
@@ -142,7 +124,7 @@ export default function SignInPageClient({
             <input value={mfaCode} onChange={(event) => setMfaCode(event.target.value)} inputMode="numeric" pattern="[0-9 ]*" required />
             <button type="submit" disabled={loading || !mfaChallengeToken}>{loading ? 'Verifying…' : 'Complete sign in'}</button>
             {error ? <p className="statusLine">{error}</p> : null}
-            <p className="muted">Enter a 6-digit TOTP code or one recovery code.</p>
+            <p className="muted">Enter a 6-digit authenticator code or one unused recovery code.</p>
             <button type="button" onClick={() => { setMfaRequired(false); setMfaCode(''); }} disabled={loading}>Use a different account</button>
           </form>
         ) : (

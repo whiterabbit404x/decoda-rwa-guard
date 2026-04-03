@@ -26,6 +26,8 @@ NO_BILLING_BOOTSTRAP_REMEDIATION = [
     'Then rerun `make validate-no-billing-launch`.',
 ]
 
+ALLOW_BROWSER_RUNTIME_SKIP_ENV = 'ALLOW_BROWSER_RUNTIME_SKIP'
+
 
 @dataclass
 class ValidationCheck:
@@ -242,22 +244,23 @@ def run_validation(mode: str) -> int:
             remediation=['Install Chromium runtime manually with `npx playwright install chromium`.'],
         )
         install_failed = install_check.status == 'fail'
-        if pilot_mode and install_failed:
+        allow_browser_runtime_skip = env.get(ALLOW_BROWSER_RUNTIME_SKIP_ENV, '').strip().lower() in {'1', 'true', 'yes'}
+        if pilot_mode and install_failed and allow_browser_runtime_skip:
             install_check.status = 'skip'
             install_check.detail = (
                 install_check.detail
-                + '\n\nSkipped in no-billing pilot mode because this runner cannot download browser binaries.'
+                + '\n\nSkipped in no-billing pilot mode because browser-runtime skip is explicitly allowed by ALLOW_BROWSER_RUNTIME_SKIP.'
             )
         checks.append(install_check)
         runtime_check = check_playwright_runtime()
-        if pilot_mode and install_failed:
+        if pilot_mode and install_failed and allow_browser_runtime_skip:
             checks.append(
                 ValidationCheck(
                     category='browser_e2e_runtime',
                     name='playwright_runtime_policy',
                     command=['npx', 'playwright', 'install', 'chromium'],
                     status='pass',
-                    detail='No-billing pilot mode allows browser runtime to be skipped when operator environment blocks Chromium download.',
+                    detail='No-billing pilot mode allows browser runtime to be skipped only when ALLOW_BROWSER_RUNTIME_SKIP is explicitly enabled.',
                     remediation=['Provision browser runtime in CI/staging runners to execute browser smoke checks.'],
                 )
             )
@@ -266,7 +269,7 @@ def run_validation(mode: str) -> int:
                 name='playwright_runtime_detection',
                 command=['node', '-e', 'playwright runtime detection'],
                 status='skip',
-                detail='Skipped in no-billing pilot mode because Chromium runtime download is blocked in this environment.',
+                detail='Skipped in no-billing pilot mode because Chromium runtime download is blocked and ALLOW_BROWSER_RUNTIME_SKIP=true.',
                 remediation=['Run `make install-web-test-runtime` on a network-enabled runner before broad-sale launch gates.'],
                 metadata=runtime_check.metadata,
             )

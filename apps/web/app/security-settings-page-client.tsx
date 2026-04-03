@@ -13,6 +13,7 @@ export default function SecuritySettingsPageClient() {
   const [mfaCode, setMfaCode] = useState('');
   const [disableCode, setDisableCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
+  const [recoveryCodesAcknowledged, setRecoveryCodesAcknowledged] = useState(false);
 
   async function signOutAllSessions() {
     setSubmitting(true);
@@ -41,6 +42,7 @@ export default function SecuritySettingsPageClient() {
     try {
       const result = await confirmMfaEnrollment(mfaCode);
       setRecoveryCodes(result.recovery_codes);
+      setRecoveryCodesAcknowledged(false);
       setMfaSetup(null);
       setMfaCode('');
       setMessage('MFA enabled. Save your recovery codes now.');
@@ -49,6 +51,14 @@ export default function SecuritySettingsPageClient() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function copyRecoveryCodes() {
+    if (recoveryCodes.length === 0) {
+      return;
+    }
+    void navigator.clipboard.writeText(recoveryCodes.join('\n'));
+    setMessage('Recovery codes copied. Store them in a secure password vault.');
   }
 
   async function disableMfaFlow() {
@@ -99,7 +109,7 @@ export default function SecuritySettingsPageClient() {
               <label className="label">Verification code</label>
               <input value={mfaCode} onChange={(event) => setMfaCode(event.target.value)} inputMode="numeric" />
               <div className="buttonRow">
-                <button type="button" onClick={() => void confirmMfa()} disabled={submitting}>Confirm MFA</button>
+                <button type="button" onClick={() => void confirmMfa()} disabled={submitting || mfaCode.trim().length < 6}>Confirm MFA</button>
               </div>
             </div>
           ) : null}
@@ -108,7 +118,7 @@ export default function SecuritySettingsPageClient() {
               <label className="label">Current TOTP code</label>
               <input value={disableCode} onChange={(event) => setDisableCode(event.target.value)} inputMode="numeric" />
               <div className="buttonRow">
-                <button type="button" onClick={() => void disableMfaFlow()} disabled={submitting}>Disable MFA</button>
+                <button type="button" onClick={() => void disableMfaFlow()} disabled={submitting || disableCode.trim().length < 6}>Disable MFA</button>
               </div>
             </div>
           ) : null}
@@ -116,8 +126,16 @@ export default function SecuritySettingsPageClient() {
             <div>
               <p className="muted">Recovery codes (shown once):</p>
               <pre>{recoveryCodes.join('\n')}</pre>
+              <div className="buttonRow">
+                <button type="button" onClick={copyRecoveryCodes}>Copy recovery codes</button>
+                <button type="button" onClick={() => { setRecoveryCodes([]); setRecoveryCodesAcknowledged(true); }}>
+                  I saved these recovery codes
+                </button>
+              </div>
+              <p className="muted">These recovery codes are displayed only once. If lost, disable and re-enroll MFA to generate new codes.</p>
             </div>
           ) : null}
+          {recoveryCodesAcknowledged ? <p className="statusLine">Recovery codes acknowledged and cleared from this screen.</p> : null}
           {message ? <p className="statusLine">{message}</p> : null}
         </article>
       </section>
