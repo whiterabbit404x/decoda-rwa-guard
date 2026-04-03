@@ -37,6 +37,27 @@ function parseCookie(headerValue: string | null, cookieName: string) {
   return raw ? decodeURIComponent(raw) : null;
 }
 
+function readSetCookieHeaders(response: Response): string[] {
+  const headersWithGetSetCookie = response.headers as Headers & { getSetCookie?: () => string[] };
+  if (typeof headersWithGetSetCookie.getSetCookie === 'function') {
+    return headersWithGetSetCookie.getSetCookie();
+  }
+  const combinedHeader = response.headers.get('set-cookie');
+  return combinedHeader ? [combinedHeader] : [];
+}
+
+function readCookieValueFromSetCookie(setCookieHeaders: string[], cookieName: string): string | null {
+  for (const setCookieHeader of setCookieHeaders) {
+    const firstPair = setCookieHeader.split(';', 1)[0]?.trim() ?? '';
+    if (!firstPair.startsWith(`${cookieName}=`)) {
+      continue;
+    }
+    const rawValue = firstPair.slice(cookieName.length + 1).trim();
+    return rawValue ? decodeURIComponent(rawValue) : null;
+  }
+  return null;
+}
+
 function authCookieOptions() {
   const isProd = process.env.NODE_ENV === 'production';
   return {
@@ -107,11 +128,22 @@ async function buildBackendResponse(response: Response, cookieAction: AuthCookie
     },
   });
 
-  if (cookieAction === 'set-session' && typeof responseBody.access_token === 'string' && responseBody.access_token) {
-    const csrfToken = crypto.randomUUID().replace(/-/g, '');
-    proxyResponse.cookies.set(SESSION_COOKIE_NAME, responseBody.access_token, authCookieOptions());
-    proxyResponse.cookies.set(CSRF_COOKIE_NAME, csrfToken, csrfCookieOptions());
-    delete responseBody.access_token;
+  if (cookieAction === 'set-session') {
+    const responseAccessToken = typeof responseBody.access_token === 'string' ? responseBody.access_token : '';
+    const backendSetCookieHeaders = readSetCookieHeaders(response);
+    const backendSessionCookie = readCookieValueFromSetCookie(backendSetCookieHeaders, SESSION_COOKIE_NAME)
+      || readCookieValueFromSetCookie(backendSetCookieHeaders, 'decoda-pilot-access-token');
+    const sessionToken = responseAccessToken || backendSessionCookie;
+
+    if (sessionToken) {
+      const csrfToken = crypto.randomUUID().replace(/-/g, '');
+      proxyResponse.cookies.set(SESSION_COOKIE_NAME, sessionToken, authCookieOptions());
+      proxyResponse.cookies.set(CSRF_COOKIE_NAME, csrfToken, csrfCookieOptions());
+    }
+
+    if (typeof responseBody.access_token === 'string') {
+      delete responseBody.access_token;
+    }
   }
 
   if (cookieAction === 'clear-session') {

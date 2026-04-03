@@ -335,14 +335,14 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(classifyAuthResponseError('sign in', proxyUrl, response.status, data.detail, data));
     }
     setMfaChallengeToken(null);
-    saveAuthPayload(data.user);
-    const csrfResponse = await fetch('/api/auth/csrf', { cache: 'no-store' });
-    if (csrfResponse.ok) {
-      const csrfPayload = await csrfResponse.json().catch(() => ({}));
-      setCsrfToken(typeof csrfPayload.csrfToken === 'string' ? csrfPayload.csrfToken : null);
-    }
+    console.debug('[dashboard-page-data trace] source=auth-signin-response', {
+      phase: 'success',
+      hasUser: Boolean(data.user),
+      userId: data.user.id,
+      requiresSessionConfirmation: true,
+    });
     return data.user;
-  }, [saveAuthPayload]);
+  }, []);
 
   const completeMfaSignIn = useCallback(async (code: string) => {
     if (!mfaChallengeToken) {
@@ -359,14 +359,14 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(data.detail ?? 'Invalid MFA code.');
     }
     setMfaChallengeToken(null);
-    saveAuthPayload(data.user);
-    const csrfResponse = await fetch('/api/auth/csrf', { cache: 'no-store' });
-    if (csrfResponse.ok) {
-      const csrfPayload = await csrfResponse.json().catch(() => ({}));
-      setCsrfToken(typeof csrfPayload.csrfToken === 'string' ? csrfPayload.csrfToken : null);
-    }
+    console.debug('[dashboard-page-data trace] source=auth-signin-response', {
+      phase: 'mfa-success',
+      hasUser: Boolean(data.user),
+      userId: data.user.id,
+      requiresSessionConfirmation: true,
+    });
     return data.user;
-  }, [mfaChallengeToken, saveAuthPayload]);
+  }, [mfaChallengeToken]);
 
   const enrollMfa = useCallback(async () => {
     const response = await fetch('/api/auth/mfa/enroll', {
