@@ -10,7 +10,7 @@ export default function AppNavigation({ currentPath }: { currentPath: string }) 
           key={item.href}
           href={item.href}
           prefetch={false}
-          // Prevent automatic background prefetch from fanning out all product route loaders right after sign-in.
+          // Prevent protected-route prefetch fan-out from hitting multiple backend dashboard endpoints after sign-in.
           className={currentPath === item.href ? 'active' : ''}
         >
           {item.label}
