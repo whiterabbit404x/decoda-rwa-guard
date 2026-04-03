@@ -45,7 +45,7 @@ def test_event_watcher_checkpoint_persistence(monkeypatch, tmp_path):
     module.update_checkpoint({'last_block': 123, 'last_log_cursor': '123:tx:3'})
     status = module.status()
     assert status['checkpoints']['last_block'] == 123
-    assert status['source_status'] in {'degraded', 'polling', 'websocket', 'rpc_backfill'}
+    assert status['source_status'] in {'degraded', 'polling', 'websocket', 'rpc_backfill', 'no_evidence'}
     checkpoint_payload = json.loads((tmp_path / 'checkpoint.json').read_text())
     assert checkpoint_payload['last_block'] == 123
 

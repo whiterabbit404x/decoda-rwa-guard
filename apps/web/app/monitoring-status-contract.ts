@@ -13,6 +13,9 @@ export type MonitoringRuntimeStatus = {
   sales_claims_allowed?: boolean;
   claim_validator_status?: 'PASS' | 'FAIL' | string;
   recent_evidence_state?: 'real' | 'demo' | 'degraded' | 'missing' | 'failed' | 'no_evidence' | string;
+  recent_truthfulness_state?: 'claim_safe' | 'not_claim_safe' | 'unknown_risk' | string;
+  recent_real_event_count?: number;
+  last_real_event_at?: string | null;
   recent_confidence_basis?: 'provider_evidence' | 'backfill_evidence' | 'demo_scenario' | 'none' | string;
   synthetic_leak_detected?: boolean;
 };

@@ -37,6 +37,10 @@ SCENARIO_EXPECTED_RISK = {
 
 logger = logging.getLogger(__name__)
 
+RUNTIME_STATES = {'LIVE', 'DEMO', 'HYBRID', 'DEGRADED'}
+EVIDENCE_STATES = {'REAL_EVIDENCE', 'NO_EVIDENCE', 'DEGRADED_EVIDENCE', 'FAILED_EVIDENCE', 'DEMO_EVIDENCE'}
+TRUTHFULNESS_STATES = {'CLAIM_SAFE', 'NOT_CLAIM_SAFE', 'UNKNOWN_RISK'}
+
 
 @dataclass
 class ActivityEvent:
@@ -52,13 +56,18 @@ class ActivityEvent:
 class ActivityProviderResult:
     mode: str
     status: str
+    evidence_state: str
+    truthfulness_state: str
     synthetic: bool
     provider_name: str
     provider_kind: str
     evidence_present: bool
+    recent_real_event_count: int
+    last_real_event_at: datetime | None
     events: list[ActivityEvent]
     latest_block: int | None
     checkpoint: str | None
+    checkpoint_age_seconds: int | None
     degraded_reason: str | None
     error_code: str | None
     source_type: str
@@ -74,6 +83,14 @@ class ActivityProviderResult:
             raise MonitoringModeError('live monitoring result requires provider evidence')
         if not self.evidence_present and self.claim_safe:
             raise MonitoringModeError('claim_safe cannot be true when evidence is missing')
+        if self.evidence_state not in EVIDENCE_STATES:
+            raise MonitoringModeError(f'invalid evidence_state: {self.evidence_state}')
+        if self.truthfulness_state not in TRUTHFULNESS_STATES:
+            raise MonitoringModeError(f'invalid truthfulness_state: {self.truthfulness_state}')
+        if self.mode in {'live', 'hybrid'} and self.evidence_state == 'REAL_EVIDENCE' and not self.evidence_present:
+            raise MonitoringModeError('REAL_EVIDENCE requires evidence_present=true')
+        if self.mode in {'live', 'hybrid'} and not self.evidence_present and self.truthfulness_state == 'CLAIM_SAFE':
+            raise MonitoringModeError('live/hybrid cannot claim safe without real evidence')
 
 
 def monitoring_ingestion_mode() -> str:
@@ -471,13 +488,18 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             return ActivityProviderResult(
                 mode=mode,
                 status='failed',
+                evidence_state='FAILED_EVIDENCE',
+                truthfulness_state='UNKNOWN_RISK',
                 synthetic=False,
                 provider_name='evm_activity_provider',
                 provider_kind='rpc',
                 evidence_present=False,
+                recent_real_event_count=0,
+                last_real_event_at=None,
                 events=[],
                 latest_block=None,
                 checkpoint=None,
+                checkpoint_age_seconds=None,
                 degraded_reason='provider_error',
                 error_code=exc.__class__.__name__,
                 source_type='unknown',
@@ -501,13 +523,18 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             return ActivityProviderResult(
                 mode=mode,
                 status='live',
+                evidence_state='REAL_EVIDENCE',
+                truthfulness_state='NOT_CLAIM_SAFE',
                 synthetic=False,
                 provider_name='evm_activity_provider',
                 provider_kind='rpc',
                 evidence_present=True,
+                recent_real_event_count=len(live_events),
+                last_real_event_at=live_events[-1].observed_at,
                 events=live_events,
                 latest_block=latest_block,
                 checkpoint=checkpoint,
+                checkpoint_age_seconds=0,
                 degraded_reason=None,
                 error_code=None,
                 source_type='websocket' if bool((os.getenv('EVM_WS_URL') or '').strip()) else 'rpc_polling',
@@ -517,13 +544,18 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
         return ActivityProviderResult(
             mode=mode,
             status='no_evidence',
+            evidence_state='NO_EVIDENCE',
+            truthfulness_state='UNKNOWN_RISK',
             synthetic=False,
             provider_name='evm_activity_provider',
             provider_kind='rpc',
             evidence_present=False,
+            recent_real_event_count=0,
+            last_real_event_at=None,
             events=[],
             latest_block=None,
             checkpoint=None,
+            checkpoint_age_seconds=None,
             degraded_reason='no_real_provider_evidence',
             error_code=None,
             source_type='unknown',
@@ -534,13 +566,18 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
         return ActivityProviderResult(
             mode=mode,
             status='degraded',
+            evidence_state='DEGRADED_EVIDENCE',
+            truthfulness_state='UNKNOWN_RISK',
             synthetic=False,
             provider_name='evm_activity_provider',
             provider_kind='rpc',
             evidence_present=False,
+            recent_real_event_count=0,
+            last_real_event_at=None,
             events=[],
             latest_block=None,
             checkpoint=None,
+            checkpoint_age_seconds=None,
             degraded_reason=str(runtime.get('reason') or 'live ingestion degraded'),
             error_code=None,
             source_type='unknown',
@@ -550,14 +587,19 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
     if mode == 'hybrid' and target_type in {'wallet', 'contract'}:
         return ActivityProviderResult(
             mode=mode,
-            status='degraded',
+            status='no_evidence',
+            evidence_state='NO_EVIDENCE',
+            truthfulness_state='UNKNOWN_RISK',
             synthetic=False,
             provider_name='evm_activity_provider',
             provider_kind='rpc',
             evidence_present=False,
+            recent_real_event_count=0,
+            last_real_event_at=None,
             events=[],
             latest_block=None,
             checkpoint=None,
+            checkpoint_age_seconds=None,
             degraded_reason='no_live_events_observed',
             error_code=None,
             source_type='unknown',
@@ -571,13 +613,18 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
         return ActivityProviderResult(
             mode=mode,
             status='demo',
+            evidence_state='DEMO_EVIDENCE',
+            truthfulness_state='NOT_CLAIM_SAFE',
             synthetic=True,
             provider_name='demo_wallet_activity',
             provider_kind='demo',
             evidence_present=bool(events),
+            recent_real_event_count=0,
+            last_real_event_at=None,
             events=events,
             latest_block=None,
             checkpoint=events[-1].cursor if events else None,
+            checkpoint_age_seconds=None,
             degraded_reason=None,
             error_code=None,
             source_type='demo',
@@ -590,13 +637,18 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
         return ActivityProviderResult(
             mode=mode,
             status='demo',
+            evidence_state='DEMO_EVIDENCE',
+            truthfulness_state='NOT_CLAIM_SAFE',
             synthetic=True,
             provider_name='demo_contract_activity',
             provider_kind='demo',
             evidence_present=bool(events),
+            recent_real_event_count=0,
+            last_real_event_at=None,
             events=events,
             latest_block=None,
             checkpoint=events[-1].cursor if events else None,
+            checkpoint_age_seconds=None,
             degraded_reason=None,
             error_code=None,
             source_type='demo',
@@ -608,13 +660,18 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
     return ActivityProviderResult(
         mode=mode,
         status='demo',
+        evidence_state='DEMO_EVIDENCE',
+        truthfulness_state='NOT_CLAIM_SAFE',
         synthetic=True,
         provider_name='demo_market_activity',
         provider_kind='demo',
         evidence_present=bool(events),
+        recent_real_event_count=0,
+        last_real_event_at=None,
         events=events,
         latest_block=None,
         checkpoint=events[-1].cursor if events else None,
+        checkpoint_age_seconds=None,
         degraded_reason=None,
         error_code=None,
         source_type='demo',

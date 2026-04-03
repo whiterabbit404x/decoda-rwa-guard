@@ -35,6 +35,11 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
   const modeLabel = monitoringModeLabel(status.mode);
   const degraded = status.mode === 'DEGRADED';
   const tone = degraded ? 'statusBannerDegraded' : status.mode === 'DEMO' ? 'statusBannerDemo' : 'statusBannerLive';
+  const evidenceCopy = status.recent_evidence_state === 'real'
+    ? 'No confirmed anomaly detected in observed evidence.'
+    : status.recent_evidence_state === 'degraded' || status.recent_evidence_state === 'failed'
+      ? 'Monitoring degraded.'
+      : 'No real evidence observed yet.';
 
   return (
     <div className={`statusBanner ${tone}`}>
@@ -45,6 +50,7 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
       <span>
         evidence={status.recent_evidence_state ?? 'missing'} · confidence={status.recent_confidence_basis ?? 'none'} · synthetic_leak={status.synthetic_leak_detected ? 'detected' : 'none'}
       </span>
+      <span>{evidenceCopy}</span>
       {status.degraded_reason ? <span>reason={status.degraded_reason}</span> : null}
     </div>
   );
