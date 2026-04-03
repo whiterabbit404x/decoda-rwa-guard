@@ -10,9 +10,12 @@ export default defineConfig({
   testMatch: ['apps/web/tests/**/*.spec.ts'],
   timeout: 30_000,
   retries: 0,
+  outputDir: 'artifacts/playwright/test-results',
   use: {
     baseURL,
-    trace: 'on-first-retry'
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure'
   },
   webServer: useLocalWebServer
     ? {
@@ -22,5 +25,9 @@ export default defineConfig({
         timeout: 60_000
       }
     : undefined,
-  reporter: [['list']]
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'artifacts/playwright/report', open: 'never' }],
+    ['junit', { outputFile: 'artifacts/playwright/junit/results.xml' }]
+  ]
 });

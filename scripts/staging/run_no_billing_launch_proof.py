@@ -90,17 +90,28 @@ def main() -> int:
     artifact_dir = ARTIFACT_ROOT / timestamp
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
+    allow_browser_install_skip = os.getenv('PROOF_ALLOW_BROWSER_INSTALL_SKIP', '').strip().lower() in {'1', 'true', 'yes'}
+    browser_step = run_step(
+        name='02_bootstrap_e2e_runtime',
+        command=['npm', 'run', 'bootstrap:e2e'],
+        artifact_dir=artifact_dir,
+        required=not allow_browser_install_skip,
+    )
+    if browser_step.status != 'pass' and allow_browser_install_skip:
+        browser_step.note = 'Browser bootstrap failed but is non-blocking because PROOF_ALLOW_BROWSER_INSTALL_SKIP=true.'
+
     steps: list[ProofStep] = [
         run_step(name='01_npm_ci', command=['npm', 'ci'], artifact_dir=artifact_dir),
-        run_step(name='02_build_web', command=['npm', 'run', 'build:web'], artifact_dir=artifact_dir),
-        run_step(name='03_validate_no_billing_launch', command=['make', 'validate-no-billing-launch'], artifact_dir=artifact_dir),
+        browser_step,
+        run_step(name='03_build_web', command=['npm', 'run', 'build:web'], artifact_dir=artifact_dir),
+        run_step(name='04_validate_no_billing_launch', command=['make', 'validate-no-billing-launch'], artifact_dir=artifact_dir),
     ]
 
     missing_staging = [name for name in REQUIRED_STAGING_ENV if not os.getenv(name, '').strip()]
     if missing_staging:
         steps.append(
             ProofStep(
-                name='04_optional_staging_evidence',
+                name='05_optional_staging_evidence',
                 command=['python', 'scripts/staging/run_evidence_flow.py'],
                 required=False,
                 status='skip',
@@ -114,7 +125,7 @@ def main() -> int:
         evidence_env['STAGING_EVIDENCE_OUTPUT_DIR'] = str((artifact_dir / 'staging-evidence').relative_to(REPO_ROOT))
         steps.append(
             run_step(
-                name='04_optional_staging_evidence',
+                name='05_optional_staging_evidence',
                 command=['python', 'scripts/staging/run_evidence_flow.py'],
                 artifact_dir=artifact_dir,
                 required=False,
