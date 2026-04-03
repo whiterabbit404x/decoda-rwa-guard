@@ -3,8 +3,10 @@
 Use this checklist to classify release readiness without guesswork.
 
 ## 1) Pilot readiness (internal/existing customers)
+- [ ] Deterministic install succeeds: `npm ci` (or `npm run install:clean`).
+- [ ] Frontend build succeeds from clean install: `npm run build:web`.
 - [ ] `make validate-production` passes.
-- [ ] `python services/api/scripts/smoke_live_providers.py` returns no `fail` checks.
+- [ ] `make validate-no-billing-launch` passes with `BILLING_PROVIDER=none`.
 - [ ] Core backend tests still pass (`pytest -q`).
 
 ## 2) Broad self-serve sale readiness
@@ -32,3 +34,4 @@ Use this checklist to classify release readiness without guesswork.
 ### Optional follow-ups (non-blocking for pilot)
 - Additional enterprise integrations (SSO/SCIM) beyond current product scope.
 - Extended non-critical UI polish and reporting enhancements.
+- Broad-sale billing enablement (`BILLING_PROVIDER=paddle|stripe` + provider credentials/webhooks).

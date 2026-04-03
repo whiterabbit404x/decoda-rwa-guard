@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "NEXT_PUBLIC_LIVE_MODE_ENABLED=${NEXT_PUBLIC_LIVE_MODE_ENABLED:-false} API_URL=${API_URL:-https://api.example.com} next build",
     "start": "next start"
   },
   "dependencies": {
@@ -15,7 +15,6 @@
   "devDependencies": {
     "typescript": "5.5.4",
     "@types/react": "18.3.3",
-    "@types/node": "20.14.10",
-    "eslint-config-next": "15.5.9"
+    "@types/node": "20.14.10"
   }
 }

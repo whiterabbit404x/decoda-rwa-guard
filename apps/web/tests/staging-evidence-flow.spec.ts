@@ -11,6 +11,8 @@ const password = process.env.STAGING_EVIDENCE_PASSWORD ?? '';
 const evidenceRoot = process.env.STAGING_EVIDENCE_OUTPUT_DIR ?? 'evidence';
 const screenshotDir = path.join(evidenceRoot, 'screenshots');
 
+test.skip(!runEnabled, 'Set RUN_REAL_STAGING_EVIDENCE=true to execute staging evidence flow.');
+
 function authHeaders(token: string): Record<string, string> {
   return {
     Authorization: `Bearer ${token}`,
@@ -19,8 +21,6 @@ function authHeaders(token: string): Record<string, string> {
 }
 
 test('staging evidence flow', async ({ page, request }, testInfo) => {
-  test.skip(!runEnabled, 'Set RUN_REAL_STAGING_EVIDENCE=true to execute staging evidence flow.');
-
   const missing: string[] = [];
   if (!baseUrl) missing.push('STAGING_BASE_URL');
   if (!apiUrl) missing.push('STAGING_API_URL');
@@ -34,6 +34,34 @@ test('staging evidence flow', async ({ page, request }, testInfo) => {
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     await expect(page).toHaveTitle(/Decoda|RWA Guard/i);
     await page.screenshot({ path: path.join(screenshotDir, 'landing-page.png'), fullPage: true });
+  });
+
+  await test.step('public trust/support/legal pages load', async () => {
+    for (const route of ['/support', '/legal', '/trust']) {
+      await page.goto(`${baseUrl.replace(/\/$/, '')}${route}`, { waitUntil: 'domcontentloaded' });
+      await expect(page.locator('body')).not.toContainText('This page could not be found');
+      await page.screenshot({ path: path.join(screenshotDir, `public-${route.replace('/', '')}.png`), fullPage: true });
+    }
+  });
+
+  const signupProbe = await test.step('sign-up route and API are reachable', async () => {
+    await page.goto(`${baseUrl.replace(/\/$/, '')}/signup`, { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('body')).toContainText(/sign up|create/i);
+    await page.screenshot({ path: path.join(screenshotDir, 'signup-route.png'), fullPage: true });
+
+    const suffix = new Date().toISOString().replace(/[:.]/g, '-');
+    const signupEmail = `${email.replace('@', `+staging-evidence-${suffix}@`)}`;
+    const signupPassword = `${password}A!1`;
+    const response = await request.post(`${apiUrl.replace(/\/$/, '')}/auth/signup`, {
+      data: {
+        email: signupEmail,
+        password: signupPassword,
+        full_name: 'Staging Evidence Operator',
+        workspace_name: `Staging Evidence Workspace ${suffix}`
+      }
+    });
+    expect([200, 409]).toContain(response.status());
+    return { attempted: true, status: response.status() };
   });
 
   const signinResponse = await test.step('sign in via API', async () => {
@@ -102,6 +130,20 @@ test('staging evidence flow', async ({ page, request }, testInfo) => {
     return created;
   });
 
+  const evidenceDataSurfaces = await test.step('alerts/exports/history surfaces are reachable', async () => {
+    const alerts = await request.get(`${apiUrl.replace(/\/$/, '')}/alerts`, { headers: authHeaders(accessToken) });
+    expect(alerts.ok(), `alerts list failed with status ${alerts.status()}`).toBeTruthy();
+    const history = await request.get(`${apiUrl.replace(/\/$/, '')}/history`, { headers: authHeaders(accessToken) });
+    expect(history.ok(), `history list failed with status ${history.status()}`).toBeTruthy();
+    const exportsList = await request.get(`${apiUrl.replace(/\/$/, '')}/exports`, { headers: authHeaders(accessToken) });
+    expect(exportsList.ok(), `exports list failed with status ${exportsList.status()}`).toBeTruthy();
+    return {
+      alerts: await alerts.json(),
+      history: await history.json(),
+      exports: await exportsList.json()
+    };
+  });
+
   await page.goto(`${baseUrl.replace(/\/$/, '')}/workspaces`, { waitUntil: 'domcontentloaded' });
   await page.screenshot({ path: path.join(screenshotDir, 'workspace-route.png'), fullPage: true });
 
@@ -111,14 +153,18 @@ test('staging evidence flow', async ({ page, request }, testInfo) => {
     api_url: apiUrl,
     checks: {
       landing_page: true,
+      trust_support_legal_pages: true,
+      signup_route_and_api_reachable: signupProbe.attempted,
       signed_in: true,
       protected_route: true,
       onboarding_state_read: Boolean(onboardingState),
-      core_workflow_asset_create: Boolean(createdAsset?.id)
+      core_workflow_asset_create: Boolean(createdAsset?.id),
+      alerts_exports_history_reachable: Boolean(evidenceDataSurfaces)
     },
     workspace: me?.user?.current_workspace ?? null,
     onboarding_state: onboardingState,
     created_asset_id: createdAsset?.id ?? null,
+    data_surface_snapshot: evidenceDataSurfaces,
     trace_enabled: process.env.STAGING_EVIDENCE_TRACE === 'true'
   };
 
