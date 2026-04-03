@@ -8,6 +8,12 @@ from typing import Any
 import os
 
 from services.api.app.evm_activity_provider import fetch_evm_activity
+from services.api.app.monitoring_mode import (
+    MonitoringModeError,
+    assert_no_demo_fallback,
+    is_demo_mode,
+    resolve_monitoring_mode,
+)
 
 MONITORING_DEMO_SCENARIOS = {
     'safe',
@@ -42,11 +48,30 @@ class ActivityEvent:
     payload: dict[str, Any]
 
 
+@dataclass
+class ActivityProviderResult:
+    mode: str
+    status: str
+    synthetic: bool
+    provider_name: str
+    provider_kind: str
+    evidence_present: bool
+    events: list[ActivityEvent]
+    latest_block: int | None
+    checkpoint: str | None
+    degraded_reason: str | None
+    error: str | None
+    source_type: str
+    reason_code: str | None
+    claim_safe: bool
+
 
 
 def monitoring_ingestion_mode() -> str:
-    mode = str(os.getenv('MONITORING_INGESTION_MODE', 'hybrid')).strip().lower()
-    return mode if mode in {'demo', 'live', 'hybrid'} else 'hybrid'
+    mode = resolve_monitoring_mode()
+    if mode == 'degraded':
+        return 'hybrid'
+    return mode
 
 
 def live_monitoring_enabled() -> bool:
@@ -79,6 +104,8 @@ def validate_monitoring_config_or_raise() -> None:
     if runtime['mode'] == 'live' and runtime['degraded']:
         raise RuntimeError(f"Live monitoring mode is misconfigured: {runtime['reason']}")
 def monitoring_scenario(target: dict[str, Any]) -> str | None:
+    if not is_demo_mode():
+        return None
     value = str(
         target.get('monitoring_scenario')
         or target.get('monitoring_demo_scenario')
@@ -420,23 +447,150 @@ def fetch_market_activity(target: dict[str, Any], since_ts: datetime | None) -> 
 
 
 def fetch_target_activity(target: dict[str, Any], since_ts: datetime | None) -> list[ActivityEvent]:
+    return fetch_target_activity_result(target, since_ts).events
+
+
+def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | None) -> ActivityProviderResult:
     target_type = str(target.get('target_type') or '').lower()
     runtime = monitoring_ingestion_runtime()
     mode = runtime['mode']
     can_use_live = (not runtime['degraded']) and target_type in {'wallet', 'contract'}
     if mode in {'live', 'hybrid'} and can_use_live:
         live_events = fetch_evm_activity(target, since_ts)
-        if live_events:
-            return live_events
-        return []
+        has_evidence = bool(live_events)
+        latest_block = None
+        checkpoint = None
+        if has_evidence:
+            block_candidates: list[int] = []
+            for event in live_events:
+                block_number = event.payload.get('block_number') if isinstance(event.payload, dict) else None
+                if isinstance(block_number, int):
+                    block_candidates.append(block_number)
+            latest_block = max(block_candidates) if block_candidates else None
+            checkpoint = live_events[-1].cursor
+            if any(event.ingestion_source == 'demo' for event in live_events):
+                raise MonitoringModeError('synthetic event leaked into live/hybrid provider stream')
+        if has_evidence:
+            return ActivityProviderResult(
+                mode=mode,
+                status='live',
+                synthetic=False,
+                provider_name='evm_activity_provider',
+                provider_kind='rpc',
+                evidence_present=True,
+                events=live_events,
+                latest_block=latest_block,
+                checkpoint=checkpoint,
+                degraded_reason=None,
+                error=None,
+                source_type='websocket' if bool((os.getenv('EVM_WS_URL') or '').strip()) else 'rpc_polling',
+                reason_code=None,
+                claim_safe=False,
+            )
+        return ActivityProviderResult(
+            mode=mode,
+            status='degraded',
+            synthetic=False,
+            provider_name='evm_activity_provider',
+            provider_kind='rpc',
+            evidence_present=False,
+            events=[],
+            latest_block=None,
+            checkpoint=None,
+            degraded_reason='no_real_provider_evidence',
+            error=None,
+            source_type='unknown',
+            reason_code='NO_PROVIDER_EVIDENCE',
+            claim_safe=False,
+        )
     if mode == 'live' and runtime['degraded']:
-        raise RuntimeError(str(runtime.get('reason') or 'live ingestion degraded'))
+        return ActivityProviderResult(
+            mode=mode,
+            status='degraded',
+            synthetic=False,
+            provider_name='evm_activity_provider',
+            provider_kind='rpc',
+            evidence_present=False,
+            events=[],
+            latest_block=None,
+            checkpoint=None,
+            degraded_reason=str(runtime.get('reason') or 'live ingestion degraded'),
+            error=None,
+            source_type='unknown',
+            reason_code='RUNTIME_DEGRADED',
+            claim_safe=False,
+        )
     if mode == 'hybrid' and target_type in {'wallet', 'contract'}:
-        # In hybrid mode, do not silently substitute deterministic demo payloads for
-        # workspace-bound live wallet/contract targets.
-        return []
+        return ActivityProviderResult(
+            mode=mode,
+            status='degraded',
+            synthetic=False,
+            provider_name='evm_activity_provider',
+            provider_kind='rpc',
+            evidence_present=False,
+            events=[],
+            latest_block=None,
+            checkpoint=None,
+            degraded_reason='no_live_events_observed',
+            error=None,
+            source_type='unknown',
+            reason_code='NO_PROVIDER_EVIDENCE',
+            claim_safe=False,
+        )
+    assert_no_demo_fallback(mode, attempted=False, context='activity_providers.fetch_target_activity_result')
     if target_type == 'wallet':
-        return fetch_wallet_activity(target, since_ts)
+        events = fetch_wallet_activity(target, since_ts)
+        assert_no_demo_fallback(mode, attempted=bool(events), context='wallet synthetic generator')
+        return ActivityProviderResult(
+            mode=mode,
+            status='demo',
+            synthetic=True,
+            provider_name='demo_wallet_activity',
+            provider_kind='demo',
+            evidence_present=bool(events),
+            events=events,
+            latest_block=None,
+            checkpoint=events[-1].cursor if events else None,
+            degraded_reason=None,
+            error=None,
+            source_type='demo',
+            reason_code='DEMO_SCENARIO',
+            claim_safe=False,
+        )
     if target_type == 'contract':
-        return fetch_contract_activity(target, since_ts)
-    return fetch_market_activity(target, since_ts)
+        events = fetch_contract_activity(target, since_ts)
+        assert_no_demo_fallback(mode, attempted=bool(events), context='contract synthetic generator')
+        return ActivityProviderResult(
+            mode=mode,
+            status='demo',
+            synthetic=True,
+            provider_name='demo_contract_activity',
+            provider_kind='demo',
+            evidence_present=bool(events),
+            events=events,
+            latest_block=None,
+            checkpoint=events[-1].cursor if events else None,
+            degraded_reason=None,
+            error=None,
+            source_type='demo',
+            reason_code='DEMO_SCENARIO',
+            claim_safe=False,
+        )
+    events = fetch_market_activity(target, since_ts)
+    assert_no_demo_fallback(mode, attempted=bool(events), context='market synthetic generator')
+    return ActivityProviderResult(
+        mode=mode,
+        status='demo',
+        synthetic=True,
+        provider_name='demo_market_activity',
+        provider_kind='demo',
+        evidence_present=bool(events),
+        events=events,
+        latest_block=None,
+        checkpoint=events[-1].cursor if events else None,
+        degraded_reason=None,
+        error=None,
+        source_type='demo',
+        reason_code='DEMO_SCENARIO',
+        claim_safe=False,
+    )

@@ -9,6 +9,7 @@ You can claim the platform provides live monitoring for tokenized RWA / treasury
 - `EVM_RPC_URL` is configured and reachable.
 - Watcher source status is active and checkpoints are advancing.
 - Alerts/incidents and audit evidence are persisted from real events.
+- Validator confirms no synthetic leakage (`synthetic_leak_detected=false`) and recent monitoring evidence is real (`recent_evidence_state=real`).
 - Production claim validator reports `PASS`.
 
 ## Disallowed claims
@@ -18,7 +19,8 @@ Do **not** claim live protection when:
 - deployment is in demo mode;
 - RPC is missing/unreachable;
 - watcher is degraded with stale checkpoints;
-- demo payloads are being used for wallet/contract monitoring evidence.
+- demo/synthetic payloads are being used for wallet/contract monitoring evidence;
+- validator reports `recent_evidence_state` as `demo`, `degraded`, or `missing`.
 
 ## Operator proof checklist
 
