@@ -50,6 +50,12 @@ export default function SignInPageClient({
 
   useEffect(() => {
     if (!authLoading && isAuthenticated) {
+      const targetPath = nextPath ?? '/dashboard';
+      console.debug('[dashboard-page-data trace] source=post-signin-redirect', {
+        targetPath,
+        authLoading,
+        isAuthenticated,
+      });
       router.replace(nextPath ?? '/dashboard');
     }
   }, [authLoading, isAuthenticated, nextPath, router]);
