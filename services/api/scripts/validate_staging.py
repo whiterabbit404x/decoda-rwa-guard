@@ -273,14 +273,17 @@ def run_validation(mode: str) -> int:
     checks.append(runtime_check)
     if runtime_check.passed:
         smoke_env = env.copy()
-        smoke_env.setdefault('PLAYWRIGHT_LOCAL_WEB_SERVER', 'true')
+        smoke_env.setdefault('WEB_LOCAL_SMOKE_BASE_URL', 'http://127.0.0.1:3000')
         checks.append(
             run_command(
                 'browser_e2e_runtime',
                 'web_local_smoke',
-                ['npx', 'playwright', 'test', 'apps/web/tests/feature4-smoke.spec.ts'],
+                ['python', 'scripts/run_web_local_smoke.py'],
                 env=smoke_env,
-                remediation=['Investigate failure in Playwright report; ensure local app endpoints are reachable.'],
+                remediation=[
+                    'Investigate artifacts/web-local-smoke/next-web.log for startup failures.',
+                    'Ensure local app endpoints are reachable at WEB_LOCAL_SMOKE_BASE_URL before Playwright runs.',
+                ],
             )
         )
     else:
@@ -288,7 +291,7 @@ def run_validation(mode: str) -> int:
             ValidationCheck(
                 category='browser_e2e_runtime',
                 name='web_local_smoke',
-                command=['npx', 'playwright', 'test', 'apps/web/tests/feature4-smoke.spec.ts'],
+                command=['python', 'scripts/run_web_local_smoke.py'],
                 status='skip',
                 detail='Skipped because Playwright runtime is not ready.',
                 remediation=runtime_check.remediation,

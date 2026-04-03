@@ -1483,7 +1483,7 @@ Use `make install-web-test-runtime` to install deterministic browser runtime pre
 Then run:
 
 ```bash
-npx playwright test apps/web/tests/feature4-smoke.spec.ts
+python scripts/run_web_local_smoke.py
 python scripts/staging/run_evidence_flow.py
 ```
 
@@ -1505,7 +1505,7 @@ Troubleshooting notes:
 - If Playwright Chromium download is blocked on your runner, no-billing pilot mode keeps validation explicit by recording browser-runtime checks as `SKIP` (not fake `PASS`), while still failing real blockers.
 - If `STAGING_*` vars are missing, staging evidence is intentionally recorded as skipped configuration. Provide env vars and rerun for full staging artifacts.
 
-Validation explicitly separates dependency-missing, browser-binaries-missing, and true E2E execution failures.
+Validation explicitly separates dependency-missing, browser-binaries-missing, and true E2E execution failures. The local smoke wrapper writes startup logs to `artifacts/web-local-smoke/next-web.log` for deterministic CI debugging.
 
 
 ## Minimal launch runbook (Vercel + Railway)

@@ -1,9 +1,8 @@
 import { defineConfig } from '@playwright/test';
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:3000';
-const useLocalWebServer =
-  process.env.PLAYWRIGHT_LOCAL_WEB_SERVER === 'true' &&
-  /^https?:\/\/(127\.0\.0\.1|localhost):3000\/?$/.test(baseURL);
+const localWebServerURL = process.env.PLAYWRIGHT_LOCAL_WEB_SERVER_URL ?? 'http://127.0.0.1:3000';
+const useLocalWebServer = process.env.PLAYWRIGHT_LOCAL_WEB_SERVER === 'true';
 
 export default defineConfig({
   testDir: '.',
@@ -16,10 +15,12 @@ export default defineConfig({
   },
   webServer: useLocalWebServer
     ? {
-        command: 'npm run start --workspace apps/web',
-        url: baseURL,
-        reuseExistingServer: true,
-        timeout: 60_000
+        command: 'make run-web-smoke',
+        url: `${localWebServerURL.replace(/\/$/, '')}/api/health`,
+        reuseExistingServer: false,
+        timeout: 120_000,
+        stdout: 'pipe',
+        stderr: 'pipe'
       }
     : undefined,
   reporter: [['list']]
