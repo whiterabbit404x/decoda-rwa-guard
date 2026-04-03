@@ -3555,11 +3555,16 @@ def billing_runtime_status() -> dict[str, Any]:
 def _billing_unavailable_detail(*, operation: str, expected_provider: str | None = None) -> dict[str, Any]:
     billing_status = billing_runtime_status()
     message = billing_status['message']
+    reason = 'provider_not_ready'
+    if billing_status.get('provider') == 'none':
+        reason = 'disabled_by_configuration'
     if expected_provider and billing_status['provider'] != expected_provider:
         message = f"Billing endpoint requires provider={expected_provider} but BILLING_PROVIDER={billing_status['provider']}."
+        reason = 'provider_mismatch'
     return {
         'error': 'billing_unavailable',
         'code': 'billing_unavailable',
+        'reason': reason,
         'operation': operation,
         'provider': billing_status['provider'],
         'status': billing_status['status'],

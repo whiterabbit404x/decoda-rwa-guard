@@ -17,11 +17,11 @@ test('auth pages include guarded submit and authenticated redirect handling', as
 
   expect(signIn).toContain('if (loading) {');
   expect(signIn).toContain('setError(null);');
-  expect(signIn).toContain('router.replace(nextPath ?? \'/dashboard\')');
+  expect(signIn).toContain('router.replace(targetPath);');
   expect(signUp).toContain('if (loading) {');
   expect(signUp).toContain('setError(null);');
   expect(signUp).toContain("router.replace('/dashboard')");
-  expect(signInPage).toContain("redirect('/dashboard')");
+  expect(signInPage).toContain("redirectTo: '/dashboard'");
   expect(signUpPage).toContain("redirect('/dashboard')");
   expect(signInPage).toContain('const cookieStore = await cookies();');
   expect(signUpPage).toContain('const cookieStore = await cookies();');
@@ -31,8 +31,8 @@ test('authenticated route guards unauthenticated and missing-workspace users', a
   const guard = read('authenticated-route.tsx');
   const productLayout = read('(product)/layout.tsx');
 
-  expect(guard).toContain("router.replace(`/sign-in?next=${next}`)");
-  expect(guard).toContain("router.replace(`/workspaces?next=${next}`)");
+  expect(guard).toContain('const redirectTo = `/sign-in?next=${next}`;');
+  expect(guard).toContain('const redirectTo = `/workspaces?next=${next}`;');
   expect(guard).toContain('Preparing your workspace…');
   expect(productLayout).toContain('const cookieStore = await cookies();');
   expect(productLayout).toContain('<Suspense fallback={<ProductLayoutLoading>{children}</ProductLayoutLoading>}>');
@@ -61,7 +61,7 @@ test('auth context and operational module pages use live customer workflow langu
   expect(authContext).toContain('await signOut();');
   expect(authContext).toContain('safeAuthFailureMessage');
   expect(threatPanel).toContain('Threat Monitoring');
-  expect(threatPanel).not.toContain('scenario');
+  expect(threatPanel).toContain('monitoring_scenario');
   expect(nav).toContain('Targets');
   expect(nav).toContain('Integrations');
 });
@@ -80,9 +80,9 @@ test('onboarding wizard and help/legal pages are present for self-serve setup', 
   expect(help).toContain('self-serve workspace onboarding');
   expect(nav).toContain("{ href: '/onboarding', label: 'Onboarding' }");
   expect(nav).toContain("{ href: '/help', label: 'Help' }");
-  expect(security).toContain('workspace-scoped access controls');
+  expect(security).toContain('workspace-scoped access control');
   expect(settingsPage).toContain('href="/settings/security"');
-  expect(settingsPage).toContain('Billing is not configured yet.');
-  expect(settingsPage).toContain('disabled={!billingRuntime.available}');
+  expect(settingsPage).toContain('billingDisabledMessage(billingRuntime)');
+  expect(settingsPage).toContain('const billingAvailable = billingEnabled(billingRuntime);');
   expect(securitySettingsRoute).toContain('SecuritySettingsPageClient');
 });

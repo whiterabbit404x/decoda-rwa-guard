@@ -164,6 +164,7 @@ def test_checkout_session_fails_with_structured_error_when_billing_provider_none
     assert isinstance(exc.value.detail, dict)
     assert exc.value.detail['code'] == 'billing_unavailable'
     assert exc.value.detail['provider'] == 'none'
+    assert exc.value.detail['reason'] == 'disabled_by_configuration'
 
 
 def test_checkout_session_fails_with_structured_error_when_paddle_missing_keys(monkeypatch: pytest.MonkeyPatch) -> None:

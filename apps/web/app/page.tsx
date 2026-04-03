@@ -28,10 +28,10 @@ export default async function MarketingHomePage() {
           <h1>Risk control for tokenized treasuries and real-world assets.</h1>
           <p className="lede">Operate tokenized treasury programs with a customer-ready control layer for threat detection, compliance governance, and operational resilience—with dependable continuity and clear operator messaging when a dependency is temporarily unavailable.</p>
           <div className="heroActionRow">
-            <Link href="/dashboard" className="primaryCta" prefetch={false}>Start free trial</Link>
-            <a href={`mailto:${process.env.NEXT_PUBLIC_SUPPORT_EMAIL ?? "support@decoda.app"}`} className="secondaryCta">Contact sales</a>
+            <Link href="/sign-up" className="primaryCta" prefetch={false}>Start pilot</Link>
+            <a href={`mailto:${process.env.NEXT_PUBLIC_SUPPORT_EMAIL ?? 'support@decoda.app'}`} className="secondaryCta">Contact sales</a>
+            <Link href="/support" className="tertiaryCta" prefetch={false}>Support</Link>
             <Link href="/sign-in" className="tertiaryCta" prefetch={false}>Sign in</Link>
-            <Link href="/sign-up" className="tertiaryCta" prefetch={false}>Sign up</Link>
           </div>
           <div className="chipRow">
             <span className="ruleChip">Railway API</span>
@@ -79,8 +79,8 @@ export default async function MarketingHomePage() {
           </div>
         </div>
         <div className="summaryGrid">
-          <article className="metricCard"><p className="metricLabel">Deployment posture</p><p className="metricValue">Production-ready</p><p className="metricMeta">Documented env vars, migrations, and verification flow</p></article>
-          <article className="metricCard"><p className="metricLabel">UX promise</p><p className="metricValue">Never blank</p><p className="metricMeta">Live, degraded, fallback, and sample states stay visible</p></article>
+          <article className="metricCard"><p className="metricLabel">Deployment posture</p><p className="metricValue">Pilot-ready</p><p className="metricMeta">Documented env vars, migrations, and verification flow</p></article>
+          <article className="metricCard"><p className="metricLabel">Commercial motion</p><p className="metricValue">No-billing</p><p className="metricMeta">Pilot access now; paid self-serve rollout follows provider validation</p></article>
           <article className="metricCard"><p className="metricLabel">Workspace controls</p><p className="metricValue">Scoped</p><p className="metricMeta">User, workspace, and role-aware workspace operations</p></article>
         </div>
       </section>
@@ -89,12 +89,12 @@ export default async function MarketingHomePage() {
         <div className="sectionHeader">
           <div>
             <p className="eyebrow">Commercial motion</p>
-            <h2>Start self-serve, scale into enterprise operations</h2>
+            <h2>Pilot access today, billing activation later</h2>
           </div>
         </div>
         <div className="threeColumnSection">
-          <article className="dataCard polishedCard"><h3>Starter</h3><p className="metricValue">Start free trial</p><p>Self-serve onboarding, workspace setup, and integration delivery.</p></article>
-          <article className="dataCard polishedCard"><h3>Operator</h3><p className="metricValue">Start free trial</p><p>Run authenticated workspaces, persist live records, and validate live vs fallback behavior.</p></article>
+          <article className="dataCard polishedCard"><h3>Pilot</h3><p className="metricValue">Start pilot</p><p>Self-serve signup, workspace setup, and operational validation in no-billing mode.</p></article>
+          <article className="dataCard polishedCard"><h3>Launch prep</h3><p className="metricValue">Contact sales</p><p>Align support, security review, and rollout milestones before broad availability.</p></article>
           <article className="dataCard polishedCard"><h3>Enterprise</h3><p className="metricValue">Custom</p><p>For issuers and infrastructure partners who need governance and resilience workflows at scale.</p></article>
         </div>
       </section>

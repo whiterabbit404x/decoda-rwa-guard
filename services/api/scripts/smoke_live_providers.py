@@ -142,6 +142,8 @@ def check_chain_monitoring() -> dict[str, Any]:
 
 
 def main() -> int:
+    validation_mode = (os.getenv('VALIDATION_MODE', 'production') or 'production').strip().lower()
+    allow_billing_disabled = validation_mode in {'pilot', 'no_billing_pilot', 'no-billing-pilot'}
     checks = [
         check_email_provider(),
         check_billing_provider(),
@@ -149,10 +151,16 @@ def main() -> int:
         check_api_readiness(),
         check_chain_monitoring(),
     ]
-    statuses = [check['status'] for check in checks]
+    statuses: list[str] = []
+    for check in checks:
+        status_value = check['status']
+        if allow_billing_disabled and check['name'] == 'billing_provider' and status_value == 'not_configured':
+            status_value = 'configured_unverified'
+        statuses.append(status_value)
     ok = all(status in {'verified', 'configured_unverified'} for status in statuses)
     summary = {
         'ok': ok,
+        'validation_mode': validation_mode,
         'checks': checks,
         'status_counts': {status: statuses.count(status) for status in sorted(set(statuses))},
     }

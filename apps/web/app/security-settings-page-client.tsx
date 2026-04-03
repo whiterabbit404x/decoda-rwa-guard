@@ -132,7 +132,7 @@ export default function SecuritySettingsPageClient() {
           </article>
           <article className="dataCard">
             <p className="sectionEyebrow">Role protections</p>
-            <p className="muted">Owners keep billing and administrative continuity. Admin and analyst roles support operational execution with scoped permissions.</p>
+            <p className="muted">Owners keep administrative continuity. Admin and analyst roles support operational execution with scoped permissions.</p>
           </article>
           <article className="dataCard">
             <p className="sectionEyebrow">Live mode safeguards</p>
