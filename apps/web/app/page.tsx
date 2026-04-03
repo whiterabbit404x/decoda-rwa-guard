@@ -28,10 +28,10 @@ export default async function MarketingHomePage() {
           <h1>Risk control for tokenized treasuries and real-world assets.</h1>
           <p className="lede">Operate tokenized treasury programs with a customer-ready control layer for threat detection, compliance governance, and operational resilience—with dependable continuity and clear operator messaging when a dependency is temporarily unavailable.</p>
           <div className="heroActionRow">
-            <Link href="/dashboard" className="primaryCta">Start free trial</Link>
+            <Link href="/dashboard" className="primaryCta" prefetch={false}>Start free trial</Link>
             <a href={`mailto:${process.env.NEXT_PUBLIC_SUPPORT_EMAIL ?? "support@decoda.app"}`} className="secondaryCta">Contact sales</a>
-            <Link href="/sign-in" className="tertiaryCta">Sign in</Link>
-            <Link href="/sign-up" className="tertiaryCta">Sign up</Link>
+            <Link href="/sign-in" className="tertiaryCta" prefetch={false}>Sign in</Link>
+            <Link href="/sign-up" className="tertiaryCta" prefetch={false}>Sign up</Link>
           </div>
           <div className="chipRow">
             <span className="ruleChip">Railway API</span>
@@ -64,7 +64,7 @@ export default async function MarketingHomePage() {
               <p className="sectionEyebrow">{card.title}</p>
               <h3>{card.title} controls</h3>
               <p>{card.description}</p>
-              <Link href={`/${card.title.toLowerCase() === 'threat' ? 'dashboard' : card.title.toLowerCase()}`}>Explore {card.title.toLowerCase()}</Link>
+              <Link href={`/${card.title.toLowerCase() === 'threat' ? 'dashboard' : card.title.toLowerCase()}`} prefetch={false}>Explore {card.title.toLowerCase()}</Link>
             </article>
           ))}
         </div>

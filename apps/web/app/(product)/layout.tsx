@@ -19,6 +19,13 @@ export default async function ProductLayout({ children }: { children: React.Reac
   const token = cookieStore.get(TOKEN_COOKIE_NAME)?.value;
   const runtimeConfig = getRuntimeConfig();
 
+  console.debug('[dashboard-page-data trace] source=product-layout-entry', {
+    routeGroup: '(product)',
+    hasToken: Boolean(token),
+    liveModeEnabled: runtimeConfig.liveModeEnabled,
+    configured: runtimeConfig.configured,
+  });
+
   if (shouldRedirectUnauthenticatedProductAccess(token, runtimeConfig)) {
     redirect('/sign-in');
   }
