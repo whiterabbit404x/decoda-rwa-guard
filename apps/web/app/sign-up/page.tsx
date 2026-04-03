@@ -11,7 +11,7 @@ export default async function SignUpPage() {
   const isPreviewDeployment = process.env.VERCEL_ENV === 'preview';
   const runtimeConfig = getRuntimeConfig();
   const cookieStore = await cookies();
-  const token = cookieStore.get('decoda-pilot-access-token')?.value;
+  const token = cookieStore.get('decoda_session')?.value;
 
   if (runtimeConfig.liveModeEnabled && token) {
     redirect('/dashboard');

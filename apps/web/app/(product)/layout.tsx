@@ -8,7 +8,7 @@ import AuthenticatedRoute from '../authenticated-route';
 import { getRuntimeConfig } from '../runtime-config';
 import { shouldRedirectUnauthenticatedProductAccess } from '../auth-guards';
 
-const TOKEN_COOKIE_NAME = 'decoda-pilot-access-token';
+const TOKEN_COOKIE_NAME = 'decoda_session';
 
 function ProductLayoutLoading({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
