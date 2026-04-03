@@ -136,6 +136,7 @@ from services.api.app.pilot import (
 from services.api.app.monitoring_runner import (
     get_monitoring_health,
     list_monitoring_targets,
+    monitoring_runtime_status,
     patch_monitoring_target,
     production_claim_validator,
     run_monitoring_cycle,
@@ -1537,6 +1538,11 @@ def ops_monitoring_health() -> dict[str, Any]:
 @app.get('/ops/production-claim-validator', summary='Strategic Infrastructure Guard production claim validator')
 def ops_production_claim_validator() -> dict[str, Any]:
     return with_auth_schema_json(production_claim_validator)
+
+
+@app.get('/ops/monitoring/runtime-status', summary='Monitoring runtime status for admin/settings surfaces')
+def ops_monitoring_runtime_status() -> dict[str, Any]:
+    return with_auth_schema_json(monitoring_runtime_status)
 
 
 @app.get('/workspaces', summary='List workspaces for the authenticated user')

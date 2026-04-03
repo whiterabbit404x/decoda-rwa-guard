@@ -6,7 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import AppNavigation from './app-navigation';
 import { usePilotAuth } from 'app/pilot-auth-context';
 
-export default function AppShell({ children }: { children: React.ReactNode }) {
+export default function AppShell({ children, topBanner }: { children: React.ReactNode; topBanner?: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { error, signOut, user } = usePilotAuth();
@@ -38,7 +38,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         {error ? <p className="statusLine">{error}</p> : null}
       </aside>
-      <div className="appShellContent">{children}</div>
+      <div className="appShellContent">
+        {topBanner}
+        {children}
+      </div>
     </div>
   );
 }
