@@ -129,7 +129,14 @@ Use this when you want a credible customer-facing deployment without checkout en
 5. Deterministic install from a fresh checkout: `npm run install:clean` (alias for `npm ci`).
 6. Validate web build from that clean install: `npm run build:web`.
 7. Validate pilot launch posture: `make validate-no-billing-launch` (or `npm run validate:no-billing-launch`).
-8. Run staging evidence flow when staging credentials are available:
+8. Generate a reproducible proof-run artifact bundle (includes command logs + summary): `npm run proof:no-billing-launch`.
+   - Artifacts are written under `artifacts/launch-proof/<timestamp>/`.
+   - Required commands in this proof runner are exactly:
+     - `npm ci`
+     - `npm run build:web`
+     - `make validate-no-billing-launch`
+   - Optional step `python scripts/staging/run_evidence_flow.py` runs automatically only when required `STAGING_*` vars are present; otherwise it is recorded as an explicit `SKIP`.
+9. Run staging evidence flow when staging credentials are available:
    - `export STAGING_BASE_URL=...`
    - `export STAGING_API_URL=...`
    - `export STAGING_EVIDENCE_EMAIL=...`
@@ -1463,6 +1470,22 @@ python scripts/staging/run_evidence_flow.py
 ```
 
 For no-billing pilot validation without staging credentials, `validate-no-billing-launch` records staging evidence as skipped-missing-configuration instead of failing the full gate. To produce full staging evidence artifacts, provide the `STAGING_*` variables and rerun `npm run evidence:staging`.
+
+For a single reproducible operator run (including `npm ci`, `npm run build:web`, and `make validate-no-billing-launch`), run:
+
+```bash
+npm run proof:no-billing-launch
+```
+
+Expected artifact outputs:
+- `artifacts/launch-proof/<timestamp>/summary.md`
+- `artifacts/launch-proof/<timestamp>/summary.json`
+- command logs like `01_npm_ci.log`, `02_build_web.log`, and `03_validate_no_billing_launch.log`
+- optional staging evidence output at `artifacts/launch-proof/<timestamp>/staging-evidence/` when `STAGING_*` credentials are provided
+
+Troubleshooting notes:
+- If Playwright Chromium download is blocked on your runner, no-billing pilot mode keeps validation explicit by recording browser-runtime checks as `SKIP` (not fake `PASS`), while still failing real blockers.
+- If `STAGING_*` vars are missing, staging evidence is intentionally recorded as skipped configuration. Provide env vars and rerun for full staging artifacts.
 
 Validation explicitly separates dependency-missing, browser-binaries-missing, and true E2E execution failures.
 

@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch proof-no-billing-launch
 
 up:
 	docker compose up -d
@@ -71,3 +71,6 @@ validate-launch:
 
 validate-no-billing-launch:
 	BILLING_PROVIDER=none VALIDATION_MODE=no_billing_pilot python services/api/scripts/validate_staging.py
+
+proof-no-billing-launch:
+	python scripts/staging/run_no_billing_launch_proof.py
