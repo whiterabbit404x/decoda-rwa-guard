@@ -1541,7 +1541,9 @@ See `docs/LAUNCH_VALIDATION_CHECKLIST.md` for pilot vs broad-sale vs enterprise 
 - **Degraded mode (`DEGRADED`)** is an operational state exposed by `/ops/monitoring/health` and `/ops/monitoring/runtime-status` whenever live/hybrid runtime checks fail (provider unreachable, live monitoring disabled, stale checkpoints, or source degradation).
 - In authenticated live workspaces, wallet/contract monitoring does **not** silently inject demo payloads if live ingestion is unavailable.
 - Live/hybrid monitoring never fabricates synthetic-success analysis when providers fail; failures are persisted as degraded/failed evidence records.
+- Missing provider data is persisted as explicit `no_evidence`/`degraded`/`failed` truth states and never mapped to safe/normal defaults.
 - `/ops/production-claim-validator` now fails if synthetic/demo evidence leaks into the recent evidence window.
+- See `docs/DEMO_ISOLATION_AUDIT.md` for the file-by-file synthetic fallback removals and isolation boundaries.
 
 ## How to prove live on-chain monitoring
 

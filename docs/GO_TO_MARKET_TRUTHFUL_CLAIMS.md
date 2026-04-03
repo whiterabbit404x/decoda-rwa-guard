@@ -10,6 +10,7 @@ You can claim the platform provides live monitoring for tokenized RWA / treasury
 - Watcher source status is active and checkpoints are advancing.
 - Alerts/incidents and audit evidence are persisted from real events.
 - Validator confirms no synthetic leakage (`synthetic_leak_detected=false`) and recent monitoring evidence is real (`recent_evidence_state=real`).
+- Validator confirms `recent_claim_safe_window_passed=true`.
 - Production claim validator reports `PASS`.
 
 ## Disallowed claims
@@ -20,7 +21,15 @@ Do **not** claim live protection when:
 - RPC is missing/unreachable;
 - watcher is degraded with stale checkpoints;
 - demo/synthetic payloads are being used for wallet/contract monitoring evidence;
-- validator reports `recent_evidence_state` as `demo`, `degraded`, or `missing`.
+- validator reports `recent_evidence_state` as `demo`, `degraded`, `missing`, `no_evidence`, or `failed`.
+- validator reports `recent_confidence_basis=none` or `synthetic_leak_detected=true`.
+
+## Truth-preserving runtime semantics
+
+- DEMO mode is strictly synthetic and always tagged as synthetic.
+- LIVE/HYBRID never substitute demo payloads for missing provider data.
+- No provider evidence is treated as `no_evidence` / `degraded` / `failed`, never as safe or normal.
+- Degraded/unknown states are expected, persisted, and visible to operators.
 
 ## Operator proof checklist
 

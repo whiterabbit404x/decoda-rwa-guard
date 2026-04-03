@@ -60,11 +60,20 @@ class ActivityProviderResult:
     latest_block: int | None
     checkpoint: str | None
     degraded_reason: str | None
-    error: str | None
+    error_code: str | None
     source_type: str
     reason_code: str | None
     claim_safe: bool
 
+    def __post_init__(self) -> None:
+        if self.mode in {'live', 'hybrid'} and self.synthetic:
+            raise MonitoringModeError('live/hybrid monitoring result cannot be synthetic')
+        if self.mode == 'demo' and not self.synthetic:
+            raise MonitoringModeError('demo monitoring result must be synthetic')
+        if self.status == 'live' and not self.evidence_present:
+            raise MonitoringModeError('live monitoring result requires provider evidence')
+        if not self.evidence_present and self.claim_safe:
+            raise MonitoringModeError('claim_safe cannot be true when evidence is missing')
 
 
 def monitoring_ingestion_mode() -> str:
@@ -456,7 +465,25 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
     mode = runtime['mode']
     can_use_live = (not runtime['degraded']) and target_type in {'wallet', 'contract'}
     if mode in {'live', 'hybrid'} and can_use_live:
-        live_events = fetch_evm_activity(target, since_ts)
+        try:
+            live_events = fetch_evm_activity(target, since_ts)
+        except Exception as exc:
+            return ActivityProviderResult(
+                mode=mode,
+                status='failed',
+                synthetic=False,
+                provider_name='evm_activity_provider',
+                provider_kind='rpc',
+                evidence_present=False,
+                events=[],
+                latest_block=None,
+                checkpoint=None,
+                degraded_reason='provider_error',
+                error_code=exc.__class__.__name__,
+                source_type='unknown',
+                reason_code='PROVIDER_FAILED',
+                claim_safe=False,
+            )
         has_evidence = bool(live_events)
         latest_block = None
         checkpoint = None
@@ -482,14 +509,14 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
                 latest_block=latest_block,
                 checkpoint=checkpoint,
                 degraded_reason=None,
-                error=None,
+                error_code=None,
                 source_type='websocket' if bool((os.getenv('EVM_WS_URL') or '').strip()) else 'rpc_polling',
                 reason_code=None,
                 claim_safe=False,
             )
         return ActivityProviderResult(
             mode=mode,
-            status='degraded',
+            status='no_evidence',
             synthetic=False,
             provider_name='evm_activity_provider',
             provider_kind='rpc',
@@ -498,7 +525,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             latest_block=None,
             checkpoint=None,
             degraded_reason='no_real_provider_evidence',
-            error=None,
+            error_code=None,
             source_type='unknown',
             reason_code='NO_PROVIDER_EVIDENCE',
             claim_safe=False,
@@ -515,7 +542,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             latest_block=None,
             checkpoint=None,
             degraded_reason=str(runtime.get('reason') or 'live ingestion degraded'),
-            error=None,
+            error_code=None,
             source_type='unknown',
             reason_code='RUNTIME_DEGRADED',
             claim_safe=False,
@@ -532,7 +559,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             latest_block=None,
             checkpoint=None,
             degraded_reason='no_live_events_observed',
-            error=None,
+            error_code=None,
             source_type='unknown',
             reason_code='NO_PROVIDER_EVIDENCE',
             claim_safe=False,
@@ -552,7 +579,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             latest_block=None,
             checkpoint=events[-1].cursor if events else None,
             degraded_reason=None,
-            error=None,
+            error_code=None,
             source_type='demo',
             reason_code='DEMO_SCENARIO',
             claim_safe=False,
@@ -571,7 +598,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             latest_block=None,
             checkpoint=events[-1].cursor if events else None,
             degraded_reason=None,
-            error=None,
+            error_code=None,
             source_type='demo',
             reason_code='DEMO_SCENARIO',
             claim_safe=False,
@@ -589,7 +616,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
         latest_block=None,
         checkpoint=events[-1].cursor if events else None,
         degraded_reason=None,
-        error=None,
+        error_code=None,
         source_type='demo',
         reason_code='DEMO_SCENARIO',
         claim_safe=False,

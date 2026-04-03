@@ -328,8 +328,10 @@ def _process_single_event(
     configured_scenario: str | None,
 ) -> dict[str, Any]:
     kind, normalized = _normalize_event(target, event, monitoring_run_id, workspace)
-    response, diagnostics = _threat_call(kind, normalized, target_id=str(target['id']))
     ingestion_runtime = monitoring_ingestion_runtime()
+    if ingestion_runtime.get('mode') in {'live', 'hybrid'} and str(event.ingestion_source or '').lower() == 'demo':
+        raise RuntimeError('synthetic event leakage blocked in live/hybrid monitoring')
+    response, diagnostics = _threat_call(kind, normalized, target_id=str(target['id']))
     fallback_count = 0
     if response is None:
         fallback_count = 1
@@ -374,6 +376,12 @@ def _process_single_event(
             'monitoring_demo_scenario': configured_scenario,
             'evidence_state': 'demo' if response_metadata.get('ingestion_source') == 'demo' else ('degraded' if response.get('degraded') else 'real'),
             'confidence_basis': 'demo_scenario' if response_metadata.get('ingestion_source') == 'demo' else ('none' if response.get('degraded') else 'provider_evidence'),
+            'truthfulness_state': 'claim_safe' if bool(response.get('claim_safe')) else 'not_claim_safe',
+            'detection_outcome': (
+                'DEMO_ONLY'
+                if response_metadata.get('ingestion_source') == 'demo'
+                else ('ANALYSIS_FAILED' if response.get('analysis_status') == 'analysis_failed' else 'DETECTION_CONFIRMED')
+            ),
         }
     )
     response['metadata'] = response_metadata
@@ -498,9 +506,26 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     if not events and provider_result.mode in {'live', 'hybrid'} and str(target.get('target_type') or '').lower() in {'wallet', 'contract'}:
         source_status = 'degraded'
         degraded_reason = provider_result.degraded_reason or 'no_live_events_observed'
+        last_status = 'no_evidence' if provider_result.status == 'no_evidence' else 'degraded'
     if events and provider_result.synthetic and provider_result.mode in {'live', 'hybrid'}:
         source_status = 'degraded'
         degraded_reason = 'synthetic_leak_detected'
+        last_status = 'degraded'
+
+    recent_evidence_state = (
+        'demo'
+        if provider_result.synthetic
+        else ('real' if bool(events) else ('degraded' if provider_result.status in {'failed', 'degraded'} else 'missing'))
+    )
+    recent_confidence_basis = (
+        'demo_scenario'
+        if provider_result.synthetic
+        else ('provider_evidence' if bool(events) else 'none')
+    )
+    last_real_event_at = checkpoint_at if (bool(events) and not provider_result.synthetic) else None
+    last_no_evidence_at = utc_now() if provider_result.status == 'no_evidence' else None
+    last_failed_monitoring_at = utc_now() if provider_result.status == 'failed' else None
+    last_synthetic_event_at = checkpoint_at if provider_result.synthetic else None
 
     connection.execute(
         '''
@@ -516,6 +541,12 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             watcher_source_status = %s,
             watcher_degraded_reason = %s,
             watcher_last_event_at = %s,
+            last_real_event_at = COALESCE(%s, last_real_event_at),
+            last_no_evidence_at = COALESCE(%s, last_no_evidence_at),
+            last_failed_monitoring_at = COALESCE(%s, last_failed_monitoring_at),
+            last_synthetic_event_at = %s,
+            recent_evidence_state = %s,
+            recent_confidence_basis = %s,
             monitoring_claimed_by = NULL,
             monitoring_claimed_at = NULL,
             updated_at = NOW()
@@ -534,6 +565,12 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             source_status,
             degraded_reason,
             checkpoint_at,
+            last_real_event_at,
+            last_no_evidence_at,
+            last_failed_monitoring_at,
+            last_synthetic_event_at,
+            recent_evidence_state,
+            recent_confidence_basis,
             target['id'],
         ),
     )
@@ -1070,6 +1107,7 @@ def production_claim_validator() -> dict[str, Any]:
         'no_synthetic_evidence_window': False,
         'real_target_exists': False,
         'analysis_evidence_real': False,
+        'no_recent_degraded_or_missing': False,
     }
     reason = None
     if checks['live_or_hybrid_mode'] and checks['live_monitoring_enabled'] and (os.getenv('EVM_RPC_URL') or '').strip():
@@ -1089,6 +1127,7 @@ def production_claim_validator() -> dict[str, Any]:
     last_demo_event_at = None
     recent_evidence_state = 'missing'
     recent_confidence_basis = 'none'
+    recent_claim_safe_window_passed = False
     try:
         with pg_connection() as connection:
             ensure_pilot_schema(connection)
@@ -1140,6 +1179,8 @@ def production_claim_validator() -> dict[str, Any]:
     synthetic_leak_detected = last_demo_event_at is not None
     checks['no_synthetic_evidence_window'] = not synthetic_leak_detected
     checks['analysis_evidence_real'] = recent_evidence_state == 'real' and recent_confidence_basis in {'provider_evidence', 'backfill_evidence'}
+    checks['no_recent_degraded_or_missing'] = recent_evidence_state == 'real'
+    recent_claim_safe_window_passed = checks['analysis_evidence_real'] and checks['no_synthetic_evidence_window'] and checks['no_recent_degraded_or_missing']
     passed = all(checks.values())
     return {
         'status': 'PASS' if passed else 'FAIL',
@@ -1155,6 +1196,7 @@ def production_claim_validator() -> dict[str, Any]:
         'last_demo_event_at': last_demo_event_at,
         'recent_evidence_state': recent_evidence_state,
         'recent_confidence_basis': recent_confidence_basis,
+        'recent_claim_safe_window_passed': recent_claim_safe_window_passed,
     }
 
 
