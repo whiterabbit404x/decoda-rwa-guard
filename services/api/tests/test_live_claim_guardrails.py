@@ -16,7 +16,7 @@ def test_hybrid_wallet_no_demo_payload_leak(monkeypatch):
     events = activity_providers.fetch_target_activity({'id': 't1', 'target_type': 'wallet', 'chain_network': 'ethereum', 'wallet_address': '0x' + '1' * 40}, None)
     assert events == []
     result = activity_providers.fetch_target_activity_result({'id': 't1', 'target_type': 'wallet', 'chain_network': 'ethereum', 'wallet_address': '0x' + '1' * 40}, None)
-    assert result.status == 'degraded'
+    assert result.status == 'no_evidence'
     assert result.synthetic is False
 
 

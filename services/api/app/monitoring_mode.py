@@ -46,6 +46,10 @@ def is_hybrid_mode(mode: str | None = None) -> bool:
     return resolve_monitoring_mode(mode) == 'hybrid'
 
 
+def is_degraded_mode(mode: str | None = None) -> bool:
+    return resolve_monitoring_mode(mode) == 'degraded'
+
+
 def require_real_monitoring(mode: str | None = None) -> None:
     resolved = resolve_monitoring_mode(mode)
     if resolved in {'live', 'hybrid'}:
@@ -53,9 +57,17 @@ def require_real_monitoring(mode: str | None = None) -> None:
     raise MonitoringModeError(f'real monitoring required, got mode={resolved}')
 
 
-def assert_no_demo_fallback(mode: str | None, *, attempted: bool, context: str) -> None:
+def require_real_evidence(mode: str | None = None) -> None:
+    require_real_monitoring(mode)
+
+
+def assert_no_synthetic_path(mode: str | None, *, attempted: bool, context: str) -> None:
     if not attempted:
         return
     resolved = resolve_monitoring_mode(mode)
     if resolved in {'live', 'hybrid', 'degraded'}:
         raise MonitoringModeError(f'demo/synthetic fallback blocked in {resolved} mode: {context}')
+
+
+def assert_no_demo_fallback(mode: str | None, *, attempted: bool, context: str) -> None:
+    assert_no_synthetic_path(mode, attempted=attempted, context=context)
