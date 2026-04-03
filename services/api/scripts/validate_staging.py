@@ -20,6 +20,12 @@ CATEGORIES = [
     'staging_evidence',
 ]
 
+NO_BILLING_BOOTSTRAP_REMEDIATION = [
+    'Run `npm ci` from repository root to install Node/Next.js dependencies.',
+    'If browser smoke checks are required, run `make install-web-test-runtime`.',
+    'Then rerun `make validate-no-billing-launch`.',
+]
+
 
 @dataclass
 class ValidationCheck:
@@ -132,6 +138,38 @@ def check_playwright_runtime() -> ValidationCheck:
     )
 
 
+def check_node_bootstrap() -> ValidationCheck:
+    node_modules = REPO_ROOT / 'node_modules'
+    web_next_package = REPO_ROOT / 'node_modules' / 'next' / 'package.json'
+    npm_lock = REPO_ROOT / 'package-lock.json'
+
+    missing_parts: list[str] = []
+    if not npm_lock.exists():
+        missing_parts.append('package-lock.json is missing')
+    if not node_modules.exists():
+        missing_parts.append('node_modules is missing')
+    if node_modules.exists() and not web_next_package.exists():
+        missing_parts.append('Next.js runtime is missing from node_modules')
+
+    if missing_parts:
+        return ValidationCheck(
+            category='frontend_build_reproducibility',
+            name='node_bootstrap_prerequisites',
+            command=['npm', 'ci'],
+            status='fail',
+            detail='; '.join(missing_parts),
+            remediation=NO_BILLING_BOOTSTRAP_REMEDIATION,
+        )
+
+    return ValidationCheck(
+        category='frontend_build_reproducibility',
+        name='node_bootstrap_prerequisites',
+        command=['npm', 'ci'],
+        status='pass',
+        detail='Node/Next.js dependencies are present for validation.',
+    )
+
+
 def run_validation(mode: str) -> int:
     env = os.environ.copy()
     normalized_mode = (mode or 'staging').strip().lower()
@@ -150,26 +188,50 @@ def run_validation(mode: str) -> int:
     web_env.setdefault('NEXT_PUBLIC_LIVE_MODE_ENABLED', 'true')
     web_env.setdefault('API_URL', env.get('STAGING_API_URL', 'https://api.staging.example.com'))
 
-    checks.append(
-        run_command(
-            'frontend_build_reproducibility',
-            'frontend_runtime_alignment',
-            ['python', 'scripts/check_frontend_runtime_alignment.py'],
-            remediation=[
-                'Resolve package.json/package-lock.json drift, then rerun.',
-                'Use `npm ci` for deterministic install before build validation.',
-            ],
+    bootstrap_check = check_node_bootstrap()
+    checks.append(bootstrap_check)
+    if bootstrap_check.status == 'pass':
+        checks.append(
+            run_command(
+                'frontend_build_reproducibility',
+                'frontend_runtime_alignment',
+                ['python', 'scripts/check_frontend_runtime_alignment.py'],
+                remediation=[
+                    'Resolve package.json/package-lock.json drift, then rerun.',
+                    'Use `npm ci` for deterministic install before build validation.',
+                ],
+            )
         )
-    )
-    checks.append(
-        run_command(
-            'frontend_build_reproducibility',
-            'web_build',
-            ['npm', 'run', 'build', '--workspace', 'apps/web'],
-            env=web_env,
-            remediation=['Run `npm ci` and re-run build with required Vercel-style env vars.'],
+        checks.append(
+            run_command(
+                'frontend_build_reproducibility',
+                'web_build',
+                ['npm', 'run', 'build', '--workspace', 'apps/web'],
+                env=web_env,
+                remediation=['Run `npm ci` and re-run build with required Vercel-style env vars.'],
+            )
         )
-    )
+    else:
+        checks.append(
+            ValidationCheck(
+                category='frontend_build_reproducibility',
+                name='frontend_runtime_alignment',
+                command=['python', 'scripts/check_frontend_runtime_alignment.py'],
+                status='skip',
+                detail='Skipped because Node bootstrap prerequisites are missing.',
+                remediation=bootstrap_check.remediation,
+            )
+        )
+        checks.append(
+            ValidationCheck(
+                category='frontend_build_reproducibility',
+                name='web_build',
+                command=['npm', 'run', 'build', '--workspace', 'apps/web'],
+                status='skip',
+                detail='Skipped because Node bootstrap prerequisites are missing.',
+                remediation=bootstrap_check.remediation,
+            )
+        )
 
     runtime_check = check_playwright_runtime()
     if runtime_check.status == 'fail' and runtime_check.metadata.get('state') == 'missing_browser':

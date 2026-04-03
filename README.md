@@ -122,21 +122,28 @@ Fast operator checks:
 
 Use this when you want a credible customer-facing deployment without checkout enabled.
 
+Prerequisites for reproducible proof runs:
+
+- Node.js 20+ and npm 10+.
+- Python 3.11+ with `pytest` available in your active environment.
+- Network access for first-time Playwright Chromium install (only required when browser smoke checks must execute locally).
+
 1. Configure API env with: `LIVE_MODE_ENABLED=true`, `DATABASE_URL`, `AUTH_TOKEN_SECRET`, `APP_PUBLIC_URL`, and `BILLING_PROVIDER=none`.
 2. Run migrations: `python services/api/scripts/migrate.py`.
 3. Seed optional pilot demo user: `python services/api/scripts/seed.py --pilot-demo`.
 4. Start API + worker processes (Railway) and web app (Vercel).
-5. Deterministic install from a fresh checkout: `npm run install:clean` (alias for `npm ci`).
-6. Validate web build from that clean install: `npm run build:web`.
-7. Validate pilot launch posture: `make validate-no-billing-launch` (or `npm run validate:no-billing-launch`).
-8. Generate a reproducible proof-run artifact bundle (includes command logs + summary): `npm run proof:no-billing-launch`.
+5. Deterministic install from a fresh checkout: `npm ci` (or `npm run install:clean`).
+6. Optional local browser bootstrap (recommended for full local smoke coverage): `make install-web-test-runtime`.
+7. Validate web build from that clean install: `npm run build:web`.
+8. Validate pilot launch posture: `make validate-no-billing-launch` (or `npm run validate:no-billing-launch`).
+9. Generate a reproducible proof-run artifact bundle (includes command logs + summary): `npm run proof:no-billing-launch`.
    - Artifacts are written under `artifacts/launch-proof/<timestamp>/`.
    - Required commands in this proof runner are exactly:
      - `npm ci`
      - `npm run build:web`
      - `make validate-no-billing-launch`
    - Optional step `python scripts/staging/run_evidence_flow.py` runs automatically only when required `STAGING_*` vars are present; otherwise it is recorded as an explicit `SKIP`.
-9. Run staging evidence flow when staging credentials are available:
+10. Run staging evidence flow when staging credentials are available:
    - `export STAGING_BASE_URL=...`
    - `export STAGING_API_URL=...`
    - `export STAGING_EVIDENCE_EMAIL=...`
@@ -144,6 +151,17 @@ Use this when you want a credible customer-facing deployment without checkout en
    - `npm run evidence:staging`
 
 `make validate-no-billing-launch` intentionally treats `BILLING_PROVIDER=none` as pilot-valid. It still fails for real blockers (for example broken API startup checks, broken auth/runtime, dependency drift, or failed web build).
+
+Expected success signal for `make validate-no-billing-launch`:
+
+- JSON summary with `"ok": true`.
+- Release summary categories reported as `PASS` (with optional `SKIP` only for documented pilot allowances).
+
+Troubleshooting:
+
+- If validation fails at `node_bootstrap_prerequisites`, run `npm ci` and retry.
+- If Playwright runtime is missing, run `make install-web-test-runtime` (or `npx playwright install chromium`) and retry.
+- If Playwright browser download is blocked by network policy, no-billing pilot mode may record that browser step as `SKIP`, but build + API/provider checks must still pass.
 
 This mode is **pilot-ready** and **marketing-ready**. Broad paid self-serve remains out of scope until billing provider credentials and checkout workflows are enabled in deployment.
 
