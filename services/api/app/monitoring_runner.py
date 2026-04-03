@@ -729,13 +729,13 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             '''
             UPDATE monitoring_worker_state
             SET running = FALSE,
-                status = CASE WHEN %s IS NULL THEN 'idle' ELSE 'error' END,
+                status = CASE WHEN CAST(%s AS text) IS NULL THEN 'idle' ELSE 'error' END,
                 last_heartbeat_at = NOW(),
                 last_cycle_at = NOW(),
-                last_cycle_due_targets = %s,
-                last_cycle_targets_checked = %s,
-                last_cycle_alerts_generated = %s,
-                last_error = %s,
+                last_cycle_due_targets = CAST(%s AS integer),
+                last_cycle_targets_checked = CAST(%s AS integer),
+                last_cycle_alerts_generated = CAST(%s AS integer),
+                last_error = CAST(%s AS text),
                 updated_at = NOW()
             WHERE worker_name = %s
             ''',
