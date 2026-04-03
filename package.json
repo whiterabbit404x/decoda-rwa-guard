@@ -10,6 +10,7 @@
     "install:clean": "npm ci",
     "build:web": "NEXT_PUBLIC_LIVE_MODE_ENABLED=false API_URL=https://api.example.com npm run build --workspace apps/web",
     "validate:no-billing-launch": "make validate-no-billing-launch",
+    "proof:no-billing-launch": "make proof-no-billing-launch",
     "test:backend:feature2-smoke": "python -m pytest services/api/tests/test_feature2_smoke.py -q",
     "test:frontend:feature2-smoke": "playwright test apps/web/tests/feature2-smoke.spec.ts",
     "smoke:feature2": "python scripts/smoke_feature2.py",
