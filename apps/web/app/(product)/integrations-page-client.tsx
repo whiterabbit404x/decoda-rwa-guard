@@ -123,6 +123,22 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
     setSaving(false);
   }
 
+  async function startSlackOAuthInstall() {
+    setSaving(true);
+    const response = await fetch(`${apiUrl}/integrations/slack/oauth/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ redirect_after_install: '/integrations' }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload?.authorize_url) {
+      setMessage(payload?.detail || 'Slack OAuth install is unavailable. Confirm Slack OAuth environment variables.');
+      setSaving(false);
+      return;
+    }
+    window.location.assign(payload.authorize_url);
+  }
+
   async function testSlack(item: any) {
     const response = await fetch(`${apiUrl}/integrations/slack/${item.id}/test`, { method: 'POST', headers: authHeaders() });
     setMessage(response.ok ? `Slack test queued (${item.slack_mode || 'webhook'}).` : 'Slack test failed to queue.');
@@ -234,7 +250,8 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
         </article>
         <article className="dataCard"><p className="sectionEyebrow">Safe test actions</p><button type="button" onClick={() => void runEmailTest()}>Test email delivery</button><button type="button" onClick={() => void runSlackHealthTest()}>Test Slack delivery</button><p className="muted">Billing is not fully configured if Stripe checks report warnings.</p></article>
         <article className="dataCard"><p className="sectionEyebrow">Create Slack integration</p>
-          <p className="muted">OAuth install is not enabled in this public beta. Use manual webhook or bot token setup below.</p>
+          <p className="muted">Use one-click OAuth for self-serve setup, or manual webhook/bot token setup if your Slack app policy requires it.</p>
+          <button type="button" onClick={() => void startSlackOAuthInstall()} disabled={saving}>Connect with Slack OAuth</button>
           <input placeholder="Display name" value={slackName} onChange={(event) => setSlackName(event.target.value)} />
           <select value={slackMode} onChange={(event) => setSlackMode(event.target.value as 'webhook' | 'bot')}><option value="webhook">Incoming webhook (compatibility)</option><option value="bot">Bot token (recommended)</option></select>
           {slackMode === 'webhook' ? <input placeholder="https://hooks.slack.com/services/..." value={slackWebhookUrl} onChange={(event) => setSlackWebhookUrl(event.target.value)} /> : <input placeholder="xoxb-..." value={slackBotToken} onChange={(event) => setSlackBotToken(event.target.value)} />}

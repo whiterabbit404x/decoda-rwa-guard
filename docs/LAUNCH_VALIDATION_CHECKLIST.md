@@ -14,9 +14,10 @@ Use this checklist to classify release readiness without guesswork.
 - [ ] Core backend tests still pass (`pytest -q`).
 - [ ] MFA UX is complete in web app (enroll, confirm, challenge completion, disable, recovery-code shown-once handling).
 - [ ] Integration UX clearly supports manual Slack/webhook setup with delivery logs and worker health status.
+- [ ] Slack OAuth may be left unconfigured in pilot mode, but status must be explicit (`not_configured`) in provider smoke output.
 
 ## 2) Broad self-serve sale readiness
-- [ ] `make validate-launch` passes (`validate-production` + `validate-staging`).
+- [ ] `make validate-paid-ga` passes (strict paid-GA gate; no skip statuses).
 - [ ] Staging evidence artifacts exist under a reproducible proof path:
   - `artifacts/launch-proof/<timestamp>/summary.json`
   - `artifacts/launch-proof/<timestamp>/staging-evidence/api/run.json`
@@ -25,7 +26,7 @@ Use this checklist to classify release readiness without guesswork.
 - [ ] Billing provider is `verified` (not `not_configured`) in live provider smoke output.
 - [ ] Email provider is `verified` with non-placeholder sender/domain.
 - [ ] `REDIS_URL` is configured for production topology.
-- [ ] Slack OAuth install/callback/interactivity is implemented (or explicitly tracked as out of scope while remaining in no-billing pilot tier).
+- [ ] Slack OAuth install/callback is implemented and provider config is `verified` in live provider smoke output.
 
 ## 3) Enterprise procurement readiness
 - [ ] Security/compliance evidence package is complete (SOC2 controls, IR runbooks, key rotation evidence).

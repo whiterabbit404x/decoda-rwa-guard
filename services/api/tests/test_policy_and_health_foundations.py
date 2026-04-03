@@ -25,3 +25,4 @@ def test_integration_health_snapshot_masks_and_reports_flags(monkeypatch) -> Non
     assert snapshot['stripe']['checks']['secret_key_present'] is True
     assert 'STRIPE_SECRET_KEY' in snapshot['stripe']['message'] or snapshot['stripe']['status'] in {'healthy', 'warning'}
     assert snapshot['slack']['checks']['bot_mode_supported'] is True
+    assert snapshot['slack']['checks']['oauth_configured'] is False

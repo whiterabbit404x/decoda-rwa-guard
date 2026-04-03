@@ -16,6 +16,8 @@ def test_new_live_workflow_routes_exist() -> None:
     assert "/actions/{action_id}" in source
     assert "/integrations/webhooks/{webhook_id}/rotate-secret" in source
     assert "/integrations/slack/{integration_id}/test" in source
+    assert "/integrations/slack/oauth/start" in source
+    assert "/integrations/slack/oauth/callback" in source
     assert "/integrations/routing/{channel_type}" in source
     assert "/billing/webhooks/paddle" in source
 
@@ -25,6 +27,8 @@ def test_export_generation_is_not_placeholder_complete() -> None:
     assert "VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'queued', %s, %s, %s)" in source
     assert "def _generate_export_artifact" in source
     assert "status = 'completed'" in source
+    assert "def begin_slack_oauth_install" in source
+    assert "def complete_slack_oauth_install" in source
 
 
 def test_protected_pages_use_authenticated_client_fetch_flow() -> None:

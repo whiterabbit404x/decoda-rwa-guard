@@ -21,7 +21,7 @@ from urllib.request import Request as UrlRequest, urlopen
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.pilot import (
@@ -37,6 +37,8 @@ from services.api.app.pilot import (
     create_portal_session,
     create_webhook,
     create_slack_integration,
+    begin_slack_oauth_install,
+    complete_slack_oauth_install,
     create_workspace_invitation,
     list_workspace_invitations,
     revoke_workspace_invitation,
@@ -1845,6 +1847,20 @@ def integrations_slack_list(request: Request) -> dict[str, Any]:
 @app.post('/integrations/slack', summary='Create workspace Slack integration')
 def integrations_slack_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_slack_integration(payload, request))
+
+
+@app.post('/integrations/slack/oauth/start', summary='Start Slack OAuth install')
+def integrations_slack_oauth_start(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: begin_slack_oauth_install(payload, request))
+
+
+@app.get('/integrations/slack/oauth/callback', summary='Complete Slack OAuth install')
+def integrations_slack_oauth_callback(code: str = '', state: str = '') -> Response:
+    result = with_auth_schema_json(lambda: complete_slack_oauth_install(state_token=state, code=code))
+    redirect_after = str(result.get('redirect_after_install') or '/integrations')
+    suffix = '&' if '?' in redirect_after else '?'
+    target = f'{redirect_after}{suffix}slack_oauth=connected'
+    return RedirectResponse(url=target, status_code=302)
 
 
 @app.patch('/integrations/slack/{integration_id}', summary='Update workspace Slack integration')

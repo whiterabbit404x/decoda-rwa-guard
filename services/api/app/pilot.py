@@ -57,6 +57,7 @@ EMAIL_VERIFICATION_TTL_MINUTES = 60 * 24
 PASSWORD_RESET_TTL_MINUTES = 30
 SESSION_TTL_HOURS = 24
 MFA_RECOVERY_CODE_COUNT = 8
+SLACK_OAUTH_STATE_TTL_MINUTES = 10
 _rate_limit_lock = threading.Lock()
 _rate_limit_state: dict[str, list[float]] = {}
 logger = logging.getLogger(__name__)
@@ -352,9 +353,9 @@ def integration_health_snapshot(connection: Any | None = None) -> dict[str, Any]
             'message': 'Redis-backed auth rate limiting configured.' if redis_ready else ('REDIS_URL missing in production: auth throttling is not safely shared.' if production else 'REDIS_URL missing: using in-memory limiter for local development only.'),
         },
         'slack': {
-            'status': 'healthy',
-            'message': 'Slack integrations are configured per workspace. Use test delivery to validate channels.',
-            'checks': {'webhook_mode_supported': True, 'bot_mode_supported': True},
+            'status': 'healthy' if slack_oauth_configured() else 'warning',
+            'message': 'Slack integrations are configured per workspace. OAuth is available for self-serve installs.' if slack_oauth_configured() else 'Slack OAuth is unavailable until SLACK_CLIENT_ID and SLACK_CLIENT_SECRET are configured.',
+            'checks': {'webhook_mode_supported': True, 'bot_mode_supported': True, 'oauth_configured': slack_oauth_configured()},
         },
     }
 
@@ -2757,6 +2758,140 @@ def _normalize_slack_severity_routing(payload: dict[str, Any]) -> dict[str, str]
         value = str(incoming.get(level) or 'default').strip()
         normalized[level] = value[:80] if value else 'default'
     return normalized
+
+
+def slack_oauth_configured() -> bool:
+    return bool(os.getenv('SLACK_CLIENT_ID', '').strip() and os.getenv('SLACK_CLIENT_SECRET', '').strip())
+
+
+def slack_oauth_callback_url() -> str:
+    configured = os.getenv('SLACK_OAUTH_REDIRECT_URI', '').strip()
+    if configured:
+        return configured
+    api_base = os.getenv('API_PUBLIC_URL', os.getenv('API_URL', 'http://localhost:8000')).rstrip('/')
+    return f'{api_base}/integrations/slack/oauth/callback'
+
+
+def begin_slack_oauth_install(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    if not slack_oauth_configured():
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Slack OAuth is unavailable. Configure SLACK_CLIENT_ID and SLACK_CLIENT_SECRET.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        state_token = secrets.token_urlsafe(32)
+        redirect_after_install = str(payload.get('redirect_after_install') or '/integrations').strip() or '/integrations'
+        expires_at = utc_now() + timedelta(minutes=SLACK_OAUTH_STATE_TTL_MINUTES)
+        connection.execute(
+            '''
+            INSERT INTO slack_oauth_states (state_token, workspace_id, user_id, redirect_after_install, expires_at)
+            VALUES (%s, %s, %s, %s, %s)
+            ''',
+            (state_token, workspace_context['workspace_id'], user['id'], redirect_after_install[:400], expires_at),
+        )
+        connection.execute('DELETE FROM slack_oauth_states WHERE expires_at < NOW()')
+        connection.commit()
+        params = urlencode(
+            {
+                'client_id': os.getenv('SLACK_CLIENT_ID', '').strip(),
+                'scope': os.getenv('SLACK_OAUTH_SCOPES', 'chat:write,incoming-webhook'),
+                'redirect_uri': slack_oauth_callback_url(),
+                'state': state_token,
+            }
+        )
+        return {'authorize_url': f'https://slack.com/oauth/v2/authorize?{params}', 'expires_at': expires_at.isoformat()}
+
+
+def complete_slack_oauth_install(*, state_token: str, code: str) -> dict[str, Any]:
+    require_live_mode()
+    if not slack_oauth_configured():
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Slack OAuth is unavailable. Configure SLACK_CLIENT_ID and SLACK_CLIENT_SECRET.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        oauth_state = connection.execute(
+            '''
+            SELECT state_token, workspace_id, user_id, redirect_after_install
+            FROM slack_oauth_states
+            WHERE state_token = %s AND expires_at > NOW()
+            ''',
+            (state_token,),
+        ).fetchone()
+        if oauth_state is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Slack OAuth state is invalid or expired.')
+        data = urlencode(
+            {
+                'code': code,
+                'client_id': os.getenv('SLACK_CLIENT_ID', '').strip(),
+                'client_secret': os.getenv('SLACK_CLIENT_SECRET', '').strip(),
+                'redirect_uri': slack_oauth_callback_url(),
+            }
+        ).encode('utf-8')
+        try:
+            with urlopen(
+                UrlRequest(
+                    'https://slack.com/api/oauth.v2.access',
+                    method='POST',
+                    data=data,
+                    headers={'Content-Type': 'application/x-www-form-urlencoded'},
+                ),
+                timeout=15,
+            ) as response:
+                oauth_payload = json.loads(response.read().decode('utf-8'))
+        except (HTTPError, URLError, TimeoutError) as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f'Failed to complete Slack OAuth exchange: {exc}') from exc
+        if not oauth_payload.get('ok'):
+            error = str(oauth_payload.get('error') or 'unknown_error')
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Slack OAuth exchange failed: {error}')
+
+        workspace_id = str(oauth_state['workspace_id'])
+        bot_token = str(oauth_payload.get('access_token') or '').strip()
+        incoming_webhook = oauth_payload.get('incoming_webhook') if isinstance(oauth_payload.get('incoming_webhook'), dict) else {}
+        webhook_url = str(incoming_webhook.get('url') or '').strip()
+        channel_id = str(incoming_webhook.get('channel_id') or '').strip() or None
+        channel_name = str(incoming_webhook.get('channel') or '').strip() or None
+        team_data = oauth_payload.get('team') if isinstance(oauth_payload.get('team'), dict) else {}
+        integration_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO workspace_slack_integrations (id, workspace_id, display_name, slack_mode, webhook_url_encrypted, webhook_last4, bot_token_encrypted, bot_token_last4, default_channel, severity_routing, secret_scheme, secret_key_id, enabled, created_by_user_id, installation_method, slack_team_id, slack_team_name, slack_installer_user_id)
+            VALUES (%s, %s, %s, 'bot', %s, %s, %s, %s, %s, %s::jsonb, %s, %s, TRUE, %s, 'oauth', %s, %s, %s)
+            ''',
+            (
+                integration_id,
+                workspace_id,
+                f"Slack ({team_data.get('name') or 'workspace'})",
+                (_encode_secret_value(webhook_url, aad=f'slack:{workspace_id}:webhook') if webhook_url else None),
+                (webhook_url[-4:] if webhook_url else None),
+                (_encode_secret_value(bot_token, aad=f'slack:{workspace_id}:bot') if bot_token else None),
+                (bot_token[-4:] if bot_token else None),
+                channel_id or channel_name,
+                _json_dumps({'low': 'default', 'medium': 'default', 'high': 'default', 'critical': 'default'}),
+                'aes256gcm:v1',
+                os.getenv('SECRET_ENCRYPTION_KEY_ID', 'env-default').strip() or 'env-default',
+                str(oauth_state['user_id']),
+                str(team_data.get('id') or '')[:120] or None,
+                str(team_data.get('name') or '')[:200] or None,
+                str((oauth_payload.get('authed_user') or {}).get('id') or '')[:120] or None,
+            ),
+        )
+        connection.execute('DELETE FROM slack_oauth_states WHERE state_token = %s', (state_token,))
+        log_audit(
+            connection,
+            action='integration.slack.oauth_install',
+            entity_type='workspace_slack_integration',
+            entity_id=integration_id,
+            request=None,
+            user_id=str(oauth_state['user_id']),
+            workspace_id=workspace_id,
+            metadata={'installation_method': 'oauth'},
+        )
+        connection.commit()
+        return {
+            'integration_id': integration_id,
+            'redirect_after_install': str(oauth_state.get('redirect_after_install') or '/integrations'),
+            'team_name': team_data.get('name'),
+            'default_channel': channel_id or channel_name,
+        }
 
 
 def list_slack_integrations(request: Request) -> dict[str, Any]:

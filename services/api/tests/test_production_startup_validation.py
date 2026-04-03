@@ -95,6 +95,7 @@ def test_health_readiness_stays_healthy_when_billing_provider_none(api_main, mon
     monkeypatch.setenv('EMAIL_RESEND_API_KEY', 're_123')
     monkeypatch.setenv('REDIS_URL', 'redis://localhost:6379/0')
     monkeypatch.setenv('BILLING_PROVIDER', 'none')
+    monkeypatch.delenv('STRICT_PRODUCTION_BILLING', raising=False)
     monkeypatch.delenv('PADDLE_API_KEY', raising=False)
     monkeypatch.delenv('PADDLE_WEBHOOK_SECRET', raising=False)
     monkeypatch.delenv('PADDLE_PRICE_ID_PRO', raising=False)

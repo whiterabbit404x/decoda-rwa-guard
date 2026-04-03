@@ -141,6 +141,24 @@ def check_chain_monitoring() -> dict[str, Any]:
         return classify('live_chain_monitoring', 'configured_unverified', f'EVM RPC configured but probe failed: {exc}', ['Confirm provider allows eth_chainId from this environment.'])
 
 
+def check_slack_oauth_provider() -> dict[str, Any]:
+    client_id = os.getenv('SLACK_CLIENT_ID', '').strip()
+    client_secret = os.getenv('SLACK_CLIENT_SECRET', '').strip()
+    redirect_uri = os.getenv('SLACK_OAUTH_REDIRECT_URI', '').strip()
+    if not client_id or not client_secret:
+        return classify(
+            'slack_oauth_provider',
+            'not_configured',
+            'Slack OAuth self-serve install is unavailable because SLACK_CLIENT_ID or SLACK_CLIENT_SECRET is missing.',
+            ['Set SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, and SLACK_OAUTH_REDIRECT_URI for GA self-serve setup.'],
+        )
+    if has_placeholder(client_id) or has_placeholder(client_secret):
+        return classify('slack_oauth_provider', 'fail', 'Slack OAuth credentials appear placeholder-like.', ['Replace with real Slack app credentials.'])
+    if not redirect_uri.startswith('https://'):
+        return classify('slack_oauth_provider', 'fail', 'SLACK_OAUTH_REDIRECT_URI must be https:// in staging/production.', ['Set SLACK_OAUTH_REDIRECT_URI to the public API callback URL.'])
+    return classify('slack_oauth_provider', 'verified', 'Slack OAuth credentials and redirect URI are configured.')
+
+
 def main() -> int:
     validation_mode = (os.getenv('VALIDATION_MODE', 'production') or 'production').strip().lower()
     allow_billing_disabled = validation_mode in {'pilot', 'no_billing_pilot', 'no-billing-pilot'}
@@ -151,6 +169,7 @@ def main() -> int:
         check_redis_requirement(),
         check_api_readiness(),
         check_chain_monitoring(),
+        check_slack_oauth_provider(),
     ]
     statuses: list[str] = []
     for check in checks:
@@ -159,7 +178,7 @@ def main() -> int:
             status_value = 'configured_unverified'
         if (
             allow_pilot_optional_providers
-            and check['name'] in {'email_provider', 'redis_requirement', 'staging_api_readiness', 'live_chain_monitoring'}
+            and check['name'] in {'email_provider', 'redis_requirement', 'staging_api_readiness', 'live_chain_monitoring', 'slack_oauth_provider'}
             and status_value == 'not_configured'
         ):
             status_value = 'configured_unverified'
