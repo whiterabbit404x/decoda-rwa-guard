@@ -131,8 +131,7 @@ async function buildBackendResponse(response: Response, cookieAction: AuthCookie
   if (cookieAction === 'set-session') {
     const responseAccessToken = typeof responseBody.access_token === 'string' ? responseBody.access_token : '';
     const backendSetCookieHeaders = readSetCookieHeaders(response);
-    const backendSessionCookie = readCookieValueFromSetCookie(backendSetCookieHeaders, SESSION_COOKIE_NAME)
-      || readCookieValueFromSetCookie(backendSetCookieHeaders, 'decoda-pilot-access-token');
+    const backendSessionCookie = readCookieValueFromSetCookie(backendSetCookieHeaders, SESSION_COOKIE_NAME);
     const sessionToken = responseAccessToken || backendSessionCookie;
 
     if (sessionToken) {

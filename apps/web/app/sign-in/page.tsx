@@ -14,7 +14,7 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
   const isPreviewDeployment = process.env.VERCEL_ENV === 'preview';
   const runtimeConfig = getRuntimeConfig();
   const cookieStore = await cookies();
-  const token = cookieStore.get('decoda-pilot-access-token')?.value;
+  const token = cookieStore.get('decoda_session')?.value;
   const resolvedSearchParams = await searchParams;
   const nextParam = resolvedSearchParams?.next;
   const nextPath = Array.isArray(nextParam) ? nextParam[0] : nextParam;
