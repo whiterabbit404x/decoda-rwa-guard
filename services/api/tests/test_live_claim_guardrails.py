@@ -61,7 +61,9 @@ def test_production_claim_validator_fails_on_synthetic_evidence_window(monkeypat
                 if 'COUNT(*) AS total' in query:
                     return type('R', (), {'fetchone': lambda self: {'total': 1}})()
                 if 'FROM analysis_runs' in query:
-                    return type('R', (), {'fetchone': lambda self: {'created_at': 'now', 'response_payload': {'metadata': {'evidence_state': 'demo', 'confidence_basis': 'demo_scenario'}}}})()
+                    return type('R', (), {'fetchone': lambda self: {'created_at': 'now', 'response_payload': {'metadata': {'evidence_state': 'demo', 'confidence_basis': 'demo_scenario', 'truthfulness_state': 'unknown_risk'}}}})()
+                if 'real_evidence_targets' in query:
+                    return type('R', (), {'fetchone': lambda self: {'real_evidence_targets': 0, 'degraded_or_missing_targets': 1, 'unknown_risk_targets': 1, 'real_event_count_total': 0, 'latest_real_event_at': None}})()
                 if "ingestion_source <> 'demo'" in query:
                     return type('R', (), {'fetchone': lambda self: {'ts': None}})()
                 if "ingestion_source = 'demo'" in query:
@@ -78,6 +80,67 @@ def test_production_claim_validator_fails_on_synthetic_evidence_window(monkeypat
     payload = monitoring_runner.production_claim_validator()
     assert payload['status'] == 'FAIL'
     assert payload['synthetic_leak_detected'] is True
+    assert payload['recent_real_event_count'] == 0
+    assert payload['recent_truthfulness_state'] == 'unknown_risk'
+
+
+def test_production_claim_validator_fails_without_recent_real_events(monkeypatch):
+    @contextmanager
+    def _fake_pg():
+        class _Conn:
+            def execute(self, query, params=None):
+                if 'COUNT(*) AS total' in query:
+                    return type('R', (), {'fetchone': lambda self: {'total': 1}})()
+                if 'FROM analysis_runs' in query:
+                    return type('R', (), {'fetchone': lambda self: {'created_at': 'now', 'response_payload': {'metadata': {'evidence_state': 'real', 'confidence_basis': 'provider_evidence', 'truthfulness_state': 'not_claim_safe'}}}})()
+                if 'real_evidence_targets' in query:
+                    return type('R', (), {'fetchone': lambda self: {'real_evidence_targets': 1, 'degraded_or_missing_targets': 0, 'unknown_risk_targets': 0, 'real_event_count_total': 0, 'latest_real_event_at': None}})()
+                if "ingestion_source <> 'demo'" in query:
+                    return type('R', (), {'fetchone': lambda self: {'ts': None}})()
+                if "ingestion_source = 'demo'" in query:
+                    return type('R', (), {'fetchone': lambda self: {'ts': None}})()
+                return type('R', (), {'fetchone': lambda self: {}})()
+        yield _Conn()
+
+    monkeypatch.setenv('MONITORING_INGESTION_MODE', 'hybrid')
+    monkeypatch.setenv('LIVE_MONITORING_ENABLED', 'true')
+    monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: False)
+    payload = monitoring_runner.production_claim_validator()
+    assert payload['status'] == 'FAIL'
+    assert payload['checks']['recent_real_event_count_positive'] is False
+
+
+def test_production_claim_validator_fails_on_unknown_risk_truthfulness(monkeypatch):
+    @contextmanager
+    def _fake_pg():
+        class _Conn:
+            def execute(self, query, params=None):
+                if 'COUNT(*) AS total' in query:
+                    return type('R', (), {'fetchone': lambda self: {'total': 1}})()
+                if 'FROM analysis_runs' in query:
+                    return type('R', (), {'fetchone': lambda self: {'created_at': 'now', 'response_payload': {'metadata': {'evidence_state': 'real', 'confidence_basis': 'provider_evidence', 'truthfulness_state': 'unknown_risk'}}}})()
+                if 'real_evidence_targets' in query:
+                    return type('R', (), {'fetchone': lambda self: {'real_evidence_targets': 1, 'degraded_or_missing_targets': 0, 'unknown_risk_targets': 1, 'real_event_count_total': 3, 'latest_real_event_at': '2026-04-03T00:00:00Z'}})()
+                if "ingestion_source <> 'demo'" in query:
+                    return type('R', (), {'fetchone': lambda self: {'ts': '2026-04-03T00:00:00Z'}})()
+                if "ingestion_source = 'demo'" in query:
+                    return type('R', (), {'fetchone': lambda self: {'ts': None}})()
+                return type('R', (), {'fetchone': lambda self: {}})()
+        yield _Conn()
+
+    monkeypatch.setenv('MONITORING_INGESTION_MODE', 'hybrid')
+    monkeypatch.setenv('LIVE_MONITORING_ENABLED', 'true')
+    monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: False)
+    payload = monitoring_runner.production_claim_validator()
+    assert payload['status'] == 'FAIL'
+    assert payload['checks']['truthfulness_not_unknown'] is False
+    assert payload['unknown_risk_detected'] is True
 
 
 def test_ops_claim_validator_route_present(monkeypatch):

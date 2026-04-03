@@ -368,6 +368,16 @@ def _process_single_event(
         response['degraded_reason'] = None
     response['ingestion_mode'] = ingestion_runtime.get('mode')
     response_metadata = response.get('metadata') if isinstance(response.get('metadata'), dict) else {}
+    has_confirmed_anomaly = bool(response.get('matched_patterns')) or str(response.get('severity') or '').lower() in {'high', 'critical'}
+    detection_outcome = (
+        'DEMO_ONLY'
+        if response_metadata.get('ingestion_source') == 'demo'
+        else (
+            'ANALYSIS_FAILED'
+            if response.get('analysis_status') == 'analysis_failed'
+            else ('DETECTION_CONFIRMED' if has_confirmed_anomaly else 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE')
+        )
+    )
     response_metadata.update(
         {
             'monitoring_analysis_type': f'monitoring_{kind}',
@@ -377,11 +387,7 @@ def _process_single_event(
             'evidence_state': 'demo' if response_metadata.get('ingestion_source') == 'demo' else ('degraded' if response.get('degraded') else 'real'),
             'confidence_basis': 'demo_scenario' if response_metadata.get('ingestion_source') == 'demo' else ('none' if response.get('degraded') else 'provider_evidence'),
             'truthfulness_state': 'claim_safe' if bool(response.get('claim_safe')) else 'not_claim_safe',
-            'detection_outcome': (
-                'DEMO_ONLY'
-                if response_metadata.get('ingestion_source') == 'demo'
-                else ('ANALYSIS_FAILED' if response.get('analysis_status') == 'analysis_failed' else 'DETECTION_CONFIRMED')
-            ),
+            'detection_outcome': detection_outcome,
         }
     )
     response['metadata'] = response_metadata
@@ -450,7 +456,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
     checkpoint_at = checkpoint
     latest_processed_block = int(target.get('watcher_last_observed_block') or 0)
-    source_status = 'active' if provider_result.status in {'live', 'demo'} else 'degraded'
+    source_status = 'active' if provider_result.evidence_state in {'REAL_EVIDENCE', 'DEMO_EVIDENCE'} else 'degraded'
     degraded_reason: str | None = provider_result.degraded_reason
     configured_scenario = monitoring_scenario(target)
     logger.info(
@@ -512,18 +518,26 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         degraded_reason = 'synthetic_leak_detected'
         last_status = 'degraded'
 
-    recent_evidence_state = (
-        'demo'
-        if provider_result.synthetic
-        else ('real' if bool(events) else ('degraded' if provider_result.status in {'failed', 'degraded'} else 'missing'))
-    )
+    recent_evidence_state = {
+        'REAL_EVIDENCE': 'real',
+        'DEMO_EVIDENCE': 'demo',
+        'DEGRADED_EVIDENCE': 'degraded',
+        'FAILED_EVIDENCE': 'failed',
+        'NO_EVIDENCE': 'no_evidence',
+    }.get(provider_result.evidence_state, 'missing')
+    recent_truthfulness_state = {
+        'CLAIM_SAFE': 'claim_safe',
+        'NOT_CLAIM_SAFE': 'not_claim_safe',
+        'UNKNOWN_RISK': 'unknown_risk',
+    }.get(provider_result.truthfulness_state, 'unknown_risk')
     recent_confidence_basis = (
         'demo_scenario'
         if provider_result.synthetic
         else ('provider_evidence' if bool(events) else 'none')
     )
-    last_real_event_at = checkpoint_at if (bool(events) and not provider_result.synthetic) else None
+    last_real_event_at = provider_result.last_real_event_at
     last_no_evidence_at = utc_now() if provider_result.status == 'no_evidence' else None
+    last_degraded_at = utc_now() if provider_result.status == 'degraded' else None
     last_failed_monitoring_at = utc_now() if provider_result.status == 'failed' else None
     last_synthetic_event_at = checkpoint_at if provider_result.synthetic else None
 
@@ -543,9 +557,12 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             watcher_last_event_at = %s,
             last_real_event_at = COALESCE(%s, last_real_event_at),
             last_no_evidence_at = COALESCE(%s, last_no_evidence_at),
+            last_degraded_at = COALESCE(%s, last_degraded_at),
             last_failed_monitoring_at = COALESCE(%s, last_failed_monitoring_at),
             last_synthetic_event_at = %s,
             recent_evidence_state = %s,
+            recent_truthfulness_state = %s,
+            recent_real_event_count = %s,
             recent_confidence_basis = %s,
             monitoring_claimed_by = NULL,
             monitoring_claimed_at = NULL,
@@ -567,16 +584,19 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             checkpoint_at,
             last_real_event_at,
             last_no_evidence_at,
+            last_degraded_at,
             last_failed_monitoring_at,
             last_synthetic_event_at,
             recent_evidence_state,
+            recent_truthfulness_state,
+            int(provider_result.recent_real_event_count),
             recent_confidence_basis,
             target['id'],
         ),
     )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s fallback=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, fallback_count, incidents_created)
     WORKER_STATE['metrics']['live_events_ingested'] += len(events)
-    return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'fallback_count': fallback_count, 'status': last_status, 'latest_processed_block': latest_processed_block, 'source_status': source_status, 'degraded_reason': degraded_reason, 'provider_status': provider_result.status, 'provider_source_type': provider_result.source_type, 'synthetic': provider_result.synthetic}
+    return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'fallback_count': fallback_count, 'status': last_status, 'latest_processed_block': latest_processed_block, 'source_status': source_status, 'degraded_reason': degraded_reason, 'provider_status': provider_result.status, 'provider_source_type': provider_result.source_type, 'synthetic': provider_result.synthetic, 'recent_evidence_state': recent_evidence_state, 'recent_truthfulness_state': recent_truthfulness_state, 'recent_real_event_count': int(provider_result.recent_real_event_count)}
 
 
 def process_ingested_event(connection: Any, *, target: dict[str, Any], event: ActivityEvent, ingestion_mode: str = 'live') -> dict[str, Any]:
@@ -812,7 +832,8 @@ def list_monitoring_targets(request: Request) -> dict[str, Any]:
             SELECT id, workspace_id, name, target_type, chain_network, enabled, monitoring_enabled, monitoring_mode,
                    monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents,
                    notification_channels, monitoring_demo_scenario, last_checked_at, last_run_status, last_run_id, last_alert_at, is_active,
-                   monitoring_checkpoint_at, monitoring_checkpoint_cursor, watcher_last_observed_block, watcher_checkpoint_lag_blocks, watcher_source_status, watcher_degraded_reason
+                   monitoring_checkpoint_at, monitoring_checkpoint_cursor, watcher_last_observed_block, watcher_checkpoint_lag_blocks, watcher_source_status, watcher_degraded_reason,
+                   last_real_event_at, last_no_evidence_at, last_degraded_at, last_failed_monitoring_at, recent_evidence_state, recent_truthfulness_state, recent_real_event_count
             FROM targets
             WHERE workspace_id = %s AND deleted_at IS NULL
             ORDER BY created_at DESC
@@ -1108,6 +1129,8 @@ def production_claim_validator() -> dict[str, Any]:
         'real_target_exists': False,
         'analysis_evidence_real': False,
         'no_recent_degraded_or_missing': False,
+        'truthfulness_not_unknown': False,
+        'recent_real_event_count_positive': False,
     }
     reason = None
     if checks['live_or_hybrid_mode'] and checks['live_monitoring_enabled'] and (os.getenv('EVM_RPC_URL') or '').strip():
@@ -1126,6 +1149,8 @@ def production_claim_validator() -> dict[str, Any]:
     last_real_event_at = None
     last_demo_event_at = None
     recent_evidence_state = 'missing'
+    recent_truthfulness_state = 'unknown_risk'
+    recent_real_event_count = 0
     recent_confidence_basis = 'none'
     recent_claim_safe_window_passed = False
     try:
@@ -1158,6 +1183,32 @@ def production_claim_validator() -> dict[str, Any]:
                 if isinstance(meta, dict):
                     recent_evidence_state = str(meta.get('evidence_state') or 'missing')
                     recent_confidence_basis = str(meta.get('confidence_basis') or 'none')
+                    recent_truthfulness_state = str(meta.get('truthfulness_state') or 'unknown_risk')
+            evidence_rollup = connection.execute(
+                '''
+                SELECT
+                    COALESCE(SUM(CASE WHEN recent_evidence_state = 'real' THEN 1 ELSE 0 END), 0) AS real_evidence_targets,
+                    COALESCE(SUM(CASE WHEN recent_evidence_state IN ('degraded', 'no_evidence', 'failed', 'missing') THEN 1 ELSE 0 END), 0) AS degraded_or_missing_targets,
+                    COALESCE(SUM(CASE WHEN recent_truthfulness_state = 'unknown_risk' THEN 1 ELSE 0 END), 0) AS unknown_risk_targets,
+                    COALESCE(SUM(COALESCE(recent_real_event_count, 0)), 0) AS real_event_count_total,
+                    MAX(last_real_event_at) AS latest_real_event_at
+                FROM targets
+                WHERE deleted_at IS NULL
+                  AND monitoring_enabled = TRUE
+                  AND enabled = TRUE
+                  AND is_active = TRUE
+                  AND target_type IN ('wallet', 'contract')
+                '''
+            ).fetchone()
+            evidence_stats = _json_safe_value(dict(evidence_rollup or {}))
+            recent_real_event_count = int(evidence_stats.get('real_event_count_total') or 0)
+            if evidence_stats.get('latest_real_event_at'):
+                last_real_event_at = evidence_stats.get('latest_real_event_at')
+            unknown_risk_detected = int(evidence_stats.get('unknown_risk_targets') or 0) > 0
+            no_evidence_detected = int(evidence_stats.get('degraded_or_missing_targets') or 0) > 0
+            degraded_window_detected = no_evidence_detected
+            checks['truthfulness_not_unknown'] = not unknown_risk_detected and recent_truthfulness_state != 'unknown_risk'
+            checks['recent_real_event_count_positive'] = recent_real_event_count > 0
             last_real = connection.execute(
                 '''
                 SELECT MAX(processed_at) AS ts
@@ -1179,9 +1230,15 @@ def production_claim_validator() -> dict[str, Any]:
     synthetic_leak_detected = last_demo_event_at is not None
     checks['no_synthetic_evidence_window'] = not synthetic_leak_detected
     checks['analysis_evidence_real'] = recent_evidence_state == 'real' and recent_confidence_basis in {'provider_evidence', 'backfill_evidence'}
-    checks['no_recent_degraded_or_missing'] = recent_evidence_state == 'real'
+    checks['no_recent_degraded_or_missing'] = recent_evidence_state == 'real' and checks['recent_real_event_count_positive']
     recent_claim_safe_window_passed = checks['analysis_evidence_real'] and checks['no_synthetic_evidence_window'] and checks['no_recent_degraded_or_missing']
     passed = all(checks.values())
+    if 'unknown_risk_detected' not in locals():
+        unknown_risk_detected = recent_truthfulness_state == 'unknown_risk'
+    if 'no_evidence_detected' not in locals():
+        no_evidence_detected = recent_evidence_state in {'missing', 'no_evidence', 'degraded', 'failed'}
+    if 'degraded_window_detected' not in locals():
+        degraded_window_detected = recent_evidence_state in {'degraded', 'failed'}
     return {
         'status': 'PASS' if passed else 'FAIL',
         'sales_claims_allowed': passed,
@@ -1195,19 +1252,27 @@ def production_claim_validator() -> dict[str, Any]:
         'last_real_event_at': last_real_event_at,
         'last_demo_event_at': last_demo_event_at,
         'recent_evidence_state': recent_evidence_state,
+        'recent_truthfulness_state': recent_truthfulness_state,
+        'recent_real_event_count': recent_real_event_count,
         'recent_confidence_basis': recent_confidence_basis,
         'recent_claim_safe_window_passed': recent_claim_safe_window_passed,
+        'evidence_window_passed': checks['analysis_evidence_real'] and checks['recent_real_event_count_positive'],
+        'unknown_risk_detected': unknown_risk_detected,
+        'no_evidence_detected': no_evidence_detected,
+        'degraded_window_detected': degraded_window_detected,
     }
 
 
 def monitoring_runtime_status() -> dict[str, Any]:
     health = get_monitoring_health()
     claim = production_claim_validator()
+    recent_evidence_state = claim.get('recent_evidence_state')
+    provider_health = 'degraded' if health.get('degraded') or recent_evidence_state in {'missing', 'no_evidence', 'degraded', 'failed'} else 'healthy'
     return {
         'mode': health.get('operational_mode') or claim.get('operational_mode'),
         'configured_mode': str(health.get('mode') or claim.get('mode') or 'demo').upper(),
         'source_type': health.get('source_type') or claim.get('source_type'),
-        'provider_health': 'degraded' if health.get('degraded') else 'healthy',
+        'provider_health': provider_health,
         'provider_reachable': bool(claim.get('checks', {}).get('evm_rpc_reachable')),
         'latest_processed_block': health.get('latest_processed_block'),
         'checkpoint_lag_blocks': health.get('checkpoint_lag_blocks'),
@@ -1216,6 +1281,9 @@ def monitoring_runtime_status() -> dict[str, Any]:
         'sales_claims_allowed': bool(claim.get('sales_claims_allowed')),
         'claim_validator_status': claim.get('status'),
         'recent_evidence_state': claim.get('recent_evidence_state'),
+        'recent_truthfulness_state': claim.get('recent_truthfulness_state'),
+        'recent_real_event_count': claim.get('recent_real_event_count'),
+        'last_real_event_at': claim.get('last_real_event_at'),
         'recent_confidence_basis': claim.get('recent_confidence_basis'),
         'synthetic_leak_detected': claim.get('synthetic_leak_detected'),
     }

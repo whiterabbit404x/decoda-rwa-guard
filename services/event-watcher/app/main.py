@@ -198,12 +198,21 @@ async def _polling_loop() -> None:
         targets = _load_targets()
         latest = _hex_to_int(_rpc_call('eth_blockNumber', [])) or 0
         STATE['checkpoints']['last_block'] = latest
+        cycle_events = 0
         for target in targets:
             cursor = _target_cursor(str(target['id']))
             from_block = int(cursor['last_block'] or max(0, latest - 2))
             if latest >= from_block:
-                _backfill_range(target, from_block, latest)
+                cycle_events += _backfill_range(target, from_block, latest)
                 cursor['last_block'] = latest
+        if cycle_events == 0:
+            STATE['source_status'] = 'no_evidence'
+            STATE['degraded'] = True
+            STATE['degraded_reason'] = 'no_real_evidence_observed'
+        else:
+            STATE['source_status'] = 'polling'
+            STATE['degraded'] = False
+            STATE['degraded_reason'] = None
         _persist_checkpoint()
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
