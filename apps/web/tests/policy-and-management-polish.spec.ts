@@ -32,7 +32,7 @@ test('integrations UI includes bot and webhook Slack modes plus diagnostics', ()
   const integrations = fs.readFileSync(path.join(__dirname, '..', 'app', '(product)', 'integrations-page-client.tsx'), 'utf-8');
   expect(integrations).toContain('Incoming webhook (compatibility)');
   expect(integrations).toContain('Bot token (recommended)');
-  expect(integrations).toContain('OAuth install is not enabled in this public beta');
+  expect(integrations).toContain('Connect with Slack OAuth');
   expect(integrations).toContain('/ops/monitoring/health');
   expect(integrations).toContain('Background worker has not reported a recent cycle');
   expect(integrations).toContain('Rotate secret');

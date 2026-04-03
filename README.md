@@ -1320,7 +1320,7 @@ Slack now supports two workspace modes:
 1. **Incoming webhook** (legacy-compatible)
 2. **Bot token / chat.postMessage** (**recommended** for production)
 
-Bot mode is currently a secure manual setup (OAuth install flow is not yet implemented).
+Slack OAuth self-serve install is supported when SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, and SLACK_OAUTH_REDIRECT_URI are configured. Manual webhook/bot token setup remains available as fallback.
 
 ### Integration health diagnostics
 
@@ -1401,7 +1401,7 @@ This executes deterministic auth/MFA, monitoring, Slack/webhook routing, export/
 - Monitoring worker health: `GET /ops/monitoring/health`
 
 ### Next.js / npm note
-This repository pins Next.js to the secure `15.5.x` line (`apps/web` currently uses `15.5.9`) and validates package/lockfile/runtime alignment with `python scripts/check_frontend_runtime_alignment.py`.
+This repository validates Next.js package/lockfile/runtime alignment with `python scripts/check_frontend_runtime_alignment.py` and treats runtime drift as a launch blocker.
 
 ## Strict production-required API environment variables
 
@@ -1429,6 +1429,8 @@ Canonical launch-gate commands:
 make validate-production
 make validate-staging
 make validate-launch
+
+make validate-paid-ga
 ```
 
 These gates emit machine-readable JSON and an operator summary across six categories:

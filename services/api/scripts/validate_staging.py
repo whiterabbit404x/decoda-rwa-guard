@@ -176,6 +176,7 @@ def run_validation(mode: str) -> int:
     env = os.environ.copy()
     normalized_mode = (mode or 'staging').strip().lower()
     pilot_mode = normalized_mode in {'pilot', 'no_billing_pilot', 'no-billing-pilot'}
+    paid_ga_mode = normalized_mode in {'paid_ga', 'paid-ga', 'ga'}
     checks: list[ValidationCheck] = []
 
     checks.extend(
@@ -334,13 +335,14 @@ def run_validation(mode: str) -> int:
     )
 
     per_category = {category: [c for c in checks if c.category == category] for category in CATEGORIES}
+    allowed_statuses = {'pass', 'skip'} if not paid_ga_mode else {'pass'}
     category_status = {
-        category: ('pass' if all(c.status in {'pass', 'skip'} for c in items) and any(c.status == 'pass' for c in items) else 'fail')
+        category: ('pass' if all(c.status in allowed_statuses for c in items) and any(c.status == 'pass' for c in items) else 'fail')
         for category, items in per_category.items()
         if items
     }
 
-    ok = all(c.status in {'pass', 'skip'} for c in checks) and all(status == 'pass' for status in category_status.values())
+    ok = all(c.status in allowed_statuses for c in checks) and all(status == 'pass' for status in category_status.values())
     payload = {
         'mode': normalized_mode,
         'ok': ok,
