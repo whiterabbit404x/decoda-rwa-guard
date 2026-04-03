@@ -42,6 +42,9 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
       <span>
         configured={status.configured_mode ?? 'n/a'} · source={status.source_type ?? 'unknown'} · lag={status.checkpoint_lag_blocks ?? 'n/a'} · claims={status.sales_claims_allowed ? 'allowed' : 'blocked'}
       </span>
+      <span>
+        evidence={status.recent_evidence_state ?? 'missing'} · confidence={status.recent_confidence_basis ?? 'none'} · synthetic_leak={status.synthetic_leak_detected ? 'detected' : 'none'}
+      </span>
       {status.degraded_reason ? <span>reason={status.degraded_reason}</span> : null}
     </div>
   );

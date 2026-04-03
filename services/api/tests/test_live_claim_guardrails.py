@@ -15,6 +15,9 @@ def test_hybrid_wallet_no_demo_payload_leak(monkeypatch):
     monkeypatch.setattr(activity_providers, 'fetch_evm_activity', lambda *_args, **_kwargs: [])
     events = activity_providers.fetch_target_activity({'id': 't1', 'target_type': 'wallet', 'chain_network': 'ethereum', 'wallet_address': '0x' + '1' * 40}, None)
     assert events == []
+    result = activity_providers.fetch_target_activity_result({'id': 't1', 'target_type': 'wallet', 'chain_network': 'ethereum', 'wallet_address': '0x' + '1' * 40}, None)
+    assert result.status == 'degraded'
+    assert result.synthetic is False
 
 
 def test_evm_uses_ws_source_with_rpc_backfill(monkeypatch):
@@ -48,6 +51,33 @@ def test_production_claim_validator_fail_without_rpc(monkeypatch):
     payload = monitoring_runner.production_claim_validator()
     assert payload['status'] == 'FAIL'
     assert payload['checks']['evm_rpc_reachable'] is False
+
+
+def test_production_claim_validator_fails_on_synthetic_evidence_window(monkeypatch):
+    @contextmanager
+    def _fake_pg():
+        class _Conn:
+            def execute(self, query, params=None):
+                if 'COUNT(*) AS total' in query:
+                    return type('R', (), {'fetchone': lambda self: {'total': 1}})()
+                if 'FROM analysis_runs' in query:
+                    return type('R', (), {'fetchone': lambda self: {'created_at': 'now', 'response_payload': {'metadata': {'evidence_state': 'demo', 'confidence_basis': 'demo_scenario'}}}})()
+                if "ingestion_source <> 'demo'" in query:
+                    return type('R', (), {'fetchone': lambda self: {'ts': None}})()
+                if "ingestion_source = 'demo'" in query:
+                    return type('R', (), {'fetchone': lambda self: {'ts': '2026-04-03T00:00:00Z'}})()
+                return type('R', (), {'fetchone': lambda self: {}})()
+        yield _Conn()
+
+    monkeypatch.setenv('MONITORING_INGESTION_MODE', 'hybrid')
+    monkeypatch.setenv('LIVE_MONITORING_ENABLED', 'true')
+    monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: False)
+    payload = monitoring_runner.production_claim_validator()
+    assert payload['status'] == 'FAIL'
+    assert payload['synthetic_leak_detected'] is True
 
 
 def test_ops_claim_validator_route_present(monkeypatch):

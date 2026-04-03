@@ -10,12 +10,14 @@ from fastapi import HTTPException, Request, status
 
 from services.api.app.activity_providers import (
     ActivityEvent,
+    ActivityProviderResult,
     SCENARIO_EXPECTED_RISK,
-    fetch_target_activity,
+    fetch_target_activity_result,
     monitoring_scenario,
     monitoring_ingestion_runtime,
 )
 from services.api.app.evm_activity_provider import JsonRpcClient
+from services.api.app.monitoring_mode import is_demo_mode, is_hybrid_mode, is_live_mode
 from services.api.app.pilot import (
     _json_dumps,
     _json_safe_value,
@@ -136,48 +138,6 @@ def _threat_call(kind: ThreatKind, payload: dict[str, Any], *, target_id: str) -
             'fallback_exception_type': exc.__class__.__name__,
             'fallback_exception_message': _safe_error_message(exc),
         }
-
-
-def _fallback_response(kind: ThreatKind, payload: dict[str, Any], *, diagnostics: dict[str, Any] | None = None) -> dict[str, Any]:
-    diagnostics = diagnostics or {}
-    flags = payload.get('flags') if isinstance(payload.get('flags'), dict) else {}
-    if kind == 'transaction':
-        score = min(95, int(payload.get('amount') or 0) // 25000 + int(payload.get('burst_actions_last_5m') or 0) * 3 + (20 if flags.get('flash_loan_pattern') else 0))
-    elif kind == 'contract':
-        risk_flags = sum(len(item.get('risk_flags') or []) for item in payload.get('function_summaries', []) if isinstance(item, dict))
-        score = min(98, 20 + risk_flags * 18 + (25 if flags.get('privileged_role_change') else 0))
-    else:
-        current_volume = float(payload.get('current_volume') or 0)
-        baseline = max(1.0, float(payload.get('baseline_volume') or 1))
-        multiplier = current_volume / baseline
-        score = min(99, int(multiplier * 25) + int((payload.get('order_flow_summary') or {}).get('rapid_swings', 0)) * 8)
-    if score >= 80:
-        severity, action = 'critical', 'block'
-    elif score >= 60:
-        severity, action = 'high', 'review'
-    elif score >= 35:
-        severity, action = 'medium', 'review'
-    else:
-        severity, action = 'low', 'allow'
-    return {
-        'analysis_type': kind,
-        'score': score,
-        'severity': severity,
-        'matched_patterns': [{'label': 'deterministic-monitoring-fallback'}],
-        'explanation': 'Threat engine unavailable; deterministic fallback analysis applied.',
-        'recommended_action': action,
-        'reasons': ['fallback mode', f'score={score}'],
-        'source': 'fallback',
-        'degraded': True,
-        'metadata': {
-            'ingestion_source': payload.get('metadata', {}).get('ingestion_source', 'demo'),
-            'fallback_reason': diagnostics.get('fallback_reason') or 'live_engine_unavailable',
-            'fallback_exception_type': diagnostics.get('fallback_exception_type'),
-            'fallback_exception_message': diagnostics.get('fallback_exception_message'),
-            'live_invocation': diagnostics.get('live_invocation') or 'proxy_threat',
-            'live_invocation_succeeded': bool(diagnostics.get('live_invocation_succeeded', False)),
-        },
-    }
 
 
 def _normalize_event(target: dict[str, Any], event: ActivityEvent, monitoring_run_id: str, workspace: dict[str, Any]) -> tuple[ThreatKind, dict[str, Any]]:
@@ -374,37 +334,32 @@ def _process_single_event(
     if response is None:
         fallback_count = 1
         WORKER_STATE['metrics']['analysis_failures'] += 1
-        if ingestion_runtime['mode'] == 'demo':
+        if is_demo_mode(ingestion_runtime['mode']):
             WORKER_STATE['metrics']['fallback_runs_demo'] += 1
-            response = _fallback_response(kind, normalized, diagnostics=diagnostics)
-        elif ingestion_runtime['mode'] == 'hybrid':
+        elif is_hybrid_mode(ingestion_runtime['mode']):
             WORKER_STATE['metrics']['fallback_runs_hybrid'] += 1
-            response = _fallback_response(kind, normalized, diagnostics=diagnostics)
-            response['analysis_source'] = 'fallback'
-            response['analysis_status'] = 'degraded'
-            response['degraded_reason'] = diagnostics.get('fallback_reason') or 'threat_engine_unavailable'
-        else:
+        elif is_live_mode(ingestion_runtime['mode']):
             WORKER_STATE['metrics']['fallback_runs_live'] += 1
             WORKER_STATE['metrics']['degraded_runs'] += 1
-            response = {
-                'analysis_type': kind,
-                'score': 0,
-                'severity': 'high',
-                'matched_patterns': [],
-                'explanation': 'Threat analysis failed in live mode; evidence persisted for operator review.',
-                'recommended_action': 'review',
-                'reasons': ['analysis_failed_live_mode'],
-                'source': 'live',
-                'degraded': True,
-                'analysis_source': 'live',
-                'analysis_status': 'analysis_failed',
-                'degraded_reason': diagnostics.get('fallback_reason') or 'threat_engine_unavailable',
-                'metadata': {
-                    'ingestion_source': normalized.get('metadata', {}).get('ingestion_source', 'live'),
-                    'fallback_exception_type': diagnostics.get('fallback_exception_type'),
-                    'fallback_exception_message': diagnostics.get('fallback_exception_message'),
-                },
-            }
+        response = {
+            'analysis_type': kind,
+            'score': 100,
+            'severity': 'critical',
+            'matched_patterns': [],
+            'explanation': 'Threat analysis unavailable; monitoring degraded until provider evidence recovers.',
+            'recommended_action': 'review',
+            'reasons': ['analysis_unavailable'],
+            'source': 'degraded',
+            'degraded': True,
+            'analysis_source': 'degraded',
+            'analysis_status': 'analysis_failed',
+            'degraded_reason': diagnostics.get('fallback_reason') or 'threat_engine_unavailable',
+            'metadata': {
+                'ingestion_source': normalized.get('metadata', {}).get('ingestion_source', 'unknown'),
+                'fallback_exception_type': diagnostics.get('fallback_exception_type'),
+                'fallback_exception_message': diagnostics.get('fallback_exception_message'),
+            },
+        }
     else:
         response['analysis_source'] = str(response.get('source') or 'live')
         response['analysis_status'] = 'completed'
@@ -417,6 +372,8 @@ def _process_single_event(
             'monitoring_request_keys': sorted(normalized.keys()),
             'monitoring_request_metadata_keys': sorted((normalized.get('metadata') or {}).keys()) if isinstance(normalized.get('metadata'), dict) else [],
             'monitoring_demo_scenario': configured_scenario,
+            'evidence_state': 'demo' if response_metadata.get('ingestion_source') == 'demo' else ('degraded' if response.get('degraded') else 'real'),
+            'confidence_basis': 'demo_scenario' if response_metadata.get('ingestion_source') == 'demo' else ('none' if response.get('degraded') else 'provider_evidence'),
         }
     )
     response['metadata'] = response_metadata
@@ -472,7 +429,8 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     user_id = triggered_by_user_id or str(target.get('updated_by_user_id') or target.get('created_by_user_id'))
     monitoring_run_id = str(uuid.uuid4())
     checkpoint = _parse_ts(target.get('monitoring_checkpoint_at') or target.get('last_checked_at'))
-    events = fetch_target_activity(target, checkpoint)
+    provider_result: ActivityProviderResult = fetch_target_activity_result(target, checkpoint)
+    events = provider_result.events
 
     alerts_generated = 0
     fallback_count = 0
@@ -484,8 +442,8 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
     checkpoint_at = checkpoint
     latest_processed_block = int(target.get('watcher_last_observed_block') or 0)
-    source_status = 'active'
-    degraded_reason: str | None = None
+    source_status = 'active' if provider_result.status in {'live', 'demo'} else 'degraded'
+    degraded_reason: str | None = provider_result.degraded_reason
     configured_scenario = monitoring_scenario(target)
     logger.info(
         'monitoring target fetched target=%s scenario=%s threshold=%s auto_create_alerts=%s',
@@ -537,9 +495,12 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         if processed.get('incident_id'):
             incidents_created += 1
 
-    if not events and str(monitoring_ingestion_runtime().get('mode')) in {'live', 'hybrid'} and str(target.get('target_type') or '').lower() in {'wallet', 'contract'}:
+    if not events and provider_result.mode in {'live', 'hybrid'} and str(target.get('target_type') or '').lower() in {'wallet', 'contract'}:
         source_status = 'degraded'
-        degraded_reason = 'no_live_events_observed'
+        degraded_reason = provider_result.degraded_reason or 'no_live_events_observed'
+    if events and provider_result.synthetic and provider_result.mode in {'live', 'hybrid'}:
+        source_status = 'degraded'
+        degraded_reason = 'synthetic_leak_detected'
 
     connection.execute(
         '''
@@ -578,7 +539,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s fallback=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, fallback_count, incidents_created)
     WORKER_STATE['metrics']['live_events_ingested'] += len(events)
-    return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'fallback_count': fallback_count, 'status': last_status, 'latest_processed_block': latest_processed_block, 'source_status': source_status, 'degraded_reason': degraded_reason}
+    return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'fallback_count': fallback_count, 'status': last_status, 'latest_processed_block': latest_processed_block, 'source_status': source_status, 'degraded_reason': degraded_reason, 'provider_status': provider_result.status, 'provider_source_type': provider_result.source_type, 'synthetic': provider_result.synthetic}
 
 
 def process_ingested_event(connection: Any, *, target: dict[str, Any], event: ActivityEvent, ingestion_mode: str = 'live') -> dict[str, Any]:
@@ -865,6 +826,9 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
         demo_scenario = str(raw_demo_scenario or '').strip().lower() or None
         if demo_scenario is not None and demo_scenario not in SCENARIO_EXPECTED_RISK:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='monitoring_scenario must be safe/low_risk/medium_risk/high_risk/flash_loan_like/admin_abuse_like/risky_approval_like.')
+        runtime = monitoring_ingestion_runtime()
+        if runtime.get('mode') in {'live', 'hybrid'} and demo_scenario is not None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='monitoring_scenario is demo-only and cannot be configured in live/hybrid mode.')
         monitoring_enabled = bool(payload.get('monitoring_enabled')) if 'monitoring_enabled' in payload else bool(current.get('monitoring_enabled'))
         interval_seconds_raw = payload.get('monitoring_interval_seconds') if 'monitoring_interval_seconds' in payload else current.get('monitoring_interval_seconds')
         interval_seconds = max(30, int(interval_seconds_raw or 300))
@@ -1102,7 +1066,10 @@ def production_claim_validator() -> dict[str, Any]:
         'evm_rpc_reachable': False,
         'watcher_source_active': False,
         'checkpoints_advancing': False,
-        'no_silent_demo_fallback': runtime.get('mode') == 'demo' or not bool(runtime.get('degraded')),
+        'no_silent_demo_fallback': not bool(runtime.get('degraded')),
+        'no_synthetic_evidence_window': False,
+        'real_target_exists': False,
+        'analysis_evidence_real': False,
     }
     reason = None
     if checks['live_or_hybrid_mode'] and checks['live_monitoring_enabled'] and (os.getenv('EVM_RPC_URL') or '').strip():
@@ -1118,6 +1085,61 @@ def production_claim_validator() -> dict[str, Any]:
         checks['checkpoints_advancing'] = isinstance(age, int) and age <= 900
         if health.get('degraded_reason'):
             reason = str(health.get('degraded_reason'))
+    last_real_event_at = None
+    last_demo_event_at = None
+    recent_evidence_state = 'missing'
+    recent_confidence_basis = 'none'
+    try:
+        with pg_connection() as connection:
+            ensure_pilot_schema(connection)
+            target_row = connection.execute(
+                '''
+                SELECT COUNT(*) AS total
+                FROM targets
+                WHERE deleted_at IS NULL
+                  AND monitoring_enabled = TRUE
+                  AND enabled = TRUE
+                  AND is_active = TRUE
+                  AND target_type IN ('wallet', 'contract')
+                '''
+            ).fetchone()
+            checks['real_target_exists'] = int((target_row or {}).get('total') or 0) > 0
+            recent = connection.execute(
+                '''
+                SELECT created_at, response_payload
+                FROM analysis_runs
+                WHERE analysis_type LIKE 'monitoring_%'
+                ORDER BY created_at DESC
+                LIMIT 1
+                '''
+            ).fetchone()
+            if recent is not None:
+                payload = _json_safe_value(dict(recent)).get('response_payload') or {}
+                meta = payload.get('metadata') if isinstance(payload, dict) else {}
+                if isinstance(meta, dict):
+                    recent_evidence_state = str(meta.get('evidence_state') or 'missing')
+                    recent_confidence_basis = str(meta.get('confidence_basis') or 'none')
+            last_real = connection.execute(
+                '''
+                SELECT MAX(processed_at) AS ts
+                FROM monitoring_event_receipts
+                WHERE ingestion_source <> 'demo'
+                '''
+            ).fetchone()
+            last_demo = connection.execute(
+                '''
+                SELECT MAX(processed_at) AS ts
+                FROM monitoring_event_receipts
+                WHERE ingestion_source = 'demo'
+                '''
+            ).fetchone()
+            last_real_event_at = _json_safe_value(dict(last_real or {})).get('ts')
+            last_demo_event_at = _json_safe_value(dict(last_demo or {})).get('ts')
+    except Exception:
+        checks['real_target_exists'] = False
+    synthetic_leak_detected = last_demo_event_at is not None
+    checks['no_synthetic_evidence_window'] = not synthetic_leak_detected
+    checks['analysis_evidence_real'] = recent_evidence_state == 'real' and recent_confidence_basis in {'provider_evidence', 'backfill_evidence'}
     passed = all(checks.values())
     return {
         'status': 'PASS' if passed else 'FAIL',
@@ -1128,6 +1150,11 @@ def production_claim_validator() -> dict[str, Any]:
         'source_type': runtime.get('source'),
         'checks': checks,
         'reason': reason,
+        'synthetic_leak_detected': synthetic_leak_detected,
+        'last_real_event_at': last_real_event_at,
+        'last_demo_event_at': last_demo_event_at,
+        'recent_evidence_state': recent_evidence_state,
+        'recent_confidence_basis': recent_confidence_basis,
     }
 
 
@@ -1146,4 +1173,7 @@ def monitoring_runtime_status() -> dict[str, Any]:
         'degraded_reason': health.get('degraded_reason') or claim.get('reason'),
         'sales_claims_allowed': bool(claim.get('sales_claims_allowed')),
         'claim_validator_status': claim.get('status'),
+        'recent_evidence_state': claim.get('recent_evidence_state'),
+        'recent_confidence_basis': claim.get('recent_confidence_basis'),
+        'synthetic_leak_detected': claim.get('synthetic_leak_detected'),
     }

@@ -1540,6 +1540,8 @@ See `docs/LAUNCH_VALIDATION_CHECKLIST.md` for pilot vs broad-sale vs enterprise 
 - **Hybrid mode (`MONITORING_INGESTION_MODE=hybrid`, recommended)** prefers websocket ingestion when `EVM_WS_URL` is present, with polling/RPC backfill continuity and explicit degraded status reporting.
 - **Degraded mode (`DEGRADED`)** is an operational state exposed by `/ops/monitoring/health` and `/ops/monitoring/runtime-status` whenever live/hybrid runtime checks fail (provider unreachable, live monitoring disabled, stale checkpoints, or source degradation).
 - In authenticated live workspaces, wallet/contract monitoring does **not** silently inject demo payloads if live ingestion is unavailable.
+- Live/hybrid monitoring never fabricates synthetic-success analysis when providers fail; failures are persisted as degraded/failed evidence records.
+- `/ops/production-claim-validator` now fails if synthetic/demo evidence leaks into the recent evidence window.
 
 ## How to prove live on-chain monitoring
 
