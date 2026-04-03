@@ -9,7 +9,9 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: Request): Promise<Response> {
   const { searchParams } = new URL(request.url);
   const apiUrl = searchParams.get('apiUrl')?.trim();
-  const data = await fetchDashboardPageData(apiUrl || undefined);
+  const requestSource = searchParams.get('source')?.trim() || 'hydrator';
+  console.info(`[dashboard-page-data trace] source=${requestSource} path=/api/dashboard-page-data`);
+  const data = await fetchDashboardPageData(apiUrl || undefined, { requestSource });
 
   const meta = {
     gatewayReachable: resolveGatewayReachability(data.dashboard),

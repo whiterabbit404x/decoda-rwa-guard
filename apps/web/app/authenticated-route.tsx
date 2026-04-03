@@ -16,6 +16,9 @@ export default function AuthenticatedRoute({ children }: { children: React.React
   useEffect(() => {
     if (!loading && liveModeConfigured && !isAuthenticated) {
       const next = encodeURIComponent(currentPath);
+      if (process.env.NODE_ENV === 'development') {
+        console.debug('[dashboard-page-data trace] source=auth-refresh route-guard=signin-redirect');
+      }
       router.replace(`/sign-in?next=${next}`);
     }
   }, [currentPath, isAuthenticated, liveModeConfigured, loading, router]);
