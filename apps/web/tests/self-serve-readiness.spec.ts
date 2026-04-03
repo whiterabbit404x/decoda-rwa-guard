@@ -33,7 +33,9 @@ test('authenticated route guards unauthenticated and missing-workspace users', a
 
   expect(guard).toContain('const redirectTo = `/sign-in?next=${next}`;');
   expect(guard).toContain('const redirectTo = `/workspaces?next=${next}`;');
+  expect(guard).toContain('/workspaces?reason=membership_required');
   expect(guard).toContain('Preparing your workspace…');
+  expect(guard).toContain('Workspace access required…');
   expect(productLayout).toContain('const cookieStore = await cookies();');
   expect(productLayout).toContain('<Suspense fallback={<ProductLayoutLoading>{children}</ProductLayoutLoading>}>');
 });

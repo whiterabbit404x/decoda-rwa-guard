@@ -17,6 +17,7 @@ REQUIRED_STAGING_ENV = (
     'STAGING_EVIDENCE_EMAIL',
     'STAGING_EVIDENCE_PASSWORD',
 )
+NO_BILLING_PROVIDER = 'none'
 
 
 @dataclass
@@ -68,6 +69,9 @@ def write_summary(artifact_dir: Path, steps: list[ProofStep]) -> None:
         'steps': [asdict(step) for step in steps],
     }
     (artifact_dir / 'summary.json').write_text(json.dumps(payload, indent=2), encoding='utf-8')
+    latest_dir = ARTIFACT_ROOT / 'latest'
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    (latest_dir / 'summary.json').write_text(json.dumps(payload, indent=2), encoding='utf-8')
     summary_lines = [
         '# No-billing launch proof run',
         '',
@@ -82,7 +86,17 @@ def write_summary(artifact_dir: Path, steps: list[ProofStep]) -> None:
         )
         if step.note:
             summary_lines.append(f"  - note: {step.note}")
+    summary_lines.extend(
+        [
+            '',
+            '## Remediation hints',
+            '- If `03_validate_no_billing_launch` fails, run `make validate-no-billing-launch` directly for per-check remediation.',
+            '- If browser runtime checks fail, run `make install-web-test-runtime` on a network-enabled runner.',
+            '- Keep billing disabled for this launch tier by exporting `BILLING_PROVIDER=none`.',
+        ]
+    )
     (artifact_dir / 'summary.md').write_text('\n'.join(summary_lines) + '\n', encoding='utf-8')
+    (latest_dir / 'summary.md').write_text('\n'.join(summary_lines) + '\n', encoding='utf-8')
 
 
 def main() -> int:
@@ -90,17 +104,35 @@ def main() -> int:
     artifact_dir = ARTIFACT_ROOT / timestamp
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
+    env = os.environ.copy()
+    env['BILLING_PROVIDER'] = env.get('BILLING_PROVIDER', NO_BILLING_PROVIDER)
     steps: list[ProofStep] = [
+        run_step(
+            name='00_assert_no_billing_mode',
+            command=[
+                'python',
+                '-c',
+                (
+                    "import os,sys;"
+                    "provider=os.getenv('BILLING_PROVIDER','').strip().lower();"
+                    "print(f'BILLING_PROVIDER={provider or \"(unset)\"}');"
+                    "sys.exit(0 if provider=='none' else 1)"
+                ),
+            ],
+            artifact_dir=artifact_dir,
+            env=env,
+        ),
         run_step(name='01_npm_ci', command=['npm', 'ci'], artifact_dir=artifact_dir),
         run_step(name='02_build_web', command=['npm', 'run', 'build:web'], artifact_dir=artifact_dir),
-        run_step(name='03_validate_no_billing_launch', command=['make', 'validate-no-billing-launch'], artifact_dir=artifact_dir),
+        run_step(name='03_validate_no_billing_launch', command=['make', 'validate-no-billing-launch'], artifact_dir=artifact_dir, env=env),
+        run_step(name='04_validate_production', command=['make', 'validate-production'], artifact_dir=artifact_dir, env=env, required=False),
     ]
 
     missing_staging = [name for name in REQUIRED_STAGING_ENV if not os.getenv(name, '').strip()]
     if missing_staging:
         steps.append(
             ProofStep(
-                name='04_optional_staging_evidence',
+                name='05_optional_staging_evidence',
                 command=['python', 'scripts/staging/run_evidence_flow.py'],
                 required=False,
                 status='skip',
@@ -114,7 +146,7 @@ def main() -> int:
         evidence_env['STAGING_EVIDENCE_OUTPUT_DIR'] = str((artifact_dir / 'staging-evidence').relative_to(REPO_ROOT))
         steps.append(
             run_step(
-                name='04_optional_staging_evidence',
+                name='05_optional_staging_evidence',
                 command=['python', 'scripts/staging/run_evidence_flow.py'],
                 artifact_dir=artifact_dir,
                 required=False,

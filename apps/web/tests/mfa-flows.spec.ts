@@ -20,8 +20,11 @@ test('sign-in and security settings wire MFA challenge and enrollment flows', as
   expect(authContext).toContain('confirmMfaEnrollment');
   expect(signIn).toContain("if (message === 'MFA_REQUIRED')");
   expect(signIn).toContain('Complete sign in');
+  expect(signIn).toContain('unused recovery code');
   expect(security).toContain('Multi-factor authentication');
   expect(security).toContain('Recovery codes (shown once)');
+  expect(security).toContain('Copy recovery codes');
+  expect(security).toContain('I saved these recovery codes');
 });
 
 test('mfa auth proxy routes are present for complete enroll confirm disable', async () => {

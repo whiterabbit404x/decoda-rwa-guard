@@ -6,8 +6,10 @@ Last reconciled: **2026-04-03**.
 
 - `make validate-no-billing-launch` → pilot launch gate (billing intentionally disabled).
 - `make validate-launch` → strict broad self-serve gate (includes provider + staging requirements).
+- `make proof-no-billing-launch` → deterministic artifact bundle for no-billing public beta evidence (`artifacts/launch-proof/latest/{summary.json,summary.md}`).
 
 Both commands emit machine-readable JSON and category summaries.
+Browser runtime checks are required by default. Only no-billing pilot runs may skip browser runtime when `ALLOW_BROWSER_RUNTIME_SKIP=true` is set explicitly.
 
 ## Validation categories
 
@@ -23,9 +25,11 @@ Both commands emit machine-readable JSON and category summaries.
 ### 1) Production-polished pilot launch (current target)
 Pass criteria:
 - `make validate-no-billing-launch` passes.
+- `BILLING_PROVIDER=none` is asserted in proof output (`00_assert_no_billing_mode`).
 - Billing may be `not_configured` only when `BILLING_PROVIDER=none`.
 - Auth/session/workspace/runtime checks still must pass.
 - Public/legal/support/trust pages are present and coherent.
+- Integrations are self-serve via manual Slack/webhook setup with masked secrets, test-send actions, delivery logs, and worker-health guidance.
 
 ### 2) Broad self-serve launch (future)
 Pass criteria:
@@ -41,3 +45,4 @@ Requires all broad self-serve criteria plus formal compliance/control evidence a
 - **Pilot launch:** ready when `BILLING_PROVIDER=none` and no-billing validation passes.
 - **Public marketing traffic:** ready (site copy and legal/commercial pages align with pilot mode).
 - **Broad paid self-serve:** **not yet** (billing enablement intentionally deferred).
+- **Slack OAuth app install/callback/interactivity:** **not yet** in this pass; manual Slack setup is the supported launch path.

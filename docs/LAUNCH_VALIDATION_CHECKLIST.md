@@ -8,7 +8,12 @@ Use this checklist to classify release readiness without guesswork.
 - [ ] `make validate-production` passes.
 - [ ] `make validate-no-billing-launch` passes with `BILLING_PROVIDER=none`.
 - [ ] Reproducible proof bundle is generated: `npm run proof:no-billing-launch`.
+- [ ] Proof bundle includes no-billing assertion and latest summary output:
+  - `artifacts/launch-proof/latest/summary.json`
+  - `artifacts/launch-proof/latest/summary.md`
 - [ ] Core backend tests still pass (`pytest -q`).
+- [ ] MFA UX is complete in web app (enroll, confirm, challenge completion, disable, recovery-code shown-once handling).
+- [ ] Integration UX clearly supports manual Slack/webhook setup with delivery logs and worker health status.
 
 ## 2) Broad self-serve sale readiness
 - [ ] `make validate-launch` passes (`validate-production` + `validate-staging`).
@@ -20,6 +25,7 @@ Use this checklist to classify release readiness without guesswork.
 - [ ] Billing provider is `verified` (not `not_configured`) in live provider smoke output.
 - [ ] Email provider is `verified` with non-placeholder sender/domain.
 - [ ] `REDIS_URL` is configured for production topology.
+- [ ] Slack OAuth install/callback/interactivity is implemented (or explicitly tracked as out of scope while remaining in no-billing pilot tier).
 
 ## 3) Enterprise procurement readiness
 - [ ] Security/compliance evidence package is complete (SOC2 controls, IR runbooks, key rotation evidence).

@@ -12,6 +12,7 @@ export default function AuthenticatedRoute({ children }: { children: React.React
   const { loading, isAuthenticated, liveModeConfigured, user } = usePilotAuth();
   const lastRouteGuardRedirect = useRef<string | null>(null);
   const lastWorkspaceRedirect = useRef<string | null>(null);
+  const lastMembershipRedirect = useRef<string | null>(null);
 
   const currentPath = `${pathname || '/dashboard'}${searchParams?.toString() ? `?${searchParams.toString()}` : ''}`;
 
@@ -55,6 +56,17 @@ export default function AuthenticatedRoute({ children }: { children: React.React
     }
   }, [currentPath, isAuthenticated, liveModeConfigured, loading, pathname, router, user?.current_workspace]);
 
+  useEffect(() => {
+    if (!loading && isAuthenticated && liveModeConfigured && (user?.memberships?.length ?? 0) === 0 && pathname !== '/workspaces') {
+      const redirectTo = '/workspaces?reason=membership_required';
+      if (lastMembershipRedirect.current === redirectTo) {
+        return;
+      }
+      lastMembershipRedirect.current = redirectTo;
+      router.replace(redirectTo);
+    }
+  }, [isAuthenticated, liveModeConfigured, loading, pathname, router, user?.memberships?.length]);
+
   if (loading) {
     return (
       <section className="emptyStatePanel">
@@ -82,6 +94,15 @@ export default function AuthenticatedRoute({ children }: { children: React.React
       <section className="emptyStatePanel">
         <h1>Preparing your workspace…</h1>
         <p>We need a workspace selection before loading protected product data.</p>
+      </section>
+    );
+  }
+
+  if ((user?.memberships?.length ?? 0) === 0 && pathname !== '/workspaces') {
+    return (
+      <section className="emptyStatePanel">
+        <h1>Workspace access required…</h1>
+        <p>Your account does not currently have workspace membership. Ask a workspace owner/admin for access or create a workspace.</p>
       </section>
     );
   }
