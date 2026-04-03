@@ -57,9 +57,9 @@ export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApi
       </div>
       <p className="muted">{onboardingProgress ? `Workspace onboarding completion: ${onboardingProgress.progress_percent}%` : 'Load onboarding checklist to track setup completion.'}</p>
       <div className="heroActionRow">
-        <Link href="/onboarding">Open setup wizard</Link>
-        <Link href="/threat">Run your first threat analysis</Link>
-        {!user?.current_workspace ? <Link href="/workspaces">Set up workspace</Link> : null}
+        <Link href="/onboarding" prefetch={false}>Open setup wizard</Link>
+        <Link href="/threat" prefetch={false}>Run your first threat analysis</Link>
+        {!user?.current_workspace ? <Link href="/workspaces" prefetch={false}>Set up workspace</Link> : null}
       </div>
     </section>
   );

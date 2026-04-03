@@ -78,7 +78,7 @@ export default function SecuritySettingsPageClient() {
         </div>
 
         <div className="buttonRow">
-          <Link href="/settings">← Back to workspace settings</Link>
+          <Link href="/settings" prefetch={false}>← Back to workspace settings</Link>
         </div>
       </section>
 

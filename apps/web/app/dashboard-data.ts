@@ -1021,6 +1021,14 @@ type EndpointFetchResult<T> = {
   meta: DashboardEndpointMeta;
 };
 
+type DashboardPageAggregateResponse = {
+  dashboard: unknown;
+  risk_dashboard: RiskDashboardResponse;
+  threat_dashboard: ThreatDashboardResponse;
+  compliance_dashboard: ComplianceDashboardResponse;
+  resilience_dashboard: ResilienceDashboardResponse;
+};
+
 const DASHBOARD_ENDPOINT_PATHS: Record<DashboardEndpointKey, string> = {
   dashboard: '/dashboard',
   riskDashboard: '/risk/dashboard',
@@ -1028,6 +1036,8 @@ const DASHBOARD_ENDPOINT_PATHS: Record<DashboardEndpointKey, string> = {
   complianceDashboard: '/compliance/dashboard',
   resilienceDashboard: '/resilience/dashboard',
 };
+
+const DASHBOARD_AGGREGATE_ENDPOINT_PATH = '/ops/dashboard-page-data';
 
 function buildEndpointMeta(
   key: DashboardEndpointKey,
@@ -1098,6 +1108,34 @@ async function fetchEndpointJson<T>(
         error: message,
       }),
     };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function fetchDashboardAggregateJson(
+  apiUrl: string | null
+): Promise<DashboardPageAggregateResponse | null> {
+  if (!apiUrl) {
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), resolveFetchTimeoutMs());
+
+  try {
+    const response = await fetch(`${apiUrl}${DASHBOARD_AGGREGATE_ENDPOINT_PATH}`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return (await response.json()) as DashboardPageAggregateResponse;
+  } catch {
+    return null;
   } finally {
     clearTimeout(timeoutId);
   }
@@ -1527,6 +1565,71 @@ export async function fetchDashboardPageData(
   const resolvedApiUrl = apiConfig.apiUrl ?? '';
   const requestedFeatureFeeds = options.featureFeeds ?? ['riskDashboard', 'threatDashboard', 'complianceDashboard', 'resilienceDashboard'];
   const shouldFetchFeature = (key: Exclude<DashboardEndpointKey, 'dashboard'>) => requestedFeatureFeeds.includes(key);
+  const shouldUseAggregatedFetch =
+    shouldFetchFeature('riskDashboard') &&
+    shouldFetchFeature('threatDashboard') &&
+    shouldFetchFeature('complianceDashboard') &&
+    shouldFetchFeature('resilienceDashboard');
+
+  const aggregatePayload = shouldUseAggregatedFetch
+    ? await fetchDashboardAggregateJson(apiConfig.apiUrl)
+    : null;
+
+  if (aggregatePayload) {
+    const dashboard = normalizeDashboardResponse(aggregatePayload.dashboard);
+    const sampleMode = !apiConfig.apiUrl;
+    const endpoints: DashboardDiagnostics['endpoints'] = {
+      dashboard: buildEndpointMeta('dashboard', {
+        ok: true,
+        status: 200,
+        source: aggregatePayload.dashboard ? 'live' : 'unavailable',
+        transport: 'ok',
+        payloadState: aggregatePayload.dashboard ? 'live' : sampleMode ? 'sample' : 'unavailable',
+      }),
+      riskDashboard: buildEndpointMeta('riskDashboard', {
+        ok: true,
+        status: 200,
+        source: aggregatePayload.risk_dashboard.source,
+        transport: 'ok',
+        payloadState: resolveEndpointPayloadState(aggregatePayload.risk_dashboard, { sampleMode }),
+        usedFallback: aggregatePayload.risk_dashboard.source !== 'live' || aggregatePayload.risk_dashboard.degraded,
+      }),
+      threatDashboard: buildEndpointMeta('threatDashboard', {
+        ok: true,
+        status: 200,
+        source: aggregatePayload.threat_dashboard.source,
+        transport: 'ok',
+        payloadState: resolveEndpointPayloadState(aggregatePayload.threat_dashboard, { sampleMode }),
+        usedFallback: aggregatePayload.threat_dashboard.source !== 'live' || aggregatePayload.threat_dashboard.degraded,
+      }),
+      complianceDashboard: buildEndpointMeta('complianceDashboard', {
+        ok: true,
+        status: 200,
+        source: aggregatePayload.compliance_dashboard.source,
+        transport: 'ok',
+        payloadState: resolveEndpointPayloadState(aggregatePayload.compliance_dashboard, { sampleMode }),
+        usedFallback: aggregatePayload.compliance_dashboard.source !== 'live' || aggregatePayload.compliance_dashboard.degraded,
+      }),
+      resilienceDashboard: buildEndpointMeta('resilienceDashboard', {
+        ok: true,
+        status: 200,
+        source: aggregatePayload.resilience_dashboard.source,
+        transport: 'ok',
+        payloadState: resolveEndpointPayloadState(aggregatePayload.resilience_dashboard, { sampleMode }),
+        usedFallback: aggregatePayload.resilience_dashboard.source !== 'live' || aggregatePayload.resilience_dashboard.degraded,
+      }),
+    };
+    const diagnostics = buildDashboardDiagnostics(apiConfig, endpoints);
+    return {
+      apiUrl: resolvedApiUrl,
+      dashboard,
+      riskDashboard: aggregatePayload.risk_dashboard,
+      threatDashboard: normalizeThreatDashboardPayload(aggregatePayload.threat_dashboard),
+      complianceDashboard: aggregatePayload.compliance_dashboard,
+      resilienceDashboard: aggregatePayload.resilience_dashboard,
+      diagnostics,
+    };
+  }
 
   const [dashboardResult, riskResult, threatResult, complianceResult, resilienceResult] = await Promise.all([
     fetchEndpointJson<unknown>('dashboard', apiConfig.apiUrl),

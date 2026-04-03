@@ -159,6 +159,10 @@ function hasAnyLiveSection(meta: DashboardPageDataHydrationMeta) {
 }
 
 function shouldHydrate(initialData: DashboardPageData) {
+  if (initialData.diagnostics.experienceState === 'live') {
+    return false;
+  }
+
   if (!isGatewayClearlyReachable(initialData.dashboard)) {
     return true;
   }

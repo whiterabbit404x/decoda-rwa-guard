@@ -106,3 +106,19 @@ def test_dashboard_registry_reports_live_when_all_embedded_services_are_availabl
     assert metrics['threat-engine']['payload_source']['value'] == 'live'
     assert metrics['compliance-service']['payload_source']['value'] == 'live'
     assert metrics['reconciliation-service']['payload_source']['value'] == 'live'
+
+
+def test_dashboard_page_aggregate_endpoint_returns_all_dashboard_sections() -> None:
+    api_main = load_api_module()
+    _embedded_mode(api_main)
+    client = TestClient(api_main.app)
+
+    response = client.get('/ops/dashboard-page-data')
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload['dashboard']['mode']
+    assert payload['risk_dashboard']['source'] == 'live'
+    assert payload['threat_dashboard']['source'] == 'live'
+    assert payload['compliance_dashboard']['source'] == 'live'
+    assert payload['resilience_dashboard']['source'] == 'live'
