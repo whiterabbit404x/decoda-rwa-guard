@@ -19,6 +19,14 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
   const nextParam = resolvedSearchParams?.next;
   const nextPath = Array.isArray(nextParam) ? nextParam[0] : nextParam;
 
+  console.debug('[dashboard-page-data trace] source=sign-in-server-render', {
+    route: '/sign-in',
+    hasToken: Boolean(token),
+    hasNextPath: Boolean(nextPath),
+    liveModeEnabled: runtimeConfig.liveModeEnabled,
+    configured: runtimeConfig.configured,
+  });
+
   if (runtimeConfig.liveModeEnabled && token) {
     console.debug('[dashboard-page-data trace] source=sign-in-server-redirect', {
       redirectTo: '/dashboard',

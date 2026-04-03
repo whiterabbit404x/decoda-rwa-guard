@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
 
@@ -10,12 +10,19 @@ export default function AuthenticatedRoute({ children }: { children: React.React
   const searchParams = useSearchParams();
   const router = useRouter();
   const { loading, isAuthenticated, liveModeConfigured, user } = usePilotAuth();
+  const lastRouteGuardRedirect = useRef<string | null>(null);
+  const lastWorkspaceRedirect = useRef<string | null>(null);
 
   const currentPath = `${pathname || '/dashboard'}${searchParams?.toString() ? `?${searchParams.toString()}` : ''}`;
 
   useEffect(() => {
     if (!loading && liveModeConfigured && !isAuthenticated) {
       const next = encodeURIComponent(currentPath);
+      const redirectTo = `/sign-in?next=${next}`;
+      if (lastRouteGuardRedirect.current === redirectTo) {
+        return;
+      }
+      lastRouteGuardRedirect.current = redirectTo;
       console.debug('[dashboard-page-data trace] source=route-guard-redirect', {
         redirectTo: '/sign-in',
         currentPath,
@@ -23,13 +30,18 @@ export default function AuthenticatedRoute({ children }: { children: React.React
         liveModeConfigured,
         isAuthenticated,
       });
-      router.replace(`/sign-in?next=${next}`);
+      router.replace(redirectTo);
     }
   }, [currentPath, isAuthenticated, liveModeConfigured, loading, router]);
 
   useEffect(() => {
     if (!loading && isAuthenticated && liveModeConfigured && !user?.current_workspace && pathname !== '/workspaces') {
       const next = encodeURIComponent(currentPath);
+      const redirectTo = `/workspaces?next=${next}`;
+      if (lastWorkspaceRedirect.current === redirectTo) {
+        return;
+      }
+      lastWorkspaceRedirect.current = redirectTo;
       console.debug('[dashboard-page-data trace] source=workspace-redirect', {
         redirectTo: '/workspaces',
         currentPath,
@@ -39,7 +51,7 @@ export default function AuthenticatedRoute({ children }: { children: React.React
         isAuthenticated,
         hasCurrentWorkspace: Boolean(user?.current_workspace),
       });
-      router.replace(`/workspaces?next=${next}`);
+      router.replace(redirectTo);
     }
   }, [currentPath, isAuthenticated, liveModeConfigured, loading, pathname, router, user?.current_workspace]);
 

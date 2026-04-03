@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import AuthBuildBadge from '../auth-build-badge';
 import AuthDiagnosticCard from '../auth-diagnostic-card';
@@ -37,6 +37,7 @@ export default function SignInPageClient({
   const [mfaCode, setMfaCode] = useState('');
   const [mfaRequired, setMfaRequired] = useState(false);
   const [loading, setLoading] = useState(false);
+  const lastRedirectPath = useRef<string | null>(null);
 
   const runtimeConfig = useMemo(() => ({
     apiUrl: apiUrl || null,
@@ -51,12 +52,16 @@ export default function SignInPageClient({
   useEffect(() => {
     if (!authLoading && isAuthenticated) {
       const targetPath = nextPath ?? '/dashboard';
+      if (lastRedirectPath.current === targetPath) {
+        return;
+      }
+      lastRedirectPath.current = targetPath;
       console.debug('[dashboard-page-data trace] source=post-signin-client-redirect', {
         targetPath,
         authLoading,
         isAuthenticated,
       });
-      router.replace(nextPath ?? '/dashboard');
+      router.replace(targetPath);
     }
   }, [authLoading, isAuthenticated, nextPath, router]);
 
@@ -134,7 +139,7 @@ export default function SignInPageClient({
             {error ? <p className="statusLine">{error}</p> : null}
             {!configLoading && !configured ? <p className="statusLine">Auth is disabled until this deployment exposes a valid API_URL.</p> : null}
             <p className="muted"><Link href="/reset-password">Forgot password?</Link></p>
-            <p className="muted">Need an account? <Link href="/sign-up">Create one</Link>.</p>
+            <p className="muted">Need an account? <Link href="/sign-up" prefetch={false}>Create one</Link>.</p>
           </form>
         )}
         <AuthDiagnosticCard loading={configLoading} runtimeConfig={runtimeConfig} />
