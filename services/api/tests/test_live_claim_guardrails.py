@@ -57,3 +57,22 @@ def test_ops_claim_validator_route_present(monkeypatch):
     res = client.get('/ops/production-claim-validator')
     assert res.status_code == 200
     assert res.json()['status'] == 'PASS'
+
+
+def test_monitoring_health_reports_operational_mode_degraded_when_live_disabled(monkeypatch):
+    monkeypatch.setenv('MONITORING_INGESTION_MODE', 'live')
+    monkeypatch.setenv('LIVE_MONITORING_ENABLED', 'false')
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: False)
+    payload = monitoring_runner.get_monitoring_health()
+    assert payload['mode'] == 'live'
+    assert payload['operational_mode'] == 'DEGRADED'
+    assert payload['degraded'] is True
+
+
+def test_monitoring_runtime_status_route_present(monkeypatch):
+    monkeypatch.setattr(main, 'with_auth_schema_json', lambda fn: fn())
+    monkeypatch.setattr(main, 'monitoring_runtime_status', lambda: {'mode': 'LIVE', 'sales_claims_allowed': True})
+    client = TestClient(main.app)
+    res = client.get('/ops/monitoring/runtime-status')
+    assert res.status_code == 200
+    assert res.json()['mode'] == 'LIVE'

@@ -77,6 +77,17 @@ def _parse_ts(value: Any) -> datetime | None:
         return None
 
 
+def monitoring_operational_mode(runtime: dict[str, Any], *, degraded: bool, degraded_reason: str | None) -> str:
+    if degraded or degraded_reason:
+        return 'DEGRADED'
+    mode = str(runtime.get('mode') or 'demo').strip().lower()
+    if mode == 'live':
+        return 'LIVE'
+    if mode == 'hybrid':
+        return 'HYBRID'
+    return 'DEMO'
+
+
 def _safe_error_message(exc: Exception) -> str:
     text = str(exc).strip() or exc.__class__.__name__
     return text[:240]
@@ -988,7 +999,17 @@ def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) 
 def get_monitoring_health() -> dict[str, Any]:
     if not live_mode_enabled():
         runtime = monitoring_ingestion_runtime()
-        return {**WORKER_STATE, 'live_mode': False, 'ingestion_mode': runtime.get('source'), 'degraded': runtime.get('degraded')}
+        degraded_reason = str(runtime.get('reason')) if runtime.get('degraded') else None
+        return {
+            **WORKER_STATE,
+            'live_mode': False,
+            'mode': runtime.get('mode'),
+            'operational_mode': monitoring_operational_mode(runtime, degraded=bool(runtime.get('degraded')), degraded_reason=degraded_reason),
+            'ingestion_mode': runtime.get('source'),
+            'source_type': runtime.get('source'),
+            'degraded': runtime.get('degraded'),
+            'degraded_reason': degraded_reason,
+        }
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         worker_name = WORKER_STATE['worker_name']
@@ -1064,6 +1085,12 @@ def get_monitoring_health() -> dict[str, Any]:
         normalized['checkpoint_age_seconds'] = int((utc_now() - latest_checkpoint_at).total_seconds()) if latest_checkpoint_at else None
         normalized['event_count_last_15m'] = int((last_15m_events or {}).get('event_count') or 0)
         normalized['degraded_reason'] = runtime.get('reason') if runtime.get('degraded') else ('target_source_degraded' if int(stats.get('degraded_targets') or 0) > 0 else None)
+        normalized['mode'] = runtime.get('mode')
+        normalized['operational_mode'] = monitoring_operational_mode(
+            runtime,
+            degraded=bool(normalized.get('degraded')) or bool(normalized.get('degraded_reason')),
+            degraded_reason=normalized.get('degraded_reason'),
+        )
         return {**normalized, 'live_mode': True}
 
 
@@ -1094,9 +1121,29 @@ def production_claim_validator() -> dict[str, Any]:
     passed = all(checks.values())
     return {
         'status': 'PASS' if passed else 'FAIL',
+        'sales_claims_allowed': passed,
         'checked_at': utc_now().isoformat(),
         'mode': runtime.get('mode'),
+        'operational_mode': monitoring_operational_mode(runtime, degraded=bool(runtime.get('degraded')), degraded_reason=reason),
         'source_type': runtime.get('source'),
         'checks': checks,
         'reason': reason,
+    }
+
+
+def monitoring_runtime_status() -> dict[str, Any]:
+    health = get_monitoring_health()
+    claim = production_claim_validator()
+    return {
+        'mode': health.get('operational_mode') or claim.get('operational_mode'),
+        'configured_mode': str(health.get('mode') or claim.get('mode') or 'demo').upper(),
+        'source_type': health.get('source_type') or claim.get('source_type'),
+        'provider_health': 'degraded' if health.get('degraded') else 'healthy',
+        'provider_reachable': bool(claim.get('checks', {}).get('evm_rpc_reachable')),
+        'latest_processed_block': health.get('latest_processed_block'),
+        'checkpoint_lag_blocks': health.get('checkpoint_lag_blocks'),
+        'checkpoint_age_seconds': health.get('checkpoint_age_seconds'),
+        'degraded_reason': health.get('degraded_reason') or claim.get('reason'),
+        'sales_claims_allowed': bool(claim.get('sales_claims_allowed')),
+        'claim_validator_status': claim.get('status'),
     }

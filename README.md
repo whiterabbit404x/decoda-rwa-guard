@@ -1538,6 +1538,7 @@ See `docs/LAUNCH_VALIDATION_CHECKLIST.md` for pilot vs broad-sale vs enterprise 
 - **Demo mode (`MONITORING_INGESTION_MODE=demo`)** uses deterministic sample scenarios for product walkthroughs only.
 - **Live mode (`MONITORING_INGESTION_MODE=live`)** requires `EVM_RPC_URL` and only processes real chain events.
 - **Hybrid mode (`MONITORING_INGESTION_MODE=hybrid`, recommended)** prefers websocket ingestion when `EVM_WS_URL` is present, with polling/RPC backfill continuity and explicit degraded status reporting.
+- **Degraded mode (`DEGRADED`)** is an operational state exposed by `/ops/monitoring/health` and `/ops/monitoring/runtime-status` whenever live/hybrid runtime checks fail (provider unreachable, live monitoring disabled, stale checkpoints, or source degradation).
 - In authenticated live workspaces, wallet/contract monitoring does **not** silently inject demo payloads if live ingestion is unavailable.
 
 ## How to prove live on-chain monitoring
