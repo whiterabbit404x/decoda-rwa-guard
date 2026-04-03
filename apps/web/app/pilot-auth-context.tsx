@@ -175,7 +175,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       return null;
     }
 
-    console.debug('[dashboard-page-data trace] source=auth-restore', {
+    console.debug('[dashboard-page-data trace] source=auth-session-restore', {
       phase: 'request',
       path: '/api/auth/me',
     });
@@ -189,7 +189,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       setMfaChallengeToken(null);
       setError(response.status === 401 ? 'Your session expired. Please sign in again.' : (data.detail ?? 'Unable to restore your session. Please sign in again.'));
       setSessionLoading(false);
-      console.debug('[dashboard-page-data trace] source=auth-restore', {
+      console.debug('[dashboard-page-data trace] source=auth-session-restore', {
         phase: 'response-error',
         status: response.status,
       });
@@ -202,7 +202,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       setMfaChallengeToken(null);
       setError(payload.detail ?? 'Your session expired. Please sign in again.');
       setSessionLoading(false);
-      console.debug('[dashboard-page-data trace] source=auth-restore', {
+      console.debug('[dashboard-page-data trace] source=auth-session-restore', {
         phase: 'response-missing-user',
       });
       return null;
@@ -214,7 +214,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       setCsrfToken(typeof csrfPayload.csrfToken === 'string' ? csrfPayload.csrfToken : null);
     }
     setSessionLoading(false);
-    console.debug('[dashboard-page-data trace] source=auth-restore', {
+    console.debug('[dashboard-page-data trace] source=auth-session-restore', {
       phase: 'response-success',
       hasCurrentWorkspace: Boolean(payload.user.current_workspace),
       userId: payload.user.id,
@@ -277,13 +277,13 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
 
     sessionRestoreStarted.current = true;
     setSessionLoading(true);
-    console.debug('[dashboard-page-data trace] source=auth-restore', {
+    console.debug('[dashboard-page-data trace] source=auth-session-restore', {
       phase: 'effect-start',
       configLoading,
     });
     void refreshUser().catch((fetchError) => {
       const message = fetchError instanceof Error ? fetchError.message : String(fetchError);
-      console.debug('[dashboard-page-data trace] source=auth-restore', {
+      console.debug('[dashboard-page-data trace] source=auth-session-restore', {
         phase: 'effect-catch',
         message,
       });

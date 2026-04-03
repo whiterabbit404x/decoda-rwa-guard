@@ -1,5 +1,4 @@
 import { cookies } from 'next/headers';
-import { redirect } from 'next/navigation';
 
 import PreviewDeploymentNotice from '../preview-deployment-notice';
 import { getRuntimeConfig } from '../runtime-config';
@@ -21,7 +20,13 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
   const nextPath = Array.isArray(nextParam) ? nextParam[0] : nextParam;
 
   if (runtimeConfig.liveModeEnabled && token) {
-    redirect('/dashboard');
+    console.debug('[dashboard-page-data trace] source=sign-in-server-redirect', {
+      redirectTo: '/dashboard',
+      reason: 'token-cookie-present',
+      hasNextPath: Boolean(nextPath),
+    });
+    // Avoid server-side redirect loops when a stale token cookie exists; the client auth restore flow
+    // handles post-auth navigation after session validity is confirmed.
   }
 
   return <SignInPageClient nextPath={nextPath} previewNotice={isPreviewDeployment ? <PreviewDeploymentNotice /> : null} />;
