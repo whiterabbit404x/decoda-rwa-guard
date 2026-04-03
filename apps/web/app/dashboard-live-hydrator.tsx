@@ -158,12 +158,34 @@ function hasAnyLiveSection(meta: DashboardPageDataHydrationMeta) {
   return meta.riskLive || meta.threatLive || meta.complianceLive || meta.resilienceLive;
 }
 
+function shouldHydrate(initialData: DashboardPageData) {
+  if (!isGatewayClearlyReachable(initialData.dashboard)) {
+    return true;
+  }
+
+  return (
+    initialData.riskDashboard.source !== 'live' ||
+    initialData.riskDashboard.degraded ||
+    initialData.threatDashboard.source !== 'live' ||
+    initialData.threatDashboard.degraded ||
+    initialData.complianceDashboard.source !== 'live' ||
+    initialData.complianceDashboard.degraded ||
+    initialData.resilienceDashboard.source !== 'live' ||
+    initialData.resilienceDashboard.degraded
+  );
+}
+
 export default function DashboardLiveHydrator({ initialData }: Props) {
   const [data, setData] = useState(initialData);
   const [gatewayReachableOverride, setGatewayReachableOverride] = useState(false);
   const [debugState, setDebugState] = useState<HydrationDebugState>({ retriesAttempted: 0 });
 
   useEffect(() => {
+    if (!shouldHydrate(initialData)) {
+      setDebugState({ retriesAttempted: 0 });
+      return;
+    }
+
     let active = true;
     let retryTimer: number | undefined;
 
@@ -246,7 +268,7 @@ export default function DashboardLiveHydrator({ initialData }: Props) {
         window.clearTimeout(retryTimer);
       }
     };
-  }, [initialData.apiUrl]);
+  }, [initialData]);
 
   return (
     <DashboardPageContent

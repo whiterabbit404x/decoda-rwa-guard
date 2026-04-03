@@ -62,6 +62,7 @@ export default function SignInPageClient({
     setLoading(true);
     setError(null);
     try {
+      // Redirect is centralized in the auth state effect to avoid duplicate post-auth navigation.
       await signIn({ email, password });
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : String(submitError);
@@ -84,6 +85,7 @@ export default function SignInPageClient({
     setLoading(true);
     setError(null);
     try {
+      // Redirect is centralized in the auth state effect to avoid duplicate post-auth navigation.
       await completeMfaSignIn(mfaCode);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
