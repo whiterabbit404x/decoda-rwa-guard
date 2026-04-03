@@ -15,6 +15,7 @@ from services.api.app.activity_providers import (
     monitoring_scenario,
     monitoring_ingestion_runtime,
 )
+from services.api.app.evm_activity_provider import JsonRpcClient
 from services.api.app.pilot import (
     _json_dumps,
     _json_safe_value,
@@ -471,6 +472,9 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     last_alert_at: datetime | None = None
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
     checkpoint_at = checkpoint
+    latest_processed_block = int(target.get('watcher_last_observed_block') or 0)
+    source_status = 'active'
+    degraded_reason: str | None = None
     configured_scenario = monitoring_scenario(target)
     logger.info(
         'monitoring target fetched target=%s scenario=%s threshold=%s auto_create_alerts=%s',
@@ -509,12 +513,22 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         last_run_id = analysis_run_id
         checkpoint_at = event.observed_at
         checkpoint_cursor = event.cursor
+        block_number = event.payload.get('block_number') if isinstance(event.payload, dict) else None
+        if block_number is not None:
+            try:
+                latest_processed_block = max(latest_processed_block, int(block_number))
+            except Exception:
+                pass
         alert_id = processed.get('alert_id')
         if alert_id:
             alerts_generated += 1
             last_alert_at = utc_now()
         if processed.get('incident_id'):
             incidents_created += 1
+
+    if not events and str(monitoring_ingestion_runtime().get('mode')) in {'live', 'hybrid'} and str(target.get('target_type') or '').lower() in {'wallet', 'contract'}:
+        source_status = 'degraded'
+        degraded_reason = 'no_live_events_observed'
 
     connection.execute(
         '''
@@ -525,16 +539,35 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             last_alert_at = COALESCE(%s, last_alert_at),
             monitoring_checkpoint_at = COALESCE(%s, monitoring_checkpoint_at),
             monitoring_checkpoint_cursor = COALESCE(%s, monitoring_checkpoint_cursor),
+            watcher_last_observed_block = NULLIF(%s, 0),
+            watcher_checkpoint_lag_blocks = CASE WHEN NULLIF(%s, 0) IS NULL THEN watcher_checkpoint_lag_blocks ELSE GREATEST(0, %s - %s) END,
+            watcher_source_status = %s,
+            watcher_degraded_reason = %s,
+            watcher_last_event_at = %s,
             monitoring_claimed_by = NULL,
             monitoring_claimed_at = NULL,
             updated_at = NOW()
         WHERE id = %s
         ''',
-        (last_status, last_run_id, last_alert_at, checkpoint_at, checkpoint_cursor, target['id']),
+        (
+            last_status,
+            last_run_id,
+            last_alert_at,
+            checkpoint_at,
+            checkpoint_cursor,
+            latest_processed_block,
+            latest_processed_block,
+            latest_processed_block,
+            latest_processed_block,
+            source_status,
+            degraded_reason,
+            checkpoint_at,
+            target['id'],
+        ),
     )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s fallback=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, fallback_count, incidents_created)
     WORKER_STATE['metrics']['live_events_ingested'] += len(events)
-    return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'fallback_count': fallback_count, 'status': last_status}
+    return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'fallback_count': fallback_count, 'status': last_status, 'latest_processed_block': latest_processed_block, 'source_status': source_status, 'degraded_reason': degraded_reason}
 
 
 def process_ingested_event(connection: Any, *, target: dict[str, Any], event: ActivityEvent, ingestion_mode: str = 'live') -> dict[str, Any]:
@@ -769,7 +802,8 @@ def list_monitoring_targets(request: Request) -> dict[str, Any]:
             '''
             SELECT id, workspace_id, name, target_type, chain_network, enabled, monitoring_enabled, monitoring_mode,
                    monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents,
-                   notification_channels, monitoring_demo_scenario, last_checked_at, last_run_status, last_run_id, last_alert_at, is_active
+                   notification_channels, monitoring_demo_scenario, last_checked_at, last_run_status, last_run_id, last_alert_at, is_active,
+                   monitoring_checkpoint_at, monitoring_checkpoint_cursor, watcher_last_observed_block, watcher_checkpoint_lag_blocks, watcher_source_status, watcher_degraded_reason
             FROM targets
             WHERE workspace_id = %s AND deleted_at IS NULL
             ORDER BY created_at DESC
@@ -1003,4 +1037,66 @@ def get_monitoring_health() -> dict[str, Any]:
         runtime = monitoring_ingestion_runtime()
         normalized['ingestion_mode'] = runtime.get('source')
         normalized['degraded'] = runtime.get('degraded')
+        checkpoint_stats = connection.execute(
+            '''
+            SELECT
+                MAX(watcher_last_observed_block) AS latest_processed_block,
+                MAX(watcher_checkpoint_lag_blocks) AS max_checkpoint_lag_blocks,
+                MAX(monitoring_checkpoint_at) AS latest_checkpoint_at,
+                COALESCE(SUM(CASE WHEN watcher_source_status = 'degraded' THEN 1 ELSE 0 END), 0) AS degraded_targets,
+                COALESCE(SUM(CASE WHEN watcher_source_status = 'active' THEN 1 ELSE 0 END), 0) AS active_targets
+            FROM targets
+            WHERE deleted_at IS NULL AND monitoring_enabled = TRUE AND enabled = TRUE AND is_active = TRUE
+            '''
+        ).fetchone()
+        last_15m_events = connection.execute(
+            '''
+            SELECT COUNT(*) AS event_count
+            FROM monitoring_event_receipts
+            WHERE processed_at >= NOW() - INTERVAL '15 minutes'
+            '''
+        ).fetchone()
+        stats = _json_safe_value(dict(checkpoint_stats or {}))
+        latest_checkpoint_at = _parse_ts(stats.get('latest_checkpoint_at'))
+        normalized['source_type'] = runtime.get('source')
+        normalized['latest_processed_block'] = stats.get('latest_processed_block')
+        normalized['checkpoint_lag_blocks'] = stats.get('max_checkpoint_lag_blocks')
+        normalized['checkpoint_age_seconds'] = int((utc_now() - latest_checkpoint_at).total_seconds()) if latest_checkpoint_at else None
+        normalized['event_count_last_15m'] = int((last_15m_events or {}).get('event_count') or 0)
+        normalized['degraded_reason'] = runtime.get('reason') if runtime.get('degraded') else ('target_source_degraded' if int(stats.get('degraded_targets') or 0) > 0 else None)
         return {**normalized, 'live_mode': True}
+
+
+def production_claim_validator() -> dict[str, Any]:
+    runtime = monitoring_ingestion_runtime()
+    checks: dict[str, bool] = {
+        'live_or_hybrid_mode': runtime.get('mode') in {'live', 'hybrid'},
+        'live_monitoring_enabled': str(os.getenv('LIVE_MONITORING_ENABLED', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'},
+        'evm_rpc_reachable': False,
+        'watcher_source_active': False,
+        'checkpoints_advancing': False,
+        'no_silent_demo_fallback': runtime.get('mode') == 'demo' or not bool(runtime.get('degraded')),
+    }
+    reason = None
+    if checks['live_or_hybrid_mode'] and checks['live_monitoring_enabled'] and (os.getenv('EVM_RPC_URL') or '').strip():
+        try:
+            chain_id_hex = JsonRpcClient((os.getenv('EVM_RPC_URL') or '').strip()).call('eth_chainId', [])
+            checks['evm_rpc_reachable'] = bool(chain_id_hex)
+        except Exception as exc:
+            reason = f'evm_rpc_unreachable:{exc.__class__.__name__}'
+    if live_mode_enabled():
+        health = get_monitoring_health()
+        checks['watcher_source_active'] = bool((health.get('source_type') in {'websocket', 'polling', 'rpc_backfill'}) and not health.get('degraded'))
+        age = health.get('checkpoint_age_seconds')
+        checks['checkpoints_advancing'] = isinstance(age, int) and age <= 900
+        if health.get('degraded_reason'):
+            reason = str(health.get('degraded_reason'))
+    passed = all(checks.values())
+    return {
+        'status': 'PASS' if passed else 'FAIL',
+        'checked_at': utc_now().isoformat(),
+        'mode': runtime.get('mode'),
+        'source_type': runtime.get('source'),
+        'checks': checks,
+        'reason': reason,
+    }

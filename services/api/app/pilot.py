@@ -3784,10 +3784,17 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='chain_network is required (max 64 chars).')
     contract_identifier = str(payload.get('contract_identifier', '')).strip() or None
     wallet_address = str(payload.get('wallet_address', '')).strip() or None
+    token_address = str(payload.get('token_address', '')).strip() or None
+    bridge_endpoint = str(payload.get('bridge_endpoint', '')).strip() or None
+    settlement_endpoint = str(payload.get('settlement_endpoint', '')).strip() or None
+    asset_label = str(payload.get('asset_label', '')).strip() or None
+    chain_id = int(_coerce_number(payload.get('chain_id'), 0) or 0) or None
     if contract_identifier and len(contract_identifier) > 150:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='contract_identifier exceeds 150 chars.')
     if wallet_address and not re.match(r'^0x[a-fA-F0-9]{40}$', wallet_address):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='wallet_address must be an EVM-style address.')
+    if token_address and not re.match(r'^0x[a-fA-F0-9]{40}$', token_address):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='token_address must be an EVM-style address.')
     severity_preference = str(payload.get('severity_preference', 'medium')).strip().lower()
     if severity_preference not in {'low', 'medium', 'high', 'critical'}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='severity_preference must be low/medium/high/critical.')
@@ -3822,6 +3829,13 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
         'wallet_address': wallet_address,
         'asset_type': str(payload.get('asset_type', '')).strip() or None,
         'owner_notes': str(payload.get('owner_notes', '')).strip() or None,
+        'chain_id': chain_id,
+        'target_metadata': {
+            'token_address': token_address,
+            'asset_label': asset_label,
+            'bridge_endpoint': bridge_endpoint,
+            'settlement_endpoint': settlement_endpoint,
+        },
         'severity_preference': severity_preference,
         'enabled': bool(payload.get('enabled', True)),
         'monitoring_enabled': bool(payload.get('monitoring_enabled', False)),
@@ -4025,6 +4039,7 @@ def list_targets(request: Request) -> dict[str, Any]:
         rows = connection.execute(
             '''
             SELECT id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
+                   chain_id, target_metadata,
                    monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents,
                    notification_channels, monitoring_demo_scenario, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
                    created_at, updated_at
@@ -4068,9 +4083,10 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             '''
             INSERT INTO targets (
                 id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
+                chain_id, target_metadata,
                 monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents, notification_channels,
                 monitoring_demo_scenario, monitored_by_workspace_id, is_active, created_by_user_id, updated_by_user_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
             ''',
             (
                 target_id,
@@ -4084,6 +4100,8 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 validated['owner_notes'],
                 validated['severity_preference'],
                 validated['enabled'],
+                validated['chain_id'],
+                _json_dumps(validated['target_metadata']),
                 validated['monitoring_enabled'],
                 validated['monitoring_mode'],
                 validated['monitoring_interval_seconds'],
@@ -4148,12 +4166,14 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
             '''
             UPDATE targets
             SET name = %s, target_type = %s, chain_network = %s, contract_identifier = %s, wallet_address = %s, asset_type = %s, owner_notes = %s, severity_preference = %s, enabled = %s,
+                chain_id = %s, target_metadata = %s::jsonb,
                 monitoring_enabled = %s, monitoring_mode = %s, monitoring_interval_seconds = %s, severity_threshold = %s, auto_create_alerts = %s, auto_create_incidents = %s,
                 notification_channels = %s::jsonb, monitoring_demo_scenario = %s, monitored_by_workspace_id = %s, is_active = %s, updated_by_user_id = %s, updated_at = NOW()
             WHERE id = %s
             ''',
             (
                 validated['name'], validated['target_type'], validated['chain_network'], validated['contract_identifier'], validated['wallet_address'], validated['asset_type'], validated['owner_notes'], validated['severity_preference'], validated['enabled'],
+                validated['chain_id'], _json_dumps(validated['target_metadata']),
                 validated['monitoring_enabled'], validated['monitoring_mode'], validated['monitoring_interval_seconds'], validated['severity_threshold'], validated['auto_create_alerts'], validated['auto_create_incidents'],
                 _json_dumps(validated['notification_channels']), validated['monitoring_demo_scenario'], workspace_id, validated['is_active'], user['id'], target_id,
             ),

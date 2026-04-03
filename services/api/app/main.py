@@ -137,6 +137,7 @@ from services.api.app.monitoring_runner import (
     get_monitoring_health,
     list_monitoring_targets,
     patch_monitoring_target,
+    production_claim_validator,
     run_monitoring_cycle,
     run_monitoring_once,
 )
@@ -1531,6 +1532,11 @@ def ops_run_monitoring(payload: dict[str, Any]) -> dict[str, Any]:
 @app.get('/ops/monitoring/health', summary='Monitoring worker health snapshot')
 def ops_monitoring_health() -> dict[str, Any]:
     return with_auth_schema_json(get_monitoring_health)
+
+
+@app.get('/ops/production-claim-validator', summary='Strategic Infrastructure Guard production claim validator')
+def ops_production_claim_validator() -> dict[str, Any]:
+    return with_auth_schema_json(production_claim_validator)
 
 
 @app.get('/workspaces', summary='List workspaces for the authenticated user')

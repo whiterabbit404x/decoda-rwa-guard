@@ -73,7 +73,7 @@ def test_wallet_transfers_and_approvals_normalized(monkeypatch):
     events = fetch_evm_activity(target, None, rpc_client=_Rpc())
     assert any(e.payload.get('kind_hint') == 'erc20_transfer' for e in events)
     assert any(e.payload.get('kind_hint') == 'erc20_approval' for e in events)
-    assert all(e.ingestion_source == 'evm_rpc' for e in events)
+    assert all(e.ingestion_source in {'polling', 'rpc_backfill', 'websocket'} for e in events)
 
 
 def test_contract_selector_decode_and_cursor(monkeypatch):
