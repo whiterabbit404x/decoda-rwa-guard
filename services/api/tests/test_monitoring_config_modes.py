@@ -26,4 +26,4 @@ def test_hybrid_mode_labeled(monkeypatch):
     monkeypatch.setenv('LIVE_MONITORING_ENABLED', 'true')
     monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
     runtime = monitoring_ingestion_runtime()
-    assert runtime['source'] == 'hybrid'
+    assert runtime['source'] == 'polling'

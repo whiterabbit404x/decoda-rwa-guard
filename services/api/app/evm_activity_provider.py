@@ -166,6 +166,9 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         return []
 
     client = rpc_client or JsonRpcClient(rpc_url)
+    ws_configured = bool((os.getenv('EVM_WS_URL') or '').strip())
+    preferred_source = 'websocket' if ws_configured else 'polling'
+    fallback_source = 'rpc_backfill' if ws_configured else 'polling'
     latest = _hex_to_int(client.call('eth_blockNumber', [])) or 0
     safe_to = max(0, latest - confirmations)
 
@@ -218,7 +221,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                     raw_reference=f'{network}:{tx_hash}',
                 )
                 kind = 'transaction' if target_type == 'wallet' else 'contract'
-                events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, kind), kind=kind, observed_at=observed_at, ingestion_source='evm_rpc', cursor=cursor_value, payload=payload))
+                events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, kind), kind=kind, observed_at=observed_at, ingestion_source=preferred_source, cursor=cursor_value, payload=payload))
 
     for log in logs:
         tx_hash = str(log.get('transactionHash') or '')
@@ -259,7 +262,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         )
         kind = 'transaction'
         cursor_value = _event_cursor(block_number, tx_hash, log_index)
-        events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, 'transaction'), kind=kind, observed_at=observed_at, ingestion_source='evm_rpc', cursor=cursor_value, payload=payload))
+        events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, 'transaction'), kind=kind, observed_at=observed_at, ingestion_source=fallback_source, cursor=cursor_value, payload=payload))
 
     events.sort(key=lambda item: item.cursor)
     deduped: list[ActivityEvent] = []

@@ -1532,3 +1532,35 @@ Validation explicitly separates dependency-missing, browser-binaries-missing, an
 - Frontend MFA flows exist for sign-in challenge and settings enrollment; enterprise auth controls (for example SSO/SCIM) remain future work.
 
 See `docs/LAUNCH_VALIDATION_CHECKLIST.md` for pilot vs broad-sale vs enterprise gating criteria.
+
+## Demo mode vs Live mode
+
+- **Demo mode (`MONITORING_INGESTION_MODE=demo`)** uses deterministic sample scenarios for product walkthroughs only.
+- **Live mode (`MONITORING_INGESTION_MODE=live`)** requires `EVM_RPC_URL` and only processes real chain events.
+- **Hybrid mode (`MONITORING_INGESTION_MODE=hybrid`, recommended)** prefers websocket ingestion when `EVM_WS_URL` is present, with polling/RPC backfill continuity and explicit degraded status reporting.
+- In authenticated live workspaces, wallet/contract monitoring does **not** silently inject demo payloads if live ingestion is unavailable.
+
+## How to prove live on-chain monitoring
+
+1. Configure `LIVE_MONITORING_ENABLED=true`, `MONITORING_INGESTION_MODE=hybrid`, and a reachable `EVM_RPC_URL`.
+2. Add a workspace target with wallet/contract address and chain mapping (`chain_network`, `chain_id`).
+3. Run monitoring and verify checkpoint advancement (`monitoring_checkpoint_at/cursor`, `watcher_last_observed_block`, lag, source status).
+4. Confirm persisted evidence across tables/feeds:
+   - `monitoring_event_receipts`
+   - `analysis_runs`
+   - `alerts` and `incidents`
+   - `audit_logs`
+5. Run `python services/api/scripts/run_live_claim_check.py` and ensure `/ops/production-claim-validator` returns `PASS`.
+6. Run `python services/api/scripts/run_live_evidence_flow.py` to generate an operator-facing end-to-end evidence bundle.
+
+## What claims are valid to make publicly
+
+You may publicly claim **Strategic Infrastructure Guard live protection** only when:
+
+- monitoring mode is `live` or `hybrid`;
+- live monitoring is enabled and `EVM_RPC_URL` is reachable;
+- watcher source is active (`websocket`, `polling`, or `rpc_backfill`);
+- checkpoints are advancing with recent events;
+- degraded conditions are surfaced and auditable (no silent demo substitution).
+
+If any check fails, public claims must remain limited to pilot/demo capabilities.

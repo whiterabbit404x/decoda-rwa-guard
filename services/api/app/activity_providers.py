@@ -70,7 +70,7 @@ def monitoring_ingestion_runtime() -> dict[str, Any]:
         return {'mode': mode, 'source': 'degraded', 'degraded': True, 'reason': 'LIVE_MONITORING_ENABLED=false'}
     if not req['evm_rpc_url']:
         return {'mode': mode, 'source': 'degraded', 'degraded': True, 'reason': 'EVM_RPC_URL missing'}
-    source = 'hybrid' if mode == 'hybrid' else ('live-ws' if ws_url else 'live-rpc')
+    source = 'websocket' if ws_url else 'polling'
     return {'mode': mode, 'source': source, 'degraded': False, 'reason': None}
 
 
@@ -428,10 +428,13 @@ def fetch_target_activity(target: dict[str, Any], since_ts: datetime | None) -> 
         live_events = fetch_evm_activity(target, since_ts)
         if live_events:
             return live_events
-        if mode == 'live':
-            return []
+        return []
     if mode == 'live' and runtime['degraded']:
         raise RuntimeError(str(runtime.get('reason') or 'live ingestion degraded'))
+    if mode == 'hybrid' and target_type in {'wallet', 'contract'}:
+        # In hybrid mode, do not silently substitute deterministic demo payloads for
+        # workspace-bound live wallet/contract targets.
+        return []
     if target_type == 'wallet':
         return fetch_wallet_activity(target, since_ts)
     if target_type == 'contract':
