@@ -22,7 +22,7 @@ CATEGORIES = [
 
 NO_BILLING_BOOTSTRAP_REMEDIATION = [
     'Run `npm ci` from repository root to install Node/Next.js dependencies.',
-    'If browser smoke checks are required, run `make install-web-test-runtime`.',
+    'If browser smoke checks are required, run `npm run bootstrap:e2e` (or `make install-web-test-runtime`).',
     'Then rerun `make validate-no-billing-launch`.',
 ]
 
@@ -83,7 +83,7 @@ def check_playwright_runtime() -> ValidationCheck:
             detail=(node_check.stdout + '\n' + node_check.stderr).strip(),
             remediation=[
                 'Install dependencies first: `npm ci`.',
-                'Then install browser runtime: `make install-web-test-runtime`.',
+                'Then install browser runtime: `npm run bootstrap:e2e` (or `make install-web-test-runtime`).',
             ],
         )
 
@@ -112,7 +112,7 @@ def check_playwright_runtime() -> ValidationCheck:
             detail='Playwright package is not installed in node_modules.',
             remediation=[
                 'Run `npm ci` from repository root.',
-                'Then run `make install-web-test-runtime`.',
+                'Then run `npm run bootstrap:e2e` (or `make install-web-test-runtime`).',
             ],
             metadata=payload,
         )
@@ -124,7 +124,7 @@ def check_playwright_runtime() -> ValidationCheck:
             status='fail',
             detail=f"Playwright package is installed but Chromium runtime is missing at {payload.get('path')}",
             remediation=[
-                'Run `make install-web-test-runtime` (or `npx playwright install chromium`).',
+                'Run `npm run bootstrap:e2e` (or `make install-web-test-runtime`).',
             ],
             metadata=payload,
         )
@@ -134,7 +134,7 @@ def check_playwright_runtime() -> ValidationCheck:
         command=['node', '-e', 'playwright runtime detection'],
         status='fail',
         detail=f'Unable to determine Playwright runtime state: {payload}',
-        remediation=['Run `npm ci` and `make install-web-test-runtime`, then retry.'],
+        remediation=['Run `npm ci` and `npm run bootstrap:e2e`, then retry.'],
     )
 
 
@@ -267,7 +267,7 @@ def run_validation(mode: str) -> int:
                 command=['node', '-e', 'playwright runtime detection'],
                 status='skip',
                 detail='Skipped in no-billing pilot mode because Chromium runtime download is blocked in this environment.',
-                remediation=['Run `make install-web-test-runtime` on a network-enabled runner before broad-sale launch gates.'],
+                remediation=['Run `npm run bootstrap:e2e` on a network-enabled runner before broad-sale launch gates.'],
                 metadata=runtime_check.metadata,
             )
     checks.append(runtime_check)

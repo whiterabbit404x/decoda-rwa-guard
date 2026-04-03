@@ -1,0 +1,62 @@
+name: no-billing-proof
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'apps/web/**'
+      - 'services/api/**'
+      - 'scripts/**'
+      - 'playwright.config.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Makefile'
+      - '.github/workflows/no-billing-proof.yml'
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements-local.txt
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Bootstrap Playwright Chromium
+        run: npm run bootstrap:e2e
+
+      - name: Build web
+        run: npm run build:web
+
+      - name: Validate no-billing launch
+        run: make validate-no-billing-launch
+
+      - name: Run local browser smoke proof
+        env:
+          PLAYWRIGHT_LOCAL_WEB_SERVER: 'true'
+        run: npx playwright test apps/web/tests/feature4-smoke.spec.ts
+
+      - name: Upload no-billing artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: no-billing-proof-artifacts
+          path: |
+            artifacts/
+            evidence/

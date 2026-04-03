@@ -17,7 +17,7 @@ install-web:
 
 install-web-test-runtime:
 	npm ci
-	npx playwright install chromium
+	npm run bootstrap:e2e
 
 init-local:
 	mkdir -p .data
