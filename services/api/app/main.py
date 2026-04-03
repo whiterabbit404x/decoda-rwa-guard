@@ -1376,6 +1376,21 @@ def resilience_dashboard() -> dict[str, Any]:
     return attach_dependency_diagnostics(fallback_resilience_dashboard(), 'reconciliation_service', fallback_reason='Resilience dashboard fell back after embedded or remote execution failed.')
 
 
+@app.get(
+    '/ops/dashboard-page-data',
+    summary='Aggregated dashboard page payload',
+    description='Returns dashboard + risk + threat + compliance + resilience payloads in a single backend response for initial authenticated dashboard render.',
+)
+def ops_dashboard_page_data() -> dict[str, Any]:
+    return {
+        'dashboard': dashboard(),
+        'risk_dashboard': risk_dashboard(),
+        'threat_dashboard': threat_dashboard(),
+        'compliance_dashboard': compliance_dashboard(),
+        'resilience_dashboard': resilience_dashboard(),
+    }
+
+
 @app.post('/resilience/reconcile/state', summary='Feature 4 cross-chain reconciliation', description='Proxies a reconciliation request to the reconciliation-service and falls back to a deterministic local reconciliation summary if the service is unavailable.')
 def resilience_reconcile_state(payload: dict[str, Any]) -> dict[str, Any]:
     response = proxy_resilience_post('reconcile/state', payload)

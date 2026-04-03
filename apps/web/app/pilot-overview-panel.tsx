@@ -121,8 +121,8 @@ export default function PilotOverviewPanel({
           {user?.memberships?.length ? <span className="ruleChip">{user.memberships.length} workspaces</span> : null}
         </div>
         <div className="overviewActions">
-          {isAuthenticated ? <Link href="/workspaces">Manage workspace</Link> : <Link href="/sign-in">Sign in</Link>}
-          {!isAuthenticated ? <Link href="/sign-up">Create account</Link> : <Link href="/dashboard">Refresh dashboard</Link>}
+          {isAuthenticated ? <Link href="/workspaces" prefetch={false}>Manage workspace</Link> : <Link href="/sign-in">Sign in</Link>}
+          {!isAuthenticated ? <Link href="/sign-up">Create account</Link> : <Link href="/dashboard" prefetch={false}>Refresh dashboard</Link>}
         </div>
       </article>
 

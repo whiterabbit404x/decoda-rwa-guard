@@ -64,7 +64,7 @@ export default function HistoryRecordsView({ history, loading = false, error, wo
           <h2>No analyses yet</h2>
           <p>Your workspace is ready. Run your first threat analysis to create a reviewable audit trail.</p>
           <div className="heroActionRow">
-            <Link href="/threat">Run your first threat analysis</Link>
+            <Link href="/threat" prefetch={false}>Run your first threat analysis</Link>
           </div>
         </div>
       ) : null}

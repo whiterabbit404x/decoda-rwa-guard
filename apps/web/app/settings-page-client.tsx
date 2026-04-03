@@ -129,7 +129,7 @@ export default function SettingsPageClient() {
             <h2>Workspace security controls</h2>
             <p className="muted">Review workspace protections, access principles, and session controls.</p>
             <div className="buttonRow">
-              <Link href="/settings/security">Open security settings</Link>
+              <Link href="/settings/security" prefetch={false}>Open security settings</Link>
             </div>
           </article>
         </div>

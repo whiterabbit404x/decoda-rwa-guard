@@ -28,7 +28,7 @@ export default function PilotModeBanner() {
         <Link href="/">Dashboard</Link>
         {!isAuthenticated ? <Link href="/sign-in">Sign in</Link> : null}
         {!isAuthenticated ? <Link href="/sign-up">Sign up</Link> : null}
-        {isAuthenticated ? <Link href="/workspaces">Workspaces</Link> : null}
+        {isAuthenticated ? <Link href="/workspaces" prefetch={false}>Workspaces</Link> : null}
         {isAuthenticated ? <button type="button" onClick={handleSignOut}>Sign out</button> : null}
       </div>
     </section>
