@@ -32,6 +32,7 @@ class _FakeConnection:
     def __init__(self, due_targets):
         self.due_targets = due_targets
         self.health_row = None
+        self.last_worker_state_update_params = None
 
     def transaction(self):
         return _FakeTransaction()
@@ -49,6 +50,7 @@ class _FakeConnection:
         if "COUNT(*) FILTER (WHERE status = 'queued')" in normalized:
             return _Result(row={'queued': 0, 'running': 0, 'failed': 0})
         if normalized.startswith('UPDATE monitoring_worker_state'):
+            self.last_worker_state_update_params = params
             self.health_row = {
                 'worker_name': params[5],
                 'running': False,
@@ -132,6 +134,50 @@ def test_monitoring_cycle_updates_health_and_handles_target_exception(monkeypatc
     assert health['last_cycle_checked_targets'] == 1
     assert health['last_cycle_alerts_created'] == 1
     assert health['last_error'] == 'boom'
+    assert connection.last_worker_state_update_params[0] == 'boom'
+    assert connection.last_worker_state_update_params[4] == 'boom'
+
+
+def test_monitoring_cycle_updates_health_with_null_error_message(monkeypatch):
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'good-target',
+            'name': 'Good Target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'monitored_by_workspace_id': None,
+            'monitored_workspace_exists_id': None,
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda _connection, target, triggered_by_user_id=None: {
+            'alerts_generated': 0,
+            'target_id': target['id'],
+            'runs': ['run-1'],
+            'status': 'completed',
+        },
+    )
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+    assert summary['due_targets'] == 1
+    assert summary['checked'] == 1
+    assert summary['alerts_generated'] == 0
+    assert summary['live_mode'] is True
+    assert connection.last_worker_state_update_params[0] is None
+    assert connection.last_worker_state_update_params[4] is None
 
 
 def test_worker_once_mode_runs_single_cycle(monkeypatch):
@@ -159,3 +205,8 @@ def test_due_target_selection_query_keeps_monitoring_filters() -> None:
     assert 'skipped_null_handling=%s' in source
     assert 'last_checked_at is None' in source
     assert 'FOR UPDATE SKIP LOCKED' in source
+    assert 'status = CASE WHEN CAST(%s AS text) IS NULL THEN \'idle\' ELSE \'error\' END' in source
+    assert 'last_cycle_due_targets = CAST(%s AS integer)' in source
+    assert 'last_cycle_targets_checked = CAST(%s AS integer)' in source
+    assert 'last_cycle_alerts_generated = CAST(%s AS integer)' in source
+    assert 'last_error = CAST(%s AS text)' in source
