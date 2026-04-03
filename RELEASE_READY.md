@@ -1,10 +1,15 @@
 # RELEASE_READY
 
-Last reconciled: **2026-04-02**.
+Last reconciled: **2026-04-03**.
 
-## Validation model now used
+## Launch validation commands
 
-Release validation is now grouped into explicit launch-gate categories with machine-readable output:
+- `make validate-no-billing-launch` → pilot launch gate (billing intentionally disabled).
+- `make validate-launch` → strict broad self-serve gate (includes provider + staging requirements).
+
+Both commands emit machine-readable JSON and category summaries.
+
+## Validation categories
 
 1. `local_repo_integrity`
 2. `frontend_build_reproducibility`
@@ -13,49 +18,26 @@ Release validation is now grouped into explicit launch-gate categories with mach
 5. `live_provider_configuration`
 6. `staging_evidence`
 
-Commands:
-
-- `make validate-production`
-- `make validate-staging`
-- `make validate-launch` (runs both)
-
-Each command returns JSON plus an operator summary. Any category failure is a **no-go**.
-
-## What is verified in-repo
-
-- Backend readiness and auth/billing diagnostics checks run in deterministic pytest gates.
-- Frontend reproducibility is validated by checking declared, lockfile-resolved, and installed versions for Next.js and Playwright.
-- Playwright runtime checks now distinguish:
-  - package missing
-  - browser binaries missing
-  - runtime ready
-- Staging evidence flow now executes a real path (landing, sign-in, protected access, onboarding read, create/list asset workflow) and saves evidence artifacts.
-- Live provider smoke now reports structured statuses (`verified`, `configured_unverified`, `not_configured`, `fail`) for email, billing, Redis, staging readiness, and EVM RPC.
-
-## What is only verifiable in staging/external env
-
-- Real provider connectivity and non-placeholder secrets.
-- Real staging account auth/MFA outcomes.
-- External network path to staging API and EVM RPC provider.
-
 ## Readiness tiers
 
-### Ready for pilot
-- Local gate passes except explicitly external-only checks marked `configured_unverified`.
-- Controlled customer onboarding can proceed.
+### 1) Production-polished pilot launch (current target)
+Pass criteria:
+- `make validate-no-billing-launch` passes.
+- Billing may be `not_configured` only when `BILLING_PROVIDER=none`.
+- Auth/session/workspace/runtime checks still must pass.
+- Public/legal/support/trust pages are present and coherent.
 
-### Ready for broad self-serve sale
-- `make validate-launch` passes fully.
+### 2) Broad self-serve launch (future)
+Pass criteria:
+- `make validate-launch` passes.
+- Billing/email/Redis/provider checks are fully verified in deployed staging.
 - Staging evidence artifacts are generated and archived.
-- Billing/email/Redis are `verified` in provider smoke (not `not_configured`).
 
-### Ready for enterprise procurement
-In addition to broad self-serve readiness:
-- SOC2/control evidence package and incident-response artifacts are complete.
-- Procurement-facing security/compliance requirements are signed off.
+### 3) Enterprise procurement posture (out of scope for this pass)
+Requires all broad self-serve criteria plus formal compliance/control evidence and procurement artifacts.
 
-## Honest recommendation
+## Honest status for this repository
 
-**Current recommendation: conditional NO-GO for broad self-serve until external staging evidence is run with real provider credentials in your deployment environment.**
-
-Reason: the launch gates now enforce real staging/provider checks, which cannot be fully satisfied by code-only/local execution without configured external services.
+- **Pilot launch:** ready when `BILLING_PROVIDER=none` and no-billing validation passes.
+- **Public marketing traffic:** ready (site copy and legal/commercial pages align with pilot mode).
+- **Broad paid self-serve:** **not yet** (billing enablement intentionally deferred).

@@ -117,6 +117,20 @@ Fast operator checks:
 - Background jobs, webhooks, and more granular per-record dashboards instead of summary persistence only.
 - Managed observability, secret rotation, and tenant billing / provisioning workflows.
 
+
+## No-billing pilot launch runbook (production-polished mode)
+
+Use this when you want a credible customer-facing deployment without checkout enabled.
+
+1. Configure API env with: `LIVE_MODE_ENABLED=true`, `DATABASE_URL`, `AUTH_TOKEN_SECRET`, `APP_PUBLIC_URL`, and `BILLING_PROVIDER=none`.
+2. Run migrations: `python services/api/scripts/migrate.py`.
+3. Seed optional pilot demo user: `python services/api/scripts/seed.py --pilot-demo`.
+4. Start API + worker processes (Railway) and web app (Vercel).
+5. Validate web build from a clean install: `npm ci && npm run build:web`.
+6. Validate pilot launch posture: `make validate-no-billing-launch` (or `npm run validate:no-billing-launch`).
+
+This mode is **pilot-ready** and **marketing-ready**. Broad paid self-serve remains out of scope until billing provider credentials and checkout workflows are enabled in deployment.
+
 ## Self-serve public beta foundations (this pass)
 
 The API now includes real self-serve security foundations intended for public-beta usage:
@@ -180,7 +194,7 @@ python -m services.api.app.run_monitoring_worker --once --worker-name railway-mo
 ### Honest remaining gaps before true GA / enterprise claims
 
 - Frontend MFA enrollment/challenge UX is not fully wired end-to-end yet.
-- Core customer-operable flows are now live in product UI: workspace team admin (member role changes/removal/invites/revoke/resend), seat visibility, billing checkout + portal launch, webhook management (create/edit/enable/rotate/deliveries), and findings decisions/actions workflow.
+- Core customer-operable flows are now live in product UI: workspace team admin (member role changes/removal/invites/revoke/resend), seat visibility, no-billing pilot billing-state UX, webhook management (create/edit/enable/rotate/deliveries), and findings decisions/actions workflow.
 - Formal SOC 2 control evidence, key rotation automation, and full incident-response runbooks are still required for enterprise procurement.
 
 ## Self-serve onboarding wizard (this pass)
@@ -206,7 +220,7 @@ Recent SaaS workflow upgrades now prioritize real customer records over scenario
 - Export downloads now return real generated artifacts at `GET /exports/{id}/download` (CSV/JSON) with files stored under `EXPORTS_DIR` (`/tmp/decoda-exports` by default).
 - Alert notifications now queue outbound webhook/email delivery attempts via `background_jobs`; run `python services/api/scripts/run_worker.py` to process queued deliveries.
 - Slack alerting is now supported via incoming webhooks (`/integrations/slack`) with delivery logs, test-send, retries, and routing preferences (`/integrations/routing/{channel_type}`).
-- Billing is now Paddle-first by default (`BILLING_PROVIDER=paddle`), with hosted checkout via Paddle and provisioning via `POST /billing/webhooks/paddle`. Stripe remains optional (`BILLING_PROVIDER=stripe`) for future/provider-specific flows.
+- Billing foundations remain in place (`BILLING_PROVIDER=none|paddle|stripe`). For pilot launch posture, run `BILLING_PROVIDER=none` so billing is intentionally disabled while auth/workspace/alerts/exports/integrations remain fully operable.
 - Team and seat administration endpoints: `PATCH/DELETE /workspace/members/{id}`, `GET /team/seats`.
 - Team invitation lifecycle endpoints: `GET/POST /workspace/invitations`, `POST /workspace/invitations/{id}/resend`, `DELETE /workspace/invitations/{id}`, `POST /workspace/invitations/accept`.
 - Finding action workflow endpoints: `POST /findings/{id}/decision`, `POST /findings/{id}/actions`, `PATCH /actions/{id}`, `GET /actions`, `GET /decisions`.

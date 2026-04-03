@@ -22,7 +22,7 @@ def test_new_live_workflow_routes_exist() -> None:
 
 def test_export_generation_is_not_placeholder_complete() -> None:
     source = (REPO_ROOT / 'services/api/app/pilot.py').read_text(encoding='utf-8')
-    assert "VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'queued', %s)" in source
+    assert "VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'queued', %s, %s, %s)" in source
     assert "def _generate_export_artifact" in source
     assert "status = 'completed'" in source
 

@@ -134,6 +134,7 @@ def check_playwright_runtime() -> ValidationCheck:
 
 def run_validation(mode: str) -> int:
     env = os.environ.copy()
+    normalized_mode = (mode or 'staging').strip().lower()
     checks: list[ValidationCheck] = []
 
     checks.extend(
@@ -206,6 +207,7 @@ def run_validation(mode: str) -> int:
             'live_provider_configuration',
             'provider_smoke',
             ['python', 'services/api/scripts/smoke_live_providers.py'],
+            env={**env, 'VALIDATION_MODE': normalized_mode},
             remediation=['Configure real provider environment variables and verify staging API readiness URL.'],
         )
     )
@@ -228,7 +230,7 @@ def run_validation(mode: str) -> int:
 
     ok = all(c.status in {'pass', 'skip'} for c in checks) and all(status == 'pass' for status in category_status.values())
     payload = {
-        'mode': mode,
+        'mode': normalized_mode,
         'ok': ok,
         'category_status': category_status,
         'checks': [asdict(check) for check in checks],

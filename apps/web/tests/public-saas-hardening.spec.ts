@@ -6,9 +6,9 @@ import { fetchDashboardPageData } from '../app/dashboard-data';
 
 test('customer-facing routes remove demo wording', async () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'app', 'page.tsx'), 'utf-8');
-  expect(content).not.toContain('Start pilot');
-  expect(content).not.toContain('Built for real pilots, not fragile demos');
-  expect(content).toContain('Start free trial');
+  expect(content).toContain('Start pilot');
+  expect(content).toContain('Contact sales');
+  expect(content).not.toContain('Start free trial');
 });
 
 test('production mode does not silently render sample dashboard payloads', async () => {

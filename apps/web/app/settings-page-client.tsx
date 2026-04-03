@@ -4,11 +4,11 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
+import { BillingRuntime, billingDisabledMessage, billingEnabled } from './billing-capability';
 
 type Member = { id: string; user_id: string; email: string; full_name: string; role: 'owner' | 'admin' | 'analyst' | 'viewer'; created_at: string };
 type Invitation = { id: string; email: string; role: 'owner' | 'admin' | 'analyst' | 'viewer'; status: string; expires_at: string; created_at: string; updated_at: string };
 type SeatSummary = { used: number; limit: number; plan_key?: string };
-type BillingRuntime = { provider?: string; available?: boolean };
 
 export default function SettingsPageClient() {
   const { apiUrl, authHeaders, error, liveModeConfigured, loading, selectWorkspace, user } = usePilotAuth();
@@ -16,7 +16,7 @@ export default function SettingsPageClient() {
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [plans, setPlans] = useState<Array<{ plan_key: string; plan_name: string; max_members: number; features?: Record<string, unknown> }>>([]);
   const [subscription, setSubscription] = useState<any>(null);
-  const [billingRuntime, setBillingRuntime] = useState<BillingRuntime>({ provider: 'paddle', available: false });
+  const [billingRuntime, setBillingRuntime] = useState<BillingRuntime>({ provider: 'none', available: false });
   const [seatSummary, setSeatSummary] = useState<SeatSummary | null>(null);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('viewer');
@@ -43,7 +43,7 @@ export default function SettingsPageClient() {
     if (subscriptionResponse.ok) {
       const payload = await subscriptionResponse.json();
       setSubscription(payload.subscription ?? null);
-      setBillingRuntime(payload.billing ?? { provider: 'paddle', available: false });
+      setBillingRuntime(payload.billing ?? { provider: 'none', available: false });
     }
     if (plansResponse.ok) setPlans((await plansResponse.json()).plans ?? []);
   }
@@ -109,8 +109,9 @@ export default function SettingsPageClient() {
 
   const billingStatus = subscription?.status ?? 'none';
   const nearSeatLimit = seatSummary ? seatSummary.used >= seatSummary.limit : false;
+  const billingAvailable = billingEnabled(billingRuntime);
   const roleDescriptions: Record<string, string> = {
-    owner: 'Full billing + workspace control. At least one owner must remain.',
+    owner: 'Full workspace and administrative control. At least one owner must remain.',
     admin: 'Can manage members, integrations, and workflow operations.',
     analyst: 'Can run analysis and operate findings/actions.',
     viewer: 'Read-only access for reporting and dashboards.',
@@ -119,7 +120,7 @@ export default function SettingsPageClient() {
   return (
     <main className="productPage">
       <section className="featureSection">
-        <div className="sectionHeader"><div><p className="eyebrow">Settings</p><h1>Workspace administration</h1><p className="lede">Manage users, seats, entitlements, and workspace billing in one place.</p></div></div>
+        <div className="sectionHeader"><div><p className="eyebrow">Settings</p><h1>Workspace administration</h1><p className="lede">Manage users, seats, entitlements, and workspace governance in one place.</p></div></div>
         <div className="threeColumnSection">
           <article className="dataCard"><p className="sectionEyebrow">Current user</p><h2>{user?.full_name ?? 'Unknown user'}</h2><p className="muted">{user?.email}</p><p className="muted">Role: {currentMembership?.role ?? 'unknown'}</p></article>
           <article className="dataCard"><p className="sectionEyebrow">Workspace</p><h2>{user?.current_workspace?.name ?? 'No workspace selected'}</h2><label className="label compactLabel">Switch workspace<select value={user?.current_workspace?.id ?? ''} onChange={(event) => void selectWorkspace(event.target.value)} disabled={loading}>{(user?.memberships ?? []).map((membership) => (<option key={membership.workspace_id} value={membership.workspace_id}>{membership.workspace.name}</option>))}</select></label></article>
@@ -144,22 +145,24 @@ export default function SettingsPageClient() {
             <p className="muted">Status: {billingStatus}</p>
             <p className="muted">Seats: {seatSummary ? `${seatSummary.used}/${seatSummary.limit}` : 'loading'}</p>
             <p className="muted">Seat policy: {nearSeatLimit ? 'At limit' : 'Within limit'}</p>
-            {nearSeatLimit ? <p className="statusLine">Seat limit reached. Upgrade to invite more teammates.</p> : null}
+            {nearSeatLimit ? <p className="statusLine">Seat limit reached. Contact support to expand access for your pilot workspace.</p> : null}
             {billingStatus === 'trialing' ? <p className="statusLine">Trialing plan active. Review limits before launch.</p> : null}
             {billingStatus === 'past_due' ? <p className="statusLine">Billing is past_due. Update billing details to avoid disruption.</p> : null}
             {billingStatus === 'canceled' ? <p className="statusLine">Subscription canceled. Re-activate to retain premium features.</p> : null}
             <p className="muted">Provider: {billingRuntime.provider ?? 'unknown'}</p>
-            {billingRuntime.available ? null : <p className="statusLine">Billing is not configured yet.</p>}
+            {billingAvailable ? null : <p className="statusLine">{billingDisabledMessage(billingRuntime)}</p>}
           </article>
           <article className="dataCard">
             <p className="sectionEyebrow">Plan catalog</p>
-            {plans.length === 0 ? <p className="muted">No plans available.</p> : plans.map((plan) => (
+            {billingAvailable ? (plans.length === 0 ? <p className="muted">No plans available.</p> : plans.map((plan) => (
               <div key={plan.plan_key} style={{ marginBottom: 12 }}>
                 <strong>{plan.plan_name}</strong>
                 <p className="muted">{plan.plan_key} · max seats {plan.max_members}</p>
-                <button type="button" onClick={() => void startCheckout(plan.plan_key)} disabled={!billingRuntime.available}>Choose {plan.plan_name}</button>
+                <button type="button" onClick={() => void startCheckout(plan.plan_key)} disabled={!billingAvailable}>Choose {plan.plan_name}</button>
               </div>
-            ))}
+            ))) : (
+              <p className="muted">Commercial plans are managed through assisted pilot onboarding. Reach out via <a href="mailto:support@decoda.app">support@decoda.app</a>.</p>
+            )}
           </article>
           <article className="dataCard"><p className="sectionEyebrow">Sessions</p><button type="button" onClick={() => void fetch('/api/auth/signout-all', { method: 'POST', headers: authHeaders() })}>Sign out all sessions</button></article>
         </div>
