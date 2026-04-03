@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import { classifyAuthResponseError, classifyAuthTransportError } from './auth-diagnostics';
 import type { RuntimeConfig } from './runtime-config-schema';
@@ -141,6 +141,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   const [sessionLoading, setSessionLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mfaChallengeToken, setMfaChallengeToken] = useState<string | null>(null);
+  const sessionRestoreStarted = useRef(false);
 
   const requireApiUrl = useCallback(() => {
     if (configLoading) {
@@ -174,6 +175,9 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       return null;
     }
 
+    if (process.env.NODE_ENV === 'development') {
+      console.debug('[dashboard-page-data trace] source=auth-refresh path=/api/auth/me');
+    }
     const response = await fetch('/api/auth/me', { cache: 'no-store' });
 
     if (!response.ok) {
@@ -254,6 +258,11 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    if (sessionRestoreStarted.current) {
+      return;
+    }
+
+    sessionRestoreStarted.current = true;
     setSessionLoading(true);
     void refreshUser().catch((fetchError) => {
       const message = fetchError instanceof Error ? fetchError.message : String(fetchError);

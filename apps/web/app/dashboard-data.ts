@@ -1114,7 +1114,8 @@ async function fetchEndpointJson<T>(
 }
 
 async function fetchDashboardAggregateJson(
-  apiUrl: string | null
+  apiUrl: string | null,
+  requestSource?: string
 ): Promise<DashboardPageAggregateResponse | null> {
   if (!apiUrl) {
     return null;
@@ -1124,7 +1125,13 @@ async function fetchDashboardAggregateJson(
   const timeoutId = setTimeout(() => controller.abort(), resolveFetchTimeoutMs());
 
   try {
-    const response = await fetch(`${apiUrl}${DASHBOARD_AGGREGATE_ENDPOINT_PATH}`, {
+    const endpointUrl = new URL(`${apiUrl}${DASHBOARD_AGGREGATE_ENDPOINT_PATH}`);
+    if (requestSource?.trim()) {
+      endpointUrl.searchParams.set('source', requestSource.trim());
+      console.info(`[dashboard-page-data trace] source=${requestSource.trim()} path=${DASHBOARD_AGGREGATE_ENDPOINT_PATH}`);
+    }
+
+    const response = await fetch(endpointUrl.toString(), {
       cache: 'no-store',
       signal: controller.signal,
     });
@@ -1461,6 +1468,7 @@ export type DashboardPageData = {
 
 type DashboardPageDataOptions = {
   featureFeeds?: Array<Exclude<DashboardEndpointKey, 'dashboard'>>;
+  requestSource?: string;
 };
 
 export type ThreatDashboardRuntimeDiagnostics = {
@@ -1572,7 +1580,7 @@ export async function fetchDashboardPageData(
     shouldFetchFeature('resilienceDashboard');
 
   const aggregatePayload = shouldUseAggregatedFetch
-    ? await fetchDashboardAggregateJson(apiConfig.apiUrl)
+    ? await fetchDashboardAggregateJson(apiConfig.apiUrl, options.requestSource)
     : null;
 
   if (aggregatePayload) {
