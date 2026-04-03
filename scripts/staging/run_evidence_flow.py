@@ -75,7 +75,11 @@ def main() -> None:
     ensure_dirs()
     if missing:
         detail = 'Missing required staging credentials/config: ' + ', '.join(missing)
-        write_summary('missing_configuration', detail)
+        allow_missing = os.getenv('STAGING_EVIDENCE_ALLOW_MISSING', '').strip().lower() in {'1', 'true', 'yes'}
+        write_summary('missing_configuration' if not allow_missing else 'skipped_missing_configuration', detail)
+        if allow_missing:
+            print(f'Staging evidence flow skipped: {detail}')
+            return
         fail(detail + '. Set these env vars and retry.')
 
     rc, output = run_playwright()

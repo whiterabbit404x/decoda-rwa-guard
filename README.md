@@ -126,8 +126,17 @@ Use this when you want a credible customer-facing deployment without checkout en
 2. Run migrations: `python services/api/scripts/migrate.py`.
 3. Seed optional pilot demo user: `python services/api/scripts/seed.py --pilot-demo`.
 4. Start API + worker processes (Railway) and web app (Vercel).
-5. Validate web build from a clean install: `npm ci && npm run build:web`.
-6. Validate pilot launch posture: `make validate-no-billing-launch` (or `npm run validate:no-billing-launch`).
+5. Deterministic install from a fresh checkout: `npm run install:clean` (alias for `npm ci`).
+6. Validate web build from that clean install: `npm run build:web`.
+7. Validate pilot launch posture: `make validate-no-billing-launch` (or `npm run validate:no-billing-launch`).
+8. Run staging evidence flow when staging credentials are available:
+   - `export STAGING_BASE_URL=...`
+   - `export STAGING_API_URL=...`
+   - `export STAGING_EVIDENCE_EMAIL=...`
+   - `export STAGING_EVIDENCE_PASSWORD=...`
+   - `npm run evidence:staging`
+
+`make validate-no-billing-launch` intentionally treats `BILLING_PROVIDER=none` as pilot-valid. It still fails for real blockers (for example broken API startup checks, broken auth/runtime, dependency drift, or failed web build).
 
 This mode is **pilot-ready** and **marketing-ready**. Broad paid self-serve remains out of scope until billing provider credentials and checkout workflows are enabled in deployment.
 
@@ -1452,6 +1461,8 @@ Then run:
 npx playwright test apps/web/tests/feature4-smoke.spec.ts
 python scripts/staging/run_evidence_flow.py
 ```
+
+For no-billing pilot validation without staging credentials, `validate-no-billing-launch` records staging evidence as skipped-missing-configuration instead of failing the full gate. To produce full staging evidence artifacts, provide the `STAGING_*` variables and rerun `npm run evidence:staging`.
 
 Validation explicitly separates dependency-missing, browser-binaries-missing, and true E2E execution failures.
 

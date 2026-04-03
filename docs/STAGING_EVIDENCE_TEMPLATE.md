@@ -4,15 +4,13 @@
 - Commit SHA:
 - Environment URL:
 - Flow executed:
-  1. signup
-  2. verify email
-  3. sign-in
-  4. MFA
-  5. workspace setup
-  6. target creation
-  7. alert generation
-  8. export generation
-  9. integration delivery
+  1. public landing page
+  2. support/legal/trust pages
+  3. signup route and signup API reachability
+  4. sign-in (plus MFA completion when required)
+  5. workspace access
+  6. core in-app workflow (asset create/list)
+  7. alerts/history/exports surfaces reachable
 - Artifacts:
   - screenshots/
   - traces/

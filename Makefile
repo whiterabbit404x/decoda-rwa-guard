@@ -13,7 +13,7 @@ install-python:
 	python -m pip install -r requirements-local.txt
 
 install-web:
-	npm install --workspace apps/web
+	npm ci
 
 install-web-test-runtime:
 	npm ci
