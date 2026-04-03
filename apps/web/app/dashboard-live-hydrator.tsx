@@ -32,7 +32,11 @@ type DashboardPageDataHydrationResponse = {
 };
 
 const HYDRATION_RETRY_DELAY_MS = 1200;
+const HYDRATION_DEDUP_WINDOW_MS = 5000;
 const OFFLINE_GATEWAY_STATUSES = new Set(['waiting', 'down', 'offline', 'unavailable', 'fallback']);
+
+const inFlightHydrationRequests = new Map<string, Promise<DashboardPageDataHydrationResponse>>();
+const lastHydrationAttemptAt = new Map<string, number>();
 
 function toErrorMessage(error: unknown) {
   if (error instanceof Error) {
@@ -158,6 +162,71 @@ function hasAnyLiveSection(meta: DashboardPageDataHydrationMeta) {
   return meta.riskLive || meta.threatLive || meta.complianceLive || meta.resilienceLive;
 }
 
+function resolveHydrationKey(initialData: DashboardPageData) {
+  return initialData.apiUrl?.trim() || '__default__';
+}
+
+function shouldSkipDuplicateHydration(initialData: DashboardPageData) {
+  const key = resolveHydrationKey(initialData);
+  const lastAttempt = lastHydrationAttemptAt.get(key);
+
+  if (!lastAttempt) {
+    return false;
+  }
+
+  return Date.now() - lastAttempt < HYDRATION_DEDUP_WINDOW_MS;
+}
+
+function shouldRetryHydration(
+  initialData: DashboardPageData,
+  attempt: number,
+  meta: DashboardPageDataHydrationMeta,
+  routeUpdates: LiveSectionUpdates
+) {
+  if (attempt !== 0) {
+    return false;
+  }
+
+  if (meta.gatewayReachable || hasAnyLiveSection(meta) || hasLiveSectionUpdates(routeUpdates)) {
+    return false;
+  }
+
+  return !isGatewayClearlyReachable(initialData.dashboard);
+}
+
+async function fetchHydrationData(initialData: DashboardPageData): Promise<DashboardPageDataHydrationResponse> {
+  const key = resolveHydrationKey(initialData);
+  const existingRequest = inFlightHydrationRequests.get(key);
+
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request = (async () => {
+    const response = await fetch(
+      `/api/dashboard-page-data?apiUrl=${encodeURIComponent(initialData.apiUrl)}`,
+      {
+        cache: 'no-store',
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Hydration request failed with status ${response.status}.`);
+    }
+
+    return (await response.json()) as DashboardPageDataHydrationResponse;
+  })();
+
+  inFlightHydrationRequests.set(key, request);
+  lastHydrationAttemptAt.set(key, Date.now());
+
+  try {
+    return await request;
+  } finally {
+    inFlightHydrationRequests.delete(key);
+  }
+}
+
 function shouldHydrate(initialData: DashboardPageData) {
   if (initialData.diagnostics.experienceState === 'live') {
     return false;
@@ -190,23 +259,17 @@ export default function DashboardLiveHydrator({ initialData }: Props) {
       return;
     }
 
+    if (shouldSkipDuplicateHydration(initialData)) {
+      setDebugState({ retriesAttempted: 0 });
+      return;
+    }
+
     let active = true;
     let retryTimer: number | undefined;
 
     async function attemptHydration(attempt: number): Promise<void> {
       try {
-        const response = await fetch(
-          `/api/dashboard-page-data?apiUrl=${encodeURIComponent(initialData.apiUrl)}`,
-          {
-            cache: 'no-store',
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error(`Hydration request failed with status ${response.status}.`);
-        }
-
-        const hydrationResult = (await response.json()) as DashboardPageDataHydrationResponse;
+        const hydrationResult = await fetchHydrationData(initialData);
 
         if (!active) {
           return;
@@ -225,11 +288,7 @@ export default function DashboardLiveHydrator({ initialData }: Props) {
           setGatewayReachableOverride(true);
         }
 
-        const shouldRetry =
-          attempt === 0 &&
-          !hydrationResult.meta.gatewayReachable &&
-          !hasAnyLiveSection(hydrationResult.meta) &&
-          !hasLiveSectionUpdates(routeUpdates);
+        const shouldRetry = shouldRetryHydration(initialData, attempt, hydrationResult.meta, routeUpdates);
 
         if (shouldRetry) {
           retryTimer = window.setTimeout(() => {
@@ -251,7 +310,7 @@ export default function DashboardLiveHydrator({ initialData }: Props) {
 
         debugHydrationFailure('/api/dashboard-page-data', error);
 
-        if (attempt === 0) {
+        if (attempt === 0 && !isGatewayClearlyReachable(initialData.dashboard)) {
           retryTimer = window.setTimeout(() => {
             void attemptHydration(1);
           }, HYDRATION_RETRY_DELAY_MS);
