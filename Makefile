@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch proof-no-billing-launch
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch proof-no-billing-launch
 
 up:
 	docker compose up -d
@@ -46,6 +46,9 @@ run-backend:
 
 run-web:
 	cd apps/web && npm run dev
+
+run-web-smoke:
+	npm run start --workspace apps/web -- --hostname 127.0.0.1 --port 3000
 
 seed-all:
 	cd services/api && PYTHONPATH=$(CURDIR) python scripts/seed.py
