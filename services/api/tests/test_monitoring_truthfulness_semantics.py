@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from services.api.app import monitoring_runner
-from services.api.app.activity_providers import ActivityEvent
+from services.api.app.activity_providers import ActivityEvent, ActivityProviderResult
 
 
 class _Result:
@@ -133,3 +133,81 @@ def test_monitoring_runtime_status_forces_degraded_mode_when_live_has_zero_real_
     payload = monitoring_runner.monitoring_runtime_status()
     assert payload['mode'] == 'DEGRADED'
     assert payload['provider_health'] == 'degraded'
+
+
+def test_activity_provider_requires_explicit_detection_outcome() -> None:
+    result = ActivityProviderResult(
+        mode='live',
+        status='no_evidence',
+        evidence_state='NO_EVIDENCE',
+        truthfulness_state='UNKNOWN_RISK',
+        synthetic=False,
+        provider_name='evm_activity_provider',
+        provider_kind='rpc',
+        evidence_present=False,
+        recent_real_event_count=0,
+        last_real_event_at=None,
+        events=[],
+        latest_block=None,
+        checkpoint=None,
+        checkpoint_age_seconds=None,
+        degraded_reason='no_provider_data',
+        error_code=None,
+        source_type='rpc_polling',
+        reason_code='NO_PROVIDER_EVIDENCE',
+        claim_safe=False,
+        detection_outcome='NO_EVIDENCE',
+    )
+    assert result.detection_outcome == 'NO_EVIDENCE'
+
+
+def test_process_monitoring_target_preserves_failed_state(monkeypatch):
+    class _Conn:
+        def execute(self, query, params=None):
+            normalized = ' '.join(str(query).split())
+            if 'SELECT id, name FROM workspaces' in normalized:
+                return _Result({'id': 'workspace-1', 'name': 'Workspace'})
+            return _Result(None)
+
+    target = {
+        'id': 'target-1',
+        'workspace_id': 'workspace-1',
+        'name': 'Treasury Wallet',
+        'target_type': 'wallet',
+        'chain_network': 'ethereum',
+        'monitoring_checkpoint_at': None,
+        'last_checked_at': None,
+        'monitoring_checkpoint_cursor': None,
+        'watcher_last_observed_block': None,
+        'updated_by_user_id': 'user-1',
+        'created_by_user_id': 'user-1',
+    }
+    monkeypatch.setattr(
+        monitoring_runner,
+        'fetch_target_activity_result',
+        lambda *_args, **_kwargs: ActivityProviderResult(
+            mode='live',
+            status='failed',
+            evidence_state='FAILED_EVIDENCE',
+            truthfulness_state='UNKNOWN_RISK',
+            synthetic=False,
+            provider_name='evm_activity_provider',
+            provider_kind='rpc',
+            evidence_present=False,
+            recent_real_event_count=0,
+            last_real_event_at=None,
+            events=[],
+            latest_block=None,
+            checkpoint=None,
+            checkpoint_age_seconds=None,
+            degraded_reason='provider_error',
+            error_code='TimeoutError',
+            source_type='rpc_polling',
+            reason_code='PROVIDER_FAILED',
+            claim_safe=False,
+            detection_outcome='ANALYSIS_FAILED',
+        ),
+    )
+    result = monitoring_runner.process_monitoring_target(_Conn(), target, triggered_by_user_id='user-1')
+    assert result['status'] == 'failed'
+    assert result['source_status'] == 'failed'
