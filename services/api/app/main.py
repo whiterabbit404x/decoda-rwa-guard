@@ -1697,7 +1697,7 @@ def monitoring_targets_patch(target_id: str, payload: dict[str, Any], request: R
     return with_auth_schema_json(lambda: patch_monitoring_target(target_id, payload, request))
 
 
-@app.post('/monitoring/run-once/{target_id}', summary='Trigger one monitoring run for target')
+@app.post('/monitoring/run-once/{target_id}', summary='Debug-only: trigger one manual monitoring run for target (not enterprise-proof eligible)')
 def monitoring_run_once(target_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: run_monitoring_once(target_id, request))
 

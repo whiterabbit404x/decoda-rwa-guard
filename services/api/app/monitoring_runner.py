@@ -327,15 +327,20 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
     liquidity_obs = liquidity_observations[0] if liquidity_observations and isinstance(liquidity_observations[0], dict) else {}
     venue_obs = venue_observations[0] if venue_observations and isinstance(venue_observations[0], dict) else {}
     observed_volume = float(liquidity_obs.get('rolling_volume') or 0)
-    transfer_count = int(liquidity_obs.get('transfer_count') or 0)
+    transfer_count = int(liquidity_obs.get('rolling_transfer_count') or liquidity_obs.get('transfer_count') or 0)
     unique_counterparties = int(liquidity_obs.get('unique_counterparties') or 0)
     concentration_ratio = float(liquidity_obs.get('concentration_ratio') or 0)
+    abnormal_outflow_ratio = float(liquidity_obs.get('abnormal_outflow_ratio') or 0.0)
+    burst_score = float(liquidity_obs.get('burst_score') or 0.0)
+    route_distribution = liquidity_obs.get('route_distribution') if isinstance(liquidity_obs.get('route_distribution'), dict) else {}
     observed_distribution = venue_obs.get('venue_distribution') if isinstance(venue_obs.get('venue_distribution'), dict) else {}
     venues = {_normalize_addr(v) for v in asset.get('venue_labels', []) if _normalize_addr(v)}
     unexpected_venue_share = float(observed_distribution.get('unknown') or 0.0)
     baseline_volume_threshold = float(liquidity_cfg.get('abnormal_outflow_multiplier') or 2.0)
     burst_multiplier = float(liquidity_cfg.get('burst_transfer_multiplier') or 2.0)
-    if baseline_volume <= 0 or transfer_count <= 0:
+    min_transfer_evidence = int(liquidity_cfg.get('minimum_transfer_count') or 3)
+    has_distribution = bool(route_distribution) or bool(observed_distribution)
+    if baseline_volume <= 0 or transfer_count < min_transfer_evidence or not has_distribution:
         liquidity = {
             'detector_family': 'liquidity_venue',
             'detector_status': 'insufficient_real_evidence',
@@ -348,8 +353,8 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
             'baseline_comparison': {'baseline_outflow_volume': baseline_volume, 'baseline_transfer_count': baseline_transfer_count, 'observed_volume': observed_volume, 'transfer_count': transfer_count},
         }
     else:
-        abnormal_outflow = observed_volume > baseline_volume * baseline_volume_threshold
-        burst_activity = baseline_transfer_count > 0 and transfer_count > baseline_transfer_count * burst_multiplier
+        abnormal_outflow = observed_volume > baseline_volume * baseline_volume_threshold or abnormal_outflow_ratio > float(liquidity_cfg.get('max_abnormal_outflow_ratio') or 0.7)
+        burst_activity = (baseline_transfer_count > 0 and transfer_count > baseline_transfer_count * burst_multiplier) or burst_score > float(liquidity_cfg.get('burst_score_threshold') or 2.0)
         venue_shift = venues and unexpected_venue_share > float(liquidity_cfg.get('max_unknown_venue_share') or 0.25)
         concentration_spike = baseline_max_concentration > 0 and concentration_ratio > baseline_max_concentration
         counterparty_drop = baseline_unique_counterparties > 0 and unique_counterparties < baseline_unique_counterparties * float(liquidity_cfg.get('min_counterparty_ratio') or 0.5)
@@ -383,9 +388,12 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
                 'transfer_count': transfer_count,
                 'unique_counterparties': unique_counterparties,
                 'concentration_ratio': concentration_ratio,
+                'route_distribution': route_distribution,
                 'venue_labels': sorted(venues),
                 'venue_distribution': observed_distribution,
                 'unexpected_venue_share': unexpected_venue_share,
+                'abnormal_outflow_ratio': abnormal_outflow_ratio,
+                'burst_score': burst_score,
             },
         }
     oracle_sources = asset.get('oracle_sources', []) if isinstance(asset.get('oracle_sources'), list) else []
@@ -1053,7 +1061,11 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         if due_target_ids:
             due_targets = connection.execute(
                 '''
-                SELECT *
+                SELECT id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
+                       asset_id, chain_id, target_metadata, monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts,
+                       auto_create_incidents, notification_channels, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
+                       monitoring_checkpoint_at, monitoring_checkpoint_cursor, watcher_last_observed_block, watcher_checkpoint_lag_blocks, watcher_source_status,
+                       watcher_degraded_reason, recent_evidence_state, recent_truthfulness_state, recent_real_event_count, updated_by_user_id, created_by_user_id, created_at
                 FROM targets
                 WHERE id = ANY(%s)
                 ORDER BY COALESCE(last_checked_at, '1970-01-01'::timestamptz) ASC, created_at ASC
@@ -1187,7 +1199,6 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
                 auto_create_alerts = %s,
                 auto_create_incidents = %s,
                 notification_channels = %s::jsonb,
-                monitoring_demo_scenario = NULL,
                 monitored_by_workspace_id = %s,
                 is_active = %s,
                 updated_by_user_id = %s,
@@ -1220,7 +1231,16 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
             metadata={'monitoring_enabled': monitoring_enabled},
         )
         connection.commit()
-        updated = connection.execute('SELECT * FROM targets WHERE id = %s', (target_id,)).fetchone()
+        updated = connection.execute(
+            '''
+            SELECT id, workspace_id, name, target_type, chain_network, monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold,
+                   auto_create_alerts, auto_create_incidents, notification_channels, monitored_by_workspace_id, is_active, last_checked_at, last_run_status,
+                   last_run_id, last_alert_at, updated_at
+            FROM targets
+            WHERE id = %s
+            ''',
+            (target_id,),
+        ).fetchone()
         return {'target': _json_safe_value(dict(updated))}
 
 
@@ -1228,12 +1248,23 @@ def run_monitoring_once(target_id: str, request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
-        row = connection.execute('SELECT * FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (target_id, workspace_context['workspace_id'])).fetchone()
+        row = connection.execute(
+            '''
+            SELECT id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
+                   asset_id, chain_id, target_metadata, monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts,
+                   auto_create_incidents, notification_channels, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
+                   monitoring_checkpoint_at, monitoring_checkpoint_cursor, watcher_last_observed_block, watcher_checkpoint_lag_blocks, watcher_source_status,
+                   watcher_degraded_reason, recent_evidence_state, recent_truthfulness_state, recent_real_event_count, updated_by_user_id, created_by_user_id, created_at
+            FROM targets
+            WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL
+            ''',
+            (target_id, workspace_context['workspace_id']),
+        ).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
         result = process_monitoring_target(connection, dict(row), triggered_by_user_id=str(user['id']))
         connection.commit()
-        return result
+        return {**result, 'debug_only': True, 'enterprise_proof_eligible': False, 'reason_code': 'manual_run_once_debug_path'}
 
 
 def list_incidents(request: Request, *, status_value: str | None = None, severity: str | None = None, target_id: str | None = None) -> dict[str, Any]:

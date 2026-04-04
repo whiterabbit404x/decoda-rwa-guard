@@ -99,13 +99,19 @@ def main() -> int:
     for alert in alerts:
         payload = alert.get('payload') if isinstance(alert.get('payload'), dict) else {}
         observed = payload.get('observed_evidence') if isinstance(payload.get('observed_evidence'), dict) else {}
+        detector_family = str(payload.get('detector_family') or '')
+        severity = str(alert.get('severity') or payload.get('severity') or 'low').lower()
+        incident_required = severity in {'high', 'critical'}
+        incident_linked = any(alert.get('id') in (inc.get('linked_alert_ids') or []) for inc in incidents)
         if (
             str(observed.get('evidence_origin') or '').lower() == 'real'
             and str(payload.get('detector_status') or '') == 'anomaly_detected'
-            and str(payload.get('detector_family') or '') in {'counterparty', 'flow_pattern', 'approval_pattern', 'liquidity_venue', 'oracle_integrity'}
+            and detector_family in {'counterparty', 'flow_pattern', 'approval_pattern', 'liquidity_venue', 'oracle_integrity'}
             and str(payload.get('monitoring_path') or '') == 'worker'
             and str(payload.get('source') or '').lower() == 'live'
             and not bool(payload.get('degraded'))
+            and not any(token in json.dumps(payload).lower() for token in ('demo', 'synthetic', 'fallback'))
+            and (not incident_required or incident_linked)
         ):
             strict_alerts.append(alert)
 
@@ -116,11 +122,13 @@ def main() -> int:
         if linked & high_ids:
             strict_incidents.append(incident)
 
-    insufficient_evidence = any(
-        str(((item.get('payload') or {}).get('detector_status') or '')).lower() in {'insufficient_real_evidence', 'no_real_data'}
-        for item in strict_alerts
-    )
-    worker_run_ids = [item.get('id') for item in runs if str(((item.get('response_payload') or {}).get('monitoring_path') or 'worker')).lower() == 'worker']
+    insufficient_evidence = any(str(((item.get('payload') or {}).get('detector_status') or '')).lower() in {'insufficient_real_evidence', 'no_real_data'} for item in alerts)
+    worker_runs = [
+        item for item in runs
+        if str(((item.get('response_payload') or {}).get('monitoring_path') or 'worker')).lower() == 'worker'
+        and not any(token in json.dumps(item).lower() for token in ('manual_run_once', 'run-once'))
+    ]
+    worker_run_ids = [item.get('id') for item in worker_runs]
     pass_status = bool(worker_run_ids and strict_alerts and (not high_ids or strict_incidents) and not insufficient_evidence)
     summary = {
         'generated_at': datetime.now(timezone.utc).isoformat(),
@@ -132,6 +140,7 @@ def main() -> int:
         'monitoring_target': {'name': target.get('name'), 'target_type': target.get('target_type'), 'chain_network': target.get('chain_network')},
         'material_anomaly_reason': ((strict_alerts[0].get('payload') or {}).get('anomaly_basis') if strict_alerts else None),
         'detector_families_executed': sorted({str(((item.get('payload') or {}).get('detector_family') or '')) for item in strict_alerts if item.get('payload')}),
+        'worker_run_id': worker_run_ids[0] if worker_run_ids else None,
         'alert_ids': [item.get('id') for item in strict_alerts],
         'incident_ids': [item.get('id') for item in strict_incidents],
         'worker_generated_runs': worker_run_ids[:20],

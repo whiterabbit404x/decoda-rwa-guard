@@ -67,7 +67,11 @@ def main() -> int:
     incident_rows = incidents.get('incidents', []) if isinstance(incidents.get('incidents'), list) else []
     run_rows = runs.get('analysis_runs', []) if isinstance(runs.get('analysis_runs'), list) else []
     run_rows = [item for item in run_rows if isinstance(item, dict)]
-    worker_runs = [item for item in run_rows if str(((item.get('response_payload') or {}).get('monitoring_path') or 'worker')).lower() == 'worker']
+    worker_runs = [
+        item for item in run_rows
+        if str(((item.get('response_payload') or {}).get('monitoring_path') or 'worker')).lower() == 'worker'
+        and 'manual_run_once' not in json.dumps(item).lower()
+    ]
     strict_alerts = []
     for item in alert_rows:
         payload = item.get('payload') if isinstance(item.get('payload'), dict) else {}
@@ -77,15 +81,13 @@ def main() -> int:
             and str(payload.get('monitoring_path') or '').lower() == 'worker'
             and str(payload.get('detector_status') or '') == 'anomaly_detected'
             and str(payload.get('detector_family') or '') in {'counterparty', 'flow_pattern', 'approval_pattern', 'liquidity_venue', 'oracle_integrity'}
+            and not any(token in json.dumps(payload).lower() for token in ('demo', 'synthetic', 'fallback'))
         ):
             strict_alerts.append(item)
     high_alert_ids = {item.get('id') for item in strict_alerts if str(item.get('severity') or '').lower() in {'high', 'critical'}}
     strict_incidents = [item for item in incident_rows if set(item.get('linked_alert_ids') or []) & high_alert_ids]
     evidence_rows = [((item.get('payload') or {}).get('detector_results') or []) for item in strict_alerts if isinstance(item, dict)]
-    insufficient_detected = any(
-        str((item.get('payload') or {}).get('detector_status') or '') in {'insufficient_real_evidence', 'no_real_data'}
-        for item in strict_alerts
-    )
+    insufficient_detected = any(str((item.get('payload') or {}).get('detector_status') or '') in {'insufficient_real_evidence', 'no_real_data'} for item in alert_rows)
     passed = bool(worker_runs and strict_alerts and (not high_alert_ids or strict_incidents) and not insufficient_detected)
 
     summary = {

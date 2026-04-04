@@ -333,6 +333,9 @@ def _build_liquidity_observation(target: dict[str, Any], events: list[ActivityEv
     total_volume = 0.0
     counterparties: set[str] = set()
     outbound_by_destination: dict[str, float] = {}
+    route_counts: dict[str, int] = {}
+    venue_counts: dict[str, int] = {}
+    outflow_volume = 0.0
     for event in transfer_events:
         payload = event.payload if isinstance(event.payload, dict) else {}
         try:
@@ -342,21 +345,37 @@ def _build_liquidity_observation(target: dict[str, Any], events: list[ActivityEv
         total_volume += max(amount, 0.0)
         from_addr = str(payload.get('from') or payload.get('owner') or '').lower()
         to_addr = str(payload.get('to') or '').lower()
+        route_key = f'{from_addr or "unknown"}->{to_addr or "unknown"}'
+        route_counts[route_key] = route_counts.get(route_key, 0) + 1
         if from_addr:
             counterparties.add(from_addr)
         if to_addr:
             counterparties.add(to_addr)
             outbound_by_destination[to_addr] = outbound_by_destination.get(to_addr, 0.0) + max(amount, 0.0)
+            venue_counts[to_addr] = venue_counts.get(to_addr, 0) + 1
+        if from_addr == str(target.get('wallet_address') or '').lower():
+            outflow_volume += max(amount, 0.0)
     dominant_destination_volume = max(outbound_by_destination.values()) if outbound_by_destination else 0.0
     concentration_ratio = dominant_destination_volume / total_volume if total_volume > 0 else 0.0
+    transfer_count = len(transfer_events)
+    route_distribution = {key: round(value / transfer_count, 6) for key, value in route_counts.items()}
+    venue_distribution = {key: round(value / transfer_count, 6) for key, value in venue_counts.items()}
+    abnormal_outflow_ratio = (outflow_volume / total_volume) if total_volume > 0 else 0.0
+    burst_baseline = max(1, int(os.getenv('EVM_BURST_BASELINE_TRANSFER_COUNT', '5')))
+    burst_score = round(transfer_count / burst_baseline, 6)
     return {
         'provider_name': 'evm_activity_provider',
         'window_seconds': window_seconds,
         'window_event_count': len(transfer_events),
         'rolling_volume': total_volume,
-        'transfer_count': len(transfer_events),
+        'rolling_transfer_count': transfer_count,
+        'transfer_count': transfer_count,
         'unique_counterparties': len(counterparties),
         'concentration_ratio': concentration_ratio,
+        'route_distribution': route_distribution,
+        'venue_distribution': venue_distribution,
+        'abnormal_outflow_ratio': abnormal_outflow_ratio,
+        'burst_score': burst_score,
         'observed_at': now.isoformat(),
         'asset_identifier': str(target.get('asset_identifier') or target.get('asset_symbol') or target.get('id') or ''),
         'status': 'ok',

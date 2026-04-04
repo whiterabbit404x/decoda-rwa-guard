@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import importlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -141,6 +142,12 @@ def _build_event(
 def _demo_mode_allowed() -> bool:
     env = str(os.getenv('ENV') or os.getenv('APP_ENV') or '').strip().lower()
     return str(os.getenv('ALLOW_DEMO_MODE', 'false')).strip().lower() in {'1', 'true', 'yes', 'on'} and env not in {'prod', 'production'}
+
+
+def _load_demo_activity_providers() -> Any:
+    if not _demo_mode_allowed():
+        raise MonitoringModeError('demo activity providers are disabled for this environment')
+    return importlib.import_module('services.api.app.demo_activity_providers')
 
 
 def fetch_target_activity(target: dict[str, Any], since_ts: datetime | None) -> list[ActivityEvent]:
@@ -316,7 +323,6 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             detection_outcome='NO_EVIDENCE',
         )
     if mode == 'demo' and _demo_mode_allowed():
-        from services.api.app import demo_activity_providers
-
+        demo_activity_providers = _load_demo_activity_providers()
         return demo_activity_providers.fetch_demo_target_activity_result(target, since_ts)
     raise MonitoringModeError('demo activity providers are disabled for this environment')
