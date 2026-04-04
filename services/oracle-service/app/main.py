@@ -141,7 +141,7 @@ def _normalize_observation(raw: dict[str, Any], now: datetime, asset_identifier:
         'update_interval_seconds': int(raw.get('update_interval_seconds') or 0),
         'freshness_seconds': freshness_seconds if freshness_seconds is not None else int(raw.get('freshness_seconds') or 0),
         'status': str(raw.get('status') or 'ok'),
-        'provenance': raw.get('provenance') if isinstance(raw.get('provenance'), dict) else {},
+        'provenance': {**({'provider_layer': 'oracle-service'}), **(raw.get('provenance') if isinstance(raw.get('provenance'), dict) else {})},
     }
 
 
@@ -242,7 +242,9 @@ def oracle_observations(asset_identifier: str = '') -> dict[str, object]:
     else:
         return {
             'status': 'insufficient_real_evidence',
+            'detector_status': 'insufficient_real_evidence',
             'reason': 'real_oracle_providers_not_configured',
+            'provider_configured': False,
             'asset_identifier': configured_asset or None,
             'observations': [],
             'generated_at': now.isoformat(),
@@ -252,4 +254,5 @@ def oracle_observations(asset_identifier: str = '') -> dict[str, object]:
         for item in observations:
             if not item.get('asset_identifier'):
                 item['asset_identifier'] = configured_asset
-    return {'status': 'ok' if observations else 'insufficient_real_evidence', 'asset_identifier': configured_asset or None, 'observations': observations, 'generated_at': now.isoformat()}
+    status_value = 'ok' if observations else 'insufficient_real_evidence'
+    return {'status': status_value, 'detector_status': 'real_event_no_anomaly' if status_value == 'ok' else 'insufficient_real_evidence', 'provider_configured': provider_configured, 'asset_identifier': configured_asset or None, 'observations': observations, 'generated_at': now.isoformat()}

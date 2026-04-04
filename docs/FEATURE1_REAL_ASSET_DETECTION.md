@@ -48,3 +48,33 @@ Feature 1 protects **workspace-owned monitored assets** (targets linked to asset
 - `EVM_RPC_URL`
 - Oracle integrity production inputs: `ORACLE_SOURCE_URLS` (required for production oracle proof), `ORACLE_EXPECTED_FRESHNESS_SECONDS`, `ORACLE_EXPECTED_CADENCE_SECONDS`.
 - `ORACLE_SOURCE_OBSERVATIONS_JSON` is demo/dev-only compatibility input and is ignored for production enterprise-proof paths.
+
+## Asset protection runtime contract (Feature 1)
+
+Feature 1 runtime enforcement is **asset-protection monitoring**, not generic event scoring. Each worker cycle enforces a normalized asset model with:
+
+- `asset_id`, `asset_identifier`, `symbol`, `chain_id`, `contract_address`
+- `treasury_ops_wallets`, `custody_wallets`, `expected_counterparties`
+- `expected_flow_patterns`, `expected_approval_patterns`
+- `expected_liquidity_baseline`
+- `oracle_sources`, `expected_oracle_freshness_seconds`, `expected_oracle_update_cadence_seconds`
+- `venue_labels`
+- `baseline_status`, `baseline_confidence`, `baseline_coverage`
+
+Detectors compare **live telemetry** against these baseline expectations and persist rule violations with detector-level evidence (`counterparty`, `flow_pattern`, `approval_pattern`, `liquidity_venue`, `oracle_integrity`).
+
+### Live telemetry inputs
+- EVM event telemetry (`transfer`, `approval`, contract interactions with tx/block/log metadata)
+- Rolling liquidity telemetry (`rolling_volume`, `rolling_transfer_count`, `unique_counterparties`, `concentration_ratio`, `abnormal_outflow_ratio`, `burst_score`)
+- Route + venue telemetry (`route_distribution`, `venue_distribution`, venue labels, unknown route share)
+- Oracle telemetry (`source_name`, `source_type`, `asset_identifier`, `observed_value`, `observed_at`, `freshness_seconds`, `status`, provenance)
+
+### `insufficient_real_evidence` semantics
+- This is a fail-closed detector status, not a safe status.
+- Emitted when real telemetry is missing/too weak (for example: no oracle provider sources, insufficient transfer window evidence, missing baseline).
+- Must not be translated into production-safe normal output.
+
+### Alert / incident mapping
+- Alerts and incidents are created from worker-path detector output only.
+- Evidence must explain: **which protected asset rule was violated**, observed telemetry values, and baseline comparison deltas.
+- High/critical detector outcomes on protected treasury/custody paths can trigger incident escalation.

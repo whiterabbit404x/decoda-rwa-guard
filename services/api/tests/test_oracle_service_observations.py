@@ -25,3 +25,14 @@ def test_oracle_service_returns_insufficient_real_evidence_without_observations(
     body = response.json()
     assert body['status'] == 'insufficient_real_evidence'
     assert body['observations'] == []
+
+
+def test_oracle_service_response_includes_detector_status_when_unconfigured(monkeypatch) -> None:
+    monkeypatch.setenv('ENV', 'production')
+    monkeypatch.setenv('ALLOW_DEMO_MODE', 'false')
+    monkeypatch.delenv('ORACLE_SOURCE_URLS', raising=False)
+    module = _oracle_module()
+    body = module.oracle_observations(asset_identifier='USTB')
+    assert body['status'] == 'insufficient_real_evidence'
+    assert body['detector_status'] == 'insufficient_real_evidence'
+    assert body['provider_configured'] is False

@@ -117,6 +117,8 @@ def _build_base_payload(*, target: dict[str, Any], network: str, chain_id: int, 
         'contract_address': str(target.get('contract_identifier') or '').lower() or None,
         'asset_address': None,
         'asset_symbol': None,
+        'event_type': 'transaction',
+        'observed_at': None,
     }
 
 
@@ -220,6 +222,8 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                     tx_hash=tx_hash,
                     raw_reference=f'{network}:{tx_hash}',
                 )
+                payload['observed_at'] = observed_at.isoformat()
+                payload['event_type'] = 'transaction' if target_type == 'wallet' else 'contract_interaction'
                 kind = 'transaction' if target_type == 'wallet' else 'contract'
                 events.append(ActivityEvent(event_id=_make_event_id(str(target['id']), cursor_value, kind), kind=kind, observed_at=observed_at, ingestion_source=preferred_source, cursor=cursor_value, payload=payload))
 
@@ -257,7 +261,9 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
                 'spender': spender_or_to if topic0 == APPROVAL_TOPIC else None,
                 'to': spender_or_to if topic0 == TRANSFER_TOPIC else payload.get('to'),
                 'kind_hint': 'erc20_approval' if topic0 == APPROVAL_TOPIC else 'erc20_transfer',
+                'event_type': 'approval' if topic0 == APPROVAL_TOPIC else 'transfer',
                 'amount': str(_hex_to_int(log.get('data')) or 0),
+                'observed_at': observed_at.isoformat(),
             }
         )
         kind = 'transaction'
@@ -285,10 +291,36 @@ def _build_cycle_telemetry(target: dict[str, Any], events: list[ActivityEvent]) 
     oracle_observations = _fetch_oracle_observations(target)
     liquidity_observation = _build_liquidity_observation(target, events)
     venue_observation = _build_venue_observation(target, events, liquidity_observation)
+    if liquidity_observation is None:
+        liquidity_observation = {
+            'provider_name': 'evm_activity_provider',
+            'status': 'insufficient_real_evidence',
+            'reason': 'no_transfer_events_in_window',
+            'rolling_volume': 0.0,
+            'rolling_transfer_count': 0,
+            'unique_counterparties': 0,
+            'concentration_ratio': 0.0,
+            'abnormal_outflow_ratio': 0.0,
+            'burst_score': 0.0,
+            'route_distribution': {},
+            'venue_distribution': {},
+            'asset_identifier': str(target.get('asset_identifier') or target.get('asset_symbol') or target.get('id') or ''),
+            'observed_at': datetime.now(timezone.utc).isoformat(),
+        }
+    if venue_observation is None:
+        venue_observation = {
+            'provider_name': 'evm_activity_provider',
+            'status': 'insufficient_real_evidence',
+            'reason': 'venue_distribution_unavailable',
+            'venue_distribution': {},
+            'route_distribution': liquidity_observation.get('route_distribution') if isinstance(liquidity_observation, dict) else {},
+            'venue_labels': [str(v).lower() for v in (target.get('venue_labels') or []) if str(v).strip()],
+            'observed_at': datetime.now(timezone.utc).isoformat(),
+        }
     return {
         'oracle_observations': oracle_observations,
-        'liquidity_observations': [liquidity_observation] if liquidity_observation else [],
-        'venue_observations': [venue_observation] if venue_observation else [],
+        'liquidity_observations': [liquidity_observation],
+        'venue_observations': [venue_observation],
     }
 
 
@@ -314,7 +346,28 @@ def _fetch_oracle_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
     except Exception:
         return []
     observations = body.get('observations') if isinstance(body, dict) else []
-    return observations if isinstance(observations, list) else []
+    status = str(body.get('status') or 'ok') if isinstance(body, dict) else 'ok'
+    if not isinstance(observations, list):
+        observations = []
+    normalized: list[dict[str, Any]] = []
+    for item in observations:
+        if not isinstance(item, dict):
+            continue
+        normalized.append(
+            {
+                'source_name': item.get('source_name'),
+                'source_type': item.get('source_type'),
+                'asset_identifier': item.get('asset_identifier') or asset_identifier,
+                'observed_value': item.get('observed_value'),
+                'observed_at': item.get('observed_at'),
+                'freshness_seconds': item.get('freshness_seconds'),
+                'status': item.get('status') or status,
+                'provenance': item.get('provenance') if isinstance(item.get('provenance'), dict) else {},
+                'update_interval_seconds': item.get('update_interval_seconds'),
+                'block_number': item.get('block_number'),
+            }
+        )
+    return normalized
 
 
 def _build_liquidity_observation(target: dict[str, Any], events: list[ActivityEvent]) -> dict[str, Any] | None:
@@ -365,6 +418,7 @@ def _build_liquidity_observation(target: dict[str, Any], events: list[ActivityEv
     burst_score = round(transfer_count / burst_baseline, 6)
     return {
         'provider_name': 'evm_activity_provider',
+        'telemetry_kind': 'liquidity_rollup',
         'window_seconds': window_seconds,
         'window_event_count': len(transfer_events),
         'rolling_volume': total_volume,
@@ -378,7 +432,7 @@ def _build_liquidity_observation(target: dict[str, Any], events: list[ActivityEv
         'burst_score': burst_score,
         'observed_at': now.isoformat(),
         'asset_identifier': str(target.get('asset_identifier') or target.get('asset_symbol') or target.get('id') or ''),
-        'status': 'ok',
+        'status': 'ok' if transfer_count >= int(os.getenv('EVM_MIN_TRANSFER_EVIDENCE', '3')) else 'insufficient_real_evidence',
     }
 
 
@@ -410,7 +464,9 @@ def _build_venue_observation(target: dict[str, Any], events: list[ActivityEvent]
         distribution['unknown'] = round(unknown / total, 6)
     return {
         'provider_name': 'evm_activity_provider',
+        'telemetry_kind': 'venue_rollup',
         'venue_distribution': distribution,
+        'route_distribution': (liquidity_observation or {}).get('route_distribution', {}),
         'venue_labels': configured,
         'observed_at': datetime.now(timezone.utc).isoformat(),
         'rolling_volume': float((liquidity_observation or {}).get('rolling_volume') or 0.0),

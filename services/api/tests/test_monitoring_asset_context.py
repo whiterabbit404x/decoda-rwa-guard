@@ -52,3 +52,5 @@ def test_load_target_asset_context_normalizes_required_fields() -> None:
     assert context['expected_flow_patterns'] == []
     assert context['expected_approval_patterns'] == {}
     assert context['expected_oracle_update_cadence_seconds'] == 60
+    assert context['chain_id'] is None
+    assert context['identifier'] == 'asset-1'
