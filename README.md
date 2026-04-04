@@ -219,6 +219,36 @@ Run the dedicated threat monitoring worker process in production:
 python -m services.api.app.run_monitoring_worker --worker-name railway-monitoring-worker --interval-seconds 15 --limit 50
 ```
 
+## Feature 1 production-truthful monitoring (worker-first)
+
+- Production Feature 1 now runs **worker-first detect → alert → persist**; request-time threat endpoints fail closed when live threat providers are unavailable.
+- `monitoring_demo_scenario` is deprecated in production target APIs and ignored/nullified in persisted runtime state.
+- Production claim checks now require: live/hybrid mode, real RPC reachability, configured real oracle sources (`ORACLE_SOURCE_URLS` or `ORACLE_API_URL`), recent non-synthetic evidence, and no degraded/fallback evidence.
+
+### Real evidence artifact flow
+
+Use one of:
+
+```bash
+python services/api/scripts/run_feature1_real_asset_evidence.py
+python services/api/scripts/run_live_evidence_flow.py
+```
+
+Required env vars for real runs:
+
+- `FEATURE1_API_URL` (or `API_URL`)
+- `FEATURE1_API_TOKEN` / `PILOT_AUTH_TOKEN`
+- `FEATURE1_WORKSPACE_ID` / `WORKSPACE_ID`
+- `EVM_RPC_URL`
+- `ORACLE_SOURCE_URLS` (or `ORACLE_API_URL`) for production claim pass criteria
+
+Artifacts are written to `services/api/artifacts/live_evidence/` by default:
+
+- `summary.json`
+- `alerts.json`
+- `incidents.json`
+- `evidence.json`
+
 One-shot diagnostic cycle (safe to run manually in Railway shell):
 
 ```bash

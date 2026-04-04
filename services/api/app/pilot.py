@@ -3824,16 +3824,10 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
     tags_raw = payload.get('tags')
     tags = [str(item).strip().lower() for item in tags_raw] if isinstance(tags_raw, list) else []
     tags = [item for item in tags if item]
-    raw_monitoring_scenario = payload.get('monitoring_scenario')
-    if raw_monitoring_scenario is None:
-        raw_monitoring_scenario = payload.get('monitoring_demo_scenario')
-    if raw_monitoring_scenario is None:
-        raw_monitoring_scenario = payload.get('monitoring_profile')
-    monitoring_demo_scenario = str(raw_monitoring_scenario or '').strip().lower() or None
-    if monitoring_demo_scenario is not None and monitoring_demo_scenario not in MONITORING_DEMO_SCENARIOS:
+    if any(key in payload for key in ('monitoring_scenario', 'monitoring_demo_scenario', 'monitoring_profile')):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail='monitoring_demo_scenario must be safe/low_risk/medium_risk/high_risk/flash_loan_like/admin_abuse_like/risky_approval_like.',
+            detail='monitoring_demo_scenario is deprecated and not accepted in production target APIs.',
         )
     asset_id = str(payload.get('asset_id', '')).strip() or None
     if asset_id:
@@ -3865,7 +3859,6 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
         'auto_create_alerts': bool(payload.get('auto_create_alerts', True)),
         'auto_create_incidents': bool(payload.get('auto_create_incidents', False)),
         'notification_channels': channels,
-        'monitoring_demo_scenario': monitoring_demo_scenario,
         'is_active': bool(payload.get('is_active', True)),
         'tags': tags,
         'asset_id': asset_id,
@@ -4155,7 +4148,7 @@ def list_targets(request: Request) -> dict[str, Any]:
                    asset_id,
                    chain_id, target_metadata,
                    monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents,
-                   notification_channels, monitoring_demo_scenario, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
+                   notification_channels, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
                    created_at, updated_at
             FROM targets
             WHERE workspace_id = %s AND deleted_at IS NULL
@@ -4176,7 +4169,6 @@ def list_targets(request: Request) -> dict[str, Any]:
         for row in rows:
             item = _json_safe_value(dict(row))
             item['tags'] = tags_map.get(str(row['id']), [])
-            item['monitoring_scenario'] = item.get('monitoring_demo_scenario')
             targets.append(item)
         return {'targets': targets, 'workspace': workspace_context['workspace']}
 
@@ -4208,7 +4200,7 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 chain_id, target_metadata,
                 monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents, notification_channels,
                 monitoring_demo_scenario, monitored_by_workspace_id, is_active, created_by_user_id, updated_by_user_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::uuid, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::uuid, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s::jsonb, NULL, %s, %s, %s, %s)
             ''',
             (
                 target_id,
@@ -4232,7 +4224,6 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 validated['auto_create_alerts'],
                 validated['auto_create_incidents'],
                 _json_dumps(validated['notification_channels']),
-                validated['monitoring_demo_scenario'],
                 workspace_id,
                 validated['is_active'],
                 user['id'],
@@ -4246,7 +4237,7 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             )
         log_audit(connection, action='target.create', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'target_type': validated['target_type']})
         connection.commit()
-        return {'id': target_id, **validated, 'monitoring_scenario': validated['monitoring_demo_scenario']}
+        return {'id': target_id, **validated}
 
 
 def get_target(target_id: str, request: Request) -> dict[str, Any]:
@@ -4264,7 +4255,6 @@ def get_target(target_id: str, request: Request) -> dict[str, Any]:
         tags = connection.execute('SELECT tag FROM target_tags WHERE target_id = %s ORDER BY tag ASC', (target_id,)).fetchall()
         item = _json_safe_value(dict(row))
         item['tags'] = [str(tag['tag']) for tag in tags]
-        item['monitoring_scenario'] = item.get('monitoring_demo_scenario')
         return {'target': item}
 
 
@@ -4278,12 +4268,6 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
         if found is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
         merged_payload = dict(payload)
-        if 'monitoring_scenario' in merged_payload and 'monitoring_demo_scenario' not in merged_payload:
-            merged_payload['monitoring_demo_scenario'] = merged_payload.get('monitoring_scenario')
-        if 'monitoring_profile' in merged_payload and 'monitoring_demo_scenario' not in merged_payload:
-            merged_payload['monitoring_demo_scenario'] = merged_payload.get('monitoring_profile')
-        if 'monitoring_demo_scenario' not in merged_payload:
-            merged_payload['monitoring_demo_scenario'] = dict(found).get('monitoring_demo_scenario')
         validated = _validate_target_payload(merged_payload)
         if validated['asset_id'] is not None:
             asset_row = connection.execute(
@@ -4298,14 +4282,14 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
             SET name = %s, target_type = %s, chain_network = %s, contract_identifier = %s, wallet_address = %s, asset_type = %s, owner_notes = %s, severity_preference = %s, enabled = %s, asset_id = %s::uuid,
                 chain_id = %s, target_metadata = %s::jsonb,
                 monitoring_enabled = %s, monitoring_mode = %s, monitoring_interval_seconds = %s, severity_threshold = %s, auto_create_alerts = %s, auto_create_incidents = %s,
-                notification_channels = %s::jsonb, monitoring_demo_scenario = %s, monitored_by_workspace_id = %s, is_active = %s, updated_by_user_id = %s, updated_at = NOW()
+                notification_channels = %s::jsonb, monitoring_demo_scenario = NULL, monitored_by_workspace_id = %s, is_active = %s, updated_by_user_id = %s, updated_at = NOW()
             WHERE id = %s
             ''',
             (
                 validated['name'], validated['target_type'], validated['chain_network'], validated['contract_identifier'], validated['wallet_address'], validated['asset_type'], validated['owner_notes'], validated['severity_preference'], validated['enabled'], validated['asset_id'],
                 validated['chain_id'], _json_dumps(validated['target_metadata']),
                 validated['monitoring_enabled'], validated['monitoring_mode'], validated['monitoring_interval_seconds'], validated['severity_threshold'], validated['auto_create_alerts'], validated['auto_create_incidents'],
-                _json_dumps(validated['notification_channels']), validated['monitoring_demo_scenario'], workspace_id, validated['is_active'], user['id'], target_id,
+                _json_dumps(validated['notification_channels']), workspace_id, validated['is_active'], user['id'], target_id,
             ),
         )
         connection.execute('DELETE FROM target_tags WHERE target_id = %s', (target_id,))
@@ -4313,7 +4297,7 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
             connection.execute('INSERT INTO target_tags (id, workspace_id, target_id, tag) VALUES (%s, %s, %s, %s)', (str(uuid.uuid4()), workspace_id, target_id, tag))
         log_audit(connection, action='target.update', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={})
         connection.commit()
-        return {'id': target_id, **validated, 'monitoring_scenario': validated['monitoring_demo_scenario']}
+        return {'id': target_id, **validated}
 
 
 def delete_target(target_id: str, request: Request) -> dict[str, Any]:

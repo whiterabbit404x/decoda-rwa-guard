@@ -136,12 +136,7 @@ def validate_monitoring_config_or_raise() -> None:
 def monitoring_scenario(target: dict[str, Any]) -> str | None:
     if not is_demo_mode():
         return None
-    value = str(
-        target.get('monitoring_scenario')
-        or target.get('monitoring_demo_scenario')
-        or target.get('monitoring_profile')
-        or ''
-    ).strip().lower()
+    value = str(target.get('monitoring_demo_scenario') or '').strip().lower()
     if value in MONITORING_DEMO_SCENARIOS:
         return value
     return None
