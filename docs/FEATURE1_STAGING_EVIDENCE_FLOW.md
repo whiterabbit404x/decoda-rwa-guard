@@ -28,3 +28,14 @@ python services/api/scripts/run_feature1_real_asset_evidence.py
 ## Worker-first proof requirement
 
 Use `POST /ops/monitoring/run` (or `services/api/app/run_monitoring_worker.py --once`) to generate proof artifacts. Avoid using `POST /monitoring/run-once/{id}` for enterprise evidence claims.
+
+## Artifact bundle location
+
+Evidence scripts write to `services/api/artifacts/live_evidence/latest/`:
+
+- `summary.json`
+- `runs.json`
+- `alerts.json`
+- `incidents.json`
+- `evidence.json`
+- `report.md`

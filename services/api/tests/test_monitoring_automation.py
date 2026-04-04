@@ -127,3 +127,49 @@ def test_oracle_detector_flags_stale_cadence_and_divergence() -> None:
     )
     oracle = _detector(summary, 'oracle_integrity')
     assert oracle['detector_status'] == 'anomaly_detected'
+    assert 'stale_oracle' in oracle['anomaly_reason']
+    assert 'cadence_violation' in oracle['anomaly_reason']
+    assert 'source_divergence' in oracle['anomaly_reason']
+
+
+def test_liquidity_detector_flags_outflow_burst_venue_and_concentration() -> None:
+    summary = _asset_detection_summary(
+        asset={
+            'id': 'a1',
+            'identifier': 'USTB',
+            'asset_symbol': 'USTB',
+            'expected_counterparties': [],
+            'treasury_ops_wallets': ['0x1111111111111111111111111111111111111111'],
+            'custody_wallets': [],
+            'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'approved_external'}],
+            'expected_approval_patterns': {},
+            'expected_liquidity_baseline': {
+                'baseline_outflow_volume': 100,
+                'baseline_transfer_count': 2,
+                'baseline_unique_counterparties': 4,
+                'max_concentration_ratio': 0.3,
+            },
+            'venue_labels': ['0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'],
+            'oracle_sources': [],
+        },
+        event=_event(
+            {
+                'event_type': 'transfer',
+                'from': '0x1111111111111111111111111111111111111111',
+                'to': '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                'liquidity_observations': [{
+                    'rolling_volume': 350,
+                    'transfer_count': 10,
+                    'unique_counterparties': 1,
+                    'concentration_ratio': 0.9,
+                }],
+                'venue_observations': [{'venue_distribution': {'unknown': 0.8}}],
+            }
+        ),
+    )
+    liquidity = _detector(summary, 'liquidity_venue')
+    assert liquidity['detector_status'] == 'anomaly_detected'
+    assert 'abnormal_outflow' in liquidity['anomaly_reason']
+    assert 'burst_activity' in liquidity['anomaly_reason']
+    assert 'unexpected_venue_shift' in liquidity['anomaly_reason']
+    assert 'concentration_spike' in liquidity['anomaly_reason']

@@ -180,8 +180,15 @@ def test_feature2_embedded_local_dashboard_is_live_when_service_url_is_localhost
     assert details['last_used_mode'] == 'embedded_local'
 
 
-def test_feature2_remote_dashboard_preserves_true_fallback_payload_when_upstream_marks_it_degraded(client: TestClient, api_main, monkeypatch: pytest.MonkeyPatch) -> None:
-    fallback_payload = api_main.fallback_threat_dashboard()
+def test_feature2_remote_dashboard_rejects_upstream_fallback_payload(client: TestClient, api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    fallback_payload = {
+        'source': 'fallback',
+        'degraded': True,
+        'message': 'degraded',
+        'cards': [],
+        'active_alerts': [],
+        'recent_detections': [],
+    }
 
     monkeypatch.setattr(api_main, 'THREAT_ENGINE_URL_ENV', 'https://railway.example')
     monkeypatch.setattr(api_main, 'THREAT_ENGINE_URL', 'https://railway.example')
@@ -193,7 +200,7 @@ def test_feature2_remote_dashboard_preserves_true_fallback_payload_when_upstream
     body = response.json()
     assert body['degraded'] is True
     assert body['message'] == fallback_payload['message']
-    assert all(alert['source'] == 'fallback' for alert in body['active_alerts'])
+    assert body['diagnostics']['fallback_reason'] is not None
 
 
 def test_threat_analysis_endpoints_normalize_legacy_payload_before_proxy(client: TestClient, api_main, monkeypatch: pytest.MonkeyPatch) -> None:

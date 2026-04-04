@@ -222,7 +222,7 @@ python -m services.api.app.run_monitoring_worker --worker-name railway-monitorin
 ## Feature 1 production-truthful monitoring (worker-first)
 
 - Production Feature 1 now runs **worker-first detect → alert → persist**; request-time threat endpoints fail closed when live threat providers are unavailable.
-- `monitoring_demo_scenario` is deprecated in production target APIs and ignored/nullified in persisted runtime state.
+- `monitoring_demo_scenario` is deprecated in production target APIs; writes are rejected and runtime paths never consume it as control input.
 - Production claim checks now require: live/hybrid mode, real RPC reachability, configured real oracle sources (`ORACLE_SOURCE_URLS` or `ORACLE_API_URL`), recent non-synthetic evidence, and no degraded/fallback evidence.
 
 ### Real evidence artifact flow
@@ -242,12 +242,25 @@ Required env vars for real runs:
 - `EVM_RPC_URL`
 - `ORACLE_SOURCE_URLS` (or `ORACLE_API_URL`) for production claim pass criteria
 
-Artifacts are written to `services/api/artifacts/live_evidence/` by default:
+Artifacts are written to `services/api/artifacts/live_evidence/latest/` by default and include:
 
 - `summary.json`
+- `runs.json`
 - `alerts.json`
 - `incidents.json`
 - `evidence.json`
+- `report.md`
+
+Enterprise-eligible evidence is **strict**:
+
+- worker-generated monitoring run only (`monitoring_path=worker`)
+- detector status must be `anomaly_detected` in an asset-specific detector family
+- `observed_evidence.evidence_origin=real`
+- persisted alert required
+- persisted incident required for high/critical alerts
+- any `insufficient_real_evidence` result fails claim eligibility
+
+`POST /monitoring/run-once/{id}` is debug/operator forcing only and is not accepted as enterprise proof.
 
 One-shot diagnostic cycle (safe to run manually in Railway shell):
 
