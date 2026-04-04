@@ -46,4 +46,5 @@ Feature 1 protects **workspace-owned monitored assets** (targets linked to asset
 - `FEATURE1_API_TOKEN` / `PILOT_AUTH_TOKEN`
 - `FEATURE1_WORKSPACE_ID` / `WORKSPACE_ID`
 - `EVM_RPC_URL`
-- Optional oracle integrity inputs: `ORACLE_SOURCE_URLS`, `ORACLE_SOURCE_OBSERVATIONS_JSON`, `ORACLE_EXPECTED_FRESHNESS_SECONDS`, `ORACLE_EXPECTED_CADENCE_SECONDS`.
+- Oracle integrity production inputs: `ORACLE_SOURCE_URLS` (required for production oracle proof), `ORACLE_EXPECTED_FRESHNESS_SECONDS`, `ORACLE_EXPECTED_CADENCE_SECONDS`.
+- `ORACLE_SOURCE_OBSERVATIONS_JSON` is demo/dev-only compatibility input and is ignored for production enterprise-proof paths.

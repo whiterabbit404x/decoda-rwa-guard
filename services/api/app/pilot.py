@@ -4199,8 +4199,8 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 asset_id,
                 chain_id, target_metadata,
                 monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents, notification_channels,
-                monitoring_demo_scenario, monitored_by_workspace_id, is_active, created_by_user_id, updated_by_user_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::uuid, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s::jsonb, NULL, %s, %s, %s, %s)
+                monitored_by_workspace_id, is_active, created_by_user_id, updated_by_user_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::uuid, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
             ''',
             (
                 target_id,
@@ -4247,7 +4247,14 @@ def get_target(target_id: str, request: Request) -> dict[str, Any]:
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         row = connection.execute(
-            'SELECT * FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
+            '''
+            SELECT id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
+                   asset_id, chain_id, target_metadata, monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts,
+                   auto_create_incidents, notification_channels, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
+                   created_at, updated_at
+            FROM targets
+            WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL
+            ''',
             (target_id, workspace_context['workspace_id']),
         ).fetchone()
         if row is None:
@@ -4264,7 +4271,14 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         workspace_id = workspace_context['workspace_id']
-        found = connection.execute('SELECT * FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (target_id, workspace_id)).fetchone()
+        found = connection.execute(
+            '''
+            SELECT id, workspace_id
+            FROM targets
+            WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL
+            ''',
+            (target_id, workspace_id),
+        ).fetchone()
         if found is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
         merged_payload = dict(payload)
@@ -4282,7 +4296,7 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
             SET name = %s, target_type = %s, chain_network = %s, contract_identifier = %s, wallet_address = %s, asset_type = %s, owner_notes = %s, severity_preference = %s, enabled = %s, asset_id = %s::uuid,
                 chain_id = %s, target_metadata = %s::jsonb,
                 monitoring_enabled = %s, monitoring_mode = %s, monitoring_interval_seconds = %s, severity_threshold = %s, auto_create_alerts = %s, auto_create_incidents = %s,
-                notification_channels = %s::jsonb, monitoring_demo_scenario = NULL, monitored_by_workspace_id = %s, is_active = %s, updated_by_user_id = %s, updated_at = NOW()
+                notification_channels = %s::jsonb, monitored_by_workspace_id = %s, is_active = %s, updated_by_user_id = %s, updated_at = NOW()
             WHERE id = %s
             ''',
             (
