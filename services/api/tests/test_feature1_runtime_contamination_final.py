@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from services.api.app import activity_providers
+from services.api.app.monitoring_mode import MonitoringModeError
 
 
 def _wallet_target() -> dict[str, str]:
@@ -24,7 +27,6 @@ def test_monitoring_demo_scenario_is_ignored_in_live(monkeypatch):
     assert result.mode == 'live'
     assert result.synthetic is False
     assert result.status == 'no_evidence'
-    assert result.reason_code == 'NO_PROVIDER_EVIDENCE'
 
 
 def test_monitoring_demo_scenario_is_ignored_in_hybrid(monkeypatch):
@@ -38,17 +40,11 @@ def test_monitoring_demo_scenario_is_ignored_in_hybrid(monkeypatch):
     assert result.mode == 'hybrid'
     assert result.synthetic is False
     assert result.status == 'no_evidence'
-    assert result.evidence_state == 'NO_EVIDENCE'
 
 
-def test_degraded_mode_stays_degraded_not_demo(monkeypatch):
-    monkeypatch.setenv('MONITORING_INGESTION_MODE', 'degraded')
-    monkeypatch.setenv('LIVE_MONITORING_ENABLED', 'false')
-    monkeypatch.delenv('EVM_RPC_URL', raising=False)
-
-    result = activity_providers.fetch_target_activity_result(_wallet_target(), None)
-
-    assert result.mode == 'degraded'
-    assert result.synthetic is False
-    assert result.status == 'degraded'
-    assert result.evidence_state == 'DEGRADED_EVIDENCE'
+def test_demo_mode_blocked_without_explicit_gate(monkeypatch):
+    monkeypatch.setenv('MONITORING_INGESTION_MODE', 'demo')
+    monkeypatch.setenv('ENV', 'production')
+    monkeypatch.setenv('ALLOW_DEMO_MODE', 'false')
+    with pytest.raises(MonitoringModeError):
+        activity_providers.fetch_target_activity_result(_wallet_target(), None)

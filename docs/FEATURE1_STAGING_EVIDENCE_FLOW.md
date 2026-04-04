@@ -23,3 +23,8 @@ python services/api/scripts/run_feature1_real_asset_evidence.py
 - finding/alert/incident ids
 - anomaly basis and baseline context
 - export job reference for Feature 1 evidence bundle
+
+
+## Worker-first proof requirement
+
+Use `POST /ops/monitoring/run` (or `services/api/app/run_monitoring_worker.py --once`) to generate proof artifacts. Avoid using `POST /monitoring/run-once/{id}` for enterprise evidence claims.

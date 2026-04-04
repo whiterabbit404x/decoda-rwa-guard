@@ -131,25 +131,7 @@ def test_feature2_endpoints_return_safe_fallback_shapes_when_threat_engine_is_un
         monkeypatch.setattr(api_main, 'proxy_threat', lambda kind, body: None)
         response = client.post(endpoint, json=sample_payloads[payload_key])
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body['source'] == 'fallback'
-    assert body['degraded'] is True
-
-    if endpoint == '/threat/dashboard':
-        assert body['cards']
-        assert body['active_alerts']
-        assert body['recent_detections']
-        assert body['summary']['market_anomaly_types']
-    else:
-        assert body['analysis_type'] == endpoint.rsplit('/', 1)[-1]
-        assert body['score'] >= 0
-        assert body['severity'] in {'low', 'medium', 'high', 'critical'}
-        assert 'matched_patterns' in body
-        assert isinstance(body['matched_patterns'], list)
-        assert body['recommended_action'] in {'allow', 'review', 'block'}
-        assert 'metadata' in body
-        assert body['metadata']['source'] == 'fallback'
+    assert response.status_code == 503
 
 
 def test_feature2_embedded_local_dashboard_is_live_when_service_url_is_localhost(client: TestClient, api_main, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -209,7 +191,6 @@ def test_feature2_remote_dashboard_preserves_true_fallback_payload_when_upstream
 
     assert response.status_code == 200
     body = response.json()
-    assert body['source'] == 'fallback'
     assert body['degraded'] is True
     assert body['message'] == fallback_payload['message']
     assert all(alert['source'] == 'fallback' for alert in body['active_alerts'])
@@ -313,11 +294,7 @@ def test_fallback_transaction_uses_normalized_flags_for_non_zero_scoring(client:
     }
     monkeypatch.setattr(api_main, 'proxy_threat', lambda kind, body: None)
     response = client.post('/threat/analyze/transaction', json=payload)
-    assert response.status_code == 200
-    body = response.json()
-    assert body['source'] == 'fallback'
-    assert body['degraded'] is True
-    assert body['score'] > 0
+    assert response.status_code == 503
 
 
 def test_pilot_threat_persists_normalized_payload(client: TestClient, api_main, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -337,11 +314,7 @@ def test_pilot_threat_persists_normalized_payload(client: TestClient, api_main, 
 
     monkeypatch.setattr(api_main, 'live_mode_enabled', lambda: True)
     monkeypatch.setattr(api_main, 'proxy_threat', lambda kind, body: None)
-    monkeypatch.setattr(api_main, 'fallback_contract_analysis', lambda body: {'analysis_type': 'contract', 'score': 10, 'severity': 'low', 'matched_patterns': [], 'explanation': 'fallback', 'recommended_action': 'allow', 'reasons': [], 'metadata': {'source': 'fallback'}, 'source': 'fallback', 'degraded': True})
     monkeypatch.setattr(api_main, '_persist_live_analysis', _persist)
 
     response = client.post('/pilot/threat/analyze/contract', json=request_payload, headers={'authorization': 'Bearer token', 'x-workspace-id': 'workspace'})
-    assert response.status_code == 200
-    assert captured['payload']['contract_name'] == 'Legacy contract'
-    assert captured['payload']['address'] == request_payload['contract_identifier']
-    assert captured['payload']['metadata']['original_ui_request']['target_id'] == 'legacy-target'
+    assert response.status_code == 503

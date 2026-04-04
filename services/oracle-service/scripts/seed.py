@@ -6,8 +6,8 @@ load_env_file()
 
 SERVICE_NAME = 'oracle-service'
 PORT = 8002
-DETAIL = 'Oracle data worker storing mock market snapshots in local SQLite.'
-DEFAULT_METRICS = [{'metric_key': 'oracle_feed', 'label': 'Oracle Data Feed', 'value': 'Treasury market data refreshed from deterministic local fixtures.', 'status': 'Live'}]
+DETAIL = 'Oracle integrity worker for configured live sources.'
+DEFAULT_METRICS = [{'metric_key': 'oracle_feed', 'label': 'Oracle Data Feed', 'value': 'Oracle service reports degraded when real sources are unavailable.', 'status': 'Live'}]
 
 
 def seed() -> None:
