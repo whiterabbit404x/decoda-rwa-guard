@@ -43,10 +43,13 @@ export default function MonitoringOverviewPanel({ apiUrl }: { apiUrl: string }) 
   const evidenceState = liveStatus?.recent_evidence_state ?? 'missing';
   const realEventCount = liveStatus?.recent_real_event_count ?? 0;
   const truthfulnessState = liveStatus?.recent_truthfulness_state ?? 'unknown_risk';
+  const checkpointAge = liveStatus?.checkpoint_age_seconds ?? null;
   const truthCopy = evidenceState === 'real' && realEventCount > 0 && truthfulnessState !== 'unknown_risk'
     ? 'No confirmed anomaly detected in observed evidence.'
     : evidenceState === 'degraded' || evidenceState === 'failed'
       ? 'Monitoring degraded.'
-      : 'No real evidence observed yet. Zero alerts is not proof of safety.';
+      : checkpointAge != null && checkpointAge > 900
+        ? 'Checkpoint stale. Awaiting live evidence.'
+        : 'No real evidence observed yet. Zero alerts is not proof of safety.';
   return <section className="summaryGrid"><article className="metricCard"><p className="metricLabel">Monitored targets</p><p className="metricValue">{summary.monitoredTargets}</p><p className="metricMeta">Targets with automatic monitoring enabled.</p></article><article className="metricCard"><p className="metricLabel">Active alerts</p><p className="metricValue">{summary.activeAlerts}</p><p className="metricMeta">Open alerts from automatic + manual runs.</p></article><article className="metricCard"><p className="metricLabel">Open incidents</p><p className="metricValue">{summary.openIncidents}</p><p className="metricMeta">Incidents requiring triage.</p></article><article className="metricCard"><p className="metricLabel">Latest monitoring check</p><p className="metricValue">{summary.latestCheck}</p><p className="metricMeta">Worker health: {summary.worker}</p></article><article className="metricCard"><p className="metricLabel">Monitoring truth status</p><p className="metricValue">{liveStatus ? monitoringModeLabel(liveStatus.mode) : 'UNKNOWN'}</p><p className="metricMeta">source={liveStatus?.source_type ?? 'unknown'} · block={liveStatus?.latest_processed_block ?? 'n/a'} · lag={liveStatus?.checkpoint_lag_blocks ?? 'n/a'} · age={liveStatus?.checkpoint_age_seconds ?? 'n/a'}s · degraded={liveStatus?.degraded_reason ?? 'none'} · evidence={evidenceState} · real_events={liveStatus?.recent_real_event_count ?? 0} · truth={liveStatus?.recent_truthfulness_state ?? 'unknown_risk'}</p></article><article className="metricCard"><p className="metricLabel">Production claim</p><p className="metricValue">{claim?.status ?? 'unknown'}</p><p className="metricMeta">{claim?.reason ?? truthCopy}</p></article></section>;
 }

@@ -109,6 +109,9 @@ def test_monitoring_runtime_status_marks_provider_degraded_when_no_evidence(monk
     payload = monitoring_runner.monitoring_runtime_status()
     assert payload['provider_health'] == 'degraded'
     assert payload['recent_evidence_state'] == 'no_evidence'
+    assert payload['evidence_state'] == 'no_evidence'
+    assert payload['truthfulness_state'] == 'unknown_risk'
+    assert payload['claim_safe'] is False
 
 
 def test_monitoring_runtime_status_forces_degraded_mode_when_live_has_zero_real_events(monkeypatch):

@@ -11,12 +11,16 @@ export type MonitoringRuntimeStatus = {
   claim_safe?: boolean;
   synthetic?: boolean;
   evidence_present?: boolean;
+  evidence_state?: 'real' | 'demo' | 'degraded' | 'missing' | 'failed' | 'no_evidence' | string;
+  truthfulness_state?: 'claim_safe' | 'not_claim_safe' | 'unknown_risk' | string;
   latest_processed_block?: number | null;
+  latest_block?: number | null;
   checkpoint_lag_blocks?: number | null;
   checkpoint_age_seconds?: number | null;
   provider_name?: string | null;
   provider_kind?: string | null;
   degraded_reason?: string | null;
+  error_code?: string | null;
   sales_claims_allowed?: boolean;
   claim_validator_status?: 'PASS' | 'FAIL' | string;
   recent_evidence_state?: 'real' | 'demo' | 'degraded' | 'missing' | 'failed' | 'no_evidence' | string;
