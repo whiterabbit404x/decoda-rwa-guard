@@ -201,6 +201,10 @@ def _load_target_asset_context(connection: Any, *, workspace_id: str, target: di
             context[key] = {}
     if not context.get('identifier') and context.get('asset_identifier'):
         context['identifier'] = context['asset_identifier']
+    if not context.get('asset_identifier'):
+        context['asset_identifier'] = context.get('identifier') or context.get('name')
+    if not context.get('asset_symbol'):
+        context['asset_symbol'] = context.get('symbol')
     context['chain_id'] = target.get('chain_id')
     if not context.get('token_contract_address'):
         context['token_contract_address'] = target.get('contract_identifier')
@@ -235,14 +239,18 @@ def _normalized_asset_model(asset: dict[str, Any] | None) -> dict[str, Any] | No
     expected_counterparties = {_normalize_addr(item) for item in asset.get('expected_counterparties', []) if _normalize_addr(item)}
     venue_labels = {_normalize_addr(item) for item in asset.get('venue_labels', []) if _normalize_addr(item)}
     flow_patterns = [item for item in asset.get('expected_flow_patterns', []) if isinstance(item, dict)]
-    allowed_routes = {(str(item.get('source_class') or '').strip().lower(), str(item.get('destination_class') or '').strip().lower()) for item in flow_patterns if item.get('source_class') and item.get('destination_class')}
+    allowed_routes = {
+        (str(item.get('source_class') or '').strip().lower(), str(item.get('destination_class') or '').strip().lower())
+        for item in flow_patterns
+        if item.get('source_class') and item.get('destination_class')
+    }
     approval_patterns = asset.get('expected_approval_patterns') if isinstance(asset.get('expected_approval_patterns'), dict) else {}
     liquidity_baseline = asset.get('expected_liquidity_baseline') if isinstance(asset.get('expected_liquidity_baseline'), dict) else {}
     oracle_sources = [str(item).strip().lower() for item in asset.get('oracle_sources', []) if str(item).strip()]
     return {
         'asset_id': asset.get('id'),
-        'asset_identifier': asset.get('identifier'),
-        'symbol': asset.get('asset_symbol'),
+        'asset_identifier': asset.get('asset_identifier') or asset.get('identifier') or asset.get('name'),
+        'symbol': asset.get('asset_symbol') or asset.get('symbol'),
         'chain_id': asset.get('chain_id'),
         'contract_address': _normalize_addr(asset.get('token_contract_address')),
         'treasury_ops_wallets': treasury_wallets,
@@ -256,10 +264,22 @@ def _normalized_asset_model(asset: dict[str, Any] | None) -> dict[str, Any] | No
         'expected_oracle_freshness_seconds': int(asset.get('expected_oracle_freshness_seconds') or 0),
         'expected_oracle_update_cadence_seconds': int(asset.get('expected_oracle_update_cadence_seconds') or 0),
         'venue_labels': venue_labels,
-        'baseline_status': asset.get('baseline_status') or 'missing',
+        'baseline_status': asset.get('baseline_status'),
         'baseline_confidence': asset.get('baseline_confidence'),
         'baseline_coverage': asset.get('baseline_coverage'),
     }
+
+
+def _resolve_flow_classification(source_class: str, destination_class: str) -> str:
+    if source_class == destination_class == 'treasury_ops':
+        return 'treasury_ops_internal'
+    if source_class == destination_class == 'custody':
+        return 'custody_internal'
+    if destination_class == 'approved_external_counterparty':
+        return 'approved_external_counterparty'
+    if destination_class == 'monitored_venue':
+        return 'monitored_venue'
+    return 'unknown_external'
 
 
 def _classify_endpoint(address: str, model: dict[str, Any]) -> str:
@@ -285,6 +305,11 @@ def _asset_detection_summary(*, asset: dict[str, Any] | None, event: ActivityEve
         'detector_results': results,
         'detector_status': highest.get('detector_status'),
         'anomaly_basis': summary_reason,
+        'baseline_reference': {
+            'baseline_status': (asset or {}).get('baseline_status'),
+            'baseline_confidence': (asset or {}).get('baseline_confidence'),
+            'baseline_coverage': (asset or {}).get('baseline_coverage'),
+        },
         'confidence_basis': highest.get('confidence'),
         'recommended_action': highest.get('recommended_action'),
         'severity': highest.get('severity', 'low'),
@@ -335,13 +360,7 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
     destination_class = _classify_endpoint(destination, model) if destination else 'unknown_external'
     route_tuple = (source_class, destination_class)
     route_valid = (not model['allowed_routes']) or route_tuple in model['allowed_routes']
-    flow_classification = (
-        'treasury_ops_internal' if source_class == destination_class == 'treasury_ops' else
-        'custody_internal' if source_class == destination_class == 'custody' else
-        'approved_external_counterparty' if destination_class == 'approved_external_counterparty' else
-        'monitored_venue' if destination_class == 'monitored_venue' else
-        'unknown_external'
-    )
+    flow_classification = _resolve_flow_classification(source_class, destination_class)
 
     touches_protected_path = source_class in {'treasury_ops', 'custody'} or destination_class in {'treasury_ops', 'custody'}
     unknown_counterparty = destination_class == 'unknown_external'
@@ -378,24 +397,40 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
         },
     }
 
-    flow_violation = touches_protected_path and not route_valid
+    bypassed_checkpoint = False
+    for pattern in model['expected_flow_patterns']:
+        if not isinstance(pattern, dict):
+            continue
+        if str(pattern.get('source_class') or '').strip().lower() != source_class:
+            continue
+        if str(pattern.get('destination_class') or '').strip().lower() != destination_class:
+            continue
+        required_checkpoint = str(pattern.get('required_checkpoint') or '').strip().lower()
+        if required_checkpoint and required_checkpoint not in {source_class, destination_class}:
+            bypassed_checkpoint = True
+    flow_violation = touches_protected_path and (not route_valid or bypassed_checkpoint)
     flow = {
         'detector_family': 'flow_pattern',
         'detector_status': 'anomaly_detected' if flow_violation else 'real_event_no_anomaly',
-        'anomaly_reason': 'invalid_protected_asset_routing' if flow_violation else 'route_matches_expected_flow_pattern',
+            'anomaly_reason': (
+                'asset_movement_bypassed_required_checkpoint'
+                if bypassed_checkpoint
+                else ('invalid_protected_asset_routing' if flow_violation else 'route_matches_expected_flow_pattern')
+            ),
         'severity': 'high' if flow_violation else 'low',
         'confidence': 'high',
         'recommended_action': 'block_route_and_escalate' if flow_violation else 'continue_monitoring',
         'violated_asset_rule': 'expected_flow_patterns',
         'route_classification': flow_classification,
         'venue_classification': destination_class,
-        'route_classification_details': {
-            'source_class': source_class,
-            'destination_class': destination_class,
-            'route_valid': route_valid,
-            'allowed_routes': [list(item) for item in sorted(model['allowed_routes'])],
-            'violated_pattern': list(route_tuple) if flow_violation else None,
-        },
+            'route_classification_details': {
+                'source_class': source_class,
+                'destination_class': destination_class,
+                'route_valid': route_valid,
+                'bypassed_checkpoint': bypassed_checkpoint,
+                'allowed_routes': [list(item) for item in sorted(model['allowed_routes'])],
+                'violated_pattern': list(route_tuple) if flow_violation else None,
+            },
         'baseline_comparison': {'allowed_routes': [list(item) for item in sorted(model['allowed_routes'])], 'observed_route': [source_class, destination_class]},
     }
 
@@ -411,14 +446,27 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
     churn_violation = repeated_approval_count > int(approval_cfg.get('max_churn_count') or 5)
     over_limit = max_approval > 0 and approval_amount > max_approval
     approval_event = str(payload.get('kind_hint') or '').lower() == 'erc20_approval'
-    approval_violation = approval_event and (unexpected_spender or unlimited or over_limit or churn_violation or unexpected_token)
+    has_approval_telemetry = approval_event or str(payload.get('event_type') or '').lower() == 'approval'
+    approval_violation = has_approval_telemetry and (unexpected_spender or unlimited or over_limit or churn_violation or unexpected_token)
     approval = {
         'detector_family': 'approval_pattern',
-        'detector_status': 'anomaly_detected' if approval_violation else 'real_event_no_anomaly',
+        'detector_status': (
+            'insufficient_real_evidence'
+            if not has_approval_telemetry
+            else ('anomaly_detected' if approval_violation else 'real_event_no_anomaly')
+        ),
         'anomaly_reason': 'unexpected_unlimited_approval_on_protected_asset' if (approval_violation and unlimited) else ('approval_pattern_violation' if approval_violation else 'approval_within_expected_pattern'),
-        'severity': 'high' if (approval_violation and unlimited) else ('medium' if approval_violation else 'low'),
-        'confidence': 'high' if approval_violation else 'medium',
-        'recommended_action': 'revoke_approval_and_rotate_keys' if approval_violation else 'continue_monitoring',
+        'severity': (
+            'medium'
+            if not has_approval_telemetry
+            else ('high' if (approval_violation and unlimited) else ('medium' if approval_violation else 'low'))
+        ),
+        'confidence': 'low' if not has_approval_telemetry else ('high' if approval_violation else 'medium'),
+        'recommended_action': (
+            'collect_more_real_approval_telemetry'
+            if not has_approval_telemetry
+            else ('revoke_approval_and_rotate_keys' if approval_violation else 'continue_monitoring')
+        ),
         'violated_asset_rule': 'expected_approval_patterns',
         'baseline_comparison': {
             'allowed_spenders': sorted(allowed_spenders),
@@ -453,7 +501,9 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
     min_transfer_evidence = int(liquidity_cfg.get('minimum_transfer_count') or 3)
     has_distribution = bool(route_distribution) or bool(observed_distribution)
     telemetry_status = str(liquidity_obs.get('status') or 'unknown').lower()
-    if baseline_volume <= 0 or transfer_count < min_transfer_evidence or not has_distribution or telemetry_status in {'insufficient_real_evidence', 'unavailable'}:
+    baseline_state = str(model.get('baseline_status') or '').lower()
+    baseline_ready = baseline_state in {'ready', 'observed', 'active'} or (not baseline_state and baseline_volume > 0)
+    if (not baseline_ready) or baseline_volume <= 0 or transfer_count < min_transfer_evidence or not has_distribution or telemetry_status in {'insufficient_real_evidence', 'unavailable', 'no_real_telemetry'}:
         liquidity = {
             'detector_family': 'liquidity_venue',
             'detector_status': 'insufficient_real_evidence',
@@ -466,7 +516,13 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
             'venue_classification': destination_class,
             'route_classification': flow_classification,
             'route_classification_details': {'source_class': source_class, 'destination_class': destination_class, 'route_valid': route_valid},
-            'baseline_comparison': {'baseline_outflow_volume': baseline_volume, 'baseline_transfer_count': baseline_transfer_count, 'observed_volume': observed_volume, 'transfer_count': transfer_count},
+            'baseline_comparison': {
+                'baseline_status': model.get('baseline_status'),
+                'baseline_outflow_volume': baseline_volume,
+                'baseline_transfer_count': baseline_transfer_count,
+                'observed_volume': observed_volume,
+                'transfer_count': transfer_count,
+            },
         }
     else:
         abnormal_outflow = observed_volume > baseline_volume * float(liquidity_cfg.get('abnormal_outflow_multiplier') or 2.0) or abnormal_outflow_ratio > float(liquidity_cfg.get('max_abnormal_outflow_ratio') or 0.7)
@@ -521,7 +577,12 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
     now = utc_now()
     observed_sources = {str(item.get('source_name') or item.get('source') or '').strip().lower() for item in oracle_observations if isinstance(item, dict)}
     required_sources = set(model['oracle_sources'])
-    if not oracle_observations or len(observed_sources) < max(1, len(required_sources)):
+    insufficient_oracle_telemetry = (
+        not oracle_observations
+        or any(str(item.get('status') or '').lower() in {'insufficient_real_evidence', 'unavailable', 'no_real_telemetry'} for item in oracle_observations if isinstance(item, dict))
+        or len(observed_sources) < max(1, len(required_sources))
+    )
+    if insufficient_oracle_telemetry:
         oracle = {
             'detector_family': 'oracle_integrity',
             'detector_status': 'insufficient_real_evidence',

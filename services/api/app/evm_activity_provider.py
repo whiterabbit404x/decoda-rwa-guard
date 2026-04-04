@@ -326,8 +326,6 @@ def _build_cycle_telemetry(target: dict[str, Any], events: list[ActivityEvent]) 
 
 def _fetch_oracle_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
     oracle_url = (os.getenv('ORACLE_API_URL') or 'http://localhost:8002').rstrip('/')
-    if not oracle_url:
-        return []
     asset_identifier = str(
         target.get('asset_identifier')
         or target.get('asset_symbol')
@@ -335,6 +333,19 @@ def _fetch_oracle_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
         or target.get('wallet_address')
         or ''
     ).strip()
+    if not oracle_url:
+        return [{
+            'source_name': 'oracle-service',
+            'source_type': 'oracle_api',
+            'asset_identifier': asset_identifier or None,
+            'observed_value': None,
+            'observed_at': None,
+            'freshness_seconds': None,
+            'status': 'no_real_telemetry',
+            'provenance': {'provider_layer': 'evm_activity_provider', 'reason': 'ORACLE_API_URL missing'},
+            'update_interval_seconds': None,
+            'block_number': None,
+        }]
     params = parse.urlencode({'asset_identifier': asset_identifier}) if asset_identifier else ''
     url = f'{oracle_url}/oracle/observations'
     if params:
@@ -344,7 +355,18 @@ def _fetch_oracle_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
         with request.urlopen(req, timeout=10) as resp:  # nosec B310
             body = json.loads(resp.read().decode('utf-8'))
     except Exception:
-        return []
+        return [{
+            'source_name': 'oracle-service',
+            'source_type': 'oracle_api',
+            'asset_identifier': asset_identifier or None,
+            'observed_value': None,
+            'observed_at': None,
+            'freshness_seconds': None,
+            'status': 'insufficient_real_evidence',
+            'provenance': {'provider_layer': 'evm_activity_provider', 'reason': 'oracle_service_unreachable'},
+            'update_interval_seconds': None,
+            'block_number': None,
+        }]
     observations = body.get('observations') if isinstance(body, dict) else []
     status = str(body.get('status') or 'ok') if isinstance(body, dict) else 'ok'
     if not isinstance(observations, list):
@@ -367,7 +389,20 @@ def _fetch_oracle_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
                 'block_number': item.get('block_number'),
             }
         )
-    return normalized
+    if normalized:
+        return normalized
+    return [{
+        'source_name': 'oracle-service',
+        'source_type': 'oracle_api',
+        'asset_identifier': asset_identifier or None,
+        'observed_value': None,
+        'observed_at': None,
+        'freshness_seconds': None,
+        'status': str(body.get('status') or 'insufficient_real_evidence') if isinstance(body, dict) else 'insufficient_real_evidence',
+        'provenance': {'provider_layer': 'evm_activity_provider', 'reason': str(body.get('reason') or 'no_observations') if isinstance(body, dict) else 'no_observations'},
+        'update_interval_seconds': None,
+        'block_number': None,
+    }]
 
 
 def _build_liquidity_observation(target: dict[str, Any], events: list[ActivityEvent]) -> dict[str, Any] | None:
@@ -398,7 +433,9 @@ def _build_liquidity_observation(target: dict[str, Any], events: list[ActivityEv
         total_volume += max(amount, 0.0)
         from_addr = str(payload.get('from') or payload.get('owner') or '').lower()
         to_addr = str(payload.get('to') or '').lower()
-        route_key = f'{from_addr or "unknown"}->{to_addr or "unknown"}'
+        source_class = 'protected_wallet' if from_addr == str(target.get('wallet_address') or '').lower() else 'external'
+        destination_class = 'monitored_venue' if to_addr in {str(v).lower() for v in (target.get('venue_labels') or []) if str(v).strip()} else ('protected_wallet' if to_addr == str(target.get('wallet_address') or '').lower() else 'unknown_path')
+        route_key = f'{source_class}->{destination_class}'
         route_counts[route_key] = route_counts.get(route_key, 0) + 1
         if from_addr:
             counterparties.add(from_addr)
@@ -433,6 +470,7 @@ def _build_liquidity_observation(target: dict[str, Any], events: list[ActivityEv
         'observed_at': now.isoformat(),
         'asset_identifier': str(target.get('asset_identifier') or target.get('asset_symbol') or target.get('id') or ''),
         'status': 'ok' if transfer_count >= int(os.getenv('EVM_MIN_TRANSFER_EVIDENCE', '3')) else 'insufficient_real_evidence',
+        'telemetry_state': 'real_telemetry_present' if transfer_count >= int(os.getenv('EVM_MIN_TRANSFER_EVIDENCE', '3')) else 'insufficient_real_evidence',
     }
 
 
@@ -467,8 +505,14 @@ def _build_venue_observation(target: dict[str, Any], events: list[ActivityEvent]
         'telemetry_kind': 'venue_rollup',
         'venue_distribution': distribution,
         'route_distribution': (liquidity_observation or {}).get('route_distribution', {}),
+        'route_classification': {
+            'known_venue_share': round(1 - distribution.get('unknown', 0.0), 6),
+            'unknown_path_share': distribution.get('unknown', 0.0),
+            'expected_flow_patterns': target.get('expected_flow_patterns') if isinstance(target.get('expected_flow_patterns'), list) else [],
+        },
         'venue_labels': configured,
         'observed_at': datetime.now(timezone.utc).isoformat(),
         'rolling_volume': float((liquidity_observation or {}).get('rolling_volume') or 0.0),
         'status': 'ok',
+        'telemetry_state': 'real_telemetry_present',
     }
