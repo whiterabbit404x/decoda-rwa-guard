@@ -33,7 +33,8 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
   }
 
   const modeLabel = monitoringModeLabel(status.mode);
-  const degraded = status.mode === 'DEGRADED';
+  const noEvidence = (status.recent_real_event_count ?? 0) <= 0 || status.recent_truthfulness_state === 'unknown_risk';
+  const degraded = status.mode === 'DEGRADED' || noEvidence;
   const tone = degraded ? 'statusBannerDegraded' : status.mode === 'DEMO' ? 'statusBannerDemo' : 'statusBannerLive';
   const evidenceCopy = status.recent_evidence_state === 'real'
     ? 'No confirmed anomaly detected in observed evidence.'

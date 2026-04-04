@@ -109,3 +109,27 @@ def test_monitoring_runtime_status_marks_provider_degraded_when_no_evidence(monk
     payload = monitoring_runner.monitoring_runtime_status()
     assert payload['provider_health'] == 'degraded'
     assert payload['recent_evidence_state'] == 'no_evidence'
+
+
+def test_monitoring_runtime_status_forces_degraded_mode_when_live_has_zero_real_events(monkeypatch):
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'operational_mode': 'LIVE', 'mode': 'live', 'source_type': 'polling', 'degraded': False},
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'production_claim_validator',
+        lambda: {
+            'status': 'FAIL',
+            'sales_claims_allowed': False,
+            'checks': {'evm_rpc_reachable': True},
+            'recent_evidence_state': 'real',
+            'recent_truthfulness_state': 'unknown_risk',
+            'recent_real_event_count': 0,
+            'last_real_event_at': None,
+        },
+    )
+    payload = monitoring_runner.monitoring_runtime_status()
+    assert payload['mode'] == 'DEGRADED'
+    assert payload['provider_health'] == 'degraded'
