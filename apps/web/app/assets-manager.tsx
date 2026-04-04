@@ -8,7 +8,11 @@ import { parseTagInput } from './policy-builders';
 type Props = { apiUrl: string };
 type Asset = any;
 
-const EMPTY_ASSET = { name: '', description: '', asset_type: 'contract', chain_network: 'ethereum-mainnet', identifier: '', asset_class: '', risk_tier: 'medium', owner_team: '', notes: '', enabled: true, tags: [] as string[] };
+const EMPTY_ASSET = {
+  name: '', description: '', asset_type: 'contract', chain_network: 'ethereum-mainnet', identifier: '', asset_class: 'treasury_token', risk_tier: 'medium', owner_team: '', notes: '', enabled: true, tags: [] as string[],
+  issuer_name: '', asset_symbol: '', asset_identifier: '', token_contract_address: '', custody_wallets: [] as string[], treasury_ops_wallets: [] as string[], oracle_sources: [] as string[], venue_labels: [] as string[], expected_counterparties: [] as string[],
+  baseline_status: 'missing', baseline_source: 'manual', baseline_confidence: 0, baseline_coverage: 0, expected_oracle_freshness_seconds: 0
+};
 
 export default function AssetsManager({ apiUrl }: Props) {
   const { authHeaders } = usePilotAuth();
@@ -85,7 +89,25 @@ export default function AssetsManager({ apiUrl }: Props) {
       </select>
       <input placeholder="Chain/network" value={form.chain_network} onChange={(event) => setForm({ ...form, chain_network: event.target.value })} />
       <input placeholder="Contract, wallet, or identifier" value={form.identifier} onChange={(event) => setForm({ ...form, identifier: event.target.value })} />
-      <input placeholder="Asset class" value={form.asset_class} onChange={(event) => setForm({ ...form, asset_class: event.target.value })} />
+      <select value={form.asset_class} onChange={(event) => setForm({ ...form, asset_class: event.target.value })}>
+        <option value="treasury_token">treasury_token</option><option value="bond_token">bond_token</option><option value="money_market_token">money_market_token</option><option value="rwa_other">rwa_other</option>
+      </select>
+      <input placeholder="Issuer name" value={form.issuer_name} onChange={(event) => setForm({ ...form, issuer_name: event.target.value })} />
+      <input placeholder="Asset symbol" value={form.asset_symbol} onChange={(event) => setForm({ ...form, asset_symbol: event.target.value })} />
+      <input placeholder="Asset identifier (ISIN/CUSIP/internal)" value={form.asset_identifier} onChange={(event) => setForm({ ...form, asset_identifier: event.target.value })} />
+      <input placeholder="Token contract (0x...)" value={form.token_contract_address} onChange={(event) => setForm({ ...form, token_contract_address: event.target.value })} />
+      <input placeholder="Custody wallets" value={(form.custody_wallets || []).join(', ')} onChange={(event) => setForm({ ...form, custody_wallets: parseTagInput(event.target.value) })} />
+      <input placeholder="Treasury ops wallets" value={(form.treasury_ops_wallets || []).join(', ')} onChange={(event) => setForm({ ...form, treasury_ops_wallets: parseTagInput(event.target.value) })} />
+      <input placeholder="Oracle sources" value={(form.oracle_sources || []).join(', ')} onChange={(event) => setForm({ ...form, oracle_sources: parseTagInput(event.target.value) })} />
+      <input placeholder="Expected counterparties" value={(form.expected_counterparties || []).join(', ')} onChange={(event) => setForm({ ...form, expected_counterparties: parseTagInput(event.target.value) })} />
+      <div className="buttonRow">
+        <select value={form.baseline_status} onChange={(event) => setForm({ ...form, baseline_status: event.target.value })}>
+          <option value="missing">Baseline missing</option><option value="configured">Baseline configured</option><option value="observed">Baseline observed</option><option value="stale">Baseline stale</option>
+        </select>
+        <select value={form.baseline_source} onChange={(event) => setForm({ ...form, baseline_source: event.target.value })}>
+          <option value="manual">manual</option><option value="observed">observed</option><option value="imported">imported</option>
+        </select>
+      </div>
       <input placeholder="Owner team" value={form.owner_team} onChange={(event) => setForm({ ...form, owner_team: event.target.value })} />
       <input placeholder="Tags (comma-separated)" value={form.tags.join(', ')} onChange={(event) => setForm({ ...form, tags: parseTagInput(event.target.value) })} />
       <textarea placeholder="Notes" rows={3} value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} />

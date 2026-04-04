@@ -30,6 +30,7 @@ const EMPTY_TARGET = {
 export default function TargetsManager({ apiUrl }: Props) {
   const { authHeaders } = usePilotAuth();
   const [targets, setTargets] = useState<Target[]>([]);
+  const [assets, setAssets] = useState<any[]>([]);
   const [form, setForm] = useState<any>(EMPTY_TARGET);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -37,10 +38,18 @@ export default function TargetsManager({ apiUrl }: Props) {
   const [editing, setEditing] = useState<Target | null>(null);
 
   async function load() {
-    const response = await fetch(`${apiUrl}/targets`, { headers: { ...authHeaders() } });
-    if (!response.ok) return;
-    const payload = await response.json();
-    setTargets(payload.targets ?? []);
+    const [targetsResponse, assetsResponse] = await Promise.all([
+      fetch(`${apiUrl}/targets`, { headers: { ...authHeaders() } }),
+      fetch(`${apiUrl}/assets`, { headers: { ...authHeaders() } }),
+    ]);
+    if (targetsResponse.ok) {
+      const payload = await targetsResponse.json();
+      setTargets(payload.targets ?? []);
+    }
+    if (assetsResponse.ok) {
+      const payload = await assetsResponse.json();
+      setAssets(payload.assets ?? []);
+    }
   }
 
   async function createOrUpdate() {
@@ -124,6 +133,10 @@ export default function TargetsManager({ apiUrl }: Props) {
       <input placeholder="Contract identifier" value={form.contract_identifier} onChange={(event) => setForm({ ...form, contract_identifier: event.target.value })} />
       <input placeholder="Wallet (0x...)" value={form.wallet_address} onChange={(event) => setForm({ ...form, wallet_address: event.target.value })} />
       <input placeholder="Asset class/type" value={form.asset_type} onChange={(event) => setForm({ ...form, asset_type: event.target.value })} />
+      <select value={form.asset_id || ''} onChange={(event) => setForm({ ...form, asset_id: event.target.value || null })}>
+        <option value="">No asset profile linked</option>
+        {assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name} ({asset.asset_class || 'n/a'})</option>)}
+      </select>
       <select value={form.severity_preference} onChange={(event) => setForm({ ...form, severity_preference: event.target.value })}>
         <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option>
       </select>
@@ -154,7 +167,7 @@ export default function TargetsManager({ apiUrl }: Props) {
       <h3>Target registry</h3>
       {filtered.length === 0 ? <p className="muted">Create your first target to run live analysis and start alerting.</p> : filtered.map((target) => (
         <div key={target.id} className="listHeader" style={{ marginBottom: 8 }}>
-          <span>{target.name} · {target.target_type} · {target.chain_network} · {target.enabled ? 'enabled' : 'disabled'} · monitoring: {target.monitoring_enabled ? 'active' : 'paused'} · interval: {target.monitoring_interval_seconds ?? 300}s · last check: {target.last_checked_at ? new Date(target.last_checked_at).toLocaleString() : 'never'}</span>
+          <span>{target.name} · {target.target_type} · {target.chain_network} · asset profile: {target.asset_id || 'none'} · {target.enabled ? 'enabled' : 'disabled'} · monitoring: {target.monitoring_enabled ? 'active' : 'paused'} · interval: {target.monitoring_interval_seconds ?? 300}s · last check: {target.last_checked_at ? new Date(target.last_checked_at).toLocaleString() : 'never'}</span>
           <div className="buttonRow"><button type="button" onClick={() => { setEditing(target); setForm({ ...target, tags: target.tags ?? [] }); }}>Edit</button><button type="button" onClick={() => duplicate(target)}>Duplicate</button><button type="button" onClick={() => void toggleEnabled(target)}>{target.enabled ? 'Disable' : 'Enable'}</button><button type="button" onClick={() => void toggleMonitoring(target)}>{target.monitoring_enabled ? 'Pause monitoring' : 'Enable monitoring'}</button><button type="button" onClick={() => void remove(target)}>Delete</button></div>
         </div>
       ))}

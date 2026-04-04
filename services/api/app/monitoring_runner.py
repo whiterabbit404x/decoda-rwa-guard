@@ -208,6 +208,42 @@ def _normalize_event(target: dict[str, Any], event: ActivityEvent, monitoring_ru
     return kind, normalized
 
 
+def _load_target_asset_context(connection: Any, *, workspace_id: str, target: dict[str, Any]) -> dict[str, Any] | None:
+    asset_id = target.get('asset_id')
+    if not asset_id:
+        return None
+    row = connection.execute(
+        '''
+        SELECT id, name, asset_class, asset_symbol, identifier, token_contract_address, expected_counterparties, expected_approval_patterns,
+               expected_liquidity_baseline, expected_oracle_freshness_seconds, baseline_status, baseline_source, baseline_updated_at, baseline_confidence, baseline_coverage
+        FROM assets
+        WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL
+        ''',
+        (asset_id, workspace_id),
+    ).fetchone()
+    return _json_safe_value(dict(row)) if row is not None else None
+
+
+def _asset_detection_summary(*, asset: dict[str, Any] | None, event: ActivityEvent) -> dict[str, Any]:
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    tx_hash = str(payload.get('tx_hash') or '')
+    block_number = payload.get('block_number')
+    log_index = payload.get('log_index')
+    if not asset:
+        return {'detection_family': 'target_without_asset_profile', 'anomaly_basis': 'No asset profile attached to target; asset-specific anomaly confidence limited.', 'confidence_basis': 'missing_asset_profile', 'recommended_action': 'attach_asset_profile'}
+    baseline_status = str(asset.get('baseline_status') or 'missing').lower()
+    if baseline_status in {'missing', 'stale'}:
+        return {'detection_family': 'baseline_gap', 'anomaly_basis': f"Asset baseline is {baseline_status}; anomaly classification is constrained until baseline refresh.", 'confidence_basis': f'baseline_{baseline_status}', 'recommended_action': 'refresh_asset_baseline', 'baseline_reference': {'status': baseline_status, 'source': asset.get('baseline_source'), 'updated_at': asset.get('baseline_updated_at')}}
+    event_type = str(payload.get('event_type') or payload.get('kind') or event.kind or '').lower()
+    if 'approval' in event_type:
+        return {'detection_family': 'treasury_approval_abuse', 'anomaly_basis': 'Approval activity deviates from expected approval recipients/patterns for this asset.', 'confidence_basis': 'approval_pattern_deviation', 'recommended_action': 'revoke_suspicious_approval'}
+    if 'oracle' in event_type:
+        return {'detection_family': 'oracle_integrity_anomaly', 'anomaly_basis': 'Oracle freshness/divergence signal violates configured asset oracle expectations.', 'confidence_basis': 'oracle_freshness_divergence', 'recommended_action': 'validate_oracle_sources'}
+    if 'bridge' in event_type or 'settlement' in event_type:
+        return {'detection_family': 'settlement_bridge_anomaly', 'anomaly_basis': 'Settlement/bridge activity is outside expected venue timing or destination profile for this asset.', 'confidence_basis': 'settlement_reconciliation_mismatch', 'recommended_action': 'pause_settlement_route'}
+    return {'detection_family': 'treasury_ops_wallet_anomaly', 'anomaly_basis': 'Observed treasury flow cadence/size differs from configured baseline for this asset.', 'confidence_basis': 'flow_baseline_deviation', 'recommended_action': 'review_treasury_ops', 'evidence_reference': {'tx_hash': tx_hash, 'block_number': block_number, 'log_index': log_index}}
+
+
 def _signature(target_id: str, payload: dict[str, Any], response: dict[str, Any]) -> str:
     marker = {
         'target_id': target_id,
@@ -353,6 +389,7 @@ def _process_single_event(
     event: ActivityEvent,
     configured_scenario: str | None,
 ) -> dict[str, Any]:
+    asset = _load_target_asset_context(connection, workspace_id=str(target['workspace_id']), target=target)
     kind, normalized = _normalize_event(target, event, monitoring_run_id, workspace)
     ingestion_runtime = monitoring_ingestion_runtime()
     if ingestion_runtime.get('mode') in {'live', 'hybrid'} and str(event.ingestion_source or '').lower() == 'demo':
@@ -403,6 +440,23 @@ def _process_single_event(
         }
     )
     response['metadata'] = response_metadata
+    asset_detection = _asset_detection_summary(asset=asset, event=event)
+    response['asset_profile_id'] = (asset or {}).get('id')
+    response['asset_label'] = (asset or {}).get('name') or target.get('name')
+    response['detection_family'] = asset_detection.get('detection_family')
+    response['anomaly_basis'] = asset_detection.get('anomaly_basis')
+    response['baseline_reference'] = asset_detection.get('baseline_reference') or {
+        'status': (asset or {}).get('baseline_status', 'missing'),
+        'source': (asset or {}).get('baseline_source'),
+        'updated_at': (asset or {}).get('baseline_updated_at'),
+        'confidence': (asset or {}).get('baseline_confidence'),
+        'coverage': (asset or {}).get('baseline_coverage'),
+    }
+    response['confidence_basis'] = asset_detection.get('confidence_basis')
+    response['recommended_action'] = asset_detection.get('recommended_action') or response.get('recommended_action')
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    response['observed_evidence'] = {'event_id': event.event_id, 'tx_hash': payload.get('tx_hash'), 'block_number': payload.get('block_number'), 'log_index': payload.get('log_index'), 'observed_at': event.observed_at.isoformat(), 'ingestion_source': event.ingestion_source}
+    response['evidence_window'] = {'start': event.observed_at.isoformat(), 'end': event.observed_at.isoformat()}
     analysis_run_id = persist_analysis_run(
         connection,
         workspace_id=str(target['workspace_id']),
