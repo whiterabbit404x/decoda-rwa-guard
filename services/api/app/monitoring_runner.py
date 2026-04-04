@@ -319,10 +319,23 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
     }
     liquidity_cfg = asset.get('expected_liquidity_baseline') if isinstance(asset.get('expected_liquidity_baseline'), dict) else {}
     baseline_volume = float(liquidity_cfg.get('baseline_outflow_volume') or 0)
-    observed_volume = float(payload.get('current_volume') or payload.get('amount') or 0)
+    baseline_transfer_count = int(liquidity_cfg.get('baseline_transfer_count') or 0)
+    baseline_unique_counterparties = int(liquidity_cfg.get('baseline_unique_counterparties') or 0)
+    baseline_max_concentration = float(liquidity_cfg.get('max_concentration_ratio') or 0)
+    liquidity_observations = payload.get('liquidity_observations') if isinstance(payload.get('liquidity_observations'), list) else []
+    venue_observations = payload.get('venue_observations') if isinstance(payload.get('venue_observations'), list) else []
+    liquidity_obs = liquidity_observations[0] if liquidity_observations and isinstance(liquidity_observations[0], dict) else {}
+    venue_obs = venue_observations[0] if venue_observations and isinstance(venue_observations[0], dict) else {}
+    observed_volume = float(liquidity_obs.get('rolling_volume') or 0)
+    transfer_count = int(liquidity_obs.get('transfer_count') or 0)
+    unique_counterparties = int(liquidity_obs.get('unique_counterparties') or 0)
+    concentration_ratio = float(liquidity_obs.get('concentration_ratio') or 0)
+    observed_distribution = venue_obs.get('venue_distribution') if isinstance(venue_obs.get('venue_distribution'), dict) else {}
     venues = {_normalize_addr(v) for v in asset.get('venue_labels', []) if _normalize_addr(v)}
-    observed_venue = _normalize_addr(payload.get('venue'))
-    if baseline_volume <= 0 or observed_volume <= 0:
+    unexpected_venue_share = float(observed_distribution.get('unknown') or 0.0)
+    baseline_volume_threshold = float(liquidity_cfg.get('abnormal_outflow_multiplier') or 2.0)
+    burst_multiplier = float(liquidity_cfg.get('burst_transfer_multiplier') or 2.0)
+    if baseline_volume <= 0 or transfer_count <= 0:
         liquidity = {
             'detector_family': 'liquidity_venue',
             'detector_status': 'insufficient_real_evidence',
@@ -330,18 +343,50 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
             'severity': 'medium',
             'confidence': 'low',
             'recommended_action': 'collect_more_real_liquidity_evidence',
-            'baseline_comparison': {'baseline_outflow_volume': baseline_volume, 'observed_volume': observed_volume},
+            'liquidity_observation_details': liquidity_obs,
+            'route_classification_details': {'source_class': source_class, 'destination_class': destination_class},
+            'baseline_comparison': {'baseline_outflow_volume': baseline_volume, 'baseline_transfer_count': baseline_transfer_count, 'observed_volume': observed_volume, 'transfer_count': transfer_count},
         }
     else:
-        liquidity_anomaly = observed_volume > baseline_volume * 2 or (venues and observed_venue and observed_venue not in venues)
+        abnormal_outflow = observed_volume > baseline_volume * baseline_volume_threshold
+        burst_activity = baseline_transfer_count > 0 and transfer_count > baseline_transfer_count * burst_multiplier
+        venue_shift = venues and unexpected_venue_share > float(liquidity_cfg.get('max_unknown_venue_share') or 0.25)
+        concentration_spike = baseline_max_concentration > 0 and concentration_ratio > baseline_max_concentration
+        counterparty_drop = baseline_unique_counterparties > 0 and unique_counterparties < baseline_unique_counterparties * float(liquidity_cfg.get('min_counterparty_ratio') or 0.5)
+        route_inconsistent = not route_valid and source_class in {'treasury_ops', 'custody'}
+        liquidity_anomaly = any((abnormal_outflow, burst_activity, venue_shift, concentration_spike, counterparty_drop, route_inconsistent))
+        reasons = [
+            label for flag, label in (
+                (abnormal_outflow, 'abnormal_outflow'),
+                (burst_activity, 'burst_activity'),
+                (venue_shift, 'unexpected_venue_shift'),
+                (concentration_spike, 'concentration_spike'),
+                (counterparty_drop, 'counterparty_collapse'),
+                (route_inconsistent, 'route_inconsistent_with_baseline'),
+            ) if flag
+        ]
         liquidity = {
             'detector_family': 'liquidity_venue',
             'detector_status': 'anomaly_detected' if liquidity_anomaly else 'real_event_no_anomaly',
-            'anomaly_reason': 'abnormal_outflow_or_venue_shift' if liquidity_anomaly else 'liquidity_within_baseline',
+            'anomaly_reason': '+'.join(reasons) if reasons else 'liquidity_within_baseline',
             'severity': 'high' if observed_volume > baseline_volume * 3 else ('medium' if liquidity_anomaly else 'low'),
-            'confidence': 'medium',
+            'confidence': 'high' if len(reasons) >= 2 else 'medium',
             'recommended_action': 'throttle_venue_and_investigate' if liquidity_anomaly else 'continue_monitoring',
-            'baseline_comparison': {'baseline_outflow_volume': baseline_volume, 'observed_volume': observed_volume, 'venue_labels': sorted(venues), 'observed_venue': observed_venue},
+            'liquidity_observation_details': liquidity_obs,
+            'route_classification_details': {'source_class': source_class, 'destination_class': destination_class, 'route_valid': route_valid},
+            'baseline_comparison': {
+                'baseline_outflow_volume': baseline_volume,
+                'baseline_transfer_count': baseline_transfer_count,
+                'baseline_unique_counterparties': baseline_unique_counterparties,
+                'baseline_max_concentration': baseline_max_concentration,
+                'observed_volume': observed_volume,
+                'transfer_count': transfer_count,
+                'unique_counterparties': unique_counterparties,
+                'concentration_ratio': concentration_ratio,
+                'venue_labels': sorted(venues),
+                'venue_distribution': observed_distribution,
+                'unexpected_venue_share': unexpected_venue_share,
+            },
         }
     oracle_sources = asset.get('oracle_sources', []) if isinstance(asset.get('oracle_sources'), list) else []
     oracle_observations = payload.get('oracle_observations') if isinstance(payload.get('oracle_observations'), list) else []
@@ -360,32 +405,52 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
         }
     else:
         stale = False
+        missing_update = False
+        cadence_violation = False
         divergence = False
         prices: list[float] = []
         for item in oracle_observations:
             observed_ts = _parse_ts(item.get('observed_at'))
-            if expected_freshness and observed_ts and (now - observed_ts).total_seconds() > expected_freshness:
+            freshness_seconds = int(item.get('freshness_seconds') or 0)
+            if expected_freshness and ((freshness_seconds and freshness_seconds > expected_freshness) or (observed_ts and (now - observed_ts).total_seconds() > expected_freshness)):
                 stale = True
-            update_interval = int(item.get('update_interval_seconds') or 0)
+            if observed_ts is None:
+                missing_update = True
+            update_interval = int(item.get('update_interval_seconds') or expected_cadence or 0)
             if expected_cadence and update_interval and update_interval > expected_cadence:
-                stale = True
+                cadence_violation = True
             try:
-                prices.append(float(item.get('price')))
+                prices.append(float(item.get('observed_value') or item.get('price')))
             except Exception:
                 continue
         if len(prices) >= 2:
             low = min(prices)
             high = max(prices)
             divergence = low > 0 and ((high - low) / low) > 0.02
-        oracle_anomaly = stale or divergence
+        oracle_anomaly = stale or missing_update or cadence_violation or divergence
+        reasons = [
+            label for flag, label in (
+                (stale, 'stale_oracle'),
+                (missing_update, 'missing_update'),
+                (cadence_violation, 'cadence_violation'),
+                (divergence, 'source_divergence'),
+            ) if flag
+        ]
         oracle = {
             'detector_family': 'oracle_integrity',
             'detector_status': 'anomaly_detected' if oracle_anomaly else 'real_event_no_anomaly',
-            'anomaly_reason': 'oracle_stale_or_divergent' if oracle_anomaly else 'oracle_integrity_normal',
+            'anomaly_reason': '+'.join(reasons) if reasons else 'oracle_integrity_normal',
             'severity': 'high' if oracle_anomaly else 'low',
             'confidence': 'high' if oracle_anomaly else 'medium',
             'recommended_action': 'pause_sensitive_routes_and_reconcile_oracles' if oracle_anomaly else 'continue_monitoring',
-            'oracle_observation_details': {'observations': oracle_observations, 'prices': prices, 'divergence': divergence},
+            'oracle_observation_details': {
+                'observations': oracle_observations,
+                'prices': prices,
+                'stale': stale,
+                'missing_update': missing_update,
+                'cadence_violation': cadence_violation,
+                'divergence': divergence,
+            },
         }
     base = {
         'asset_id': asset.get('id'),
@@ -406,6 +471,8 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
         'raw_event_type': payload.get('event_type') or event.kind,
         'normalized_event_snapshot': payload,
         'oracle_observation_details': {},
+        'liquidity_observation_details': {},
+        'route_classification_details': {'source_class': source_class, 'destination_class': destination_class, 'route_valid': route_valid},
     }
     return [{**base, **item} for item in (counterparty, flow, approval, liquidity, oracle)]
 

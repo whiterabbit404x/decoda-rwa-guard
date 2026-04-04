@@ -60,13 +60,33 @@ def main() -> int:
     alerts = _request('GET', f'{api_url}/alerts?target_id={target_id}&status_value=open', token=token, workspace_id=workspace_id)
     incidents = _request('GET', f'{api_url}/incidents?target_id={target_id}', token=token, workspace_id=workspace_id)
     runs = _request('GET', f'{api_url}/pilot/history?kind=analysis_runs', token=token, workspace_id=workspace_id)
-    artifacts_dir = Path(os.getenv('FEATURE1_EVIDENCE_DIR', 'services/api/artifacts/live_evidence')).resolve()
+    artifacts_dir = Path(os.getenv('FEATURE1_EVIDENCE_DIR', 'services/api/artifacts/live_evidence/latest')).resolve()
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     alert_rows = alerts.get('alerts', []) if isinstance(alerts.get('alerts'), list) else []
     incident_rows = incidents.get('incidents', []) if isinstance(incidents.get('incidents'), list) else []
     run_rows = runs.get('analysis_runs', []) if isinstance(runs.get('analysis_runs'), list) else []
-    evidence_rows = [((item.get('payload') or {}).get('detector_results') or []) for item in alert_rows if isinstance(item, dict)]
+    run_rows = [item for item in run_rows if isinstance(item, dict)]
+    worker_runs = [item for item in run_rows if str(((item.get('response_payload') or {}).get('monitoring_path') or 'worker')).lower() == 'worker']
+    strict_alerts = []
+    for item in alert_rows:
+        payload = item.get('payload') if isinstance(item.get('payload'), dict) else {}
+        observed = payload.get('observed_evidence') if isinstance(payload.get('observed_evidence'), dict) else {}
+        if (
+            str(observed.get('evidence_origin') or '').lower() == 'real'
+            and str(payload.get('monitoring_path') or '').lower() == 'worker'
+            and str(payload.get('detector_status') or '') == 'anomaly_detected'
+            and str(payload.get('detector_family') or '') in {'counterparty', 'flow_pattern', 'approval_pattern', 'liquidity_venue', 'oracle_integrity'}
+        ):
+            strict_alerts.append(item)
+    high_alert_ids = {item.get('id') for item in strict_alerts if str(item.get('severity') or '').lower() in {'high', 'critical'}}
+    strict_incidents = [item for item in incident_rows if set(item.get('linked_alert_ids') or []) & high_alert_ids]
+    evidence_rows = [((item.get('payload') or {}).get('detector_results') or []) for item in strict_alerts if isinstance(item, dict)]
+    insufficient_detected = any(
+        str((item.get('payload') or {}).get('detector_status') or '') in {'insufficient_real_evidence', 'no_real_data'}
+        for item in strict_alerts
+    )
+    passed = bool(worker_runs and strict_alerts and (not high_alert_ids or strict_incidents) and not insufficient_detected)
 
     summary = {
         'target_id': target_id,
@@ -75,8 +95,13 @@ def main() -> int:
         'alert_count': len(alert_rows),
         'incident_count': len(incident_rows),
         'run_count': len(run_rows),
-        'status': 'pass' if incident_rows else 'fail',
-        'failure_reason': None if incident_rows else 'no_incidentworthy_real_anomaly_detected',
+        'worker_run_count': len(worker_runs),
+        'strict_alert_count': len(strict_alerts),
+        'strict_incident_count': len(strict_incidents),
+        'status': 'pass' if passed else 'fail',
+        'failure_reason': None if passed else 'missing_worker_real_asset_anomaly_evidence',
+        'enterprise_claim_eligible': passed,
+        'insufficient_real_evidence_detected': insufficient_detected,
     }
 
     (artifacts_dir / 'summary.json').write_text(json.dumps(summary, indent=2))
@@ -84,9 +109,16 @@ def main() -> int:
     (artifacts_dir / 'incidents.json').write_text(json.dumps(incident_rows, indent=2, default=str))
     (artifacts_dir / 'evidence.json').write_text(json.dumps(evidence_rows, indent=2, default=str))
     (artifacts_dir / 'runs.json').write_text(json.dumps(run_rows, indent=2, default=str))
-    (artifacts_dir / 'report.md').write_text('# Feature1 Evidence\n\nWorker-driven monitoring artifacts exported.\n')
+    (artifacts_dir / 'report.md').write_text(
+        '# Feature1 Evidence\n\n'
+        f"- status: `{summary['status']}`\n"
+        f"- worker_run_count: `{summary['worker_run_count']}`\n"
+        f"- strict_alert_count: `{summary['strict_alert_count']}`\n"
+        f"- strict_incident_count: `{summary['strict_incident_count']}`\n"
+        f"- enterprise_claim_eligible: `{summary['enterprise_claim_eligible']}`\n"
+    )
     print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2, default=str))
-    return 0 if incident_rows else 3
+    return 0 if passed else 3
 
 
 if __name__ == '__main__':

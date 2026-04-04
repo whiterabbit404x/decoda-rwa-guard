@@ -4677,7 +4677,11 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 (workspace_id, target_id, target_id),
             ).fetchone()
             alerts = connection.execute(
-                'SELECT id, target_id, title, severity, status, summary, payload, created_at FROM alerts WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 20',
+                'SELECT id, analysis_run_id, target_id, title, severity, status, summary, payload, created_at FROM alerts WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 20',
+                (workspace_id,),
+            ).fetchall()
+            runs = connection.execute(
+                "SELECT id, target_id, analysis_type, status, response_payload, created_at FROM analysis_runs WHERE workspace_id = %s AND analysis_type LIKE 'monitoring_%%' ORDER BY created_at DESC LIMIT 100",
                 (workspace_id,),
             ).fetchall()
             incidents = connection.execute(
@@ -4689,29 +4693,48 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 (workspace_id,),
             ).fetchall()
             normalized_alerts = [_json_safe_value(dict(row)) for row in alerts]
+            normalized_runs = [_json_safe_value(dict(row)) for row in runs]
             normalized_incidents = [_json_safe_value(dict(item)) for item in incidents]
+            worker_runs = [
+                item for item in normalized_runs
+                if str(((item.get('response_payload') or {}).get('monitoring_path') or 'worker')).lower() == 'worker'
+            ]
+            worker_run_ids = {str(item.get('id')) for item in worker_runs}
             def _strict_real_alert(item: dict[str, Any]) -> bool:
                 payload = item.get('payload') if isinstance(item.get('payload'), dict) else {}
                 observed = payload.get('observed_evidence') if isinstance(payload.get('observed_evidence'), dict) else {}
                 severity = str(item.get('severity') or payload.get('severity') or 'low').lower()
                 incident_linked = any(item.get('id') in (inc.get('linked_alert_ids') or []) for inc in normalized_incidents)
+                analysis_run_id = str(item.get('analysis_run_id') or '')
                 return (
                     str(observed.get('evidence_origin') or '').lower() == 'real'
                     and str(payload.get('detector_status') or '').lower() == 'anomaly_detected'
                     and str(payload.get('detector_family') or payload.get('detection_family') or '') in {'counterparty', 'flow_pattern', 'approval_pattern', 'liquidity_venue', 'oracle_integrity'}
                     and str(payload.get('source') or '').lower() == 'live'
                     and str(payload.get('monitoring_path') or 'worker') == 'worker'
+                    and analysis_run_id in worker_run_ids
+                    and not bool(payload.get('degraded'))
+                    and not any(key in payload for key in ('monitoring_demo_scenario', 'monitoring_scenario', 'monitoring_profile'))
                     and (severity not in {'high', 'critical'} or incident_linked)
                 )
             strict_anomaly = any(_strict_real_alert(item) for item in normalized_alerts)
+            reason_codes: list[str] = []
+            if not worker_runs:
+                reason_codes.append('no_worker_generated_runs')
+            if not normalized_alerts:
+                reason_codes.append('no_alerts_found')
+            if normalized_alerts and not strict_anomaly:
+                reason_codes.append('alerts_failed_strict_real_anomaly_checks')
             rows = [{
                 'generated_at': utc_now_iso(),
                 'workspace_id': workspace_id,
                 'target': _json_safe_value(dict(target)) if target else None,
+                'runs': normalized_runs,
                 'alerts': normalized_alerts,
                 'incidents': normalized_incidents,
                 'audit_trail': [_json_safe_value(dict(item)) for item in audits],
                 'real_anomaly_observed': strict_anomaly,
+                'real_anomaly_reason_codes': reason_codes,
                 'sales_safe_claim': 'anomaly_detected_from_real_worker_evidence' if strict_anomaly else 'insufficient_real_anomaly_evidence',
             }]
         case _:

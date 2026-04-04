@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
-from urllib import request
+from urllib import parse, request
 
 
 @dataclass
@@ -270,5 +270,130 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         if cursor and event.cursor <= cursor:
             continue
         deduped.append(event)
+    telemetry = _build_cycle_telemetry(target, deduped)
+    for event in deduped:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        payload['oracle_observations'] = telemetry['oracle_observations']
+        payload['liquidity_observations'] = telemetry['liquidity_observations']
+        payload['venue_observations'] = telemetry['venue_observations']
+        event.payload = payload
     logger.info('evm activity fetched target=%s from_block=%s to_block=%s events=%s', target.get('id'), from_block, safe_to, len(deduped))
     return deduped
+
+
+def _build_cycle_telemetry(target: dict[str, Any], events: list[ActivityEvent]) -> dict[str, list[dict[str, Any]]]:
+    oracle_observations = _fetch_oracle_observations(target)
+    liquidity_observation = _build_liquidity_observation(target, events)
+    venue_observation = _build_venue_observation(target, events, liquidity_observation)
+    return {
+        'oracle_observations': oracle_observations,
+        'liquidity_observations': [liquidity_observation] if liquidity_observation else [],
+        'venue_observations': [venue_observation] if venue_observation else [],
+    }
+
+
+def _fetch_oracle_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
+    oracle_url = (os.getenv('ORACLE_API_URL') or 'http://localhost:8002').rstrip('/')
+    if not oracle_url:
+        return []
+    asset_identifier = str(
+        target.get('asset_identifier')
+        or target.get('asset_symbol')
+        or target.get('contract_identifier')
+        or target.get('wallet_address')
+        or ''
+    ).strip()
+    params = parse.urlencode({'asset_identifier': asset_identifier}) if asset_identifier else ''
+    url = f'{oracle_url}/oracle/observations'
+    if params:
+        url = f'{url}?{params}'
+    try:
+        req = request.Request(url, headers={'Accept': 'application/json'})
+        with request.urlopen(req, timeout=10) as resp:  # nosec B310
+            body = json.loads(resp.read().decode('utf-8'))
+    except Exception:
+        return []
+    observations = body.get('observations') if isinstance(body, dict) else []
+    return observations if isinstance(observations, list) else []
+
+
+def _build_liquidity_observation(target: dict[str, Any], events: list[ActivityEvent]) -> dict[str, Any] | None:
+    if not events:
+        return None
+    window_seconds = max(60, int(os.getenv('EVM_LIQUIDITY_WINDOW_SECONDS', '1800')))
+    now = datetime.now(timezone.utc)
+    window_start = now.timestamp() - window_seconds
+    transfer_events = [
+        event for event in events
+        if str((event.payload or {}).get('kind_hint') or '').lower() == 'erc20_transfer'
+        and event.observed_at.timestamp() >= window_start
+    ]
+    if not transfer_events:
+        return None
+    total_volume = 0.0
+    counterparties: set[str] = set()
+    outbound_by_destination: dict[str, float] = {}
+    for event in transfer_events:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        try:
+            amount = float(payload.get('amount') or 0)
+        except Exception:
+            amount = 0.0
+        total_volume += max(amount, 0.0)
+        from_addr = str(payload.get('from') or payload.get('owner') or '').lower()
+        to_addr = str(payload.get('to') or '').lower()
+        if from_addr:
+            counterparties.add(from_addr)
+        if to_addr:
+            counterparties.add(to_addr)
+            outbound_by_destination[to_addr] = outbound_by_destination.get(to_addr, 0.0) + max(amount, 0.0)
+    dominant_destination_volume = max(outbound_by_destination.values()) if outbound_by_destination else 0.0
+    concentration_ratio = dominant_destination_volume / total_volume if total_volume > 0 else 0.0
+    return {
+        'provider_name': 'evm_activity_provider',
+        'window_seconds': window_seconds,
+        'window_event_count': len(transfer_events),
+        'rolling_volume': total_volume,
+        'transfer_count': len(transfer_events),
+        'unique_counterparties': len(counterparties),
+        'concentration_ratio': concentration_ratio,
+        'observed_at': now.isoformat(),
+        'asset_identifier': str(target.get('asset_identifier') or target.get('asset_symbol') or target.get('id') or ''),
+        'status': 'ok',
+    }
+
+
+def _build_venue_observation(target: dict[str, Any], events: list[ActivityEvent], liquidity_observation: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not events:
+        return None
+    venue_labels = target.get('venue_labels')
+    configured = [str(v).lower() for v in venue_labels] if isinstance(venue_labels, list) else []
+    if not configured:
+        return None
+    counts = {item: 0 for item in configured}
+    unknown = 0
+    for event in events:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        destination = str(payload.get('to') or '').lower()
+        matched = False
+        for venue in configured:
+            if destination == venue:
+                counts[venue] += 1
+                matched = True
+                break
+        if not matched and destination:
+            unknown += 1
+    total = sum(counts.values()) + unknown
+    if total <= 0:
+        return None
+    distribution = {venue: round(count / total, 6) for venue, count in counts.items()}
+    if unknown:
+        distribution['unknown'] = round(unknown / total, 6)
+    return {
+        'provider_name': 'evm_activity_provider',
+        'venue_distribution': distribution,
+        'venue_labels': configured,
+        'observed_at': datetime.now(timezone.utc).isoformat(),
+        'rolling_volume': float((liquidity_observation or {}).get('rolling_volume') or 0.0),
+        'status': 'ok',
+    }
