@@ -1549,9 +1549,11 @@ See `docs/LAUNCH_VALIDATION_CHECKLIST.md` for pilot vs broad-sale vs enterprise 
 - “No confirmed anomaly detected in observed evidence” is an observation label, not a global safety claim.
 - LIVE/HYBRID reassurance requires real observed evidence (`recent_evidence_state=real`, `recent_real_event_count>0`, and non-`unknown_risk` truthfulness).
 - `/ops/production-claim-validator` now fails if synthetic/demo evidence leaks into the recent evidence window.
+- `/ops/production-claim-validator` now also fails when the last real event is outside `MONITORING_EVIDENCE_WINDOW_SECONDS` (default 900s), even if no alerts/incidents were raised.
 - See `docs/DEMO_ISOLATION_AUDIT.md` for the file-by-file synthetic fallback removals and isolation boundaries.
 - See `docs/FEATURE1_RUNTIME_CONTAMINATION_AUDIT.md` for the latest file-by-file runtime contamination remediation.
 - See `docs/FEATURE1_NO_DATA_TRUTH_AUDIT.md` for the file-by-file no-data truthfulness remediation list.
+- See `docs/FEATURE1_FAIL_OPEN_AUDIT.md` for the latest no-data/no-alert fail-open removals.
 
 ## How to prove live on-chain monitoring
 

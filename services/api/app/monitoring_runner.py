@@ -1133,19 +1133,23 @@ def get_monitoring_health() -> dict[str, Any]:
 
 def production_claim_validator() -> dict[str, Any]:
     runtime = monitoring_ingestion_runtime()
+    evidence_window_seconds = max(60, int(os.getenv('MONITORING_EVIDENCE_WINDOW_SECONDS', '900')))
     checks: dict[str, bool] = {
         'live_or_hybrid_mode': runtime.get('mode') in {'live', 'hybrid'},
         'live_monitoring_enabled': str(os.getenv('LIVE_MONITORING_ENABLED', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'},
         'evm_rpc_reachable': False,
         'watcher_source_active': False,
+        'provider_reachable_or_backfilling': False,
         'checkpoints_advancing': False,
         'no_silent_demo_fallback': not bool(runtime.get('degraded')),
         'no_synthetic_evidence_window': False,
         'real_target_exists': False,
         'analysis_evidence_real': False,
+        'recent_evidence_state_real': False,
         'no_recent_degraded_or_missing': False,
         'truthfulness_not_unknown': False,
         'recent_real_event_count_positive': False,
+        'evidence_window_recent_real_events': False,
     }
     reason = None
     if checks['live_or_hybrid_mode'] and checks['live_monitoring_enabled'] and (os.getenv('EVM_RPC_URL') or '').strip():
@@ -1157,10 +1161,15 @@ def production_claim_validator() -> dict[str, Any]:
     if live_mode_enabled():
         health = get_monitoring_health()
         checks['watcher_source_active'] = bool((health.get('source_type') in {'websocket', 'polling', 'rpc_backfill'}) and not health.get('degraded'))
+        checks['provider_reachable_or_backfilling'] = bool(
+            checks['evm_rpc_reachable'] or health.get('source_type') in {'rpc_backfill', 'polling', 'websocket'}
+        )
         age = health.get('checkpoint_age_seconds')
         checks['checkpoints_advancing'] = isinstance(age, int) and age <= 900
         if health.get('degraded_reason'):
             reason = str(health.get('degraded_reason'))
+    else:
+        checks['provider_reachable_or_backfilling'] = checks['evm_rpc_reachable']
     last_real_event_at = None
     last_demo_event_at = None
     recent_evidence_state = 'missing'
@@ -1242,11 +1251,23 @@ def production_claim_validator() -> dict[str, Any]:
             last_demo_event_at = _json_safe_value(dict(last_demo or {})).get('ts')
     except Exception:
         checks['real_target_exists'] = False
+    parsed_last_real = _parse_ts(last_real_event_at)
+    evidence_window_passed = bool(parsed_last_real and int((utc_now() - parsed_last_real).total_seconds()) <= evidence_window_seconds)
+    checks['evidence_window_recent_real_events'] = evidence_window_passed
     synthetic_leak_detected = last_demo_event_at is not None
     checks['no_synthetic_evidence_window'] = not synthetic_leak_detected
     checks['analysis_evidence_real'] = recent_evidence_state == 'real' and recent_confidence_basis in {'provider_evidence', 'backfill_evidence'}
+    checks['recent_evidence_state_real'] = recent_evidence_state == 'real'
     checks['no_recent_degraded_or_missing'] = recent_evidence_state == 'real' and checks['recent_real_event_count_positive']
-    recent_claim_safe_window_passed = checks['analysis_evidence_real'] and checks['no_synthetic_evidence_window'] and checks['no_recent_degraded_or_missing']
+    recent_claim_safe_window_passed = (
+        checks['analysis_evidence_real']
+        and checks['recent_evidence_state_real']
+        and checks['recent_real_event_count_positive']
+        and checks['truthfulness_not_unknown']
+        and checks['evidence_window_recent_real_events']
+        and checks['no_synthetic_evidence_window']
+        and checks['no_recent_degraded_or_missing']
+    )
     passed = all(checks.values())
     if 'unknown_risk_detected' not in locals():
         unknown_risk_detected = recent_truthfulness_state == 'unknown_risk'
@@ -1271,7 +1292,8 @@ def production_claim_validator() -> dict[str, Any]:
         'recent_real_event_count': recent_real_event_count,
         'recent_confidence_basis': recent_confidence_basis,
         'recent_claim_safe_window_passed': recent_claim_safe_window_passed,
-        'evidence_window_passed': checks['analysis_evidence_real'] and checks['recent_real_event_count_positive'],
+        'evidence_window_passed': checks['evidence_window_recent_real_events'],
+        'evidence_window_seconds': evidence_window_seconds,
         'unknown_risk_detected': unknown_risk_detected,
         'no_evidence_detected': no_evidence_detected,
         'degraded_window_detected': degraded_window_detected,
@@ -1296,6 +1318,9 @@ def monitoring_runtime_status() -> dict[str, Any]:
         and int(claim.get('recent_real_event_count') or 0) > 0
         and str(claim.get('recent_truthfulness_state') or '') != 'unknown_risk'
     )
+    evidence_state = str(claim.get('recent_evidence_state') or 'missing')
+    truthfulness_state = str(claim.get('recent_truthfulness_state') or 'unknown_risk')
+    error_code = 'UNKNOWN_RISK' if evidence_gap else None
     return {
         'mode': runtime_mode,
         'configured_mode': configured_mode,
@@ -1307,12 +1332,16 @@ def monitoring_runtime_status() -> dict[str, Any]:
         'claim_safe': claim_safe,
         'synthetic': bool(claim.get('synthetic_leak_detected')),
         'evidence_present': not evidence_gap,
+        'evidence_state': evidence_state,
+        'truthfulness_state': truthfulness_state,
         'latest_processed_block': health.get('latest_processed_block'),
+        'latest_block': health.get('latest_processed_block'),
         'checkpoint_lag_blocks': health.get('checkpoint_lag_blocks'),
         'checkpoint_age_seconds': health.get('checkpoint_age_seconds'),
         'provider_name': 'evm_activity_provider',
         'provider_kind': 'rpc',
         'degraded_reason': health.get('degraded_reason') or claim.get('reason'),
+        'error_code': error_code,
         'sales_claims_allowed': bool(claim.get('sales_claims_allowed')),
         'claim_validator_status': claim.get('status'),
         'recent_evidence_state': claim.get('recent_evidence_state'),

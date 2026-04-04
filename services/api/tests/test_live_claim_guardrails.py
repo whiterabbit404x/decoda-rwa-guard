@@ -113,6 +113,37 @@ def test_production_claim_validator_fails_without_recent_real_events(monkeypatch
     assert payload['checks']['recent_real_event_count_positive'] is False
 
 
+def test_production_claim_validator_fails_when_real_event_outside_evidence_window(monkeypatch):
+    @contextmanager
+    def _fake_pg():
+        class _Conn:
+            def execute(self, query, params=None):
+                if 'COUNT(*) AS total' in query:
+                    return type('R', (), {'fetchone': lambda self: {'total': 1}})()
+                if 'FROM analysis_runs' in query:
+                    return type('R', (), {'fetchone': lambda self: {'created_at': 'now', 'response_payload': {'metadata': {'evidence_state': 'real', 'confidence_basis': 'provider_evidence', 'truthfulness_state': 'not_claim_safe'}}}})()
+                if 'real_evidence_targets' in query:
+                    return type('R', (), {'fetchone': lambda self: {'real_evidence_targets': 1, 'degraded_or_missing_targets': 0, 'unknown_risk_targets': 0, 'real_event_count_total': 2, 'latest_real_event_at': '2026-04-03T00:00:00Z'}})()
+                if "ingestion_source <> 'demo'" in query:
+                    return type('R', (), {'fetchone': lambda self: {'ts': '2026-04-03T00:00:00Z'}})()
+                if "ingestion_source = 'demo'" in query:
+                    return type('R', (), {'fetchone': lambda self: {'ts': None}})()
+                return type('R', (), {'fetchone': lambda self: {}})()
+        yield _Conn()
+
+    monkeypatch.setenv('MONITORING_INGESTION_MODE', 'hybrid')
+    monkeypatch.setenv('LIVE_MONITORING_ENABLED', 'true')
+    monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
+    monkeypatch.setenv('MONITORING_EVIDENCE_WINDOW_SECONDS', '60')
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: False)
+    payload = monitoring_runner.production_claim_validator()
+    assert payload['status'] == 'FAIL'
+    assert payload['checks']['evidence_window_recent_real_events'] is False
+    assert payload['evidence_window_passed'] is False
+
+
 def test_production_claim_validator_fails_on_unknown_risk_truthfulness(monkeypatch):
     @contextmanager
     def _fake_pg():
