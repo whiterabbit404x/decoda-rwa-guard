@@ -17,17 +17,24 @@ def _event(event_type: str) -> ActivityEvent:
     )
 
 
-def test_asset_detection_flags_missing_baseline() -> None:
-    outcome = _asset_detection_summary(asset={'baseline_status': 'missing', 'name': 'USTB'}, event=_event('transfer'))
-    assert outcome['detection_family'] == 'baseline_gap'
-    assert 'baseline is missing' in outcome['anomaly_basis']
+def _asset() -> dict:
+    return {
+        'id': 'a1',
+        'identifier': 'USTB',
+        'asset_symbol': 'USTB',
+        'expected_counterparties': [],
+        'treasury_ops_wallets': [],
+        'custody_wallets': [],
+        'oracle_sources': ['oracle-a'],
+        'venue_labels': ['venue-a'],
+        'expected_flow_patterns': [],
+        'expected_approval_patterns': {},
+        'expected_liquidity_baseline': {'baseline_outflow_volume': 1000},
+    }
 
 
-def test_asset_detection_flags_approval_abuse_family() -> None:
-    outcome = _asset_detection_summary(asset={'baseline_status': 'observed', 'name': 'USTB'}, event=_event('approval_changed'))
-    assert outcome['detection_family'] == 'treasury_approval_abuse'
-
-
-def test_asset_detection_flags_oracle_family() -> None:
-    outcome = _asset_detection_summary(asset={'baseline_status': 'observed', 'name': 'USTB'}, event=_event('oracle_update'))
-    assert outcome['detection_family'] == 'oracle_integrity_anomaly'
+def test_asset_detection_produces_detector_bundle() -> None:
+    outcome = _asset_detection_summary(asset=_asset(), event=_event('transfer'))
+    assert outcome['detection_family'] in {'counterparty', 'flow_pattern', 'approval_pattern', 'liquidity_venue', 'oracle_integrity'}
+    assert isinstance(outcome['detector_results'], list)
+    assert len(outcome['detector_results']) == 5

@@ -26,3 +26,24 @@ Feature 1 protects **workspace-owned monitored assets** (targets linked to asset
 - Demo-only scenarios.
 - Generic "high risk" output without asset/evidence linkage.
 - No-evidence windows with zero alerts.
+
+## Monitoring modes and enterprise proof boundaries (2026-04-04)
+
+- **Demo/dev mode**: enabled only with `ALLOW_DEMO_MODE=true` and non-production environment. Demo events are explicitly marked `evidence_origin=demo` and `production_claim_eligible=false`.
+- **Hybrid mode**: only real provider evidence is accepted in runtime outcomes. If real evidence is missing, detector results must remain `insufficient_real_evidence` and cannot be interpreted as safe/normal.
+- **Production/live mode**: fail-closed when real providers are unavailable; no synthetic/demo fallback is allowed.
+- **Authoritative proof path**: worker-driven monitoring via `run_monitoring_worker.py` or `POST /ops/monitoring/run`. `POST /monitoring/run-once/{id}` is debugging-only and not valid for enterprise proof claims.
+- **Valid protection proof** must include all of:
+  - real `evidence_origin`
+  - asset-specific detector family (`counterparty`, `flow_pattern`, `approval_pattern`, `liquidity_venue`, `oracle_integrity`)
+  - worker-path monitoring run
+  - persisted alert and incident linkage for high/critical anomalies
+  - export artifacts: `summary.json`, `alerts.json`, `incidents.json`, `evidence.json`, `runs.json`
+
+### Real evidence generation env vars
+
+- `FEATURE1_API_URL`
+- `FEATURE1_API_TOKEN` / `PILOT_AUTH_TOKEN`
+- `FEATURE1_WORKSPACE_ID` / `WORKSPACE_ID`
+- `EVM_RPC_URL`
+- Optional oracle integrity inputs: `ORACLE_SOURCE_URLS`, `ORACLE_SOURCE_OBSERVATIONS_JSON`, `ORACLE_EXPECTED_FRESHNESS_SECONDS`, `ORACLE_EXPECTED_CADENCE_SECONDS`.

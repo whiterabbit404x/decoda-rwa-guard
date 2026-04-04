@@ -180,63 +180,234 @@ def _load_target_asset_context(connection: Any, *, workspace_id: str, target: di
         return None
     row = connection.execute(
         '''
-        SELECT id, name, asset_class, asset_symbol, identifier, token_contract_address, expected_counterparties, expected_approval_patterns,
-               expected_liquidity_baseline, expected_oracle_freshness_seconds, baseline_status, baseline_source, baseline_updated_at, baseline_confidence, baseline_coverage
+        SELECT id, name, asset_class, asset_symbol, identifier, token_contract_address,
+               treasury_ops_wallets, custody_wallets, oracle_sources, venue_labels, expected_flow_patterns,
+               expected_counterparties, expected_approval_patterns, expected_liquidity_baseline,
+               expected_oracle_freshness_seconds, expected_oracle_update_cadence_seconds,
+               baseline_status, baseline_source, baseline_updated_at, baseline_confidence, baseline_coverage
         FROM assets
         WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL
         ''',
         (asset_id, workspace_id),
     ).fetchone()
-    return _json_safe_value(dict(row)) if row is not None else None
+    if row is None:
+        return None
+    context = _json_safe_value(dict(row))
+    for key in ('treasury_ops_wallets', 'custody_wallets', 'oracle_sources', 'venue_labels', 'expected_flow_patterns', 'expected_counterparties'):
+        if not isinstance(context.get(key), list):
+            context[key] = []
+    for key in ('expected_approval_patterns', 'expected_liquidity_baseline'):
+        if not isinstance(context.get(key), dict):
+            context[key] = {}
+    return context
+
+
+ASSET_DETECTOR_FAMILIES = {
+    'counterparty',
+    'flow_pattern',
+    'approval_pattern',
+    'liquidity_venue',
+    'oracle_integrity',
+}
+
+
+def _normalize_addr(value: Any) -> str:
+    return str(value or '').strip().lower()
 
 
 def _asset_detection_summary(*, asset: dict[str, Any] | None, event: ActivityEvent) -> dict[str, Any]:
-    payload = event.payload if isinstance(event.payload, dict) else {}
-    tx_hash = str(payload.get('tx_hash') or '')
-    block_number = payload.get('block_number')
-    log_index = payload.get('log_index')
-    if not asset:
-        return {'detection_family': 'target_without_asset_profile', 'anomaly_basis': 'No asset profile attached to target; asset-specific anomaly confidence limited.', 'confidence_basis': 'missing_asset_profile', 'recommended_action': 'attach_asset_profile'}
-    baseline_status = str(asset.get('baseline_status') or 'missing').lower()
-    if baseline_status in {'missing', 'stale'}:
-        return {'detection_family': 'baseline_gap', 'anomaly_basis': f"Asset baseline is {baseline_status}; anomaly classification is constrained until baseline refresh.", 'confidence_basis': f'baseline_{baseline_status}', 'recommended_action': 'refresh_asset_baseline', 'baseline_reference': {'status': baseline_status, 'source': asset.get('baseline_source'), 'updated_at': asset.get('baseline_updated_at')}}
-    event_type = str(payload.get('event_type') or payload.get('kind') or event.kind or '').lower()
-    if 'approval' in event_type:
-        return {'detection_family': 'treasury_approval_abuse', 'anomaly_basis': 'Approval activity deviates from expected approval recipients/patterns for this asset.', 'confidence_basis': 'approval_pattern_deviation', 'recommended_action': 'revoke_suspicious_approval'}
-    if 'oracle' in event_type:
-        return {'detection_family': 'oracle_integrity_anomaly', 'anomaly_basis': 'Oracle freshness/divergence signal violates configured asset oracle expectations.', 'confidence_basis': 'oracle_freshness_divergence', 'recommended_action': 'validate_oracle_sources'}
-    if 'bridge' in event_type or 'settlement' in event_type:
-        return {'detection_family': 'settlement_bridge_anomaly', 'anomaly_basis': 'Settlement/bridge activity is outside expected venue timing or destination profile for this asset.', 'confidence_basis': 'settlement_reconciliation_mismatch', 'recommended_action': 'pause_settlement_route'}
-    return {'detection_family': 'treasury_ops_wallet_anomaly', 'anomaly_basis': 'Observed treasury flow cadence/size differs from configured baseline for this asset.', 'confidence_basis': 'flow_baseline_deviation', 'recommended_action': 'review_treasury_ops', 'evidence_reference': {'tx_hash': tx_hash, 'block_number': block_number, 'log_index': log_index}}
+    results = _enforce_asset_detectors(asset=asset, event=event)
+    anomalous = [item for item in results if item['detector_status'] == 'anomaly_detected']
+    insufficient = [item for item in results if item['detector_status'] == 'insufficient_real_evidence']
+    highest = anomalous[0] if anomalous else (insufficient[0] if insufficient else results[0])
+    summary_reason = highest.get('anomaly_reason') or 'detectors_completed_without_confirmed_anomaly'
+    return {
+        'detection_family': highest.get('detector_family'),
+        'detector_results': results,
+        'detector_status': highest.get('detector_status'),
+        'anomaly_basis': summary_reason,
+        'confidence_basis': highest.get('confidence'),
+        'recommended_action': highest.get('recommended_action'),
+        'severity': highest.get('severity', 'low'),
+    }
 
 
-def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent) -> dict[str, Any]:
+def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent) -> list[dict[str, Any]]:
     payload = event.payload if isinstance(event.payload, dict) else {}
     if not asset:
-        return _asset_detection_summary(asset=asset, event=event)
-    counterparties = {str(v).lower() for v in (asset.get('expected_counterparties') or []) if str(v).strip()}
-    treasury_wallets = {str(v).lower() for v in (asset.get('treasury_ops_wallets') or []) if str(v).strip()}
-    custody_wallets = {str(v).lower() for v in (asset.get('custody_wallets') or []) if str(v).strip()}
-    sender = str(payload.get('from') or payload.get('owner') or '').lower()
-    recipient = str(payload.get('to') or payload.get('spender') or '').lower()
+        return [{
+            'asset_id': None,
+            'asset_identifier': None,
+            'symbol': None,
+            'target_id': payload.get('target_id'),
+            'detector_family': 'counterparty',
+            'detector_status': 'insufficient_real_evidence',
+            'anomaly_reason': 'missing_asset_profile',
+            'severity': 'medium',
+            'confidence': 'low',
+            'recommended_action': 'attach_asset_profile',
+            'evidence_origin': 'fallback',
+            'provider_name': 'asset_detector',
+            'observed_at': event.observed_at.isoformat(),
+            'chain_id': payload.get('chain_id'),
+            'tx_hash': payload.get('tx_hash'),
+            'block_number': payload.get('block_number'),
+            'log_index': payload.get('log_index'),
+            'source_address': payload.get('from') or payload.get('owner'),
+            'destination_address': payload.get('to'),
+            'spender': payload.get('spender'),
+            'contract_address': payload.get('contract_address'),
+            'raw_event_type': payload.get('event_type') or event.kind,
+            'normalized_event_snapshot': payload,
+            'baseline_comparison': {'status': 'missing_asset_profile'},
+            'oracle_observation_details': {},
+        }]
+    expected_counterparties = {_normalize_addr(v) for v in asset.get('expected_counterparties', []) if _normalize_addr(v)}
+    treasury_wallets = {_normalize_addr(v) for v in asset.get('treasury_ops_wallets', []) if _normalize_addr(v)}
+    custody_wallets = {_normalize_addr(v) for v in asset.get('custody_wallets', []) if _normalize_addr(v)}
+    source = _normalize_addr(payload.get('from') or payload.get('owner'))
+    destination = _normalize_addr(payload.get('to'))
+    spender = _normalize_addr(payload.get('spender'))
     amount = float(payload.get('amount') or 0)
-    if str(payload.get('kind_hint') or '').lower() == 'erc20_approval' and recipient and counterparties and recipient not in counterparties:
-        return {
-            'detection_family': 'approval_anomaly',
-            'anomaly_basis': 'Approval spender is not in expected approval/counterparty profile.',
-            'confidence_basis': 'approval_pattern_deviation',
-            'recommended_action': 'revoke_approval_and_rotate_signers',
+    severity = 'low'
+    counterparty_class = 'approved_external_counterparty'
+    if destination and destination not in expected_counterparties and destination not in treasury_wallets and destination not in custody_wallets:
+        counterparty_class = 'unknown_external_counterparty'
+        severity = 'high' if amount > 100000 or source in treasury_wallets or source in custody_wallets else 'medium'
+    elif destination in treasury_wallets:
+        counterparty_class = 'treasury_ops_wallet'
+    elif destination in custody_wallets:
+        counterparty_class = 'custody_wallet'
+    counterparty = {
+        'detector_family': 'counterparty',
+        'detector_status': 'anomaly_detected' if counterparty_class == 'unknown_external_counterparty' else 'real_event_no_anomaly',
+        'anomaly_reason': 'unknown_counterparty_on_protected_path' if counterparty_class == 'unknown_external_counterparty' else 'counterparty_in_expected_profile',
+        'severity': severity,
+        'confidence': 'high' if counterparty_class == 'unknown_external_counterparty' else 'medium',
+        'recommended_action': 'pause_outbound_transfer_and_review' if counterparty_class == 'unknown_external_counterparty' else 'continue_monitoring',
+        'baseline_comparison': {'expected_counterparties': sorted(expected_counterparties), 'counterparty_classification': counterparty_class},
+    }
+    allowed_routes = {(str(item.get('source_class')).lower(), str(item.get('destination_class')).lower()) for item in asset.get('expected_flow_patterns', []) if isinstance(item, dict)}
+    source_class = 'treasury_ops' if source in treasury_wallets else ('custody' if source in custody_wallets else 'external')
+    destination_class = 'treasury_ops' if destination in treasury_wallets else ('custody' if destination in custody_wallets else ('approved_external' if destination in expected_counterparties else 'unknown_external'))
+    route_tuple = (source_class, destination_class)
+    route_valid = (not allowed_routes) or route_tuple in allowed_routes
+    flow = {
+        'detector_family': 'flow_pattern',
+        'detector_status': 'real_event_no_anomaly' if route_valid else 'anomaly_detected',
+        'anomaly_reason': 'route_matches_expected_flow_pattern' if route_valid else 'invalid_protected_asset_routing',
+        'severity': 'high' if not route_valid and source_class in {'treasury_ops', 'custody'} else 'medium',
+        'confidence': 'high',
+        'recommended_action': 'block_route_and_escalate' if not route_valid else 'continue_monitoring',
+        'baseline_comparison': {'allowed_routes': [list(item) for item in sorted(allowed_routes)], 'observed_route': [source_class, destination_class]},
+    }
+    approval_cfg = asset.get('expected_approval_patterns') if isinstance(asset.get('expected_approval_patterns'), dict) else {}
+    allowed_spenders = {_normalize_addr(v) for v in approval_cfg.get('allowed_spenders', []) if _normalize_addr(v)}
+    max_approval = float(approval_cfg.get('max_amount') or 0)
+    approval_amount = float(payload.get('approval_amount') or payload.get('amount') or 0)
+    unlimited = bool(payload.get('is_unlimited_approval')) or approval_amount >= 2**255
+    unexpected_spender = bool(spender) and allowed_spenders and spender not in allowed_spenders
+    approval_violation = str(payload.get('kind_hint') or '').lower() == 'erc20_approval' and (unexpected_spender or unlimited or (max_approval > 0 and approval_amount > max_approval))
+    approval = {
+        'detector_family': 'approval_pattern',
+        'detector_status': 'anomaly_detected' if approval_violation else 'real_event_no_anomaly',
+        'anomaly_reason': 'unexpected_unlimited_approval_on_protected_asset' if approval_violation and unlimited else ('approval_pattern_violation' if approval_violation else 'approval_within_expected_pattern'),
+        'severity': 'high' if approval_violation and unlimited else ('medium' if approval_violation else 'low'),
+        'confidence': 'high' if approval_violation else 'medium',
+        'recommended_action': 'revoke_approval_and_rotate_keys' if approval_violation else 'continue_monitoring',
+        'baseline_comparison': {'allowed_spenders': sorted(allowed_spenders), 'max_approval': max_approval, 'approval_amount': approval_amount, 'unlimited': unlimited},
+    }
+    liquidity_cfg = asset.get('expected_liquidity_baseline') if isinstance(asset.get('expected_liquidity_baseline'), dict) else {}
+    baseline_volume = float(liquidity_cfg.get('baseline_outflow_volume') or 0)
+    observed_volume = float(payload.get('current_volume') or payload.get('amount') or 0)
+    venues = {_normalize_addr(v) for v in asset.get('venue_labels', []) if _normalize_addr(v)}
+    observed_venue = _normalize_addr(payload.get('venue'))
+    if baseline_volume <= 0 or observed_volume <= 0:
+        liquidity = {
+            'detector_family': 'liquidity_venue',
+            'detector_status': 'insufficient_real_evidence',
+            'anomaly_reason': 'missing_real_liquidity_baseline_or_observation',
+            'severity': 'medium',
+            'confidence': 'low',
+            'recommended_action': 'collect_more_real_liquidity_evidence',
+            'baseline_comparison': {'baseline_outflow_volume': baseline_volume, 'observed_volume': observed_volume},
+        }
+    else:
+        liquidity_anomaly = observed_volume > baseline_volume * 2 or (venues and observed_venue and observed_venue not in venues)
+        liquidity = {
+            'detector_family': 'liquidity_venue',
+            'detector_status': 'anomaly_detected' if liquidity_anomaly else 'real_event_no_anomaly',
+            'anomaly_reason': 'abnormal_outflow_or_venue_shift' if liquidity_anomaly else 'liquidity_within_baseline',
+            'severity': 'high' if observed_volume > baseline_volume * 3 else ('medium' if liquidity_anomaly else 'low'),
+            'confidence': 'medium',
+            'recommended_action': 'throttle_venue_and_investigate' if liquidity_anomaly else 'continue_monitoring',
+            'baseline_comparison': {'baseline_outflow_volume': baseline_volume, 'observed_volume': observed_volume, 'venue_labels': sorted(venues), 'observed_venue': observed_venue},
+        }
+    oracle_sources = asset.get('oracle_sources', []) if isinstance(asset.get('oracle_sources'), list) else []
+    oracle_observations = payload.get('oracle_observations') if isinstance(payload.get('oracle_observations'), list) else []
+    expected_freshness = int(asset.get('expected_oracle_freshness_seconds') or 0)
+    expected_cadence = int(asset.get('expected_oracle_update_cadence_seconds') or 0)
+    now = utc_now()
+    if len(oracle_observations) < max(1, len(oracle_sources)):
+        oracle = {
+            'detector_family': 'oracle_integrity',
+            'detector_status': 'insufficient_real_evidence',
+            'anomaly_reason': 'insufficient_real_oracle_sources',
             'severity': 'high',
+            'confidence': 'low',
+            'recommended_action': 'restore_oracle_sources',
+            'oracle_observation_details': {'required_sources': oracle_sources, 'observed_sources': oracle_observations},
         }
-    if recipient and counterparties and recipient not in counterparties and recipient not in treasury_wallets and recipient not in custody_wallets:
-        return {
-            'detection_family': 'counterparty_anomaly',
-            'anomaly_basis': 'Transfer/interaction with unknown counterparty outside configured asset profile.',
-            'confidence_basis': 'expected_counterparty_mismatch',
-            'recommended_action': 'pause_and_review_counterparty',
-            'severity': 'high' if amount > 0 else 'medium',
+    else:
+        stale = False
+        divergence = False
+        prices: list[float] = []
+        for item in oracle_observations:
+            observed_ts = _parse_ts(item.get('observed_at'))
+            if expected_freshness and observed_ts and (now - observed_ts).total_seconds() > expected_freshness:
+                stale = True
+            update_interval = int(item.get('update_interval_seconds') or 0)
+            if expected_cadence and update_interval and update_interval > expected_cadence:
+                stale = True
+            try:
+                prices.append(float(item.get('price')))
+            except Exception:
+                continue
+        if len(prices) >= 2:
+            low = min(prices)
+            high = max(prices)
+            divergence = low > 0 and ((high - low) / low) > 0.02
+        oracle_anomaly = stale or divergence
+        oracle = {
+            'detector_family': 'oracle_integrity',
+            'detector_status': 'anomaly_detected' if oracle_anomaly else 'real_event_no_anomaly',
+            'anomaly_reason': 'oracle_stale_or_divergent' if oracle_anomaly else 'oracle_integrity_normal',
+            'severity': 'high' if oracle_anomaly else 'low',
+            'confidence': 'high' if oracle_anomaly else 'medium',
+            'recommended_action': 'pause_sensitive_routes_and_reconcile_oracles' if oracle_anomaly else 'continue_monitoring',
+            'oracle_observation_details': {'observations': oracle_observations, 'prices': prices, 'divergence': divergence},
         }
-    return _asset_detection_summary(asset=asset, event=event)
+    base = {
+        'asset_id': asset.get('id'),
+        'asset_identifier': asset.get('identifier'),
+        'symbol': asset.get('asset_symbol'),
+        'target_id': payload.get('target_id'),
+        'evidence_origin': str((payload.get('metadata') or {}).get('evidence_origin') or 'real'),
+        'provider_name': str((payload.get('metadata') or {}).get('provider_name') or 'unknown'),
+        'observed_at': event.observed_at.isoformat(),
+        'chain_id': payload.get('chain_id'),
+        'tx_hash': payload.get('tx_hash'),
+        'block_number': payload.get('block_number'),
+        'log_index': payload.get('log_index'),
+        'source_address': payload.get('from') or payload.get('owner'),
+        'destination_address': payload.get('to'),
+        'spender': payload.get('spender'),
+        'contract_address': payload.get('contract_address'),
+        'raw_event_type': payload.get('event_type') or event.kind,
+        'normalized_event_snapshot': payload,
+        'oracle_observation_details': {},
+    }
+    return [{**base, **item} for item in (counterparty, flow, approval, liquidity, oracle)]
 
 
 def _signature(target_id: str, payload: dict[str, Any], response: dict[str, Any]) -> str:
@@ -382,6 +553,8 @@ def _process_single_event(
     user_id: str,
     monitoring_run_id: str,
     event: ActivityEvent,
+    monitoring_path: str = 'worker',
+    configured_scenario: str | None = None,
 ) -> dict[str, Any]:
     asset = _load_target_asset_context(connection, workspace_id=str(target['workspace_id']), target=target)
     kind, normalized = _normalize_event(target, event, monitoring_run_id, workspace)
@@ -397,6 +570,7 @@ def _process_single_event(
         response['analysis_status'] = 'completed'
         response['degraded_reason'] = None
     response['ingestion_mode'] = ingestion_runtime.get('mode')
+    response['monitoring_path'] = monitoring_path
     response_metadata = response.get('metadata') if isinstance(response.get('metadata'), dict) else {}
     has_confirmed_anomaly = bool(response.get('matched_patterns')) or str(response.get('severity') or '').lower() in {'high', 'critical'}
     detection_outcome = (
@@ -422,10 +596,14 @@ def _process_single_event(
         }
     )
     response['metadata'] = response_metadata
-    asset_detection = _enforce_asset_detectors(asset=asset, event=event)
+    detector_results = _enforce_asset_detectors(asset=asset, event=event)
+    asset_detection = _asset_detection_summary(asset=asset, event=event)
     response['asset_profile_id'] = (asset or {}).get('id')
     response['asset_label'] = (asset or {}).get('name') or target.get('name')
     response['detection_family'] = asset_detection.get('detection_family')
+    response['detector_family'] = asset_detection.get('detection_family')
+    response['detector_status'] = asset_detection.get('detector_status')
+    response['detector_results'] = detector_results
     response['anomaly_basis'] = asset_detection.get('anomaly_basis')
     response['baseline_reference'] = asset_detection.get('baseline_reference') or {
         'status': (asset or {}).get('baseline_status', 'missing'),
@@ -439,7 +617,16 @@ def _process_single_event(
     if asset_detection.get('severity'):
         response['severity'] = asset_detection['severity']
     payload = event.payload if isinstance(event.payload, dict) else {}
-    response['observed_evidence'] = {'event_id': event.event_id, 'tx_hash': payload.get('tx_hash'), 'block_number': payload.get('block_number'), 'log_index': payload.get('log_index'), 'observed_at': event.observed_at.isoformat(), 'ingestion_source': event.ingestion_source}
+    response['observed_evidence'] = {
+        'event_id': event.event_id,
+        'tx_hash': payload.get('tx_hash'),
+        'block_number': payload.get('block_number'),
+        'log_index': payload.get('log_index'),
+        'observed_at': event.observed_at.isoformat(),
+        'ingestion_source': event.ingestion_source,
+        'evidence_origin': str((payload.get('metadata') or {}).get('evidence_origin') or event.ingestion_source),
+        'provider_name': str((payload.get('metadata') or {}).get('provider_name') or 'unknown'),
+    }
     response['evidence_window'] = {'start': event.observed_at.isoformat(), 'end': event.observed_at.isoformat()}
     analysis_run_id = persist_analysis_run(
         connection,
@@ -477,12 +664,22 @@ def _process_single_event(
                 analysis_run_id=analysis_run_id,
                 alert_id=alert_id,
                 response=response,
-                auto_create=bool(target.get('auto_create_incidents')) and _severity_meets_threshold(str(response.get('severity') or 'low'), severity_threshold),
+                auto_create=bool(target.get('auto_create_incidents'))
+                and str(response.get('severity') or 'low').lower() in {'high', 'critical'}
+                and _severity_meets_threshold(str(response.get('severity') or 'low'), severity_threshold),
             )
+    response['monitoring_state'] = (
+        'anomaly_escalated_to_incident' if incident_id else (
+            'real_event_anomaly_detected' if asset_detection.get('detector_status') == 'anomaly_detected' else (
+                'insufficient_real_evidence' if asset_detection.get('detector_status') == 'insufficient_real_evidence' else 'real_event_no_anomaly'
+            )
+        )
+    )
     return {
         'analysis_run_id': analysis_run_id,
         'alert_id': alert_id,
         'incident_id': incident_id,
+        'monitoring_state': response.get('monitoring_state'),
     }
 
 
@@ -491,6 +688,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     workspace = _json_safe_value(dict(workspace_row))
     user_id = triggered_by_user_id or str(target.get('updated_by_user_id') or target.get('created_by_user_id'))
     monitoring_run_id = str(uuid.uuid4())
+    monitoring_path = 'manual_run_once' if triggered_by_user_id else 'worker'
     checkpoint = _parse_ts(target.get('monitoring_checkpoint_at') or target.get('last_checked_at'))
     provider_result: ActivityProviderResult = fetch_target_activity_result(target, checkpoint)
     events = provider_result.events
@@ -498,7 +696,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     alerts_generated = 0
     incidents_created = 0
     run_ids: list[str] = []
-    last_status = str(provider_result.status or 'no_evidence')
+    last_status = 'no_real_data' if provider_result.status == 'no_evidence' else str(provider_result.status or 'no_real_data')
     last_run_id: str | None = None
     last_alert_at: datetime | None = None
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
@@ -520,10 +718,15 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             user_id=user_id,
             monitoring_run_id=monitoring_run_id,
             event=event,
+            monitoring_path=monitoring_path,
         )
         analysis_run_id = str(processed['analysis_run_id'])
         run_ids.append(analysis_run_id)
-        last_status = 'completed'
+        event_state = str(processed.get('monitoring_state') or 'real_event_no_anomaly')
+        if event_state in {'anomaly_escalated_to_incident', 'real_event_anomaly_detected'}:
+            last_status = event_state
+        elif last_status not in {'anomaly_escalated_to_incident', 'real_event_anomaly_detected'}:
+            last_status = event_state
         last_run_id = analysis_run_id
         checkpoint_at = event.observed_at
         checkpoint_cursor = event.cursor
@@ -544,15 +747,15 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         if provider_result.status == 'failed':
             source_status = 'failed'
             degraded_reason = provider_result.degraded_reason or 'provider_failed'
-            last_status = 'failed'
+            last_status = 'insufficient_real_evidence'
         elif provider_result.status == 'no_evidence':
             source_status = 'no_evidence'
             degraded_reason = provider_result.degraded_reason or 'no_live_events_observed'
-            last_status = 'no_evidence'
+            last_status = 'no_real_data'
         else:
             source_status = 'degraded'
             degraded_reason = provider_result.degraded_reason or 'monitoring_degraded'
-            last_status = 'degraded'
+            last_status = 'insufficient_real_evidence'
     if events and provider_result.synthetic and provider_result.mode in {'live', 'hybrid'}:
         source_status = 'degraded'
         degraded_reason = 'synthetic_leak_detected'
@@ -642,7 +845,7 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
     ).fetchone()
     if receipt is not None:
         return {'status': 'duplicate_suppressed', 'event_id': event.event_id}
-    processed = _process_single_event(connection, target=target, workspace=workspace, user_id=user_id, monitoring_run_id=monitoring_run_id, event=event)
+    processed = _process_single_event(connection, target=target, workspace=workspace, user_id=user_id, monitoring_run_id=monitoring_run_id, event=event, monitoring_path='worker')
     payload = event.payload if isinstance(event.payload, dict) else {}
     connection.execute(
         '''

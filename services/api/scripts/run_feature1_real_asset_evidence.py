@@ -43,82 +43,97 @@ def main() -> int:
     parser.add_argument('--token', default=os.getenv('FEATURE1_API_TOKEN', ''))
     parser.add_argument('--workspace-id', default=os.getenv('FEATURE1_WORKSPACE_ID', ''))
     parser.add_argument('--target-id', default=os.getenv('FEATURE1_TARGET_ID', ''))
+    parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
 
     artifacts_dir = Path(os.getenv('FEATURE1_EVIDENCE_DIR', 'services/api/artifacts/live_evidence')).resolve()
     artifacts_dir.mkdir(parents=True, exist_ok=True)
+    if args.dry_run:
+        summary = {
+            'generated_at': datetime.now(timezone.utc).isoformat(),
+            'status': 'inconclusive',
+            'reason': 'dry_run',
+        }
+        (artifacts_dir / 'summary.json').write_text(json.dumps(summary, indent=2))
+        (artifacts_dir / 'alerts.json').write_text(json.dumps([], indent=2))
+        (artifacts_dir / 'incidents.json').write_text(json.dumps([], indent=2))
+        (artifacts_dir / 'runs.json').write_text(json.dumps([], indent=2))
+        (artifacts_dir / 'evidence.json').write_text(json.dumps([], indent=2))
+        print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
+        return 0
+
     status, runtime = _request_json(f"{args.api_url.rstrip('/')}/ops/monitoring/runtime-status", token=args.token, workspace_id=args.workspace_id)
     if status != 200:
         print(json.dumps({'status': 'fail', 'reason': 'runtime_unavailable', 'http_status': status, 'runtime': runtime}, indent=2))
         return 1
-    configured_mode = str(runtime.get('configured_mode') or runtime.get('mode') or '').upper()
-    if configured_mode not in {'LIVE', 'HYBRID'}:
-        print(json.dumps({'status': 'inconclusive', 'reason': 'mode_not_live_or_hybrid', 'configured_mode': configured_mode}, indent=2))
-        return 2
 
-    _, provider_checks = _request_json(f"{args.api_url.rstrip('/')}/ops/production-claim-validator", token=args.token, workspace_id=args.workspace_id)
-    checks = provider_checks.get('checks') if isinstance(provider_checks.get('checks'), dict) else {}
-    if checks.get('evm_rpc_reachable') is False:
-        print(json.dumps({'status': 'inconclusive', 'reason': 'provider_not_reachable', 'checks': checks}, indent=2))
+    mode = str(runtime.get('configured_mode') or runtime.get('mode') or '').upper()
+    if mode not in {'LIVE', 'HYBRID'}:
+        print(json.dumps({'status': 'inconclusive', 'reason': 'mode_not_live_or_hybrid', 'configured_mode': mode}, indent=2))
         return 2
 
     status, targets_payload = _request_json(f"{args.api_url.rstrip('/')}/targets", token=args.token, workspace_id=args.workspace_id)
-    if status != 200:
-        print(json.dumps({'status': 'fail', 'reason': 'targets_unavailable', 'http_status': status}, indent=2))
-        return 1
     targets = targets_payload.get('targets') if isinstance(targets_payload.get('targets'), list) else []
-    target = next((item for item in targets if not args.target_id or str(item.get('id')) == args.target_id), None)
-    if target is None:
+    target = next((item for item in targets if (not args.target_id or str(item.get('id')) == args.target_id)), None)
+    if status != 200 or target is None:
         print(json.dumps({'status': 'inconclusive', 'reason': 'no_monitored_target_found'}, indent=2))
         return 2
 
-    run_status, run_payload = _request_json(f"{args.api_url.rstrip('/')}/monitoring/run-once/{target['id']}", method='POST', token=args.token, workspace_id=args.workspace_id)
-    if run_status != 200:
-        print(json.dumps({'status': 'fail', 'reason': 'monitoring_run_failed', 'http_status': run_status, 'response': run_payload}, indent=2))
-        return 1
-
-    _, alerts_payload = _request_json(f"{args.api_url.rstrip('/')}/alerts?target_id={target['id']}", token=args.token, workspace_id=args.workspace_id)
-    _, incidents_payload = _request_json(f"{args.api_url.rstrip('/')}/incidents?target_id={target['id']}", token=args.token, workspace_id=args.workspace_id)
-    export_status, export_payload = _request_json(
-        f"{args.api_url.rstrip('/')}/exports/feature1-evidence",
+    _request_json(
+        f"{args.api_url.rstrip('/')}/ops/monitoring/run",
         method='POST',
         token=args.token,
         workspace_id=args.workspace_id,
-        payload={'format': 'json', 'filters': {'target_id': target['id']}},
+        payload={'worker_name': 'feature1-proof-worker', 'limit': 100},
     )
+
+    _, alerts_payload = _request_json(f"{args.api_url.rstrip('/')}/alerts?target_id={target['id']}", token=args.token, workspace_id=args.workspace_id)
+    _, incidents_payload = _request_json(f"{args.api_url.rstrip('/')}/incidents?target_id={target['id']}", token=args.token, workspace_id=args.workspace_id)
+    _, runs_payload = _request_json(f"{args.api_url.rstrip('/')}/pilot/history?kind=analysis_runs", token=args.token, workspace_id=args.workspace_id)
 
     alerts = alerts_payload.get('alerts') if isinstance(alerts_payload.get('alerts'), list) else []
     incidents = incidents_payload.get('incidents') if isinstance(incidents_payload.get('incidents'), list) else []
-    latest_alert = alerts[0] if alerts else None
-    anomaly_basis = ((latest_alert or {}).get('payload') or {}).get('anomaly_basis') if isinstance((latest_alert or {}).get('payload'), dict) else None
-    evidence = ((latest_alert or {}).get('payload') or {}).get('observed_evidence') if isinstance((latest_alert or {}).get('payload'), dict) else None
+    runs = runs_payload.get('analysis_runs') if isinstance(runs_payload.get('analysis_runs'), list) else []
 
-    outcome = 'pass' if latest_alert and anomaly_basis and evidence else 'inconclusive'
-    evidence_payload = []
-    if latest_alert and isinstance(latest_alert.get('payload'), dict):
-        evidence_payload = [latest_alert['payload'].get('observed_evidence')]
-    result = {
+    strict_alerts = []
+    for alert in alerts:
+        payload = alert.get('payload') if isinstance(alert.get('payload'), dict) else {}
+        observed = payload.get('observed_evidence') if isinstance(payload.get('observed_evidence'), dict) else {}
+        if (
+            str(observed.get('evidence_origin') or '').lower() == 'real'
+            and str(payload.get('detector_status') or '') == 'anomaly_detected'
+            and str(payload.get('detector_family') or '') in {'counterparty', 'flow_pattern', 'approval_pattern', 'liquidity_venue', 'oracle_integrity'}
+            and str(payload.get('monitoring_path') or '') == 'worker'
+        ):
+            strict_alerts.append(alert)
+
+    strict_incidents = []
+    high_ids = {item.get('id') for item in strict_alerts if str(item.get('severity') or '').lower() in {'high', 'critical'}}
+    for incident in incidents:
+        linked = set(incident.get('linked_alert_ids') or [])
+        if linked & high_ids:
+            strict_incidents.append(incident)
+
+    summary = {
         'generated_at': datetime.now(timezone.utc).isoformat(),
-        'status': outcome,
-        'workspace_id': args.workspace_id or targets_payload.get('workspace', {}).get('id'),
+        'status': 'pass' if strict_alerts and (not high_ids or strict_incidents) else 'fail',
+        'workspace_id': args.workspace_id,
         'target_id': target.get('id'),
         'asset_id': target.get('asset_id'),
-        'chain': target.get('chain_network'),
-        'evidence_window': {'start': target.get('monitoring_checkpoint_at'), 'end': target.get('last_checked_at')},
-        'last_real_event_observed': evidence,
-        'finding_ids': [item.get('analysis_run_id') for item in ([run_payload] if isinstance(run_payload, dict) else []) if item.get('analysis_run_id')],
-        'alert_ids': [item.get('id') for item in alerts[:5]],
-        'incident_ids': [item.get('id') for item in incidents[:5]],
-        'anomaly_basis': anomaly_basis,
-        'baseline_context': ((latest_alert or {}).get('payload') or {}).get('baseline_reference') if isinstance((latest_alert or {}).get('payload'), dict) else None,
-        'export_job': export_payload if export_status == 200 else {'status': 'failed', 'response': export_payload},
+        'protected_asset': {'symbol': target.get('asset_symbol'), 'identifier': target.get('asset_identifier')},
+        'material_anomaly_reason': ((strict_alerts[0].get('payload') or {}).get('anomaly_basis') if strict_alerts else None),
+        'alert_ids': [item.get('id') for item in strict_alerts],
+        'incident_ids': [item.get('id') for item in strict_incidents],
+        'worker_generated_runs': [item.get('id') for item in runs[:20]],
     }
-    (artifacts_dir / 'summary.json').write_text(json.dumps(result, indent=2))
+
+    (artifacts_dir / 'summary.json').write_text(json.dumps(summary, indent=2))
     (artifacts_dir / 'alerts.json').write_text(json.dumps(alerts, indent=2))
     (artifacts_dir / 'incidents.json').write_text(json.dumps(incidents, indent=2))
-    (artifacts_dir / 'evidence.json').write_text(json.dumps(evidence_payload, indent=2))
-    print(json.dumps({**result, 'artifacts_dir': str(artifacts_dir)}, indent=2))
-    return 0 if outcome == 'pass' else 2
+    (artifacts_dir / 'runs.json').write_text(json.dumps(runs, indent=2))
+    (artifacts_dir / 'evidence.json').write_text(json.dumps([((item.get('payload') or {}).get('detector_results')) for item in strict_alerts], indent=2))
+    print(json.dumps({**summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
+    return 0 if summary['status'] == 'pass' else 2
 
 
 if __name__ == '__main__':

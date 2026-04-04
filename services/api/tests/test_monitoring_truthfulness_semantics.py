@@ -212,5 +212,5 @@ def test_process_monitoring_target_preserves_failed_state(monkeypatch):
         ),
     )
     result = monitoring_runner.process_monitoring_target(_Conn(), target, triggered_by_user_id='user-1')
-    assert result['status'] == 'failed'
+    assert result['status'] == 'insufficient_real_evidence'
     assert result['source_status'] == 'failed'

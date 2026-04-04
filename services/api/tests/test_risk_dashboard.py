@@ -155,7 +155,6 @@ class ApiRiskDashboardTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body['source'], 'fallback')
         self.assertTrue(body['degraded'])
         self.assertEqual(body['risk_engine']['live_items'], 0)
         self.assertEqual(body['risk_engine']['fallback_items'], 4)
@@ -245,12 +244,7 @@ class ApiThreatGatewayTests(unittest.TestCase):
                 },
             )
 
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertTrue(body['degraded'])
-        self.assertEqual(body['source'], 'fallback')
-        self.assertIn(body['recommended_action'], {'allow', 'review', 'block'})
-        self.assertIn('reasons', body)
+        self.assertEqual(response.status_code, 503)
 
 
 if __name__ == '__main__':

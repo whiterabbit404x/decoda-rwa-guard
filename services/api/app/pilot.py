@@ -4688,15 +4688,31 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 "SELECT id, action, entity_type, entity_id, metadata, created_at FROM audit_logs WHERE workspace_id = %s AND action IN ('asset.create','asset.update','target.update','export.generate') ORDER BY created_at DESC LIMIT 50",
                 (workspace_id,),
             ).fetchall()
+            normalized_alerts = [_json_safe_value(dict(row)) for row in alerts]
+            normalized_incidents = [_json_safe_value(dict(item)) for item in incidents]
+            def _strict_real_alert(item: dict[str, Any]) -> bool:
+                payload = item.get('payload') if isinstance(item.get('payload'), dict) else {}
+                observed = payload.get('observed_evidence') if isinstance(payload.get('observed_evidence'), dict) else {}
+                severity = str(item.get('severity') or payload.get('severity') or 'low').lower()
+                incident_linked = any(item.get('id') in (inc.get('linked_alert_ids') or []) for inc in normalized_incidents)
+                return (
+                    str(observed.get('evidence_origin') or '').lower() == 'real'
+                    and str(payload.get('detector_status') or '').lower() == 'anomaly_detected'
+                    and str(payload.get('detector_family') or payload.get('detection_family') or '') in {'counterparty', 'flow_pattern', 'approval_pattern', 'liquidity_venue', 'oracle_integrity'}
+                    and str(payload.get('source') or '').lower() == 'live'
+                    and str(payload.get('monitoring_path') or 'worker') == 'worker'
+                    and (severity not in {'high', 'critical'} or incident_linked)
+                )
+            strict_anomaly = any(_strict_real_alert(item) for item in normalized_alerts)
             rows = [{
                 'generated_at': utc_now_iso(),
                 'workspace_id': workspace_id,
                 'target': _json_safe_value(dict(target)) if target else None,
-                'alerts': [_json_safe_value(dict(item)) for item in alerts],
-                'incidents': [_json_safe_value(dict(item)) for item in incidents],
+                'alerts': normalized_alerts,
+                'incidents': normalized_incidents,
                 'audit_trail': [_json_safe_value(dict(item)) for item in audits],
-                'real_anomaly_observed': any(str((item.get('payload') or {}).get('source', '')).lower() == 'live' and bool((item.get('payload') or {}).get('anomaly_basis')) for item in [_json_safe_value(dict(row)) for row in alerts]),
-                'sales_safe_claim': 'anomaly_detected_from_real_evidence' if any(str((item.get('payload') or {}).get('source', '')).lower() == 'live' and bool((item.get('payload') or {}).get('anomaly_basis')) for item in [_json_safe_value(dict(row)) for row in alerts]) else 'insufficient_real_anomaly_evidence',
+                'real_anomaly_observed': strict_anomaly,
+                'sales_safe_claim': 'anomaly_detected_from_real_worker_evidence' if strict_anomaly else 'insufficient_real_anomaly_evidence',
             }]
         case _:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export type.')
