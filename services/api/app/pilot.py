@@ -3637,6 +3637,20 @@ ASSET_TYPES = {
     'monitored counterparty',
     'policy-controlled workflow object',
 }
+ASSET_CLASSES = {'treasury_token', 'bond_token', 'money_market_token', 'rwa_other'}
+BASELINE_SOURCES = {'observed', 'manual', 'imported'}
+
+
+def _normalize_address_list(value: Any, *, field_name: str) -> list[str]:
+    items = [str(item).strip().lower() for item in value] if isinstance(value, list) else []
+    filtered: list[str] = []
+    for item in items:
+        if not item:
+            continue
+        if not re.match(r'^0x[a-f0-9]{40}$', item):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'{field_name} entries must be EVM-style addresses.')
+        filtered.append(item)
+    return filtered[:100]
 
 
 def billing_provider() -> str:
@@ -3821,6 +3835,12 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='monitoring_demo_scenario must be safe/low_risk/medium_risk/high_risk/flash_loan_like/admin_abuse_like/risky_approval_like.',
         )
+    asset_id = str(payload.get('asset_id', '')).strip() or None
+    if asset_id:
+        try:
+            uuid.UUID(asset_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='asset_id must be a UUID.') from exc
     return {
         'name': name,
         'target_type': target_type,
@@ -3848,6 +3868,7 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
         'monitoring_demo_scenario': monitoring_demo_scenario,
         'is_active': bool(payload.get('is_active', True)),
         'tags': tags,
+        'asset_id': asset_id,
     }
 
 
@@ -3857,7 +3878,7 @@ def _validate_asset_payload(payload: dict[str, Any]) -> dict[str, Any]:
     asset_type = str(payload.get('asset_type', '')).strip().lower()
     chain_network = str(payload.get('chain_network', '')).strip()
     identifier = str(payload.get('identifier', '')).strip()
-    asset_class = str(payload.get('asset_class', '')).strip() or None
+    asset_class = str(payload.get('asset_class', '')).strip().lower() or None
     risk_tier = str(payload.get('risk_tier', 'medium')).strip().lower()
     owner_team = str(payload.get('owner_team', '')).strip() or None
     notes = str(payload.get('notes', '')).strip() or None
@@ -3871,6 +3892,21 @@ def _validate_asset_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='identifier is required (max 180 chars).')
     if risk_tier not in {'low', 'medium', 'high', 'critical'}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='risk_tier must be low/medium/high/critical.')
+    if asset_class is not None and asset_class not in ASSET_CLASSES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='asset_class must be treasury_token/bond_token/money_market_token/rwa_other.')
+    token_contract_address = str(payload.get('token_contract_address', '')).strip().lower() or None
+    if token_contract_address and not re.match(r'^0x[a-f0-9]{40}$', token_contract_address):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='token_contract_address must be an EVM-style address.')
+    baseline_source = str(payload.get('baseline_source', 'manual')).strip().lower()
+    if baseline_source not in BASELINE_SOURCES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='baseline_source must be observed/manual/imported.')
+    baseline_status = str(payload.get('baseline_status', 'missing')).strip().lower()
+    if baseline_status not in {'missing', 'configured', 'observed', 'stale'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='baseline_status must be missing/configured/observed/stale.')
+    baseline_confidence = max(0, min(100, int(_coerce_number(payload.get('baseline_confidence'), 0))))
+    baseline_coverage = max(0, min(100, int(_coerce_number(payload.get('baseline_coverage'), 0))))
+    expected_oracle_freshness_seconds = max(0, int(_coerce_number(payload.get('expected_oracle_freshness_seconds'), 0)))
+    expected_oracle_update_cadence_seconds = max(0, int(_coerce_number(payload.get('expected_oracle_update_cadence_seconds'), 0)))
     tags_raw = payload.get('tags')
     tags = [str(item).strip().lower() for item in tags_raw] if isinstance(tags_raw, list) else []
     tags = [item for item in tags if item][:25]
@@ -3886,6 +3922,26 @@ def _validate_asset_payload(payload: dict[str, Any]) -> dict[str, Any]:
         'notes': notes,
         'enabled': bool(payload.get('enabled', True)),
         'tags': tags,
+        'issuer_name': str(payload.get('issuer_name', '')).strip() or None,
+        'asset_symbol': str(payload.get('asset_symbol', '')).strip() or None,
+        'asset_identifier': str(payload.get('asset_identifier', '')).strip() or None,
+        'token_contract_address': token_contract_address,
+        'custody_wallets': _normalize_address_list(payload.get('custody_wallets'), field_name='custody_wallets'),
+        'treasury_ops_wallets': _normalize_address_list(payload.get('treasury_ops_wallets'), field_name='treasury_ops_wallets'),
+        'oracle_sources': [str(item).strip() for item in (payload.get('oracle_sources') or []) if str(item).strip()][:50] if isinstance(payload.get('oracle_sources'), list) else [],
+        'venue_labels': [str(item).strip() for item in (payload.get('venue_labels') or []) if str(item).strip()][:50] if isinstance(payload.get('venue_labels'), list) else [],
+        'expected_counterparties': _normalize_address_list(payload.get('expected_counterparties'), field_name='expected_counterparties'),
+        'expected_flow_patterns': payload.get('expected_flow_patterns') if isinstance(payload.get('expected_flow_patterns'), dict) else {},
+        'expected_approval_patterns': payload.get('expected_approval_patterns') if isinstance(payload.get('expected_approval_patterns'), dict) else {},
+        'expected_liquidity_baseline': payload.get('expected_liquidity_baseline') if isinstance(payload.get('expected_liquidity_baseline'), dict) else {},
+        'policy_tags': [str(item).strip() for item in (payload.get('policy_tags') or []) if str(item).strip()][:25] if isinstance(payload.get('policy_tags'), list) else [],
+        'jurisdiction_tags': [str(item).strip() for item in (payload.get('jurisdiction_tags') or []) if str(item).strip()][:25] if isinstance(payload.get('jurisdiction_tags'), list) else [],
+        'expected_oracle_freshness_seconds': expected_oracle_freshness_seconds,
+        'expected_oracle_update_cadence_seconds': expected_oracle_update_cadence_seconds,
+        'baseline_status': baseline_status,
+        'baseline_source': baseline_source,
+        'baseline_confidence': baseline_confidence,
+        'baseline_coverage': baseline_coverage,
     }
 
 
@@ -3898,7 +3954,12 @@ def list_assets(request: Request) -> dict[str, Any]:
         workspace_id = workspace_context['workspace_id']
         rows = connection.execute(
             '''
-            SELECT id, name, description, asset_type, chain_network, identifier, asset_class, risk_tier, owner_team, notes, enabled, created_at, updated_at
+            SELECT id, name, description, asset_type, chain_network, identifier, asset_class, risk_tier, owner_team, notes, enabled,
+                   issuer_name, asset_symbol, asset_identifier, token_contract_address, custody_wallets, treasury_ops_wallets, oracle_sources, venue_labels,
+                   expected_counterparties, expected_flow_patterns, expected_approval_patterns, expected_liquidity_baseline,
+                   expected_oracle_freshness_seconds, expected_oracle_update_cadence_seconds, policy_tags, jurisdiction_tags,
+                   baseline_status, baseline_source, baseline_updated_at, baseline_confidence, baseline_coverage,
+                   created_at, updated_at
             FROM assets
             WHERE workspace_id = %s AND deleted_at IS NULL
             ORDER BY created_at DESC
@@ -3939,8 +4000,13 @@ def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         connection.execute(
             '''
             INSERT INTO assets (
-                id, workspace_id, name, description, asset_type, chain_network, identifier, asset_class, risk_tier, owner_team, notes, enabled, created_by_user_id, updated_by_user_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                id, workspace_id, name, description, asset_type, chain_network, identifier, asset_class, risk_tier, owner_team, notes, enabled,
+                issuer_name, asset_symbol, asset_identifier, token_contract_address, custody_wallets, treasury_ops_wallets, oracle_sources, venue_labels,
+                expected_counterparties, expected_flow_patterns, expected_approval_patterns, expected_liquidity_baseline,
+                expected_oracle_freshness_seconds, expected_oracle_update_cadence_seconds, policy_tags, jurisdiction_tags,
+                baseline_status, baseline_source, baseline_updated_at, baseline_confidence, baseline_coverage,
+                created_by_user_id, updated_by_user_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb, %s, %s, NOW(), %s, %s, %s, %s)
             ''',
             (
                 asset_id,
@@ -3955,9 +4021,38 @@ def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 validated['owner_team'],
                 validated['notes'],
                 validated['enabled'],
+                validated['issuer_name'],
+                validated['asset_symbol'],
+                validated['asset_identifier'],
+                validated['token_contract_address'],
+                _json_dumps(validated['custody_wallets']),
+                _json_dumps(validated['treasury_ops_wallets']),
+                _json_dumps(validated['oracle_sources']),
+                _json_dumps(validated['venue_labels']),
+                _json_dumps(validated['expected_counterparties']),
+                _json_dumps(validated['expected_flow_patterns']),
+                _json_dumps(validated['expected_approval_patterns']),
+                _json_dumps(validated['expected_liquidity_baseline']),
+                validated['expected_oracle_freshness_seconds'] or None,
+                validated['expected_oracle_update_cadence_seconds'] or None,
+                _json_dumps(validated['policy_tags']),
+                _json_dumps(validated['jurisdiction_tags']),
+                validated['baseline_status'],
+                validated['baseline_source'],
+                validated['baseline_confidence'],
+                validated['baseline_coverage'],
                 user['id'],
                 user['id'],
             ),
+        )
+        connection.execute(
+            '''
+            INSERT INTO asset_baselines (id, workspace_id, asset_id, status, source, confidence, coverage, details, updated_by_user_id, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW())
+            ON CONFLICT (workspace_id, asset_id)
+            DO UPDATE SET status = EXCLUDED.status, source = EXCLUDED.source, confidence = EXCLUDED.confidence, coverage = EXCLUDED.coverage, details = EXCLUDED.details, updated_by_user_id = EXCLUDED.updated_by_user_id, updated_at = NOW()
+            ''',
+            (str(uuid.uuid4()), workspace_id, asset_id, validated['baseline_status'], validated['baseline_source'], validated['baseline_confidence'], validated['baseline_coverage'], _json_dumps({'expected_counterparties': validated['expected_counterparties'], 'expected_approval_patterns': validated['expected_approval_patterns'], 'expected_flow_patterns': validated['expected_flow_patterns'], 'expected_liquidity_baseline': validated['expected_liquidity_baseline'], 'expected_oracle_freshness_seconds': validated['expected_oracle_freshness_seconds'], 'expected_oracle_update_cadence_seconds': validated['expected_oracle_update_cadence_seconds']}), user['id']),
         )
         for tag in validated['tags']:
             connection.execute(
@@ -4000,12 +4095,30 @@ def update_asset(asset_id: str, payload: dict[str, Any], request: Request) -> di
         connection.execute(
             '''
             UPDATE assets
-            SET name = %s, description = %s, asset_type = %s, chain_network = %s, identifier = %s, asset_class = %s, risk_tier = %s, owner_team = %s, notes = %s, enabled = %s, updated_by_user_id = %s, updated_at = NOW()
+            SET name = %s, description = %s, asset_type = %s, chain_network = %s, identifier = %s, asset_class = %s, risk_tier = %s, owner_team = %s, notes = %s, enabled = %s,
+                issuer_name = %s, asset_symbol = %s, asset_identifier = %s, token_contract_address = %s, custody_wallets = %s::jsonb, treasury_ops_wallets = %s::jsonb,
+                oracle_sources = %s::jsonb, venue_labels = %s::jsonb, expected_counterparties = %s::jsonb, expected_flow_patterns = %s::jsonb, expected_approval_patterns = %s::jsonb,
+                expected_liquidity_baseline = %s::jsonb, expected_oracle_freshness_seconds = %s, expected_oracle_update_cadence_seconds = %s, policy_tags = %s::jsonb, jurisdiction_tags = %s::jsonb,
+                baseline_status = %s, baseline_source = %s, baseline_updated_at = NOW(), baseline_confidence = %s, baseline_coverage = %s,
+                updated_by_user_id = %s, updated_at = NOW()
             WHERE id = %s
             ''',
             (
-                validated['name'], validated['description'], validated['asset_type'], validated['chain_network'], validated['identifier'], validated['asset_class'], validated['risk_tier'], validated['owner_team'], validated['notes'], validated['enabled'], user['id'], asset_id,
+                validated['name'], validated['description'], validated['asset_type'], validated['chain_network'], validated['identifier'], validated['asset_class'], validated['risk_tier'], validated['owner_team'], validated['notes'], validated['enabled'],
+                validated['issuer_name'], validated['asset_symbol'], validated['asset_identifier'], validated['token_contract_address'], _json_dumps(validated['custody_wallets']), _json_dumps(validated['treasury_ops_wallets']),
+                _json_dumps(validated['oracle_sources']), _json_dumps(validated['venue_labels']), _json_dumps(validated['expected_counterparties']), _json_dumps(validated['expected_flow_patterns']), _json_dumps(validated['expected_approval_patterns']),
+                _json_dumps(validated['expected_liquidity_baseline']), validated['expected_oracle_freshness_seconds'] or None, validated['expected_oracle_update_cadence_seconds'] or None, _json_dumps(validated['policy_tags']), _json_dumps(validated['jurisdiction_tags']),
+                validated['baseline_status'], validated['baseline_source'], validated['baseline_confidence'], validated['baseline_coverage'], user['id'], asset_id,
             ),
+        )
+        connection.execute(
+            '''
+            INSERT INTO asset_baselines (id, workspace_id, asset_id, status, source, confidence, coverage, details, updated_by_user_id, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW())
+            ON CONFLICT (workspace_id, asset_id)
+            DO UPDATE SET status = EXCLUDED.status, source = EXCLUDED.source, confidence = EXCLUDED.confidence, coverage = EXCLUDED.coverage, details = EXCLUDED.details, updated_by_user_id = EXCLUDED.updated_by_user_id, updated_at = NOW()
+            ''',
+            (str(uuid.uuid4()), workspace_id, asset_id, validated['baseline_status'], validated['baseline_source'], validated['baseline_confidence'], validated['baseline_coverage'], _json_dumps({'expected_counterparties': validated['expected_counterparties'], 'expected_approval_patterns': validated['expected_approval_patterns'], 'expected_flow_patterns': validated['expected_flow_patterns'], 'expected_liquidity_baseline': validated['expected_liquidity_baseline'], 'expected_oracle_freshness_seconds': validated['expected_oracle_freshness_seconds'], 'expected_oracle_update_cadence_seconds': validated['expected_oracle_update_cadence_seconds']}), user['id']),
         )
         connection.execute('DELETE FROM asset_tags WHERE asset_id = %s', (asset_id,))
         for tag in validated['tags']:
@@ -4039,6 +4152,7 @@ def list_targets(request: Request) -> dict[str, Any]:
         rows = connection.execute(
             '''
             SELECT id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
+                   asset_id,
                    chain_id, target_metadata,
                    monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents,
                    notification_channels, monitoring_demo_scenario, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
@@ -4078,15 +4192,23 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         count_row = connection.execute('SELECT COUNT(*) AS count FROM targets WHERE workspace_id = %s AND deleted_at IS NULL', (workspace_id,)).fetchone()
         if int((count_row or {}).get('count') or 0) >= int(entitlements.get('max_targets') or 0):
             raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Target limit reached for current plan.')
+        if validated['asset_id'] is not None:
+            asset_row = connection.execute(
+                'SELECT id FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
+                (validated['asset_id'], workspace_id),
+            ).fetchone()
+            if asset_row is None:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='asset_id must reference an asset in this workspace.')
         target_id = str(uuid.uuid4())
         connection.execute(
             '''
             INSERT INTO targets (
                 id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
+                asset_id,
                 chain_id, target_metadata,
                 monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents, notification_channels,
                 monitoring_demo_scenario, monitored_by_workspace_id, is_active, created_by_user_id, updated_by_user_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::uuid, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
             ''',
             (
                 target_id,
@@ -4100,6 +4222,7 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 validated['owner_notes'],
                 validated['severity_preference'],
                 validated['enabled'],
+                validated['asset_id'],
                 validated['chain_id'],
                 _json_dumps(validated['target_metadata']),
                 validated['monitoring_enabled'],
@@ -4162,17 +4285,24 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
         if 'monitoring_demo_scenario' not in merged_payload:
             merged_payload['monitoring_demo_scenario'] = dict(found).get('monitoring_demo_scenario')
         validated = _validate_target_payload(merged_payload)
+        if validated['asset_id'] is not None:
+            asset_row = connection.execute(
+                'SELECT id, name FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
+                (validated['asset_id'], workspace_id),
+            ).fetchone()
+            if asset_row is None:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='asset_id must reference an asset in this workspace.')
         connection.execute(
             '''
             UPDATE targets
-            SET name = %s, target_type = %s, chain_network = %s, contract_identifier = %s, wallet_address = %s, asset_type = %s, owner_notes = %s, severity_preference = %s, enabled = %s,
+            SET name = %s, target_type = %s, chain_network = %s, contract_identifier = %s, wallet_address = %s, asset_type = %s, owner_notes = %s, severity_preference = %s, enabled = %s, asset_id = %s::uuid,
                 chain_id = %s, target_metadata = %s::jsonb,
                 monitoring_enabled = %s, monitoring_mode = %s, monitoring_interval_seconds = %s, severity_threshold = %s, auto_create_alerts = %s, auto_create_incidents = %s,
                 notification_channels = %s::jsonb, monitoring_demo_scenario = %s, monitored_by_workspace_id = %s, is_active = %s, updated_by_user_id = %s, updated_at = NOW()
             WHERE id = %s
             ''',
             (
-                validated['name'], validated['target_type'], validated['chain_network'], validated['contract_identifier'], validated['wallet_address'], validated['asset_type'], validated['owner_notes'], validated['severity_preference'], validated['enabled'],
+                validated['name'], validated['target_type'], validated['chain_network'], validated['contract_identifier'], validated['wallet_address'], validated['asset_type'], validated['owner_notes'], validated['severity_preference'], validated['enabled'], validated['asset_id'],
                 validated['chain_id'], _json_dumps(validated['target_metadata']),
                 validated['monitoring_enabled'], validated['monitoring_mode'], validated['monitoring_interval_seconds'], validated['severity_threshold'], validated['auto_create_alerts'], validated['auto_create_incidents'],
                 _json_dumps(validated['notification_channels']), validated['monitoring_demo_scenario'], workspace_id, validated['is_active'], user['id'], target_id,
@@ -4539,6 +4669,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export not found.')
     rows: list[dict[str, Any]]
+    filters = job.get('filters') if isinstance(job.get('filters'), dict) else {}
     match str(job['export_type']):
         case 'history':
             rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, analysis_type, service_name, status, title, summary, created_at FROM analysis_runs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
@@ -4546,6 +4677,43 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, alert_type, title, severity, status, module_key, target_id, created_at FROM alerts WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
         case 'findings' | 'report':
             rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, analysis_type, status, title, summary, created_at FROM analysis_runs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
+        case 'feature1_evidence':
+            target_id = str(filters.get('target_id', '')).strip() or None
+            target = connection.execute(
+                '''
+                SELECT t.*, a.name AS asset_name, a.asset_class, a.asset_symbol, a.identifier AS asset_identifier
+                FROM targets t
+                LEFT JOIN assets a ON a.id = t.asset_id
+                WHERE t.workspace_id = %s
+                  AND t.deleted_at IS NULL
+                  AND (%s::uuid IS NULL OR t.id = %s::uuid)
+                ORDER BY COALESCE(t.last_checked_at, t.created_at) DESC
+                LIMIT 1
+                ''',
+                (workspace_id, target_id, target_id),
+            ).fetchone()
+            alerts = connection.execute(
+                'SELECT id, target_id, title, severity, status, summary, payload, created_at FROM alerts WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 20',
+                (workspace_id,),
+            ).fetchall()
+            incidents = connection.execute(
+                'SELECT id, target_id, title, severity, status, summary, linked_alert_ids, created_at FROM incidents WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 20',
+                (workspace_id,),
+            ).fetchall()
+            audits = connection.execute(
+                "SELECT id, action, entity_type, entity_id, metadata, created_at FROM audit_logs WHERE workspace_id = %s AND action IN ('asset.create','asset.update','target.update','export.generate') ORDER BY created_at DESC LIMIT 50",
+                (workspace_id,),
+            ).fetchall()
+            rows = [{
+                'generated_at': utc_now_iso(),
+                'workspace_id': workspace_id,
+                'target': _json_safe_value(dict(target)) if target else None,
+                'alerts': [_json_safe_value(dict(item)) for item in alerts],
+                'incidents': [_json_safe_value(dict(item)) for item in incidents],
+                'audit_trail': [_json_safe_value(dict(item)) for item in audits],
+                'real_anomaly_observed': any(str((item.get('payload') or {}).get('source', '')).lower() == 'live' and bool((item.get('payload') or {}).get('anomaly_basis')) for item in [_json_safe_value(dict(row)) for row in alerts]),
+                'sales_safe_claim': 'anomaly_detected_from_real_evidence' if any(str((item.get('payload') or {}).get('source', '')).lower() == 'live' and bool((item.get('payload') or {}).get('anomaly_basis')) for item in [_json_safe_value(dict(row)) for row in alerts]) else 'insufficient_real_anomaly_evidence',
+            }]
         case _:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export type.')
     storage = load_export_storage()

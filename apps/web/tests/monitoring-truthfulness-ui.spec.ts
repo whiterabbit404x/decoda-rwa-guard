@@ -39,5 +39,8 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(incidents).toContain('Monitoring degraded. Incident absence does not prove safety.');
     expect(alerts).not.toContain('All clear');
     expect(incidents).not.toContain('Operating normally');
+    expect(alerts).toContain('Protected asset:');
+    expect(alerts).toContain('Anomaly basis:');
+    expect(alerts).toContain('Evidence: tx');
   });
 });

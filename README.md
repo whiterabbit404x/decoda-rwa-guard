@@ -1533,6 +1533,10 @@ Validation explicitly separates dependency-missing, browser-binaries-missing, an
 
 See `docs/LAUNCH_VALIDATION_CHECKLIST.md` for pilot vs broad-sale vs enterprise gating criteria.
 
+## Feature 1: asset-specific live detection
+
+Feature 1 now binds monitoring to **workspace-owned assets** by linking monitored targets to asset profiles (`target.asset_id -> assets.id`). Detection outcomes include asset-linked anomaly basis and observed evidence references (event/tx/block) instead of generic risk-only language. Baselines are stored per asset (status/source/confidence/coverage), and missing/stale baseline states are surfaced explicitly in findings. Operators can generate a reusable evidence bundle via `POST /exports/feature1-evidence` or run `python services/api/scripts/run_feature1_real_asset_evidence.py` for a single-command staging proof run. If no real anomaly is observed, the script returns an inconclusive result instead of fake success.
+
 ## Demo mode vs Live mode
 
 - **Demo mode (`MONITORING_INGESTION_MODE=demo`)** uses deterministic sample scenarios for product walkthroughs only.

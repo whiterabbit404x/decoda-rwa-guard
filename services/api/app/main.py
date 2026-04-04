@@ -1709,6 +1709,16 @@ def assets_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_asset(payload, request))
 
 
+@app.get('/asset-profiles', summary='List workspace asset profiles')
+def asset_profiles_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_assets(request))
+
+
+@app.post('/asset-profiles', summary='Create workspace asset profile')
+def asset_profiles_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_asset(payload, request))
+
+
 @app.get('/assets/{asset_id}', summary='Get workspace asset')
 def assets_get(asset_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_asset(asset_id, request))
@@ -1716,6 +1726,11 @@ def assets_get(asset_id: str, request: Request) -> dict[str, Any]:
 
 @app.patch('/assets/{asset_id}', summary='Update workspace asset')
 def assets_patch(asset_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: update_asset(asset_id, payload, request))
+
+
+@app.patch('/asset-profiles/{asset_id}', summary='Update workspace asset profile')
+def asset_profiles_patch(asset_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: update_asset(asset_id, payload, request))
 
 
@@ -1807,6 +1822,11 @@ def exports_findings(payload: dict[str, Any], request: Request) -> dict[str, Any
 @app.post('/exports/report', summary='Export report')
 def exports_report(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_export_job('report', payload, request))
+
+
+@app.post('/exports/feature1-evidence', summary='Export Feature 1 asset evidence bundle')
+def exports_feature1_evidence(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_export_job('feature1_evidence', payload, request))
 
 
 @app.get('/exports', summary='List workspace exports')
