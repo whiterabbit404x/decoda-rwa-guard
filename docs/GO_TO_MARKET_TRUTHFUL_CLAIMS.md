@@ -31,6 +31,7 @@ Do **not** claim live protection when:
 - LIVE/HYBRID never substitute demo payloads for missing provider data.
 - No provider evidence is treated as `no_evidence` / `degraded` / `failed`, never as safe or normal.
 - No alert is never treated as proof of safety.
+- “No confirmed anomaly” messaging is only valid when real evidence was observed and is never equivalent to “safe”.
 - Degraded/unknown states are expected, persisted, and visible to operators.
 
 ## Operator proof checklist

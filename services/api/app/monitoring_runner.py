@@ -378,6 +378,8 @@ def _process_single_event(
             else ('DETECTION_CONFIRMED' if has_confirmed_anomaly else 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE')
         )
     )
+    truthfulness_state = 'not_claim_safe'
+    response['claim_safe'] = False
     response_metadata.update(
         {
             'monitoring_analysis_type': f'monitoring_{kind}',
@@ -386,7 +388,7 @@ def _process_single_event(
             'monitoring_demo_scenario': configured_scenario,
             'evidence_state': 'demo' if response_metadata.get('ingestion_source') == 'demo' else ('degraded' if response.get('degraded') else 'real'),
             'confidence_basis': 'demo_scenario' if response_metadata.get('ingestion_source') == 'demo' else ('none' if response.get('degraded') else 'provider_evidence'),
-            'truthfulness_state': 'claim_safe' if bool(response.get('claim_safe')) else 'not_claim_safe',
+            'truthfulness_state': truthfulness_state,
             'detection_outcome': detection_outcome,
         }
     )
@@ -450,13 +452,15 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     fallback_count = 0
     incidents_created = 0
     run_ids: list[str] = []
-    last_status = 'no_events'
+    last_status = str(provider_result.status or 'no_evidence')
     last_run_id: str | None = None
     last_alert_at: datetime | None = None
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
     checkpoint_at = checkpoint
     latest_processed_block = int(target.get('watcher_last_observed_block') or 0)
-    source_status = 'active' if provider_result.evidence_state in {'REAL_EVIDENCE', 'DEMO_EVIDENCE'} else 'degraded'
+    source_status = 'active' if provider_result.evidence_state in {'REAL_EVIDENCE', 'DEMO_EVIDENCE'} else (
+        'no_evidence' if provider_result.evidence_state == 'NO_EVIDENCE' else 'degraded'
+    )
     degraded_reason: str | None = provider_result.degraded_reason
     configured_scenario = monitoring_scenario(target)
     logger.info(
@@ -510,7 +514,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             incidents_created += 1
 
     if not events and provider_result.mode in {'live', 'hybrid'} and str(target.get('target_type') or '').lower() in {'wallet', 'contract'}:
-        source_status = 'degraded'
+        source_status = 'no_evidence' if provider_result.status == 'no_evidence' else 'degraded'
         degraded_reason = provider_result.degraded_reason or 'no_live_events_observed'
         last_status = 'no_evidence' if provider_result.status == 'no_evidence' else 'degraded'
     if events and provider_result.synthetic and provider_result.mode in {'live', 'hybrid'}:
@@ -1267,10 +1271,17 @@ def monitoring_runtime_status() -> dict[str, Any]:
     health = get_monitoring_health()
     claim = production_claim_validator()
     recent_evidence_state = claim.get('recent_evidence_state')
-    provider_health = 'degraded' if health.get('degraded') or recent_evidence_state in {'missing', 'no_evidence', 'degraded', 'failed'} else 'healthy'
+    recent_real_event_count = int(claim.get('recent_real_event_count') or 0)
+    recent_truthfulness_state = str(claim.get('recent_truthfulness_state') or 'unknown_risk')
+    evidence_gap = recent_evidence_state in {'missing', 'no_evidence', 'degraded', 'failed'} or recent_real_event_count <= 0 or recent_truthfulness_state == 'unknown_risk'
+    provider_health = 'degraded' if health.get('degraded') or evidence_gap else 'healthy'
+    runtime_mode = str(health.get('operational_mode') or claim.get('operational_mode') or 'DEMO').upper()
+    configured_mode = str(health.get('mode') or claim.get('mode') or 'demo').upper()
+    if configured_mode in {'LIVE', 'HYBRID'} and evidence_gap:
+        runtime_mode = 'DEGRADED'
     return {
-        'mode': health.get('operational_mode') or claim.get('operational_mode'),
-        'configured_mode': str(health.get('mode') or claim.get('mode') or 'demo').upper(),
+        'mode': runtime_mode,
+        'configured_mode': configured_mode,
         'source_type': health.get('source_type') or claim.get('source_type'),
         'provider_health': provider_health,
         'provider_reachable': bool(claim.get('checks', {}).get('evm_rpc_reachable')),
