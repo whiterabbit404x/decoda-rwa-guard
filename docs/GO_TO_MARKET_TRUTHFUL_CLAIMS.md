@@ -29,10 +29,12 @@ Do **not** claim live protection when:
 
 - DEMO mode is strictly synthetic and always tagged as synthetic.
 - LIVE/HYBRID never substitute demo payloads for missing provider data.
+- Shared monitoring truth states are enforced across provider/detector/validator/UI: mode (`DEMO`/`LIVE`/`HYBRID`/`DEGRADED`), evidence (`REAL_EVIDENCE`/`NO_EVIDENCE`/`DEGRADED_EVIDENCE`/`FAILED_EVIDENCE`/`DEMO_EVIDENCE`), and truthfulness (`CLAIM_SAFE`/`NOT_CLAIM_SAFE`/`UNKNOWN_RISK`).
 - No provider evidence is treated as `no_evidence` / `degraded` / `failed`, never as safe or normal.
 - No alert is never treated as proof of safety.
 - “No confirmed anomaly” messaging is only valid when real evidence was observed and is never equivalent to “safe”.
 - Degraded/unknown states are expected, persisted, and visible to operators.
+- File-by-file runtime contamination removals are tracked in `docs/FEATURE1_RUNTIME_CONTAMINATION_AUDIT.md`.
 
 ## Operator proof checklist
 

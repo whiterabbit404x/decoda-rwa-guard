@@ -14,6 +14,7 @@ from services.api.app.monitoring_mode import (
     is_demo_mode,
     resolve_monitoring_mode,
 )
+from services.api.app.monitoring_truth import api_mode
 
 MONITORING_DEMO_SCENARIOS = {
     'safe',
@@ -36,11 +37,6 @@ SCENARIO_EXPECTED_RISK = {
 }
 
 logger = logging.getLogger(__name__)
-
-RUNTIME_STATES = {'LIVE', 'DEMO', 'HYBRID', 'DEGRADED'}
-EVIDENCE_STATES = {'REAL_EVIDENCE', 'NO_EVIDENCE', 'DEGRADED_EVIDENCE', 'FAILED_EVIDENCE', 'DEMO_EVIDENCE'}
-TRUTHFULNESS_STATES = {'CLAIM_SAFE', 'NOT_CLAIM_SAFE', 'UNKNOWN_RISK'}
-
 
 @dataclass
 class ActivityEvent:
@@ -75,29 +71,27 @@ class ActivityProviderResult:
     claim_safe: bool
 
     def __post_init__(self) -> None:
-        if self.mode in {'live', 'hybrid'} and self.synthetic:
+        normalized_mode = api_mode(self.mode)
+        if normalized_mode in {'LIVE', 'HYBRID'} and self.synthetic:
             raise MonitoringModeError('live/hybrid monitoring result cannot be synthetic')
-        if self.mode == 'demo' and not self.synthetic:
+        if normalized_mode == 'DEMO' and not self.synthetic:
             raise MonitoringModeError('demo monitoring result must be synthetic')
         if self.status == 'live' and not self.evidence_present:
             raise MonitoringModeError('live monitoring result requires provider evidence')
         if not self.evidence_present and self.claim_safe:
             raise MonitoringModeError('claim_safe cannot be true when evidence is missing')
-        if self.evidence_state not in EVIDENCE_STATES:
+        if self.evidence_state not in {'REAL_EVIDENCE', 'NO_EVIDENCE', 'DEGRADED_EVIDENCE', 'FAILED_EVIDENCE', 'DEMO_EVIDENCE'}:
             raise MonitoringModeError(f'invalid evidence_state: {self.evidence_state}')
-        if self.truthfulness_state not in TRUTHFULNESS_STATES:
+        if self.truthfulness_state not in {'CLAIM_SAFE', 'NOT_CLAIM_SAFE', 'UNKNOWN_RISK'}:
             raise MonitoringModeError(f'invalid truthfulness_state: {self.truthfulness_state}')
-        if self.mode in {'live', 'hybrid'} and self.evidence_state == 'REAL_EVIDENCE' and not self.evidence_present:
+        if normalized_mode in {'LIVE', 'HYBRID'} and self.evidence_state == 'REAL_EVIDENCE' and not self.evidence_present:
             raise MonitoringModeError('REAL_EVIDENCE requires evidence_present=true')
-        if self.mode in {'live', 'hybrid'} and not self.evidence_present and self.truthfulness_state == 'CLAIM_SAFE':
+        if normalized_mode in {'LIVE', 'HYBRID'} and not self.evidence_present and self.truthfulness_state == 'CLAIM_SAFE':
             raise MonitoringModeError('live/hybrid cannot claim safe without real evidence')
 
 
 def monitoring_ingestion_mode() -> str:
-    mode = resolve_monitoring_mode()
-    if mode == 'degraded':
-        return 'hybrid'
-    return mode
+    return resolve_monitoring_mode()
 
 
 def live_monitoring_enabled() -> bool:
@@ -562,7 +556,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             reason_code='NO_PROVIDER_EVIDENCE',
             claim_safe=False,
         )
-    if mode == 'live' and runtime['degraded']:
+    if mode in {'live', 'degraded'} and runtime['degraded']:
         return ActivityProviderResult(
             mode=mode,
             status='degraded',
@@ -579,6 +573,28 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             checkpoint=None,
             checkpoint_age_seconds=None,
             degraded_reason=str(runtime.get('reason') or 'live ingestion degraded'),
+            error_code=None,
+            source_type='unknown',
+            reason_code='RUNTIME_DEGRADED',
+            claim_safe=False,
+        )
+    if mode == 'degraded':
+        return ActivityProviderResult(
+            mode=mode,
+            status='degraded',
+            evidence_state='DEGRADED_EVIDENCE',
+            truthfulness_state='UNKNOWN_RISK',
+            synthetic=False,
+            provider_name='evm_activity_provider',
+            provider_kind='rpc',
+            evidence_present=False,
+            recent_real_event_count=0,
+            last_real_event_at=None,
+            events=[],
+            latest_block=None,
+            checkpoint=None,
+            checkpoint_age_seconds=None,
+            degraded_reason=str(runtime.get('reason') or 'degraded_mode_active'),
             error_code=None,
             source_type='unknown',
             reason_code='RUNTIME_DEGRADED',

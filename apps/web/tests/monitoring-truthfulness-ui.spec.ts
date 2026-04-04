@@ -1,9 +1,11 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
-const appRoot = path.join(process.cwd(), 'apps/web/app');
+const appRoot = existsSync(path.join(process.cwd(), 'apps/web/app'))
+  ? path.join(process.cwd(), 'apps/web/app')
+  : path.join(process.cwd(), 'app');
 
 function source(relativePath: string): string {
   return readFileSync(path.join(appRoot, relativePath), 'utf8');
@@ -16,6 +18,8 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(banner).toContain("const degraded = status.mode === 'DEGRADED' || noEvidence;");
     expect(banner).toContain('No real evidence observed yet.');
     expect(banner).toContain('No confirmed anomaly detected in observed evidence.');
+    expect(banner).not.toContain('All clear');
+    expect(banner).not.toContain('Healthy');
   });
 
   test('overview panel does not treat zero alerts as safety', async () => {
@@ -23,5 +27,6 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(panel).toContain("realEventCount > 0 && truthfulnessState !== 'unknown_risk'");
     expect(panel).toContain('Zero alerts is not proof of safety.');
     expect(panel).toContain('No real evidence observed yet.');
+    expect(panel).not.toContain('Operating normally');
   });
 });

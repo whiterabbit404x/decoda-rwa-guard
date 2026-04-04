@@ -18,6 +18,7 @@ from services.api.app.activity_providers import (
 )
 from services.api.app.evm_activity_provider import JsonRpcClient
 from services.api.app.monitoring_mode import is_demo_mode, is_hybrid_mode, is_live_mode
+from services.api.app.monitoring_truth import ui_evidence_state, ui_truthfulness_state
 from services.api.app.pilot import (
     _json_dumps,
     _json_safe_value,
@@ -140,8 +141,32 @@ def _threat_call(kind: ThreatKind, payload: dict[str, Any], *, target_id: str) -
         }
 
 
+def _fallback_response(kind: ThreatKind, payload: dict[str, Any], *, diagnostics: dict[str, Any]) -> dict[str, Any]:
+    metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+    return {
+        'analysis_type': kind,
+        'score': 100,
+        'severity': 'critical',
+        'matched_patterns': [],
+        'explanation': 'Threat analysis unavailable; monitoring degraded until provider evidence recovers.',
+        'recommended_action': 'review',
+        'reasons': ['analysis_unavailable'],
+        'source': 'fallback',
+        'degraded': True,
+        'analysis_source': 'degraded',
+        'analysis_status': 'analysis_failed',
+        'metadata': {
+            'ingestion_source': metadata.get('ingestion_source', 'unknown'),
+            'fallback_reason': diagnostics.get('fallback_reason') or 'threat_engine_unavailable',
+            'fallback_exception_type': diagnostics.get('fallback_exception_type'),
+            'fallback_exception_message': diagnostics.get('fallback_exception_message'),
+        },
+    }
+
+
 def _normalize_event(target: dict[str, Any], event: ActivityEvent, monitoring_run_id: str, workspace: dict[str, Any]) -> tuple[ThreatKind, dict[str, Any]]:
     kind = event.kind if event.kind in {'contract', 'transaction', 'market'} else 'transaction'
+    scenario = monitoring_scenario(target)
     payload = {
         **event.payload,
         'target_id': str(target['id']),
@@ -166,11 +191,12 @@ def _normalize_event(target: dict[str, Any], event: ActivityEvent, monitoring_ru
             },
             'provider_cursor': event.cursor,
             'event_id': event.event_id,
-            'monitoring_scenario': monitoring_scenario(target),
-            'monitoring_demo_scenario': monitoring_scenario(target),
-            'expected_risk_class': SCENARIO_EXPECTED_RISK.get(monitoring_scenario(target) or '', 'default'),
+            'monitoring_scenario': scenario,
+            'expected_risk_class': SCENARIO_EXPECTED_RISK.get(scenario or '', 'default'),
         },
     }
+    if scenario is not None:
+        payload['metadata']['monitoring_demo_scenario'] = scenario
     normalized, _ = normalize_threat_payload(kind, payload, include_original=False)
     logger.info(
         'monitoring payload built target=%s event=%s analysis_type=%s payload_shape=%s',
@@ -343,25 +369,9 @@ def _process_single_event(
         elif is_live_mode(ingestion_runtime['mode']):
             WORKER_STATE['metrics']['fallback_runs_live'] += 1
             WORKER_STATE['metrics']['degraded_runs'] += 1
-        response = {
-            'analysis_type': kind,
-            'score': 100,
-            'severity': 'critical',
-            'matched_patterns': [],
-            'explanation': 'Threat analysis unavailable; monitoring degraded until provider evidence recovers.',
-            'recommended_action': 'review',
-            'reasons': ['analysis_unavailable'],
-            'source': 'degraded',
-            'degraded': True,
-            'analysis_source': 'degraded',
-            'analysis_status': 'analysis_failed',
-            'degraded_reason': diagnostics.get('fallback_reason') or 'threat_engine_unavailable',
-            'metadata': {
-                'ingestion_source': normalized.get('metadata', {}).get('ingestion_source', 'unknown'),
-                'fallback_exception_type': diagnostics.get('fallback_exception_type'),
-                'fallback_exception_message': diagnostics.get('fallback_exception_message'),
-            },
-        }
+        response = _fallback_response(kind, normalized, diagnostics=diagnostics)
+        response['source'] = 'degraded'
+        response['degraded_reason'] = diagnostics.get('fallback_reason') or 'threat_engine_unavailable'
     else:
         response['analysis_source'] = str(response.get('source') or 'live')
         response['analysis_status'] = 'completed'
@@ -522,18 +532,8 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         degraded_reason = 'synthetic_leak_detected'
         last_status = 'degraded'
 
-    recent_evidence_state = {
-        'REAL_EVIDENCE': 'real',
-        'DEMO_EVIDENCE': 'demo',
-        'DEGRADED_EVIDENCE': 'degraded',
-        'FAILED_EVIDENCE': 'failed',
-        'NO_EVIDENCE': 'no_evidence',
-    }.get(provider_result.evidence_state, 'missing')
-    recent_truthfulness_state = {
-        'CLAIM_SAFE': 'claim_safe',
-        'NOT_CLAIM_SAFE': 'not_claim_safe',
-        'UNKNOWN_RISK': 'unknown_risk',
-    }.get(provider_result.truthfulness_state, 'unknown_risk')
+    recent_evidence_state = ui_evidence_state(provider_result.evidence_state)
+    recent_truthfulness_state = ui_truthfulness_state(provider_result.truthfulness_state)
     recent_confidence_basis = (
         'demo_scenario'
         if provider_result.synthetic
@@ -1279,15 +1279,27 @@ def monitoring_runtime_status() -> dict[str, Any]:
     configured_mode = str(health.get('mode') or claim.get('mode') or 'demo').upper()
     if configured_mode in {'LIVE', 'HYBRID'} and evidence_gap:
         runtime_mode = 'DEGRADED'
+    claim_safe = bool(
+        claim.get('status') == 'PASS'
+        and str(claim.get('recent_evidence_state') or '') == 'real'
+        and int(claim.get('recent_real_event_count') or 0) > 0
+        and str(claim.get('recent_truthfulness_state') or '') != 'unknown_risk'
+    )
     return {
         'mode': runtime_mode,
         'configured_mode': configured_mode,
+        'status': 'MONITORING_DEGRADED' if evidence_gap else 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
         'source_type': health.get('source_type') or claim.get('source_type'),
         'provider_health': provider_health,
         'provider_reachable': bool(claim.get('checks', {}).get('evm_rpc_reachable')),
+        'claim_safe': claim_safe,
+        'synthetic': bool(claim.get('synthetic_leak_detected')),
+        'evidence_present': not evidence_gap,
         'latest_processed_block': health.get('latest_processed_block'),
         'checkpoint_lag_blocks': health.get('checkpoint_lag_blocks'),
         'checkpoint_age_seconds': health.get('checkpoint_age_seconds'),
+        'provider_name': 'evm_activity_provider',
+        'provider_kind': 'rpc',
         'degraded_reason': health.get('degraded_reason') or claim.get('reason'),
         'sales_claims_allowed': bool(claim.get('sales_claims_allowed')),
         'claim_validator_status': claim.get('status'),
