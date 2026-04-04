@@ -468,8 +468,10 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
     checkpoint_at = checkpoint
     latest_processed_block = int(target.get('watcher_last_observed_block') or 0)
-    source_status = 'active' if provider_result.evidence_state in {'REAL_EVIDENCE', 'DEMO_EVIDENCE'} else (
-        'no_evidence' if provider_result.evidence_state == 'NO_EVIDENCE' else 'degraded'
+    source_status = (
+        'active'
+        if provider_result.evidence_state in {'REAL_EVIDENCE', 'DEMO_EVIDENCE'}
+        else ('no_evidence' if provider_result.evidence_state == 'NO_EVIDENCE' else ('failed' if provider_result.evidence_state == 'FAILED_EVIDENCE' else 'degraded'))
     )
     degraded_reason: str | None = provider_result.degraded_reason
     configured_scenario = monitoring_scenario(target)
@@ -524,9 +526,18 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             incidents_created += 1
 
     if not events and provider_result.mode in {'live', 'hybrid'} and str(target.get('target_type') or '').lower() in {'wallet', 'contract'}:
-        source_status = 'no_evidence' if provider_result.status == 'no_evidence' else 'degraded'
-        degraded_reason = provider_result.degraded_reason or 'no_live_events_observed'
-        last_status = 'no_evidence' if provider_result.status == 'no_evidence' else 'degraded'
+        if provider_result.status == 'failed':
+            source_status = 'failed'
+            degraded_reason = provider_result.degraded_reason or 'provider_failed'
+            last_status = 'failed'
+        elif provider_result.status == 'no_evidence':
+            source_status = 'no_evidence'
+            degraded_reason = provider_result.degraded_reason or 'no_live_events_observed'
+            last_status = 'no_evidence'
+        else:
+            source_status = 'degraded'
+            degraded_reason = provider_result.degraded_reason or 'monitoring_degraded'
+            last_status = 'degraded'
     if events and provider_result.synthetic and provider_result.mode in {'live', 'hybrid'}:
         source_status = 'degraded'
         degraded_reason = 'synthetic_leak_detected'
@@ -1289,6 +1300,7 @@ def monitoring_runtime_status() -> dict[str, Any]:
         'mode': runtime_mode,
         'configured_mode': configured_mode,
         'status': 'MONITORING_DEGRADED' if evidence_gap else 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
+        'detection_outcome': 'MONITORING_DEGRADED' if evidence_gap else 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
         'source_type': health.get('source_type') or claim.get('source_type'),
         'provider_health': provider_health,
         'provider_reachable': bool(claim.get('checks', {}).get('evm_rpc_reachable')),

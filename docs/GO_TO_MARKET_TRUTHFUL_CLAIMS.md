@@ -30,7 +30,9 @@ Do **not** claim live protection when:
 - DEMO mode is strictly synthetic and always tagged as synthetic.
 - LIVE/HYBRID never substitute demo payloads for missing provider data.
 - Shared monitoring truth states are enforced across provider/detector/validator/UI: mode (`DEMO`/`LIVE`/`HYBRID`/`DEGRADED`), evidence (`REAL_EVIDENCE`/`NO_EVIDENCE`/`DEGRADED_EVIDENCE`/`FAILED_EVIDENCE`/`DEMO_EVIDENCE`), and truthfulness (`CLAIM_SAFE`/`NOT_CLAIM_SAFE`/`UNKNOWN_RISK`).
+- Detection outcomes are explicit and typed (`DETECTION_CONFIRMED`, `NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE`, `NO_EVIDENCE`, `MONITORING_DEGRADED`, `ANALYSIS_FAILED`, `DEMO_ONLY`) so empty outputs cannot be interpreted as calm/healthy defaults.
 - No provider evidence is treated as `no_evidence` / `degraded` / `failed`, never as safe or normal.
+- \"No confirmed anomaly\" is only valid when backed by recent real evidence; it is never equivalent to a global safety claim.
 - No alert is never treated as proof of safety.
 - “No confirmed anomaly” messaging is only valid when real evidence was observed and is never equivalent to “safe”.
 - Degraded/unknown states are expected, persisted, and visible to operators.

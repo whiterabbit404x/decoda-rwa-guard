@@ -29,4 +29,15 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(panel).toContain('No real evidence observed yet.');
     expect(panel).not.toContain('Operating normally');
   });
+
+  test('alerts and incidents empty states do not present no-data as safe in live/hybrid', async () => {
+    const alerts = source('(product)/alerts-page-client.tsx');
+    const incidents = source('(product)/incidents-page-client.tsx');
+    expect(alerts).toContain('Zero alerts is not proof of safety.');
+    expect(alerts).toContain('No real evidence observed yet.');
+    expect(incidents).toContain('Zero incidents is not proof of safety.');
+    expect(incidents).toContain('Monitoring degraded. Incident absence does not prove safety.');
+    expect(alerts).not.toContain('All clear');
+    expect(incidents).not.toContain('Operating normally');
+  });
 });

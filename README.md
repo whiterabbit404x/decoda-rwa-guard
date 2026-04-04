@@ -1543,12 +1543,15 @@ See `docs/LAUNCH_VALIDATION_CHECKLIST.md` for pilot vs broad-sale vs enterprise 
 - Live/hybrid monitoring never fabricates synthetic-success analysis when providers fail; failures are persisted as degraded/failed evidence records.
 - Missing provider data is persisted as explicit `no_evidence`/`degraded`/`failed` truth states and never mapped to safe/normal defaults.
 - No recent alert is not proof of safety; it can mean no evidence, degraded monitoring, or unknown risk.
+- LIVE/HYBRID empty alert/incident UI states must use no-evidence/degraded/failed wording rather than healthy/normal/all-clear language.
 - Shared Feature 1 truth contract is explicit: mode (`DEMO`/`LIVE`/`HYBRID`/`DEGRADED`), evidence state (`REAL_EVIDENCE`/`NO_EVIDENCE`/`DEGRADED_EVIDENCE`/`FAILED_EVIDENCE`/`DEMO_EVIDENCE`), and truthfulness (`CLAIM_SAFE`/`NOT_CLAIM_SAFE`/`UNKNOWN_RISK`).
+- Shared detection outcomes are explicit (`DETECTION_CONFIRMED`, `NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE`, `NO_EVIDENCE`, `MONITORING_DEGRADED`, `ANALYSIS_FAILED`, `DEMO_ONLY`) so empty datasets never default to neutral-safe semantics.
 - “No confirmed anomaly detected in observed evidence” is an observation label, not a global safety claim.
 - LIVE/HYBRID reassurance requires real observed evidence (`recent_evidence_state=real`, `recent_real_event_count>0`, and non-`unknown_risk` truthfulness).
 - `/ops/production-claim-validator` now fails if synthetic/demo evidence leaks into the recent evidence window.
 - See `docs/DEMO_ISOLATION_AUDIT.md` for the file-by-file synthetic fallback removals and isolation boundaries.
 - See `docs/FEATURE1_RUNTIME_CONTAMINATION_AUDIT.md` for the latest file-by-file runtime contamination remediation.
+- See `docs/FEATURE1_NO_DATA_TRUTH_AUDIT.md` for the file-by-file no-data truthfulness remediation list.
 
 ## How to prove live on-chain monitoring
 

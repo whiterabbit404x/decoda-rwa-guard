@@ -69,6 +69,7 @@ class ActivityProviderResult:
     source_type: str
     reason_code: str | None
     claim_safe: bool
+    detection_outcome: str
 
     def __post_init__(self) -> None:
         normalized_mode = api_mode(self.mode)
@@ -88,6 +89,15 @@ class ActivityProviderResult:
             raise MonitoringModeError('REAL_EVIDENCE requires evidence_present=true')
         if normalized_mode in {'LIVE', 'HYBRID'} and not self.evidence_present and self.truthfulness_state == 'CLAIM_SAFE':
             raise MonitoringModeError('live/hybrid cannot claim safe without real evidence')
+        if self.detection_outcome not in {
+            'DETECTION_CONFIRMED',
+            'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
+            'NO_EVIDENCE',
+            'MONITORING_DEGRADED',
+            'ANALYSIS_FAILED',
+            'DEMO_ONLY',
+        }:
+            raise MonitoringModeError(f'invalid detection_outcome: {self.detection_outcome}')
 
 
 def monitoring_ingestion_mode() -> str:
@@ -499,6 +509,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
                 source_type='unknown',
                 reason_code='PROVIDER_FAILED',
                 claim_safe=False,
+                detection_outcome='ANALYSIS_FAILED',
             )
         has_evidence = bool(live_events)
         latest_block = None
@@ -534,6 +545,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
                 source_type='websocket' if bool((os.getenv('EVM_WS_URL') or '').strip()) else 'rpc_polling',
                 reason_code=None,
                 claim_safe=False,
+                detection_outcome='NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
             )
         return ActivityProviderResult(
             mode=mode,
@@ -555,6 +567,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             source_type='unknown',
             reason_code='NO_PROVIDER_EVIDENCE',
             claim_safe=False,
+            detection_outcome='NO_EVIDENCE',
         )
     if mode in {'live', 'degraded'} and runtime['degraded']:
         return ActivityProviderResult(
@@ -577,6 +590,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             source_type='unknown',
             reason_code='RUNTIME_DEGRADED',
             claim_safe=False,
+            detection_outcome='MONITORING_DEGRADED',
         )
     if mode == 'degraded':
         return ActivityProviderResult(
@@ -599,6 +613,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             source_type='unknown',
             reason_code='RUNTIME_DEGRADED',
             claim_safe=False,
+            detection_outcome='MONITORING_DEGRADED',
         )
     if mode == 'hybrid' and target_type in {'wallet', 'contract'}:
         return ActivityProviderResult(
@@ -621,6 +636,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             source_type='unknown',
             reason_code='NO_PROVIDER_EVIDENCE',
             claim_safe=False,
+            detection_outcome='NO_EVIDENCE',
         )
     assert_no_demo_fallback(mode, attempted=False, context='activity_providers.fetch_target_activity_result')
     if target_type == 'wallet':
@@ -646,6 +662,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             source_type='demo',
             reason_code='DEMO_SCENARIO',
             claim_safe=False,
+            detection_outcome='DEMO_ONLY',
         )
     if target_type == 'contract':
         events = fetch_contract_activity(target, since_ts)
@@ -670,6 +687,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
             source_type='demo',
             reason_code='DEMO_SCENARIO',
             claim_safe=False,
+            detection_outcome='DEMO_ONLY',
         )
     events = fetch_market_activity(target, since_ts)
     assert_no_demo_fallback(mode, attempted=bool(events), context='market synthetic generator')
@@ -693,4 +711,5 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
         source_type='demo',
         reason_code='DEMO_SCENARIO',
         claim_safe=False,
+        detection_outcome='DEMO_ONLY',
     )
