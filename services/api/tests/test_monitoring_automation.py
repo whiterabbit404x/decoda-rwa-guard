@@ -173,3 +173,98 @@ def test_liquidity_detector_flags_outflow_burst_venue_and_concentration() -> Non
     assert 'burst_activity' in liquidity['anomaly_reason']
     assert 'unexpected_venue_shift' in liquidity['anomaly_reason']
     assert 'concentration_spike' in liquidity['anomaly_reason']
+
+
+def test_counterparty_detector_allows_approved_external_counterparty() -> None:
+    summary = _asset_detection_summary(
+        asset={
+            'id': 'a1',
+            'identifier': 'USTB',
+            'asset_symbol': 'USTB',
+            'expected_counterparties': ['0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'],
+            'treasury_ops_wallets': ['0x1111111111111111111111111111111111111111'],
+            'custody_wallets': [],
+            'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'approved_external_counterparty'}],
+            'expected_approval_patterns': {},
+            'expected_liquidity_baseline': {'baseline_outflow_volume': 100, 'baseline_transfer_count': 2, 'minimum_transfer_count': 1},
+            'oracle_sources': ['oracle-a'],
+            'venue_labels': [],
+        },
+        event=_event({'from': '0x1111111111111111111111111111111111111111', 'to': '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'amount': '100', 'event_type': 'transfer'}),
+    )
+    result = _detector(summary, 'counterparty')
+    assert result['detector_status'] == 'real_event_no_anomaly'
+
+
+def test_flow_pattern_detector_persists_route_classification() -> None:
+    summary = _asset_detection_summary(
+        asset={
+            'id': 'a1',
+            'identifier': 'USTB',
+            'asset_symbol': 'USTB',
+            'expected_counterparties': ['0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'],
+            'treasury_ops_wallets': ['0x1111111111111111111111111111111111111111'],
+            'custody_wallets': ['0x2222222222222222222222222222222222222222'],
+            'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}],
+            'expected_approval_patterns': {},
+            'expected_liquidity_baseline': {},
+            'oracle_sources': [],
+            'venue_labels': [],
+        },
+        event=_event({'from': '0x1111111111111111111111111111111111111111', 'to': '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'amount': '200', 'event_type': 'transfer'}),
+    )
+    flow = _detector(summary, 'flow_pattern')
+    assert flow['detector_status'] == 'anomaly_detected'
+    assert flow['route_classification_details']['violated_pattern'] == ['treasury_ops', 'unknown_external']
+
+
+def test_oracle_detector_returns_insufficient_real_evidence_when_sources_missing() -> None:
+    summary = _asset_detection_summary(
+        asset={
+            'id': 'a1',
+            'identifier': 'USTB',
+            'asset_symbol': 'USTB',
+            'expected_counterparties': [],
+            'treasury_ops_wallets': [],
+            'custody_wallets': [],
+            'expected_flow_patterns': [],
+            'expected_approval_patterns': {},
+            'expected_liquidity_baseline': {'baseline_outflow_volume': 100},
+            'oracle_sources': ['a', 'b'],
+            'expected_oracle_freshness_seconds': 30,
+            'expected_oracle_update_cadence_seconds': 30,
+            'venue_labels': [],
+        },
+        event=_event({'event_type': 'oracle_update', 'oracle_observations': [{'source_name': 'a', 'observed_value': 100}]}),
+    )
+    oracle = _detector(summary, 'oracle_integrity')
+    assert oracle['detector_status'] == 'insufficient_real_evidence'
+
+
+def test_liquidity_detector_flags_insufficient_when_provider_marks_unavailable() -> None:
+    summary = _asset_detection_summary(
+        asset={
+            'id': 'a1',
+            'identifier': 'USTB',
+            'asset_symbol': 'USTB',
+            'expected_counterparties': [],
+            'treasury_ops_wallets': ['0x1111111111111111111111111111111111111111'],
+            'custody_wallets': [],
+            'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'approved_external_counterparty'}],
+            'expected_approval_patterns': {},
+            'expected_liquidity_baseline': {'baseline_outflow_volume': 10, 'baseline_transfer_count': 1, 'minimum_transfer_count': 1},
+            'oracle_sources': [],
+            'venue_labels': ['0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'],
+        },
+        event=_event(
+            {
+                'from': '0x1111111111111111111111111111111111111111',
+                'to': '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                'event_type': 'transfer',
+                'liquidity_observations': [{'status': 'insufficient_real_evidence', 'rolling_volume': 100, 'rolling_transfer_count': 10, 'route_distribution': {'a->b': 1.0}, 'venue_distribution': {'unknown': 1.0}}],
+                'venue_observations': [{'venue_distribution': {'unknown': 1.0}}],
+            }
+        ),
+    )
+    liquidity = _detector(summary, 'liquidity_venue')
+    assert liquidity['detector_status'] == 'insufficient_real_evidence'
