@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -32,6 +33,8 @@ def _request_json(url: str, *, method: str = 'GET', token: str = '', workspace_i
             return exc.code, json.loads(text or '{}')
         except Exception:
             return exc.code, {'error': text}
+    except urllib.error.URLError as exc:
+        return 503, {'error': str(exc.reason), 'code': 'connection_unavailable'}
 
 
 def main() -> int:
@@ -42,6 +45,8 @@ def main() -> int:
     parser.add_argument('--target-id', default=os.getenv('FEATURE1_TARGET_ID', ''))
     args = parser.parse_args()
 
+    artifacts_dir = Path(os.getenv('FEATURE1_EVIDENCE_DIR', 'services/api/artifacts/live_evidence')).resolve()
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
     status, runtime = _request_json(f"{args.api_url.rstrip('/')}/ops/monitoring/runtime-status", token=args.token, workspace_id=args.workspace_id)
     if status != 200:
         print(json.dumps({'status': 'fail', 'reason': 'runtime_unavailable', 'http_status': status, 'runtime': runtime}, indent=2))
@@ -89,6 +94,9 @@ def main() -> int:
     evidence = ((latest_alert or {}).get('payload') or {}).get('observed_evidence') if isinstance((latest_alert or {}).get('payload'), dict) else None
 
     outcome = 'pass' if latest_alert and anomaly_basis and evidence else 'inconclusive'
+    evidence_payload = []
+    if latest_alert and isinstance(latest_alert.get('payload'), dict):
+        evidence_payload = [latest_alert['payload'].get('observed_evidence')]
     result = {
         'generated_at': datetime.now(timezone.utc).isoformat(),
         'status': outcome,
@@ -105,7 +113,11 @@ def main() -> int:
         'baseline_context': ((latest_alert or {}).get('payload') or {}).get('baseline_reference') if isinstance((latest_alert or {}).get('payload'), dict) else None,
         'export_job': export_payload if export_status == 200 else {'status': 'failed', 'response': export_payload},
     }
-    print(json.dumps(result, indent=2))
+    (artifacts_dir / 'summary.json').write_text(json.dumps(result, indent=2))
+    (artifacts_dir / 'alerts.json').write_text(json.dumps(alerts, indent=2))
+    (artifacts_dir / 'incidents.json').write_text(json.dumps(incidents, indent=2))
+    (artifacts_dir / 'evidence.json').write_text(json.dumps(evidence_payload, indent=2))
+    print(json.dumps({**result, 'artifacts_dir': str(artifacts_dir)}, indent=2))
     return 0 if outcome == 'pass' else 2
 
 

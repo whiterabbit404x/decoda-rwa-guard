@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 
@@ -38,4 +39,21 @@ def state() -> dict[str, object]:
     return {
         'service': load_service(SERVICE_NAME),
         'sqlite_path': str(resolve_sqlite_path()),
+    }
+
+
+@app.get('/oracle/check')
+def oracle_check() -> dict[str, object]:
+    sources = [item.strip() for item in (os.getenv('ORACLE_SOURCE_URLS', '')).split(',') if item.strip()]
+    if not sources:
+        return {
+            'status': 'unavailable',
+            'reason': 'no_real_oracle_sources_configured',
+            'sources': [],
+            'checked_at': datetime.now(timezone.utc).isoformat(),
+        }
+    return {
+        'status': 'ok',
+        'sources': sources,
+        'checked_at': datetime.now(timezone.utc).isoformat(),
     }

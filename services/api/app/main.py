@@ -1296,29 +1296,32 @@ def threat_dashboard() -> dict[str, Any]:
     payload = fetch_threat_dashboard()
     if payload is not None:
         return payload
-    record_dependency_runtime('threat_engine', 'fallback', 'Threat dashboard request failed; serving fallback dashboard.', payload_source='fallback', degraded=True, detail='Threat dashboard fallback active')
-    return attach_dependency_diagnostics(fallback_threat_dashboard(), 'threat_engine', fallback_reason='Threat dashboard fell back after embedded or remote execution failed.')
+    raise HTTPException(status_code=503, detail={'code': 'THREAT_ENGINE_UNAVAILABLE', 'message': 'Threat dashboard unavailable without live threat-engine evidence.'})
+
+
+def _require_threat_response(kind: str, normalized: dict[str, Any]) -> dict[str, Any]:
+    response = proxy_threat(kind, normalized)
+    if response is None:
+        raise HTTPException(status_code=503, detail={'code': 'THREAT_ENGINE_UNAVAILABLE', 'analysis_type': kind, 'message': 'Live threat provider unavailable; fallback payloads are disabled in production.'})
+    return response
 
 
 @app.post('/threat/analyze/contract', summary='Feature 2 contract analysis', description='Proxies a contract analysis request to the threat-engine and falls back to a conservative local rule summary if the engine is unavailable.')
 def threat_analyze_contract(payload: dict[str, Any]) -> dict[str, Any]:
     normalized, _ = normalize_threat_payload('contract', payload)
-    response = proxy_threat('contract', normalized)
-    return response or fallback_contract_analysis(normalized)
+    return _require_threat_response('contract', normalized)
 
 
 @app.post('/threat/analyze/transaction', summary='Feature 2 transaction analysis', description='Proxies a transaction intent analysis request to the threat-engine and falls back to a conservative local rule summary if the engine is unavailable.')
 def threat_analyze_transaction(payload: dict[str, Any]) -> dict[str, Any]:
     normalized, _ = normalize_threat_payload('transaction', payload)
-    response = proxy_threat('transaction', normalized)
-    return response or fallback_transaction_analysis(normalized)
+    return _require_threat_response('transaction', normalized)
 
 
 @app.post('/threat/analyze/market', summary='Feature 2 market anomaly analysis', description='Proxies a market anomaly request to the threat-engine and falls back to a conservative local rule summary if the engine is unavailable.')
 def threat_analyze_market(payload: dict[str, Any]) -> dict[str, Any]:
     normalized, _ = normalize_threat_payload('market', payload)
-    response = proxy_threat('market', normalized)
-    return response or fallback_market_analysis(normalized)
+    return _require_threat_response('market', normalized)
 
 
 @app.get('/compliance/dashboard', summary='Feature 3 compliance dashboard feed', description='Returns the compliance-service dashboard payload when available and explicit fallback demo data when the compliance service is unavailable.')
@@ -2031,21 +2034,21 @@ def _persist_live_analysis(request: Request, payload: dict[str, Any], response_p
 @app.post('/pilot/threat/analyze/contract', summary='Run and persist a contract threat analysis for live mode')
 def pilot_threat_analyze_contract(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     normalized, _ = normalize_threat_payload('contract', payload, include_original=True)
-    response = proxy_threat('contract', normalized) or fallback_contract_analysis(normalized)
+    response = _require_threat_response('contract', normalized)
     return _persist_live_analysis(request, normalized, response, analysis_type='threat_contract', service_name='threat-engine', title='Threat contract analysis')
 
 
 @app.post('/pilot/threat/analyze/transaction', summary='Run and persist a transaction threat analysis for live mode')
 def pilot_threat_analyze_transaction(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     normalized, _ = normalize_threat_payload('transaction', payload, include_original=True)
-    response = proxy_threat('transaction', normalized) or fallback_transaction_analysis(normalized)
+    response = _require_threat_response('transaction', normalized)
     return _persist_live_analysis(request, normalized, response, analysis_type='threat_transaction', service_name='threat-engine', title='Threat transaction analysis')
 
 
 @app.post('/pilot/threat/analyze/market', summary='Run and persist a market threat analysis for live mode')
 def pilot_threat_analyze_market(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     normalized, _ = normalize_threat_payload('market', payload, include_original=True)
-    response = proxy_threat('market', normalized) or fallback_market_analysis(normalized)
+    response = _require_threat_response('market', normalized)
     return _persist_live_analysis(request, normalized, response, analysis_type='threat_market', service_name='threat-engine', title='Threat market analysis')
 
 
