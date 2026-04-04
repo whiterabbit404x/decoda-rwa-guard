@@ -115,7 +115,25 @@ def _load_real_provider_observations(*, asset_identifier: str, now: datetime) ->
         try:
             observations.extend(fetcher.fetch(asset_identifier=asset_identifier, now=now))
         except Exception:
-            continue
+            observations.append(
+                {
+                    'source_name': str(provider.get('source_name') or 'oracle'),
+                    'source_type': str(provider.get('source_type') or 'oracle_api'),
+                    'asset_identifier': asset_identifier or None,
+                    'observed_value': None,
+                    'observed_at': None,
+                    'status': 'unavailable',
+                    'freshness_seconds': None,
+                    'update_interval_seconds': None,
+                    'provenance': {
+                        'provider_layer': 'oracle-service',
+                        'provider_kind': 'http_json',
+                        'provider_url': str(provider.get('url') or ''),
+                        'failure': 'provider_unreachable',
+                        'checked_at': now.isoformat(),
+                    },
+                }
+            )
     return observations
 
 
@@ -254,5 +272,13 @@ def oracle_observations(asset_identifier: str = '') -> dict[str, object]:
         for item in observations:
             if not item.get('asset_identifier'):
                 item['asset_identifier'] = configured_asset
-    status_value = 'ok' if observations else 'insufficient_real_evidence'
-    return {'status': status_value, 'detector_status': 'real_event_no_anomaly' if status_value == 'ok' else 'insufficient_real_evidence', 'provider_configured': provider_configured, 'asset_identifier': configured_asset or None, 'observations': observations, 'generated_at': now.isoformat()}
+    available = [item for item in observations if str(item.get('status') or 'ok').lower() not in {'unavailable', 'insufficient_real_evidence', 'no_real_telemetry'}]
+    status_value = 'ok' if available else 'insufficient_real_evidence'
+    return {
+        'status': status_value,
+        'detector_status': 'real_event_no_anomaly' if status_value == 'ok' else 'insufficient_real_evidence',
+        'provider_configured': provider_configured,
+        'asset_identifier': configured_asset or None,
+        'observations': observations,
+        'generated_at': now.isoformat(),
+    }

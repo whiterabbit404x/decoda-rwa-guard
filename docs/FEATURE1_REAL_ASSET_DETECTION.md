@@ -61,13 +61,14 @@ Feature 1 runtime enforcement is **asset-protection monitoring**, not generic ev
 - `venue_labels`
 - `baseline_status`, `baseline_confidence`, `baseline_coverage`
 
-Detectors compare **live telemetry** against these baseline expectations and persist rule violations with detector-level evidence (`counterparty`, `flow_pattern`, `approval_pattern`, `liquidity_venue`, `oracle_integrity`).
+Detectors compare **live telemetry** against these baseline expectations and persist rule violations with detector-level evidence (`counterparty`, `flow_pattern`, `approval_pattern`, `liquidity_venue`, `oracle_integrity`). The worker loop is the authoritative protection loop: `load protected asset baseline -> fetch live telemetry -> enforce protected rules -> persist evidence -> alert/escalate`.
 
 ### Live telemetry inputs
 - EVM event telemetry (`transfer`, `approval`, contract interactions with tx/block/log metadata)
 - Rolling liquidity telemetry (`rolling_volume`, `rolling_transfer_count`, `unique_counterparties`, `concentration_ratio`, `abnormal_outflow_ratio`, `burst_score`)
 - Route + venue telemetry (`route_distribution`, `venue_distribution`, venue labels, unknown route share)
 - Oracle telemetry (`source_name`, `source_type`, `asset_identifier`, `observed_value`, `observed_at`, `freshness_seconds`, `status`, provenance)
+- Telemetry state semantics are explicit: `real_telemetry_present`, `insufficient_real_evidence`, or `no_real_telemetry`.
 
 ### `insufficient_real_evidence` semantics
 - This is a fail-closed detector status, not a safe status.

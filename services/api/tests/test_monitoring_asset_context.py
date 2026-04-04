@@ -26,6 +26,7 @@ def test_load_target_asset_context_normalizes_required_fields() -> None:
         'asset_class': 'rwa',
         'asset_symbol': 'USTB',
         'identifier': 'asset-1',
+        'asset_identifier': 'asset-1',
         'token_contract_address': '0xabc',
         'treasury_ops_wallets': None,
         'custody_wallets': None,
@@ -43,7 +44,7 @@ def test_load_target_asset_context_normalizes_required_fields() -> None:
         'baseline_confidence': 0.9,
         'baseline_coverage': 0.8,
     }
-    context = _load_target_asset_context(_Conn(row), workspace_id='w1', target={'asset_id': 'a1'})
+    context = _load_target_asset_context(_Conn(row), workspace_id='w1', target={'asset_id': 'a1', 'chain_id': 1})
     assert context is not None
     assert context['treasury_ops_wallets'] == []
     assert context['custody_wallets'] == []
@@ -52,5 +53,6 @@ def test_load_target_asset_context_normalizes_required_fields() -> None:
     assert context['expected_flow_patterns'] == []
     assert context['expected_approval_patterns'] == {}
     assert context['expected_oracle_update_cadence_seconds'] == 60
-    assert context['chain_id'] is None
+    assert context['chain_id'] == 1
     assert context['identifier'] == 'asset-1'
+    assert context['asset_identifier'] == 'asset-1'
