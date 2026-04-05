@@ -36,3 +36,15 @@ def test_oracle_service_response_includes_detector_status_when_unconfigured(monk
     assert body['status'] == 'insufficient_real_evidence'
     assert body['detector_status'] == 'insufficient_real_evidence'
     assert body['provider_configured'] is False
+
+
+def test_oracle_service_marks_unavailable_when_configured_provider_unreachable(monkeypatch) -> None:
+    monkeypatch.setenv('ENV', 'production')
+    monkeypatch.setenv('ALLOW_DEMO_MODE', 'false')
+    monkeypatch.setenv('ORACLE_SOURCE_URLS', 'oracle-a=http://unreachable.local/oracle')
+    module = _oracle_module()
+    monkeypatch.setattr(module.request, 'urlopen', lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError('down')))
+    body = module.oracle_observations(asset_identifier='USTB')
+    assert body['status'] == 'unavailable'
+    assert body['detector_status'] == 'insufficient_real_evidence'
+    assert body['reason'] == 'configured_provider_unreachable'

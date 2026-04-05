@@ -49,6 +49,10 @@ class RpcClient(Protocol):
     def call(self, method: str, params: list[Any]) -> Any: ...
 
 
+class MarketTelemetryProvider(Protocol):
+    def fetch(self, *, asset_identifier: str, now: datetime) -> list[dict[str, Any]]: ...
+
+
 @dataclass
 class JsonRpcClient:
     rpc_url: str
@@ -61,6 +65,43 @@ class JsonRpcClient:
         if body.get('error'):
             raise RuntimeError(f"json-rpc error: {body['error']}")
         return body.get('result')
+
+
+@dataclass
+class HttpJsonMarketTelemetryProvider:
+    source_name: str
+    source_type: str
+    url: str
+
+    def fetch(self, *, asset_identifier: str, now: datetime) -> list[dict[str, Any]]:
+        query = parse.urlencode({'asset_identifier': asset_identifier}) if asset_identifier else ''
+        url = f'{self.url}?{query}' if query else self.url
+        req = request.Request(url, headers={'Accept': 'application/json'})
+        with request.urlopen(req, timeout=10) as resp:  # nosec B310
+            body = json.loads(resp.read().decode('utf-8') or '{}')
+        observations = body.get('observations') if isinstance(body, dict) else body
+        if not isinstance(observations, list):
+            return []
+        items: list[dict[str, Any]] = []
+        for item in observations:
+            if not isinstance(item, dict):
+                continue
+            items.append(
+                {
+                    **item,
+                    'provider_name': self.source_name,
+                    'source_name': str(item.get('source_name') or self.source_name),
+                    'source_type': str(item.get('source_type') or self.source_type),
+                    'telemetry_kind': str(item.get('telemetry_kind') or 'external_market'),
+                    'provenance': {
+                        'provider_layer': 'evm_activity_provider',
+                        'provider_kind': 'http_json',
+                        'provider_url': self.url,
+                        'fetched_at': now.isoformat(),
+                    },
+                }
+            )
+        return items
 
 
 def _hex_to_int(value: str | None) -> int | None:
@@ -279,6 +320,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
     telemetry = _build_cycle_telemetry(target, deduped)
     for event in deduped:
         payload = event.payload if isinstance(event.payload, dict) else {}
+        payload['market_observations'] = telemetry['market_observations']
         payload['oracle_observations'] = telemetry['oracle_observations']
         payload['liquidity_observations'] = telemetry['liquidity_observations']
         payload['venue_observations'] = telemetry['venue_observations']
@@ -288,9 +330,30 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
 
 
 def _build_cycle_telemetry(target: dict[str, Any], events: list[ActivityEvent]) -> dict[str, list[dict[str, Any]]]:
+    market_observations = _fetch_market_observations(target)
     oracle_observations = _fetch_oracle_observations(target)
     liquidity_observation = _build_liquidity_observation(target, events)
-    venue_observation = _build_venue_observation(target, events, liquidity_observation)
+    venue_observation = _build_venue_observation(target, events, liquidity_observation, market_observations)
+    primary_market = market_observations[0] if market_observations and isinstance(market_observations[0], dict) else {}
+    if liquidity_observation and str(primary_market.get('status') or '').lower() == 'ok':
+        for key in (
+            'rolling_volume',
+            'rolling_transfer_count',
+            'transfer_count',
+            'unique_counterparties',
+            'concentration_ratio',
+            'abnormal_outflow_ratio',
+            'burst_score',
+            'route_distribution',
+            'venue_distribution',
+        ):
+            if key in primary_market:
+                liquidity_observation[key] = primary_market.get(key)
+        liquidity_observation['provider_name'] = str(primary_market.get('provider_name') or primary_market.get('source_name') or 'external_market_provider')
+        liquidity_observation['telemetry_kind'] = str(primary_market.get('telemetry_kind') or 'external_market')
+        liquidity_observation['status'] = str(primary_market.get('status') or 'ok')
+        liquidity_observation['telemetry_state'] = 'real_telemetry_present'
+        liquidity_observation['market_observations'] = market_observations
     if liquidity_observation is None:
         liquidity_observation = {
             'provider_name': 'evm_activity_provider',
@@ -306,6 +369,7 @@ def _build_cycle_telemetry(target: dict[str, Any], events: list[ActivityEvent]) 
             'venue_distribution': {},
             'asset_identifier': str(target.get('asset_identifier') or target.get('asset_symbol') or target.get('id') or ''),
             'observed_at': datetime.now(timezone.utc).isoformat(),
+            'market_observations': market_observations,
         }
     if venue_observation is None:
         venue_observation = {
@@ -316,12 +380,84 @@ def _build_cycle_telemetry(target: dict[str, Any], events: list[ActivityEvent]) 
             'route_distribution': liquidity_observation.get('route_distribution') if isinstance(liquidity_observation, dict) else {},
             'venue_labels': [str(v).lower() for v in (target.get('venue_labels') or []) if str(v).strip()],
             'observed_at': datetime.now(timezone.utc).isoformat(),
+            'market_observations': market_observations,
         }
     return {
+        'market_observations': market_observations,
         'oracle_observations': oracle_observations,
         'liquidity_observations': [liquidity_observation],
         'venue_observations': [venue_observation],
     }
+
+
+def _market_provider_configs() -> list[dict[str, str]]:
+    raw = str(os.getenv('MARKET_TELEMETRY_SOURCE_URLS') or '').strip()
+    configs: list[dict[str, str]] = []
+    for chunk in [item.strip() for item in raw.split(',') if item.strip()]:
+        if '=' in chunk:
+            name, url = chunk.split('=', 1)
+            configs.append({'source_name': name.strip() or 'external-market', 'source_type': 'market_api', 'url': url.strip()})
+        else:
+            configs.append({'source_name': parse.urlparse(chunk).netloc or 'external-market', 'source_type': 'market_api', 'url': chunk})
+    return [item for item in configs if item.get('url')]
+
+
+def _fetch_market_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
+    asset_identifier = str(target.get('asset_identifier') or target.get('asset_symbol') or target.get('id') or '').strip()
+    providers = _market_provider_configs()
+    now = datetime.now(timezone.utc)
+    if not providers:
+        return [{
+            'provider_name': 'external_market_provider',
+            'source_name': 'external_market_provider',
+            'source_type': 'market_api',
+            'asset_identifier': asset_identifier or None,
+            'telemetry_kind': 'external_market',
+            'status': 'insufficient_real_evidence',
+            'reason': 'external_market_provider_not_configured',
+            'observed_at': now.isoformat(),
+            'provenance': {'provider_layer': 'evm_activity_provider'},
+        }]
+    observations: list[dict[str, Any]] = []
+    for provider in providers:
+        fetcher = HttpJsonMarketTelemetryProvider(
+            source_name=str(provider.get('source_name') or 'external-market'),
+            source_type=str(provider.get('source_type') or 'market_api'),
+            url=str(provider.get('url') or ''),
+        )
+        try:
+            fetched = fetcher.fetch(asset_identifier=asset_identifier, now=now)
+            if fetched:
+                observations.extend(fetched)
+                continue
+            observations.append(
+                {
+                    'provider_name': str(provider.get('source_name') or 'external-market'),
+                    'source_name': str(provider.get('source_name') or 'external-market'),
+                    'source_type': str(provider.get('source_type') or 'market_api'),
+                    'asset_identifier': asset_identifier or None,
+                    'telemetry_kind': 'external_market',
+                    'status': 'insufficient_real_evidence',
+                    'reason': 'provider_returned_no_observations',
+                    'observed_at': now.isoformat(),
+                    'provenance': {'provider_layer': 'evm_activity_provider', 'provider_url': str(provider.get('url') or '')},
+                }
+            )
+        except Exception:
+            observations.append(
+                {
+                    'provider_name': str(provider.get('source_name') or 'external-market'),
+                    'source_name': str(provider.get('source_name') or 'external-market'),
+                    'source_type': str(provider.get('source_type') or 'market_api'),
+                    'asset_identifier': asset_identifier or None,
+                    'telemetry_kind': 'external_market',
+                    'status': 'unavailable',
+                    'reason': 'provider_unreachable',
+                    'observed_at': now.isoformat(),
+                    'provenance': {'provider_layer': 'evm_activity_provider', 'provider_url': str(provider.get('url') or '')},
+                }
+            )
+    return observations
 
 
 def _fetch_oracle_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
@@ -474,7 +610,12 @@ def _build_liquidity_observation(target: dict[str, Any], events: list[ActivityEv
     }
 
 
-def _build_venue_observation(target: dict[str, Any], events: list[ActivityEvent], liquidity_observation: dict[str, Any] | None) -> dict[str, Any] | None:
+def _build_venue_observation(
+    target: dict[str, Any],
+    events: list[ActivityEvent],
+    liquidity_observation: dict[str, Any] | None,
+    market_observations: list[dict[str, Any]],
+) -> dict[str, Any] | None:
     if not events:
         return None
     venue_labels = target.get('venue_labels')
@@ -515,4 +656,5 @@ def _build_venue_observation(target: dict[str, Any], events: list[ActivityEvent]
         'rolling_volume': float((liquidity_observation or {}).get('rolling_volume') or 0.0),
         'status': 'ok',
         'telemetry_state': 'real_telemetry_present',
+        'market_observations': market_observations,
     }

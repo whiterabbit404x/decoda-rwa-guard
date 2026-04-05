@@ -123,6 +123,7 @@ def _load_real_provider_observations(*, asset_identifier: str, now: datetime) ->
                     'observed_value': None,
                     'observed_at': None,
                     'status': 'unavailable',
+                    'detector_status': 'insufficient_real_evidence',
                     'freshness_seconds': None,
                     'update_interval_seconds': None,
                     'provenance': {
@@ -273,12 +274,22 @@ def oracle_observations(asset_identifier: str = '') -> dict[str, object]:
             if not item.get('asset_identifier'):
                 item['asset_identifier'] = configured_asset
     available = [item for item in observations if str(item.get('status') or 'ok').lower() not in {'unavailable', 'insufficient_real_evidence', 'no_real_telemetry'}]
-    status_value = 'ok' if available else 'insufficient_real_evidence'
+    unavailable = [item for item in observations if str(item.get('status') or '').lower() in {'unavailable'}]
+    if available:
+        status_value = 'ok'
+        reason = None
+    elif unavailable:
+        status_value = 'unavailable'
+        reason = 'configured_provider_unreachable'
+    else:
+        status_value = 'insufficient_real_evidence'
+        reason = 'configured_provider_returned_no_usable_observations' if provider_configured else 'real_oracle_providers_not_configured'
     return {
         'status': status_value,
         'detector_status': 'real_event_no_anomaly' if status_value == 'ok' else 'insufficient_real_evidence',
         'provider_configured': provider_configured,
         'asset_identifier': configured_asset or None,
         'observations': observations,
+        'reason': reason,
         'generated_at': now.isoformat(),
     }

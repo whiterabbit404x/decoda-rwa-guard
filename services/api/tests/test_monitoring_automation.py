@@ -163,6 +163,7 @@ def test_liquidity_detector_flags_outflow_burst_venue_and_concentration() -> Non
                     'unique_counterparties': 1,
                     'concentration_ratio': 0.9,
                 }],
+                'market_observations': [{'status': 'ok', 'source_name': 'market-a'}],
                 'venue_observations': [{'venue_distribution': {'unknown': 0.8}}],
             }
         ),
@@ -261,6 +262,7 @@ def test_liquidity_detector_flags_insufficient_when_provider_marks_unavailable()
                 'from': '0x1111111111111111111111111111111111111111',
                 'to': '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
                 'event_type': 'transfer',
+                'market_observations': [{'status': 'insufficient_real_evidence', 'source_name': 'market-a'}],
                 'liquidity_observations': [{'status': 'insufficient_real_evidence', 'rolling_volume': 100, 'rolling_transfer_count': 10, 'route_distribution': {'a->b': 1.0}, 'venue_distribution': {'unknown': 1.0}}],
                 'venue_observations': [{'venue_distribution': {'unknown': 1.0}}],
             }
@@ -268,3 +270,63 @@ def test_liquidity_detector_flags_insufficient_when_provider_marks_unavailable()
     )
     liquidity = _detector(summary, 'liquidity_venue')
     assert liquidity['detector_status'] == 'insufficient_real_evidence'
+
+
+def test_liquidity_detector_fails_closed_without_external_market_observations() -> None:
+    summary = _asset_detection_summary(
+        asset={
+            'id': 'a1',
+            'identifier': 'USTB',
+            'asset_symbol': 'USTB',
+            'expected_counterparties': [],
+            'treasury_ops_wallets': ['0x1111111111111111111111111111111111111111'],
+            'custody_wallets': [],
+            'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'approved_external_counterparty'}],
+            'expected_approval_patterns': {},
+            'expected_liquidity_baseline': {'baseline_outflow_volume': 100, 'baseline_transfer_count': 2, 'minimum_transfer_count': 1},
+            'oracle_sources': [],
+            'venue_labels': ['0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'],
+        },
+        event=_event(
+            {
+                'from': '0x1111111111111111111111111111111111111111',
+                'to': '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                'event_type': 'transfer',
+                'liquidity_observations': [{'status': 'ok', 'rolling_volume': 120, 'rolling_transfer_count': 4, 'route_distribution': {'treasury_ops->approved_external_counterparty': 1.0}, 'venue_distribution': {'0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb': 1.0}}],
+                'venue_observations': [{'venue_distribution': {'0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb': 1.0}}],
+            }
+        ),
+    )
+    liquidity = _detector(summary, 'liquidity_venue')
+    assert liquidity['detector_status'] == 'insufficient_real_evidence'
+
+
+def test_liquidity_detector_consumes_external_market_observations() -> None:
+    summary = _asset_detection_summary(
+        asset={
+            'id': 'a1',
+            'identifier': 'USTB',
+            'asset_symbol': 'USTB',
+            'expected_counterparties': [],
+            'treasury_ops_wallets': ['0x1111111111111111111111111111111111111111'],
+            'custody_wallets': [],
+            'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'approved_external_counterparty'}],
+            'expected_approval_patterns': {},
+            'expected_liquidity_baseline': {'baseline_outflow_volume': 100, 'baseline_transfer_count': 2, 'minimum_transfer_count': 1},
+            'oracle_sources': [],
+            'venue_labels': ['0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'],
+        },
+        event=_event(
+            {
+                'from': '0x1111111111111111111111111111111111111111',
+                'to': '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                'event_type': 'transfer',
+                'market_observations': [{'status': 'ok', 'source_name': 'market-a'}],
+                'liquidity_observations': [{'status': 'ok', 'rolling_volume': 260, 'rolling_transfer_count': 4, 'route_distribution': {'treasury_ops->approved_external_counterparty': 1.0}, 'venue_distribution': {'0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb': 1.0}}],
+                'venue_observations': [{'venue_distribution': {'0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb': 1.0}}],
+            }
+        ),
+    )
+    liquidity = _detector(summary, 'liquidity_venue')
+    assert liquidity['detector_status'] == 'anomaly_detected'
+    assert 'abnormal_outflow' in liquidity['anomaly_reason']

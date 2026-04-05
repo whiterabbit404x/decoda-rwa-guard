@@ -205,9 +205,12 @@ def _load_target_asset_context(connection: Any, *, workspace_id: str, target: di
         context['asset_identifier'] = context.get('identifier') or context.get('name')
     if not context.get('asset_symbol'):
         context['asset_symbol'] = context.get('symbol')
-    context['chain_id'] = target.get('chain_id')
+    context['chain_id'] = target.get('chain_id') or context.get('chain_id')
     if not context.get('token_contract_address'):
         context['token_contract_address'] = target.get('contract_identifier')
+    context['asset_id'] = context.get('id')
+    context['symbol'] = context.get('asset_symbol')
+    context['contract_address'] = context.get('token_contract_address')
     return context
 
 
@@ -486,6 +489,7 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
     baseline_max_concentration = _to_float(liquidity_cfg.get('max_concentration_ratio'))
     liquidity_observations = payload.get('liquidity_observations') if isinstance(payload.get('liquidity_observations'), list) else []
     venue_observations = payload.get('venue_observations') if isinstance(payload.get('venue_observations'), list) else []
+    market_observations = payload.get('market_observations') if isinstance(payload.get('market_observations'), list) else []
     liquidity_obs = liquidity_observations[0] if liquidity_observations and isinstance(liquidity_observations[0], dict) else {}
     venue_obs = venue_observations[0] if venue_observations and isinstance(venue_observations[0], dict) else {}
     observed_volume = _to_float(liquidity_obs.get('rolling_volume'))
@@ -501,13 +505,24 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
     min_transfer_evidence = int(liquidity_cfg.get('minimum_transfer_count') or 3)
     has_distribution = bool(route_distribution) or bool(observed_distribution)
     telemetry_status = str(liquidity_obs.get('status') or 'unknown').lower()
+    external_market_ready = any(
+        isinstance(item, dict) and str(item.get('status') or '').lower() == 'ok'
+        for item in market_observations
+    )
     baseline_state = str(model.get('baseline_status') or '').lower()
     baseline_ready = baseline_state in {'ready', 'observed', 'active'} or (not baseline_state and baseline_volume > 0)
-    if (not baseline_ready) or baseline_volume <= 0 or transfer_count < min_transfer_evidence or not has_distribution or telemetry_status in {'insufficient_real_evidence', 'unavailable', 'no_real_telemetry'}:
+    if (
+        (not baseline_ready)
+        or baseline_volume <= 0
+        or transfer_count < min_transfer_evidence
+        or not has_distribution
+        or (not external_market_ready)
+        or telemetry_status in {'insufficient_real_evidence', 'unavailable', 'no_real_telemetry'}
+    ):
         liquidity = {
             'detector_family': 'liquidity_venue',
             'detector_status': 'insufficient_real_evidence',
-            'anomaly_reason': 'missing_real_liquidity_baseline_or_observation',
+            'anomaly_reason': 'missing_real_liquidity_baseline_or_external_market_telemetry',
             'severity': 'medium',
             'confidence': 'low',
             'recommended_action': 'collect_more_real_liquidity_evidence',
@@ -522,6 +537,8 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
                 'baseline_transfer_count': baseline_transfer_count,
                 'observed_volume': observed_volume,
                 'transfer_count': transfer_count,
+                'external_market_observations': market_observations,
+                'external_market_ready': external_market_ready,
             },
         }
     else:
@@ -568,6 +585,7 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
                 'unexpected_venue_share': unexpected_venue_share,
                 'abnormal_outflow_ratio': abnormal_outflow_ratio,
                 'burst_score': burst_score,
+                'external_market_observations': market_observations,
             },
         }
 
@@ -578,15 +596,24 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
     observed_sources = {str(item.get('source_name') or item.get('source') or '').strip().lower() for item in oracle_observations if isinstance(item, dict)}
     required_sources = set(model['oracle_sources'])
     insufficient_oracle_telemetry = (
-        not oracle_observations
+        not required_sources
+        or not oracle_observations
         or any(str(item.get('status') or '').lower() in {'insufficient_real_evidence', 'unavailable', 'no_real_telemetry'} for item in oracle_observations if isinstance(item, dict))
         or len(observed_sources) < max(1, len(required_sources))
     )
     if insufficient_oracle_telemetry:
+        if not required_sources:
+            reason = 'no_oracle_provider_configured_for_asset'
+        elif not oracle_observations:
+            reason = 'oracle_provider_configured_but_no_observations'
+        elif len(observed_sources) < max(1, len(required_sources)):
+            reason = 'insufficient_oracle_source_coverage'
+        else:
+            reason = 'oracle_provider_unavailable_or_unreachable'
         oracle = {
             'detector_family': 'oracle_integrity',
             'detector_status': 'insufficient_real_evidence',
-            'anomaly_reason': 'insufficient_real_oracle_sources',
+            'anomaly_reason': reason,
             'severity': 'high',
             'confidence': 'low',
             'recommended_action': 'restore_oracle_sources',
@@ -671,7 +698,7 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
         'route_classification_details': {'source_class': source_class, 'destination_class': destination_class, 'route_valid': route_valid},
         'proof_eligibility': {
             'production_claim_eligible': bool((payload.get('metadata') or {}).get('production_claim_eligible', True)),
-            'has_real_telemetry': bool(payload.get('oracle_observations') or payload.get('liquidity_observations') or payload.get('venue_observations')),
+            'has_real_telemetry': bool(payload.get('oracle_observations') or payload.get('liquidity_observations') or payload.get('venue_observations') or payload.get('market_observations')),
         },
     }
     return [{**base, **item} for item in (counterparty, flow, approval, liquidity, oracle)]

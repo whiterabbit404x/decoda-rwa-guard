@@ -84,7 +84,7 @@ def test_approval_protection_unlimited_approval_is_high_severity() -> None:
 
 
 def test_liquidity_detector_fails_closed_when_telemetry_insufficient() -> None:
-    event = _event('transfer', liquidity_observations=[{'status': 'insufficient_real_evidence'}], venue_observations=[{'venue_distribution': {}}], oracle_observations=[{'source_name': 'oracle-a', 'status': 'ok', 'observed_value': 1, 'observed_at': datetime.now(timezone.utc).isoformat()}])
+    event = _event('transfer', liquidity_observations=[{'status': 'insufficient_real_evidence'}], market_observations=[{'status': 'insufficient_real_evidence'}], venue_observations=[{'venue_distribution': {}}], oracle_observations=[{'source_name': 'oracle-a', 'status': 'ok', 'observed_value': 1, 'observed_at': datetime.now(timezone.utc).isoformat()}])
     detector = [item for item in _enforce_asset_detectors(asset=_asset(), event=event) if item['detector_family'] == 'liquidity_venue'][0]
     assert detector['detector_status'] == 'insufficient_real_evidence'
 
@@ -97,6 +97,7 @@ def test_oracle_integrity_detects_divergence_and_cadence_violation() -> None:
             {'source_name': 'oracle-a', 'status': 'ok', 'observed_value': 100, 'observed_at': now, 'update_interval_seconds': 30},
             {'source_name': 'oracle-b', 'status': 'ok', 'observed_value': 130, 'observed_at': now, 'update_interval_seconds': 180},
         ],
+        market_observations=[{'status': 'ok', 'source_name': 'market-a'}],
         liquidity_observations=[{'status': 'ok', 'rolling_volume': 1200, 'rolling_transfer_count': 15, 'unique_counterparties': 8, 'concentration_ratio': 0.4, 'abnormal_outflow_ratio': 0.1, 'burst_score': 1.3, 'route_distribution': {'treasury_ops->approved_external_counterparty': 1.0}}],
         venue_observations=[{'venue_distribution': {'venue-a': 1.0}}],
     )

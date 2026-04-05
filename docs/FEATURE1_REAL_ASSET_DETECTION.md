@@ -67,12 +67,13 @@ Detectors compare **live telemetry** against these baseline expectations and per
 - EVM event telemetry (`transfer`, `approval`, contract interactions with tx/block/log metadata)
 - Rolling liquidity telemetry (`rolling_volume`, `rolling_transfer_count`, `unique_counterparties`, `concentration_ratio`, `abnormal_outflow_ratio`, `burst_score`)
 - Route + venue telemetry (`route_distribution`, `venue_distribution`, venue labels, unknown route share)
+- External market telemetry observations (`market_observations`) from configured providers via `MARKET_TELEMETRY_SOURCE_URLS`; this is distinct from transfer-derived rollups and is required for production-grade liquidity/venue anomaly proof.
 - Oracle telemetry (`source_name`, `source_type`, `asset_identifier`, `observed_value`, `observed_at`, `freshness_seconds`, `status`, provenance)
 - Telemetry state semantics are explicit: `real_telemetry_present`, `insufficient_real_evidence`, or `no_real_telemetry`.
 
 ### `insufficient_real_evidence` semantics
 - This is a fail-closed detector status, not a safe status.
-- Emitted when real telemetry is missing/too weak (for example: no oracle provider sources, insufficient transfer window evidence, missing baseline).
+- Emitted when real telemetry is missing/too weak (for example: no oracle provider sources, insufficient oracle source coverage, no external market provider, insufficient transfer window evidence, missing baseline).
 - Must not be translated into production-safe normal output.
 
 ### Alert / incident mapping
