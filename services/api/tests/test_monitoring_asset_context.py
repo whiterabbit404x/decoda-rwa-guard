@@ -91,3 +91,6 @@ def test_protected_asset_context_contract_and_coverage_fail_closed() -> None:
     assert coverage['enterprise_claim_eligibility'] is False
     assert coverage['market_coverage_status'] == 'insufficient_real_evidence'
     assert coverage['oracle_coverage_status'] == 'insufficient_real_evidence'
+    assert coverage['provider_coverage_status']['market_claim_eligible'] is False
+    assert coverage['provider_coverage_status']['oracle_claim_eligible'] is False
+    assert 'market_provider_not_configured_or_no_observation' in coverage['claim_ineligibility_reasons']

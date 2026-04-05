@@ -127,6 +127,7 @@ def _normalize_market_observation(item: dict[str, Any], *, provider_name: str, a
         'status': str(item.get('status') or 'insufficient_real_evidence'),
         'freshness_seconds': freshness_seconds,
         'telemetry_kind': str(item.get('telemetry_kind') or 'external_market'),
+        'observation_kind': 'real_external_market_observation' if str(item.get('status') or '').lower() == 'ok' else 'external_market_observation_unusable',
         'provenance': item.get('provenance') if isinstance(item.get('provenance'), dict) else {'provider_layer': 'evm_activity_provider'},
     }
 
@@ -577,12 +578,14 @@ def _fetch_oracle_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
         normalized.append(
             {
                 'source_name': item.get('source_name'),
+                'provider_name': item.get('provider_name') or item.get('source_name'),
                 'source_type': item.get('source_type'),
                 'asset_identifier': item.get('asset_identifier') or asset_identifier,
                 'observed_value': item.get('observed_value'),
                 'observed_at': item.get('observed_at'),
                 'freshness_seconds': item.get('freshness_seconds'),
                 'status': item.get('status') or status,
+                'provider_status': item.get('provider_status') or item.get('status') or status,
                 'provenance': item.get('provenance') if isinstance(item.get('provenance'), dict) else {},
                 'update_interval_seconds': item.get('update_interval_seconds'),
                 'block_number': item.get('block_number'),
@@ -592,6 +595,7 @@ def _fetch_oracle_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
         return normalized
     return [{
         'source_name': 'oracle-service',
+        'provider_name': 'oracle-service',
         'source_type': 'oracle_api',
         'asset_identifier': asset_identifier or None,
         'observed_value': None,

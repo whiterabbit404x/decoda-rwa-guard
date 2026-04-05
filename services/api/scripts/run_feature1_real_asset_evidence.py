@@ -159,8 +159,26 @@ def main() -> int:
         and item.get('enterprise_claim_eligibility')
         for item in run_coverage
     )
+    provider_coverage_status = [
+        {
+            'run_id': item.get('id'),
+            'provider_coverage_status': ((item.get('response_payload') or {}).get('provider_coverage_status') or {}),
+        }
+        for item in worker_runs
+    ]
+    coverage_states = [entry.get('provider_coverage_status') or {} for entry in provider_coverage_status]
+    external_market_present = any(bool(item.get('market_claim_eligible')) for item in coverage_states)
+    real_oracle_present = any(bool(item.get('oracle_claim_eligible')) for item in coverage_states)
     worker_run_ids = [item.get('id') for item in worker_runs]
-    pass_status = bool(worker_run_ids and strict_alerts and (not high_ids or strict_incidents) and not insufficient_evidence and has_live_coverage)
+    pass_status = bool(
+        worker_run_ids
+        and strict_alerts
+        and (not high_ids or strict_incidents)
+        and not insufficient_evidence
+        and has_live_coverage
+        and external_market_present
+        and real_oracle_present
+    )
     summary = {
         'generated_at': datetime.now(timezone.utc).isoformat(),
         'status': 'pass' if pass_status else 'fail',
@@ -182,6 +200,9 @@ def main() -> int:
         'market_coverage_status': (run_coverage[0]['market_coverage_status'] if run_coverage else 'insufficient_real_evidence'),
         'oracle_coverage_status': (run_coverage[0]['oracle_coverage_status'] if run_coverage else 'insufficient_real_evidence'),
         'claim_ineligibility_reasons': sorted({reason for item in run_coverage for reason in (item.get('claim_ineligibility_reasons') or [])}),
+        'external_market_telemetry_present': external_market_present,
+        'real_oracle_observations_present': real_oracle_present,
+        'provider_coverage_status': provider_coverage_status[:20],
         'coverage_snapshots': coverage_snapshots[:20],
         'why_material': 'Asset-specific detector fired from worker-generated real telemetry and persisted alerts/incidents exist.' if pass_status else 'Missing strict worker-driven real anomaly evidence bundle.',
     }

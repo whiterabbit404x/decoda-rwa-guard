@@ -1587,6 +1587,20 @@ See `docs/LAUNCH_VALIDATION_CHECKLIST.md` for pilot vs broad-sale vs enterprise 
 
 Feature 1 now binds monitoring to **workspace-owned assets** by linking monitored targets to asset profiles (`target.asset_id -> assets.id`). Detection outcomes include asset-linked anomaly basis and observed evidence references (event/tx/block) instead of generic risk-only language. Baselines are stored per asset (status/source/confidence/coverage), and missing/stale baseline states are surfaced explicitly in findings. Operators can generate a reusable evidence bundle via `POST /exports/feature1-evidence` or run `python services/api/scripts/run_feature1_real_asset_evidence.py` for a single-command staging proof run. If no real anomaly is observed, the script returns an inconclusive result instead of fake success.
 
+Feature 1 enterprise claims are now evaluated against a strict `protected_asset_context + provider_coverage_status` contract for one concrete treasury-linked asset. The run payload/export includes:
+
+- `protected_asset_context` with explicit identity (`asset_id`, `asset_identifier`, `symbol`, `chain_id`, `contract_address`), protected path configuration (`treasury_ops_wallets`, `custody_wallets`, expected routes/approvals/counterparties/venues), baseline context, and oracle freshness/cadence expectations.
+- `market_coverage_status` and `oracle_coverage_status`, plus provider counts/names/reachability/freshness (`market_provider_count`, `market_provider_reachable_count`, `market_provider_fresh_count`, `oracle_provider_count`, `oracle_provider_reachable_count`, `oracle_provider_fresh_count`).
+- `market_claim_eligible`, `oracle_claim_eligible`, `enterprise_claim_eligibility`, and explicit `claim_ineligibility_reasons`.
+
+Important truthfulness distinction:
+
+- Internal on-chain rollups (`liquidity_rollup`, `venue_rollup`) are supporting telemetry only.
+- External market telemetry (from configured `MARKET_TELEMETRY_SOURCE_URLS`) is required for full market-coverage claims.
+- Real oracle observations (from configured `ORACLE_SOURCE_URLS` through oracle-service) are required for oracle-coverage claims.
+
+If external market or real oracle coverage is missing/unreachable/stale/insufficient, Feature 1 fails closed with `insufficient_real_evidence` and `enterprise_claim_eligibility=false`.
+
 ## Demo mode vs Live mode
 
 - **Demo mode (`MONITORING_INGESTION_MODE=demo`)** uses deterministic sample scenarios for product walkthroughs only.
