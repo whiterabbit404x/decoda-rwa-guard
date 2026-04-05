@@ -47,6 +47,8 @@ def _missing_asset_fields(asset: dict) -> list[str]:
         'venue_labels',
         'expected_liquidity_baseline',
         'oracle_sources',
+        'expected_oracle_freshness_seconds',
+        'expected_oracle_update_cadence_seconds',
     ]
     missing: list[str] = []
     for key in required:
@@ -153,6 +155,9 @@ def main() -> int:
     market_claim_eligible = bool(first_coverage.get('market_claim_eligible'))
     oracle_claim_eligible = bool(first_coverage.get('oracle_claim_eligible'))
     enterprise_claim_eligibility = bool(first_coverage.get('enterprise_claim_eligibility'))
+    market_observation_count = int(first_coverage.get('market_observation_count') or 0)
+    oracle_observation_count = int(first_coverage.get('oracle_observation_count') or 0)
+    real_provider_observations_present = market_observation_count > 0 and oracle_observation_count > 0
 
     claim_ineligibility_reasons = sorted(
         {
@@ -189,12 +194,14 @@ def main() -> int:
     elif not worker_runs:
         status_value = 'monitoring_execution_failed'
         reason = 'worker_monitoring_not_executed'
-    elif enterprise_claim_eligibility and market_claim_eligible and oracle_claim_eligible:
+    elif enterprise_claim_eligibility and market_claim_eligible and oracle_claim_eligible and real_provider_observations_present:
         status_value = 'live_coverage_confirmed'
         reason = None
     else:
         status_value = 'live_coverage_denied'
         reason = 'coverage_requirements_not_satisfied'
+        if not real_provider_observations_present:
+            claim_ineligibility_reasons = sorted(set([*claim_ineligibility_reasons, 'missing_real_provider_observations']))
 
     if status_value not in ALLOWED_STATUSES:
         status_value = 'monitoring_execution_failed'
@@ -215,6 +222,8 @@ def main() -> int:
             'venue_labels': asset.get('venue_labels') or [],
             'expected_liquidity_baseline': asset.get('expected_liquidity_baseline') or {},
             'oracle_sources': asset.get('oracle_sources') or [],
+            'expected_oracle_freshness_seconds': asset.get('expected_oracle_freshness_seconds'),
+            'expected_oracle_update_cadence_seconds': asset.get('expected_oracle_update_cadence_seconds'),
         },
         'target_identity': {
             'target_id': target_id,
@@ -240,15 +249,15 @@ def main() -> int:
         'market_provider_reachable_count': int(first_coverage.get('market_provider_reachable_count') or 0),
         'market_provider_fresh_count': int(first_coverage.get('market_provider_fresh_count') or 0),
         'market_provider_names': first_coverage.get('market_provider_names') or [],
-        'market_observation_count': int(first_coverage.get('market_observation_count') or 0),
+        'market_observation_count': market_observation_count,
         'oracle_provider_count': int(first_coverage.get('oracle_provider_count') or 0),
         'oracle_provider_reachable_count': int(first_coverage.get('oracle_provider_reachable_count') or 0),
         'oracle_provider_fresh_count': int(first_coverage.get('oracle_provider_fresh_count') or 0),
         'oracle_provider_names': first_coverage.get('oracle_provider_names') or [],
-        'oracle_observation_count': int(first_coverage.get('oracle_observation_count') or 0),
+        'oracle_observation_count': oracle_observation_count,
         'claim_ineligibility_reasons': claim_ineligibility_reasons,
-        'external_market_telemetry_present': int(first_coverage.get('market_observation_count') or 0) > 0,
-        'real_oracle_observations_present': int(first_coverage.get('oracle_observation_count') or 0) > 0,
+        'external_market_telemetry_present': market_observation_count > 0,
+        'real_oracle_observations_present': oracle_observation_count > 0,
         'lifecycle_checks_executed': bool(lifecycle_checks_performed),
         'lifecycle_checks_performed': lifecycle_checks_performed,
         'anomalies_observed': anomalies_observed,

@@ -75,6 +75,8 @@ Detectors compare **live telemetry** against these baseline expectations and per
   - `oracle_coverage_status`: `real_oracle_observations_present`, `provider_configured_but_unreachable`, `provider_returned_stale_data`, `provider_returned_divergent_values`, or `insufficient_real_evidence`.
   - `enterprise_claim_eligibility`: true only when the protected asset contract is complete and both market + oracle coverage are real.
   - `claim_ineligibility_reasons`: explicit fail-closed reasons persisted with run evidence.
+  - Normal proof export verdicts are strict and finite: `live_coverage_confirmed`, `live_coverage_denied`, `asset_configuration_incomplete`, `monitoring_execution_failed`.
+  - `dry_run_requested` is only valid when an explicit dry-run mode is requested.
 
 ### Internal rollups vs external telemetry
 - `supporting_onchain_rollup`: transfer-derived internal rollups (useful signal only).
