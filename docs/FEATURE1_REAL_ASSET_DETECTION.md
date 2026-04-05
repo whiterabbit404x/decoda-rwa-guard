@@ -70,6 +70,18 @@ Detectors compare **live telemetry** against these baseline expectations and per
 - External market telemetry observations (`market_observations`) from configured providers via `MARKET_TELEMETRY_SOURCE_URLS`; this is distinct from transfer-derived rollups and is required for production-grade liquidity/venue anomaly proof.
 - Oracle telemetry (`source_name`, `source_type`, `asset_identifier`, `observed_value`, `observed_at`, `freshness_seconds`, `status`, provenance)
 - Telemetry state semantics are explicit: `real_telemetry_present`, `insufficient_real_evidence`, or `no_real_telemetry`.
+- Coverage semantics are explicit per monitoring cycle:
+  - `market_coverage_status`: `real_external_market_observation`, `provider_configured_but_unreachable`, or `insufficient_real_evidence`.
+  - `oracle_coverage_status`: `real_oracle_observations_present`, `provider_configured_but_unreachable`, `provider_returned_stale_data`, `provider_returned_divergent_values`, or `insufficient_real_evidence`.
+  - `enterprise_claim_eligibility`: true only when the protected asset contract is complete and both market + oracle coverage are real.
+  - `claim_ineligibility_reasons`: explicit fail-closed reasons persisted with run evidence.
+
+### Internal rollups vs external telemetry
+- `supporting_onchain_rollup`: transfer-derived internal rollups (useful signal only).
+- `real_external_market_observation`: structured external market provider observation.
+- `insufficient_real_evidence`: fail-closed state whenever real provider coverage is missing/insufficient.
+
+Internal rollups are **never** equivalent to full external market surveillance.
 
 ### `insufficient_real_evidence` semantics
 - This is a fail-closed detector status, not a safe status.

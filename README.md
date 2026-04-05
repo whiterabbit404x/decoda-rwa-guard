@@ -259,6 +259,13 @@ Enterprise-eligible evidence is **strict**:
 - persisted alert required
 - persisted incident required for high/critical alerts
 - any `insufficient_real_evidence` result fails claim eligibility
+- run payload must include concrete protected-asset coverage:
+  - `protected_asset_context`
+  - `market_coverage_status`
+  - `oracle_coverage_status`
+  - `enterprise_claim_eligibility`
+  - `claim_ineligibility_reasons`
+- internal on-chain rollups are supporting telemetry only; they do not count as full external market surveillance
 
 `POST /monitoring/run-once/{id}` is debug/operator forcing only and is not accepted as enterprise proof.
 

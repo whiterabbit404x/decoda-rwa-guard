@@ -99,6 +99,7 @@ def test_market_observations_fail_closed_without_provider_config(monkeypatch):
     observations = _fetch_market_observations({'asset_identifier': 'USTB'})
     assert observations
     assert observations[0]['status'] == 'insufficient_real_evidence'
+    assert observations[0]['provider_status'] == 'no_provider_configured'
 
 
 def test_market_observations_reads_external_provider(monkeypatch):
@@ -118,3 +119,4 @@ def test_market_observations_reads_external_provider(monkeypatch):
     assert observations
     assert observations[0]['status'] == 'ok'
     assert observations[0]['rolling_volume'] == 123
+    assert observations[0]['provider_name'] == 'market-a'
