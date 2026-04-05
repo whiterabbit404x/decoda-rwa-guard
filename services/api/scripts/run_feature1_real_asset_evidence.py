@@ -5,11 +5,19 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
-from typing import Any
+
+ALLOWED_STATUSES = {
+    'live_coverage_confirmed',
+    'live_coverage_denied',
+    'monitoring_execution_failed',
+    'asset_configuration_incomplete',
+    'dry_run_requested',
+}
 
 
 def _request_json(url: str, *, method: str = 'GET', token: str = '', workspace_id: str = '', payload: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
@@ -37,6 +45,59 @@ def _request_json(url: str, *, method: str = 'GET', token: str = '', workspace_i
         return 503, {'error': str(exc.reason), 'code': 'connection_unavailable'}
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _pick_target(targets: list[dict[str, Any]], target_id: str) -> dict[str, Any] | None:
+    return next((item for item in targets if (not target_id or str(item.get('id')) == target_id) and item.get('asset_id')), None)
+
+
+def _missing_asset_fields(context: dict[str, Any]) -> list[str]:
+    required = [
+        'asset_id',
+        'asset_identifier',
+        'symbol',
+        'chain_id',
+        'contract_address',
+        'treasury_ops_wallets',
+        'custody_wallets',
+        'expected_flow_patterns',
+        'expected_counterparties',
+        'expected_approval_patterns',
+        'venue_labels',
+        'expected_liquidity_baseline',
+        'oracle_sources',
+    ]
+    missing: list[str] = []
+    for key in required:
+        value = context.get(key)
+        if value is None:
+            missing.append(key)
+        elif isinstance(value, str) and not value.strip():
+            missing.append(key)
+        elif isinstance(value, (list, dict)) and len(value) == 0:
+            missing.append(key)
+    return missing
+
+
+def _write_artifacts(*, artifacts_dir: Path, summary: dict[str, Any], alerts: list[dict[str, Any]], incidents: list[dict[str, Any]], runs: list[dict[str, Any]], evidence: list[dict[str, Any]]) -> None:
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / 'summary.json').write_text(json.dumps(summary, indent=2))
+    (artifacts_dir / 'alerts.json').write_text(json.dumps(alerts, indent=2, default=str))
+    (artifacts_dir / 'incidents.json').write_text(json.dumps(incidents, indent=2, default=str))
+    (artifacts_dir / 'runs.json').write_text(json.dumps(runs, indent=2, default=str))
+    (artifacts_dir / 'evidence.json').write_text(json.dumps(evidence, indent=2, default=str))
+    (artifacts_dir / 'report.md').write_text(
+        '# Feature1 Real Asset Evidence\n\n'
+        f"- status: `{summary['status']}`\n"
+        f"- enterprise_claim_eligibility: `{summary.get('enterprise_claim_eligibility')}`\n"
+        f"- market_coverage_status: `{summary.get('market_coverage_status')}`\n"
+        f"- oracle_coverage_status: `{summary.get('oracle_coverage_status')}`\n"
+        f"- claim_ineligibility_reasons: `{summary.get('claim_ineligibility_reasons')}`\n"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='Run Feature 1 real-asset evidence flow.')
     parser.add_argument('--api-url', default=os.getenv('FEATURE1_API_URL', 'http://127.0.0.1:8000'))
@@ -47,40 +108,71 @@ def main() -> int:
     args = parser.parse_args()
 
     artifacts_dir = Path(os.getenv('FEATURE1_EVIDENCE_DIR', 'services/api/artifacts/live_evidence/latest')).resolve()
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
     if args.dry_run:
         summary = {
-            'generated_at': datetime.now(timezone.utc).isoformat(),
-            'status': 'inconclusive',
-            'reason': 'dry_run',
+            'generated_at': _now_iso(),
+            'status': 'dry_run_requested',
+            'reason': 'dry_run_requested',
+            'enterprise_claim_eligibility': False,
+            'market_claim_eligible': False,
+            'oracle_claim_eligible': False,
+            'claim_ineligibility_reasons': ['dry_run_requested'],
         }
-        (artifacts_dir / 'summary.json').write_text(json.dumps(summary, indent=2))
-        (artifacts_dir / 'alerts.json').write_text(json.dumps([], indent=2))
-        (artifacts_dir / 'incidents.json').write_text(json.dumps([], indent=2))
-        (artifacts_dir / 'runs.json').write_text(json.dumps([], indent=2))
-        (artifacts_dir / 'evidence.json').write_text(json.dumps([], indent=2))
-        (artifacts_dir / 'report.md').write_text('# Feature1 Real Asset Evidence\n\n- status: `inconclusive`\n- reason: `dry_run`\n')
+        _write_artifacts(artifacts_dir=artifacts_dir, summary=summary, alerts=[], incidents=[], runs=[], evidence=[{'record_type': 'dry_run_requested'}])
         print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
         return 0
 
     status, runtime = _request_json(f"{args.api_url.rstrip('/')}/ops/monitoring/runtime-status", token=args.token, workspace_id=args.workspace_id)
     if status != 200:
-        print(json.dumps({'status': 'fail', 'reason': 'runtime_unavailable', 'http_status': status, 'runtime': runtime}, indent=2))
-        return 1
+        summary = {
+            'generated_at': _now_iso(),
+            'status': 'monitoring_execution_failed',
+            'reason': 'runtime_unavailable',
+            'http_status': status,
+            'enterprise_claim_eligibility': False,
+            'market_claim_eligible': False,
+            'oracle_claim_eligible': False,
+            'claim_ineligibility_reasons': ['runtime_unavailable'],
+        }
+        _write_artifacts(artifacts_dir=artifacts_dir, summary=summary, alerts=[], incidents=[], runs=[], evidence=[{'record_type': 'monitoring_execution_failure', 'details': runtime}])
+        print(json.dumps({'summary': summary, 'runtime': runtime, 'artifacts_dir': str(artifacts_dir)}, indent=2))
+        return 2
 
     mode = str(runtime.get('configured_mode') or runtime.get('mode') or '').upper()
     if mode not in {'LIVE', 'HYBRID'}:
-        print(json.dumps({'status': 'inconclusive', 'reason': 'mode_not_live_or_hybrid', 'configured_mode': mode}, indent=2))
+        summary = {
+            'generated_at': _now_iso(),
+            'status': 'live_coverage_denied',
+            'reason': 'mode_not_live_or_hybrid',
+            'configured_mode': mode,
+            'enterprise_claim_eligibility': False,
+            'market_claim_eligible': False,
+            'oracle_claim_eligible': False,
+            'claim_ineligibility_reasons': ['mode_not_live_or_hybrid'],
+        }
+        _write_artifacts(artifacts_dir=artifacts_dir, summary=summary, alerts=[], incidents=[], runs=[], evidence=[{'record_type': 'coverage_denial', 'details': summary}])
+        print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
         return 2
 
     status, targets_payload = _request_json(f"{args.api_url.rstrip('/')}/targets", token=args.token, workspace_id=args.workspace_id)
     targets = targets_payload.get('targets') if isinstance(targets_payload.get('targets'), list) else []
-    target = next((item for item in targets if (not args.target_id or str(item.get('id')) == args.target_id) and item.get('asset_id')), None)
+    target = _pick_target(targets, args.target_id)
     if status != 200 or target is None:
-        print(json.dumps({'status': 'inconclusive', 'reason': 'no_monitored_target_with_asset_profile_found'}, indent=2))
+        summary = {
+            'generated_at': _now_iso(),
+            'status': 'asset_configuration_incomplete',
+            'reason': 'no_monitored_target_with_asset_profile_found',
+            'enterprise_claim_eligibility': False,
+            'market_claim_eligible': False,
+            'oracle_claim_eligible': False,
+            'claim_ineligibility_reasons': ['missing_target_or_asset_profile'],
+        }
+        _write_artifacts(artifacts_dir=artifacts_dir, summary=summary, alerts=[], incidents=[], runs=[], evidence=[{'record_type': 'asset_configuration', 'missing_requirements': ['target_id', 'asset_id']}])
+        print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
         return 2
 
-    _request_json(
+    run_status, run_payload = _request_json(
         f"{args.api_url.rstrip('/')}/ops/monitoring/run",
         method='POST',
         token=args.token,
@@ -96,150 +188,191 @@ def main() -> int:
     incidents = incidents_payload.get('incidents') if isinstance(incidents_payload.get('incidents'), list) else []
     runs = runs_payload.get('analysis_runs') if isinstance(runs_payload.get('analysis_runs'), list) else []
 
-    strict_alerts = []
-    coverage_snapshots: list[dict[str, Any]] = []
-    for alert in alerts:
-        payload = alert.get('payload') if isinstance(alert.get('payload'), dict) else {}
-        coverage_snapshots.append(
-            {
-                'analysis_run_id': alert.get('analysis_run_id'),
-                'market_coverage_status': payload.get('market_coverage_status'),
-                'oracle_coverage_status': payload.get('oracle_coverage_status'),
-                'enterprise_claim_eligibility': bool(payload.get('enterprise_claim_eligibility')),
-                'claim_ineligibility_reasons': payload.get('claim_ineligibility_reasons') or [],
-                'provider_coverage_summary': payload.get('provider_coverage_summary') or {},
-                'protected_asset_context': payload.get('protected_asset_context') or {},
-            }
-        )
-        observed = payload.get('observed_evidence') if isinstance(payload.get('observed_evidence'), dict) else {}
-        detector_family = str(payload.get('detector_family') or '')
-        severity = str(alert.get('severity') or payload.get('severity') or 'low').lower()
-        incident_required = severity in {'high', 'critical'}
-        incident_linked = any(alert.get('id') in (inc.get('linked_alert_ids') or []) for inc in incidents)
-        if (
-            str(observed.get('evidence_origin') or '').lower() == 'real'
-            and str(payload.get('detector_status') or '') == 'anomaly_detected'
-            and detector_family in {'counterparty', 'flow_pattern', 'approval_pattern', 'liquidity_venue', 'oracle_integrity'}
-            and str(payload.get('monitoring_path') or '') == 'worker'
-            and str(payload.get('source') or '').lower() == 'live'
-            and not bool(payload.get('degraded'))
-            and str(payload.get('market_coverage_status') or '') == 'real_external_market_observation'
-            and str(payload.get('oracle_coverage_status') or '') == 'real_oracle_observations_present'
-            and bool(payload.get('enterprise_claim_eligibility'))
-            and not any(token in json.dumps(payload).lower() for token in ('demo', 'synthetic', 'fallback'))
-            and (not incident_required or incident_linked)
-        ):
-            strict_alerts.append(alert)
-
-    strict_incidents = []
-    high_ids = {item.get('id') for item in strict_alerts if str(item.get('severity') or '').lower() in {'high', 'critical'}}
-    for incident in incidents:
-        linked = set(incident.get('linked_alert_ids') or [])
-        if linked & high_ids:
-            strict_incidents.append(incident)
-
-    insufficient_evidence = any(str(((item.get('payload') or {}).get('detector_status') or '')).lower() in {'insufficient_real_evidence', 'no_real_data'} for item in alerts)
     worker_runs = [
         item for item in runs
         if str(((item.get('response_payload') or {}).get('monitoring_path') or 'worker')).lower() == 'worker'
-        and not any(token in json.dumps(item).lower() for token in ('manual_run_once', 'run-once'))
+        and str(item.get('target_id') or '') == str(target.get('id') or '')
     ]
-    run_coverage = [
-        {
-            'run_id': item.get('id'),
-            'market_coverage_status': ((item.get('response_payload') or {}).get('market_coverage_status')),
-            'oracle_coverage_status': ((item.get('response_payload') or {}).get('oracle_coverage_status')),
-            'enterprise_claim_eligibility': bool((item.get('response_payload') or {}).get('enterprise_claim_eligibility')),
-            'claim_ineligibility_reasons': ((item.get('response_payload') or {}).get('claim_ineligibility_reasons') or []),
+    worker_monitoring_executed = bool(worker_runs)
+
+    first_payload = (worker_runs[0].get('response_payload') if worker_runs else {}) if isinstance(worker_runs[0] if worker_runs else {}, dict) else {}
+    coverage_record = (first_payload.get('protected_asset_coverage_record') if isinstance(first_payload.get('protected_asset_coverage_record'), dict) else {}) if isinstance(first_payload, dict) else {}
+    protected_asset_context = (coverage_record.get('protected_asset_context') if isinstance(coverage_record.get('protected_asset_context'), dict) else {})
+
+    if not protected_asset_context:
+        protected_asset_context = {
+            'asset_id': target.get('asset_id'),
+            'asset_identifier': target.get('asset_identifier'),
+            'symbol': target.get('asset_symbol'),
+            'chain_id': target.get('chain_id'),
+            'contract_address': target.get('contract_identifier'),
+            'treasury_ops_wallets': target.get('treasury_ops_wallets') or [],
+            'custody_wallets': target.get('custody_wallets') or [],
+            'expected_flow_patterns': [],
+            'expected_counterparties': [],
+            'expected_approval_patterns': {},
+            'venue_labels': target.get('venue_labels') or [],
+            'expected_liquidity_baseline': {},
+            'oracle_sources': [],
         }
-        for item in worker_runs
-    ]
-    has_live_coverage = any(
-        item.get('market_coverage_status') == 'real_external_market_observation'
-        and item.get('oracle_coverage_status') == 'real_oracle_observations_present'
-        and item.get('enterprise_claim_eligibility')
-        for item in run_coverage
-    )
-    provider_coverage_status = [
+
+    missing_context_fields = _missing_asset_fields(protected_asset_context)
+
+    market_coverage_status = str(coverage_record.get('market_coverage_status') or first_payload.get('market_coverage_status') or 'insufficient_real_evidence')
+    oracle_coverage_status = str(coverage_record.get('oracle_coverage_status') or first_payload.get('oracle_coverage_status') or 'insufficient_real_evidence')
+    claim_reasons = sorted(
         {
-            'run_id': item.get('id'),
-            'provider_coverage_status': ((item.get('response_payload') or {}).get('provider_coverage_status') or {}),
+            str(reason)
+            for reason in [
+                *(coverage_record.get('claim_ineligibility_reasons') or []),
+                *(first_payload.get('claim_ineligibility_reasons') or []),
+                *[
+                    reason
+                    for alert in alerts
+                    for reason in (((alert.get('payload') or {}).get('claim_ineligibility_reasons')) or [])
+                ],
+            ]
+            if str(reason).strip()
         }
-        for item in worker_runs
-    ]
-    coverage_states = [entry.get('provider_coverage_status') or {} for entry in provider_coverage_status]
-    external_market_present = any(bool(item.get('market_claim_eligible')) for item in coverage_states)
-    real_oracle_present = any(bool(item.get('oracle_claim_eligible')) for item in coverage_states)
-    worker_run_ids = [item.get('id') for item in worker_runs]
-    explicit_ineligibility = bool(
-        run_coverage
-        and any((item.get('claim_ineligibility_reasons') or []) for item in run_coverage)
-        and not has_live_coverage
     )
-    pass_status = bool(worker_run_ids and (has_live_coverage or explicit_ineligibility))
-    first_run = run_coverage[0] if run_coverage else {}
-    enterprise_claim_eligible = bool(first_run.get('enterprise_claim_eligibility'))
-    claim_reasons = sorted({reason for item in run_coverage for reason in (item.get('claim_ineligibility_reasons') or [])})
+
+    market_claim_eligible = bool(coverage_record.get('market_claim_eligible'))
+    oracle_claim_eligible = bool(coverage_record.get('oracle_claim_eligible'))
+    enterprise_claim_eligibility = bool(coverage_record.get('enterprise_claim_eligibility'))
+
+    lifecycle_checks_performed = sorted(
+        {
+            str(result.get('detector_family'))
+            for alert in alerts
+            for result in ((alert.get('payload') or {}).get('detector_results') or [])
+            if isinstance(result, dict) and result.get('lifecycle_stage')
+        }
+    )
+
+    anomalies_observed = any(str(((alert.get('payload') or {}).get('detector_status') or '')).lower() == 'anomaly_detected' for alert in alerts)
+
+    if run_status >= 400:
+        status_value = 'monitoring_execution_failed'
+        reason = 'monitoring_run_request_failed'
+        claim_reasons = sorted(set([*claim_reasons, 'monitoring_run_request_failed']))
+    elif missing_context_fields:
+        status_value = 'asset_configuration_incomplete'
+        reason = 'asset_context_missing_required_fields'
+        claim_reasons = sorted(set([*claim_reasons, *[f'missing_{item}' for item in missing_context_fields]]))
+    elif enterprise_claim_eligibility and market_claim_eligible and oracle_claim_eligible and worker_monitoring_executed:
+        status_value = 'live_coverage_confirmed'
+        reason = None
+    elif worker_monitoring_executed or run_status < 400:
+        status_value = 'live_coverage_denied'
+        reason = 'coverage_requirements_not_satisfied'
+    else:
+        status_value = 'monitoring_execution_failed'
+        reason = 'worker_monitoring_not_executed'
+        claim_reasons = sorted(set([*claim_reasons, 'worker_monitoring_not_executed']))
+
     summary = {
-        'generated_at': datetime.now(timezone.utc).isoformat(),
-        'status': 'pass' if pass_status else 'fail',
+        'generated_at': _now_iso(),
+        'status': status_value,
+        'reason': reason,
         'workspace_id': args.workspace_id,
         'target_id': target.get('id'),
-        'asset_id': target.get('asset_id'),
-        'protected_asset': {'symbol': target.get('asset_symbol'), 'identifier': target.get('asset_identifier')},
-        'protected_asset_context': (coverage_snapshots[0].get('protected_asset_context') if coverage_snapshots else {}),
-        'monitoring_target': {'name': target.get('name'), 'target_type': target.get('target_type'), 'chain_network': target.get('chain_network')},
-        'material_anomaly_reason': ((strict_alerts[0].get('payload') or {}).get('anomaly_basis') if strict_alerts else None),
-        'detector_families_executed': sorted({str(((item.get('payload') or {}).get('detector_family') or '')) for item in strict_alerts if item.get('payload')}),
-        'worker_run_id': worker_run_ids[0] if worker_run_ids else None,
-        'alert_ids': [item.get('id') for item in strict_alerts],
-        'incident_ids': [item.get('id') for item in strict_incidents],
-        'worker_generated_runs': worker_run_ids[:20],
-        'insufficient_real_evidence_detected': insufficient_evidence,
-        'enterprise_claim_eligibility': enterprise_claim_eligible,
-        'market_provider_coverage_live': has_live_coverage,
-        'market_coverage_status': (first_run.get('market_coverage_status') or 'insufficient_real_evidence'),
-        'oracle_coverage_status': (first_run.get('oracle_coverage_status') or 'insufficient_real_evidence'),
+        'worker_monitoring_executed': worker_monitoring_executed,
+        'worker_run_count': len(worker_runs),
+        'worker_run_request_http_status': run_status,
+        'protected_asset_context': protected_asset_context,
+        'market_coverage_status': market_coverage_status,
+        'oracle_coverage_status': oracle_coverage_status,
+        'market_provider_count': int(coverage_record.get('market_provider_count') or 0),
+        'market_provider_reachable_count': int(coverage_record.get('market_provider_reachable_count') or 0),
+        'market_provider_fresh_count': int(coverage_record.get('market_provider_fresh_count') or 0),
+        'market_provider_names': coverage_record.get('market_provider_names') or [],
+        'market_observation_count': int(coverage_record.get('market_observation_count') or 0),
+        'oracle_provider_count': int(coverage_record.get('oracle_provider_count') or 0),
+        'oracle_provider_reachable_count': int(coverage_record.get('oracle_provider_reachable_count') or 0),
+        'oracle_provider_fresh_count': int(coverage_record.get('oracle_provider_fresh_count') or 0),
+        'oracle_provider_names': coverage_record.get('oracle_provider_names') or [],
+        'oracle_observation_count': int(coverage_record.get('oracle_observation_count') or 0),
+        'enterprise_claim_eligibility': enterprise_claim_eligibility,
+        'market_claim_eligible': market_claim_eligible,
+        'oracle_claim_eligible': oracle_claim_eligible,
         'claim_ineligibility_reasons': claim_reasons,
-        'external_market_telemetry_present': external_market_present,
-        'real_oracle_observations_present': real_oracle_present,
-        'market_provider_names': sorted({name for item in coverage_states for name in ((item.get('market_provider_names') or []) if isinstance(item, dict) else [])}),
-        'oracle_provider_names': sorted({name for item in coverage_states for name in ((item.get('oracle_provider_names') or []) if isinstance(item, dict) else [])}),
-        'lifecycle_checks_performed': sorted({str(result.get('detector_family')) for alert in alerts for result in ((alert.get('payload') or {}).get('detector_results') or []) if isinstance(result, dict) and result.get('lifecycle_stage')}),
-        'anomaly_findings': [
-            {
-                'analysis_run_id': item.get('analysis_run_id'),
-                'detector_family': (item.get('payload') or {}).get('detector_family'),
-                'enterprise_claim_eligible': bool((item.get('payload') or {}).get('enterprise_claim_eligibility')),
-            }
-            for item in alerts
-            if isinstance(item, dict) and isinstance(item.get('payload'), dict)
-        ],
-        'provider_coverage_status': provider_coverage_status[:20],
-        'coverage_snapshots': coverage_snapshots[:20],
-        'why_material': (
-            'Concrete live market+oracle coverage observed for protected asset.'
-            if has_live_coverage
-            else 'Enterprise claim blocked with explicit ineligibility reasons (no fabricated live coverage).'
-        ),
+        'external_market_telemetry_present': int(coverage_record.get('market_observation_count') or 0) > 0,
+        'real_oracle_observations_present': int(coverage_record.get('oracle_observation_count') or 0) > 0,
+        'lifecycle_checks_executed': bool(lifecycle_checks_performed),
+        'lifecycle_checks_performed': lifecycle_checks_performed,
+        'anomalies_observed': anomalies_observed,
+        'result_scope': 'enterprise_claim_eligible' if enterprise_claim_eligibility else 'internal_only',
+        'target_identity': {
+            'name': target.get('name'),
+            'target_type': target.get('target_type'),
+            'chain_network': target.get('chain_network'),
+        },
+        'protected_asset_identity': {
+            'asset_id': protected_asset_context.get('asset_id'),
+            'asset_identifier': protected_asset_context.get('asset_identifier'),
+            'symbol': protected_asset_context.get('symbol'),
+            'chain_id': protected_asset_context.get('chain_id'),
+            'contract_address': protected_asset_context.get('contract_address'),
+        },
     }
 
-    (artifacts_dir / 'summary.json').write_text(json.dumps(summary, indent=2))
-    (artifacts_dir / 'alerts.json').write_text(json.dumps(alerts, indent=2))
-    (artifacts_dir / 'incidents.json').write_text(json.dumps(incidents, indent=2))
-    (artifacts_dir / 'runs.json').write_text(json.dumps(runs, indent=2))
-    (artifacts_dir / 'evidence.json').write_text(json.dumps([((item.get('payload') or {}).get('detector_results')) for item in strict_alerts], indent=2))
-    (artifacts_dir / 'coverage.json').write_text(json.dumps(run_coverage, indent=2))
-    (artifacts_dir / 'report.md').write_text(
-        '# Feature1 Real Asset Evidence\n\n'
-        f"- status: `{summary['status']}`\n"
-        f"- asset: `{summary['protected_asset']}`\n"
-        f"- detector_families_executed: `{summary['detector_families_executed']}`\n"
-        f"- enterprise_claim_eligibility: `{summary['enterprise_claim_eligibility']}`\n"
-        f"- claim_ineligibility_reasons: `{summary['claim_ineligibility_reasons']}`\n"
+    if summary['status'] not in ALLOWED_STATUSES:
+        summary['status'] = 'monitoring_execution_failed'
+        summary['reason'] = 'invalid_status_guard_triggered'
+
+    evidence = [
+        {
+            'record_type': 'coverage_evaluation',
+            'status': summary['status'],
+            'reason': summary.get('reason'),
+            'protected_asset_context': protected_asset_context,
+            'target_identity': summary['target_identity'],
+            'worker_monitoring_executed': worker_monitoring_executed,
+            'worker_run_request_http_status': run_status,
+            'worker_run_ids': [item.get('id') for item in worker_runs],
+            'market_coverage_status': market_coverage_status,
+            'oracle_coverage_status': oracle_coverage_status,
+            'enterprise_claim_eligibility': enterprise_claim_eligibility,
+            'market_claim_eligible': market_claim_eligible,
+            'oracle_claim_eligible': oracle_claim_eligible,
+            'market_provider_names': coverage_record.get('market_provider_names') or [],
+            'oracle_provider_names': coverage_record.get('oracle_provider_names') or [],
+            'market_observation_count': int(coverage_record.get('market_observation_count') or 0),
+            'oracle_observation_count': int(coverage_record.get('oracle_observation_count') or 0),
+            'lifecycle_checks_performed': lifecycle_checks_performed,
+            'anomalies_observed': anomalies_observed,
+            'claim_ineligibility_reasons': claim_reasons,
+            'missing_asset_context_fields': missing_context_fields,
+            'monitoring_run_response': run_payload,
+        }
+    ]
+
+    for alert in alerts:
+        payload = alert.get('payload') if isinstance(alert.get('payload'), dict) else {}
+        evidence.append(
+            {
+                'record_type': 'alert_evaluation',
+                'alert_id': alert.get('id'),
+                'analysis_run_id': alert.get('analysis_run_id'),
+                'detector_family': payload.get('detector_family'),
+                'detector_status': payload.get('detector_status'),
+                'enterprise_claim_eligibility': bool(payload.get('enterprise_claim_eligibility')),
+                'market_coverage_status': payload.get('market_coverage_status'),
+                'oracle_coverage_status': payload.get('oracle_coverage_status'),
+                'claim_ineligibility_reasons': payload.get('claim_ineligibility_reasons') or [],
+            }
+        )
+
+    _write_artifacts(
+        artifacts_dir=artifacts_dir,
+        summary=summary,
+        alerts=alerts,
+        incidents=incidents,
+        runs=runs,
+        evidence=evidence,
     )
     print(json.dumps({**summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
-    return 0 if pass_status else 2
+    return 0 if summary['status'] in {'live_coverage_confirmed', 'live_coverage_denied'} else 2
 
 
 if __name__ == '__main__':

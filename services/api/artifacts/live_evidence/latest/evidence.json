@@ -1,1 +1,5 @@
-[]
+[
+  {
+    "record_type": "dry_run_requested"
+  }
+]
