@@ -150,6 +150,7 @@ def _normalize_observation(raw: dict[str, Any], now: datetime, asset_identifier:
     if observed_at is not None:
         freshness_seconds = max(0, int((now - observed_at).total_seconds()))
     return {
+        'provider_name': str(raw.get('provider_name') or raw.get('source_name') or raw.get('source') or 'unknown'),
         'source_name': str(raw.get('source_name') or raw.get('source') or 'unknown'),
         'source_type': str(raw.get('source_type') or 'oracle_api'),
         'asset_identifier': str(raw.get('asset_identifier') or asset_identifier),
@@ -160,6 +161,7 @@ def _normalize_observation(raw: dict[str, Any], now: datetime, asset_identifier:
         'update_interval_seconds': int(raw.get('update_interval_seconds') or 0),
         'freshness_seconds': freshness_seconds if freshness_seconds is not None else int(raw.get('freshness_seconds') or 0),
         'status': str(raw.get('status') or 'ok'),
+        'provider_status': str(raw.get('provider_status') or raw.get('status') or 'ok'),
         'provenance': {**({'provider_layer': 'oracle-service'}), **(raw.get('provenance') if isinstance(raw.get('provenance'), dict) else {})},
     }
 
@@ -265,6 +267,8 @@ def oracle_observations(asset_identifier: str = '') -> dict[str, object]:
             'reason': 'real_oracle_providers_not_configured',
             'oracle_coverage_status': 'no_provider_configured',
             'provider_coverage_summary': {'configured_provider_count': 0, 'reachable_provider_count': 0, 'usable_observation_count': 0},
+            'oracle_claim_eligible': False,
+            'oracle_claim_ineligibility_reasons': ['oracle_provider_not_configured'],
             'provider_configured': False,
             'asset_identifier': configured_asset or None,
             'observations': [],
@@ -288,30 +292,39 @@ def oracle_observations(asset_identifier: str = '') -> dict[str, object]:
         status_value = 'ok'
         reason = None
         coverage_status = 'real_oracle_observations_present'
+        ineligibility_reasons: list[str] = []
     elif stale:
         status_value = 'insufficient_real_evidence'
         reason = 'configured_provider_returned_stale_data'
         coverage_status = 'provider_returned_stale_data'
+        ineligibility_reasons = ['oracle_observation_stale']
     elif divergent:
         status_value = 'insufficient_real_evidence'
         reason = 'configured_provider_returned_divergent_values'
         coverage_status = 'provider_returned_divergent_values'
+        ineligibility_reasons = ['oracle_source_divergence']
     elif cadence_violations:
         status_value = 'insufficient_real_evidence'
         reason = 'configured_provider_cadence_violation'
         coverage_status = 'provider_cadence_violation'
+        ineligibility_reasons = ['oracle_provider_cadence_violation']
     elif unavailable:
         status_value = 'unavailable'
         reason = 'configured_provider_unreachable'
         coverage_status = 'provider_configured_but_unreachable'
+        ineligibility_reasons = ['oracle_provider_unreachable']
     else:
         status_value = 'insufficient_real_evidence'
         reason = 'configured_provider_returned_no_usable_observations' if provider_configured else 'real_oracle_providers_not_configured'
         coverage_status = 'insufficient_real_evidence'
+        ineligibility_reasons = ['oracle_provider_returned_insufficient_observations']
+    oracle_claim_eligible = bool(status_value == 'ok' and provider_configured and available)
     return {
         'status': status_value,
         'detector_status': 'real_event_no_anomaly' if status_value == 'ok' else 'insufficient_real_evidence',
         'oracle_coverage_status': coverage_status,
+        'oracle_claim_eligible': oracle_claim_eligible,
+        'oracle_claim_ineligibility_reasons': ineligibility_reasons,
         'provider_configured': provider_configured,
         'asset_identifier': configured_asset or None,
         'observations': observations,
@@ -322,6 +335,13 @@ def oracle_observations(asset_identifier: str = '') -> dict[str, object]:
             'stale_observation_count': len(stale),
             'cadence_violation_count': len(cadence_violations),
             'divergent_observation_count': len(divergent),
+            'provider_names': sorted(
+                {
+                    str(item.get('provider_name') or item.get('source_name') or '').strip().lower()
+                    for item in observations
+                    if str(item.get('provider_name') or item.get('source_name') or '').strip()
+                }
+            ),
         },
         'reason': reason,
         'generated_at': now.isoformat(),

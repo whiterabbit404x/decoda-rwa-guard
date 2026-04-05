@@ -4750,6 +4750,19 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 'real_anomaly_observed': strict_anomaly,
                 'real_anomaly_reason_codes': reason_codes,
                 'sales_safe_claim': 'anomaly_detected_from_real_worker_evidence' if strict_anomaly else 'insufficient_real_anomaly_evidence',
+                'coverage_snapshots': [
+                    {
+                        'run_id': item.get('id'),
+                        'target_id': item.get('target_id'),
+                        'market_coverage_status': ((item.get('response_payload') or {}).get('market_coverage_status')),
+                        'oracle_coverage_status': ((item.get('response_payload') or {}).get('oracle_coverage_status')),
+                        'enterprise_claim_eligibility': bool((item.get('response_payload') or {}).get('enterprise_claim_eligibility')),
+                        'claim_ineligibility_reasons': ((item.get('response_payload') or {}).get('claim_ineligibility_reasons') or []),
+                        'provider_coverage_status': ((item.get('response_payload') or {}).get('provider_coverage_status') or {}),
+                        'protected_asset_context': ((item.get('response_payload') or {}).get('protected_asset_context') or {}),
+                    }
+                    for item in worker_runs[:20]
+                ],
             }]
         case _:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export type.')

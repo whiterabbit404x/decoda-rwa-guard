@@ -315,6 +315,8 @@ def test_liquidity_detector_flags_insufficient_when_provider_marks_unavailable()
     )
     liquidity = _detector(summary, 'liquidity_venue')
     assert liquidity['detector_status'] == 'insufficient_real_evidence'
+    assert liquidity['market_coverage_status'] == 'insufficient_real_evidence'
+    assert liquidity['provider_coverage_status']['market_claim_eligible'] is False
 
 
 def test_liquidity_detector_fails_closed_without_external_market_observations() -> None:
@@ -375,3 +377,29 @@ def test_liquidity_detector_consumes_external_market_observations() -> None:
     liquidity = _detector(summary, 'liquidity_venue')
     assert liquidity['detector_status'] == 'anomaly_detected'
     assert 'abnormal_outflow' in liquidity['anomaly_reason']
+    assert liquidity['market_coverage_status'] == 'real_external_market_observation'
+    assert liquidity['provider_coverage_status']['market_claim_eligible'] is True
+
+
+def test_flow_detector_persists_endangered_asset_path_on_lifecycle_violation() -> None:
+    summary = _asset_detection_summary(
+        asset={
+            'id': 'a1',
+            'identifier': 'USTB',
+            'asset_symbol': 'USTB',
+            'expected_counterparties': [],
+            'treasury_ops_wallets': ['0x1111111111111111111111111111111111111111'],
+            'custody_wallets': ['0x2222222222222222222222222222222222222222'],
+            'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}],
+            'expected_approval_patterns': {},
+            'expected_liquidity_baseline': {},
+            'oracle_sources': ['oracle-a'],
+            'expected_oracle_freshness_seconds': 30,
+            'expected_oracle_update_cadence_seconds': 30,
+            'venue_labels': [],
+        },
+        event=_event({'from': '0x1111111111111111111111111111111111111111', 'to': '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'amount': '200', 'event_type': 'transfer'}),
+    )
+    flow = _detector(summary, 'flow_pattern')
+    assert flow['violated_lifecycle_rule'] in {'invalid_lifecycle_transition', 'prohibited_route_shortcut'}
+    assert flow['endangered_asset_path'] == 'treasury_ops->unknown_external'

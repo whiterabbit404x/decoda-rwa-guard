@@ -36,6 +36,36 @@ def main() -> int:
         print('Set PILOT_AUTH_TOKEN and WORKSPACE_ID', file=sys.stderr)
         return 2
 
+    asset_identifier = os.getenv('EVIDENCE_ASSET_IDENTIFIER', 'USTB-REAL')
+    asset = _request(
+        'POST',
+        f'{api_url}/assets',
+        token=token,
+        workspace_id=workspace_id,
+        body={
+            'name': f'Protected Treasury Asset {asset_identifier}',
+            'asset_symbol': os.getenv('EVIDENCE_ASSET_SYMBOL', 'USTB'),
+            'asset_identifier': asset_identifier,
+            'chain_network': 'ethereum',
+            'token_contract_address': os.getenv('EVIDENCE_ASSET_CONTRACT', '0x' + 'a' * 40),
+            'treasury_ops_wallets': [os.getenv('EVIDENCE_WALLET_ADDRESS', '0x1111111111111111111111111111111111111111')],
+            'custody_wallets': [os.getenv('EVIDENCE_CUSTODY_WALLET', '0x2222222222222222222222222222222222222222')],
+            'expected_counterparties': [os.getenv('EVIDENCE_COUNTERPARTY', '0x3333333333333333333333333333333333333333')],
+            'expected_flow_patterns': [
+                {'source_class': 'treasury_ops', 'destination_class': 'custody'},
+                {'source_class': 'custody', 'destination_class': 'approved_external_counterparty', 'required_checkpoint': 'monitored_venue'},
+            ],
+            'expected_approval_patterns': {'allowed_spenders': [os.getenv('EVIDENCE_SPENDER', '0x4444444444444444444444444444444444444444')], 'max_amount': 1000000},
+            'venue_labels': [os.getenv('EVIDENCE_VENUE', '0x5555555555555555555555555555555555555555')],
+            'expected_liquidity_baseline': {'baseline_outflow_volume': 100000, 'baseline_transfer_count': 5, 'minimum_transfer_count': 1},
+            'baseline_status': 'ready',
+            'baseline_confidence': 0.9,
+            'baseline_coverage': 0.9,
+            'oracle_sources': [os.getenv('EVIDENCE_ORACLE_SOURCE', 'oracle-a')],
+            'expected_oracle_freshness_seconds': 120,
+            'expected_oracle_update_cadence_seconds': 120,
+        },
+    )
     target = _request(
         'POST',
         f'{api_url}/targets',
@@ -50,6 +80,7 @@ def main() -> int:
             'monitoring_mode': 'stream',
             'chain_id': 1,
             'asset_label': 'Treasury reserve wallet',
+            'asset_id': asset.get('id'),
             'enabled': True,
             'auto_create_incidents': True,
             'severity_threshold': 'high',
@@ -91,6 +122,15 @@ def main() -> int:
     passed = bool(worker_runs and strict_alerts and (not high_alert_ids or strict_incidents) and not insufficient_detected)
 
     summary = {
+        'protected_asset': {
+            'asset_id': asset.get('id'),
+            'asset_identifier': asset.get('asset_identifier'),
+            'symbol': asset.get('asset_symbol'),
+            'chain_id': 1,
+            'contract_address': asset.get('token_contract_address'),
+            'treasury_ops_wallets': asset.get('treasury_ops_wallets') or [],
+            'custody_wallets': asset.get('custody_wallets') or [],
+        },
         'target_id': target_id,
         'workspace_id': workspace_id,
         'worker_run': run_cycle,
@@ -102,9 +142,26 @@ def main() -> int:
         'strict_incident_count': len(strict_incidents),
         'status': 'pass' if passed else 'fail',
         'failure_reason': None if passed else 'missing_worker_real_asset_anomaly_evidence',
-        'enterprise_claim_eligible': passed,
+        'enterprise_claim_eligibility': passed,
         'market_coverage_status': ((strict_alerts[0].get('payload') or {}).get('market_coverage_status') if strict_alerts else 'insufficient_real_evidence'),
         'oracle_coverage_status': ((strict_alerts[0].get('payload') or {}).get('oracle_coverage_status') if strict_alerts else 'insufficient_real_evidence'),
+        'provider_coverage_status': ((strict_alerts[0].get('payload') or {}).get('provider_coverage_status') if strict_alerts else {}),
+        'enterprise_claim_eligible_results': [
+            {
+                'analysis_run_id': item.get('analysis_run_id'),
+                'detector_family': (item.get('payload') or {}).get('detector_family'),
+            }
+            for item in strict_alerts
+            if bool((item.get('payload') or {}).get('enterprise_claim_eligibility'))
+        ],
+        'internal_only_results': [
+            {
+                'analysis_run_id': item.get('analysis_run_id'),
+                'detector_family': (item.get('payload') or {}).get('detector_family'),
+            }
+            for item in alert_rows
+            if not bool((item.get('payload') or {}).get('enterprise_claim_eligibility'))
+        ],
         'claim_ineligibility_reasons': sorted(
             {
                 str(reason)
@@ -126,7 +183,9 @@ def main() -> int:
         f"- worker_run_count: `{summary['worker_run_count']}`\n"
         f"- strict_alert_count: `{summary['strict_alert_count']}`\n"
         f"- strict_incident_count: `{summary['strict_incident_count']}`\n"
-        f"- enterprise_claim_eligible: `{summary['enterprise_claim_eligible']}`\n"
+        f"- enterprise_claim_eligibility: `{summary['enterprise_claim_eligibility']}`\n"
+        f"- market_coverage_status: `{summary['market_coverage_status']}`\n"
+        f"- oracle_coverage_status: `{summary['oracle_coverage_status']}`\n"
     )
     print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2, default=str))
     return 0 if passed else 3
