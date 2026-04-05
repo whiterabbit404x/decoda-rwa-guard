@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from services.api.app.monitoring_runner import _build_protected_asset_context, _load_target_asset_context, _provider_coverage_status
+from services.api.app.monitoring_runner import _build_protected_asset_context, _load_target_asset_context, _protected_asset_coverage_record, _provider_coverage_status
 
 
 class _Result:
@@ -93,4 +93,75 @@ def test_protected_asset_context_contract_and_coverage_fail_closed() -> None:
     assert coverage['oracle_coverage_status'] == 'insufficient_real_evidence'
     assert coverage['provider_coverage_status']['market_claim_eligible'] is False
     assert coverage['provider_coverage_status']['oracle_claim_eligible'] is False
-    assert 'market_provider_not_configured_or_no_observation' in coverage['claim_ineligibility_reasons']
+    assert 'missing_market_provider_config' in coverage['claim_ineligibility_reasons']
+    assert 'insufficient_oracle_observations' in coverage['claim_ineligibility_reasons']
+
+
+def test_internal_rollups_do_not_make_market_claim_eligible() -> None:
+    context = _build_protected_asset_context(
+        {
+            'id': 'a1',
+            'asset_identifier': 'USTB',
+            'asset_symbol': 'USTB',
+            'chain_id': 1,
+            'token_contract_address': '0xabc',
+            'treasury_ops_wallets': ['0x1'],
+            'custody_wallets': ['0x2'],
+            'expected_counterparties': ['0x3'],
+            'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}],
+            'expected_approval_patterns': {'allowed_spenders': ['0x4']},
+            'expected_liquidity_baseline': {'baseline_outflow_volume': 100},
+            'oracle_sources': ['oracle-a'],
+            'expected_oracle_freshness_seconds': 30,
+            'expected_oracle_update_cadence_seconds': 30,
+            'venue_labels': ['0x5'],
+            'baseline_status': 'ready',
+            'baseline_confidence': 0.9,
+            'baseline_coverage': 0.8,
+        }
+    )
+    coverage = _provider_coverage_status(
+        event_payload={
+            'market_observations': [
+                {'provider_name': 'evm_activity_provider', 'telemetry_kind': 'external_market', 'observation_kind': 'supporting_onchain_rollup', 'status': 'ok', 'freshness_seconds': 1}
+            ],
+            'oracle_observations': [
+                {'provider_name': 'oracle-a', 'source_name': 'oracle-a', 'status': 'ok', 'freshness_seconds': 1}
+            ],
+        },
+        protected_asset_context=context,
+    )
+    assert coverage['provider_coverage_summary']['market_claim_eligible'] is False
+    assert 'detector_relied_on_internal_rollups_only' in coverage['claim_ineligibility_reasons']
+
+
+def test_coverage_record_contract_contains_claim_and_provider_fields() -> None:
+    context = _build_protected_asset_context(
+        {
+            'id': 'a1',
+            'asset_identifier': 'USTB',
+            'asset_symbol': 'USTB',
+            'chain_id': 1,
+            'token_contract_address': '0xabc',
+            'treasury_ops_wallets': ['0x1'],
+            'custody_wallets': ['0x2'],
+            'expected_counterparties': ['0x3'],
+            'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}],
+            'expected_approval_patterns': {'allowed_spenders': ['0x4']},
+            'expected_liquidity_baseline': {'baseline_outflow_volume': 100},
+            'oracle_sources': ['oracle-a'],
+            'expected_oracle_freshness_seconds': 30,
+            'expected_oracle_update_cadence_seconds': 30,
+            'venue_labels': ['0x5'],
+            'baseline_status': 'ready',
+            'baseline_confidence': 0.9,
+            'baseline_coverage': 0.8,
+        }
+    )
+    coverage = _provider_coverage_status(event_payload={'market_observations': [], 'oracle_observations': []}, protected_asset_context=context)
+    record = _protected_asset_coverage_record(protected_asset_context=context, coverage_status=coverage)
+    assert record['asset_identifier'] == 'USTB'
+    assert record['market_provider_count'] == 0
+    assert record['oracle_provider_count'] == 0
+    assert record['enterprise_claim_eligibility'] is False
+    assert isinstance(record['claim_ineligibility_reasons'], list)

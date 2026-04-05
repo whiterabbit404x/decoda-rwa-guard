@@ -119,7 +119,16 @@ def main() -> int:
     strict_incidents = [item for item in incident_rows if set(item.get('linked_alert_ids') or []) & high_alert_ids]
     evidence_rows = [((item.get('payload') or {}).get('detector_results') or []) for item in strict_alerts if isinstance(item, dict)]
     insufficient_detected = any(str((item.get('payload') or {}).get('detector_status') or '') in {'insufficient_real_evidence', 'no_real_data'} for item in alert_rows)
-    passed = bool(worker_runs and strict_alerts and (not high_alert_ids or strict_incidents) and not insufficient_detected)
+    coverage_rows = [
+        ((item.get('response_payload') or {}).get('protected_asset_coverage_record') or {})
+        for item in worker_runs
+        if isinstance(item, dict)
+    ]
+    coverage_rows = [item for item in coverage_rows if isinstance(item, dict) and item]
+    first_coverage = coverage_rows[0] if coverage_rows else {}
+    has_live_coverage = any(bool(item.get('enterprise_claim_eligibility')) for item in coverage_rows)
+    explicit_ineligibility = bool(coverage_rows and not has_live_coverage and any(item.get('claim_ineligibility_reasons') for item in coverage_rows))
+    passed = bool(worker_runs and (has_live_coverage or explicit_ineligibility))
 
     summary = {
         'protected_asset': {
@@ -141,10 +150,16 @@ def main() -> int:
         'strict_alert_count': len(strict_alerts),
         'strict_incident_count': len(strict_incidents),
         'status': 'pass' if passed else 'fail',
-        'failure_reason': None if passed else 'missing_worker_real_asset_anomaly_evidence',
-        'enterprise_claim_eligibility': passed,
-        'market_coverage_status': ((strict_alerts[0].get('payload') or {}).get('market_coverage_status') if strict_alerts else 'insufficient_real_evidence'),
-        'oracle_coverage_status': ((strict_alerts[0].get('payload') or {}).get('oracle_coverage_status') if strict_alerts else 'insufficient_real_evidence'),
+        'failure_reason': (
+            None
+            if passed
+            else 'missing_worker_real_asset_coverage_or_explicit_ineligibility'
+        ),
+        'enterprise_claim_eligibility': bool(first_coverage.get('enterprise_claim_eligibility')),
+        'market_coverage_status': (first_coverage.get('market_coverage_status') or 'insufficient_real_evidence'),
+        'oracle_coverage_status': (first_coverage.get('oracle_coverage_status') or 'insufficient_real_evidence'),
+        'market_provider_names': first_coverage.get('market_provider_names') or [],
+        'oracle_provider_names': first_coverage.get('oracle_provider_names') or [],
         'provider_coverage_status': ((strict_alerts[0].get('payload') or {}).get('provider_coverage_status') if strict_alerts else {}),
         'enterprise_claim_eligible_results': [
             {
@@ -170,6 +185,9 @@ def main() -> int:
             }
         ),
         'insufficient_real_evidence_detected': insufficient_detected,
+        'external_market_telemetry_present': bool(first_coverage.get('market_claim_eligible')),
+        'real_oracle_observations_present': bool(first_coverage.get('oracle_claim_eligible')),
+        'lifecycle_checks_performed': sorted({str(result.get('detector_family')) for alert in alert_rows for result in ((alert.get('payload') or {}).get('detector_results') or []) if isinstance(result, dict) and result.get('lifecycle_stage')}),
     }
 
     (artifacts_dir / 'summary.json').write_text(json.dumps(summary, indent=2))

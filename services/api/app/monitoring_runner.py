@@ -222,6 +222,21 @@ ASSET_DETECTOR_FAMILIES = {
     'oracle_integrity',
 }
 
+CLAIM_REASON_EXPLANATIONS: dict[str, str] = {
+    'missing_asset_identity': 'Protected asset identity is incomplete (asset_id/identifier/symbol/chain/contract required).',
+    'missing_protected_path_context': 'Treasury/custody protected path context is incomplete.',
+    'lifecycle_context_incomplete': 'Lifecycle routing, approvals, or baseline rules are incomplete.',
+    'missing_market_provider_config': 'No real external market provider is configured for this asset.',
+    'market_provider_unreachable': 'Configured market providers could not be reached.',
+    'market_provider_stale': 'Market telemetry is stale for configured providers.',
+    'insufficient_market_observations': 'Not enough real external market observations were available.',
+    'detector_relied_on_internal_rollups_only': 'Only internal rollups were available; no eligible external market telemetry was present.',
+    'missing_oracle_provider_config': 'No real oracle provider/source is configured for this asset.',
+    'oracle_provider_unreachable': 'Configured oracle providers could not be reached.',
+    'oracle_provider_stale': 'Oracle observations are stale.',
+    'insufficient_oracle_observations': 'Oracle observations are missing or insufficient for independent source coverage.',
+}
+
 
 def _normalize_addr(value: Any) -> str:
     return str(value or '').strip().lower()
@@ -361,7 +376,14 @@ def _provider_coverage_status(*, event_payload: dict[str, Any], protected_asset_
     market_observations = event_payload.get('market_observations') if isinstance(event_payload.get('market_observations'), list) else []
     oracle_observations = event_payload.get('oracle_observations') if isinstance(event_payload.get('oracle_observations'), list) else []
     required_oracles = {str(item).strip().lower() for item in protected_asset_context.get('oracle_sources', []) if str(item).strip()}
-    claim_ineligibility_reasons = list(protected_asset_context.get('missing_contract_fields') or [])
+    claim_ineligibility_reasons: list[str] = []
+    missing_contract_fields = set(protected_asset_context.get('missing_contract_fields') or [])
+    if missing_contract_fields & {'asset_id', 'asset_identifier', 'symbol', 'chain_id', 'contract_address'}:
+        claim_ineligibility_reasons.append('missing_asset_identity')
+    if missing_contract_fields & {'treasury_ops_wallets', 'custody_wallets', 'expected_counterparties'}:
+        claim_ineligibility_reasons.append('missing_protected_path_context')
+    if missing_contract_fields & {'expected_flow_patterns', 'expected_approval_patterns', 'expected_liquidity_baseline'}:
+        claim_ineligibility_reasons.append('lifecycle_context_incomplete')
 
     market_provider_names = sorted(
         {
@@ -371,28 +393,45 @@ def _provider_coverage_status(*, event_payload: dict[str, Any], protected_asset_
         }
     )
     market_statuses = {str(item.get('status') or '').lower() for item in market_observations if isinstance(item, dict)}
-    market_fresh = [item for item in market_observations if isinstance(item, dict) and str(item.get('status') or '').lower() == 'ok' and int(item.get('freshness_seconds') or 0) >= 0]
+    market_freshness_limit = max(1, int(os.getenv('FEATURE1_MARKET_FRESHNESS_SECONDS', '300')))
+    external_market_observations = [
+        item for item in market_observations
+        if isinstance(item, dict) and str(item.get('telemetry_kind') or 'external_market').lower() == 'external_market'
+    ]
+    market_realtime_external = [
+        item for item in external_market_observations
+        if str(item.get('observation_kind') or ('real_external_market_observation' if str(item.get('status') or '').lower() == 'ok' else '')).lower() == 'real_external_market_observation'
+    ]
+    market_fresh = [
+        item for item in market_realtime_external
+        if str(item.get('status') or '').lower() == 'ok'
+        and int(item.get('freshness_seconds') or 0) <= market_freshness_limit
+    ]
     market_reachable = [item for item in market_observations if isinstance(item, dict) and str(item.get('status') or '').lower() != 'unavailable']
     market_claim_ineligibility_reasons: list[str] = []
     if not market_provider_names:
         market_coverage_status = 'insufficient_real_evidence'
         market_claim_eligible = False
-        market_claim_ineligibility_reasons.append('market_provider_not_configured_or_no_observation')
+        market_claim_ineligibility_reasons.append('missing_market_provider_config')
     elif not market_reachable:
         market_coverage_status = 'provider_configured_but_unreachable'
         market_claim_eligible = False
         market_claim_ineligibility_reasons.append('market_provider_unreachable')
+    elif external_market_observations and not market_realtime_external:
+        market_coverage_status = 'insufficient_real_evidence'
+        market_claim_eligible = False
+        market_claim_ineligibility_reasons.append('detector_relied_on_internal_rollups_only')
     elif not market_fresh:
         market_coverage_status = 'insufficient_real_evidence'
         market_claim_eligible = False
-        market_claim_ineligibility_reasons.append('market_provider_not_fresh')
+        market_claim_ineligibility_reasons.extend(['market_provider_stale', 'insufficient_market_observations'])
     elif 'ok' in market_statuses:
         market_coverage_status = 'real_external_market_observation'
         market_claim_eligible = True
     else:
         market_coverage_status = 'insufficient_real_evidence'
         market_claim_eligible = False
-        market_claim_ineligibility_reasons.append('market_provider_insufficient_real_evidence')
+        market_claim_ineligibility_reasons.append('insufficient_market_observations')
 
     oracle_provider_names = sorted(
         {
@@ -413,11 +452,11 @@ def _provider_coverage_status(*, event_payload: dict[str, Any], protected_asset_
     if not required_oracles:
         oracle_coverage_status = 'insufficient_real_evidence'
         oracle_claim_eligible = False
-        oracle_claim_ineligibility_reasons.append('oracle_provider_not_configured')
+        oracle_claim_ineligibility_reasons.append('missing_oracle_provider_config')
     elif not oracle_provider_names:
         oracle_coverage_status = 'insufficient_real_evidence'
         oracle_claim_eligible = False
-        oracle_claim_ineligibility_reasons.append('oracle_provider_configured_but_no_observation')
+        oracle_claim_ineligibility_reasons.append('insufficient_oracle_observations')
     elif not oracle_reachable:
         oracle_coverage_status = 'provider_configured_but_unreachable'
         oracle_claim_eligible = False
@@ -425,26 +464,26 @@ def _provider_coverage_status(*, event_payload: dict[str, Any], protected_asset_
     elif 'stale' in oracle_statuses:
         oracle_coverage_status = 'provider_returned_stale_data'
         oracle_claim_eligible = False
-        oracle_claim_ineligibility_reasons.append('oracle_observation_stale')
+        oracle_claim_ineligibility_reasons.append('oracle_provider_stale')
     elif 'divergent' in oracle_statuses:
         oracle_coverage_status = 'provider_returned_divergent_values'
         oracle_claim_eligible = False
-        oracle_claim_ineligibility_reasons.append('oracle_source_divergence')
+        oracle_claim_ineligibility_reasons.append('insufficient_oracle_observations')
     elif len(observed_sources) < max(1, len(required_oracles)):
         oracle_coverage_status = 'insufficient_real_evidence'
         oracle_claim_eligible = False
-        oracle_claim_ineligibility_reasons.append('oracle_source_coverage_insufficient')
+        oracle_claim_ineligibility_reasons.append('insufficient_oracle_observations')
     elif not oracle_fresh:
         oracle_coverage_status = 'insufficient_real_evidence'
         oracle_claim_eligible = False
-        oracle_claim_ineligibility_reasons.append('oracle_provider_not_fresh')
+        oracle_claim_ineligibility_reasons.append('oracle_provider_stale')
     elif 'ok' in oracle_statuses:
         oracle_coverage_status = 'real_oracle_observations_present'
         oracle_claim_eligible = True
     else:
         oracle_coverage_status = 'insufficient_real_evidence'
         oracle_claim_eligible = False
-        oracle_claim_ineligibility_reasons.append('oracle_provider_insufficient_real_evidence')
+        oracle_claim_ineligibility_reasons.append('insufficient_oracle_observations')
 
     claim_ineligibility_reasons.extend(market_claim_ineligibility_reasons)
     claim_ineligibility_reasons.extend(oracle_claim_ineligibility_reasons)
@@ -454,6 +493,7 @@ def _provider_coverage_status(*, event_payload: dict[str, Any], protected_asset_
         and market_claim_eligible
         and oracle_claim_eligible
     )
+    distinct_reasons = sorted({item for item in claim_ineligibility_reasons if item})
     return {
         'provider_coverage_status': {
             'market_coverage_status': market_coverage_status,
@@ -490,11 +530,15 @@ def _provider_coverage_status(*, event_payload: dict[str, Any], protected_asset_
             'oracle_observation_count': len(oracle_observations),
             'oracle_claim_eligible': oracle_claim_eligible,
             'oracle_claim_ineligibility_reasons': sorted(set(oracle_claim_ineligibility_reasons)),
-            'external_market_telemetry_present': market_claim_eligible,
-            'real_oracle_observations_present': oracle_claim_eligible,
+            'external_market_telemetry_present': bool(market_realtime_external),
+            'real_oracle_observations_present': bool(oracle_fresh),
         },
         'enterprise_claim_eligibility': enterprise_claim_eligibility,
-        'claim_ineligibility_reasons': sorted({item for item in claim_ineligibility_reasons if item}),
+        'claim_ineligibility_reasons': distinct_reasons,
+        'claim_ineligibility_details': [
+            {'code': code, 'message': CLAIM_REASON_EXPLANATIONS.get(code, code.replace('_', ' '))}
+            for code in distinct_reasons
+        ],
     }
 
 
@@ -549,6 +593,48 @@ def _asset_detection_summary(*, asset: dict[str, Any] | None, event: ActivityEve
         'provider_coverage_summary': highest.get('provider_coverage_summary'),
         'enterprise_claim_eligibility': bool(highest.get('enterprise_claim_eligibility')),
         'claim_ineligibility_reasons': highest.get('claim_ineligibility_reasons') or [],
+        'claim_ineligibility_details': highest.get('claim_ineligibility_details') or [],
+    }
+
+
+def _protected_asset_coverage_record(*, protected_asset_context: dict[str, Any], coverage_status: dict[str, Any]) -> dict[str, Any]:
+    provider_summary = coverage_status.get('provider_coverage_summary') if isinstance(coverage_status.get('provider_coverage_summary'), dict) else {}
+    reasons = coverage_status.get('claim_ineligibility_reasons') if isinstance(coverage_status.get('claim_ineligibility_reasons'), list) else []
+    reason_details = coverage_status.get('claim_ineligibility_details') if isinstance(coverage_status.get('claim_ineligibility_details'), list) else []
+    return {
+        'asset_id': protected_asset_context.get('asset_id'),
+        'asset_identifier': protected_asset_context.get('asset_identifier'),
+        'symbol': protected_asset_context.get('symbol'),
+        'chain_id': protected_asset_context.get('chain_id'),
+        'contract_address': protected_asset_context.get('contract_address'),
+        'protected_asset_context': protected_asset_context,
+        'treasury_ops_wallets': protected_asset_context.get('treasury_ops_wallets') or [],
+        'custody_wallets': protected_asset_context.get('custody_wallets') or [],
+        'expected_counterparties': protected_asset_context.get('expected_counterparties') or [],
+        'expected_flow_patterns': protected_asset_context.get('expected_flow_patterns') or [],
+        'expected_approval_patterns': protected_asset_context.get('expected_approval_patterns') or {},
+        'venue_labels': protected_asset_context.get('venue_labels') or [],
+        'expected_liquidity_baseline': protected_asset_context.get('expected_liquidity_baseline') or {},
+        'oracle_sources': protected_asset_context.get('oracle_sources') or [],
+        'expected_oracle_freshness_seconds': int(protected_asset_context.get('expected_oracle_freshness_seconds') or 0),
+        'expected_oracle_update_cadence_seconds': int(protected_asset_context.get('expected_oracle_update_cadence_seconds') or 0),
+        'market_coverage_status': coverage_status.get('market_coverage_status') or 'insufficient_real_evidence',
+        'oracle_coverage_status': coverage_status.get('oracle_coverage_status') or 'insufficient_real_evidence',
+        'market_provider_count': int(provider_summary.get('market_provider_count') or 0),
+        'market_provider_reachable_count': int(provider_summary.get('market_provider_reachable_count') or 0),
+        'market_provider_fresh_count': int(provider_summary.get('market_provider_fresh_count') or 0),
+        'market_provider_names': provider_summary.get('market_provider_names') or [],
+        'market_observation_count': int(provider_summary.get('market_observation_count') or 0),
+        'oracle_provider_count': int(provider_summary.get('oracle_provider_count') or 0),
+        'oracle_provider_reachable_count': int(provider_summary.get('oracle_provider_reachable_count') or 0),
+        'oracle_provider_fresh_count': int(provider_summary.get('oracle_provider_fresh_count') or 0),
+        'oracle_provider_names': provider_summary.get('oracle_provider_names') or [],
+        'oracle_observation_count': int(provider_summary.get('oracle_observation_count') or 0),
+        'enterprise_claim_eligibility': bool(coverage_status.get('enterprise_claim_eligibility')),
+        'market_claim_eligible': bool(provider_summary.get('market_claim_eligible')),
+        'oracle_claim_eligible': bool(provider_summary.get('oracle_claim_eligible')),
+        'claim_ineligibility_reasons': reasons,
+        'claim_ineligibility_details': reason_details,
     }
 
 
@@ -594,6 +680,7 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
             'provider_coverage_summary': coverage_status['provider_coverage_summary'],
             'enterprise_claim_eligibility': coverage_status['enterprise_claim_eligibility'],
             'claim_ineligibility_reasons': coverage_status['claim_ineligibility_reasons'],
+            'claim_ineligibility_details': coverage_status.get('claim_ineligibility_details') or [],
         }]
 
     source = _normalize_addr(payload.get('from') or payload.get('owner'))
@@ -1007,6 +1094,7 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
         'provider_coverage_summary': coverage_status['provider_coverage_summary'],
         'enterprise_claim_eligibility': coverage_status['enterprise_claim_eligibility'],
         'claim_ineligibility_reasons': coverage_status['claim_ineligibility_reasons'],
+        'claim_ineligibility_details': coverage_status.get('claim_ineligibility_details') or [],
     }
     return [{**base, **item} for item in (counterparty, flow, approval, liquidity, oracle)]
 
@@ -1222,6 +1310,18 @@ def _process_single_event(
     response['provider_coverage_summary'] = asset_detection.get('provider_coverage_summary') or {}
     response['enterprise_claim_eligibility'] = bool(asset_detection.get('enterprise_claim_eligibility'))
     response['claim_ineligibility_reasons'] = asset_detection.get('claim_ineligibility_reasons') or []
+    response['claim_ineligibility_details'] = asset_detection.get('claim_ineligibility_details') or []
+    response['protected_asset_coverage_record'] = _protected_asset_coverage_record(
+        protected_asset_context=response['protected_asset_context'],
+        coverage_status={
+            'market_coverage_status': response['market_coverage_status'],
+            'oracle_coverage_status': response['oracle_coverage_status'],
+            'provider_coverage_summary': response['provider_coverage_summary'],
+            'enterprise_claim_eligibility': response['enterprise_claim_eligibility'],
+            'claim_ineligibility_reasons': response['claim_ineligibility_reasons'],
+            'claim_ineligibility_details': response['claim_ineligibility_details'],
+        },
+    )
     if asset_detection.get('severity'):
         response['severity'] = asset_detection['severity']
     payload = event.payload if isinstance(event.payload, dict) else {}
@@ -1288,6 +1388,7 @@ def _process_single_event(
         'alert_id': alert_id,
         'incident_id': incident_id,
         'monitoring_state': response.get('monitoring_state'),
+        'protected_asset_coverage_record': response.get('protected_asset_coverage_record') or {},
     }
 
 
@@ -1310,6 +1411,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
     checkpoint_at = checkpoint
     latest_processed_block = int(target.get('watcher_last_observed_block') or 0)
+    last_protected_asset_coverage_record: dict[str, Any] = {}
     source_status = (
         'active'
         if provider_result.evidence_state in {'REAL_EVIDENCE', 'DEMO_EVIDENCE'}
@@ -1350,6 +1452,9 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             last_alert_at = utc_now()
         if processed.get('incident_id'):
             incidents_created += 1
+        coverage_record = processed.get('protected_asset_coverage_record')
+        if isinstance(coverage_record, dict) and coverage_record:
+            last_protected_asset_coverage_record = coverage_record
 
     if not events and provider_result.mode in {'live', 'hybrid'} and str(target.get('target_type') or '').lower() in {'wallet', 'contract'}:
         if provider_result.status == 'failed':
@@ -1437,7 +1542,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, incidents_created)
     WORKER_STATE['metrics']['live_events_ingested'] += len(events)
-    return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'status': last_status, 'latest_processed_block': latest_processed_block, 'source_status': source_status, 'degraded_reason': degraded_reason, 'provider_status': provider_result.status, 'provider_source_type': provider_result.source_type, 'synthetic': provider_result.synthetic, 'recent_evidence_state': recent_evidence_state, 'recent_truthfulness_state': recent_truthfulness_state, 'recent_real_event_count': int(provider_result.recent_real_event_count)}
+    return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'status': last_status, 'latest_processed_block': latest_processed_block, 'source_status': source_status, 'degraded_reason': degraded_reason, 'provider_status': provider_result.status, 'provider_source_type': provider_result.source_type, 'synthetic': provider_result.synthetic, 'recent_evidence_state': recent_evidence_state, 'recent_truthfulness_state': recent_truthfulness_state, 'recent_real_event_count': int(provider_result.recent_real_event_count), 'protected_asset_coverage_record': last_protected_asset_coverage_record}
 
 
 def process_ingested_event(connection: Any, *, target: dict[str, Any], event: ActivityEvent, ingestion_mode: str = 'live') -> dict[str, Any]:
