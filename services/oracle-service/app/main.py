@@ -263,6 +263,8 @@ def oracle_observations(asset_identifier: str = '') -> dict[str, object]:
             'status': 'insufficient_real_evidence',
             'detector_status': 'insufficient_real_evidence',
             'reason': 'real_oracle_providers_not_configured',
+            'oracle_coverage_status': 'no_provider_configured',
+            'provider_coverage_summary': {'configured_provider_count': 0, 'reachable_provider_count': 0, 'usable_observation_count': 0},
             'provider_configured': False,
             'asset_identifier': configured_asset or None,
             'observations': [],
@@ -275,21 +277,52 @@ def oracle_observations(asset_identifier: str = '') -> dict[str, object]:
                 item['asset_identifier'] = configured_asset
     available = [item for item in observations if str(item.get('status') or 'ok').lower() not in {'unavailable', 'insufficient_real_evidence', 'no_real_telemetry'}]
     unavailable = [item for item in observations if str(item.get('status') or '').lower() in {'unavailable'}]
+    stale = [item for item in observations if str(item.get('status') or '').lower() in {'stale'}]
+    divergent = [item for item in observations if str(item.get('status') or '').lower() in {'divergent'}]
+    expected_cadence = int(os.getenv('ORACLE_EXPECTED_CADENCE_SECONDS', '120') or '120')
+    cadence_violations = [
+        item for item in observations
+        if int(item.get('update_interval_seconds') or 0) > expected_cadence > 0
+    ]
     if available:
         status_value = 'ok'
         reason = None
+        coverage_status = 'real_oracle_observations_present'
+    elif stale:
+        status_value = 'insufficient_real_evidence'
+        reason = 'configured_provider_returned_stale_data'
+        coverage_status = 'provider_returned_stale_data'
+    elif divergent:
+        status_value = 'insufficient_real_evidence'
+        reason = 'configured_provider_returned_divergent_values'
+        coverage_status = 'provider_returned_divergent_values'
+    elif cadence_violations:
+        status_value = 'insufficient_real_evidence'
+        reason = 'configured_provider_cadence_violation'
+        coverage_status = 'provider_cadence_violation'
     elif unavailable:
         status_value = 'unavailable'
         reason = 'configured_provider_unreachable'
+        coverage_status = 'provider_configured_but_unreachable'
     else:
         status_value = 'insufficient_real_evidence'
         reason = 'configured_provider_returned_no_usable_observations' if provider_configured else 'real_oracle_providers_not_configured'
+        coverage_status = 'insufficient_real_evidence'
     return {
         'status': status_value,
         'detector_status': 'real_event_no_anomaly' if status_value == 'ok' else 'insufficient_real_evidence',
+        'oracle_coverage_status': coverage_status,
         'provider_configured': provider_configured,
         'asset_identifier': configured_asset or None,
         'observations': observations,
+        'provider_coverage_summary': {
+            'configured_provider_count': len(_provider_configs()),
+            'reachable_provider_count': len([item for item in observations if str(item.get('status') or '').lower() != 'unavailable']),
+            'usable_observation_count': len(available),
+            'stale_observation_count': len(stale),
+            'cadence_violation_count': len(cadence_violations),
+            'divergent_observation_count': len(divergent),
+        },
         'reason': reason,
         'generated_at': now.isoformat(),
     }

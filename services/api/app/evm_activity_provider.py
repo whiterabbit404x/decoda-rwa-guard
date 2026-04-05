@@ -104,6 +104,33 @@ class HttpJsonMarketTelemetryProvider:
         return items
 
 
+def _normalize_market_observation(item: dict[str, Any], *, provider_name: str, asset_identifier: str, now: datetime) -> dict[str, Any]:
+    observed_at = str(item.get('observed_at') or now.isoformat())
+    try:
+        parsed_observed_at = datetime.fromisoformat(observed_at.replace('Z', '+00:00'))
+        freshness_seconds = max(0, int((now - parsed_observed_at).total_seconds()))
+    except Exception:
+        freshness_seconds = int(item.get('freshness_seconds') or 0)
+    return {
+        'provider_name': str(item.get('provider_name') or provider_name),
+        'asset_identifier': str(item.get('asset_identifier') or asset_identifier or ''),
+        'observed_at': observed_at,
+        'venue_distribution': item.get('venue_distribution') if isinstance(item.get('venue_distribution'), dict) else {},
+        'route_distribution': item.get('route_distribution') if isinstance(item.get('route_distribution'), dict) else {},
+        'rolling_volume': float(item.get('rolling_volume') or 0.0),
+        'rolling_transfer_count': int(item.get('rolling_transfer_count') or item.get('transfer_count') or 0),
+        'unique_counterparties': int(item.get('unique_counterparties') or 0),
+        'concentration_ratio': float(item.get('concentration_ratio') or 0.0),
+        'abnormal_outflow_ratio': float(item.get('abnormal_outflow_ratio') or 0.0),
+        'burst_score': float(item.get('burst_score') or 0.0),
+        'provider_status': str(item.get('provider_status') or item.get('status') or 'insufficient_real_evidence'),
+        'status': str(item.get('status') or 'insufficient_real_evidence'),
+        'freshness_seconds': freshness_seconds,
+        'telemetry_kind': str(item.get('telemetry_kind') or 'external_market'),
+        'provenance': item.get('provenance') if isinstance(item.get('provenance'), dict) else {'provider_layer': 'evm_activity_provider'},
+    }
+
+
 def _hex_to_int(value: str | None) -> int | None:
     if not value:
         return None
@@ -351,6 +378,7 @@ def _build_cycle_telemetry(target: dict[str, Any], events: list[ActivityEvent]) 
                 liquidity_observation[key] = primary_market.get(key)
         liquidity_observation['provider_name'] = str(primary_market.get('provider_name') or primary_market.get('source_name') or 'external_market_provider')
         liquidity_observation['telemetry_kind'] = str(primary_market.get('telemetry_kind') or 'external_market')
+        liquidity_observation['observation_kind'] = 'real_external_market_observation'
         liquidity_observation['status'] = str(primary_market.get('status') or 'ok')
         liquidity_observation['telemetry_state'] = 'real_telemetry_present'
         liquidity_observation['market_observations'] = market_observations
@@ -370,6 +398,7 @@ def _build_cycle_telemetry(target: dict[str, Any], events: list[ActivityEvent]) 
             'asset_identifier': str(target.get('asset_identifier') or target.get('asset_symbol') or target.get('id') or ''),
             'observed_at': datetime.now(timezone.utc).isoformat(),
             'market_observations': market_observations,
+            'observation_kind': 'supporting_onchain_rollup',
         }
     if venue_observation is None:
         venue_observation = {
@@ -414,8 +443,18 @@ def _fetch_market_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
             'asset_identifier': asset_identifier or None,
             'telemetry_kind': 'external_market',
             'status': 'insufficient_real_evidence',
+            'provider_status': 'no_provider_configured',
             'reason': 'external_market_provider_not_configured',
             'observed_at': now.isoformat(),
+            'venue_distribution': {},
+            'route_distribution': {},
+            'rolling_volume': 0.0,
+            'rolling_transfer_count': 0,
+            'unique_counterparties': 0,
+            'concentration_ratio': 0.0,
+            'abnormal_outflow_ratio': 0.0,
+            'burst_score': 0.0,
+            'freshness_seconds': None,
             'provenance': {'provider_layer': 'evm_activity_provider'},
         }]
     observations: list[dict[str, Any]] = []
@@ -428,7 +467,11 @@ def _fetch_market_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
         try:
             fetched = fetcher.fetch(asset_identifier=asset_identifier, now=now)
             if fetched:
-                observations.extend(fetched)
+                observations.extend([
+                    _normalize_market_observation(item, provider_name=str(provider.get('source_name') or 'external-market'), asset_identifier=asset_identifier, now=now)
+                    for item in fetched
+                    if isinstance(item, dict)
+                ])
                 continue
             observations.append(
                 {
@@ -438,8 +481,18 @@ def _fetch_market_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
                     'asset_identifier': asset_identifier or None,
                     'telemetry_kind': 'external_market',
                     'status': 'insufficient_real_evidence',
+                    'provider_status': 'provider_returned_no_observations',
                     'reason': 'provider_returned_no_observations',
                     'observed_at': now.isoformat(),
+                    'venue_distribution': {},
+                    'route_distribution': {},
+                    'rolling_volume': 0.0,
+                    'rolling_transfer_count': 0,
+                    'unique_counterparties': 0,
+                    'concentration_ratio': 0.0,
+                    'abnormal_outflow_ratio': 0.0,
+                    'burst_score': 0.0,
+                    'freshness_seconds': None,
                     'provenance': {'provider_layer': 'evm_activity_provider', 'provider_url': str(provider.get('url') or '')},
                 }
             )
@@ -452,8 +505,18 @@ def _fetch_market_observations(target: dict[str, Any]) -> list[dict[str, Any]]:
                     'asset_identifier': asset_identifier or None,
                     'telemetry_kind': 'external_market',
                     'status': 'unavailable',
+                    'provider_status': 'provider_unreachable',
                     'reason': 'provider_unreachable',
                     'observed_at': now.isoformat(),
+                    'venue_distribution': {},
+                    'route_distribution': {},
+                    'rolling_volume': 0.0,
+                    'rolling_transfer_count': 0,
+                    'unique_counterparties': 0,
+                    'concentration_ratio': 0.0,
+                    'abnormal_outflow_ratio': 0.0,
+                    'burst_score': 0.0,
+                    'freshness_seconds': None,
                     'provenance': {'provider_layer': 'evm_activity_provider', 'provider_url': str(provider.get('url') or '')},
                 }
             )
@@ -592,6 +655,7 @@ def _build_liquidity_observation(target: dict[str, Any], events: list[ActivityEv
     return {
         'provider_name': 'evm_activity_provider',
         'telemetry_kind': 'liquidity_rollup',
+        'observation_kind': 'supporting_onchain_rollup',
         'window_seconds': window_seconds,
         'window_event_count': len(transfer_events),
         'rolling_volume': total_volume,

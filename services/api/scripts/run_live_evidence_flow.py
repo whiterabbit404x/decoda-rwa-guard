@@ -103,6 +103,15 @@ def main() -> int:
         'status': 'pass' if passed else 'fail',
         'failure_reason': None if passed else 'missing_worker_real_asset_anomaly_evidence',
         'enterprise_claim_eligible': passed,
+        'market_coverage_status': ((strict_alerts[0].get('payload') or {}).get('market_coverage_status') if strict_alerts else 'insufficient_real_evidence'),
+        'oracle_coverage_status': ((strict_alerts[0].get('payload') or {}).get('oracle_coverage_status') if strict_alerts else 'insufficient_real_evidence'),
+        'claim_ineligibility_reasons': sorted(
+            {
+                str(reason)
+                for item in alert_rows
+                for reason in (((item.get('payload') or {}).get('claim_ineligibility_reasons')) or [])
+            }
+        ),
         'insufficient_real_evidence_detected': insufficient_detected,
     }
 

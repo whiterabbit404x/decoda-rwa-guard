@@ -273,6 +273,156 @@ def _normalized_asset_model(asset: dict[str, Any] | None) -> dict[str, Any] | No
     }
 
 
+def _build_protected_asset_context(asset: dict[str, Any] | None, *, target: dict[str, Any] | None = None) -> dict[str, Any]:
+    model = _normalized_asset_model(asset)
+    context: dict[str, Any] = {
+        'asset_id': None,
+        'asset_identifier': None,
+        'symbol': None,
+        'chain_id': None,
+        'contract_address': None,
+        'treasury_ops_wallets': [],
+        'custody_wallets': [],
+        'expected_counterparties': [],
+        'expected_flow_patterns': [],
+        'expected_approval_patterns': {},
+        'venue_labels': [],
+        'expected_liquidity_baseline': {},
+        'baseline_status': None,
+        'baseline_confidence': None,
+        'baseline_coverage': None,
+        'oracle_sources': [],
+        'expected_oracle_freshness_seconds': 0,
+        'expected_oracle_update_cadence_seconds': 0,
+        'contract_complete': False,
+        'missing_contract_fields': [],
+    }
+    if not model:
+        context['missing_contract_fields'] = ['asset_profile']
+        return context
+    context.update(
+        {
+            'asset_id': model.get('asset_id'),
+            'asset_identifier': model.get('asset_identifier'),
+            'symbol': model.get('symbol'),
+            'chain_id': model.get('chain_id') or ((target or {}).get('chain_id') if isinstance(target, dict) else None),
+            'contract_address': model.get('contract_address'),
+            'treasury_ops_wallets': sorted(model.get('treasury_ops_wallets', set())),
+            'custody_wallets': sorted(model.get('custody_wallets', set())),
+            'expected_counterparties': sorted(model.get('expected_counterparties', set())),
+            'expected_flow_patterns': model.get('expected_flow_patterns', []),
+            'expected_approval_patterns': model.get('expected_approval_patterns', {}),
+            'venue_labels': sorted(model.get('venue_labels', set())),
+            'expected_liquidity_baseline': model.get('expected_liquidity_baseline', {}),
+            'baseline_status': model.get('baseline_status'),
+            'baseline_confidence': model.get('baseline_confidence'),
+            'baseline_coverage': model.get('baseline_coverage'),
+            'oracle_sources': model.get('oracle_sources', []),
+            'expected_oracle_freshness_seconds': model.get('expected_oracle_freshness_seconds', 0),
+            'expected_oracle_update_cadence_seconds': model.get('expected_oracle_update_cadence_seconds', 0),
+        }
+    )
+    required = {
+        'asset_id': context.get('asset_id'),
+        'asset_identifier': context.get('asset_identifier'),
+        'symbol': context.get('symbol'),
+        'chain_id': context.get('chain_id'),
+        'contract_address': context.get('contract_address'),
+        'treasury_ops_wallets': context.get('treasury_ops_wallets'),
+        'custody_wallets': context.get('custody_wallets'),
+        'expected_counterparties': context.get('expected_counterparties'),
+        'expected_flow_patterns': context.get('expected_flow_patterns'),
+        'expected_approval_patterns': context.get('expected_approval_patterns'),
+        'venue_labels': context.get('venue_labels'),
+        'expected_liquidity_baseline': context.get('expected_liquidity_baseline'),
+        'baseline_status': context.get('baseline_status'),
+        'baseline_confidence': context.get('baseline_confidence'),
+        'baseline_coverage': context.get('baseline_coverage'),
+        'oracle_sources': context.get('oracle_sources'),
+        'expected_oracle_freshness_seconds': context.get('expected_oracle_freshness_seconds'),
+        'expected_oracle_update_cadence_seconds': context.get('expected_oracle_update_cadence_seconds'),
+    }
+    missing: list[str] = []
+    for key, value in required.items():
+        if value is None:
+            missing.append(key)
+        elif isinstance(value, (list, dict)) and len(value) == 0:
+            missing.append(key)
+        elif isinstance(value, str) and not value.strip():
+            missing.append(key)
+        elif isinstance(value, (int, float)) and key in {'expected_oracle_freshness_seconds', 'expected_oracle_update_cadence_seconds'} and value <= 0:
+            missing.append(key)
+    context['missing_contract_fields'] = missing
+    context['contract_complete'] = not missing
+    return context
+
+
+def _provider_coverage_status(*, event_payload: dict[str, Any], protected_asset_context: dict[str, Any]) -> dict[str, Any]:
+    market_observations = event_payload.get('market_observations') if isinstance(event_payload.get('market_observations'), list) else []
+    oracle_observations = event_payload.get('oracle_observations') if isinstance(event_payload.get('oracle_observations'), list) else []
+    required_oracles = {str(item).strip().lower() for item in protected_asset_context.get('oracle_sources', []) if str(item).strip()}
+    claim_ineligibility_reasons = list(protected_asset_context.get('missing_contract_fields') or [])
+
+    if not market_observations:
+        market_coverage_status = 'insufficient_real_evidence'
+        claim_ineligibility_reasons.append('market_provider_not_configured_or_no_observation')
+    else:
+        statuses = {str(item.get('status') or '').lower() for item in market_observations if isinstance(item, dict)}
+        if 'ok' in statuses:
+            market_coverage_status = 'real_external_market_observation'
+        elif 'unavailable' in statuses:
+            market_coverage_status = 'provider_configured_but_unreachable'
+            claim_ineligibility_reasons.append('market_provider_unreachable')
+        else:
+            market_coverage_status = 'insufficient_real_evidence'
+            claim_ineligibility_reasons.append('market_provider_insufficient_real_evidence')
+
+    if not required_oracles:
+        oracle_coverage_status = 'insufficient_real_evidence'
+        claim_ineligibility_reasons.append('oracle_provider_not_configured')
+    elif not oracle_observations:
+        oracle_coverage_status = 'insufficient_real_evidence'
+        claim_ineligibility_reasons.append('oracle_provider_configured_but_no_observation')
+    else:
+        observed_sources = {str(item.get('source_name') or item.get('provider_name') or '').strip().lower() for item in oracle_observations if isinstance(item, dict)}
+        statuses = {str(item.get('status') or '').lower() for item in oracle_observations if isinstance(item, dict)}
+        if 'unavailable' in statuses:
+            oracle_coverage_status = 'provider_configured_but_unreachable'
+            claim_ineligibility_reasons.append('oracle_provider_unreachable')
+        elif 'stale' in statuses:
+            oracle_coverage_status = 'provider_returned_stale_data'
+            claim_ineligibility_reasons.append('oracle_observation_stale')
+        elif 'divergent' in statuses:
+            oracle_coverage_status = 'provider_returned_divergent_values'
+            claim_ineligibility_reasons.append('oracle_source_divergence')
+        elif len(observed_sources) < max(1, len(required_oracles)):
+            oracle_coverage_status = 'insufficient_real_evidence'
+            claim_ineligibility_reasons.append('oracle_source_coverage_insufficient')
+        elif 'ok' in statuses:
+            oracle_coverage_status = 'real_oracle_observations_present'
+        else:
+            oracle_coverage_status = 'insufficient_real_evidence'
+            claim_ineligibility_reasons.append('oracle_provider_insufficient_real_evidence')
+
+    enterprise_claim_eligibility = bool(
+        protected_asset_context.get('contract_complete')
+        and market_coverage_status == 'real_external_market_observation'
+        and oracle_coverage_status == 'real_oracle_observations_present'
+    )
+    return {
+        'market_coverage_status': market_coverage_status,
+        'oracle_coverage_status': oracle_coverage_status,
+        'provider_coverage_summary': {
+            'market_provider_count': len(market_observations),
+            'oracle_provider_count': len(oracle_observations),
+            'external_market_telemetry_present': market_coverage_status == 'real_external_market_observation',
+            'real_oracle_observations_present': oracle_coverage_status == 'real_oracle_observations_present',
+        },
+        'enterprise_claim_eligibility': enterprise_claim_eligibility,
+        'claim_ineligibility_reasons': sorted({item for item in claim_ineligibility_reasons if item}),
+    }
+
+
 def _resolve_flow_classification(source_class: str, destination_class: str) -> str:
     if source_class == destination_class == 'treasury_ops':
         return 'treasury_ops_internal'
@@ -303,6 +453,7 @@ def _asset_detection_summary(*, asset: dict[str, Any] | None, event: ActivityEve
     insufficient = [item for item in results if item['detector_status'] == 'insufficient_real_evidence']
     highest = anomalous[0] if anomalous else (insufficient[0] if insufficient else results[0])
     summary_reason = highest.get('anomaly_reason') or 'detectors_completed_without_confirmed_anomaly'
+    protected_asset_context = highest.get('protected_asset_context') if isinstance(highest.get('protected_asset_context'), dict) else _build_protected_asset_context(asset)
     return {
         'detection_family': highest.get('detector_family'),
         'detector_results': results,
@@ -316,12 +467,20 @@ def _asset_detection_summary(*, asset: dict[str, Any] | None, event: ActivityEve
         'confidence_basis': highest.get('confidence'),
         'recommended_action': highest.get('recommended_action'),
         'severity': highest.get('severity', 'low'),
+        'protected_asset_context': protected_asset_context,
+        'market_coverage_status': highest.get('market_coverage_status'),
+        'oracle_coverage_status': highest.get('oracle_coverage_status'),
+        'provider_coverage_summary': highest.get('provider_coverage_summary'),
+        'enterprise_claim_eligibility': bool(highest.get('enterprise_claim_eligibility')),
+        'claim_ineligibility_reasons': highest.get('claim_ineligibility_reasons') or [],
     }
 
 
 def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent) -> list[dict[str, Any]]:
     payload = event.payload if isinstance(event.payload, dict) else {}
     model = _normalized_asset_model(asset)
+    protected_asset_context = _build_protected_asset_context(asset)
+    coverage_status = _provider_coverage_status(event_payload=payload, protected_asset_context=protected_asset_context)
     if not model:
         return [{
             'asset_id': None,
@@ -352,6 +511,12 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
             'baseline_comparison': {'status': 'missing_asset_profile'},
             'oracle_observation_details': {},
             'liquidity_observation_details': {},
+            'protected_asset_context': protected_asset_context,
+            'market_coverage_status': coverage_status['market_coverage_status'],
+            'oracle_coverage_status': coverage_status['oracle_coverage_status'],
+            'provider_coverage_summary': coverage_status['provider_coverage_summary'],
+            'enterprise_claim_eligibility': coverage_status['enterprise_claim_eligibility'],
+            'claim_ineligibility_reasons': coverage_status['claim_ineligibility_reasons'],
         }]
 
     source = _normalize_addr(payload.get('from') or payload.get('owner'))
@@ -364,6 +529,11 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
     route_tuple = (source_class, destination_class)
     route_valid = (not model['allowed_routes']) or route_tuple in model['allowed_routes']
     flow_classification = _resolve_flow_classification(source_class, destination_class)
+    route_stage = f'{source_class}->{destination_class}'
+    lifecycle_stage = (
+        'treasury_ops_egress' if source_class == 'treasury_ops'
+        else ('custody_egress' if source_class == 'custody' else ('treasury_ops_ingress' if destination_class == 'treasury_ops' else ('custody_ingress' if destination_class == 'custody' else 'external_flow')))
+    )
 
     touches_protected_path = source_class in {'treasury_ops', 'custody'} or destination_class in {'treasury_ops', 'custody'}
     unknown_counterparty = destination_class == 'unknown_external'
@@ -374,6 +544,15 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
         or (touches_protected_path and not route_valid)
     )
     severity = 'high' if (counterparty_violation and (high_value or unknown_counterparty or touches_protected_path)) else ('medium' if counterparty_violation else 'low')
+    lifecycle_rule = (
+        'treasury_ops_unknown_external_shortcut'
+        if source_class == 'treasury_ops' and destination_class == 'unknown_external'
+        else (
+            'custody_unknown_external_shortcut'
+            if source_class == 'custody' and destination_class == 'unknown_external'
+            else ('unapproved_protected_route' if (touches_protected_path and not route_valid) else None)
+        )
+    )
     counterparty = {
         'detector_family': 'counterparty',
         'detector_status': 'anomaly_detected' if counterparty_violation else 'real_event_no_anomaly',
@@ -391,6 +570,9 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
         'recommended_action': 'pause_outbound_transfer_and_review' if counterparty_violation else 'continue_monitoring',
         'violated_asset_rule': 'counterparty_allowlist',
         'route_classification': flow_classification,
+        'lifecycle_stage': lifecycle_stage,
+        'route_stage': route_stage,
+        'violated_lifecycle_rule': lifecycle_rule,
         'venue_classification': destination_class,
         'baseline_comparison': {
             'expected_counterparties': sorted(model['expected_counterparties']),
@@ -411,7 +593,18 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
         required_checkpoint = str(pattern.get('required_checkpoint') or '').strip().lower()
         if required_checkpoint and required_checkpoint not in {source_class, destination_class}:
             bypassed_checkpoint = True
-    flow_violation = touches_protected_path and (not route_valid or bypassed_checkpoint)
+    prohibited_route_shortcut = (
+        source_class == 'treasury_ops' and destination_class in {'approved_external_counterparty', 'unknown_external'} and any(
+            str(item.get('source_class') or '').strip().lower() == 'treasury_ops' and str(item.get('destination_class') or '').strip().lower() == 'custody'
+            for item in model['expected_flow_patterns']
+        )
+    )
+    flow_violation = touches_protected_path and (not route_valid or bypassed_checkpoint or prohibited_route_shortcut)
+    flow_lifecycle_rule = (
+        'bypassed_required_checkpoint'
+        if bypassed_checkpoint
+        else ('prohibited_route_shortcut' if prohibited_route_shortcut else ('invalid_lifecycle_transition' if flow_violation else None))
+    )
     flow = {
         'detector_family': 'flow_pattern',
         'detector_status': 'anomaly_detected' if flow_violation else 'real_event_no_anomaly',
@@ -425,12 +618,16 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
         'recommended_action': 'block_route_and_escalate' if flow_violation else 'continue_monitoring',
         'violated_asset_rule': 'expected_flow_patterns',
         'route_classification': flow_classification,
+        'lifecycle_stage': lifecycle_stage,
+        'route_stage': route_stage,
+        'violated_lifecycle_rule': flow_lifecycle_rule,
         'venue_classification': destination_class,
             'route_classification_details': {
                 'source_class': source_class,
                 'destination_class': destination_class,
                 'route_valid': route_valid,
                 'bypassed_checkpoint': bypassed_checkpoint,
+                'prohibited_route_shortcut': prohibited_route_shortcut,
                 'allowed_routes': [list(item) for item in sorted(model['allowed_routes'])],
                 'violated_pattern': list(route_tuple) if flow_violation else None,
             },
@@ -471,6 +668,13 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
             else ('revoke_approval_and_rotate_keys' if approval_violation else 'continue_monitoring')
         ),
         'violated_asset_rule': 'expected_approval_patterns',
+        'lifecycle_stage': lifecycle_stage,
+        'route_stage': route_stage,
+        'violated_lifecycle_rule': (
+            'approval_inconsistent_with_treasury_custody_lifecycle'
+            if approval_violation and touches_protected_path
+            else None
+        ),
         'baseline_comparison': {
             'allowed_spenders': sorted(allowed_spenders),
             'max_approval': max_approval,
@@ -527,6 +731,9 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
             'confidence': 'low',
             'recommended_action': 'collect_more_real_liquidity_evidence',
             'violated_asset_rule': 'expected_liquidity_baseline',
+            'lifecycle_stage': lifecycle_stage,
+            'route_stage': route_stage,
+            'violated_lifecycle_rule': 'insufficient_real_market_coverage',
             'liquidity_observation_details': liquidity_obs,
             'venue_classification': destination_class,
             'route_classification': flow_classification,
@@ -567,6 +774,9 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
             'confidence': 'high' if len(reasons) >= 2 else 'medium',
             'recommended_action': 'throttle_venue_and_investigate' if liquidity_anomaly else 'continue_monitoring',
             'violated_asset_rule': 'expected_liquidity_baseline',
+            'lifecycle_stage': lifecycle_stage,
+            'route_stage': route_stage,
+            'violated_lifecycle_rule': 'route_inconsistent_with_protected_lifecycle' if route_inconsistent else None,
             'route_classification': flow_classification,
             'venue_classification': destination_class,
             'liquidity_observation_details': liquidity_obs,
@@ -618,6 +828,9 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
             'confidence': 'low',
             'recommended_action': 'restore_oracle_sources',
             'violated_asset_rule': 'oracle_sources_required',
+            'lifecycle_stage': lifecycle_stage,
+            'route_stage': route_stage,
+            'violated_lifecycle_rule': 'oracle_coverage_missing_for_protected_asset',
             'oracle_observation_details': {'required_sources': sorted(required_sources), 'observed_sources': sorted(observed_sources), 'observations': oracle_observations},
         }
     else:
@@ -664,6 +877,9 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
             'confidence': 'high' if oracle_anomaly else 'medium',
             'recommended_action': 'pause_sensitive_routes_and_reconcile_oracles' if oracle_anomaly else 'continue_monitoring',
             'violated_asset_rule': 'oracle_integrity',
+            'lifecycle_stage': lifecycle_stage,
+            'route_stage': route_stage,
+            'violated_lifecycle_rule': 'oracle_divergence_on_protected_lifecycle' if oracle_anomaly else None,
             'oracle_observation_details': {
                 'required_sources': sorted(required_sources),
                 'observations': oracle_observations,
@@ -697,9 +913,15 @@ def _enforce_asset_detectors(asset: dict[str, Any] | None, event: ActivityEvent)
         'oracle_observation_details': {},
         'route_classification_details': {'source_class': source_class, 'destination_class': destination_class, 'route_valid': route_valid},
         'proof_eligibility': {
-            'production_claim_eligible': bool((payload.get('metadata') or {}).get('production_claim_eligible', True)),
+            'production_claim_eligible': bool(coverage_status.get('enterprise_claim_eligibility')),
             'has_real_telemetry': bool(payload.get('oracle_observations') or payload.get('liquidity_observations') or payload.get('venue_observations') or payload.get('market_observations')),
         },
+        'protected_asset_context': protected_asset_context,
+        'market_coverage_status': coverage_status['market_coverage_status'],
+        'oracle_coverage_status': coverage_status['oracle_coverage_status'],
+        'provider_coverage_summary': coverage_status['provider_coverage_summary'],
+        'enterprise_claim_eligibility': coverage_status['enterprise_claim_eligibility'],
+        'claim_ineligibility_reasons': coverage_status['claim_ineligibility_reasons'],
     }
     return [{**base, **item} for item in (counterparty, flow, approval, liquidity, oracle)]
 
@@ -908,6 +1130,12 @@ def _process_single_event(
     }
     response['confidence_basis'] = asset_detection.get('confidence_basis')
     response['recommended_action'] = asset_detection.get('recommended_action') or response.get('recommended_action')
+    response['protected_asset_context'] = asset_detection.get('protected_asset_context') or _build_protected_asset_context(asset, target=target)
+    response['market_coverage_status'] = asset_detection.get('market_coverage_status') or 'insufficient_real_evidence'
+    response['oracle_coverage_status'] = asset_detection.get('oracle_coverage_status') or 'insufficient_real_evidence'
+    response['provider_coverage_summary'] = asset_detection.get('provider_coverage_summary') or {}
+    response['enterprise_claim_eligibility'] = bool(asset_detection.get('enterprise_claim_eligibility'))
+    response['claim_ineligibility_reasons'] = asset_detection.get('claim_ineligibility_reasons') or []
     if asset_detection.get('severity'):
         response['severity'] = asset_detection['severity']
     payload = event.payload if isinstance(event.payload, dict) else {}

@@ -217,6 +217,51 @@ def test_flow_pattern_detector_persists_route_classification() -> None:
     flow = _detector(summary, 'flow_pattern')
     assert flow['detector_status'] == 'anomaly_detected'
     assert flow['route_classification_details']['violated_pattern'] == ['treasury_ops', 'unknown_external']
+    assert flow['violated_lifecycle_rule'] in {'invalid_lifecycle_transition', 'prohibited_route_shortcut'}
+
+
+def test_lifecycle_flags_treasury_ops_direct_to_unknown_external() -> None:
+    summary = _asset_detection_summary(
+        asset={
+            'id': 'a1',
+            'identifier': 'USTB',
+            'asset_symbol': 'USTB',
+            'expected_counterparties': [],
+            'treasury_ops_wallets': ['0x1111111111111111111111111111111111111111'],
+            'custody_wallets': ['0x2222222222222222222222222222222222222222'],
+            'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}],
+            'expected_approval_patterns': {},
+            'expected_liquidity_baseline': {},
+            'oracle_sources': [],
+            'venue_labels': [],
+        },
+        event=_event({'from': '0x1111111111111111111111111111111111111111', 'to': '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'amount': '200', 'event_type': 'transfer'}),
+    )
+    cp = _detector(summary, 'counterparty')
+    assert cp['violated_lifecycle_rule'] == 'treasury_ops_unknown_external_shortcut'
+    assert cp['lifecycle_stage'] == 'treasury_ops_egress'
+
+
+def test_lifecycle_flags_custody_to_unapproved_route() -> None:
+    summary = _asset_detection_summary(
+        asset={
+            'id': 'a1',
+            'identifier': 'USTB',
+            'asset_symbol': 'USTB',
+            'expected_counterparties': ['0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'],
+            'treasury_ops_wallets': ['0x1111111111111111111111111111111111111111'],
+            'custody_wallets': ['0x2222222222222222222222222222222222222222'],
+            'expected_flow_patterns': [{'source_class': 'custody', 'destination_class': 'approved_external_counterparty', 'required_checkpoint': 'monitored_venue'}],
+            'expected_approval_patterns': {},
+            'expected_liquidity_baseline': {},
+            'oracle_sources': [],
+            'venue_labels': [],
+        },
+        event=_event({'from': '0x2222222222222222222222222222222222222222', 'to': '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'amount': '200', 'event_type': 'transfer'}),
+    )
+    flow = _detector(summary, 'flow_pattern')
+    assert flow['detector_status'] == 'anomaly_detected'
+    assert flow['violated_lifecycle_rule'] == 'bypassed_required_checkpoint'
 
 
 def test_oracle_detector_returns_insufficient_real_evidence_when_sources_missing() -> None:

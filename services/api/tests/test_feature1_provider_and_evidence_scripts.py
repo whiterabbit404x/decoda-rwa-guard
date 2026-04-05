@@ -102,3 +102,5 @@ def test_feature1_evidence_script_fails_without_worker_generated_real_evidence(m
     assert code == 2
     summary = json.loads((tmp_path / 'evidence' / 'summary.json').read_text())
     assert summary['enterprise_claim_eligible'] is False
+    assert summary['market_coverage_status'] == 'insufficient_real_evidence'
+    assert summary['oracle_coverage_status'] == 'insufficient_real_evidence'

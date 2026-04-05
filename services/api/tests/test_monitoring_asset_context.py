@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from services.api.app.monitoring_runner import _load_target_asset_context
+from services.api.app.monitoring_runner import _build_protected_asset_context, _load_target_asset_context, _provider_coverage_status
 
 
 class _Result:
@@ -59,3 +59,35 @@ def test_load_target_asset_context_normalizes_required_fields() -> None:
     assert context['asset_id'] == 'a1'
     assert context['symbol'] == 'USTB'
     assert context['contract_address'] == '0xabc'
+
+
+def test_protected_asset_context_contract_and_coverage_fail_closed() -> None:
+    asset = {
+        'id': 'a1',
+        'asset_identifier': 'USTB',
+        'asset_symbol': 'USTB',
+        'chain_id': 1,
+        'token_contract_address': '0xabc',
+        'treasury_ops_wallets': ['0x1'],
+        'custody_wallets': ['0x2'],
+        'expected_counterparties': ['0x3'],
+        'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}],
+        'expected_approval_patterns': {'allowed_spenders': ['0x4']},
+        'expected_liquidity_baseline': {'baseline_outflow_volume': 100},
+        'oracle_sources': ['oracle-a'],
+        'expected_oracle_freshness_seconds': 30,
+        'expected_oracle_update_cadence_seconds': 30,
+        'venue_labels': ['0x5'],
+        'baseline_status': 'ready',
+        'baseline_confidence': 0.9,
+        'baseline_coverage': 0.8,
+    }
+    context = _build_protected_asset_context(asset)
+    assert context['contract_complete'] is True
+    coverage = _provider_coverage_status(
+        event_payload={'market_observations': [], 'oracle_observations': []},
+        protected_asset_context=context,
+    )
+    assert coverage['enterprise_claim_eligibility'] is False
+    assert coverage['market_coverage_status'] == 'insufficient_real_evidence'
+    assert coverage['oracle_coverage_status'] == 'insufficient_real_evidence'

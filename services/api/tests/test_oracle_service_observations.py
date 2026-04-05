@@ -36,6 +36,7 @@ def test_oracle_service_response_includes_detector_status_when_unconfigured(monk
     assert body['status'] == 'insufficient_real_evidence'
     assert body['detector_status'] == 'insufficient_real_evidence'
     assert body['provider_configured'] is False
+    assert body['oracle_coverage_status'] == 'no_provider_configured'
 
 
 def test_oracle_service_marks_unavailable_when_configured_provider_unreachable(monkeypatch) -> None:
@@ -48,3 +49,4 @@ def test_oracle_service_marks_unavailable_when_configured_provider_unreachable(m
     assert body['status'] == 'unavailable'
     assert body['detector_status'] == 'insufficient_real_evidence'
     assert body['reason'] == 'configured_provider_unreachable'
+    assert body['oracle_coverage_status'] == 'provider_configured_but_unreachable'
