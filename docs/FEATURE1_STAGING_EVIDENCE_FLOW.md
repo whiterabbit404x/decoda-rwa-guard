@@ -16,7 +16,14 @@ python services/api/scripts/run_feature1_real_asset_evidence.py
 - `status=live_coverage_denied`: monitoring executed (or was attempted) but coverage requirements for enterprise proof were not met; `enterprise_claim_eligibility=false` and `claim_ineligibility_reasons` are explicit.
 - `status=monitoring_execution_failed`: runtime/worker execution failed with explicit reasons.
 - `status=asset_configuration_incomplete`: required protected-asset identity or lifecycle/provider configuration is incomplete; export remains fail-closed with explicit missing requirements.
-- `status=dry_run_requested`: only when `--dry-run` is explicitly requested.
+
+Normal proof mode never emits vague statuses such as `dry_run`, `dry_run_requested`, or `inconclusive`. The normal path always ends in one of:
+- `live_coverage_confirmed`
+- `live_coverage_denied`
+- `asset_configuration_incomplete`
+- `monitoring_execution_failed`
+
+`status=dry_run_requested` exists only for explicit `--dry-run` execution and is not part of the normal proof verdict path.
 
 ## Expected output fields
 - workspace/target/asset identity

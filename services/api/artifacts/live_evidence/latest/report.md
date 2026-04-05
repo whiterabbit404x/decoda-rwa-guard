@@ -1,7 +1,7 @@
 # Feature1 Real Asset Evidence
 
-- status: `dry_run_requested`
+- status: `asset_configuration_incomplete`
 - enterprise_claim_eligibility: `False`
-- market_coverage_status: `None`
-- oracle_coverage_status: `None`
-- claim_ineligibility_reasons: `['dry_run_requested']`
+- market_coverage_status: `insufficient_real_evidence`
+- oracle_coverage_status: `insufficient_real_evidence`
+- claim_ineligibility_reasons: `['missing_asset_identifier', 'missing_symbol']`

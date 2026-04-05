@@ -1,5 +1,41 @@
 [
   {
-    "record_type": "dry_run_requested"
+    "record_type": "coverage_evaluation",
+    "status": "asset_configuration_incomplete",
+    "reason": "asset_context_missing_required_fields",
+    "protected_asset_context": {
+      "asset_id": null,
+      "asset_identifier": null,
+      "symbol": null,
+      "chain_id": null,
+      "contract_address": null,
+      "treasury_ops_wallets": [],
+      "custody_wallets": [],
+      "expected_counterparties": [],
+      "expected_flow_patterns": [],
+      "expected_approval_patterns": {},
+      "venue_labels": [],
+      "expected_liquidity_baseline": {},
+      "oracle_sources": [],
+      "expected_oracle_freshness_seconds": null,
+      "expected_oracle_update_cadence_seconds": null
+    },
+    "target_identity": {},
+    "worker_monitoring_executed": false,
+    "market_coverage_status": "insufficient_real_evidence",
+    "oracle_coverage_status": "insufficient_real_evidence",
+    "enterprise_claim_eligibility": false,
+    "market_claim_eligible": false,
+    "oracle_claim_eligible": false,
+    "market_provider_names": [],
+    "oracle_provider_names": [],
+    "market_observation_count": 0,
+    "oracle_observation_count": 0,
+    "lifecycle_checks_performed": [],
+    "anomalies_observed": false,
+    "claim_ineligibility_reasons": [
+      "missing_asset_identifier",
+      "missing_symbol"
+    ]
   }
 ]

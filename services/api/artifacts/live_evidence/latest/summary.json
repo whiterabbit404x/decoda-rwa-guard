@@ -1,11 +1,37 @@
 {
-  "generated_at": "2026-04-05T13:15:24.143307+00:00",
-  "status": "dry_run_requested",
-  "reason": "dry_run_requested",
+  "status": "asset_configuration_incomplete",
+  "reason": "asset_context_missing_required_fields",
   "enterprise_claim_eligibility": false,
   "market_claim_eligible": false,
   "oracle_claim_eligible": false,
+  "market_coverage_status": "insufficient_real_evidence",
+  "oracle_coverage_status": "insufficient_real_evidence",
+  "protected_asset_context": {
+    "asset_id": null,
+    "asset_identifier": null,
+    "symbol": null,
+    "chain_id": null,
+    "contract_address": null,
+    "treasury_ops_wallets": [],
+    "custody_wallets": [],
+    "expected_counterparties": [],
+    "expected_flow_patterns": [],
+    "expected_approval_patterns": {},
+    "venue_labels": [],
+    "expected_liquidity_baseline": {},
+    "oracle_sources": [],
+    "expected_oracle_freshness_seconds": null,
+    "expected_oracle_update_cadence_seconds": null
+  },
+  "target_identity": {},
   "claim_ineligibility_reasons": [
-    "dry_run_requested"
-  ]
+    "missing_asset_identifier",
+    "missing_symbol"
+  ],
+  "external_market_telemetry_present": false,
+  "real_oracle_observations_present": false,
+  "worker_monitoring_executed": false,
+  "lifecycle_checks_executed": false,
+  "anomalies_observed": false,
+  "result_scope": "internal_only"
 }
