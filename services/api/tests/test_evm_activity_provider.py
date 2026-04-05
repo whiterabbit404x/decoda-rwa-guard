@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
-from services.api.app.evm_activity_provider import APPROVAL_TOPIC, TRANSFER_TOPIC, fetch_evm_activity
+from services.api.app.evm_activity_provider import APPROVAL_TOPIC, TRANSFER_TOPIC, _fetch_market_observations, fetch_evm_activity
 
 
 class _Rpc:
@@ -91,3 +92,29 @@ def test_contract_selector_decode_and_cursor(monkeypatch):
     target['monitoring_checkpoint_cursor'] = events[-1].cursor
     later = fetch_evm_activity(target, None, rpc_client=_Rpc())
     assert later == []
+
+
+def test_market_observations_fail_closed_without_provider_config(monkeypatch):
+    monkeypatch.delenv('MARKET_TELEMETRY_SOURCE_URLS', raising=False)
+    observations = _fetch_market_observations({'asset_identifier': 'USTB'})
+    assert observations
+    assert observations[0]['status'] == 'insufficient_real_evidence'
+
+
+def test_market_observations_reads_external_provider(monkeypatch):
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({'observations': [{'status': 'ok', 'rolling_volume': 123, 'source_name': 'market-a'}]}).encode('utf-8')
+
+    monkeypatch.setenv('MARKET_TELEMETRY_SOURCE_URLS', 'market-a=http://market/api')
+    monkeypatch.setattr('services.api.app.evm_activity_provider.request.urlopen', lambda *_args, **_kwargs: _Resp())
+    observations = _fetch_market_observations({'asset_identifier': 'USTB'})
+    assert observations
+    assert observations[0]['status'] == 'ok'
+    assert observations[0]['rolling_volume'] == 123

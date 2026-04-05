@@ -56,3 +56,6 @@ def test_load_target_asset_context_normalizes_required_fields() -> None:
     assert context['chain_id'] == 1
     assert context['identifier'] == 'asset-1'
     assert context['asset_identifier'] == 'asset-1'
+    assert context['asset_id'] == 'a1'
+    assert context['symbol'] == 'USTB'
+    assert context['contract_address'] == '0xabc'
