@@ -1585,7 +1585,7 @@ See `docs/LAUNCH_VALIDATION_CHECKLIST.md` for pilot vs broad-sale vs enterprise 
 
 ## Feature 1: asset-specific live detection
 
-Feature 1 now binds monitoring to **workspace-owned assets** by linking monitored targets to asset profiles (`target.asset_id -> assets.id`). Detection outcomes include asset-linked anomaly basis and observed evidence references (event/tx/block) instead of generic risk-only language. Baselines are stored per asset (status/source/confidence/coverage), and missing/stale baseline states are surfaced explicitly in findings. Operators can generate a reusable evidence bundle via `POST /exports/feature1-evidence` or run `python services/api/scripts/run_feature1_real_asset_evidence.py` for a single-command staging proof run. If no real anomaly is observed, the script returns an inconclusive result instead of fake success.
+Feature 1 now binds monitoring to **workspace-owned assets** by linking monitored targets to asset profiles (`target.asset_id -> assets.id`). Detection outcomes include asset-linked anomaly basis and observed evidence references (event/tx/block) instead of generic risk-only language. Baselines are stored per asset (status/source/confidence/coverage), and missing/stale baseline states are surfaced explicitly in findings. Operators can generate a reusable evidence bundle via `POST /exports/feature1-evidence` or run `python services/api/scripts/run_feature1_real_asset_evidence.py` for a single-command staging proof run.
 
 Feature 1 enterprise claims are now evaluated against a strict `protected_asset_context + provider_coverage_status` contract for one concrete treasury-linked asset. The run payload/export includes:
 
@@ -1599,7 +1599,11 @@ Important truthfulness distinction:
 - External market telemetry (from configured `MARKET_TELEMETRY_SOURCE_URLS`) is required for full market-coverage claims.
 - Real oracle observations (from configured `ORACLE_SOURCE_URLS` through oracle-service) are required for oracle-coverage claims.
 
-If external market or real oracle coverage is missing/unreachable/stale/insufficient, Feature 1 fails closed with `insufficient_real_evidence` and `enterprise_claim_eligibility=false`.
+Normal proof exports are always classified to one explicit status: `live_coverage_confirmed`, `live_coverage_denied`, `monitoring_execution_failed`, or `asset_configuration_incomplete`. A generic `dry_run`/`inconclusive` state is reserved only for explicit dry-run invocation (`dry_run_requested`) and is not the default outcome for production proof generation.
+
+`evidence.json` is always populated with at least one coverage-evaluation record for the resolved protected asset (even when no anomaly is observed). This record includes worker execution truth, provider coverage counts, lifecycle check execution state, claim eligibility flags, and explicit `claim_ineligibility_reasons` when enterprise live proof cannot be established.
+
+If external market or real oracle coverage is missing/unreachable/stale/insufficient, Feature 1 fails closed with `enterprise_claim_eligibility=false` and specific `claim_ineligibility_reasons`.
 
 ## Demo mode vs Live mode
 

@@ -101,6 +101,25 @@ def test_feature1_evidence_script_fails_without_worker_generated_real_evidence(m
     code = run_feature1_real_asset_evidence.main()
     assert code == 2
     summary = json.loads((tmp_path / 'evidence' / 'summary.json').read_text())
+    assert summary['status'] == 'asset_configuration_incomplete'
     assert summary['enterprise_claim_eligibility'] is False
     assert summary['market_coverage_status'] == 'insufficient_real_evidence'
     assert summary['oracle_coverage_status'] == 'insufficient_real_evidence'
+    assert 'dry_run' not in json.dumps(summary).lower()
+    evidence = json.loads((tmp_path / 'evidence' / 'evidence.json').read_text())
+    assert isinstance(evidence, list)
+    assert evidence
+
+
+def test_feature1_evidence_script_dry_run_exports_explicit_state(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('FEATURE1_EVIDENCE_DIR', str(tmp_path / 'evidence'))
+    monkeypatch.setattr('sys.argv', ['run_feature1_real_asset_evidence.py', '--dry-run'])
+    code = run_feature1_real_asset_evidence.main()
+    assert code == 0
+    summary = json.loads((tmp_path / 'evidence' / 'summary.json').read_text())
+    assert summary['status'] == 'dry_run_requested'
+    assert summary['reason'] == 'dry_run_requested'
+    evidence = json.loads((tmp_path / 'evidence' / 'evidence.json').read_text())
+    assert isinstance(evidence, list)
+    assert evidence and evidence[0]['record_type'] == 'dry_run_requested'
