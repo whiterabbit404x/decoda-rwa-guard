@@ -194,9 +194,13 @@ def test_feature1_evidence_script_confirms_live_coverage_with_real_provider_obse
     assert code == 0
     summary = json.loads((tmp_path / 'evidence' / 'summary.json').read_text())
     assert summary['status'] == 'live_coverage_confirmed'
+    assert summary['target_identity']['target_id'] == 't1'
+    assert summary['target_identity']['target_name_or_label'] == 'Treasury'
     assert summary['enterprise_claim_eligibility'] is True
     assert summary['external_market_telemetry_present'] is True
     assert summary['real_oracle_observations_present'] is True
+    assert summary['worker_monitoring_executed'] is True
+    assert summary['lifecycle_checks_executed'] is True
     evidence = json.loads((tmp_path / 'evidence' / 'evidence.json').read_text())
     assert evidence and evidence[0]['record_type'] == 'coverage_evaluation'
 
@@ -292,6 +296,9 @@ def test_feature1_evidence_script_denies_live_coverage_without_provider_observat
     assert summary['status'] == 'live_coverage_denied'
     assert summary['enterprise_claim_eligibility'] is False
     assert 'missing_real_provider_observations' in summary['claim_ineligibility_reasons']
+    assert summary['target_identity']['target_id'] == 't1'
+    assert summary['worker_monitoring_executed'] is True
+    assert summary['lifecycle_checks_executed'] is True
 
 
 def test_feature1_evidence_script_marks_missing_oracle_timing_fields_ineligible(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -345,3 +352,66 @@ def test_feature1_evidence_script_marks_missing_oracle_timing_fields_ineligible(
     assert summary['status'] == 'asset_configuration_incomplete'
     assert 'missing_expected_oracle_freshness_seconds' in summary['claim_ineligibility_reasons']
     assert 'missing_expected_oracle_update_cadence_seconds' in summary['claim_ineligibility_reasons']
+
+
+def test_feature1_evidence_script_marks_target_identity_missing_fields_ineligible(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('FEATURE1_EVIDENCE_DIR', str(tmp_path / 'evidence'))
+
+    def _mock_request(url: str, **kwargs):  # noqa: ANN003,ANN202
+        path = url.replace('http://127.0.0.1:8000', '')
+        if path == '/ops/monitoring/runtime-status':
+            return 200, {'configured_mode': 'LIVE'}
+        if path == '/targets':
+            return 200, {'targets': [{'id': 't1', 'asset_id': 'a1', 'target_type': 'wallet', 'chain_network': 'ethereum'}]}
+        if path == '/ops/monitoring/run':
+            return 200, {'run_id': 'run-1'}
+        if path == '/alerts?target_id=t1':
+            return 200, {'alerts': []}
+        if path == '/incidents?target_id=t1':
+            return 200, {'incidents': []}
+        if path == '/pilot/history?kind=analysis_runs':
+            return 200, {'analysis_runs': [{
+                'id': 'r1',
+                'target_id': 't1',
+                'response_payload': {
+                    'monitoring_path': 'worker',
+                    'protected_asset_coverage_record': {
+                        'protected_asset_context': {
+                            'asset_id': 'a1',
+                            'asset_identifier': 'USTB-REAL',
+                            'symbol': 'USTB',
+                            'chain_id': 1,
+                            'contract_address': '0x' + 'a' * 40,
+                            'treasury_ops_wallets': ['0x' + '1' * 40],
+                            'custody_wallets': ['0x' + '2' * 40],
+                            'expected_flow_patterns': [{'source_class': 'treasury_ops'}],
+                            'expected_counterparties': ['0x' + '3' * 40],
+                            'expected_approval_patterns': {'allowed_spenders': ['0x' + '4' * 40]},
+                            'venue_labels': ['venue-a'],
+                            'expected_liquidity_baseline': {'minimum_transfer_count': 1},
+                            'oracle_sources': ['oracle-a'],
+                            'expected_oracle_freshness_seconds': 120,
+                            'expected_oracle_update_cadence_seconds': 120,
+                        },
+                        'market_coverage_status': 'real_external_market_observation',
+                        'oracle_coverage_status': 'real_oracle_observations_present',
+                        'market_observation_count': 1,
+                        'oracle_observation_count': 1,
+                        'market_claim_eligible': True,
+                        'oracle_claim_eligible': True,
+                        'enterprise_claim_eligibility': True,
+                        'claim_ineligibility_reasons': [],
+                    },
+                },
+            }]}
+        return 404, {}
+
+    monkeypatch.setattr(run_feature1_real_asset_evidence, '_request_json', _mock_request)
+    monkeypatch.setattr('sys.argv', ['run_feature1_real_asset_evidence.py'])
+    code = run_feature1_real_asset_evidence.main()
+    assert code == 2
+    summary = json.loads((tmp_path / 'evidence' / 'summary.json').read_text())
+    assert summary['status'] == 'asset_configuration_incomplete'
+    assert 'missing_target_name_or_label' in summary['claim_ineligibility_reasons']
+    assert sorted(summary['missing_target_identity_fields']) == ['target_locator', 'target_name_or_label']

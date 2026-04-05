@@ -27,7 +27,9 @@ Normal proof mode never emits vague statuses such as `dry_run`, `dry_run_request
 
 ## Expected output fields
 - workspace/target/asset identity
+- concrete `target_identity` (`target_id`, `target_name_or_label`, `target_type`, `target_locator`) or explicit `missing_target_identity_fields`
 - protected asset context completeness for one concrete treasury-linked target
+- explicit `missing_asset_context_fields` / `claim_ineligibility_reasons` when proof cannot be established
 - market/oracle provider coverage status and provider names/counts
 - enterprise claim eligibility and ineligibility reasons
 - worker monitoring execution truth

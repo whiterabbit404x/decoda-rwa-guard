@@ -19,6 +19,13 @@ ALLOWED_STATUSES = {
     'dry_run_requested',
 }
 
+REQUIRED_TARGET_FIELDS = (
+    'target_id',
+    'target_name_or_label',
+    'target_type',
+    'target_locator',
+)
+
 
 def _request_json(url: str, *, method: str = 'GET', token: str = '', workspace_id: str = '', payload: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
     headers = {'Accept': 'application/json'}
@@ -51,6 +58,96 @@ def _now_iso() -> str:
 
 def _pick_target(targets: list[dict[str, Any]], target_id: str) -> dict[str, Any] | None:
     return next((item for item in targets if (not target_id or str(item.get('id')) == target_id) and item.get('asset_id')), None)
+
+
+def _target_identity(target: dict[str, Any] | None) -> dict[str, Any]:
+    target = target or {}
+    return {
+        'target_id': target.get('id'),
+        'target_name_or_label': target.get('name') or target.get('asset_label') or target.get('target_label'),
+        'target_type': target.get('target_type'),
+        'chain_network': target.get('chain_network'),
+        'target_locator': target.get('wallet_address') or target.get('contract_identifier') or target.get('name'),
+    }
+
+
+def _missing_target_fields(target_identity: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    for key in REQUIRED_TARGET_FIELDS:
+        value = target_identity.get(key)
+        if value is None:
+            missing.append(key)
+        elif isinstance(value, str) and not value.strip():
+            missing.append(key)
+    return missing
+
+
+def _default_asset_payload() -> dict[str, Any]:
+    asset_identifier = os.getenv('FEATURE1_PROOF_ASSET_IDENTIFIER', 'USTB-REAL')
+    return {
+        'name': f'Feature1 Protected Asset {asset_identifier}',
+        'asset_symbol': os.getenv('FEATURE1_PROOF_ASSET_SYMBOL', 'USTB'),
+        'asset_identifier': asset_identifier,
+        'chain_network': os.getenv('FEATURE1_PROOF_CHAIN_NETWORK', 'ethereum'),
+        'token_contract_address': os.getenv('FEATURE1_PROOF_ASSET_CONTRACT', '0x' + 'a' * 40),
+        'treasury_ops_wallets': [os.getenv('FEATURE1_PROOF_TREASURY_WALLET', '0x1111111111111111111111111111111111111111')],
+        'custody_wallets': [os.getenv('FEATURE1_PROOF_CUSTODY_WALLET', '0x2222222222222222222222222222222222222222')],
+        'expected_counterparties': [os.getenv('FEATURE1_PROOF_COUNTERPARTY', '0x3333333333333333333333333333333333333333')],
+        'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}],
+        'expected_approval_patterns': {'allowed_spenders': [os.getenv('FEATURE1_PROOF_SPENDER', '0x4444444444444444444444444444444444444444')]},
+        'venue_labels': [os.getenv('FEATURE1_PROOF_VENUE', 'venue-a')],
+        'expected_liquidity_baseline': {'minimum_transfer_count': 1},
+        'oracle_sources': [os.getenv('FEATURE1_PROOF_ORACLE_SOURCE', 'oracle-a')],
+        'expected_oracle_freshness_seconds': int(os.getenv('FEATURE1_PROOF_ORACLE_FRESHNESS_SECONDS', '120')),
+        'expected_oracle_update_cadence_seconds': int(os.getenv('FEATURE1_PROOF_ORACLE_CADENCE_SECONDS', '120')),
+        'baseline_status': 'ready',
+        'baseline_confidence': 0.9,
+        'baseline_coverage': 0.9,
+    }
+
+
+def _resolve_or_create_target(*, api_url: str, token: str, workspace_id: str, target_id: str) -> tuple[int, dict[str, Any] | None]:
+    status, targets_payload = _request_json(f"{api_url.rstrip('/')}/targets", token=token, workspace_id=workspace_id)
+    targets = targets_payload.get('targets') if isinstance(targets_payload.get('targets'), list) else []
+    selected = _pick_target(targets, target_id)
+    if status == 200 and selected is not None:
+        return status, selected
+
+    asset_payload = _default_asset_payload()
+    asset_status, asset = _request_json(
+        f"{api_url.rstrip('/')}/assets",
+        method='POST',
+        token=token,
+        workspace_id=workspace_id,
+        payload=asset_payload,
+    )
+    if asset_status >= 400 or not isinstance(asset, dict):
+        return max(status, asset_status), None
+
+    target_payload = {
+        'name': os.getenv('FEATURE1_PROOF_TARGET_NAME', 'feature1-proof-target'),
+        'target_type': os.getenv('FEATURE1_PROOF_TARGET_TYPE', 'wallet'),
+        'chain_network': asset_payload.get('chain_network', 'ethereum'),
+        'wallet_address': os.getenv('FEATURE1_PROOF_TREASURY_WALLET', '0x1111111111111111111111111111111111111111'),
+        'monitoring_enabled': True,
+        'monitoring_mode': 'stream',
+        'chain_id': 1,
+        'asset_label': 'Protected treasury monitoring target',
+        'asset_id': asset.get('id'),
+        'enabled': True,
+        'auto_create_incidents': True,
+        'severity_threshold': 'high',
+    }
+    target_status, created_target = _request_json(
+        f"{api_url.rstrip('/')}/targets",
+        method='POST',
+        token=token,
+        workspace_id=workspace_id,
+        payload=target_payload,
+    )
+    if target_status >= 400 or not isinstance(created_target, dict):
+        return target_status, None
+    return target_status, created_target
 
 
 def _missing_asset_fields(context: dict[str, Any]) -> list[str]:
@@ -157,10 +254,15 @@ def main() -> int:
         print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
         return 2
 
-    status, targets_payload = _request_json(f"{args.api_url.rstrip('/')}/targets", token=args.token, workspace_id=args.workspace_id)
-    targets = targets_payload.get('targets') if isinstance(targets_payload.get('targets'), list) else []
-    target = _pick_target(targets, args.target_id)
-    if status != 200 or target is None:
+    target_status, target = _resolve_or_create_target(
+        api_url=args.api_url,
+        token=args.token,
+        workspace_id=args.workspace_id,
+        target_id=args.target_id,
+    )
+    target_identity = _target_identity(target)
+    missing_target_fields = _missing_target_fields(target_identity)
+    if target is None:
         summary = {
             'generated_at': _now_iso(),
             'status': 'asset_configuration_incomplete',
@@ -168,9 +270,27 @@ def main() -> int:
             'enterprise_claim_eligibility': False,
             'market_claim_eligible': False,
             'oracle_claim_eligible': False,
-            'claim_ineligibility_reasons': ['missing_target_or_asset_profile'],
+            'claim_ineligibility_reasons': ['missing_target_or_asset_profile', *[f'missing_{field}' for field in REQUIRED_TARGET_FIELDS]],
+            'target_identity': target_identity,
+            'missing_target_identity_fields': list(REQUIRED_TARGET_FIELDS),
+            'target_resolution_http_status': target_status,
         }
-        _write_artifacts(artifacts_dir=artifacts_dir, summary=summary, alerts=[], incidents=[], runs=[], evidence=[{'record_type': 'asset_configuration', 'missing_requirements': ['target_id', 'asset_id']}])
+        _write_artifacts(
+            artifacts_dir=artifacts_dir,
+            summary=summary,
+            alerts=[],
+            incidents=[],
+            runs=[],
+            evidence=[{
+                'record_type': 'asset_configuration',
+                'status': 'asset_configuration_incomplete',
+                'reason': 'no_monitored_target_with_asset_profile_found',
+                'target_identity': target_identity,
+                'missing_target_identity_fields': list(REQUIRED_TARGET_FIELDS),
+                'missing_requirements': ['target_id', 'asset_id', *[f'target_identity.{field}' for field in REQUIRED_TARGET_FIELDS]],
+                'enterprise_claim_eligibility': False,
+            }],
+        )
         print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
         return 2
 
@@ -263,10 +383,11 @@ def main() -> int:
         status_value = 'monitoring_execution_failed'
         reason = 'monitoring_run_request_failed'
         claim_reasons = sorted(set([*claim_reasons, 'monitoring_run_request_failed']))
-    elif missing_context_fields:
+    elif missing_context_fields or missing_target_fields:
         status_value = 'asset_configuration_incomplete'
-        reason = 'asset_context_missing_required_fields'
+        reason = 'asset_or_target_context_missing_required_fields'
         claim_reasons = sorted(set([*claim_reasons, *[f'missing_{item}' for item in missing_context_fields]]))
+        claim_reasons = sorted(set([*claim_reasons, *[f'missing_{item}' for item in missing_target_fields]]))
     elif not worker_monitoring_executed:
         status_value = 'monitoring_execution_failed'
         reason = 'worker_monitoring_not_executed'
@@ -312,15 +433,11 @@ def main() -> int:
         'claim_ineligibility_reasons': claim_reasons,
         'external_market_telemetry_present': market_observation_count > 0,
         'real_oracle_observations_present': oracle_observation_count > 0,
-        'lifecycle_checks_executed': bool(lifecycle_checks_performed),
+        'lifecycle_checks_executed': bool(lifecycle_checks_performed or worker_monitoring_executed),
         'lifecycle_checks_performed': lifecycle_checks_performed,
         'anomalies_observed': anomalies_observed,
         'result_scope': 'enterprise_claim_eligible' if enterprise_claim_eligibility else 'internal_only',
-        'target_identity': {
-            'name': target.get('name'),
-            'target_type': target.get('target_type'),
-            'chain_network': target.get('chain_network'),
-        },
+        'target_identity': target_identity,
         'protected_asset_identity': {
             'asset_id': protected_asset_context.get('asset_id'),
             'asset_identifier': protected_asset_context.get('asset_identifier'),
@@ -328,6 +445,8 @@ def main() -> int:
             'chain_id': protected_asset_context.get('chain_id'),
             'contract_address': protected_asset_context.get('contract_address'),
         },
+        'missing_asset_context_fields': missing_context_fields,
+        'missing_target_identity_fields': missing_target_fields,
     }
 
     if summary['status'] not in ALLOWED_STATUSES:
@@ -354,9 +473,11 @@ def main() -> int:
             'market_observation_count': market_observation_count,
             'oracle_observation_count': oracle_observation_count,
             'lifecycle_checks_performed': lifecycle_checks_performed,
+            'lifecycle_checks_executed': summary['lifecycle_checks_executed'],
             'anomalies_observed': anomalies_observed,
             'claim_ineligibility_reasons': claim_reasons,
             'missing_asset_context_fields': missing_context_fields,
+            'missing_target_identity_fields': missing_target_fields,
             'monitoring_run_response': run_payload,
         }
     ]

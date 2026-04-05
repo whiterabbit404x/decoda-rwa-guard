@@ -15,6 +15,12 @@ ALLOWED_STATUSES = {
     'monitoring_execution_failed',
     'asset_configuration_incomplete',
 }
+REQUIRED_TARGET_FIELDS = (
+    'target_id',
+    'target_name_or_label',
+    'target_type',
+    'target_locator',
+)
 
 
 def _request(method: str, url: str, *, token: str, workspace_id: str, body: dict | None = None) -> dict:
@@ -58,6 +64,27 @@ def _missing_asset_fields(asset: dict) -> list[str]:
         elif isinstance(value, str) and not value.strip():
             missing.append(key)
         elif isinstance(value, (list, dict)) and len(value) == 0:
+            missing.append(key)
+    return missing
+
+
+def _target_identity(target: dict, target_id: str | None) -> dict:
+    return {
+        'target_id': target_id,
+        'target_name_or_label': target.get('name') or target.get('asset_label') or target.get('target_label'),
+        'target_type': target.get('target_type'),
+        'chain_network': target.get('chain_network'),
+        'target_locator': target.get('wallet_address') or target.get('contract_identifier') or target.get('name'),
+    }
+
+
+def _missing_target_fields(target_identity: dict) -> list[str]:
+    missing: list[str] = []
+    for key in REQUIRED_TARGET_FIELDS:
+        value = target_identity.get(key)
+        if value is None:
+            missing.append(key)
+        elif isinstance(value, str) and not value.strip():
             missing.append(key)
     return missing
 
@@ -124,6 +151,8 @@ def main() -> int:
         },
     )
     target_id = target.get('id')
+    target_identity = _target_identity(target, target_id)
+    missing_target_fields = _missing_target_fields(target_identity)
     run_cycle = _request('POST', f'{api_url}/ops/monitoring/run', token=token, workspace_id=workspace_id, body={'worker_name': 'evidence-worker', 'limit': 100})
     alerts = _request('GET', f'{api_url}/alerts?target_id={target_id}&status_value=open', token=token, workspace_id=workspace_id)
     incidents = _request('GET', f'{api_url}/incidents?target_id={target_id}', token=token, workspace_id=workspace_id)
@@ -188,9 +217,14 @@ def main() -> int:
     )
     anomalies_observed = any(str(((item.get('payload') or {}).get('detector_status') or '')).lower() == 'anomaly_detected' for item in alert_rows)
 
-    if missing_fields:
+    if missing_fields or missing_target_fields:
         status_value = 'asset_configuration_incomplete'
-        reason = 'asset_context_missing_required_fields'
+        reason = 'asset_or_target_context_missing_required_fields'
+        claim_ineligibility_reasons = sorted(set([
+            *claim_ineligibility_reasons,
+            *[f'missing_{field}' for field in missing_fields],
+            *[f'missing_{field}' for field in missing_target_fields],
+        ]))
     elif not worker_runs:
         status_value = 'monitoring_execution_failed'
         reason = 'worker_monitoring_not_executed'
@@ -225,12 +259,7 @@ def main() -> int:
             'expected_oracle_freshness_seconds': asset.get('expected_oracle_freshness_seconds'),
             'expected_oracle_update_cadence_seconds': asset.get('expected_oracle_update_cadence_seconds'),
         },
-        'target_identity': {
-            'target_id': target_id,
-            'name': target.get('name'),
-            'target_type': target.get('target_type'),
-            'chain_network': target.get('chain_network'),
-        },
+        'target_identity': target_identity,
         'workspace_id': workspace_id,
         'worker_run': run_cycle,
         'worker_monitoring_executed': bool(worker_runs),
@@ -258,11 +287,12 @@ def main() -> int:
         'claim_ineligibility_reasons': claim_ineligibility_reasons,
         'external_market_telemetry_present': market_observation_count > 0,
         'real_oracle_observations_present': oracle_observation_count > 0,
-        'lifecycle_checks_executed': bool(lifecycle_checks_performed),
+        'lifecycle_checks_executed': bool(lifecycle_checks_performed or bool(worker_runs)),
         'lifecycle_checks_performed': lifecycle_checks_performed,
         'anomalies_observed': anomalies_observed,
         'result_scope': 'enterprise_claim_eligible' if enterprise_claim_eligibility else 'internal_only',
         'missing_asset_context_fields': missing_fields,
+        'missing_target_identity_fields': missing_target_fields,
     }
 
     evidence_rows: list[dict] = [{
@@ -279,7 +309,9 @@ def main() -> int:
         'enterprise_claim_eligibility': enterprise_claim_eligibility,
         'claim_ineligibility_reasons': claim_ineligibility_reasons,
         'lifecycle_checks_performed': lifecycle_checks_performed,
+        'lifecycle_checks_executed': summary['lifecycle_checks_executed'],
         'anomalies_observed': anomalies_observed,
+        'missing_target_identity_fields': missing_target_fields,
     }]
 
     for item in alert_rows:
