@@ -21,6 +21,7 @@ Feature 1 protects **workspace-owned monitored assets** (targets linked to asset
 - LIVE/HYBRID provider event tied to a monitored target.
 - Finding payload contains observed evidence (`event_id`, `tx_hash`, `block_number`), anomaly basis, and linked asset profile.
 - Persisted alert/incident created from that finding path.
+- Reproducible worker-path proof run via `make proof-feature1-live` / `python services/api/scripts/run_feature1_live_proof.py`.
 
 ## What does NOT qualify
 - Demo-only scenarios.

@@ -11,6 +11,27 @@
 python services/api/scripts/run_feature1_real_asset_evidence.py
 ```
 
+## Deterministic local live proof (non-mocked worker path)
+
+Use the one-command harness below to generate reproducible Feature 1 detection artifacts from a real runtime anomaly:
+
+```bash
+make proof-feature1-live
+```
+
+What this command does:
+1. Starts `postgres` + `redis` via `docker compose` (unless `--skip-compose` is passed directly to the script).
+2. Starts a local EVM (`ganache`) as the live chain source.
+3. Starts a local telemetry server that serves market + oracle observations.
+4. Starts the API service with `MONITORING_MODE=live` and real provider endpoints.
+5. Creates a real workspace/user, protected asset profile, and monitored treasury target with full context.
+6. Submits a real anomalous on-chain transfer (`treasury_ops -> unknown_external`) to produce tx/block evidence.
+7. Runs monitoring through `POST /ops/monitoring/run` (worker path provenance).
+8. Exports evidence artifacts to `services/api/artifacts/live_evidence/latest/`.
+9. Exits non-zero if alerts/runs/incidents/evidence are missing or if required summary booleans are false.
+
+The harness does **not** use `/monitoring/run-once/{id}` and does **not** use mocked HTTP providers for proof generation.
+
 ## Output interpretation
 - `status=live_coverage_confirmed`: one concrete protected asset has sufficient live market + oracle coverage, worker monitoring executed, and enterprise claim eligibility is true.
 - `status=live_coverage_denied`: monitoring executed (or was attempted) but coverage requirements for enterprise proof were not met; `enterprise_claim_eligibility=false` and `claim_ineligibility_reasons` are explicit.
