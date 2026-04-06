@@ -1601,6 +1601,8 @@ Important truthfulness distinction:
 
 Normal proof exports are always classified to one explicit status: `live_coverage_confirmed`, `live_coverage_denied`, `monitoring_execution_failed`, or `asset_configuration_incomplete`. A generic `dry_run`/`inconclusive` state is reserved only for explicit dry-run invocation (`dry_run_requested`) and is not the default outcome for production proof generation.
 
+Normal proof mode resolves one concrete protected asset and one concrete target before verdict export. If required protected-asset fields or target identity fields are missing, exports fail closed with `asset_configuration_incomplete`, explicit `missing_asset_context_fields` / `missing_target_identity_fields`, and field-level `claim_ineligibility_reasons`.
+
 `evidence.json` is always populated with at least one coverage-evaluation record for the resolved protected asset (even when no anomaly is observed). This record includes worker execution truth, provider coverage counts, lifecycle check execution state, claim eligibility flags, and explicit `claim_ineligibility_reasons` when enterprise live proof cannot be established.
 
 If external market or real oracle coverage is missing/unreachable/stale/insufficient, Feature 1 fails closed with `enterprise_claim_eligibility=false` and specific `claim_ineligibility_reasons`.

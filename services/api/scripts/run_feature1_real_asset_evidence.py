@@ -25,6 +25,23 @@ REQUIRED_TARGET_FIELDS = (
     'target_type',
     'target_locator',
 )
+REQUIRED_PROTECTED_ASSET_FIELDS = (
+    'asset_id',
+    'asset_identifier',
+    'symbol',
+    'chain_id',
+    'contract_address',
+    'treasury_ops_wallets',
+    'custody_wallets',
+    'expected_flow_patterns',
+    'expected_counterparties',
+    'expected_approval_patterns',
+    'venue_labels',
+    'expected_liquidity_baseline',
+    'oracle_sources',
+    'expected_oracle_freshness_seconds',
+    'expected_oracle_update_cadence_seconds',
+)
 
 
 def _request_json(url: str, *, method: str = 'GET', token: str = '', workspace_id: str = '', payload: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
@@ -196,25 +213,8 @@ def _asset_context_from_asset(asset: dict[str, Any] | None, target: dict[str, An
 
 
 def _missing_asset_fields(context: dict[str, Any]) -> list[str]:
-    required = [
-        'asset_id',
-        'asset_identifier',
-        'symbol',
-        'chain_id',
-        'contract_address',
-        'treasury_ops_wallets',
-        'custody_wallets',
-        'expected_flow_patterns',
-        'expected_counterparties',
-        'expected_approval_patterns',
-        'venue_labels',
-        'expected_liquidity_baseline',
-        'oracle_sources',
-        'expected_oracle_freshness_seconds',
-        'expected_oracle_update_cadence_seconds',
-    ]
     missing: list[str] = []
-    for key in required:
+    for key in REQUIRED_PROTECTED_ASSET_FIELDS:
         value = context.get(key)
         if value is None:
             missing.append(key)
@@ -269,6 +269,7 @@ def main() -> int:
 
     status, runtime = _request_json(f"{args.api_url.rstrip('/')}/ops/monitoring/runtime-status", token=args.token, workspace_id=args.workspace_id)
     if status != 200:
+        target_identity = _target_identity(None)
         summary = {
             'generated_at': _now_iso(),
             'status': 'monitoring_execution_failed',
@@ -278,26 +279,41 @@ def main() -> int:
             'market_claim_eligible': False,
             'oracle_claim_eligible': False,
             'claim_ineligibility_reasons': ['runtime_unavailable'],
+            'target_identity': target_identity,
+            'protected_asset_context': {},
+            'protected_asset_identity': {key: None for key in ('asset_id', 'asset_identifier', 'symbol', 'chain_id', 'contract_address')},
+            'missing_target_identity_fields': list(REQUIRED_TARGET_FIELDS),
+            'missing_asset_context_fields': list(REQUIRED_PROTECTED_ASSET_FIELDS),
+            'worker_monitoring_executed': False,
+            'lifecycle_checks_executed': False,
+            'market_coverage_status': 'insufficient_real_evidence',
+            'oracle_coverage_status': 'insufficient_real_evidence',
         }
-        _write_artifacts(artifacts_dir=artifacts_dir, summary=summary, alerts=[], incidents=[], runs=[], evidence=[{'record_type': 'monitoring_execution_failure', 'details': runtime}])
+        _write_artifacts(
+            artifacts_dir=artifacts_dir,
+            summary=summary,
+            alerts=[],
+            incidents=[],
+            runs=[],
+            evidence=[{
+                'record_type': 'coverage_evaluation',
+                'status': 'monitoring_execution_failed',
+                'reason': 'runtime_unavailable',
+                'target_identity': target_identity,
+                'protected_asset_context': {},
+                'missing_target_identity_fields': list(REQUIRED_TARGET_FIELDS),
+                'missing_asset_context_fields': list(REQUIRED_PROTECTED_ASSET_FIELDS),
+                'worker_monitoring_executed': False,
+                'lifecycle_checks_executed': False,
+                'enterprise_claim_eligibility': False,
+                'claim_ineligibility_reasons': ['runtime_unavailable'],
+                'monitoring_runtime_response': runtime,
+            }],
+        )
         print(json.dumps({'summary': summary, 'runtime': runtime, 'artifacts_dir': str(artifacts_dir)}, indent=2))
         return 2
 
     mode = str(runtime.get('configured_mode') or runtime.get('mode') or '').upper()
-    if mode not in {'LIVE', 'HYBRID'}:
-        summary = {
-            'generated_at': _now_iso(),
-            'status': 'live_coverage_denied',
-            'reason': 'mode_not_live_or_hybrid',
-            'configured_mode': mode,
-            'enterprise_claim_eligibility': False,
-            'market_claim_eligible': False,
-            'oracle_claim_eligible': False,
-            'claim_ineligibility_reasons': ['mode_not_live_or_hybrid'],
-        }
-        _write_artifacts(artifacts_dir=artifacts_dir, summary=summary, alerts=[], incidents=[], runs=[], evidence=[{'record_type': 'coverage_denial', 'details': summary}])
-        print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
-        return 2
 
     target_status, target = _resolve_or_create_target(
         api_url=args.api_url,
@@ -317,7 +333,14 @@ def main() -> int:
             'oracle_claim_eligible': False,
             'claim_ineligibility_reasons': ['missing_target_or_asset_profile', *[f'missing_{field}' for field in REQUIRED_TARGET_FIELDS]],
             'target_identity': target_identity,
+            'protected_asset_context': {},
+            'protected_asset_identity': {key: None for key in ('asset_id', 'asset_identifier', 'symbol', 'chain_id', 'contract_address')},
             'missing_target_identity_fields': list(REQUIRED_TARGET_FIELDS),
+            'missing_asset_context_fields': list(REQUIRED_PROTECTED_ASSET_FIELDS),
+            'worker_monitoring_executed': False,
+            'lifecycle_checks_executed': False,
+            'market_coverage_status': 'insufficient_real_evidence',
+            'oracle_coverage_status': 'insufficient_real_evidence',
             'target_resolution_http_status': target_status,
         }
         _write_artifacts(
@@ -331,9 +354,14 @@ def main() -> int:
                 'status': 'asset_configuration_incomplete',
                 'reason': 'no_monitored_target_with_asset_profile_found',
                 'target_identity': target_identity,
+                'protected_asset_context': {},
                 'missing_target_identity_fields': list(REQUIRED_TARGET_FIELDS),
-                'missing_requirements': ['target_id', 'asset_id', *[f'target_identity.{field}' for field in REQUIRED_TARGET_FIELDS]],
+                'missing_asset_context_fields': list(REQUIRED_PROTECTED_ASSET_FIELDS),
+                'missing_requirements': ['target_id', 'asset_id', *[f'target_identity.{field}' for field in REQUIRED_TARGET_FIELDS], *[f'protected_asset_context.{field}' for field in REQUIRED_PROTECTED_ASSET_FIELDS]],
                 'enterprise_claim_eligibility': False,
+                'worker_monitoring_executed': False,
+                'lifecycle_checks_executed': False,
+                'claim_ineligibility_reasons': summary['claim_ineligibility_reasons'],
             }],
         )
         print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
@@ -376,6 +404,57 @@ def main() -> int:
         protected_asset_context = _asset_context_from_asset(resolved_asset, target)
 
     missing_context_fields = _missing_asset_fields(protected_asset_context)
+
+    if mode not in {'LIVE', 'HYBRID'}:
+        claim_reasons = sorted(set(['mode_not_live_or_hybrid', *[f'missing_{item}' for item in missing_context_fields], *[f'missing_{item}' for item in missing_target_fields]]))
+        summary = {
+            'generated_at': _now_iso(),
+            'status': 'live_coverage_denied',
+            'reason': 'mode_not_live_or_hybrid',
+            'configured_mode': mode,
+            'target_identity': target_identity,
+            'protected_asset_context': protected_asset_context,
+            'protected_asset_identity': {
+                'asset_id': protected_asset_context.get('asset_id'),
+                'asset_identifier': protected_asset_context.get('asset_identifier'),
+                'symbol': protected_asset_context.get('symbol'),
+                'chain_id': protected_asset_context.get('chain_id'),
+                'contract_address': protected_asset_context.get('contract_address'),
+            },
+            'missing_target_identity_fields': missing_target_fields,
+            'missing_asset_context_fields': missing_context_fields,
+            'worker_monitoring_executed': False,
+            'lifecycle_checks_executed': False,
+            'market_coverage_status': 'insufficient_real_evidence',
+            'oracle_coverage_status': 'insufficient_real_evidence',
+            'enterprise_claim_eligibility': False,
+            'market_claim_eligible': False,
+            'oracle_claim_eligible': False,
+            'claim_ineligibility_reasons': claim_reasons,
+        }
+        _write_artifacts(
+            artifacts_dir=artifacts_dir,
+            summary=summary,
+            alerts=[],
+            incidents=[],
+            runs=[],
+            evidence=[{
+                'record_type': 'coverage_evaluation',
+                'status': summary['status'],
+                'reason': summary['reason'],
+                'configured_mode': mode,
+                'target_identity': target_identity,
+                'protected_asset_context': protected_asset_context,
+                'missing_target_identity_fields': missing_target_fields,
+                'missing_asset_context_fields': missing_context_fields,
+                'worker_monitoring_executed': False,
+                'lifecycle_checks_executed': False,
+                'enterprise_claim_eligibility': False,
+                'claim_ineligibility_reasons': claim_reasons,
+            }],
+        )
+        print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
+        return 2
 
     market_coverage_status = str(coverage_record.get('market_coverage_status') or first_payload.get('market_coverage_status') or 'insufficient_real_evidence')
     oracle_coverage_status = str(coverage_record.get('oracle_coverage_status') or first_payload.get('oracle_coverage_status') or 'insufficient_real_evidence')

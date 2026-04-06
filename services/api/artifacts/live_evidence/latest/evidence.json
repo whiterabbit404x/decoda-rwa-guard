@@ -2,7 +2,7 @@
   {
     "record_type": "coverage_evaluation",
     "status": "asset_configuration_incomplete",
-    "reason": "asset_context_missing_required_fields",
+    "reason": "asset_or_target_context_missing_required_fields",
     "protected_asset_context": {
       "asset_id": null,
       "asset_identifier": null,
@@ -20,8 +20,16 @@
       "expected_oracle_freshness_seconds": null,
       "expected_oracle_update_cadence_seconds": null
     },
-    "target_identity": {},
+    "target_identity": {
+      "target_id": null,
+      "target_name_or_label": null,
+      "target_type": null,
+      "chain_network": null,
+      "target_locator": null
+    },
     "worker_monitoring_executed": false,
+    "worker_run_request_http_status": null,
+    "worker_run_ids": [],
     "market_coverage_status": "insufficient_real_evidence",
     "oracle_coverage_status": "insufficient_real_evidence",
     "enterprise_claim_eligibility": false,
@@ -32,10 +40,52 @@
     "market_observation_count": 0,
     "oracle_observation_count": 0,
     "lifecycle_checks_performed": [],
+    "lifecycle_checks_executed": false,
     "anomalies_observed": false,
+    "missing_asset_context_fields": [
+      "asset_id",
+      "asset_identifier",
+      "symbol",
+      "chain_id",
+      "contract_address",
+      "treasury_ops_wallets",
+      "custody_wallets",
+      "expected_flow_patterns",
+      "expected_counterparties",
+      "expected_approval_patterns",
+      "venue_labels",
+      "expected_liquidity_baseline",
+      "oracle_sources",
+      "expected_oracle_freshness_seconds",
+      "expected_oracle_update_cadence_seconds"
+    ],
+    "missing_target_identity_fields": [
+      "target_id",
+      "target_name_or_label",
+      "target_type",
+      "target_locator"
+    ],
     "claim_ineligibility_reasons": [
+      "missing_asset_id",
       "missing_asset_identifier",
-      "missing_symbol"
-    ]
+      "missing_chain_id",
+      "missing_contract_address",
+      "missing_custody_wallets",
+      "missing_expected_approval_patterns",
+      "missing_expected_counterparties",
+      "missing_expected_flow_patterns",
+      "missing_expected_liquidity_baseline",
+      "missing_expected_oracle_freshness_seconds",
+      "missing_expected_oracle_update_cadence_seconds",
+      "missing_oracle_sources",
+      "missing_symbol",
+      "missing_target_id",
+      "missing_target_locator",
+      "missing_target_name_or_label",
+      "missing_target_type",
+      "missing_treasury_ops_wallets",
+      "missing_venue_labels"
+    ],
+    "monitoring_run_response": {}
   }
 ]
