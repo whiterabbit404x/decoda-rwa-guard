@@ -233,6 +233,56 @@ def test_feature1_evidence_script_marks_monitoring_execution_failed_when_run_req
     assert 'dry_run' not in json.dumps(summary).lower()
 
 
+def test_feature1_evidence_script_marks_monitoring_execution_failed_when_worker_runs_missing_after_attempt(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('FEATURE1_EVIDENCE_DIR', str(tmp_path / 'evidence'))
+
+    def _mock_request(url: str, **kwargs):  # noqa: ANN003,ANN202
+        path = url.replace('http://127.0.0.1:8000', '')
+        if path == '/ops/monitoring/runtime-status':
+            return 200, {'configured_mode': 'LIVE'}
+        if path == '/targets':
+            return 200, {'targets': [{'id': 't1', 'asset_id': 'a1', 'name': 'Treasury', 'target_type': 'wallet', 'chain_network': 'ethereum', 'wallet_address': '0x' + '1' * 40}]}
+        if path == '/assets':
+            return 200, {'assets': [{
+                'id': 'a1',
+                'asset_identifier': 'USTB-REAL',
+                'asset_symbol': 'USTB',
+                'chain_id': 1,
+                'token_contract_address': '0x' + 'a' * 40,
+                'treasury_ops_wallets': ['0x' + '1' * 40],
+                'custody_wallets': ['0x' + '2' * 40],
+                'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}],
+                'expected_counterparties': ['0x' + '3' * 40],
+                'expected_approval_patterns': {'allowed_spenders': ['0x' + '4' * 40]},
+                'venue_labels': ['venue-a'],
+                'expected_liquidity_baseline': {'minimum_transfer_count': 1},
+                'oracle_sources': ['oracle-a'],
+                'expected_oracle_freshness_seconds': 120,
+                'expected_oracle_update_cadence_seconds': 120,
+            }]}
+        if path == '/ops/monitoring/run':
+            return 200, {'run_id': 'run-1'}
+        if path == '/alerts?target_id=t1':
+            return 200, {'alerts': []}
+        if path == '/incidents?target_id=t1':
+            return 200, {'incidents': []}
+        if path == '/pilot/history?kind=analysis_runs':
+            return 200, {'analysis_runs': []}
+        return 404, {}
+
+    monkeypatch.setattr(run_feature1_real_asset_evidence, '_request_json', _mock_request)
+    monkeypatch.setattr('sys.argv', ['run_feature1_real_asset_evidence.py'])
+    code = run_feature1_real_asset_evidence.main()
+    assert code == 2
+    summary = json.loads((tmp_path / 'evidence' / 'summary.json').read_text())
+    assert summary['status'] == 'monitoring_execution_failed'
+    assert summary['reason'] == 'worker_monitoring_not_executed'
+    assert summary['target_identity']['target_id'] == 't1'
+    assert summary['target_identity']['target_locator']
+    assert summary['missing_asset_context_fields'] == []
+
+
 def test_feature1_evidence_script_denies_live_coverage_without_provider_observations(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('FEATURE1_EVIDENCE_DIR', str(tmp_path / 'evidence'))
@@ -415,3 +465,50 @@ def test_feature1_evidence_script_marks_target_identity_missing_fields_ineligibl
     assert summary['status'] == 'asset_configuration_incomplete'
     assert 'missing_target_name_or_label' in summary['claim_ineligibility_reasons']
     assert sorted(summary['missing_target_identity_fields']) == ['target_locator', 'target_name_or_label']
+
+
+def test_feature1_evidence_script_normal_mode_status_is_never_placeholder(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('FEATURE1_EVIDENCE_DIR', str(tmp_path / 'evidence'))
+    monkeypatch.setattr(
+        run_feature1_real_asset_evidence,
+        '_request_json',
+        lambda url, **kwargs: (
+            200,
+            {
+                '/ops/monitoring/runtime-status': {'configured_mode': 'LIVE'},
+                '/targets': {'targets': [{'id': 't1', 'asset_id': 'a1', 'name': 'Treasury', 'target_type': 'wallet', 'chain_network': 'ethereum'}]},
+                '/assets': {'assets': [{
+                    'id': 'a1',
+                    'asset_identifier': 'USTB-REAL',
+                    'asset_symbol': 'USTB',
+                    'chain_id': 1,
+                    'token_contract_address': '0x' + 'a' * 40,
+                    'treasury_ops_wallets': ['0x' + '1' * 40],
+                    'custody_wallets': ['0x' + '2' * 40],
+                    'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}],
+                    'expected_counterparties': ['0x' + '3' * 40],
+                    'expected_approval_patterns': {'allowed_spenders': ['0x' + '4' * 40]},
+                    'venue_labels': ['venue-a'],
+                    'expected_liquidity_baseline': {'minimum_transfer_count': 1},
+                    'oracle_sources': ['oracle-a'],
+                    'expected_oracle_freshness_seconds': 120,
+                    'expected_oracle_update_cadence_seconds': 120,
+                }]},
+                '/ops/monitoring/run': {'run_id': 'run-1'},
+                '/alerts?target_id=t1': {'alerts': []},
+                '/incidents?target_id=t1': {'incidents': []},
+                '/pilot/history?kind=analysis_runs': {'analysis_runs': []},
+            }.get(url.replace('http://127.0.0.1:8000', ''), {}),
+        ),
+    )
+    monkeypatch.setattr('sys.argv', ['run_feature1_real_asset_evidence.py'])
+    run_feature1_real_asset_evidence.main()
+    summary = json.loads((tmp_path / 'evidence' / 'summary.json').read_text())
+    assert summary['status'] in {
+        'live_coverage_confirmed',
+        'live_coverage_denied',
+        'asset_configuration_incomplete',
+        'monitoring_execution_failed',
+    }
+    assert summary['status'] not in {'dry_run_requested', 'inconclusive'}

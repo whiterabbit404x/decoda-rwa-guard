@@ -150,6 +150,51 @@ def _resolve_or_create_target(*, api_url: str, token: str, workspace_id: str, ta
     return target_status, created_target
 
 
+def _resolve_asset_for_target(*, api_url: str, token: str, workspace_id: str, target: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
+    target_asset_id = str(target.get('asset_id') or '').strip()
+    status, assets_payload = _request_json(f"{api_url.rstrip('/')}/assets", token=token, workspace_id=workspace_id)
+    if status >= 400:
+        return status, None
+    assets = assets_payload.get('assets') if isinstance(assets_payload.get('assets'), list) else []
+    if not assets and isinstance(assets_payload, list):
+        assets = assets_payload
+    if not isinstance(assets, list):
+        return 200, None
+    for item in assets:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get('id') or '').strip()
+        if target_asset_id and item_id == target_asset_id:
+            return 200, item
+    return 200, None
+
+
+def _asset_context_from_asset(asset: dict[str, Any] | None, target: dict[str, Any]) -> dict[str, Any]:
+    asset = asset or {}
+    chain_id = asset.get('chain_id')
+    if chain_id is None:
+        chain_id = target.get('chain_id')
+    if chain_id is None:
+        chain_id = int(os.getenv('FEATURE1_PROOF_CHAIN_ID', '1'))
+    return {
+        'asset_id': asset.get('id') or target.get('asset_id'),
+        'asset_identifier': asset.get('asset_identifier') or asset.get('identifier') or target.get('asset_identifier'),
+        'symbol': asset.get('asset_symbol') or asset.get('symbol') or target.get('asset_symbol'),
+        'chain_id': chain_id,
+        'contract_address': asset.get('token_contract_address') or target.get('contract_identifier'),
+        'treasury_ops_wallets': asset.get('treasury_ops_wallets') or target.get('treasury_ops_wallets') or [],
+        'custody_wallets': asset.get('custody_wallets') or target.get('custody_wallets') or [],
+        'expected_flow_patterns': asset.get('expected_flow_patterns') or [],
+        'expected_counterparties': asset.get('expected_counterparties') or [],
+        'expected_approval_patterns': asset.get('expected_approval_patterns') or {},
+        'venue_labels': asset.get('venue_labels') or target.get('venue_labels') or [],
+        'expected_liquidity_baseline': asset.get('expected_liquidity_baseline') or {},
+        'oracle_sources': asset.get('oracle_sources') or [],
+        'expected_oracle_freshness_seconds': asset.get('expected_oracle_freshness_seconds') or target.get('expected_oracle_freshness_seconds'),
+        'expected_oracle_update_cadence_seconds': asset.get('expected_oracle_update_cadence_seconds') or target.get('expected_oracle_update_cadence_seconds'),
+    }
+
+
 def _missing_asset_fields(context: dict[str, Any]) -> list[str]:
     required = [
         'asset_id',
@@ -321,25 +366,14 @@ def main() -> int:
     first_payload = (worker_runs[0].get('response_payload') if worker_runs else {}) if isinstance(worker_runs[0] if worker_runs else {}, dict) else {}
     coverage_record = (first_payload.get('protected_asset_coverage_record') if isinstance(first_payload.get('protected_asset_coverage_record'), dict) else {}) if isinstance(first_payload, dict) else {}
     protected_asset_context = (coverage_record.get('protected_asset_context') if isinstance(coverage_record.get('protected_asset_context'), dict) else {})
-
+    asset_status, resolved_asset = _resolve_asset_for_target(
+        api_url=args.api_url,
+        token=args.token,
+        workspace_id=args.workspace_id,
+        target=target,
+    )
     if not protected_asset_context:
-        protected_asset_context = {
-            'asset_id': target.get('asset_id'),
-            'asset_identifier': target.get('asset_identifier'),
-            'symbol': target.get('asset_symbol'),
-            'chain_id': target.get('chain_id'),
-            'contract_address': target.get('contract_identifier'),
-            'treasury_ops_wallets': target.get('treasury_ops_wallets') or [],
-            'custody_wallets': target.get('custody_wallets') or [],
-            'expected_flow_patterns': [],
-            'expected_counterparties': [],
-            'expected_approval_patterns': {},
-            'venue_labels': target.get('venue_labels') or [],
-            'expected_liquidity_baseline': {},
-            'oracle_sources': [],
-            'expected_oracle_freshness_seconds': target.get('expected_oracle_freshness_seconds'),
-            'expected_oracle_update_cadence_seconds': target.get('expected_oracle_update_cadence_seconds'),
-        }
+        protected_asset_context = _asset_context_from_asset(resolved_asset, target)
 
     missing_context_fields = _missing_asset_fields(protected_asset_context)
 
@@ -383,6 +417,10 @@ def main() -> int:
         status_value = 'monitoring_execution_failed'
         reason = 'monitoring_run_request_failed'
         claim_reasons = sorted(set([*claim_reasons, 'monitoring_run_request_failed']))
+    elif asset_status >= 400 and not protected_asset_context:
+        status_value = 'monitoring_execution_failed'
+        reason = 'asset_resolution_failed'
+        claim_reasons = sorted(set([*claim_reasons, 'asset_resolution_failed']))
     elif missing_context_fields or missing_target_fields:
         status_value = 'asset_configuration_incomplete'
         reason = 'asset_or_target_context_missing_required_fields'
@@ -414,6 +452,7 @@ def main() -> int:
         'worker_monitoring_executed': worker_monitoring_executed,
         'worker_run_count': len(worker_runs),
         'worker_run_request_http_status': run_status,
+        'asset_resolution_http_status': asset_status,
         'protected_asset_context': protected_asset_context,
         'market_coverage_status': market_coverage_status,
         'oracle_coverage_status': oracle_coverage_status,
@@ -433,7 +472,7 @@ def main() -> int:
         'claim_ineligibility_reasons': claim_reasons,
         'external_market_telemetry_present': market_observation_count > 0,
         'real_oracle_observations_present': oracle_observation_count > 0,
-        'lifecycle_checks_executed': bool(lifecycle_checks_performed or worker_monitoring_executed),
+        'lifecycle_checks_executed': bool(lifecycle_checks_performed or coverage_record.get('lifecycle_checks_executed') or worker_monitoring_executed),
         'lifecycle_checks_performed': lifecycle_checks_performed,
         'anomalies_observed': anomalies_observed,
         'result_scope': 'enterprise_claim_eligible' if enterprise_claim_eligibility else 'internal_only',
