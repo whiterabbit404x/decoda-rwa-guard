@@ -512,3 +512,125 @@ def test_feature1_evidence_script_normal_mode_status_is_never_placeholder(monkey
         'monitoring_execution_failed',
     }
     assert summary['status'] not in {'dry_run_requested', 'inconclusive'}
+
+
+def test_feature1_evidence_script_runtime_failure_exports_explicit_missing_context(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('FEATURE1_EVIDENCE_DIR', str(tmp_path / 'evidence'))
+    monkeypatch.setattr(
+        run_feature1_real_asset_evidence,
+        '_request_json',
+        lambda url, **kwargs: (503, {'error': 'runtime-down'}) if url.endswith('/ops/monitoring/runtime-status') else (404, {}),
+    )
+    monkeypatch.setattr('sys.argv', ['run_feature1_real_asset_evidence.py'])
+
+    code = run_feature1_real_asset_evidence.main()
+
+    assert code == 2
+    summary = json.loads((tmp_path / 'evidence' / 'summary.json').read_text())
+    assert summary['status'] == 'monitoring_execution_failed'
+    assert summary['target_identity'] == {
+        'target_id': None,
+        'target_name_or_label': None,
+        'target_type': None,
+        'chain_network': None,
+        'target_locator': None,
+    }
+    assert summary['missing_target_identity_fields'] == ['target_id', 'target_name_or_label', 'target_type', 'target_locator']
+    assert 'asset_id' in summary['missing_asset_context_fields']
+    assert summary['worker_monitoring_executed'] is False
+    assert summary['lifecycle_checks_executed'] is False
+    evidence = json.loads((tmp_path / 'evidence' / 'evidence.json').read_text())
+    assert evidence
+    assert evidence[0]['record_type'] == 'coverage_evaluation'
+
+
+def test_feature1_evidence_script_exports_full_artifact_bundle_for_denied_coverage(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('FEATURE1_EVIDENCE_DIR', str(tmp_path / 'evidence'))
+    monkeypatch.setenv('FEATURE1_PROOF_ORACLE_CADENCE_SECONDS', '60')
+    monkeypatch.setenv('FEATURE1_PROOF_ORACLE_FRESHNESS_SECONDS', '60')
+
+    def _mock_request(url: str, **kwargs):  # noqa: ANN003,ANN202
+        path = url.replace('http://127.0.0.1:8000', '')
+        if path == '/ops/monitoring/runtime-status':
+            return 200, {'configured_mode': 'LIVE'}
+        if path == '/targets':
+            return 200, {'targets': [{'id': 't1', 'asset_id': 'a1', 'name': 'Treasury', 'target_type': 'wallet', 'wallet_address': '0x' + '1' * 40, 'chain_network': 'ethereum'}]}
+        if path == '/assets':
+            return 200, {'assets': [{
+                'id': 'a1',
+                'asset_identifier': 'USTB-REAL',
+                'asset_symbol': 'USTB',
+                'chain_id': 1,
+                'token_contract_address': '0x' + 'a' * 40,
+                'treasury_ops_wallets': ['0x' + '1' * 40],
+                'custody_wallets': ['0x' + '2' * 40],
+                'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}],
+                'expected_counterparties': ['0x' + '3' * 40],
+                'expected_approval_patterns': {'allowed_spenders': ['0x' + '4' * 40]},
+                'venue_labels': ['venue-a'],
+                'expected_liquidity_baseline': {'minimum_transfer_count': 1},
+                'oracle_sources': ['oracle-a'],
+                'expected_oracle_freshness_seconds': 60,
+                'expected_oracle_update_cadence_seconds': 60,
+            }]}
+        if path == '/ops/monitoring/run':
+            return 200, {'run_id': 'run-1'}
+        if path == '/alerts?target_id=t1':
+            return 200, {'alerts': []}
+        if path == '/incidents?target_id=t1':
+            return 200, {'incidents': []}
+        if path == '/pilot/history?kind=analysis_runs':
+            return 200, {'analysis_runs': [{
+                'id': 'r1',
+                'target_id': 't1',
+                'response_payload': {
+                    'monitoring_path': 'worker',
+                    'protected_asset_coverage_record': {
+                        'protected_asset_context': {
+                            'asset_id': 'a1',
+                            'asset_identifier': 'USTB-REAL',
+                            'symbol': 'USTB',
+                            'chain_id': 1,
+                            'contract_address': '0x' + 'a' * 40,
+                            'treasury_ops_wallets': ['0x' + '1' * 40],
+                            'custody_wallets': ['0x' + '2' * 40],
+                            'expected_flow_patterns': [{'source_class': 'treasury_ops'}],
+                            'expected_counterparties': ['0x' + '3' * 40],
+                            'expected_approval_patterns': {'allowed_spenders': ['0x' + '4' * 40]},
+                            'venue_labels': ['venue-a'],
+                            'expected_liquidity_baseline': {'minimum_transfer_count': 1},
+                            'oracle_sources': ['oracle-a'],
+                            'expected_oracle_freshness_seconds': 60,
+                            'expected_oracle_update_cadence_seconds': 60,
+                        },
+                        'market_coverage_status': 'insufficient_real_evidence',
+                        'oracle_coverage_status': 'provider_configured_but_unreachable',
+                        'market_provider_names': ['market-a'],
+                        'oracle_provider_names': ['oracle-a'],
+                        'market_observation_count': 0,
+                        'oracle_observation_count': 0,
+                        'market_claim_eligible': False,
+                        'oracle_claim_eligible': False,
+                        'enterprise_claim_eligibility': False,
+                        'claim_ineligibility_reasons': ['insufficient_market_observations', 'oracle_provider_unreachable'],
+                    },
+                },
+            }]}
+        return 404, {}
+
+    monkeypatch.setattr(run_feature1_real_asset_evidence, '_request_json', _mock_request)
+    monkeypatch.setattr('sys.argv', ['run_feature1_real_asset_evidence.py'])
+    code = run_feature1_real_asset_evidence.main()
+    assert code == 0
+
+    artifact_dir = tmp_path / 'evidence'
+    for file_name in ('summary.json', 'evidence.json', 'runs.json', 'alerts.json', 'incidents.json', 'report.md'):
+        assert (artifact_dir / file_name).exists()
+
+    summary = json.loads((artifact_dir / 'summary.json').read_text())
+    assert summary['status'] == 'live_coverage_denied'
+    assert summary['target_identity']['target_id'] == 't1'
+    assert summary['protected_asset_identity']['asset_id'] == 'a1'
+    assert summary['claim_ineligibility_reasons']
