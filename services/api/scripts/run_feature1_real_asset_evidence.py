@@ -115,8 +115,11 @@ def _missing_target_fields(target_identity: dict[str, Any]) -> list[str]:
 
 def _default_asset_payload() -> dict[str, Any]:
     asset_identifier = os.getenv('FEATURE1_PROOF_ASSET_IDENTIFIER', 'USTB-REAL')
+    identifier = os.getenv('FEATURE1_PROOF_IDENTIFIER', 'feature1-live-proof-ustb')
     return {
         'name': f'Feature1 Protected Asset {asset_identifier}',
+        'asset_type': os.getenv('FEATURE1_PROOF_ASSET_TYPE', 'contract'),
+        'identifier': identifier,
         'asset_symbol': os.getenv('FEATURE1_PROOF_ASSET_SYMBOL', 'USTB'),
         'asset_identifier': asset_identifier,
         'chain_network': os.getenv('FEATURE1_PROOF_CHAIN_NETWORK', 'ethereum'),
@@ -124,7 +127,11 @@ def _default_asset_payload() -> dict[str, Any]:
         'treasury_ops_wallets': [os.getenv('FEATURE1_PROOF_TREASURY_WALLET', '0x1111111111111111111111111111111111111111')],
         'custody_wallets': [os.getenv('FEATURE1_PROOF_CUSTODY_WALLET', '0x2222222222222222222222222222222222222222')],
         'expected_counterparties': [os.getenv('FEATURE1_PROOF_COUNTERPARTY', '0x3333333333333333333333333333333333333333')],
-        'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}],
+        'expected_flow_patterns': {
+            'allowed_paths': [
+                {'source_class': 'treasury_ops', 'destination_class': 'custody'},
+            ],
+        },
         'expected_approval_patterns': {'allowed_spenders': [os.getenv('FEATURE1_PROOF_SPENDER', '0x4444444444444444444444444444444444444444')]},
         'venue_labels': [os.getenv('FEATURE1_PROOF_VENUE', 'venue-a')],
         'expected_liquidity_baseline': {'minimum_transfer_count': 1},

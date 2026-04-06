@@ -157,6 +157,8 @@ def _proof_email() -> str:
 def _create_asset_and_target(api_url: str, *, token: str, workspace_id: str, chain_id: int, contract_address: str, treasury_wallet: str, custody_wallet: str, expected_counterparty: str, allowed_spender: str) -> tuple[str, str]:
     asset_payload = {
         'name': 'Feature1 Live Proof Protected Asset',
+        'asset_type': 'contract',
+        'identifier': 'feature1-live-proof-ustb',
         'asset_symbol': 'USTB',
         'asset_identifier': 'USTB-LIVE-PROOF',
         'chain_network': 'ethereum',
@@ -165,7 +167,11 @@ def _create_asset_and_target(api_url: str, *, token: str, workspace_id: str, cha
         'treasury_ops_wallets': [treasury_wallet],
         'custody_wallets': [custody_wallet],
         'expected_counterparties': [expected_counterparty],
-        'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}],
+        'expected_flow_patterns': {
+            'allowed_paths': [
+                {'source_class': 'treasury_ops', 'destination_class': 'custody'},
+            ],
+        },
         'expected_approval_patterns': {'allowed_spenders': [allowed_spender], 'max_amount': 1000},
         'venue_labels': [custody_wallet],
         'expected_liquidity_baseline': {

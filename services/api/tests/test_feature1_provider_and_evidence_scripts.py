@@ -161,6 +161,40 @@ def test_feature1_live_proof_bootstrap_auth_uses_signup_verify_signin(monkeypatc
     ]
 
 
+def test_feature1_asset_payloads_include_required_contract_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_asset_payload: dict[str, object] = {}
+
+    def _mock_request(url: str, *, method: str = 'GET', payload=None, **_kwargs):  # noqa: ANN001,ANN202
+        path = url.replace('http://127.0.0.1:8000', '')
+        if path == '/assets' and method == 'POST':
+            assert isinstance(payload, dict)
+            captured_asset_payload.update(payload)
+            return 201, {'id': 'asset-1'}
+        if path == '/targets' and method == 'POST':
+            return 201, {'id': 'target-1'}
+        raise AssertionError(f'unexpected request path: {path}')
+
+    monkeypatch.setattr(run_feature1_live_proof, '_request_json', _mock_request)
+    run_feature1_live_proof._create_asset_and_target(  # noqa: SLF001
+        'http://127.0.0.1:8000',
+        token='token',
+        workspace_id='workspace',
+        chain_id=1,
+        contract_address='0x' + 'a' * 40,
+        treasury_wallet='0x' + '1' * 40,
+        custody_wallet='0x' + '2' * 40,
+        expected_counterparty='0x' + '3' * 40,
+        allowed_spender='0x' + '4' * 40,
+    )
+
+    assert captured_asset_payload.get('asset_type') == 'contract'
+    assert captured_asset_payload.get('identifier') == 'feature1-live-proof-ustb'
+
+    fallback_payload = run_feature1_real_asset_evidence._default_asset_payload()  # noqa: SLF001
+    assert fallback_payload.get('asset_type') == 'contract'
+    assert fallback_payload.get('identifier') == 'feature1-live-proof-ustb'
+
+
 def test_feature1_evidence_script_dry_run_exports_explicit_state(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('FEATURE1_EVIDENCE_DIR', str(tmp_path / 'evidence'))
