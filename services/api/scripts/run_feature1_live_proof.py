@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from shutil import which
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ARTIFACT_DIR = REPO_ROOT / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest'
 
@@ -58,8 +60,6 @@ def _wait_for_http(url: str, *, timeout_seconds: int = 60) -> None:
 
 
 def _require_cmd(name: str) -> None:
-    from shutil import which
-
     if which(name) is None:
         raise RuntimeError(f'required command not found: {name}')
 
@@ -235,6 +235,18 @@ def _assert_artifacts_non_empty() -> dict[str, Any]:
             tx_evidence_found = True
             break
     _require(tx_evidence_found, 'evidence.json missing tx_hash/block_number linked evidence')
+    report_path = ARTIFACT_DIR / 'report.md'
+    _require(report_path.exists(), 'report.md missing')
+    _require(bool(report_path.read_text().strip()), 'report.md must be non-empty')
+
+    high_or_critical_alerts = [
+        item
+        for item in alerts
+        if isinstance(item, dict)
+        and str(item.get('severity') or '').lower() in {'high', 'critical'}
+    ]
+    if high_or_critical_alerts:
+        _require(len(incidents) >= 1, 'high/critical alerts observed but incidents.json is empty')
     return {
         'summary': summary,
         'alerts_count': len(alerts),
@@ -242,6 +254,21 @@ def _assert_artifacts_non_empty() -> dict[str, Any]:
         'incidents_count': len(incidents),
         'evidence_count': len(evidence),
     }
+
+
+def _resolve_evm_command(port: int) -> list[str]:
+    override = os.getenv('FEATURE1_EVM_CMD', '').strip()
+    if override:
+        return override.split()
+    ganache = which('ganache')
+    if ganache:
+        return [ganache, '--wallet.deterministic', '--chain.chainId', '1', '--server.port', str(port)]
+    anvil = which('anvil')
+    if anvil:
+        return [anvil, '--chain-id', '1', '--port', str(port)]
+    raise RuntimeError(
+        'No local EVM executable found. Install `ganache` or `anvil`, or set FEATURE1_EVM_CMD to a custom command.'
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -264,8 +291,8 @@ def main() -> int:
 
     env = os.environ.copy()
     env.setdefault('PYTHONPATH', str(REPO_ROOT))
-    env.setdefault('APP_MODE', 'production')
-    env.setdefault('APP_ENV', 'production')
+    env.setdefault('APP_MODE', 'local')
+    env.setdefault('APP_ENV', 'development')
     env.setdefault('LIVE_MODE_ENABLED', 'true')
     env.setdefault('MONITORING_MODE', 'live')
     env.setdefault('LIVE_MONITORING_ENABLED', 'true')
@@ -281,15 +308,21 @@ def main() -> int:
     env.setdefault('FEATURE1_API_URL', api_url)
     env.setdefault('FEATURE1_EVIDENCE_DIR', str(ARTIFACT_DIR))
     env.setdefault('AUTH_EXPOSE_DEBUG_TOKENS', 'true')
+    env.setdefault('AUTH_TOKEN_SECRET', 'feature1-local-proof-secret')
+    env.setdefault('SECRET_ENCRYPTION_KEY', 'feature1-local-proof-encryption-key-32')
+    env.setdefault('EMAIL_PROVIDER', 'console')
+    env.setdefault('EMAIL_FROM', 'proof@decoda.local')
+    env.setdefault('REDIS_URL', 'redis://127.0.0.1:6379/0')
 
     processes: list[tuple[str, Any]] = []
     try:
         if not args.skip_compose:
-            _require_cmd('docker')
+            if which('docker') is None:
+                raise RuntimeError('docker is required unless --skip-compose is passed')
             subprocess.run(['docker', 'compose', 'up', '-d', 'postgres', 'redis'], cwd=str(REPO_ROOT), check=True)
 
         telemetry_script = REPO_ROOT / 'services' / 'api' / 'tests' / 'fixtures' / 'feature1_live_proof_telemetry_server.py'
-        evm_cmd = ['npx', '--yes', 'ganache', '--wallet.deterministic', '--chain.chainId', '1', '--server.port', str(args.evm_port)]
+        evm_cmd = _resolve_evm_command(args.evm_port)
         tele_cmd = [sys.executable, str(telemetry_script), '--port', str(args.telemetry_port)]
         processes.append(('evm', subprocess.Popen(evm_cmd, cwd=str(REPO_ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)))
         processes.append(('telemetry', subprocess.Popen(tele_cmd, cwd=str(REPO_ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)))
@@ -329,15 +362,17 @@ def main() -> int:
         )
         _ = _rpc_call(rpc_url, 'evm_mine', [])
 
-        run_status, run_payload = _request_json(
-            f'{api_url}/ops/monitoring/run',
-            method='POST',
-            payload={'worker_name': 'feature1-live-proof-worker', 'limit': 100},
-            token=token,
-            workspace_id=workspace_id,
-        )
-        if run_status not in {200, 201}:
-            raise RuntimeError(f'worker monitoring run failed: status={run_status} body={run_payload}')
+        worker_cmd = [
+            sys.executable,
+            '-m',
+            'services.api.app.run_monitoring_worker',
+            '--once',
+            '--worker-name',
+            'feature1-live-proof-worker',
+            '--limit',
+            '100',
+        ]
+        subprocess.run(worker_cmd, cwd=str(REPO_ROOT), env=env, check=True)
 
         evidence_cmd = [
             sys.executable,

@@ -1587,6 +1587,13 @@ See `docs/LAUNCH_VALIDATION_CHECKLIST.md` for pilot vs broad-sale vs enterprise 
 
 Feature 1 now binds monitoring to **workspace-owned assets** by linking monitored targets to asset profiles (`target.asset_id -> assets.id`). Detection outcomes include asset-linked anomaly basis and observed evidence references (event/tx/block) instead of generic risk-only language. Baselines are stored per asset (status/source/confidence/coverage), and missing/stale baseline states are surfaced explicitly in findings. Operators can generate a reusable evidence bundle via `POST /exports/feature1-evidence` or run `python services/api/scripts/run_feature1_real_asset_evidence.py` for a single-command staging proof run.
 
+Deterministic local proof command:
+
+- `make proof-feature1-live`
+- Executes a real anomaly: treasury wallet sends value to an unexpected counterparty on a local chain.
+- Runs the authoritative worker process (`python -m services.api.app.run_monitoring_worker --once`), then exports and verifies artifacts under `services/api/artifacts/live_evidence/latest/`.
+- Required local dependencies: Postgres + Redis, plus one local EVM binary (`ganache` or `anvil`, or `FEATURE1_EVM_CMD` override).
+
 Feature 1 enterprise claims are now evaluated against a strict `protected_asset_context + provider_coverage_status` contract for one concrete treasury-linked asset. The run payload/export includes:
 
 - `protected_asset_context` with explicit identity (`asset_id`, `asset_identifier`, `symbol`, `chain_id`, `contract_address`), protected path configuration (`treasury_ops_wallets`, `custody_wallets`, expected routes/approvals/counterparties/venues), baseline context, and oracle freshness/cadence expectations.
