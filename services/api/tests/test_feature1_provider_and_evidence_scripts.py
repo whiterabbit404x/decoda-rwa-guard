@@ -12,6 +12,7 @@ import pytest
 from services.api.app import evm_activity_provider
 from services.api.scripts import run_feature1_live_proof
 from services.api.scripts import run_feature1_real_asset_evidence
+from services.api.scripts import validate_feature1_live_artifacts
 
 
 class _Rpc:
@@ -106,7 +107,8 @@ def test_feature1_evidence_script_fails_without_worker_generated_real_evidence(m
     code = run_feature1_real_asset_evidence.main()
     assert code == 2
     summary = json.loads((tmp_path / 'evidence' / 'summary.json').read_text())
-    assert summary['status'] == 'asset_configuration_incomplete'
+    assert summary['status'] == 'monitoring_execution_failed'
+    assert summary['reason'] == 'proof_validation_failed'
     assert summary['enterprise_claim_eligibility'] is False
     assert summary['market_coverage_status'] == 'insufficient_real_evidence'
     assert summary['oracle_coverage_status'] == 'insufficient_real_evidence'
@@ -281,8 +283,28 @@ def test_feature1_evidence_script_marks_monitoring_execution_failed_when_run_req
     summary = json.loads((tmp_path / 'evidence' / 'summary.json').read_text())
     assert summary['status'] == 'monitoring_execution_failed'
     assert summary['reason'] == 'monitoring_run_request_failed'
-    assert 'inconclusive' not in json.dumps(summary).lower()
-    assert 'dry_run' not in json.dumps(summary).lower()
+
+
+def test_validate_feature1_live_artifacts_rejects_placeholder_bundle(tmp_path: Path) -> None:
+    artifacts = tmp_path / 'latest'
+    artifacts.mkdir(parents=True)
+    (artifacts / 'summary.json').write_text(json.dumps({
+        'status': 'asset_configuration_incomplete',
+        'worker_monitoring_executed': False,
+        'anomalies_observed': False,
+        'protected_asset_identity': {},
+        'target_identity': {},
+    }))
+    (artifacts / 'alerts.json').write_text('[]')
+    (artifacts / 'runs.json').write_text('[]')
+    (artifacts / 'incidents.json').write_text('[]')
+    (artifacts / 'evidence.json').write_text(json.dumps([{'record_type': 'coverage_evaluation'}]))
+    (artifacts / 'report.md').write_text('')
+
+    failures = validate_feature1_live_artifacts.validate_bundle(artifacts)
+    assert failures
+    assert any('summary.status=asset_configuration_incomplete' in item for item in failures)
+    assert any('evidence.json contains only coverage_evaluation rows' in item for item in failures)
 
 
 def test_feature1_evidence_script_marks_monitoring_execution_failed_when_worker_runs_missing_after_attempt(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

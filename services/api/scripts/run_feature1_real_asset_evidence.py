@@ -258,7 +258,54 @@ def _write_artifacts(*, artifacts_dir: Path, summary: dict[str, Any], alerts: li
         f"- protected_asset_identity: `{summary.get('protected_asset_identity')}`\n"
         f"- target_identity: `{summary.get('target_identity')}`\n"
         f"- claim_ineligibility_reasons: `{summary.get('claim_ineligibility_reasons')}`\n"
+        f"- proof_command: `{summary.get('proof_command')}`\n"
+        f"- monitoring_worker_name: `{summary.get('monitoring_worker_name')}`\n"
+        f"- monitoring_run_ids: `{summary.get('monitoring_run_ids')}`\n"
+        f"- anomalous_tx_hashes: `{summary.get('anomalous_tx_hashes')}`\n"
+        f"- anomaly_kind: `{summary.get('anomaly_kind')}`\n"
     )
+
+
+def _find_anomalous_rows(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in evidence:
+        if not isinstance(row, dict):
+            continue
+        if row.get('record_type') == 'coverage_evaluation':
+            continue
+        has_link = bool(row.get('event_id')) or (bool(row.get('tx_hash')) and row.get('block_number') is not None)
+        if has_link:
+            rows.append(row)
+    return rows
+
+
+def _require_honest_proof_or_raise(*, summary: dict[str, Any], alerts: list[dict[str, Any]], runs: list[dict[str, Any]], incidents: list[dict[str, Any]], evidence: list[dict[str, Any]], missing_context_fields: list[str], missing_target_fields: list[str]) -> None:
+    problems: list[str] = []
+    if missing_context_fields:
+        problems.append(f'protected_asset_context missing required fields: {missing_context_fields}')
+    if missing_target_fields:
+        problems.append(f'target_identity missing required fields: {missing_target_fields}')
+    if not summary.get('worker_monitoring_executed'):
+        problems.append('worker_monitoring_executed=false')
+    if not summary.get('lifecycle_checks_executed'):
+        problems.append('lifecycle_checks_executed=false')
+    if not summary.get('anomalies_observed'):
+        problems.append('anomalies_observed=false')
+    if not alerts:
+        problems.append('alerts.json empty')
+    if not runs:
+        problems.append('runs.json empty')
+    if not evidence:
+        problems.append('evidence.json empty')
+    elif all(str(item.get('record_type') or '') == 'coverage_evaluation' for item in evidence if isinstance(item, dict)):
+        problems.append('evidence only contains coverage_evaluation rows')
+    anomalous_rows = _find_anomalous_rows(evidence)
+    if not anomalous_rows:
+        problems.append('no tx_hash/block_number or event_id-linked anomaly rows in evidence')
+    if any(str((item.get('severity') or '')).lower() in {'high', 'critical'} for item in alerts if isinstance(item, dict)) and not incidents:
+        problems.append('incidents.json empty despite high/critical alerts')
+    if problems:
+        raise RuntimeError('; '.join(problems))
 
 
 def main() -> int:
@@ -589,6 +636,7 @@ def main() -> int:
         'reason': reason,
         'workspace_id': args.workspace_id,
         'target_id': target.get('id'),
+        'asset_id': protected_asset_context.get('asset_id'),
         'worker_monitoring_executed': worker_monitoring_executed,
         'worker_run_count': len(worker_runs),
         'worker_run_request_http_status': run_status,
@@ -628,6 +676,9 @@ def main() -> int:
         'missing_asset_context_fields': missing_context_fields,
         'missing_target_identity_fields': missing_target_fields,
         'execution_failure_reasons': execution_failure_reasons,
+        'proof_command': os.getenv('FEATURE1_PROOF_COMMAND', '').strip() or 'make proof-feature1-live',
+        'monitoring_worker_name': os.getenv('FEATURE1_MONITORING_WORKER_NAME', 'feature1-live-proof-worker'),
+        'monitoring_run_ids': [item.get('id') for item in worker_runs],
     }
 
     if summary['status'] not in ALLOWED_STATUSES:
@@ -693,6 +744,39 @@ def main() -> int:
                 'block_number': block_number,
             }
         )
+
+    anomalous_rows = _find_anomalous_rows(evidence)
+    summary['anomalous_tx_hashes'] = sorted({str(row.get('tx_hash')) for row in anomalous_rows if row.get('tx_hash')})
+    summary['anomaly_kind'] = (
+        'erc20_approval_unexpected_spender'
+        if any(str(row.get('detector_family') or '').lower() in {'approval_pattern', 'approval'} for row in anomalous_rows)
+        else 'asset_lifecycle_anomaly'
+    )
+    try:
+        _require_honest_proof_or_raise(
+            summary=summary,
+            alerts=alerts,
+            runs=worker_runs or runs,
+            incidents=incidents,
+            evidence=evidence,
+            missing_context_fields=missing_context_fields,
+            missing_target_fields=missing_target_fields,
+        )
+    except RuntimeError as exc:
+        summary['status'] = 'monitoring_execution_failed'
+        summary['reason'] = 'proof_validation_failed'
+        summary['execution_failure_reasons'] = sorted(set([*execution_failure_reasons, 'proof_validation_failed']))
+        summary['claim_ineligibility_reasons'] = sorted(set([*(summary.get('claim_ineligibility_reasons') or []), 'proof_validation_failed']))
+        _write_artifacts(
+            artifacts_dir=artifacts_dir,
+            summary=summary,
+            alerts=alerts,
+            incidents=incidents,
+            runs=runs,
+            evidence=evidence,
+        )
+        print(json.dumps({'error': str(exc), **summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
+        return 2
 
     _write_artifacts(
         artifacts_dir=artifacts_dir,

@@ -26,10 +26,11 @@ What this command does:
 4. Starts the API service with `MONITORING_MODE=live` and real provider endpoints.
 5. Creates a real workspace/user with auth bootstrap `signup -> verify-email -> signin`; the harness enables `AUTH_EXPOSE_DEBUG_TOKENS=true` for this local run so signup returns a deterministic verification token used by `/auth/verify-email`.
 6. Uses a unique proof email per run by default (`feature1-proof+<suffix>@decoda.local`) to avoid rerun collisions; set `FEATURE1_PROOF_EMAIL` to override when needed.
-7. Submits a real anomalous on-chain transfer (`treasury_ops -> unknown_external`) to produce tx/block evidence.
+7. Seeds a deterministic local ERC20 proof contract, then submits a real anomalous approval from treasury to an unexpected spender to produce `Approval` log + tx/block evidence.
 8. Runs the authoritative worker process (`python -m services.api.app.run_monitoring_worker --once`) so emitted runs are `monitoring_path=worker` (not `manual_run_once`).
-9. Exports evidence artifacts to `services/api/artifacts/live_evidence/latest/`.
-10. Exits non-zero if alerts/runs/incidents/evidence/report are missing, if tx/block-linked evidence is absent, or if required summary booleans remain false.
+9. Clears any stale files in `services/api/artifacts/live_evidence/latest/`, then exports fresh runtime artifacts only.
+10. Runs `python services/api/scripts/validate_feature1_live_artifacts.py` and exits non-zero if stale/placeholder patterns are detected.
+11. Exits non-zero if alerts/runs/incidents/evidence/report are missing, if tx/event-linked evidence is absent, or if required summary booleans remain false.
 
 The harness does **not** use `/monitoring/run-once/{id}` and does **not** use mocked HTTP providers for proof generation.
 
@@ -68,6 +69,7 @@ Normal proof mode never emits vague statuses such as `dry_run`, `dry_run_request
 - lifecycle checks executed state, plus `lifecycle_checks_not_executed_reason` when false
 - machine-readable `execution_failure_reasons` when runtime/worker/lifecycle execution does not complete
 - anomaly observation context (if present)
+- proof freshness/integrity markers (`generated_at`, `proof_command`, `monitoring_worker_name`, `monitoring_run_ids`, `anomalous_tx_hashes`, `anomaly_kind`)
 - chain and evidence window
 - observed tx hash/block/event
 - finding/alert/incident ids
@@ -90,4 +92,4 @@ Evidence scripts write to `services/api/artifacts/live_evidence/latest/`:
 - `evidence.json`
 - `report.md`
 
-`evidence.json` is intentionally non-empty even when no anomaly is detected. It contains structured coverage-evaluation records for one concrete protected asset and monitoring target, including worker execution truth, lifecycle-check execution state, provider coverage metadata, and explicit claim ineligibility reasons when enterprise proof is denied.
+`evidence.json` must include at least one tx/event-linked anomaly row (`tx_hash` + `block_number` or `event_id`) in proof mode. Coverage-only bundles are rejected by validator and exporter hard-fail rules.

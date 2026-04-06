@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -18,6 +19,16 @@ from shutil import which
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ARTIFACT_DIR = REPO_ROOT / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest'
+APPROVAL_TOPIC = '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925'
+DEFAULT_PROOF_CONTRACT = '0x' + 'a' * 40
+DEFAULT_PROOF_SPENDER = '0x' + '4' * 40
+PROOF_ERC20_RUNTIME_CODE = (
+    '0x'
+    '7f0000000000000000000000000000000000000000000000000000000000000001600052'
+    '7f0000000000000000000000004444444444444444444444444444444444444444'
+    '337f8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925'
+    '60206000a3600160005260206000f3'
+)
 
 
 def _now_iso() -> str:
@@ -271,6 +282,44 @@ def _resolve_evm_command(port: int) -> list[str]:
     )
 
 
+def _reset_artifacts_dir() -> None:
+    if ARTIFACT_DIR.exists():
+        shutil.rmtree(ARTIFACT_DIR)
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _seed_erc20_proof_contract(rpc_url: str, contract_address: str) -> None:
+    for method in ('anvil_setCode', 'evm_setAccountCode'):
+        try:
+            _rpc_call(rpc_url, method, [contract_address, PROOF_ERC20_RUNTIME_CODE])
+            return
+        except Exception:
+            continue
+    raise RuntimeError(
+        'Failed to seed deterministic ERC20 proof contract bytecode. '
+        'The local EVM must support anvil_setCode or evm_setAccountCode.'
+    )
+
+
+def _execute_approval_anomaly(rpc_url: str, *, treasury: str, contract_address: str, unexpected_spender: str) -> str:
+    selector = '095ea7b3'
+    spender_word = unexpected_spender.lower().replace('0x', '').rjust(64, '0')
+    amount_word = hex(10**18).replace('0x', '').rjust(64, '0')
+    tx_hash = _rpc_call(
+        rpc_url,
+        'eth_sendTransaction',
+        [{'from': treasury, 'to': contract_address, 'data': f'0x{selector}{spender_word}{amount_word}'}],
+    )
+    _ = _rpc_call(rpc_url, 'evm_mine', [])
+    receipt = _rpc_call(rpc_url, 'eth_getTransactionReceipt', [tx_hash]) or {}
+    logs = receipt.get('logs') if isinstance(receipt.get('logs'), list) else []
+    if not logs:
+        raise RuntimeError(f'approval anomaly transaction produced no logs: {tx_hash}')
+    if not any(str((log.get('topics') or [''])[0]).lower() == APPROVAL_TOPIC.lower() for log in logs if isinstance(log, dict)):
+        raise RuntimeError(f'approval anomaly transaction missing Approval topic log: {tx_hash}')
+    return str(tx_hash)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Run deterministic local Feature 1 live proof using worker monitoring path.')
     parser.add_argument('--api-port', type=int, default=8000)
@@ -313,6 +362,8 @@ def main() -> int:
     env.setdefault('EMAIL_PROVIDER', 'console')
     env.setdefault('EMAIL_FROM', 'proof@decoda.local')
     env.setdefault('REDIS_URL', 'redis://127.0.0.1:6379/0')
+    env.setdefault('FEATURE1_PROOF_COMMAND', 'python services/api/scripts/run_feature1_live_proof.py')
+    env.setdefault('FEATURE1_MONITORING_WORKER_NAME', 'feature1-live-proof-worker')
 
     processes: list[tuple[str, Any]] = []
     try:
@@ -343,24 +394,26 @@ def main() -> int:
         proof_email = _proof_email()
         token, workspace_id = _bootstrap_auth(api_url, email=proof_email, password='ProofPass123!')
 
+        proof_contract_address = os.getenv('FEATURE1_PROOF_CONTRACT_ADDRESS', DEFAULT_PROOF_CONTRACT).strip().lower()
         _asset_id, target_id = _create_asset_and_target(
             api_url,
             token=token,
             workspace_id=workspace_id,
             chain_id=chain_id,
-            contract_address='0x' + 'a' * 40,
+            contract_address=proof_contract_address,
             treasury_wallet=treasury,
             custody_wallet=custody,
             expected_counterparty=expected_counterparty,
             allowed_spender=expected_counterparty,
         )
-
-        tx_hash = _rpc_call(
+        _reset_artifacts_dir()
+        _seed_erc20_proof_contract(rpc_url, proof_contract_address)
+        tx_hash = _execute_approval_anomaly(
             rpc_url,
-            'eth_sendTransaction',
-            [{'from': treasury, 'to': unexpected_counterparty, 'value': hex(2_000_000_000_000_000_000)}],
+            treasury=treasury,
+            contract_address=proof_contract_address,
+            unexpected_spender=unexpected_counterparty or DEFAULT_PROOF_SPENDER,
         )
-        _ = _rpc_call(rpc_url, 'evm_mine', [])
 
         worker_cmd = [
             sys.executable,
@@ -387,6 +440,12 @@ def main() -> int:
             target_id,
         ]
         subprocess.run(evidence_cmd, cwd=str(REPO_ROOT), env=env, check=True)
+        subprocess.run(
+            [sys.executable, 'services/api/scripts/validate_feature1_live_artifacts.py', '--artifacts-dir', str(ARTIFACT_DIR)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            check=True,
+        )
         stats = _assert_artifacts_non_empty()
         print(
             json.dumps(

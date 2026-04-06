@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts
 
 up:
 	docker compose up -d
@@ -81,5 +81,9 @@ validate-paid-ga:
 proof-no-billing-launch:
 	python scripts/staging/run_no_billing_launch_proof.py
 
+validate-feature1-live-artifacts:
+	python services/api/scripts/validate_feature1_live_artifacts.py
+
 proof-feature1-live:
 	python services/api/scripts/run_feature1_live_proof.py
+	$(MAKE) validate-feature1-live-artifacts
