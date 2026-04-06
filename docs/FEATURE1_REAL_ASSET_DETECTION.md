@@ -21,7 +21,7 @@ Feature 1 protects **workspace-owned monitored assets** (targets linked to asset
 - LIVE/HYBRID provider event tied to a monitored target.
 - Finding payload contains observed evidence (`event_id`, `tx_hash`, `block_number`), anomaly basis, and linked asset profile.
 - Persisted alert/incident created from that finding path.
-- Reproducible worker-path proof run via `make proof-feature1-live` / `python services/api/scripts/run_feature1_live_proof.py`.
+- Reproducible worker-path proof run via `make proof-feature1-live` / `python services/api/scripts/run_feature1_live_proof.py` (requires `anvil`, or an Anvil-compatible `FEATURE1_EVM_CMD` override).
 - Local proof harness executes a **real ERC20-style approval anomaly** on a protected asset contract: treasury wallet emits an `Approval` log for an unexpected spender, then runs `python -m services.api.app.run_monitoring_worker --once` so monitoring provenance is `monitoring_path=worker`.
 - Harness auth bootstrap is `POST /auth/signup` -> `POST /auth/verify-email` -> `POST /auth/signin`, then workspace resolution from `signin.user.current_workspace.id` (not from signup).
 - Local proof automation requires `AUTH_EXPOSE_DEBUG_TOKENS=true` on the API process so signup returns a one-time `verification_token` for deterministic verify-email execution.
@@ -63,6 +63,7 @@ Feature 1 runtime enforcement is **asset-protection monitoring**, not generic ev
 - `asset_id`, `asset_identifier`, `symbol`, `chain_id`, `contract_address`
 - `treasury_ops_wallets`, `custody_wallets`, `expected_counterparties`
 - `expected_flow_patterns`, `expected_approval_patterns`
+- `expected_flow_patterns` must be a JSON list of route dictionaries (for example `[{"source_class":"treasury_ops","destination_class":"custody"}]`), not a wrapper object like `{ "allowed_paths": [...] }`.
 - `expected_liquidity_baseline`
 - `oracle_sources`, `expected_oracle_freshness_seconds`, `expected_oracle_update_cadence_seconds`
 - `venue_labels`

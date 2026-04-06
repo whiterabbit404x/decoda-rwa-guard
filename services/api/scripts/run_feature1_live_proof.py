@@ -167,11 +167,9 @@ def _create_asset_and_target(api_url: str, *, token: str, workspace_id: str, cha
         'treasury_ops_wallets': [treasury_wallet],
         'custody_wallets': [custody_wallet],
         'expected_counterparties': [expected_counterparty],
-        'expected_flow_patterns': {
-            'allowed_paths': [
-                {'source_class': 'treasury_ops', 'destination_class': 'custody'},
-            ],
-        },
+        'expected_flow_patterns': [
+            {'source_class': 'treasury_ops', 'destination_class': 'custody'},
+        ],
         'expected_approval_patterns': {'allowed_spenders': [allowed_spender], 'max_amount': 1000},
         'venue_labels': [custody_wallet],
         'expected_liquidity_baseline': {
@@ -277,14 +275,12 @@ def _resolve_evm_command(port: int) -> list[str]:
     override = os.getenv('FEATURE1_EVM_CMD', '').strip()
     if override:
         return override.split()
-    ganache = which('ganache')
-    if ganache:
-        return [ganache, '--wallet.deterministic', '--chain.chainId', '1', '--server.port', str(port)]
     anvil = which('anvil')
     if anvil:
         return [anvil, '--chain-id', '1', '--port', str(port)]
     raise RuntimeError(
-        'No local EVM executable found. Install `ganache` or `anvil`, or set FEATURE1_EVM_CMD to a custom command.'
+        'Feature1 live proof requires `anvil` on PATH (or FEATURE1_EVM_CMD set to an Anvil-compatible command). '
+        'Ganache is not supported for deterministic proof contract seeding.'
     )
 
 
@@ -324,6 +320,57 @@ def _execute_approval_anomaly(rpc_url: str, *, treasury: str, contract_address: 
     if not any(str((log.get('topics') or [''])[0]).lower() == APPROVAL_TOPIC.lower() for log in logs if isinstance(log, dict)):
         raise RuntimeError(f'approval anomaly transaction missing Approval topic log: {tx_hash}')
     return str(tx_hash)
+
+
+def _assert_preexport_lifecycle_context(api_url: str, *, token: str, workspace_id: str, target_id: str, asset_id: str) -> None:
+    status, assets_payload = _request_json(f'{api_url}/assets', token=token, workspace_id=workspace_id)
+    if status not in {200, 201}:
+        raise RuntimeError(f'pre-export asset lookup failed: status={status} body={assets_payload}')
+    assets = assets_payload.get('assets') if isinstance(assets_payload.get('assets'), list) else []
+    asset = next((item for item in assets if isinstance(item, dict) and str(item.get('id') or '') == asset_id), None)
+    if not isinstance(asset, dict):
+        raise RuntimeError(f'pre-export asset context missing for asset_id={asset_id}')
+
+    flow_patterns = asset.get('expected_flow_patterns')
+    normalized_flows = [item for item in (flow_patterns if isinstance(flow_patterns, list) else []) if isinstance(item, dict)]
+    if not normalized_flows:
+        raise RuntimeError('pre-export lifecycle validation failed: protected asset expected_flow_patterns normalized to empty list')
+
+    protected_asset_missing: list[str] = []
+    for key in ('id', 'identifier', 'asset_identifier', 'asset_symbol', 'token_contract_address', 'treasury_ops_wallets', 'custody_wallets'):
+        value = asset.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()) or (isinstance(value, list) and not value):
+            protected_asset_missing.append(f'asset.{key}')
+    if protected_asset_missing:
+        raise RuntimeError(f'pre-export lifecycle validation failed: missing protected asset context fields={protected_asset_missing}')
+
+    t_status, targets_payload = _request_json(f'{api_url}/targets', token=token, workspace_id=workspace_id)
+    if t_status not in {200, 201}:
+        raise RuntimeError(f'pre-export target lookup failed: status={t_status} body={targets_payload}')
+    targets = targets_payload.get('targets') if isinstance(targets_payload.get('targets'), list) else []
+    target = next((item for item in targets if isinstance(item, dict) and str(item.get('id') or '') == target_id), None)
+    if not isinstance(target, dict):
+        raise RuntimeError(f'pre-export target context missing for target_id={target_id}')
+    target_missing: list[str] = []
+    for key in ('id', 'target_type', 'wallet_address'):
+        value = target.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            target_missing.append(f'target.{key}')
+    if target_missing:
+        raise RuntimeError(f'pre-export lifecycle validation failed: missing target context fields={target_missing}')
+
+    r_status, runs_payload = _request_json(f'{api_url}/pilot/history?kind=analysis_runs', token=token, workspace_id=workspace_id)
+    if r_status not in {200, 201}:
+        raise RuntimeError(f'pre-export worker run lookup failed: status={r_status} body={runs_payload}')
+    runs = runs_payload.get('analysis_runs') if isinstance(runs_payload.get('analysis_runs'), list) else []
+    worker_runs = [
+        item for item in runs
+        if isinstance(item, dict)
+        and str(item.get('target_id') or '') == str(target_id)
+        and str(((item.get('response_payload') or {}).get('monitoring_path') or '')).lower() == 'worker'
+    ]
+    if not worker_runs:
+        raise RuntimeError(f'pre-export lifecycle validation failed: no worker-generated run found for target_id={target_id}')
 
 
 def parse_args() -> argparse.Namespace:
@@ -392,7 +439,7 @@ def main() -> int:
         chain_id = int(_rpc_call(rpc_url, 'eth_chainId', []), 16)
         accounts = _rpc_call(rpc_url, 'eth_accounts', [])
         if not isinstance(accounts, list) or len(accounts) < 4:
-            raise RuntimeError(f'ganache did not expose deterministic accounts: {accounts}')
+            raise RuntimeError(f'local EVM did not expose deterministic accounts: {accounts}')
         treasury = str(accounts[0]).lower()
         custody = str(accounts[1]).lower()
         expected_counterparty = str(accounts[2]).lower()
@@ -432,6 +479,13 @@ def main() -> int:
             '100',
         ]
         subprocess.run(worker_cmd, cwd=str(REPO_ROOT), env=env, check=True)
+        _assert_preexport_lifecycle_context(
+            api_url,
+            token=token,
+            workspace_id=workspace_id,
+            target_id=target_id,
+            asset_id=_asset_id,
+        )
 
         evidence_cmd = [
             sys.executable,
