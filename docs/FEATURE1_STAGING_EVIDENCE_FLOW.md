@@ -29,7 +29,8 @@ Normal proof mode never emits vague statuses such as `dry_run`, `dry_run_request
 - workspace/target/asset identity
 - concrete `target_identity` (`target_id`, `target_name_or_label`, `target_type`, `target_locator`) or explicit `missing_target_identity_fields`
 - protected asset context completeness for one concrete treasury-linked target
-- explicit `missing_asset_context_fields` / `claim_ineligibility_reasons` when proof cannot be established
+- explicit `missing_asset_context_fields` and `missing_target_identity_fields` when required fields are absent
+- exact field-coded `claim_ineligibility_reasons` (for example `missing_expected_oracle_freshness_seconds`) when proof cannot be established
 - market/oracle provider coverage status and provider names/counts
 - enterprise claim eligibility and ineligibility reasons
 - worker monitoring execution truth
@@ -57,4 +58,4 @@ Evidence scripts write to `services/api/artifacts/live_evidence/latest/`:
 - `evidence.json`
 - `report.md`
 
-`evidence.json` is intentionally non-empty even when no anomaly is detected. It contains structured coverage-evaluation records explaining either why live coverage was confirmed or why enterprise claim eligibility was denied.
+`evidence.json` is intentionally non-empty even when no anomaly is detected. It contains structured coverage-evaluation records for one concrete protected asset and monitoring target, including worker execution truth, lifecycle-check execution state, provider coverage metadata, and explicit claim ineligibility reasons when enterprise proof is denied.
