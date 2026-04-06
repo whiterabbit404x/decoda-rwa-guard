@@ -24,11 +24,12 @@ What this command does:
 2. Starts a local EVM (`ganache`) as the live chain source.
 3. Starts a local telemetry server that serves market + oracle observations.
 4. Starts the API service with `MONITORING_MODE=live` and real provider endpoints.
-5. Creates a real workspace/user, protected asset profile, and monitored treasury target with full context.
-6. Submits a real anomalous on-chain transfer (`treasury_ops -> unknown_external`) to produce tx/block evidence.
-7. Runs monitoring through `POST /ops/monitoring/run` (worker path provenance).
-8. Exports evidence artifacts to `services/api/artifacts/live_evidence/latest/`.
-9. Exits non-zero if alerts/runs/incidents/evidence are missing or if required summary booleans are false.
+5. Creates a real workspace/user with auth bootstrap `signup -> verify-email -> signin`; the harness enables `AUTH_EXPOSE_DEBUG_TOKENS=true` for this local run so signup returns a deterministic verification token used by `/auth/verify-email`.
+6. Uses a unique proof email per run by default (`feature1-proof+<suffix>@decoda.local`) to avoid rerun collisions; set `FEATURE1_PROOF_EMAIL` to override when needed.
+7. Submits a real anomalous on-chain transfer (`treasury_ops -> unknown_external`) to produce tx/block evidence.
+8. Runs monitoring through `POST /ops/monitoring/run` (worker path provenance).
+9. Exports evidence artifacts to `services/api/artifacts/live_evidence/latest/`.
+10. Exits non-zero if alerts/runs/incidents/evidence are missing or if required summary booleans are false.
 
 The harness does **not** use `/monitoring/run-once/{id}` and does **not** use mocked HTTP providers for proof generation.
 

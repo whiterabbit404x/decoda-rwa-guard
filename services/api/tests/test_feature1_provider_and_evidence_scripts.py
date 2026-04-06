@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from services.api.app import evm_activity_provider
+from services.api.scripts import run_feature1_live_proof
 from services.api.scripts import run_feature1_real_asset_evidence
 
 
@@ -115,6 +116,47 @@ def test_feature1_evidence_script_fails_without_worker_generated_real_evidence(m
     assert evidence
     assert evidence[0]['record_type'] == 'coverage_evaluation'
     assert 'protected_asset_context' in evidence[0]
+
+
+def test_feature1_live_proof_bootstrap_auth_uses_signup_verify_signin(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def _mock_request(url: str, *, method: str = 'GET', payload=None, **_kwargs):  # noqa: ANN001,ANN202
+        path = url.replace('http://127.0.0.1:8000', '')
+        calls.append((path, method, payload))
+        if path == '/auth/signup':
+            return 201, {
+                'verification_required': True,
+                'verification_token': 'verify-token-123',
+                'user': {'id': 'u1'},
+            }
+        if path == '/auth/verify-email':
+            return 200, {'verified': True}
+        if path == '/auth/signin':
+            return 200, {
+                'access_token': 'access-token-123',
+                'user': {'current_workspace': {'id': 'workspace-123'}},
+            }
+        raise AssertionError(f'unexpected request path: {path}')
+
+    monkeypatch.setattr(run_feature1_live_proof, '_request_json', _mock_request)
+    token, workspace_id = run_feature1_live_proof._bootstrap_auth(  # noqa: SLF001
+        'http://127.0.0.1:8000',
+        email='feature1-proof@test.local',
+        password='ProofPass123!',
+    )
+
+    assert token == 'access-token-123'
+    assert workspace_id == 'workspace-123'
+    assert calls == [
+        (
+            '/auth/signup',
+            'POST',
+            {'email': 'feature1-proof@test.local', 'password': 'ProofPass123!', 'full_name': 'Feature1 Live Proof'},
+        ),
+        ('/auth/verify-email', 'POST', {'token': 'verify-token-123'}),
+        ('/auth/signin', 'POST', {'email': 'feature1-proof@test.local', 'password': 'ProofPass123!'}),
+    ]
 
 
 def test_feature1_evidence_script_dry_run_exports_explicit_state(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
