@@ -3924,7 +3924,7 @@ def _validate_asset_payload(payload: dict[str, Any]) -> dict[str, Any]:
         'oracle_sources': [str(item).strip() for item in (payload.get('oracle_sources') or []) if str(item).strip()][:50] if isinstance(payload.get('oracle_sources'), list) else [],
         'venue_labels': [str(item).strip() for item in (payload.get('venue_labels') or []) if str(item).strip()][:50] if isinstance(payload.get('venue_labels'), list) else [],
         'expected_counterparties': _normalize_address_list(payload.get('expected_counterparties'), field_name='expected_counterparties'),
-        'expected_flow_patterns': payload.get('expected_flow_patterns') if isinstance(payload.get('expected_flow_patterns'), dict) else {},
+        'expected_flow_patterns': payload.get('expected_flow_patterns') if isinstance(payload.get('expected_flow_patterns'), list) else [],
         'expected_approval_patterns': payload.get('expected_approval_patterns') if isinstance(payload.get('expected_approval_patterns'), dict) else {},
         'expected_liquidity_baseline': payload.get('expected_liquidity_baseline') if isinstance(payload.get('expected_liquidity_baseline'), dict) else {},
         'policy_tags': [str(item).strip() for item in (payload.get('policy_tags') or []) if str(item).strip()][:25] if isinstance(payload.get('policy_tags'), list) else [],

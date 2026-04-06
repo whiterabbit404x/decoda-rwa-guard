@@ -127,11 +127,9 @@ def _default_asset_payload() -> dict[str, Any]:
         'treasury_ops_wallets': [os.getenv('FEATURE1_PROOF_TREASURY_WALLET', '0x1111111111111111111111111111111111111111')],
         'custody_wallets': [os.getenv('FEATURE1_PROOF_CUSTODY_WALLET', '0x2222222222222222222222222222222222222222')],
         'expected_counterparties': [os.getenv('FEATURE1_PROOF_COUNTERPARTY', '0x3333333333333333333333333333333333333333')],
-        'expected_flow_patterns': {
-            'allowed_paths': [
-                {'source_class': 'treasury_ops', 'destination_class': 'custody'},
-            ],
-        },
+        'expected_flow_patterns': [
+            {'source_class': 'treasury_ops', 'destination_class': 'custody'},
+        ],
         'expected_approval_patterns': {'allowed_spenders': [os.getenv('FEATURE1_PROOF_SPENDER', '0x4444444444444444444444444444444444444444')]},
         'venue_labels': [os.getenv('FEATURE1_PROOF_VENUE', 'venue-a')],
         'expected_liquidity_baseline': {'minimum_transfer_count': 1},
@@ -239,10 +237,20 @@ def _missing_asset_fields(context: dict[str, Any]) -> list[str]:
         value = context.get(key)
         if value is None:
             missing.append(key)
-        elif isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, str) and not value.strip():
             missing.append(key)
-        elif isinstance(value, (list, dict)) and len(value) == 0:
+            continue
+        if isinstance(value, (list, dict)) and len(value) == 0:
             missing.append(key)
+            continue
+        if key == 'expected_flow_patterns':
+            if not isinstance(value, list):
+                missing.append(key)
+                continue
+            normalized = [item for item in value if isinstance(item, dict)]
+            if not normalized:
+                missing.append(key)
     return missing
 
 

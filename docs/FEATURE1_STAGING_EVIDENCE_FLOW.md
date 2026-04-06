@@ -21,7 +21,7 @@ make proof-feature1-live
 
 What this command does:
 1. Starts `postgres` + `redis` via `docker compose` (unless `--skip-compose` is passed directly to the script).
-2. Starts a local EVM (`ganache` or `anvil`) as the live chain source.
+2. Starts a local EVM (`anvil`) as the live chain source (deterministic proof contract seeding requires Anvil-compatible RPC methods).
 3. Starts a local telemetry server that serves market + oracle observations.
 4. Starts the API service with `MONITORING_MODE=live` and real provider endpoints.
 5. Creates a real workspace/user with auth bootstrap `signup -> verify-email -> signin`; the harness enables `AUTH_EXPOSE_DEBUG_TOKENS=true` for this local run so signup returns a deterministic verification token used by `/auth/verify-email`.
@@ -31,6 +31,7 @@ What this command does:
 9. Clears any stale files in `services/api/artifacts/live_evidence/latest/`, then exports fresh runtime artifacts only.
 10. Runs `python services/api/scripts/validate_feature1_live_artifacts.py` and exits non-zero if stale/placeholder patterns are detected.
 11. Exits non-zero if alerts/runs/incidents/evidence/report are missing, if tx/event-linked evidence is absent, or if required summary booleans remain false.
+12. Performs a pre-export lifecycle guard and fails non-zero when protected asset context is incomplete (including when `expected_flow_patterns` is not a non-empty list of route dictionaries).
 
 The harness does **not** use `/monitoring/run-once/{id}` and does **not** use mocked HTTP providers for proof generation.
 
@@ -39,9 +40,8 @@ The harness does **not** use `/monitoring/run-once/{id}` and does **not** use mo
 - Python + API dependencies from `requirements-local.txt`
 - Postgres + Redis (docker compose by default; or externally running services with `--skip-compose`)
 - One local EVM executable:
-  - `ganache` on PATH, or
   - `anvil` on PATH, or
-  - `FEATURE1_EVM_CMD="<custom command>"` override
+  - `FEATURE1_EVM_CMD="<custom command>"` override that is Anvil-compatible (supports `anvil_setCode` or `evm_setAccountCode`).
 
 ## Output interpretation
 - `status=live_coverage_confirmed`: one concrete protected asset has sufficient live market + oracle coverage, worker monitoring executed, and enterprise claim eligibility is true.
@@ -93,3 +93,16 @@ Evidence scripts write to `services/api/artifacts/live_evidence/latest/`:
 - `report.md`
 
 `evidence.json` must include at least one tx/event-linked anomaly row (`tx_hash` + `block_number` or `event_id`) in proof mode. Coverage-only bundles are rejected by validator and exporter hard-fail rules.
+
+
+## Asset payload shape guard
+
+For Feature 1 protected assets, `expected_flow_patterns` must be a JSON list of route objects, for example:
+
+```json
+[
+  {"source_class": "treasury_ops", "destination_class": "custody"}
+]
+```
+
+The legacy wrapper shape (`{"allowed_paths": [...]}`) is rejected by the deterministic proof flow because runtime normalization expects a list of route dictionaries.

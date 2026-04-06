@@ -879,3 +879,99 @@ def test_feature1_live_proof_harness_runs_real_worker_path_when_enabled() -> Non
     assert incidents
     assert evidence
     assert any((item.get('tx_hash') and item.get('block_number') is not None) for item in evidence if isinstance(item, dict))
+
+
+def test_feature1_payloads_use_list_shaped_expected_flow_patterns(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_asset_payload: dict[str, object] = {}
+
+    def _mock_request(url: str, *, method: str = 'GET', payload=None, **_kwargs):  # noqa: ANN001,ANN202
+        path = url.replace('http://127.0.0.1:8000', '')
+        if path == '/assets' and method == 'POST':
+            assert isinstance(payload, dict)
+            captured_asset_payload.update(payload)
+            return 201, {'id': 'asset-1'}
+        if path == '/targets' and method == 'POST':
+            return 201, {'id': 'target-1'}
+        raise AssertionError(f'unexpected request path: {path}')
+
+    monkeypatch.setattr(run_feature1_live_proof, '_request_json', _mock_request)
+    run_feature1_live_proof._create_asset_and_target(  # noqa: SLF001
+        'http://127.0.0.1:8000',
+        token='token',
+        workspace_id='workspace',
+        chain_id=1,
+        contract_address='0x' + 'a' * 40,
+        treasury_wallet='0x' + '1' * 40,
+        custody_wallet='0x' + '2' * 40,
+        expected_counterparty='0x' + '3' * 40,
+        allowed_spender='0x' + '4' * 40,
+    )
+
+    flow_patterns = captured_asset_payload.get('expected_flow_patterns')
+    assert isinstance(flow_patterns, list)
+    assert flow_patterns == [{'source_class': 'treasury_ops', 'destination_class': 'custody'}]
+
+    fallback_payload = run_feature1_real_asset_evidence._default_asset_payload()  # noqa: SLF001
+    fallback_flow_patterns = fallback_payload.get('expected_flow_patterns')
+    assert isinstance(fallback_flow_patterns, list)
+    assert fallback_flow_patterns == [{'source_class': 'treasury_ops', 'destination_class': 'custody'}]
+
+
+def test_feature1_live_proof_requires_anvil_when_no_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(run_feature1_live_proof, 'which', lambda _name: None)
+    monkeypatch.delenv('FEATURE1_EVM_CMD', raising=False)
+
+    with pytest.raises(RuntimeError, match='requires `anvil`'):
+        run_feature1_live_proof._resolve_evm_command(8545)  # noqa: SLF001
+
+
+def test_feature1_live_proof_preexport_check_fails_on_empty_normalized_flow_patterns(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _mock_request(url: str, **_kwargs):  # noqa: ANN003,ANN202
+        path = url.replace('http://127.0.0.1:8000', '')
+        if path == '/assets':
+            return 200, {'assets': [{
+                'id': 'asset-1',
+                'identifier': 'feature1-live-proof-ustb',
+                'asset_identifier': 'USTB',
+                'asset_symbol': 'USTB',
+                'token_contract_address': '0x' + 'a' * 40,
+                'treasury_ops_wallets': ['0x' + '1' * 40],
+                'custody_wallets': ['0x' + '2' * 40],
+                'expected_flow_patterns': {'allowed_paths': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}]},
+            }]}
+        if path == '/targets':
+            return 200, {'targets': [{'id': 'target-1', 'target_type': 'wallet', 'wallet_address': '0x' + '1' * 40}]}
+        if path == '/pilot/history?kind=analysis_runs':
+            return 200, {'analysis_runs': [{'id': 'run-1', 'target_id': 'target-1', 'response_payload': {'monitoring_path': 'worker'}}]}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(run_feature1_live_proof, '_request_json', _mock_request)
+    with pytest.raises(RuntimeError, match='expected_flow_patterns normalized to empty list'):
+        run_feature1_live_proof._assert_preexport_lifecycle_context(  # noqa: SLF001
+            'http://127.0.0.1:8000',
+            token='token',
+            workspace_id='workspace-1',
+            target_id='target-1',
+            asset_id='asset-1',
+        )
+
+
+def test_feature1_evidence_script_missing_asset_fields_rejects_non_list_flow_patterns() -> None:
+    missing = run_feature1_real_asset_evidence._missing_asset_fields({  # noqa: SLF001
+        'asset_id': 'a1',
+        'asset_identifier': 'USTB',
+        'symbol': 'USTB',
+        'chain_id': 1,
+        'contract_address': '0x' + 'a' * 40,
+        'treasury_ops_wallets': ['0x' + '1' * 40],
+        'custody_wallets': ['0x' + '2' * 40],
+        'expected_flow_patterns': {'allowed_paths': [{'source_class': 'treasury_ops'}]},
+        'expected_counterparties': ['0x' + '3' * 40],
+        'expected_approval_patterns': {'allowed_spenders': ['0x' + '4' * 40]},
+        'venue_labels': ['venue-a'],
+        'expected_liquidity_baseline': {'minimum_transfer_count': 1},
+        'oracle_sources': ['oracle-a'],
+        'expected_oracle_freshness_seconds': 120,
+        'expected_oracle_update_cadence_seconds': 120,
+    })
+    assert 'expected_flow_patterns' in missing
