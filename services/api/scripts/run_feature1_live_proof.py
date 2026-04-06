@@ -9,6 +9,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -76,22 +77,70 @@ def _rpc_call(rpc_url: str, method: str, params: list[Any]) -> Any:
     return body.get('result')
 
 
-def _bootstrap_auth(api_url: str, *, email: str, password: str) -> tuple[str, str]:
+def _signup_proof_user(api_url: str, *, email: str, password: str) -> dict[str, Any]:
     status, signup = _request_json(
         f'{api_url}/auth/signup',
         method='POST',
         payload={'email': email, 'password': password, 'full_name': 'Feature1 Live Proof'},
     )
+    if status == 409:
+        raise RuntimeError(
+            'failed to sign up proof user: email already exists (status=409). '
+            f'Use FEATURE1_PROOF_EMAIL to override for reruns. email={email} body={signup}'
+        )
     if status not in {200, 201}:
         raise RuntimeError(f'failed to sign up proof user: status={status} body={signup}')
-    token = str(signup.get('token') or signup.get('access_token') or '')
+    return signup
+
+
+def _verify_proof_user_email(api_url: str, *, verification_token: str) -> None:
+    status, payload = _request_json(
+        f'{api_url}/auth/verify-email',
+        method='POST',
+        payload={'token': verification_token},
+    )
+    if status not in {200, 201}:
+        raise RuntimeError(f'failed to verify proof user email: status={status} body={payload}')
+
+
+def _signin_proof_user(api_url: str, *, email: str, password: str) -> dict[str, Any]:
+    status, signin = _request_json(
+        f'{api_url}/auth/signin',
+        method='POST',
+        payload={'email': email, 'password': password},
+    )
+    if status not in {200, 201}:
+        raise RuntimeError(f'failed to sign in proof user: status={status} body={signin}')
+    return signin
+
+
+def _bootstrap_auth(api_url: str, *, email: str, password: str) -> tuple[str, str]:
+    signup = _signup_proof_user(api_url, email=email, password=password)
+    verification_token = str(signup.get('verification_token') or '')
+    if not verification_token:
+        raise RuntimeError(
+            'proof signup did not return verification_token. '
+            'Ensure AUTH_EXPOSE_DEBUG_TOKENS=true for the API process running this local proof harness. '
+            f'body={signup}'
+        )
+    _verify_proof_user_email(api_url, verification_token=verification_token)
+    signin = _signin_proof_user(api_url, email=email, password=password)
+    token = str(signin.get('access_token') or '')
     if not token:
-        raise RuntimeError(f'proof signup did not return token: {signup}')
-    workspace = signup.get('current_workspace') if isinstance(signup.get('current_workspace'), dict) else {}
+        raise RuntimeError(f'proof signin did not return access_token: {signin}')
+    user = signin.get('user') if isinstance(signin.get('user'), dict) else {}
+    workspace = user.get('current_workspace') if isinstance(user.get('current_workspace'), dict) else {}
     workspace_id = str(workspace.get('id') or '')
     if not workspace_id:
-        raise RuntimeError(f'proof signup did not return current workspace id: {signup}')
+        raise RuntimeError(f'proof signin response missing user.current_workspace.id: {signin}')
     return token, workspace_id
+
+
+def _proof_email() -> str:
+    override = os.getenv('FEATURE1_PROOF_EMAIL', '').strip()
+    if override:
+        return override
+    return f'feature1-proof+{uuid.uuid4().hex[:12]}@decoda.local'
 
 
 def _create_asset_and_target(api_url: str, *, token: str, workspace_id: str, chain_id: int, contract_address: str, treasury_wallet: str, custody_wallet: str, expected_counterparty: str, allowed_spender: str) -> tuple[str, str]:
@@ -231,6 +280,7 @@ def main() -> int:
     env.setdefault('DATABASE_URL', 'postgresql://postgres:postgres@127.0.0.1:5432/treasury')
     env.setdefault('FEATURE1_API_URL', api_url)
     env.setdefault('FEATURE1_EVIDENCE_DIR', str(ARTIFACT_DIR))
+    env.setdefault('AUTH_EXPOSE_DEBUG_TOKENS', 'true')
 
     processes: list[tuple[str, Any]] = []
     try:
@@ -257,7 +307,8 @@ def main() -> int:
         custody = str(accounts[1]).lower()
         expected_counterparty = str(accounts[2]).lower()
         unexpected_counterparty = str(accounts[3]).lower()
-        token, workspace_id = _bootstrap_auth(api_url, email='feature1-proof@decoda.local', password='ProofPass123!')
+        proof_email = _proof_email()
+        token, workspace_id = _bootstrap_auth(api_url, email=proof_email, password='ProofPass123!')
 
         _asset_id, target_id = _create_asset_and_target(
             api_url,
