@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -748,3 +752,32 @@ def test_feature1_evidence_script_marks_execution_failed_when_lifecycle_checks_d
     assert summary['lifecycle_checks_executed'] is False
     assert summary['lifecycle_checks_not_executed_reason'] == 'no_lifecycle_signal_emitted'
     assert 'lifecycle_checks_not_executed' in summary['claim_ineligibility_reasons']
+
+
+@pytest.mark.integration
+def test_feature1_live_proof_harness_runs_real_worker_path_when_enabled() -> None:
+    if os.getenv('RUN_FEATURE1_LIVE_PROOF_INTEGRATION', '').strip().lower() not in {'1', 'true', 'yes', 'on'}:
+        pytest.skip('set RUN_FEATURE1_LIVE_PROOF_INTEGRATION=true to run real local proof harness')
+    repo_root = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [sys.executable, 'services/api/scripts/run_feature1_live_proof.py'],
+        cwd=repo_root,
+        env={**os.environ, 'FEATURE1_EVIDENCE_DIR': str(repo_root / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest')},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + '\n' + result.stderr
+    summary = json.loads((repo_root / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest' / 'summary.json').read_text())
+    alerts = json.loads((repo_root / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest' / 'alerts.json').read_text())
+    runs = json.loads((repo_root / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest' / 'runs.json').read_text())
+    incidents = json.loads((repo_root / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest' / 'incidents.json').read_text())
+    evidence = json.loads((repo_root / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest' / 'evidence.json').read_text())
+    assert summary['status'] != 'asset_configuration_incomplete'
+    assert summary['worker_monitoring_executed'] is True
+    assert summary['lifecycle_checks_executed'] is True
+    assert summary['anomalies_observed'] is True
+    assert alerts
+    assert runs
+    assert incidents
+    assert evidence
+    assert any((item.get('tx_hash') and item.get('block_number') is not None) for item in evidence if isinstance(item, dict))

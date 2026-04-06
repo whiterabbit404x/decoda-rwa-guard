@@ -252,6 +252,11 @@ def _write_artifacts(*, artifacts_dir: Path, summary: dict[str, Any], alerts: li
         f"- enterprise_claim_eligibility: `{summary.get('enterprise_claim_eligibility')}`\n"
         f"- market_coverage_status: `{summary.get('market_coverage_status')}`\n"
         f"- oracle_coverage_status: `{summary.get('oracle_coverage_status')}`\n"
+        f"- worker_monitoring_executed: `{summary.get('worker_monitoring_executed')}`\n"
+        f"- lifecycle_checks_executed: `{summary.get('lifecycle_checks_executed')}`\n"
+        f"- anomalies_observed: `{summary.get('anomalies_observed')}`\n"
+        f"- protected_asset_identity: `{summary.get('protected_asset_identity')}`\n"
+        f"- target_identity: `{summary.get('target_identity')}`\n"
         f"- claim_ineligibility_reasons: `{summary.get('claim_ineligibility_reasons')}`\n"
     )
 
@@ -662,6 +667,16 @@ def main() -> int:
 
     for alert in alerts:
         payload = alert.get('payload') if isinstance(alert.get('payload'), dict) else {}
+        detector_results = payload.get('detector_results') if isinstance(payload.get('detector_results'), list) else []
+        tx_hash = None
+        block_number = None
+        event_id = None
+        for detector in detector_results:
+            if not isinstance(detector, dict):
+                continue
+            tx_hash = tx_hash or detector.get('tx_hash')
+            block_number = block_number if block_number is not None else detector.get('block_number')
+            event_id = event_id or detector.get('event_id') or ((detector.get('normalized_event_snapshot') or {}).get('metadata', {}).get('event_id') if isinstance(detector.get('normalized_event_snapshot'), dict) else None)
         evidence.append(
             {
                 'record_type': 'alert_evaluation',
@@ -673,6 +688,9 @@ def main() -> int:
                 'market_coverage_status': payload.get('market_coverage_status'),
                 'oracle_coverage_status': payload.get('oracle_coverage_status'),
                 'claim_ineligibility_reasons': payload.get('claim_ineligibility_reasons') or [],
+                'event_id': event_id,
+                'tx_hash': tx_hash,
+                'block_number': block_number,
             }
         )
 
