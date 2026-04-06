@@ -44,6 +44,20 @@ REQUIRED_PROTECTED_ASSET_FIELDS = (
 )
 
 
+def _lifecycle_execution_details(*, status: str, lifecycle_checks_performed: list[str], worker_monitoring_executed: bool, missing_context_fields: list[str], run_failed: bool) -> tuple[bool, str | None]:
+    if lifecycle_checks_performed:
+        return True, None
+    if status == 'asset_configuration_incomplete':
+        return False, 'lifecycle_prerequisites_missing'
+    if run_failed:
+        return False, 'monitoring_run_request_failed'
+    if status == 'monitoring_execution_failed' and not worker_monitoring_executed:
+        return False, 'worker_monitoring_not_executed'
+    if missing_context_fields:
+        return False, 'lifecycle_prerequisites_missing'
+    return False, 'no_lifecycle_signal_emitted'
+
+
 def _request_json(url: str, *, method: str = 'GET', token: str = '', workspace_id: str = '', payload: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
     headers = {'Accept': 'application/json'}
     if token:
@@ -270,6 +284,7 @@ def main() -> int:
     status, runtime = _request_json(f"{args.api_url.rstrip('/')}/ops/monitoring/runtime-status", token=args.token, workspace_id=args.workspace_id)
     if status != 200:
         target_identity = _target_identity(None)
+        execution_failure_reasons = ['runtime_unavailable', 'worker_monitoring_not_executed']
         summary = {
             'generated_at': _now_iso(),
             'status': 'monitoring_execution_failed',
@@ -278,7 +293,7 @@ def main() -> int:
             'enterprise_claim_eligibility': False,
             'market_claim_eligible': False,
             'oracle_claim_eligible': False,
-            'claim_ineligibility_reasons': ['runtime_unavailable'],
+            'claim_ineligibility_reasons': execution_failure_reasons,
             'target_identity': target_identity,
             'protected_asset_context': {},
             'protected_asset_identity': {key: None for key in ('asset_id', 'asset_identifier', 'symbol', 'chain_id', 'contract_address')},
@@ -286,6 +301,8 @@ def main() -> int:
             'missing_asset_context_fields': list(REQUIRED_PROTECTED_ASSET_FIELDS),
             'worker_monitoring_executed': False,
             'lifecycle_checks_executed': False,
+            'lifecycle_checks_not_executed_reason': 'runtime_unavailable',
+            'execution_failure_reasons': execution_failure_reasons,
             'market_coverage_status': 'insufficient_real_evidence',
             'oracle_coverage_status': 'insufficient_real_evidence',
         }
@@ -306,7 +323,8 @@ def main() -> int:
                 'worker_monitoring_executed': False,
                 'lifecycle_checks_executed': False,
                 'enterprise_claim_eligibility': False,
-                'claim_ineligibility_reasons': ['runtime_unavailable'],
+                'claim_ineligibility_reasons': execution_failure_reasons,
+                'execution_failure_reasons': execution_failure_reasons,
                 'monitoring_runtime_response': runtime,
             }],
         )
@@ -324,6 +342,7 @@ def main() -> int:
     target_identity = _target_identity(target)
     missing_target_fields = _missing_target_fields(target_identity)
     if target is None:
+        execution_failure_reasons = ['missing_target_or_asset_profile', 'worker_monitoring_not_executed']
         summary = {
             'generated_at': _now_iso(),
             'status': 'asset_configuration_incomplete',
@@ -331,7 +350,7 @@ def main() -> int:
             'enterprise_claim_eligibility': False,
             'market_claim_eligible': False,
             'oracle_claim_eligible': False,
-            'claim_ineligibility_reasons': ['missing_target_or_asset_profile', *[f'missing_{field}' for field in REQUIRED_TARGET_FIELDS]],
+            'claim_ineligibility_reasons': sorted(set([*execution_failure_reasons, *[f'missing_{field}' for field in REQUIRED_TARGET_FIELDS]])),
             'target_identity': target_identity,
             'protected_asset_context': {},
             'protected_asset_identity': {key: None for key in ('asset_id', 'asset_identifier', 'symbol', 'chain_id', 'contract_address')},
@@ -339,6 +358,8 @@ def main() -> int:
             'missing_asset_context_fields': list(REQUIRED_PROTECTED_ASSET_FIELDS),
             'worker_monitoring_executed': False,
             'lifecycle_checks_executed': False,
+            'lifecycle_checks_not_executed_reason': 'lifecycle_prerequisites_missing',
+            'execution_failure_reasons': execution_failure_reasons,
             'market_coverage_status': 'insufficient_real_evidence',
             'oracle_coverage_status': 'insufficient_real_evidence',
             'target_resolution_http_status': target_status,
@@ -361,7 +382,9 @@ def main() -> int:
                 'enterprise_claim_eligibility': False,
                 'worker_monitoring_executed': False,
                 'lifecycle_checks_executed': False,
+                'lifecycle_checks_not_executed_reason': 'lifecycle_prerequisites_missing',
                 'claim_ineligibility_reasons': summary['claim_ineligibility_reasons'],
+                'execution_failure_reasons': execution_failure_reasons,
             }],
         )
         print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
@@ -407,6 +430,7 @@ def main() -> int:
 
     if mode not in {'LIVE', 'HYBRID'}:
         claim_reasons = sorted(set(['mode_not_live_or_hybrid', *[f'missing_{item}' for item in missing_context_fields], *[f'missing_{item}' for item in missing_target_fields]]))
+        execution_failure_reasons = ['mode_not_live_or_hybrid', 'worker_monitoring_not_executed']
         summary = {
             'generated_at': _now_iso(),
             'status': 'live_coverage_denied',
@@ -425,6 +449,8 @@ def main() -> int:
             'missing_asset_context_fields': missing_context_fields,
             'worker_monitoring_executed': False,
             'lifecycle_checks_executed': False,
+            'lifecycle_checks_not_executed_reason': 'mode_not_live_or_hybrid',
+            'execution_failure_reasons': execution_failure_reasons,
             'market_coverage_status': 'insufficient_real_evidence',
             'oracle_coverage_status': 'insufficient_real_evidence',
             'enterprise_claim_eligibility': False,
@@ -449,8 +475,10 @@ def main() -> int:
                 'missing_asset_context_fields': missing_context_fields,
                 'worker_monitoring_executed': False,
                 'lifecycle_checks_executed': False,
+                'lifecycle_checks_not_executed_reason': 'mode_not_live_or_hybrid',
                 'enterprise_claim_eligibility': False,
                 'claim_ineligibility_reasons': claim_reasons,
+                'execution_failure_reasons': execution_failure_reasons,
             }],
         )
         print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
@@ -522,6 +550,34 @@ def main() -> int:
         reason = 'worker_monitoring_not_executed'
         claim_reasons = sorted(set([*claim_reasons, 'worker_monitoring_not_executed']))
 
+    run_failed = run_status >= 400
+    lifecycle_checks_executed, lifecycle_checks_not_executed_reason = _lifecycle_execution_details(
+        status=status_value,
+        lifecycle_checks_performed=lifecycle_checks_performed,
+        worker_monitoring_executed=worker_monitoring_executed,
+        missing_context_fields=missing_context_fields,
+        run_failed=run_failed,
+    )
+    execution_failure_reasons = sorted(
+        {
+            reason
+            for reason in claim_reasons
+            if reason in {
+                'runtime_unavailable',
+                'monitoring_run_request_failed',
+                'worker_monitoring_not_executed',
+                'asset_resolution_failed',
+                'mode_not_live_or_hybrid',
+                'lifecycle_checks_not_executed',
+            }
+        }
+    )
+    if not lifecycle_checks_executed and status_value in {'live_coverage_confirmed', 'live_coverage_denied'}:
+        status_value = 'monitoring_execution_failed'
+        reason = 'lifecycle_checks_not_executed'
+        claim_reasons = sorted(set([*claim_reasons, 'lifecycle_checks_not_executed']))
+        execution_failure_reasons = sorted(set([*execution_failure_reasons, 'lifecycle_checks_not_executed']))
+
     summary = {
         'generated_at': _now_iso(),
         'status': status_value,
@@ -551,7 +607,8 @@ def main() -> int:
         'claim_ineligibility_reasons': claim_reasons,
         'external_market_telemetry_present': market_observation_count > 0,
         'real_oracle_observations_present': oracle_observation_count > 0,
-        'lifecycle_checks_executed': bool(lifecycle_checks_performed or coverage_record.get('lifecycle_checks_executed') or worker_monitoring_executed),
+        'lifecycle_checks_executed': lifecycle_checks_executed,
+        'lifecycle_checks_not_executed_reason': lifecycle_checks_not_executed_reason,
         'lifecycle_checks_performed': lifecycle_checks_performed,
         'anomalies_observed': anomalies_observed,
         'result_scope': 'enterprise_claim_eligible' if enterprise_claim_eligibility else 'internal_only',
@@ -565,6 +622,7 @@ def main() -> int:
         },
         'missing_asset_context_fields': missing_context_fields,
         'missing_target_identity_fields': missing_target_fields,
+        'execution_failure_reasons': execution_failure_reasons,
     }
 
     if summary['status'] not in ALLOWED_STATUSES:
@@ -592,10 +650,12 @@ def main() -> int:
             'oracle_observation_count': oracle_observation_count,
             'lifecycle_checks_performed': lifecycle_checks_performed,
             'lifecycle_checks_executed': summary['lifecycle_checks_executed'],
+            'lifecycle_checks_not_executed_reason': summary.get('lifecycle_checks_not_executed_reason'),
             'anomalies_observed': anomalies_observed,
             'claim_ineligibility_reasons': claim_reasons,
             'missing_asset_context_fields': missing_context_fields,
             'missing_target_identity_fields': missing_target_fields,
+            'execution_failure_reasons': execution_failure_reasons,
             'monitoring_run_response': run_payload,
         }
     ]

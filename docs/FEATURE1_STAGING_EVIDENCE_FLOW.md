@@ -34,7 +34,8 @@ Normal proof mode never emits vague statuses such as `dry_run`, `dry_run_request
 - market/oracle provider coverage status and provider names/counts
 - enterprise claim eligibility and ineligibility reasons
 - worker monitoring execution truth
-- lifecycle checks executed state
+- lifecycle checks executed state, plus `lifecycle_checks_not_executed_reason` when false
+- machine-readable `execution_failure_reasons` when runtime/worker/lifecycle execution does not complete
 - anomaly observation context (if present)
 - chain and evidence window
 - observed tx hash/block/event
