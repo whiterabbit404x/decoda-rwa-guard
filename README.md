@@ -1590,8 +1590,8 @@ Feature 1 now binds monitoring to **workspace-owned assets** by linking monitore
 Deterministic local proof command:
 
 - `make proof-feature1-live`
-- Executes a real anomaly: treasury wallet sends value to an unexpected counterparty on a local chain.
-- Runs the authoritative worker process (`python -m services.api.app.run_monitoring_worker --once`), then exports and verifies artifacts under `services/api/artifacts/live_evidence/latest/`.
+- Executes a real ERC20-style anomaly on a local chain: treasury wallet triggers an unexpected spender `Approval` event on the protected asset contract.
+- Clears stale artifact files first, runs the authoritative worker process (`python -m services.api.app.run_monitoring_worker --once`), exports artifacts under `services/api/artifacts/live_evidence/latest/`, and validates with `python services/api/scripts/validate_feature1_live_artifacts.py`.
 - Required local dependencies: Postgres + Redis, plus one local EVM binary (`ganache` or `anvil`, or `FEATURE1_EVM_CMD` override).
 
 Feature 1 enterprise claims are now evaluated against a strict `protected_asset_context + provider_coverage_status` contract for one concrete treasury-linked asset. The run payload/export includes:
@@ -1610,7 +1610,7 @@ Normal proof exports are always classified to one explicit status: `live_coverag
 
 Normal proof mode resolves one concrete protected asset and one concrete target before verdict export. If required protected-asset fields or target identity fields are missing, exports fail closed with `asset_configuration_incomplete`, explicit `missing_asset_context_fields` / `missing_target_identity_fields`, and field-level `claim_ineligibility_reasons`.
 
-`evidence.json` is always populated with at least one coverage-evaluation record for the resolved protected asset (even when no anomaly is observed). This record includes worker execution truth, provider coverage counts, lifecycle check execution state, claim eligibility flags, and explicit `claim_ineligibility_reasons` when enterprise live proof cannot be established.
+Proof-mode `evidence.json` must include at least one tx/event-linked anomaly row (not only `coverage_evaluation`). `summary.json` now includes freshness markers (`generated_at`, `proof_command`, `monitoring_worker_name`, `monitoring_run_ids`, `anomalous_tx_hashes`, `anomaly_kind`) to make stale bundles obvious.
 
 If external market or real oracle coverage is missing/unreachable/stale/insufficient, Feature 1 fails closed with `enterprise_claim_eligibility=false` and specific `claim_ineligibility_reasons`.
 
