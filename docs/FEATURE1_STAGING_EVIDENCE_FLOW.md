@@ -21,17 +21,26 @@ make proof-feature1-live
 
 What this command does:
 1. Starts `postgres` + `redis` via `docker compose` (unless `--skip-compose` is passed directly to the script).
-2. Starts a local EVM (`ganache`) as the live chain source.
+2. Starts a local EVM (`ganache` or `anvil`) as the live chain source.
 3. Starts a local telemetry server that serves market + oracle observations.
 4. Starts the API service with `MONITORING_MODE=live` and real provider endpoints.
 5. Creates a real workspace/user with auth bootstrap `signup -> verify-email -> signin`; the harness enables `AUTH_EXPOSE_DEBUG_TOKENS=true` for this local run so signup returns a deterministic verification token used by `/auth/verify-email`.
 6. Uses a unique proof email per run by default (`feature1-proof+<suffix>@decoda.local`) to avoid rerun collisions; set `FEATURE1_PROOF_EMAIL` to override when needed.
 7. Submits a real anomalous on-chain transfer (`treasury_ops -> unknown_external`) to produce tx/block evidence.
-8. Runs monitoring through `POST /ops/monitoring/run` (worker path provenance).
+8. Runs the authoritative worker process (`python -m services.api.app.run_monitoring_worker --once`) so emitted runs are `monitoring_path=worker` (not `manual_run_once`).
 9. Exports evidence artifacts to `services/api/artifacts/live_evidence/latest/`.
-10. Exits non-zero if alerts/runs/incidents/evidence are missing or if required summary booleans are false.
+10. Exits non-zero if alerts/runs/incidents/evidence/report are missing, if tx/block-linked evidence is absent, or if required summary booleans remain false.
 
 The harness does **not** use `/monitoring/run-once/{id}` and does **not** use mocked HTTP providers for proof generation.
+
+### Local dependencies for deterministic proof
+
+- Python + API dependencies from `requirements-local.txt`
+- Postgres + Redis (docker compose by default; or externally running services with `--skip-compose`)
+- One local EVM executable:
+  - `ganache` on PATH, or
+  - `anvil` on PATH, or
+  - `FEATURE1_EVM_CMD="<custom command>"` override
 
 ## Output interpretation
 - `status=live_coverage_confirmed`: one concrete protected asset has sufficient live market + oracle coverage, worker monitoring executed, and enterprise claim eligibility is true.

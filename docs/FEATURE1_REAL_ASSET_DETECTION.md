@@ -22,9 +22,11 @@ Feature 1 protects **workspace-owned monitored assets** (targets linked to asset
 - Finding payload contains observed evidence (`event_id`, `tx_hash`, `block_number`), anomaly basis, and linked asset profile.
 - Persisted alert/incident created from that finding path.
 - Reproducible worker-path proof run via `make proof-feature1-live` / `python services/api/scripts/run_feature1_live_proof.py`.
+- Local proof harness executes a **real treasury outflow anomaly**: transfer from the protected treasury wallet to an unexpected external counterparty, then runs `python -m services.api.app.run_monitoring_worker --once` so monitoring provenance is `monitoring_path=worker`.
 - Harness auth bootstrap is `POST /auth/signup` -> `POST /auth/verify-email` -> `POST /auth/signin`, then workspace resolution from `signin.user.current_workspace.id` (not from signup).
 - Local proof automation requires `AUTH_EXPOSE_DEBUG_TOKENS=true` on the API process so signup returns a one-time `verification_token` for deterministic verify-email execution.
 - Proof user email defaults to a unique per-run address (`feature1-proof+<suffix>@decoda.local`) and can be overridden with `FEATURE1_PROOF_EMAIL`.
+- Proof harness now fails hard when artifact truth checks fail (`worker_monitoring_executed`, `lifecycle_checks_executed`, `anomalies_observed`, non-empty `alerts/runs/incidents/evidence/report`, and tx/block-linked evidence).
 
 ## What does NOT qualify
 - Demo-only scenarios.
