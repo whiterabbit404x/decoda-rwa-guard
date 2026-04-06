@@ -140,7 +140,13 @@ def test_feature1_evidence_script_confirms_live_coverage_with_real_provider_obse
         if path == '/ops/monitoring/run':
             return 200, {'run_id': 'run-1'}
         if path == '/alerts?target_id=t1':
-            return 200, {'alerts': []}
+            return 200, {'alerts': [{
+                'id': 'alert-1',
+                'analysis_run_id': 'r1',
+                'payload': {
+                    'detector_results': [{'detector_family': 'flow_monitor', 'lifecycle_stage': 'runtime'}],
+                },
+            }]}
         if path == '/incidents?target_id=t1':
             return 200, {'incidents': []}
         if path == '/pilot/history?kind=analysis_runs':
@@ -264,7 +270,13 @@ def test_feature1_evidence_script_marks_monitoring_execution_failed_when_worker_
         if path == '/ops/monitoring/run':
             return 200, {'run_id': 'run-1'}
         if path == '/alerts?target_id=t1':
-            return 200, {'alerts': []}
+            return 200, {'alerts': [{
+                'id': 'alert-1',
+                'analysis_run_id': 'r1',
+                'payload': {
+                    'detector_results': [{'detector_family': 'flow_monitor', 'lifecycle_stage': 'runtime'}],
+                },
+            }]}
         if path == '/incidents?target_id=t1':
             return 200, {'incidents': []}
         if path == '/pilot/history?kind=analysis_runs':
@@ -296,7 +308,13 @@ def test_feature1_evidence_script_denies_live_coverage_without_provider_observat
         if path == '/ops/monitoring/run':
             return 200, {'run_id': 'run-1'}
         if path == '/alerts?target_id=t1':
-            return 200, {'alerts': []}
+            return 200, {'alerts': [{
+                'id': 'alert-lifecycle',
+                'analysis_run_id': 'r1',
+                'payload': {
+                    'detector_results': [{'detector_family': 'flow_monitor', 'lifecycle_stage': 'runtime'}],
+                },
+            }]}
         if path == '/incidents?target_id=t1':
             return 200, {'incidents': []}
         if path == '/pilot/history?kind=analysis_runs':
@@ -364,7 +382,13 @@ def test_feature1_evidence_script_marks_missing_oracle_timing_fields_ineligible(
         if path == '/ops/monitoring/run':
             return 200, {'run_id': 'run-1'}
         if path == '/alerts?target_id=t1':
-            return 200, {'alerts': []}
+            return 200, {'alerts': [{
+                'id': 'alert-lifecycle',
+                'analysis_run_id': 'r1',
+                'payload': {
+                    'detector_results': [{'detector_family': 'flow_monitor', 'lifecycle_stage': 'runtime'}],
+                },
+            }]}
         if path == '/incidents?target_id=t1':
             return 200, {'incidents': []}
         if path == '/pilot/history?kind=analysis_runs':
@@ -417,7 +441,13 @@ def test_feature1_evidence_script_marks_target_identity_missing_fields_ineligibl
         if path == '/ops/monitoring/run':
             return 200, {'run_id': 'run-1'}
         if path == '/alerts?target_id=t1':
-            return 200, {'alerts': []}
+            return 200, {'alerts': [{
+                'id': 'alert-lifecycle',
+                'analysis_run_id': 'r1',
+                'payload': {
+                    'detector_results': [{'detector_family': 'flow_monitor', 'lifecycle_stage': 'runtime'}],
+                },
+            }]}
         if path == '/incidents?target_id=t1':
             return 200, {'incidents': []}
         if path == '/pilot/history?kind=analysis_runs':
@@ -578,7 +608,13 @@ def test_feature1_evidence_script_exports_full_artifact_bundle_for_denied_covera
         if path == '/ops/monitoring/run':
             return 200, {'run_id': 'run-1'}
         if path == '/alerts?target_id=t1':
-            return 200, {'alerts': []}
+            return 200, {'alerts': [{
+                'id': 'alert-lifecycle',
+                'analysis_run_id': 'r1',
+                'payload': {
+                    'detector_results': [{'detector_family': 'flow_monitor', 'lifecycle_stage': 'runtime'}],
+                },
+            }]}
         if path == '/incidents?target_id=t1':
             return 200, {'incidents': []}
         if path == '/pilot/history?kind=analysis_runs':
@@ -634,3 +670,81 @@ def test_feature1_evidence_script_exports_full_artifact_bundle_for_denied_covera
     assert summary['target_identity']['target_id'] == 't1'
     assert summary['protected_asset_identity']['asset_id'] == 'a1'
     assert summary['claim_ineligibility_reasons']
+
+
+def test_feature1_evidence_script_marks_execution_failed_when_lifecycle_checks_do_not_run(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('FEATURE1_EVIDENCE_DIR', str(tmp_path / 'evidence'))
+
+    def _mock_request(url: str, **kwargs):  # noqa: ANN003,ANN202
+        path = url.replace('http://127.0.0.1:8000', '')
+        if path == '/ops/monitoring/runtime-status':
+            return 200, {'configured_mode': 'LIVE'}
+        if path == '/targets':
+            return 200, {'targets': [{'id': 't1', 'asset_id': 'a1', 'name': 'Treasury', 'target_type': 'wallet', 'wallet_address': '0x' + '1' * 40, 'chain_network': 'ethereum'}]}
+        if path == '/assets':
+            return 200, {'assets': [{
+                'id': 'a1',
+                'asset_identifier': 'USTB-REAL',
+                'asset_symbol': 'USTB',
+                'chain_id': 1,
+                'token_contract_address': '0x' + 'a' * 40,
+                'treasury_ops_wallets': ['0x' + '1' * 40],
+                'custody_wallets': ['0x' + '2' * 40],
+                'expected_flow_patterns': [{'source_class': 'treasury_ops', 'destination_class': 'custody'}],
+                'expected_counterparties': ['0x' + '3' * 40],
+                'expected_approval_patterns': {'allowed_spenders': ['0x' + '4' * 40]},
+                'venue_labels': ['venue-a'],
+                'expected_liquidity_baseline': {'minimum_transfer_count': 1},
+                'oracle_sources': ['oracle-a'],
+                'expected_oracle_freshness_seconds': 120,
+                'expected_oracle_update_cadence_seconds': 120,
+            }]}
+        if path == '/ops/monitoring/run':
+            return 200, {'run_id': 'run-1'}
+        if path == '/alerts?target_id=t1':
+            return 200, {'alerts': []}
+        if path == '/incidents?target_id=t1':
+            return 200, {'incidents': []}
+        if path == '/pilot/history?kind=analysis_runs':
+            return 200, {'analysis_runs': [{
+                'id': 'r1',
+                'target_id': 't1',
+                'response_payload': {
+                    'monitoring_path': 'worker',
+                    'protected_asset_coverage_record': {
+                        'protected_asset_context': {
+                            'asset_id': 'a1',
+                            'asset_identifier': 'USTB-REAL',
+                            'symbol': 'USTB',
+                            'chain_id': 1,
+                            'contract_address': '0x' + 'a' * 40,
+                            'treasury_ops_wallets': ['0x' + '1' * 40],
+                            'custody_wallets': ['0x' + '2' * 40],
+                            'expected_flow_patterns': [{'source_class': 'treasury_ops'}],
+                            'expected_counterparties': ['0x' + '3' * 40],
+                            'expected_approval_patterns': {'allowed_spenders': ['0x' + '4' * 40]},
+                            'venue_labels': ['venue-a'],
+                            'expected_liquidity_baseline': {'minimum_transfer_count': 1},
+                            'oracle_sources': ['oracle-a'],
+                            'expected_oracle_freshness_seconds': 120,
+                            'expected_oracle_update_cadence_seconds': 120,
+                        },
+                        'market_coverage_status': 'insufficient_real_evidence',
+                        'oracle_coverage_status': 'insufficient_real_evidence',
+                    },
+                },
+            }]}
+        return 404, {}
+
+    monkeypatch.setattr(run_feature1_real_asset_evidence, '_request_json', _mock_request)
+    monkeypatch.setattr('sys.argv', ['run_feature1_real_asset_evidence.py'])
+    code = run_feature1_real_asset_evidence.main()
+    assert code == 2
+    summary = json.loads((tmp_path / 'evidence' / 'summary.json').read_text())
+    assert summary['status'] == 'monitoring_execution_failed'
+    assert summary['reason'] == 'lifecycle_checks_not_executed'
+    assert summary['worker_monitoring_executed'] is True
+    assert summary['lifecycle_checks_executed'] is False
+    assert summary['lifecycle_checks_not_executed_reason'] == 'no_lifecycle_signal_emitted'
+    assert 'lifecycle_checks_not_executed' in summary['claim_ineligibility_reasons']

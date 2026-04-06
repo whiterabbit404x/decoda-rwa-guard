@@ -89,6 +89,18 @@ def _missing_target_fields(target_identity: dict) -> list[str]:
     return missing
 
 
+def _lifecycle_execution_details(*, status: str, lifecycle_checks_performed: list[str], worker_monitoring_executed: bool, missing_fields: list[str]) -> tuple[bool, str | None]:
+    if lifecycle_checks_performed:
+        return True, None
+    if status == 'asset_configuration_incomplete':
+        return False, 'lifecycle_prerequisites_missing'
+    if status == 'monitoring_execution_failed' and not worker_monitoring_executed:
+        return False, 'worker_monitoring_not_executed'
+    if missing_fields:
+        return False, 'lifecycle_prerequisites_missing'
+    return False, 'no_lifecycle_signal_emitted'
+
+
 def main() -> int:
     api_url = (os.getenv('API_URL') or 'http://localhost:8000').rstrip('/')
     token = os.getenv('PILOT_AUTH_TOKEN', '').strip()
@@ -241,8 +253,26 @@ def main() -> int:
         status_value = 'monitoring_execution_failed'
         reason = 'invalid_status_guard_triggered'
 
-    summary = {
-        'protected_asset': {
+    lifecycle_checks_executed, lifecycle_checks_not_executed_reason = _lifecycle_execution_details(
+        status=status_value,
+        lifecycle_checks_performed=lifecycle_checks_performed,
+        worker_monitoring_executed=bool(worker_runs),
+        missing_fields=[*missing_fields, *missing_target_fields],
+    )
+    execution_failure_reasons = sorted(
+        {
+            reason
+            for reason in claim_ineligibility_reasons
+            if reason in {'worker_monitoring_not_executed'}
+        }
+    )
+    if not lifecycle_checks_executed and status_value in {'live_coverage_confirmed', 'live_coverage_denied'}:
+        status_value = 'monitoring_execution_failed'
+        reason = 'lifecycle_checks_not_executed'
+        claim_ineligibility_reasons = sorted(set([*claim_ineligibility_reasons, 'lifecycle_checks_not_executed']))
+        execution_failure_reasons = sorted(set([*execution_failure_reasons, 'lifecycle_checks_not_executed']))
+
+    protected_asset_context = {
             'asset_id': asset.get('id'),
             'asset_identifier': asset.get('asset_identifier'),
             'symbol': asset.get('asset_symbol'),
@@ -258,7 +288,10 @@ def main() -> int:
             'oracle_sources': asset.get('oracle_sources') or [],
             'expected_oracle_freshness_seconds': asset.get('expected_oracle_freshness_seconds'),
             'expected_oracle_update_cadence_seconds': asset.get('expected_oracle_update_cadence_seconds'),
-        },
+    }
+    summary = {
+        'protected_asset_context': protected_asset_context,
+        'protected_asset': protected_asset_context,
         'target_identity': target_identity,
         'workspace_id': workspace_id,
         'worker_run': run_cycle,
@@ -287,19 +320,21 @@ def main() -> int:
         'claim_ineligibility_reasons': claim_ineligibility_reasons,
         'external_market_telemetry_present': market_observation_count > 0,
         'real_oracle_observations_present': oracle_observation_count > 0,
-        'lifecycle_checks_executed': bool(lifecycle_checks_performed or bool(worker_runs)),
+        'lifecycle_checks_executed': lifecycle_checks_executed,
+        'lifecycle_checks_not_executed_reason': lifecycle_checks_not_executed_reason,
         'lifecycle_checks_performed': lifecycle_checks_performed,
         'anomalies_observed': anomalies_observed,
         'result_scope': 'enterprise_claim_eligible' if enterprise_claim_eligibility else 'internal_only',
         'missing_asset_context_fields': missing_fields,
         'missing_target_identity_fields': missing_target_fields,
+        'execution_failure_reasons': execution_failure_reasons,
     }
 
     evidence_rows: list[dict] = [{
         'record_type': 'coverage_evaluation',
         'status': summary['status'],
         'reason': summary.get('reason'),
-        'protected_asset_context': summary['protected_asset'],
+        'protected_asset_context': summary['protected_asset_context'],
         'target_identity': summary['target_identity'],
         'worker_monitoring_executed': summary['worker_monitoring_executed'],
         'worker_run_count': summary['worker_run_count'],
@@ -310,8 +345,10 @@ def main() -> int:
         'claim_ineligibility_reasons': claim_ineligibility_reasons,
         'lifecycle_checks_performed': lifecycle_checks_performed,
         'lifecycle_checks_executed': summary['lifecycle_checks_executed'],
+        'lifecycle_checks_not_executed_reason': summary['lifecycle_checks_not_executed_reason'],
         'anomalies_observed': anomalies_observed,
         'missing_target_identity_fields': missing_target_fields,
+        'execution_failure_reasons': execution_failure_reasons,
     }]
 
     for item in alert_rows:
