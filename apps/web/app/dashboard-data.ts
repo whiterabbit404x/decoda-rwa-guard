@@ -917,6 +917,43 @@ function normalizeThreatDashboardPayload(payload: ThreatDashboardResponse): Thre
   };
 }
 
+function sanitizeThreatDashboardPayload(payload: ThreatDashboardResponse): ThreatDashboardResponse {
+  return {
+    ...payload,
+    message: sanitizeCustomerFacingCopy(payload.message),
+    cards: payload.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) })),
+    active_alerts: payload.active_alerts.map((alert) => ({
+      ...alert,
+      explanation: sanitizeCustomerFacingCopy(alert.explanation),
+      title: sanitizeCustomerFacingCopy(alert.title),
+      patterns: alert.patterns.map((pattern) => sanitizeCustomerFacingCopy(pattern)),
+    })),
+    recent_detections: payload.recent_detections.map((detection) => ({
+      ...detection,
+      explanation: sanitizeCustomerFacingCopy(detection.explanation),
+      title: sanitizeCustomerFacingCopy(detection.title),
+      patterns: detection.patterns.map((pattern) => sanitizeCustomerFacingCopy(pattern)),
+    })),
+  };
+}
+
+function sanitizeComplianceDashboardPayload(payload: ComplianceDashboardResponse): ComplianceDashboardResponse {
+  return {
+    ...payload,
+    message: sanitizeCustomerFacingCopy(payload.message),
+    cards: payload.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) })),
+  };
+}
+
+function sanitizeResilienceDashboardPayload(payload: ResilienceDashboardResponse): ResilienceDashboardResponse {
+  return {
+    ...payload,
+    message: sanitizeCustomerFacingCopy(payload.message),
+    cards: payload.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) })),
+    latest_incidents: payload.latest_incidents.map((incident) => ({ ...incident, summary: sanitizeCustomerFacingCopy(incident.summary) })),
+  };
+}
+
 export type BackendState = 'online' | 'degraded' | 'offline';
 export type DashboardExperienceState = 'live' | 'live_degraded' | 'sample';
 export type DashboardPayloadState = 'live' | 'fallback' | 'sample' | 'unavailable';
@@ -1281,15 +1318,15 @@ export function resolveGatewayCard(card: DashboardCard, backendState: BackendSta
   if (backendState === 'degraded') {
     return {
       ...card,
-      status: 'Live (degraded)',
-      detail: 'Gateway reachable, but one or more dashboard feeds are using fallback data.',
+      status: 'Degraded',
+      detail: 'Gateway reachable, but one or more dashboard feeds are showing limited coverage.',
     };
   }
 
   return {
     ...card,
-    status: 'Sample mode',
-    detail: 'Live services are not reachable right now, so the dashboard is showing limited coverage.',
+    status: 'Offline',
+    detail: 'Live services are currently unreachable. Showing last confirmed telemetry with limited coverage.',
   };
 }
 
@@ -1533,15 +1570,15 @@ export function shouldRenderThreatAlertSourceChip(
 
 export function formatSourceLabel(payloadState: DashboardPayloadState) {
   if (payloadState === 'live') {
-    return 'Live feed';
+    return 'Verified telemetry';
   }
 
   if (payloadState === 'fallback') {
-    return 'Fallback coverage';
+    return 'Limited coverage';
   }
 
   if (payloadState === 'sample') {
-    return 'Sample coverage';
+    return 'Telemetry unavailable';
   }
 
   return 'Unavailable';
@@ -1552,15 +1589,15 @@ function formatDegradedBannerMessage(messages: string[]) {
     .map((message) =>
       message
         .replace(/^Backend unavailable\.\s*/i, '')
-        .replace(/Rendering explicit fallback/gi, 'Using fallback')
-        .replace(/fallback-safe/gi, 'fallback')
+        .replace(/Rendering explicit fallback/gi, 'Using last confirmed checkpoint')
+        .replace(/fallback-safe/gi, 'limited coverage')
         .replace(/demoable/gi, 'available').replace(/sample/gi, 'limited')
         .trim()
     )
     .filter(Boolean);
 
   if (normalized.length === 0) {
-    return 'One or more live dashboard feeds are temporarily degraded.';
+    return 'One or more live dashboard feeds are temporarily degraded. Monitoring data is delayed.';
   }
 
   return sanitizeCustomerFacingCopy(`One or more live dashboard feeds are temporarily degraded. ${normalized.join(' ')}`);
@@ -1650,9 +1687,9 @@ export async function fetchDashboardPageData(
       apiUrl: resolvedApiUrl,
       dashboard,
       riskDashboard: aggregatePayload.risk_dashboard,
-      threatDashboard: normalizeThreatDashboardPayload(aggregatePayload.threat_dashboard),
-      complianceDashboard: aggregatePayload.compliance_dashboard,
-      resilienceDashboard: aggregatePayload.resilience_dashboard,
+      threatDashboard: sanitizeThreatDashboardPayload(normalizeThreatDashboardPayload(aggregatePayload.threat_dashboard)),
+      complianceDashboard: sanitizeComplianceDashboardPayload(aggregatePayload.compliance_dashboard),
+      resilienceDashboard: sanitizeResilienceDashboardPayload(aggregatePayload.resilience_dashboard),
       diagnostics,
     };
   }
@@ -1699,21 +1736,15 @@ export async function fetchDashboardPageData(
 
   const dashboard = normalizeDashboardResponse(dashboardResult.payload);
   const riskDashboard = riskResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackRiskDashboard : await getRiskDashboard(resolvedApiUrl));
-  const threatDashboard = normalizeThreatDashboardPayload(threatResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackThreatDashboard : await getThreatDashboard(resolvedApiUrl)));
-  const complianceDashboard = complianceResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackComplianceDashboard : await getComplianceDashboard(resolvedApiUrl));
-  const resilienceDashboard = resilienceResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackResilienceDashboard : await getResilienceDashboard(resolvedApiUrl));
-
-  threatDashboard.message = sanitizeCustomerFacingCopy(threatDashboard.message);
-  threatDashboard.cards = threatDashboard.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) }));
-  threatDashboard.active_alerts = threatDashboard.active_alerts.map((alert) => ({ ...alert, explanation: sanitizeCustomerFacingCopy(alert.explanation), title: sanitizeCustomerFacingCopy(alert.title) }));
-  threatDashboard.recent_detections = threatDashboard.recent_detections.map((detection) => ({ ...detection, explanation: sanitizeCustomerFacingCopy(detection.explanation), title: sanitizeCustomerFacingCopy(detection.title), patterns: detection.patterns.map((pattern) => sanitizeCustomerFacingCopy(pattern)) }));
-
-  complianceDashboard.message = sanitizeCustomerFacingCopy(complianceDashboard.message);
-  complianceDashboard.cards = complianceDashboard.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) }));
-
-  resilienceDashboard.message = sanitizeCustomerFacingCopy(resilienceDashboard.message);
-  resilienceDashboard.cards = resilienceDashboard.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) }));
-  resilienceDashboard.latest_incidents = resilienceDashboard.latest_incidents.map((incident) => ({ ...incident, summary: sanitizeCustomerFacingCopy(incident.summary) }));
+  const threatDashboard = sanitizeThreatDashboardPayload(
+    normalizeThreatDashboardPayload(threatResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackThreatDashboard : await getThreatDashboard(resolvedApiUrl)))
+  );
+  const complianceDashboard = sanitizeComplianceDashboardPayload(
+    complianceResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackComplianceDashboard : await getComplianceDashboard(resolvedApiUrl))
+  );
+  const resilienceDashboard = sanitizeResilienceDashboardPayload(
+    resilienceResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackResilienceDashboard : await getResilienceDashboard(resolvedApiUrl))
+  );
 
   const sampleMode = !apiConfig.apiUrl;
   const endpoints: DashboardDiagnostics['endpoints'] = {
@@ -1840,7 +1871,7 @@ export function buildDashboardViewModel(
                   resilienceDashboard.message,
                 ]
           )
-        : 'Live services are temporarily unavailable. The dashboard remains available in sample mode while connectivity is restored.';
+        : 'Live services are temporarily unavailable. The dashboard is showing the last confirmed telemetry until connectivity is restored.';
 
   return {
     backendState,
