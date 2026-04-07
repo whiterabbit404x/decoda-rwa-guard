@@ -10,6 +10,7 @@ test.describe('monitoring status contract', () => {
     expect(normalizeMonitoringMode('degraded')).toBe('DEGRADED');
     expect(normalizeMonitoringMode('offline')).toBe('OFFLINE');
     expect(normalizeMonitoringMode('stale')).toBe('STALE');
+    expect(normalizeMonitoringMode('synthetic_leak')).toBe('LIMITED_COVERAGE');
     expect(normalizeMonitoringMode('unknown')).toBe('LIMITED_COVERAGE');
   });
 

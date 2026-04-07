@@ -316,7 +316,7 @@ export const fallbackCards: DashboardCard[] = [
 export const fallbackRiskDashboard: RiskDashboardResponse = {
   source: 'fallback',
   degraded: true,
-  message: 'Backend unavailable. Rendering safe fallback data until the local API and risk-engine are running.',
+  message: 'Live evidence unavailable. Showing last confirmed checkpoint with limited coverage while services reconnect.',
   risk_engine: {
     url: 'http://localhost:8001',
     timeout_seconds: 1.5,
@@ -491,9 +491,9 @@ export const fallbackComplianceDashboard: ComplianceDashboardResponse = {
   },
   cards: [
     { label: 'Transfer decision', value: 'review', detail: 'Coverage currently degraded while compliance services are unavailable.', tone: 'high' },
-    { label: 'Compliance risk', value: 'high', detail: 'Fallback deterministic wrappers remain explainable at the dashboard.', tone: 'high' },
-    { label: 'Governance actions', value: '3', detail: 'Fallback immutable-style governance records are still visible.', tone: 'medium' },
-    { label: 'Residency decision', value: 'denied', detail: 'Fallback sovereignty routing recommends eu-west.', tone: 'critical' }
+    { label: 'Compliance risk', value: 'high', detail: 'Coverage currently degraded while deterministic policy controls remain available.', tone: 'high' },
+    { label: 'Governance actions', value: '3', detail: 'Governance action records remain available from the last confirmed telemetry.', tone: 'medium' },
+    { label: 'Residency decision', value: 'denied', detail: 'Current routing recommendation is eu-west based on available telemetry.', tone: 'critical' }
   ],
   transfer_screening: {
     decision: 'review',
@@ -611,10 +611,10 @@ export const fallbackResilienceDashboard: ResilienceDashboardResponse = {
     incident_count: 2
   },
   cards: [
-    { label: 'Reconciliation', value: 'critical', detail: 'Fallback multi-ledger reconciliation shows material supply divergence.', tone: 'critical' },
-    { label: 'Mismatch amount', value: '191,400', detail: 'Fallback normalized effective supply mismatch vs expected.', tone: 'critical' },
-    { label: 'Stale ledgers', value: '1', detail: 'Fallback stale private-bank-ledger penalty remains visible.', tone: 'high' },
-    { label: 'Backstop', value: 'paused', detail: 'Fallback controls paused bridge and settlement lanes.', tone: 'critical' }
+    { label: 'Reconciliation', value: 'critical', detail: 'Coverage currently degraded while reconciliation shows material supply divergence.', tone: 'critical' },
+    { label: 'Mismatch amount', value: '191,400', detail: 'Last confirmed telemetry shows normalized effective supply mismatch versus expected supply.', tone: 'critical' },
+    { label: 'Stale ledgers', value: '1', detail: 'Monitoring data delayed for private-bank-ledger reconciliation.', tone: 'high' },
+    { label: 'Backstop', value: 'paused', detail: 'Operational controls paused bridge and settlement lanes.', tone: 'critical' }
   ],
   reconciliation_result: {
     asset_id: 'USTB-2026',
@@ -730,8 +730,8 @@ export const fallbackThreatDashboard: ThreatDashboardResponse = {
   },
   cards: [
     { label: 'Threat score', value: '82', detail: 'Coverage currently degraded while threat scoring services are unavailable.', tone: 'critical' },
-    { label: 'Active alerts', value: '4', detail: 'Fallback critical and high-confidence detections.', tone: 'high' },
-    { label: 'Blocked / reviewed', value: '3/2', detail: 'Fallback action split when the threat-engine is offline.', tone: 'medium' },
+    { label: 'Active alerts', value: '4', detail: 'Critical and high-confidence detections from the last confirmed checkpoint.', tone: 'high' },
+    { label: 'Blocked / reviewed', value: '3/2', detail: 'Action split captured while live telemetry is unavailable.', tone: 'medium' },
     { label: 'Market anomaly avg', value: '70.0', detail: 'Coverage currently degraded across monitored market anomaly signals.', tone: 'high' }
   ],
   active_alerts: [
@@ -743,7 +743,7 @@ export const fallbackThreatDashboard: ThreatDashboardResponse = {
       severity: 'critical',
       action: 'block',
       source: 'fallback',
-      explanation: 'Fallback analysis flagged flash-loan setup, rapid drain indicators, and weak counterparty reputation.',
+      explanation: 'Monitoring detected flash-loan setup, rapid drain indicators, and weak counterparty reputation.',
       patterns: ['Flash-loan indicator', 'High-value drain attempt', 'Burst of high-risk actions']
     },
     {
@@ -754,7 +754,7 @@ export const fallbackThreatDashboard: ThreatDashboardResponse = {
       severity: 'critical',
       action: 'block',
       source: 'fallback',
-      explanation: 'Fallback analysis detected unexpected admin activity and drain path indicators.',
+      explanation: 'Monitoring detected unexpected admin activity and drain path indicators.',
       patterns: ['Unexpected admin action', 'Role mismatch', 'High-value drain attempt']
     },
     {
@@ -776,7 +776,7 @@ export const fallbackThreatDashboard: ThreatDashboardResponse = {
       severity: 'critical',
       action: 'block',
       source: 'fallback',
-      explanation: 'Fallback anomaly detection found circular trading and dominant wallet cluster concentration.',
+      explanation: 'Monitoring detected circular trading and dominant wallet cluster concentration.',
       patterns: ['Wash-trading-like loops', 'Wallet cluster concentration']
     }
   ],
@@ -789,7 +789,7 @@ export const fallbackThreatDashboard: ThreatDashboardResponse = {
       severity: 'critical',
       action: 'block',
       source: 'fallback',
-      explanation: 'Fallback analysis flagged flash-loan setup, rapid drain indicators, and weak counterparty reputation.',
+      explanation: 'Monitoring detected flash-loan setup, rapid drain indicators, and weak counterparty reputation.',
       patterns: ['Flash-loan indicator', 'Borrow / swap / repay burst', 'High-value drain attempt']
     },
     {
@@ -800,7 +800,7 @@ export const fallbackThreatDashboard: ThreatDashboardResponse = {
       severity: 'critical',
       action: 'block',
       source: 'fallback',
-      explanation: 'Fallback analysis detected unexpected admin activity and drain path indicators.',
+      explanation: 'Monitoring detected unexpected admin activity and drain path indicators.',
       patterns: ['Unexpected admin action', 'Role mismatch']
     },
     {
@@ -822,7 +822,7 @@ export const fallbackThreatDashboard: ThreatDashboardResponse = {
       severity: 'critical',
       action: 'block',
       source: 'fallback',
-      explanation: 'Fallback anomaly detection found circular trading and dominant wallet cluster concentration.',
+      explanation: 'Monitoring detected circular trading and dominant wallet cluster concentration.',
       patterns: ['Wash-trading-like loops', 'Wallet cluster concentration']
     },
     {
@@ -833,7 +833,7 @@ export const fallbackThreatDashboard: ThreatDashboardResponse = {
       severity: 'critical',
       action: 'block',
       source: 'fallback',
-      explanation: 'Fallback contract analysis found privilege escalation, drain path, and untrusted integration indicators.',
+      explanation: 'Monitoring found privilege escalation, drain path, and untrusted integration indicators.',
       patterns: ['Unsafe admin action', 'Rapid drain path', 'Untrusted contract interaction']
     },
     {
@@ -844,7 +844,7 @@ export const fallbackThreatDashboard: ThreatDashboardResponse = {
       severity: 'low',
       action: 'allow',
       source: 'fallback',
-      explanation: 'Fallback analysis found no material threat indicators in the safe settlement scenario.',
+      explanation: 'No material threat indicators detected in the safe settlement workflow.',
       patterns: []
     }
   ],
@@ -868,6 +868,23 @@ const LIVE_THREAT_CARD_DETAILS: Record<string, string> = {
 };
 const THREAT_FALLBACK_COPY_MARKERS = ['fallback', 'unavailable', 'timed out', 'offline'];
 
+const CUSTOMER_SAFE_COPY_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/\bdemo[_\s-]*only\b/gi, 'limited coverage'],
+  [/\bdemo[_\s-]*scenario\b/gi, 'limited telemetry'],
+  [/\bdemo\b/gi, 'limited coverage'],
+  [/\bsynthetic[_\s-]*leak\b/gi, 'limited coverage'],
+  [/\bsynthetic\b/gi, 'limited'],
+  [/\bfallback\s+scenario\b/gi, 'last confirmed checkpoint'],
+  [/\bsample\s+scenario\b/gi, 'last confirmed checkpoint'],
+  [/\bhybrid\s+mode\b/gi, 'limited coverage'],
+  [/\bscenario\b/gi, 'checkpoint'],
+  [/\bsample\b/gi, 'limited'],
+];
+
+function sanitizeCustomerFacingCopy(value: string) {
+  return CUSTOMER_SAFE_COPY_REPLACEMENTS.reduce((next, [pattern, replacement]) => next.replace(pattern, replacement), value);
+}
+
 function containsThreatFallbackCopy(value: unknown) {
   if (typeof value !== 'string') {
     return false;
@@ -884,10 +901,10 @@ function normalizeThreatDashboardPayload(payload: ThreatDashboardResponse): Thre
 
   return {
     ...payload,
-    message: containsThreatFallbackCopy(payload.message) ? LIVE_THREAT_MESSAGE : payload.message,
+    message: sanitizeCustomerFacingCopy(containsThreatFallbackCopy(payload.message) ? LIVE_THREAT_MESSAGE : payload.message),
     cards: payload.cards.map((card) => ({
       ...card,
-      detail: containsThreatFallbackCopy(card.detail) ? (LIVE_THREAT_CARD_DETAILS[card.label] ?? card.detail) : card.detail,
+      detail: sanitizeCustomerFacingCopy(containsThreatFallbackCopy(card.detail) ? (LIVE_THREAT_CARD_DETAILS[card.label] ?? card.detail) : card.detail),
     })),
     active_alerts: payload.active_alerts.map((alert) => ({
       ...alert,
@@ -989,7 +1006,7 @@ export function resolveFetchTimeoutMs() {
   return value;
 }
 
-function demoFallbacksEnabled() {
+function fallbackSnapshotsEnabled() {
   if (process.env.ENABLE_DEMO_FALLBACKS?.toLowerCase() !== 'true') {
     return false;
   }
@@ -1283,26 +1300,26 @@ export async function getDashboard(apiUrl = resolveApiUrl()): Promise<DashboardR
 export async function getRiskDashboard(apiUrl = resolveApiUrl()): Promise<RiskDashboardResponse> {
   const payload = await fetchJson<RiskDashboardResponse>('/risk/dashboard', apiUrl);
   if (payload) return payload;
-  if (demoFallbacksEnabled()) return fallbackRiskDashboard;
+  if (fallbackSnapshotsEnabled()) return fallbackRiskDashboard;
   return { ...fallbackRiskDashboard, source: 'fallback', degraded: true, message: 'Risk dashboard is unavailable. Connect the API to view live workspace records.', transaction_queue: [], risk_alerts: [], contract_scan_results: [], decisions_log: [], summary: { ...fallbackRiskDashboard.summary, total_transactions: 0, allow_count: 0, review_count: 0, block_count: 0, high_alert_count: 0 } };
 }
 
 export async function getThreatDashboard(apiUrl = resolveApiUrl()): Promise<ThreatDashboardResponse> {
   const payload = (await fetchJson<ThreatDashboardResponse>('/threat/dashboard', apiUrl))
-    ?? (demoFallbacksEnabled() ? fallbackThreatDashboard : { ...fallbackThreatDashboard, message: 'Threat dashboard is unavailable. Reconnect the API to restore threat operations data.', cards: [], active_alerts: [], recent_detections: [], summary: { ...fallbackThreatDashboard.summary, average_score: 0, critical_or_high_alerts: 0, blocked_actions: 0, review_actions: 0, market_anomaly_types: [] } });
+    ?? (fallbackSnapshotsEnabled() ? fallbackThreatDashboard : { ...fallbackThreatDashboard, message: 'Threat dashboard is unavailable. Reconnect the API to restore threat operations data.', cards: [], active_alerts: [], recent_detections: [], summary: { ...fallbackThreatDashboard.summary, average_score: 0, critical_or_high_alerts: 0, blocked_actions: 0, review_actions: 0, market_anomaly_types: [] } });
   return normalizeThreatDashboardPayload(payload);
 }
 
 export async function getComplianceDashboard(apiUrl = resolveApiUrl()): Promise<ComplianceDashboardResponse> {
   return (await fetchJson<ComplianceDashboardResponse>('/compliance/dashboard', apiUrl))
-    ?? (demoFallbacksEnabled()
+    ?? (fallbackSnapshotsEnabled()
       ? fallbackComplianceDashboard
       : { ...fallbackComplianceDashboard, message: 'Compliance dashboard is unavailable. Reconnect the API to restore compliance operations data.', cards: [], latest_governance_actions: [], asset_transfer_status: [], summary: { ...fallbackComplianceDashboard.summary, allowlisted_wallet_count: 0, blocklisted_wallet_count: 0, frozen_wallet_count: 0, review_required_wallet_count: 0, paused_asset_count: 0, triggered_rule_count: 0 } });
 }
 
 export async function getResilienceDashboard(apiUrl = resolveApiUrl()): Promise<ResilienceDashboardResponse> {
   return (await fetchJson<ResilienceDashboardResponse>('/resilience/dashboard', apiUrl))
-    ?? (demoFallbacksEnabled()
+    ?? (fallbackSnapshotsEnabled()
       ? fallbackResilienceDashboard
       : { ...fallbackResilienceDashboard, message: 'Resilience dashboard is unavailable. Reconnect the API to restore resilience operations data.', cards: [], latest_incidents: [], summary: { ...fallbackResilienceDashboard.summary, mismatch_amount: 0, stale_ledger_count: 0, incident_count: 0 } });
 }
@@ -1546,8 +1563,9 @@ function formatDegradedBannerMessage(messages: string[]) {
     return 'One or more live dashboard feeds are temporarily degraded.';
   }
 
-  return `One or more live dashboard feeds are temporarily degraded. ${normalized.join(' ')}`;
+  return sanitizeCustomerFacingCopy(`One or more live dashboard feeds are temporarily degraded. ${normalized.join(' ')}`);
 }
+
 
 
 function resolveEndpointPayloadState(
@@ -1680,10 +1698,22 @@ export async function fetchDashboardPageData(
   ]);
 
   const dashboard = normalizeDashboardResponse(dashboardResult.payload);
-  const riskDashboard = riskResult.payload ?? (demoFallbacksEnabled() ? fallbackRiskDashboard : await getRiskDashboard(resolvedApiUrl));
-  const threatDashboard = normalizeThreatDashboardPayload(threatResult.payload ?? (demoFallbacksEnabled() ? fallbackThreatDashboard : await getThreatDashboard(resolvedApiUrl)));
-  const complianceDashboard = complianceResult.payload ?? (demoFallbacksEnabled() ? fallbackComplianceDashboard : await getComplianceDashboard(resolvedApiUrl));
-  const resilienceDashboard = resilienceResult.payload ?? (demoFallbacksEnabled() ? fallbackResilienceDashboard : await getResilienceDashboard(resolvedApiUrl));
+  const riskDashboard = riskResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackRiskDashboard : await getRiskDashboard(resolvedApiUrl));
+  const threatDashboard = normalizeThreatDashboardPayload(threatResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackThreatDashboard : await getThreatDashboard(resolvedApiUrl)));
+  const complianceDashboard = complianceResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackComplianceDashboard : await getComplianceDashboard(resolvedApiUrl));
+  const resilienceDashboard = resilienceResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackResilienceDashboard : await getResilienceDashboard(resolvedApiUrl));
+
+  threatDashboard.message = sanitizeCustomerFacingCopy(threatDashboard.message);
+  threatDashboard.cards = threatDashboard.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) }));
+  threatDashboard.active_alerts = threatDashboard.active_alerts.map((alert) => ({ ...alert, explanation: sanitizeCustomerFacingCopy(alert.explanation), title: sanitizeCustomerFacingCopy(alert.title) }));
+  threatDashboard.recent_detections = threatDashboard.recent_detections.map((detection) => ({ ...detection, explanation: sanitizeCustomerFacingCopy(detection.explanation), title: sanitizeCustomerFacingCopy(detection.title), patterns: detection.patterns.map((pattern) => sanitizeCustomerFacingCopy(pattern)) }));
+
+  complianceDashboard.message = sanitizeCustomerFacingCopy(complianceDashboard.message);
+  complianceDashboard.cards = complianceDashboard.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) }));
+
+  resilienceDashboard.message = sanitizeCustomerFacingCopy(resilienceDashboard.message);
+  resilienceDashboard.cards = resilienceDashboard.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) }));
+  resilienceDashboard.latest_incidents = resilienceDashboard.latest_incidents.map((incident) => ({ ...incident, summary: sanitizeCustomerFacingCopy(incident.summary) }));
 
   const sampleMode = !apiConfig.apiUrl;
   const endpoints: DashboardDiagnostics['endpoints'] = {

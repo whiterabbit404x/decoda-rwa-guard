@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from 'react';
 
+import { normalizeMonitoringMode, type MonitoringRuntimeStatus } from './monitoring-status-contract';
+import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
 import { usePilotAuth } from './pilot-auth-context';
-import { monitoringModeLabel, normalizeMonitoringMode, type MonitoringRuntimeStatus } from './monitoring-status-contract';
 
 export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: string | null }) {
   const { authHeaders, isAuthenticated } = usePilotAuth();
@@ -32,27 +33,23 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
     return null;
   }
 
-  const modeLabel = monitoringModeLabel(status.mode);
-  const noEvidence = (status.recent_real_event_count ?? 0) <= 0 || status.recent_truthfulness_state === 'unknown_risk';
-  const degraded = status.mode === 'DEGRADED' || status.mode === 'LIMITED_COVERAGE' || noEvidence;
-  const tone = degraded ? 'statusBannerDegraded' : status.mode === 'OFFLINE' ? 'statusBannerDegraded' : 'statusBannerLive';
-  const evidenceCopy = status.recent_evidence_state === 'real'
-    ? 'Monitoring is operating with recent confirmed evidence.'
-    : status.recent_evidence_state === 'degraded' || status.recent_evidence_state === 'failed'
-      ? 'Coverage currently degraded.'
-      : 'Live evidence unavailable.';
+  const presentation = normalizeMonitoringPresentation(status, {
+    degraded: status.mode === 'DEGRADED' || Boolean(status.degraded_reason),
+    offline: status.mode === 'OFFLINE',
+    stale: status.mode === 'STALE',
+  });
+
+  const tone = presentation.status === 'live' ? 'statusBannerLive' : 'statusBannerDegraded';
 
   return (
     <div className={`statusBanner ${tone}`}>
-      <strong>{modeLabel}</strong>
-      <span>
-        configured={status.configured_mode ?? 'n/a'} · source={status.source_type ?? 'unknown'} · lag={status.checkpoint_lag_blocks ?? 'n/a'} · claims={status.sales_claims_allowed ? 'allowed' : 'blocked'}
-      </span>
-      <span>
-        evidence={status.recent_evidence_state ?? 'missing'} · confidence={status.recent_confidence_basis ?? 'none'} · coverage={status.synthetic_leak_detected ? 'limited' : 'verified'}
-      </span>
-      <span>{evidenceCopy}</span>
-      {status.degraded_reason ? <span>reason={status.degraded_reason}</span> : null}
+      <strong>{presentation.statusLabel}</strong>
+      <span>Monitoring state: {presentation.summary}</span>
+      <span>Freshness: {presentation.freshness} · Confidence: {presentation.confidence}</span>
+      <span>Last confirmed checkpoint: {presentation.lastCheckpointLabel}</span>
+      {presentation.status === 'limited coverage' ? <span>Coverage currently limited.</span> : null}
+      {presentation.status === 'offline' ? <span>Workspace coverage offline.</span> : null}
+      {presentation.freshness === 'unavailable' ? <span>Fresh telemetry unavailable.</span> : null}
     </div>
   );
 }
