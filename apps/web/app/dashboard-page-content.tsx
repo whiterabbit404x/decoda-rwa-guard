@@ -7,6 +7,7 @@ import PilotOverviewPanel from './pilot-overview-panel';
 import ResilienceOperationsPanel from './resilience-operations-panel';
 import StatusBadge from './status-badge';
 import SystemStatusPanel from './system-status-panel';
+import { mapSourceToCustomerBadge } from './dashboard-status-presentation';
 import ThreatOperationsPanel from './threat-operations-panel';
 import type { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import {
@@ -22,13 +23,6 @@ type Props = {
   liveFeed?: ReturnType<typeof useLiveWorkspaceFeed>;
 };
 
-function resolveBadgeState(source: 'live' | 'fallback', degraded?: boolean) {
-  if (source === 'live' && !degraded) {
-    return 'live' as const;
-  }
-  return 'fallback' as const;
-}
-
 export default function DashboardPageContent({ data, gatewayReachableOverride = false, liveFeed }: Props) {
   const { threatDashboard, complianceDashboard, resilienceDashboard, apiUrl, diagnostics } = data;
   const { backendState, summaryCards, backendBanner } = buildDashboardViewModel(data, {
@@ -43,7 +37,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <h1>Tokenized treasury control dashboard</h1>
           <p className="lede">Monitor threats, compliance posture, and resilience readiness with persistent workspace telemetry and history-backed operations.</p>
           <div className="heroActionRow">
-            <StatusBadge state={diagnostics.experienceState === 'live_degraded' ? 'live_degraded' : diagnostics.experienceState} />
+            <StatusBadge state={diagnostics.experienceState === 'live_degraded' ? 'degraded' : diagnostics.experienceState} />
             <span className="ruleChip">Gateway: {diagnostics.endpoints.dashboard.ok ? 'reachable' : 'needs attention'}</span>
             <span className="ruleChip">API: {apiUrl || 'Not configured'}</span>
           </div>
@@ -90,13 +84,13 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
             <h2>Threat Operations</h2>
             <p>Visible exploit and anomaly detections with deterministic explainability and truthful coverage signals.</p>
           </div>
-          <StatusBadge state={resolveBadgeState(threatDashboard.source, threatDashboard.degraded)} />
+          <StatusBadge state={mapSourceToCustomerBadge(threatDashboard.source, threatDashboard.degraded)} />
         </div>
         <div className="threeColumnSection">
           <div className="stack compactStack">
             {threatDashboard.active_alerts.map((alert) => (
               <article key={alert.id} className="dataCard">
-                <div className="listHeader"><div><h3>{alert.title}</h3><p className="muted">{alert.category}</p></div><StatusBadge state={alert.source === 'live' ? 'live' : 'fallback'} compact /></div>
+                <div className="listHeader"><div><h3>{alert.title}</h3><p className="muted">{alert.category}</p></div><StatusBadge state={mapSourceToCustomerBadge(alert.source)} compact /></div>
                 <p className="explanation small">{alert.explanation}</p>
                 <div className="chipRow">{formatRules(alert.patterns).map((pattern) => <span key={pattern} className="ruleChip">{pattern}</span>)}</div>
               </article>
@@ -121,7 +115,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
             <h2>Compliance Operations</h2>
             <p>Screen transfers, record governance actions, and keep policy context readable for customers.</p>
           </div>
-          <StatusBadge state={resolveBadgeState(complianceDashboard.source, complianceDashboard.degraded)} />
+          <StatusBadge state={mapSourceToCustomerBadge(complianceDashboard.source, complianceDashboard.degraded)} />
         </div>
         <div className="threeColumnSection">
           <div className="stack compactStack">
@@ -138,7 +132,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <div className="stack compactStack">
             {complianceDashboard.latest_governance_actions.map((action) => (
               <article key={action.action_id} className="dataCard">
-                <div className="listHeader"><div><h3>{action.action_type}</h3><p className="muted">{action.target_type} · {action.target_id}</p></div><StatusBadge state={complianceDashboard.source === 'live' ? 'live' : 'fallback'} compact /></div>
+                <div className="listHeader"><div><h3>{action.action_type}</h3><p className="muted">{action.target_type} · {action.target_id}</p></div><StatusBadge state={mapSourceToCustomerBadge(complianceDashboard.source, complianceDashboard.degraded)} compact /></div>
                 <p className="explanation small">{action.reason}</p>
               </article>
             ))}
@@ -153,13 +147,13 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
             <h2>Resilience Operations</h2>
             <p>Reconciliation, backstop posture, and incident management remain explorable even in degraded states.</p>
           </div>
-          <StatusBadge state={resolveBadgeState(resilienceDashboard.source, resilienceDashboard.degraded)} />
+          <StatusBadge state={mapSourceToCustomerBadge(resilienceDashboard.source, resilienceDashboard.degraded)} />
         </div>
         <div className="threeColumnSection">
           <div className="stack compactStack">
             {resilienceDashboard.latest_incidents.map((incident) => (
               <article key={incident.event_id} className="dataCard">
-                <div className="listHeader"><div><h3>{incident.event_type}</h3><p className="muted">{incident.trigger_source}</p></div><StatusBadge state={incident.source === 'live' && !incident.degraded ? 'live' : 'fallback'} compact /></div>
+                <div className="listHeader"><div><h3>{incident.event_type}</h3><p className="muted">{incident.trigger_source}</p></div><StatusBadge state={mapSourceToCustomerBadge(incident.source ?? resilienceDashboard.source, incident.degraded ?? resilienceDashboard.degraded)} compact /></div>
                 <p className="explanation small">{incident.summary}</p>
               </article>
             ))}
