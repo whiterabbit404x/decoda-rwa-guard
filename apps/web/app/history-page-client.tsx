@@ -1,12 +1,14 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 
 import HistoryRecordsView from './history-records-view';
 import { HistoryPayload } from './pilot-history';
 import { usePilotAuth } from 'app/pilot-auth-context';
 
 export default function HistoryPageClient() {
+  const searchParams = useSearchParams();
   const { apiUrl, authHeaders, isAuthenticated, loading, selectWorkspace, user } = usePilotAuth();
   const [history, setHistory] = useState<HistoryPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +27,7 @@ export default function HistoryPageClient() {
       setFetching(true);
       setError(null);
       try {
-        const response = await fetch(`${apiUrl}/pilot/history?limit=50`, {
+        const response = await fetch(`${apiUrl}/pilot/history?limit=${searchParams?.get('limit') ?? '50'}`, {
           headers: authHeaders(),
           cache: 'no-store',
         });
@@ -54,7 +56,7 @@ export default function HistoryPageClient() {
       active = false;
       window.removeEventListener('pilot-history-refresh', loadHistory as EventListener);
     };
-  }, [apiUrl, authHeaders, isAuthenticated, user?.current_workspace?.id]);
+  }, [apiUrl, authHeaders, isAuthenticated, searchParams, user?.current_workspace?.id]);
 
   useEffect(() => {
     if (loading || !isAuthenticated || user?.current_workspace || !user?.memberships?.length) {

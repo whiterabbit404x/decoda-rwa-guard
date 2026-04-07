@@ -88,7 +88,7 @@ export default function TargetsManager({ apiUrl }: Props) {
         severity_threshold: target.severity_threshold || 'medium',
         auto_create_alerts: target.auto_create_alerts ?? true,
         auto_create_incidents: target.auto_create_incidents ?? false,
-        monitoring_scenario: target.monitoring_scenario || target.monitoring_demo_scenario || null,
+        monitoring_scenario: target.monitoring_scenario || null,
         notification_channels: target.notification_channels || [],
         is_active: target.is_active ?? true,
       }),
@@ -150,10 +150,6 @@ export default function TargetsManager({ apiUrl }: Props) {
         <input type="number" min={30} step={30} value={form.monitoring_interval_seconds} onChange={(event) => setForm({ ...form, monitoring_interval_seconds: Number(event.target.value) || 300 })} />
         <select value={form.severity_threshold} onChange={(event) => setForm({ ...form, severity_threshold: event.target.value })}>
           <option value="low">Threshold: low</option><option value="medium">Threshold: medium</option><option value="high">Threshold: high</option><option value="critical">Threshold: critical</option>
-        </select>
-        <select value={form.monitoring_scenario || ''} onChange={(event) => setForm({ ...form, monitoring_scenario: event.target.value })}>
-          <option value="">Demo scenario: off</option>
-          <option value="safe">safe</option><option value="low_risk">low_risk</option><option value="medium_risk">medium_risk</option><option value="high_risk">high_risk</option><option value="flash_loan_like">flash_loan_like</option><option value="admin_abuse_like">admin_abuse_like</option><option value="risky_approval_like">risky_approval_like</option>
         </select>
       </div>
       <input placeholder="Tags (comma-separated)" value={form.tags.join(', ')} onChange={(event) => setForm({ ...form, tags: parseTagInput(event.target.value) })} />
