@@ -1012,6 +1012,13 @@ def log_audit(
     workspace_id: str | None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
+    safe_metadata = metadata or {}
+    request_id = request.headers.get('x-request-id') if request else None
+    ip_address = request.client.host if request and request.client else None
+    if request_id and not safe_metadata.get('request_id'):
+        safe_metadata = {**safe_metadata, 'request_id': request_id}
+    if ip_address and not safe_metadata.get('source_ip'):
+        safe_metadata = {**safe_metadata, 'source_ip': ip_address}
     connection.execute(
         '''
         INSERT INTO audit_logs (id, workspace_id, user_id, action, entity_type, entity_id, ip_address, metadata, created_at)
@@ -1024,8 +1031,8 @@ def log_audit(
             action,
             entity_type,
             entity_id,
-            request.client.host if request and request.client else None,
-            _json_dumps(metadata or {}),
+            ip_address,
+            _json_dumps(safe_metadata),
         ),
     )
 
@@ -4739,7 +4746,7 @@ def list_alert_evidence(alert_id: str, request: Request) -> dict[str, Any]:
         }
 
 
-def list_incidents(request: Request, *, severity: str | None = None, target_id: str | None = None, status_value: str | None = None) -> dict[str, Any]:
+def list_incidents(request: Request, *, severity: str | None = None, target_id: str | None = None, status_value: str | None = None, assignee_user_id: str | None = None) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -4747,40 +4754,129 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, event_type, title, severity, status, target_id, linked_alert_ids, owner_user_id, summary, timeline, created_at, updated_at
+            SELECT id, event_type, title, severity, status, workflow_status, target_id, linked_alert_ids, owner_user_id, assignee_user_id, summary, resolution_note, timeline, created_at, updated_at
             FROM incidents
             WHERE workspace_id = %s
               AND (%s::text IS NULL OR severity = %s::text)
               AND (%s::uuid IS NULL OR target_id = %s::uuid)
-              AND (%s::text IS NULL OR status = %s::text)
+              AND (%s::text IS NULL OR workflow_status = %s::text OR status = %s::text)
+              AND (%s::uuid IS NULL OR assignee_user_id = %s::uuid)
             ORDER BY created_at DESC
             LIMIT 200
             ''',
-            (workspace_context['workspace_id'], severity, severity, target_id, target_id, status_value, status_value),
+            (workspace_context['workspace_id'], severity, severity, target_id, target_id, status_value, status_value, status_value, assignee_user_id, assignee_user_id),
         ).fetchall()
         return {'incidents': [_json_safe_value(dict(row)) for row in rows]}
 
 
 def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
-    next_status = str(payload.get('status', '')).strip().lower()
-    if next_status not in {'open', 'acknowledged', 'resolved'}:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='status must be open/acknowledged/resolved.')
+    next_workflow_status = str(payload.get('workflow_status', payload.get('status', ''))).strip().lower()
+    if next_workflow_status not in {'open', 'triaging', 'contained', 'resolved', 'closed'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='workflow_status must be open/triaging/contained/resolved/closed.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
-        found = connection.execute('SELECT id, timeline FROM incidents WHERE id = %s AND workspace_id = %s', (incident_id, workspace_context['workspace_id'])).fetchone()
+        found = connection.execute(
+            'SELECT id, timeline, workflow_status, assignee_user_id, resolution_note FROM incidents WHERE id = %s AND workspace_id = %s',
+            (incident_id, workspace_context['workspace_id']),
+        ).fetchone()
         if found is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Incident not found.')
         timeline = found.get('timeline') if isinstance(found.get('timeline'), list) else []
-        timeline.append({'event': f'incident.{next_status}', 'at': utc_now_iso(), 'actor_user_id': user['id']})
+        timeline.append({'event': f'incident.{next_workflow_status}', 'at': utc_now_iso(), 'actor_user_id': user['id']})
         connection.execute(
-            'UPDATE incidents SET status = %s, owner_user_id = COALESCE(%s, owner_user_id), timeline = %s::jsonb, updated_at = NOW() WHERE id = %s',
-            (next_status, payload.get('owner_user_id'), _json_dumps(timeline), incident_id),
+            '''
+            UPDATE incidents
+            SET status = %s,
+                workflow_status = %s,
+                owner_user_id = COALESCE(%s, owner_user_id),
+                assignee_user_id = COALESCE(%s, assignee_user_id),
+                resolution_note = COALESCE(%s, resolution_note),
+                timeline = %s::jsonb,
+                updated_at = NOW()
+            WHERE id = %s
+            ''',
+            (
+                next_workflow_status,
+                next_workflow_status,
+                payload.get('owner_user_id'),
+                payload.get('assignee_user_id'),
+                payload.get('resolution_note'),
+                _json_dumps(timeline),
+                incident_id,
+            ),
         )
-        log_audit(connection, action='incident.update', entity_type='incident', entity_id=incident_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'status': next_status})
+        connection.execute(
+            '''
+            INSERT INTO incident_timeline (id, workspace_id, incident_id, event_type, message, actor_user_id, metadata, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+            ''',
+            (
+                str(uuid.uuid4()),
+                workspace_context['workspace_id'],
+                incident_id,
+                'action_executed',
+                f'Workflow moved to {next_workflow_status}.',
+                user['id'],
+                _json_dumps({'workflow_status': next_workflow_status, 'assignee_user_id': payload.get('assignee_user_id')}),
+            ),
+        )
+        log_audit(connection, action='incident.updated', entity_type='incident', entity_id=incident_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'workflow_status': next_workflow_status, 'assignee_user_id': payload.get('assignee_user_id')})
         connection.commit()
-        return {'id': incident_id, 'status': next_status}
+        return {'id': incident_id, 'workflow_status': next_workflow_status, 'assignee_user_id': payload.get('assignee_user_id'), 'resolution_note': payload.get('resolution_note')}
+
+
+def list_incident_timeline(incident_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        found = connection.execute('SELECT id FROM incidents WHERE id = %s AND workspace_id = %s', (incident_id, workspace_context['workspace_id'])).fetchone()
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Incident not found.')
+        rows = connection.execute(
+            '''
+            SELECT id, incident_id, event_type, message, actor_user_id, metadata, created_at
+            FROM incident_timeline
+            WHERE workspace_id = %s
+              AND incident_id = %s
+            ORDER BY created_at DESC
+            LIMIT 500
+            ''',
+            (workspace_context['workspace_id'], incident_id),
+        ).fetchall()
+        return {'incident_id': incident_id, 'timeline': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def append_incident_timeline_note(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    message = str(payload.get('message') or '').strip()
+    if not message:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='message is required.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        found = connection.execute('SELECT id FROM incidents WHERE id = %s AND workspace_id = %s', (incident_id, workspace_context['workspace_id'])).fetchone()
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Incident not found.')
+        timeline_id = str(uuid.uuid4())
+        metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+        connection.execute(
+            '''
+            INSERT INTO incident_timeline (id, workspace_id, incident_id, event_type, message, actor_user_id, metadata, created_at)
+            VALUES (%s, %s, %s, 'note', %s, %s, %s::jsonb, NOW())
+            ''',
+            (timeline_id, workspace_context['workspace_id'], incident_id, message, user['id'], _json_dumps(metadata)),
+        )
+        connection.execute(
+            'UPDATE incidents SET updated_at = NOW(), timeline = timeline || %s::jsonb WHERE id = %s',
+            (_json_dumps([{'event': 'note', 'message': message, 'at': utc_now_iso(), 'actor_user_id': user['id']}]), incident_id),
+        )
+        log_audit(connection, action='incident.timeline_note_added', entity_type='incident_timeline', entity_id=timeline_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'incident_id': incident_id, 'event_type': 'note'})
+        connection.commit()
+        return {'id': timeline_id, 'incident_id': incident_id, 'event_type': 'note', 'message': message}
 
 
 ENFORCEMENT_ACTION_TYPES = {'revoke_erc20_approval', 'freeze_wallet', 'pause_asset', 'notify_only', 'compensating_reapprove_erc20_approval'}
@@ -5113,7 +5209,7 @@ def list_finding_decisions(request: Request) -> dict[str, Any]:
 def create_export_job(export_type: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     fmt = str(payload.get('format', 'csv')).strip().lower()
-    if fmt not in {'csv', 'json'}:
+    if fmt not in {'csv', 'json', 'pdf'}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export format.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -5200,6 +5296,22 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
         },
     }
     result = create_export_job('proof_bundle', export_payload, request)
+    return {
+        'export_job_id': result['job_id'],
+        'download_link': result.get('download_url'),
+        'status': result.get('status'),
+        'error_message': result.get('error_message'),
+    }
+
+
+def create_incident_report_export(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    export_payload = {
+        'format': str(payload.get('format', 'json')).strip().lower(),
+        'filters': {
+            'incident_id': payload.get('incident_id'),
+        },
+    }
+    result = create_export_job('incident_report', export_payload, request)
     return {
         'export_job_id': result['job_id'],
         'download_link': result.get('download_url'),
@@ -5360,11 +5472,41 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                     for item in evidence_rows
                 ],
             }]
+        case 'incident_report':
+            incident_id = str(filters.get('incident_id') or '').strip()
+            if not incident_id:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='incident_id is required for incident report export.')
+            incident = connection.execute('SELECT * FROM incidents WHERE workspace_id = %s AND id = %s', (workspace_id, incident_id)).fetchone()
+            if incident is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Incident not found.')
+            timeline = connection.execute(
+                'SELECT id, event_type, message, actor_user_id, metadata, created_at FROM incident_timeline WHERE workspace_id = %s AND incident_id = %s ORDER BY created_at DESC',
+                (workspace_id, incident_id),
+            ).fetchall()
+            alert_ids = incident.get('linked_alert_ids') if isinstance(incident.get('linked_alert_ids'), list) else []
+            linked_alerts = []
+            if alert_ids:
+                linked_alerts = connection.execute(
+                    'SELECT id, title, severity, status, summary, created_at FROM alerts WHERE workspace_id = %s AND id = ANY(%s::uuid[]) ORDER BY created_at DESC',
+                    (workspace_id, alert_ids),
+                ).fetchall()
+            enforcement_actions = connection.execute(
+                'SELECT id, action_type, status, dry_run, execution_metadata, created_at, updated_at FROM enforcement_actions WHERE workspace_id = %s AND incident_id = %s ORDER BY created_at DESC',
+                (workspace_id, incident_id),
+            ).fetchall()
+            rows = [{
+                'incident.json': _json_safe_value(dict(incident)),
+                'timeline.json': [_json_safe_value(dict(item)) for item in timeline],
+                'linked_alerts.json': [_json_safe_value(dict(item)) for item in linked_alerts],
+                'enforcement_actions.json': [_json_safe_value(dict(item)) for item in enforcement_actions],
+            }]
         case _:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export type.')
     storage = load_export_storage()
     try:
         if str(job['format']) == 'json':
+            content = json.dumps({'rows': rows}, indent=2).encode('utf-8')
+        elif str(job['format']) == 'pdf':
             content = json.dumps({'rows': rows}, indent=2).encode('utf-8')
         else:
             headers = sorted({key for row in rows for key in row.keys()})
