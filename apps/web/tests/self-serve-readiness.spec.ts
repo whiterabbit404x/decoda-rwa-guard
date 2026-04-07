@@ -46,10 +46,10 @@ test('dashboard and history expose self-serve onboarding and first-run empty sta
   const history = read('history-records-view.tsx');
 
   expect(dashboard).toContain('DashboardOnboardingPanel');
-  expect(onboarding).toContain('Run your first threat analysis');
-  expect(onboarding).toContain('First analysis run');
-  expect(history).toContain('Run your first threat analysis');
-  expect(history).toContain('No analyses yet');
+  expect(onboarding).toContain('Review monitoring coverage');
+  expect(onboarding).toContain('Monitoring coverage reviewed');
+  expect(history).toContain('Check monitoring status');
+  expect(history).toContain('No checkpoints yet');
   expect(history).toContain('history.workspace.name');
   expect(history).toContain('item.status');
 });
@@ -62,8 +62,8 @@ test('auth context and operational module pages use live customer workflow langu
   expect(authContext).toContain('if (response.status === 401) {');
   expect(authContext).toContain('await signOut();');
   expect(authContext).toContain('safeAuthFailureMessage');
-  expect(threatPanel).toContain('Threat Monitoring');
-  expect(threatPanel).toContain('monitoring_scenario');
+  expect(threatPanel).toContain('Threat monitoring state');
+  expect(threatPanel).not.toContain('monitoring_scenario');
   expect(nav).toContain('Targets');
   expect(nav).toContain('Integrations');
 });

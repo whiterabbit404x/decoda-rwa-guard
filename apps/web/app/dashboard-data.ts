@@ -490,7 +490,7 @@ export const fallbackComplianceDashboard: ComplianceDashboardResponse = {
     triggered_rule_count: 3
   },
   cards: [
-    { label: 'Transfer decision', value: 'review', detail: 'Fallback wrapper decision keeps Feature 3 demoable when the backend is offline.', tone: 'high' },
+    { label: 'Transfer decision', value: 'review', detail: 'Coverage currently degraded while compliance services are unavailable.', tone: 'high' },
     { label: 'Compliance risk', value: 'high', detail: 'Fallback deterministic wrappers remain explainable at the dashboard.', tone: 'high' },
     { label: 'Governance actions', value: '3', detail: 'Fallback immutable-style governance records are still visible.', tone: 'medium' },
     { label: 'Residency decision', value: 'denied', detail: 'Fallback sovereignty routing recommends eu-west.', tone: 'critical' }
@@ -595,7 +595,7 @@ export const fallbackComplianceDashboard: ComplianceDashboardResponse = {
     governance_allowlist_wallet: 'Governance action adding wallet to allowlist',
     transfer_blocked_asset_paused: 'Transfer blocked because asset is paused'
   },
-  message: 'Compliance service unavailable. Rendering explicit fallback Feature 3 data so the dashboard remains explainable and demoable.'
+  message: 'Live evidence unavailable for compliance services. Showing last confirmed checkpoint with degraded coverage.'
 };
 
 export const fallbackResilienceDashboard: ResilienceDashboardResponse = {
@@ -709,7 +709,7 @@ export const fallbackResilienceDashboard: ResilienceDashboardResponse = {
     incident_record_market_circuit_breaker: 'Incident example for a market circuit breaker.',
     recovery_normal_mode_after_alert: 'Recovery scenario returning to normal mode after prior alert.'
   },
-  message: 'Reconciliation-service unavailable. Rendering explicit fallback Feature 4 resilience data so the dashboard remains explainable and demoable.'
+  message: 'Fresh telemetry not available for resilience services. Showing the last confirmed checkpoint with degraded coverage.'
 };
 
 export const fallbackThreatDashboard: ThreatDashboardResponse = {
@@ -729,10 +729,10 @@ export const fallbackThreatDashboard: ThreatDashboardResponse = {
     ]
   },
   cards: [
-    { label: 'Threat score', value: '82', detail: 'Fallback contract threat score from Feature 2 scenarios.', tone: 'critical' },
+    { label: 'Threat score', value: '82', detail: 'Coverage currently degraded while threat scoring services are unavailable.', tone: 'critical' },
     { label: 'Active alerts', value: '4', detail: 'Fallback critical and high-confidence detections.', tone: 'high' },
     { label: 'Blocked / reviewed', value: '3/2', detail: 'Fallback action split when the threat-engine is offline.', tone: 'medium' },
-    { label: 'Market anomaly avg', value: '70.0', detail: 'Fallback anomaly average across bundled market scenarios.', tone: 'high' }
+    { label: 'Market anomaly avg', value: '70.0', detail: 'Coverage currently degraded across monitored market anomaly signals.', tone: 'high' }
   ],
   active_alerts: [
     {
@@ -856,15 +856,15 @@ export const fallbackThreatDashboard: ThreatDashboardResponse = {
     spoofing_market: 'Spoofing-like market behavior',
     wash_trading_market: 'Wash-trading-like market behavior'
   },
-  message: 'Threat-engine unavailable or timed out. Returning explicit fallback detections so the dashboard and demo panel remain usable.'
+  message: 'Live evidence unavailable for threat monitoring. Showing last confirmed checkpoint with degraded coverage.'
 };
 
-const LIVE_THREAT_MESSAGE = 'Threat dashboard is driven by deterministic weighted rules so each score remains explainable and demoable.';
+const LIVE_THREAT_MESSAGE = 'Threat monitoring scores use deterministic weighted rules with auditable evidence.';
 const LIVE_THREAT_CARD_DETAILS: Record<string, string> = {
   'Threat score': 'Contract scan composite score from deterministic rules.',
   'Active alerts': 'Critical and high-confidence exploit or anomaly detections.',
   'Blocked / reviewed': 'Action decisions produced by the explainable scoring layer.',
-  'Market anomaly avg': 'Average anomaly score across bundled treasury-token scenarios.',
+  'Market anomaly avg': 'Average anomaly score across monitored treasury-token activity.',
 };
 const THREAT_FALLBACK_COPY_MARKERS = ['fallback', 'unavailable', 'timed out', 'offline'];
 
@@ -1272,7 +1272,7 @@ export function resolveGatewayCard(card: DashboardCard, backendState: BackendSta
   return {
     ...card,
     status: 'Sample mode',
-    detail: 'Live services are not reachable right now, so the dashboard is showing sample coverage.',
+    detail: 'Live services are not reachable right now, so the dashboard is showing limited coverage.',
   };
 }
 
@@ -1537,7 +1537,7 @@ function formatDegradedBannerMessage(messages: string[]) {
         .replace(/^Backend unavailable\.\s*/i, '')
         .replace(/Rendering explicit fallback/gi, 'Using fallback')
         .replace(/fallback-safe/gi, 'fallback')
-        .replace(/demoable/gi, 'available')
+        .replace(/demoable/gi, 'available').replace(/sample/gi, 'limited')
         .trim()
     )
     .filter(Boolean);

@@ -67,7 +67,7 @@ export default function HistoryRecordsView({ history, loading = false, error, wo
         <div>
           <p className="eyebrow">Persisted customer records</p>
           <h1>Workspace history</h1>
-          <p className="lede">Browse threat analyses, compliance actions, and resilience incidents saved for {workspaceName ?? history?.workspace.name ?? 'the active workspace'}.</p>
+          <p className="lede">Browse monitoring checkpoints, compliance actions, and resilience incidents saved for {workspaceName ?? history?.workspace.name ?? 'the active workspace'}.</p>
         </div>
         <div className="historyToolbar">
           <label className="label compactLabel">
@@ -91,13 +91,13 @@ export default function HistoryRecordsView({ history, loading = false, error, wo
 
       {loading ? <div className="emptyStatePanel"><h2>Loading persisted records…</h2><p>We are pulling the latest saved analyses and operational events for this workspace.</p></div> : null}
       {error ? <div className="emptyStatePanel"><h2>Unable to load history</h2><p>{error}</p></div> : null}
-      {!loading && !error && !history ? <div className="emptyStatePanel"><h2>No saved records yet</h2><p>Run live analyses from the threat, compliance, or resilience routes to start building a customer-ready audit trail.</p></div> : null}
+      {!loading && !error && !history ? <div className="emptyStatePanel"><h2>No saved records yet</h2><p>Monitoring history will appear here once this workspace receives alerts, incidents, and checkpoints.</p></div> : null}
       {!loading && !error && history && history.analysis_runs.length === 0 ? (
         <div className="emptyStatePanel">
-          <h2>No analyses yet</h2>
-          <p>Your workspace is ready. Run your first threat analysis to create a reviewable audit trail.</p>
+          <h2>No checkpoints yet</h2>
+          <p>Your workspace is ready. Review monitoring status to start a persistent audit trail.</p>
           <div className="heroActionRow">
-            <Link href="/threat" prefetch={false}>Run your first threat analysis</Link>
+            <Link href="/threat" prefetch={false}>Check monitoring status</Link>
           </div>
         </div>
       ) : null}

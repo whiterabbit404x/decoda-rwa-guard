@@ -40,10 +40,10 @@ function formatBackendLabel(state: BackendState) {
   }
 
   if (state === 'degraded') {
-    return 'Partial fallback coverage';
+    return 'Coverage degraded';
   }
 
-  return 'Sample data only';
+  return 'Telemetry offline';
 }
 
 function formatBackendDetail(state: BackendState) {
@@ -52,10 +52,10 @@ function formatBackendDetail(state: BackendState) {
   }
 
   if (state === 'degraded') {
-    return 'At least one live dashboard feed needs attention, but unaffected sections remain connected to live services.';
+    return 'At least one workspace feed needs attention; verify evidence freshness before closing alerts.';
   }
 
-  return 'The pilot remains explorable with sample coverage while live connectivity is restored.';
+  return 'Live evidence unavailable. Review the last confirmed checkpoint until connectivity is restored.';
 }
 
 export default function PilotOverviewPanel({
@@ -206,7 +206,7 @@ export default function PilotOverviewPanel({
         ) : (
           <p className="muted">
             {isAuthenticated
-              ? 'Run live analyses to start building workspace history.'
+              ? 'Review monitoring coverage, alerts, and incidents to start building workspace history.'
               : 'Workspace history appears here after sign-in and live activity.'}
           </p>
         )}

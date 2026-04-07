@@ -23,7 +23,6 @@ const EMPTY_TARGET = {
   severity_threshold: 'medium',
   auto_create_alerts: true,
   auto_create_incidents: false,
-  monitoring_scenario: '',
   tags: [] as string[],
 };
 
@@ -88,7 +87,6 @@ export default function TargetsManager({ apiUrl }: Props) {
         severity_threshold: target.severity_threshold || 'medium',
         auto_create_alerts: target.auto_create_alerts ?? true,
         auto_create_incidents: target.auto_create_incidents ?? false,
-        monitoring_scenario: target.monitoring_scenario || null,
         notification_channels: target.notification_channels || [],
         is_active: target.is_active ?? true,
       }),
@@ -161,7 +159,7 @@ export default function TargetsManager({ apiUrl }: Props) {
       {message ? <p className="statusLine">{message}</p> : null}
 
       <h3>Target registry</h3>
-      {filtered.length === 0 ? <p className="muted">Create your first target to run live analysis and start alerting.</p> : filtered.map((target) => (
+      {filtered.length === 0 ? <p className="muted">Create your first target to start continuous monitoring and alerting.</p> : filtered.map((target) => (
         <div key={target.id} className="listHeader" style={{ marginBottom: 8 }}>
           <span>{target.name} · {target.target_type} · {target.chain_network} · asset profile: {target.asset_id || 'none'} · {target.enabled ? 'enabled' : 'disabled'} · monitoring: {target.monitoring_enabled ? 'active' : 'paused'} · interval: {target.monitoring_interval_seconds ?? 300}s · last check: {target.last_checked_at ? new Date(target.last_checked_at).toLocaleString() : 'never'}</span>
           <div className="buttonRow"><button type="button" onClick={() => { setEditing(target); setForm({ ...target, tags: target.tags ?? [] }); }}>Edit</button><button type="button" onClick={() => duplicate(target)}>Duplicate</button><button type="button" onClick={() => void toggleEnabled(target)}>{target.enabled ? 'Disable' : 'Enable'}</button><button type="button" onClick={() => void toggleMonitoring(target)}>{target.monitoring_enabled ? 'Pause monitoring' : 'Enable monitoring'}</button><button type="button" onClick={() => void remove(target)}>Delete</button></div>

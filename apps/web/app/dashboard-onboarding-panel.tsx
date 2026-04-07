@@ -35,7 +35,7 @@ export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApi
       { label: 'Account created', complete: Boolean(user?.id) },
       { label: 'Workspace ready', complete: hasWorkspace },
       { label: 'Live API reachable', complete: liveApiReachable },
-      { label: 'First analysis run', complete: Boolean(onboardingProgress && onboardingProgress.completed_steps > 0) },
+      { label: 'Monitoring coverage reviewed', complete: Boolean(onboardingProgress && onboardingProgress.completed_steps > 0) },
       { label: onboardingProgress ? `Setup progress ${onboardingProgress.completed_steps}/${onboardingProgress.total_steps}` : 'Setup progress pending', complete: Boolean(onboardingProgress && onboardingProgress.completed_steps > 0) },
     ];
   }, [liveApiReachable, onboardingProgress, user?.current_workspace, user?.id]);
@@ -58,7 +58,7 @@ export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApi
       <p className="muted">{onboardingProgress ? `Workspace onboarding completion: ${onboardingProgress.progress_percent}%` : 'Load onboarding checklist to track setup completion.'}</p>
       <div className="heroActionRow">
         <Link href="/onboarding" prefetch={false}>Open setup wizard</Link>
-        <Link href="/threat" prefetch={false}>Run your first threat analysis</Link>
+        <Link href="/threat" prefetch={false}>Review monitoring coverage</Link>
         {!user?.current_workspace ? <Link href="/workspaces" prefetch={false}>Set up workspace</Link> : null}
       </div>
     </section>

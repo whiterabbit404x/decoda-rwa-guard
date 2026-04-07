@@ -106,7 +106,7 @@ export default function ComplianceOperationsPanel({ apiUrl }: Props) {
       <div className="buttonRow">
         <button type="button" onClick={() => setShowAdvanced(!showAdvanced)}>{showAdvanced ? 'Use guided fields' : 'Use advanced JSON for save'}</button>
         <button type="button" onClick={save}>Save policy</button>
-        <button type="button" onClick={run} disabled={running}>{running ? 'Running…' : 'Run analysis'}</button>
+        <button type="button" onClick={run} disabled={running}>{running ? 'Checking…' : 'Review current alerts'}</button>
         <button type="button" onClick={exportReport}>Export report</button>
       </div>
       {output ? <p className="statusLine">{output}</p> : null}
