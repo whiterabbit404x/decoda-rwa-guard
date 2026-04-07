@@ -35,6 +35,9 @@ def _asset() -> dict:
         'identifier': 'USTB',
         'asset_identifier': 'USTB',
         'asset_symbol': 'USTB',
+        'token_standard': 'erc20',
+        'token_decimals': 6,
+        'chainlink_feeds': [{'chain_network': 'ethereum', 'proxy_address': '0xfeed', 'pair': 'USTB/USD'}],
         'chain_id': 1,
         'token_contract_address': '0xtoken',
         'expected_counterparties': ['0xcp1'],
@@ -104,3 +107,18 @@ def test_oracle_integrity_detects_divergence_and_cadence_violation() -> None:
     detector = [item for item in _enforce_asset_detectors(asset=_asset(), event=event) if item['detector_family'] == 'oracle_integrity'][0]
     assert detector['detector_status'] == 'anomaly_detected'
     assert 'source_divergence' in detector['anomaly_reason']
+
+
+def test_asset_detection_still_runs_with_bound_chainlink_and_token_metadata() -> None:
+    event = _event(
+        'transfer',
+        to='0xcp1',
+        amount='100',
+        oracle_observations=[{'source_name': 'USTB/USD', 'status': 'ok', 'observed_value': 1.0, 'observed_at': datetime.now(timezone.utc).isoformat(), 'update_interval_seconds': 30}],
+        liquidity_observations=[{'status': 'ok', 'rolling_volume': 1000, 'rolling_transfer_count': 10, 'unique_counterparties': 4, 'concentration_ratio': 0.4, 'abnormal_outflow_ratio': 0.2, 'burst_score': 1.0, 'route_distribution': {'treasury_ops->approved_external_counterparty': 1.0}}],
+        market_observations=[{'status': 'ok', 'source_name': 'market-a'}],
+        venue_observations=[{'venue_distribution': {'venue-a': 1.0}}],
+    )
+    detector_results = _enforce_asset_detectors(asset=_asset(), event=event)
+    assert len(detector_results) == 5
+    assert all(item['detector_status'] in {'real_event_no_anomaly', 'anomaly_detected', 'insufficient_real_evidence'} for item in detector_results)

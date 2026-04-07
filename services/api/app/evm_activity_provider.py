@@ -185,9 +185,28 @@ def _build_base_payload(*, target: dict[str, Any], network: str, chain_id: int, 
         'raw_reference': raw_reference,
         'contract_address': str(target.get('contract_identifier') or '').lower() or None,
         'asset_address': None,
-        'asset_symbol': None,
+        'asset_symbol': str(target.get('asset_symbol') or (target.get('asset_context') or {}).get('asset_symbol') or '') or None,
+        'asset_context': _asset_context_from_target(target),
         'event_type': 'transaction',
         'observed_at': None,
+    }
+
+
+def _asset_context_from_target(target: dict[str, Any]) -> dict[str, Any]:
+    context = target.get('asset_context') if isinstance(target.get('asset_context'), dict) else target
+    return {
+        'asset_id': context.get('asset_id') or context.get('id') or target.get('asset_id'),
+        'asset_identifier': context.get('asset_identifier') or context.get('identifier') or target.get('asset_identifier'),
+        'asset_symbol': context.get('asset_symbol') or target.get('asset_symbol'),
+        'token_contract_address': context.get('token_contract_address') or target.get('token_contract_address') or target.get('contract_identifier'),
+        'token_name': context.get('token_name'),
+        'token_decimals': context.get('token_decimals'),
+        'token_standard': context.get('token_standard'),
+        'chainlink_feeds': context.get('chainlink_feeds') if isinstance(context.get('chainlink_feeds'), list) else [],
+        'treasury_ops_wallets': context.get('treasury_ops_wallets') if isinstance(context.get('treasury_ops_wallets'), list) else [],
+        'custody_wallets': context.get('custody_wallets') if isinstance(context.get('custody_wallets'), list) else [],
+        'expected_counterparties': context.get('expected_counterparties') if isinstance(context.get('expected_counterparties'), list) else [],
+        'venue_labels': context.get('venue_labels') if isinstance(context.get('venue_labels'), list) else [],
     }
 
 

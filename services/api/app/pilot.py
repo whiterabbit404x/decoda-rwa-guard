@@ -3647,6 +3647,15 @@ ASSET_TYPES = {
 }
 ASSET_CLASSES = {'treasury_token', 'bond_token', 'money_market_token', 'rwa_other'}
 BASELINE_SOURCES = {'observed', 'manual', 'imported'}
+ASSET_TOKEN_STANDARDS = {'erc20', 'erc4626', 'erc721', 'unknown'}
+ASSET_WALLET_ROLES = {'treasury_ops', 'custody', 'counterparty', 'venue'}
+
+_ERC20_NAME_SELECTOR = '0x06fdde03'
+_ERC20_SYMBOL_SELECTOR = '0x95d89b41'
+_ERC20_DECIMALS_SELECTOR = '0x313ce567'
+_ERC4626_ASSET_SELECTOR = '0x38d52e0f'
+_ERC165_SUPPORTS_INTERFACE_SELECTOR = '0x01ffc9a7'
+_ERC721_INTERFACE_ID = '80ac58cd'
 
 
 def _normalize_address_list(value: Any, *, field_name: str) -> list[str]:
@@ -3659,6 +3668,82 @@ def _normalize_address_list(value: Any, *, field_name: str) -> list[str]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'{field_name} entries must be EVM-style addresses.')
         filtered.append(item)
     return filtered[:100]
+
+
+def _rpc_url_for_chain(chain_network: str, *, rpc_url_override: str | None = None) -> str:
+    if rpc_url_override:
+        return rpc_url_override
+    suffix = re.sub(r'[^a-z0-9]+', '_', (chain_network or '').strip().lower()).strip('_').upper()
+    if suffix:
+        candidate = os.getenv(f'EVM_RPC_URL_{suffix}', '').strip()
+        if candidate:
+            return candidate
+    return os.getenv('EVM_RPC_URL', '').strip()
+
+
+def _eth_call_raw(rpc_url: str, *, to_address: str, data: str) -> str:
+    payload = {'jsonrpc': '2.0', 'id': 1, 'method': 'eth_call', 'params': [{'to': to_address, 'data': data}, 'latest']}
+    request = UrlRequest(rpc_url, data=_json_dumps(payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
+    with urlopen(request, timeout=10) as response:  # nosec B310
+        body = json.loads(response.read().decode('utf-8') or '{}')
+    if body.get('error'):
+        raise RuntimeError(f"json-rpc error: {body.get('error')}")
+    value = str(body.get('result') or '')
+    if not value.startswith('0x'):
+        raise RuntimeError('json-rpc eth_call returned invalid hex payload')
+    return value
+
+
+def _decode_uint256(hex_value: str) -> int:
+    value = hex_value[2:] if hex_value.startswith('0x') else hex_value
+    if not value:
+        return 0
+    return int(value, 16)
+
+
+def _decode_abi_string(hex_value: str) -> str | None:
+    raw = hex_value[2:] if hex_value.startswith('0x') else hex_value
+    if len(raw) < 128:
+        return None
+    try:
+        offset = int(raw[:64], 16) * 2
+        length = int(raw[offset:offset + 64], 16) * 2
+        data_start = offset + 64
+        text_hex = raw[data_start:data_start + length]
+        if len(text_hex) != length:
+            return None
+        return bytes.fromhex(text_hex).decode('utf-8', errors='ignore').strip() or None
+    except Exception:
+        return None
+
+
+def _encode_supports_interface_call(interface_id_hex: str) -> str:
+    normalized = interface_id_hex.replace('0x', '').strip().lower()
+    if len(normalized) != 8:
+        raise ValueError('interface id must be 4 bytes / 8 hex chars')
+    return f'{_ERC165_SUPPORTS_INTERFACE_SELECTOR}{normalized.rjust(64, "0")}'
+
+
+def _detect_token_standard(rpc_url: str, token_address: str) -> str:
+    try:
+        _eth_call_raw(rpc_url, to_address=token_address, data=_ERC20_DECIMALS_SELECTOR)
+        standard = 'erc20'
+    except Exception:
+        standard = 'unknown'
+    try:
+        asset_response = _eth_call_raw(rpc_url, to_address=token_address, data=_ERC4626_ASSET_SELECTOR)
+        asset_value = asset_response[2:].rjust(64, '0')
+        if int(asset_value[-40:], 16) != 0:
+            return 'erc4626'
+    except Exception:
+        pass
+    if standard == 'erc20':
+        return standard
+    try:
+        supports = _eth_call_raw(rpc_url, to_address=token_address, data=_encode_supports_interface_call(_ERC721_INTERFACE_ID))
+        return 'erc721' if bool(_decode_uint256(supports)) else 'unknown'
+    except Exception:
+        return 'unknown'
 
 
 def billing_provider() -> str:
@@ -3956,7 +4041,7 @@ def list_assets(request: Request) -> dict[str, Any]:
         rows = connection.execute(
             '''
             SELECT id, name, description, asset_type, chain_network, identifier, asset_class, risk_tier, owner_team, notes, enabled,
-                   issuer_name, asset_symbol, asset_identifier, token_contract_address, custody_wallets, treasury_ops_wallets, oracle_sources, venue_labels,
+                   issuer_name, asset_symbol, asset_identifier, token_contract_address, token_decimals, token_name, token_standard, chainlink_feeds, custody_wallets, treasury_ops_wallets, oracle_sources, venue_labels,
                    expected_counterparties, expected_flow_patterns, expected_approval_patterns, expected_liquidity_baseline,
                    expected_oracle_freshness_seconds, expected_oracle_update_cadence_seconds, policy_tags, jurisdiction_tags,
                    baseline_status, baseline_source, baseline_updated_at, baseline_confidence, baseline_coverage,
@@ -4141,6 +4226,158 @@ def delete_asset(asset_id: str, request: Request) -> dict[str, Any]:
         log_audit(connection, action='asset.delete', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
         connection.commit()
         return {'deleted': True, 'id': asset_id}
+
+
+def resolve_asset_onchain(asset_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    chain_network = str(payload.get('chain_network') or '').strip().lower()
+    rpc_url_override = str(payload.get('rpc_url_override') or '').strip() or None
+    if not chain_network:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='chain_network is required.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        asset = connection.execute(
+            'SELECT id, token_contract_address, asset_symbol FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
+            (asset_id, workspace_id),
+        ).fetchone()
+        if asset is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Asset not found.')
+        token_address = str(asset.get('token_contract_address') or '').strip().lower()
+        if not re.match(r'^0x[a-f0-9]{40}$', token_address):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Asset token_contract_address is required for on-chain resolve.')
+        rpc_url = _rpc_url_for_chain(chain_network, rpc_url_override=rpc_url_override)
+        if not rpc_url:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='No RPC URL configured for chain_network.')
+        try:
+            token_name = _decode_abi_string(_eth_call_raw(rpc_url, to_address=token_address, data=_ERC20_NAME_SELECTOR))
+            token_symbol = _decode_abi_string(_eth_call_raw(rpc_url, to_address=token_address, data=_ERC20_SYMBOL_SELECTOR))
+            token_decimals = _decode_uint256(_eth_call_raw(rpc_url, to_address=token_address, data=_ERC20_DECIMALS_SELECTOR))
+            token_standard = _detect_token_standard(rpc_url, token_address)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f'On-chain metadata resolve failed: {exc}') from exc
+        if token_standard not in ASSET_TOKEN_STANDARDS:
+            token_standard = 'unknown'
+        resolved_at = utc_now_iso()
+        connection.execute(
+            '''
+            UPDATE assets
+            SET chain_network = %s,
+                token_name = %s,
+                asset_symbol = COALESCE(%s, asset_symbol),
+                token_decimals = %s,
+                token_standard = %s,
+                updated_by_user_id = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            ''',
+            (chain_network, token_name, token_symbol, token_decimals, token_standard, user['id'], asset_id),
+        )
+        log_audit(connection, action='asset.bind.resolve_onchain', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'chain_network': chain_network, 'token_standard': token_standard})
+        connection.commit()
+    logger.info('asset_onchain_resolve_ok asset_id=%s decimals=%s standard=%s', asset_id, token_decimals, token_standard)
+    return {'token_name': token_name, 'token_symbol': token_symbol, 'token_decimals': token_decimals, 'standard': token_standard, 'resolved_at': resolved_at}
+
+
+def bind_asset_wallets(asset_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    wallets = payload.get('wallets')
+    if not isinstance(wallets, list):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='wallets must be a list.')
+    normalized_wallets: list[dict[str, str]] = []
+    for item in wallets:
+        if not isinstance(item, dict):
+            continue
+        address = str(item.get('address') or '').strip().lower()
+        role = str(item.get('role') or '').strip().lower()
+        if not re.match(r'^0x[a-f0-9]{40}$', address):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='wallet address must be an EVM-style address.')
+        if role not in ASSET_WALLET_ROLES:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='wallet role must be treasury_ops/custody/counterparty/venue.')
+        normalized_wallets.append({'address': address, 'role': role})
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        found = connection.execute('SELECT id FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (asset_id, workspace_id)).fetchone()
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Asset not found.')
+        for item in normalized_wallets:
+            connection.execute(
+                '''
+                INSERT INTO asset_wallet_bindings (id, workspace_id, asset_id, wallet_address, wallet_role)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (workspace_id, asset_id, wallet_address, wallet_role) DO NOTHING
+                ''',
+                (str(uuid.uuid4()), workspace_id, asset_id, item['address'], item['role']),
+            )
+        bindings = connection.execute(
+            'SELECT wallet_address, wallet_role FROM asset_wallet_bindings WHERE workspace_id = %s AND asset_id = %s ORDER BY wallet_role, wallet_address',
+            (workspace_id, asset_id),
+        ).fetchall()
+        by_role: dict[str, list[str]] = {role: [] for role in ASSET_WALLET_ROLES}
+        for row in bindings:
+            role = str(row['wallet_role'])
+            by_role.setdefault(role, []).append(str(row['wallet_address']).lower())
+        connection.execute(
+            '''
+            UPDATE assets
+            SET treasury_ops_wallets = %s::jsonb,
+                custody_wallets = %s::jsonb,
+                expected_counterparties = %s::jsonb,
+                venue_labels = %s::jsonb,
+                updated_by_user_id = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            ''',
+            (
+                _json_dumps(by_role.get('treasury_ops', [])),
+                _json_dumps(by_role.get('custody', [])),
+                _json_dumps(by_role.get('counterparty', [])),
+                _json_dumps(by_role.get('venue', [])),
+                user['id'],
+                asset_id,
+            ),
+        )
+        log_audit(connection, action='asset.bind.wallets', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'wallet_count': len(normalized_wallets)})
+        connection.commit()
+        return {'asset_id': asset_id, 'wallets': [{'address': row['wallet_address'], 'role': row['wallet_role']} for row in bindings]}
+
+
+def bind_asset_chainlink_feeds(asset_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    feeds = payload.get('feeds')
+    if not isinstance(feeds, list):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='feeds must be a list.')
+    normalized_feeds: list[dict[str, str]] = []
+    for item in feeds:
+        if not isinstance(item, dict):
+            continue
+        chain_network = str(item.get('chain_network') or '').strip().lower()
+        proxy_address = str(item.get('proxy_address') or '').strip().lower()
+        pair = str(item.get('pair') or '').strip().upper()
+        if not chain_network:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='chain_network is required for each feed.')
+        if not re.match(r'^0x[a-f0-9]{40}$', proxy_address):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='proxy_address must be an EVM-style address.')
+        if not pair:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='pair is required for each feed.')
+        normalized_feeds.append({'chain_network': chain_network, 'proxy_address': proxy_address, 'pair': pair})
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        found = connection.execute('SELECT id FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (asset_id, workspace_id)).fetchone()
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Asset not found.')
+        connection.execute(
+            'UPDATE assets SET chainlink_feeds = %s::jsonb, updated_by_user_id = %s, updated_at = NOW() WHERE id = %s',
+            (_json_dumps(normalized_feeds), user['id'], asset_id),
+        )
+        log_audit(connection, action='asset.bind.chainlink', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'feed_count': len(normalized_feeds)})
+        connection.commit()
+        return {'asset_id': asset_id, 'feeds': normalized_feeds}
 
 
 def list_targets(request: Request) -> dict[str, Any]:
