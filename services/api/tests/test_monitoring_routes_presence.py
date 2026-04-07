@@ -11,3 +11,7 @@ def test_monitoring_routes_registered() -> None:
     assert "@app.get('/ops/monitoring/health'" in content
     assert "@app.get('/incidents'" in content
     assert "@app.patch('/incidents/{incident_id}'" in content
+    assert "@app.get('/onboarding/progress'" in content
+    assert "@app.get('/workspaces/current'" in content
+    assert "@app.post('/targets/{target_id}/enable'" in content
+    assert "@app.post('/targets/{target_id}/disable'" in content

@@ -114,6 +114,12 @@ ONBOARDING_STEP_ORDER = [
     'analysis_run',
 ]
 ONBOARDING_MANUAL_STEPS = {'industry_profile', 'policy_configured'}
+ONBOARDING_PROGRESS_STEP_ORDER = [
+    'asset_added',
+    'target_created',
+    'monitoring_started',
+    'evidence_recorded',
+]
 
 
 def _severity_meets_threshold(value: str, threshold: str) -> bool:
@@ -1224,6 +1230,66 @@ def _build_onboarding_response(connection: Any, *, workspace_id: str, user_id: s
         'completed_at': row['completed_at'].isoformat() if row and row.get('completed_at') else None,
         'updated_at': row['updated_at'].isoformat() if row and row.get('updated_at') else utc_now_iso(),
     }
+
+
+def get_onboarding_progress(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        counts = connection.execute(
+            '''
+            SELECT
+                (SELECT COUNT(*) FROM assets WHERE workspace_id = %(workspace_id)s AND deleted_at IS NULL) AS assets_count,
+                (SELECT COUNT(*) FROM targets WHERE workspace_id = %(workspace_id)s AND deleted_at IS NULL) AS targets_count,
+                (SELECT COUNT(*) FROM targets WHERE workspace_id = %(workspace_id)s AND deleted_at IS NULL AND monitoring_enabled = TRUE AND enabled = TRUE AND is_active = TRUE) AS monitoring_targets_count,
+                (SELECT COUNT(*) FROM targets WHERE workspace_id = %(workspace_id)s AND deleted_at IS NULL AND last_checked_at IS NOT NULL) AS evaluated_targets_count,
+                (SELECT COUNT(*) FROM monitoring_event_receipts WHERE workspace_id = %(workspace_id)s) AS event_receipts_count
+            ''',
+            {'workspace_id': workspace_id},
+        ).fetchone() or {}
+        states = {
+            'asset_added': int(counts.get('assets_count') or 0) > 0,
+            'target_created': int(counts.get('targets_count') or 0) > 0,
+            'monitoring_started': int(counts.get('monitoring_targets_count') or 0) > 0,
+            'evidence_recorded': int(counts.get('evaluated_targets_count') or 0) > 0 or int(counts.get('event_receipts_count') or 0) > 0,
+        }
+        steps = [
+            {'key': step, 'complete': bool(states.get(step)), 'source': 'automatic' if states.get(step) else 'pending'}
+            for step in ONBOARDING_PROGRESS_STEP_ORDER
+        ]
+        completed_steps = sum(1 for step in steps if step['complete'])
+        payload = {
+            'workspace_id': workspace_id,
+            'workspace_name': workspace_context['workspace']['name'],
+            'steps': steps,
+            'completed_steps': completed_steps,
+            'total_steps': len(ONBOARDING_PROGRESS_STEP_ORDER),
+            'progress_percent': int((completed_steps / len(ONBOARDING_PROGRESS_STEP_ORDER)) * 100),
+            'completed': completed_steps == len(ONBOARDING_PROGRESS_STEP_ORDER),
+            'next_step': next((step['key'] for step in steps if not step['complete']), None),
+            'counts': {
+                'assets': int(counts.get('assets_count') or 0),
+                'targets': int(counts.get('targets_count') or 0),
+                'monitoring_targets': int(counts.get('monitoring_targets_count') or 0),
+                'evaluated_targets': int(counts.get('evaluated_targets_count') or 0),
+                'event_receipts': int(counts.get('event_receipts_count') or 0),
+            },
+        }
+        connection.commit()
+        return payload
+
+
+def get_current_workspace(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        connection.commit()
+        return {'workspace': workspace_context['workspace']}
 
 
 def get_onboarding_state(request: Request) -> dict[str, Any]:
@@ -4089,6 +4155,19 @@ def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         count_row = connection.execute('SELECT COUNT(*) AS count FROM assets WHERE workspace_id = %s AND deleted_at IS NULL', (workspace_id,)).fetchone()
         if int((count_row or {}).get('count') or 0) >= max_assets:
             raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Asset limit reached for current plan.')
+        duplicate = connection.execute(
+            '''
+            SELECT id
+            FROM assets
+            WHERE workspace_id = %s
+              AND deleted_at IS NULL
+              AND lower(chain_network) = lower(%s)
+              AND lower(identifier) = lower(%s)
+            ''',
+            (workspace_id, validated['chain_network'], validated['identifier']),
+        ).fetchone()
+        if duplicate is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='An asset with this chain and identifier already exists in this workspace.')
         asset_id = str(uuid.uuid4())
         connection.execute(
             '''
@@ -4564,6 +4643,35 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
         log_audit(connection, action='target.update', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={})
         connection.commit()
         return {'id': target_id, **validated}
+
+
+def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        row = connection.execute(
+            'SELECT id FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
+            (target_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
+        connection.execute(
+            'UPDATE targets SET enabled = %s, monitoring_enabled = %s, updated_by_user_id = %s, updated_at = NOW() WHERE id = %s',
+            (enabled, enabled, user['id'], target_id),
+        )
+        log_audit(
+            connection,
+            action='target.enable' if enabled else 'target.disable',
+            entity_type='target',
+            entity_id=target_id,
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_context['workspace_id'],
+            metadata={},
+        )
+        connection.commit()
+        return {'id': target_id, 'enabled': enabled, 'monitoring_enabled': enabled}
 
 
 def delete_target(target_id: str, request: Request) -> dict[str, Any]:
