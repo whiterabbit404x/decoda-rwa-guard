@@ -16,11 +16,11 @@ test('localhost:3000/threat renders persistent workspace monitoring workflow', a
   const response = await page.goto('/threat', { waitUntil: 'networkidle' });
 
   expect(response?.ok()).toBeTruthy();
-  await expect(page.getByRole('heading', { name: 'Live monitoring for this workspace' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'This workspace is under continuous monitoring' })).toBeVisible();
-  await expect(page.locator('text=Monitored systems')).toBeVisible();
-  await expect(page.locator('text=Recent activity')).toBeVisible();
-  await expect(page.locator('text=Investigate and act from live workspace monitoring')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Threat Monitoring Console' })).toBeVisible();
+  await expect(page.locator('text=Threat monitoring command center')).toBeVisible();
+  await expect(page.locator('text=Live Threat Feed')).toBeVisible();
+  await expect(page.locator('text=Protected Assets & Coverage')).toBeVisible();
+  await expect(page.locator('text=Investigation and response actions')).toBeVisible();
 
   await expect(page.locator('text=Run analysis')).toHaveCount(0);
   await expect(page.locator('text=Scenario library')).toHaveCount(0);

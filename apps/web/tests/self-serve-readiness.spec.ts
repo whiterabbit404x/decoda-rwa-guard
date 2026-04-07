@@ -62,7 +62,7 @@ test('auth context and operational module pages use live customer workflow langu
   expect(authContext).toContain('if (response.status === 401) {');
   expect(authContext).toContain('await signOut();');
   expect(authContext).toContain('safeAuthFailureMessage');
-  expect(threatPanel).toContain('Threat monitoring state');
+  expect(threatPanel).toContain('Threat monitoring command center');
   expect(threatPanel).not.toContain('monitoring_scenario');
   expect(nav).toContain('Targets');
   expect(nav).toContain('Integrations');
