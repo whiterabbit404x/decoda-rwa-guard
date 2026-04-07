@@ -15,10 +15,7 @@ import {
   formatRules,
   statusTone,
 } from './dashboard-data';
-import {
-  normalizeDashboardPresentationState,
-  toDashboardBadgeState,
-} from './dashboard-status-presentation';
+import { toDashboardBadgeState } from './dashboard-status-presentation';
 
 type Props = {
   data: DashboardPageData;
@@ -28,7 +25,7 @@ type Props = {
 
 export default function DashboardPageContent({ data, gatewayReachableOverride = false, liveFeed }: Props) {
   const { threatDashboard, complianceDashboard, resilienceDashboard, apiUrl, diagnostics } = data;
-  const { backendState, summaryCards, backendBanner } = buildDashboardViewModel(data, {
+  const { backendState, summaryCards, backendBanner, featurePresentation, workspaceMonitoring } = buildDashboardViewModel(data, {
     gatewayReachableOverride,
   });
 
@@ -40,7 +37,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <h1>Tokenized treasury control dashboard</h1>
           <p className="lede">Monitor threats, compliance posture, and resilience readiness with persistent workspace telemetry and history-backed operations.</p>
           <div className="heroActionRow">
-            <StatusBadge state={diagnostics.experienceState === 'live_degraded' ? 'live_degraded' : diagnostics.experienceState} />
+            <StatusBadge state={diagnostics.experienceState} />
             <span className="ruleChip">Gateway: {diagnostics.endpoints.dashboard.ok ? 'reachable' : 'needs attention'}</span>
             <span className="ruleChip">API: {apiUrl || 'Not configured'}</span>
           </div>
@@ -51,7 +48,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <p><strong>Product areas:</strong> Dashboard, threat, compliance, resilience, history, and settings.</p>
           {liveFeed ? (
             <p>
-              <strong>Workspace feed:</strong> {liveFeed.offline ? 'offline' : liveFeed.degraded ? 'degraded' : 'live'} · last update {liveFeed.lastUpdatedAt ? new Date(liveFeed.lastUpdatedAt).toLocaleString() : 'pending'} · checkpoint age {liveFeed.checkpointAgeSeconds ?? 'n/a'}s.
+              <strong>Workspace feed:</strong> {liveFeed.offline ? 'offline' : liveFeed.degraded ? 'degraded' : 'live'} · last update {workspaceMonitoring.lastUpdated} · checkpoint age {liveFeed.checkpointAgeSeconds ?? 'n/a'}s.
               {liveFeed.stale ? ' Evidence is stale; review degraded telemetry before making policy claims.' : ''}
             </p>
           ) : null}
@@ -73,7 +70,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
       <section className="summaryGrid">
         {summaryCards.map((card, index) => (
           <article key={card.label} className="metricCard">
-            <div className="listHeader"><p className="metricLabel">{card.label}</p><StatusBadge state={index < 2 ? diagnostics.endpoints.riskDashboard.payloadState : index === 2 ? diagnostics.endpoints.threatDashboard.payloadState : index === 4 ? diagnostics.endpoints.complianceDashboard.payloadState : diagnostics.endpoints.resilienceDashboard.payloadState} compact /></div>
+            <div className="listHeader"><p className="metricLabel">{card.label}</p><StatusBadge state={index < 2 ? featurePresentation.riskDashboard : index === 2 ? featurePresentation.threatDashboard : index === 4 ? featurePresentation.complianceDashboard : featurePresentation.resilienceDashboard} compact /></div>
             <p className="metricValue">{card.value}</p>
             <p className="metricMeta">{card.meta}</p>
           </article>
@@ -87,13 +84,13 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
             <h2>Threat Operations</h2>
             <p>Visible exploit and anomaly detections with deterministic explainability and truthful coverage signals.</p>
           </div>
-          <StatusBadge state={toDashboardBadgeState(normalizeDashboardPresentationState({ rawSource: threatDashboard.source, degraded: threatDashboard.degraded }))} />
+          <StatusBadge state={toDashboardBadgeState(featurePresentation.threatDashboard)} />
         </div>
         <div className="threeColumnSection">
           <div className="stack compactStack">
             {threatDashboard.active_alerts.map((alert) => (
               <article key={alert.id} className="dataCard">
-                <div className="listHeader"><div><h3>{alert.title}</h3><p className="muted">{alert.category}</p></div><StatusBadge state={toDashboardBadgeState(normalizeDashboardPresentationState({ rawSource: alert.source }))} compact /></div>
+                <div className="listHeader"><div><h3>{alert.title}</h3><p className="muted">{alert.category}</p></div><StatusBadge state={toDashboardBadgeState(featurePresentation.threatDashboard)} compact /></div>
                 <p className="explanation small">{alert.explanation}</p>
                 <div className="chipRow">{formatRules(alert.patterns).map((pattern) => <span key={pattern} className="ruleChip">{pattern}</span>)}</div>
               </article>
@@ -118,7 +115,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
             <h2>Compliance Operations</h2>
             <p>Screen transfers, record governance actions, and keep policy context readable for customers.</p>
           </div>
-          <StatusBadge state={toDashboardBadgeState(normalizeDashboardPresentationState({ rawSource: complianceDashboard.source, degraded: complianceDashboard.degraded }))} />
+          <StatusBadge state={toDashboardBadgeState(featurePresentation.complianceDashboard)} />
         </div>
         <div className="threeColumnSection">
           <div className="stack compactStack">
@@ -135,7 +132,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <div className="stack compactStack">
             {complianceDashboard.latest_governance_actions.map((action) => (
               <article key={action.action_id} className="dataCard">
-                <div className="listHeader"><div><h3>{action.action_type}</h3><p className="muted">{action.target_type} · {action.target_id}</p></div><StatusBadge state={toDashboardBadgeState(normalizeDashboardPresentationState({ rawSource: complianceDashboard.source, degraded: complianceDashboard.degraded }))} compact /></div>
+                <div className="listHeader"><div><h3>{action.action_type}</h3><p className="muted">{action.target_type} · {action.target_id}</p></div><StatusBadge state={toDashboardBadgeState(featurePresentation.complianceDashboard)} compact /></div>
                 <p className="explanation small">{action.reason}</p>
               </article>
             ))}
@@ -150,13 +147,13 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
             <h2>Resilience Operations</h2>
             <p>Reconciliation, backstop posture, and incident management remain explorable even in degraded states.</p>
           </div>
-          <StatusBadge state={toDashboardBadgeState(normalizeDashboardPresentationState({ rawSource: resilienceDashboard.source, degraded: resilienceDashboard.degraded }))} />
+          <StatusBadge state={toDashboardBadgeState(featurePresentation.resilienceDashboard)} />
         </div>
         <div className="threeColumnSection">
           <div className="stack compactStack">
             {resilienceDashboard.latest_incidents.map((incident) => (
               <article key={incident.event_id} className="dataCard">
-                <div className="listHeader"><div><h3>{incident.event_type}</h3><p className="muted">{incident.trigger_source}</p></div><StatusBadge state={toDashboardBadgeState(normalizeDashboardPresentationState({ rawSource: incident.source, degraded: incident.degraded }))} compact /></div>
+                <div className="listHeader"><div><h3>{incident.event_type}</h3><p className="muted">{incident.trigger_source}</p></div><StatusBadge state={toDashboardBadgeState(featurePresentation.resilienceDashboard)} compact /></div>
                 <p className="explanation small">{incident.summary}</p>
               </article>
             ))}

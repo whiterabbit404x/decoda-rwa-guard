@@ -53,7 +53,7 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(systemStatus).toContain('Workspace monitoring state');
     expect(systemStatus).toContain('Coverage currently limited');
     expect(statusAdapter).toContain('normalizeDashboardPresentationState');
-    expect(dashboardPage).toContain('normalizedashboardpresentationstate');
+    expect(dashboardPage).toContain('featurepresentation');
     expect(dashboardPage).not.toContain("resolveBadgeState(source: 'live' | 'fallback'");
   });
 });
