@@ -118,12 +118,15 @@ from services.api.app.pilot import (
     list_alert_evidence,
     list_incidents,
     patch_incident,
+    list_incident_timeline,
+    append_incident_timeline_note,
     create_enforcement_action,
     approve_enforcement_action,
     execute_enforcement_action,
     rollback_enforcement_action,
     create_export_job,
     create_proof_bundle_export,
+    create_incident_report_export,
     get_mttd_metrics,
     list_exports,
     get_export,
@@ -1827,13 +1830,22 @@ def alerts_suppressions_create(payload: dict[str, Any], request: Request) -> dic
 
 
 @app.get('/incidents', summary='List incidents')
-def incidents_list(request: Request, severity: str | None = None, target_id: str | None = None, status_value: str | None = None) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: list_incidents(request, severity=severity, target_id=target_id, status_value=status_value))
+def incidents_list(request: Request, severity: str | None = None, target_id: str | None = None, status_value: str | None = None, assignee_user_id: str | None = None) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_incidents(request, severity=severity, target_id=target_id, status_value=status_value, assignee_user_id=assignee_user_id))
 
 
 @app.patch('/incidents/{incident_id}', summary='Update incident status/owner')
 def incidents_patch(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: patch_incident(incident_id, payload, request))
+
+@app.get('/incidents/{incident_id}/timeline', summary='List incident timeline entries')
+def incidents_timeline_list(incident_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_incident_timeline(incident_id, request))
+
+
+@app.post('/incidents/{incident_id}/timeline', summary='Append incident timeline note')
+def incidents_timeline_create(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: append_incident_timeline_note(incident_id, payload, request))
 
 
 @app.post('/enforcement/actions', summary='Plan a workspace enforcement action')
@@ -1884,6 +1896,11 @@ def exports_feature1_evidence(payload: dict[str, Any], request: Request) -> dict
 @app.post('/exports/proof-bundle', summary='Export incident proof bundle')
 def exports_proof_bundle(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_proof_bundle_export(payload, request))
+
+
+@app.post('/exports/incident-report', summary='Export incident investigation report')
+def exports_incident_report(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_incident_report_export(payload, request))
 
 
 @app.get('/exports', summary='List workspace exports')
