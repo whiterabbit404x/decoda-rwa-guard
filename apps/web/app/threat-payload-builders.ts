@@ -1,5 +1,10 @@
 import type { ThreatPolicy } from './policy-builders';
 
+/**
+ * Internal diagnostics helpers only.
+ * The signed-in Threat operations flow is investigation-first and must not depend on
+ * manual scenario payload builders or preset execution flows.
+ */
 export type ThreatAnalysisType = 'contract' | 'transaction' | 'market';
 
 export type ThreatTarget = {
@@ -110,7 +115,7 @@ export function validateAnalysisCombination(target: ThreatTarget | undefined, an
   return null;
 }
 
-export const transactionPresets: Array<{ id: string; label: string; scenario: TransactionScenarioInput }> = [
+export const diagnosticTransactionPresets: Array<{ id: string; label: string; scenario: TransactionScenarioInput }> = [
   {
     id: 'safe',
     label: 'Safe',
@@ -167,7 +172,7 @@ export const transactionPresets: Array<{ id: string; label: string; scenario: Tr
   },
 ];
 
-export const contractPresets: Array<{ id: string; label: string; scenario: ContractScenarioInput }> = [
+export const diagnosticContractPresets: Array<{ id: string; label: string; scenario: ContractScenarioInput }> = [
   {
     id: 'safe-low-risk',
     label: 'Safe / Low-risk',
@@ -224,7 +229,7 @@ export const contractPresets: Array<{ id: string; label: string; scenario: Contr
   },
 ];
 
-export const marketPresets: Array<{ id: string; label: string; scenario: MarketScenarioInput }> = [
+export const diagnosticMarketPresets: Array<{ id: string; label: string; scenario: MarketScenarioInput }> = [
   {
     id: 'normal',
     label: 'Normal',
@@ -292,3 +297,8 @@ export const marketPresets: Array<{ id: string; label: string; scenario: MarketS
     },
   },
 ];
+
+// Backwards-compatible aliases for internal callers and tests.
+export const transactionPresets = diagnosticTransactionPresets;
+export const contractPresets = diagnosticContractPresets;
+export const marketPresets = diagnosticMarketPresets;

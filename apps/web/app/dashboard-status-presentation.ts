@@ -23,6 +23,8 @@ export type DashboardPresentationState =
   | 'delayed'
   | 'unavailable';
 
+export type DashboardPresentationFreshness = 'verified' | 'recent' | 'delayed' | 'unavailable';
+
 export function normalizeDashboardPresentationState(input: {
   internalSource?: InternalDashboardSourceState;
   internalEvidence?: InternalDashboardEvidenceState | null;
@@ -70,10 +72,18 @@ export function getDashboardPresentationTone(state: DashboardPresentationState):
   return 'critical';
 }
 
+export function normalizeDashboardFreshness(state: DashboardPresentationState): DashboardPresentationFreshness {
+  if (state === 'live') return 'verified';
+  if (state === 'live_degraded' || state === 'degraded' || state === 'limited_coverage') return 'recent';
+  if (state === 'delayed' || state === 'stale') return 'delayed';
+  return 'unavailable';
+}
+
 export function getDashboardFreshnessLabel(state: DashboardPresentationState): string {
-  if (state === 'live') return 'Verified telemetry';
-  if (state === 'live_degraded' || state === 'degraded') return 'Recent telemetry';
-  if (state === 'delayed' || state === 'stale') return 'Telemetry delayed';
+  const freshness = normalizeDashboardFreshness(state);
+  if (freshness === 'verified') return 'Verified telemetry';
+  if (freshness === 'recent') return 'Recent telemetry';
+  if (freshness === 'delayed') return 'Telemetry delayed';
   return 'Telemetry unavailable';
 }
 

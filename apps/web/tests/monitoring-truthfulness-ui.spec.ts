@@ -44,6 +44,9 @@ test.describe('monitoring truthfulness UI copy', () => {
     const dashboardPage = source('dashboard-page-content.tsx').toLowerCase();
     const systemStatus = source('system-status-panel.tsx');
     const statusAdapter = source('dashboard-status-presentation.ts');
+    const statusBadge = source('status-badge.tsx');
+    const threatOperations = source('threat-operations-panel.tsx').toLowerCase();
+    const dashboardData = source('dashboard-data.ts');
 
     ['fallback engaged', 'fallback coverage', 'sample-safe', 'demo', 'scenario', 'simulation'].forEach((term) => {
       expect(dashboardPage).not.toContain(term);
@@ -58,6 +61,11 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(systemStatus).not.toContain('fallbackTriggered');
     expect(systemStatus).not.toContain('sampleMode');
     expect(statusAdapter).toContain('normalizeDashboardPresentationState');
+    expect(statusAdapter).toContain('normalizeDashboardFreshness');
+    expect(statusBadge).toContain('state: CustomerStatusBadgeState;');
+    expect(threatOperations).not.toContain('threat-payload-builders');
+    expect(threatOperations).not.toContain('scenario');
+    expect(dashboardData).toContain('recentActivitySummary');
     expect(dashboardPage).toContain('featurepresentation');
     expect(dashboardPage).toContain('monitoring state:');
     expect(dashboardPage).toContain('last confirmed checkpoint:');
