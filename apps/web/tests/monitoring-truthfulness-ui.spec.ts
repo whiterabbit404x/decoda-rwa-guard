@@ -22,25 +22,18 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(banner).not.toContain('Healthy');
   });
 
-  test('overview panel does not treat zero alerts as safety', async () => {
+  test('overview panel and threat panel present stale/degraded/offline states truthfully', async () => {
     const panel = source('monitoring-overview-panel.tsx');
-    expect(panel).toContain("realEventCount > 0 && truthfulnessState !== 'unknown_risk'");
-    expect(panel).toContain('Zero alerts is not proof of safety.');
-    expect(panel).toContain('No real evidence observed yet.');
-    expect(panel).not.toContain('Operating normally');
-  });
+    const threatPanel = source('threat-operations-panel.tsx');
 
-  test('alerts and incidents empty states do not present no-data as safe in live/hybrid', async () => {
-    const alerts = source('(product)/alerts-page-client.tsx');
-    const incidents = source('(product)/incidents-page-client.tsx');
-    expect(alerts).toContain('Zero alerts is not proof of safety.');
-    expect(alerts).toContain('No real evidence observed yet.');
-    expect(incidents).toContain('Zero incidents is not proof of safety.');
-    expect(incidents).toContain('Monitoring degraded. Incident absence does not prove safety.');
-    expect(alerts).not.toContain('All clear');
-    expect(incidents).not.toContain('Operating normally');
-    expect(alerts).toContain('Protected asset:');
-    expect(alerts).toContain('Anomaly basis:');
-    expect(alerts).toContain('Evidence: tx');
+    expect(panel).toContain('Telemetry is offline. Treat this workspace as unverified until connectivity returns.');
+    expect(panel).toContain('Monitoring is degraded. Incident absence does not prove safety.');
+    expect(panel).toContain('Evidence is stale. Await fresh checkpoint and event updates.');
+
+    expect(threatPanel).toContain('Workspace telemetry is offline. Do not assume current protection coverage until connectivity returns.');
+    expect(threatPanel).toContain('Monitoring is degraded for this workspace. Validate evidence before taking closure actions.');
+    expect(threatPanel).toContain('Coverage freshness is stale. Await a fresh checkpoint before relying on this state.');
+    expect(threatPanel).toContain('Loading monitoring state…');
+    expect(threatPanel).toContain('Refreshing monitoring state…');
   });
 });

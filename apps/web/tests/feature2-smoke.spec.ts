@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('localhost:3000/threat renders customer-facing threat analysis workflow', async ({ page }) => {
+test('localhost:3000/threat renders persistent workspace monitoring workflow', async ({ page }) => {
   const consoleErrors: string[] = [];
 
   page.on('pageerror', (error) => {
@@ -16,19 +16,15 @@ test('localhost:3000/threat renders customer-facing threat analysis workflow', a
   const response = await page.goto('/threat', { waitUntil: 'networkidle' });
 
   expect(response?.ok()).toBeTruthy();
-  await expect(page.locator('h3', { hasText: 'Threat analysis workspace' })).toBeVisible();
-  await expect(page.locator('text=Scenario library')).toBeVisible();
-  await expect(page.locator('text=Run analysis')).toBeVisible();
-  await expect(page.locator('text=Decision output')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Live monitoring for this workspace' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'This workspace is under continuous monitoring' })).toBeVisible();
+  await expect(page.locator('text=Monitored systems')).toBeVisible();
+  await expect(page.locator('text=Recent activity')).toBeVisible();
+  await expect(page.locator('text=Investigate and act from live workspace monitoring')).toBeVisible();
 
-  await expect(page.locator('text=Decision summary')).toBeVisible();
-  await expect(page.locator('text=Why this decision happened')).toBeVisible();
-  await expect(page.locator('text=Recommended operator action')).toBeVisible();
-
-  await expect(page.getByRole('button', { name: 'Copy summary' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Copy JSON' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Open history' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Run again' })).toBeVisible();
+  await expect(page.locator('text=Run analysis')).toHaveCount(0);
+  await expect(page.locator('text=Scenario library')).toHaveCount(0);
+  await expect(page.locator('text=Run once now')).toHaveCount(0);
 
   await expect(page.locator('body')).not.toContainText('Application error');
   await expect(page.locator('body')).not.toContainText('Unhandled Runtime Error');

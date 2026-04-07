@@ -5,10 +5,11 @@ import { useMemo } from 'react';
 import { usePilotAuth } from './pilot-auth-context';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 
-function feedLabel(offline: boolean, degraded: boolean) {
-  if (offline) return 'Offline';
-  if (degraded) return 'Degraded';
-  return 'Live';
+function feedLabel(offline: boolean, degraded: boolean, stale: boolean) {
+  if (offline) return 'offline';
+  if (degraded) return 'degraded';
+  if (stale) return 'stale';
+  return 'fresh';
 }
 
 export default function WorkspaceOwnershipBar() {
@@ -25,16 +26,16 @@ export default function WorkspaceOwnershipBar() {
       <h2>{user?.current_workspace?.name ?? 'No active workspace selected'}</h2>
       <div className="chipRow">
         <span className="ruleChip">Role: {role}</span>
-        <span className="ruleChip">Protected assets / monitored targets: {feed.counts.monitoredTargets}</span>
-        <span className="ruleChip">Open alerts: {feed.counts.openAlerts}</span>
-        <span className="ruleChip">Open incidents: {feed.counts.openIncidents}</span>
-        <span className="ruleChip">Workspace history records: {feed.counts.historyRecords}</span>
+        <span className="ruleChip">Protected assets: {feed.counts.monitoredTargets}</span>
+        <span className="ruleChip">Monitored systems: {feed.counts.monitoredTargets}</span>
+        <span className="ruleChip">Alerts for this workspace: {feed.counts.openAlerts}</span>
+        <span className="ruleChip">Incidents affecting this workspace: {feed.counts.openIncidents}</span>
       </div>
       <p className="tableMeta">
-        Monitoring state: {feedLabel(feed.offline, feed.degraded)} · last update: {feed.lastUpdatedAt ? new Date(feed.lastUpdatedAt).toLocaleString() : 'pending'} · checkpoint age: {feed.checkpointAgeSeconds ?? 'n/a'}s.
+        Last checkpoint: {feed.checkpointAgeSeconds ?? 'n/a'}s ago · coverage freshness: {feedLabel(feed.offline, feed.degraded, feed.stale)} ·
+        last update: {feed.lastUpdatedAt ? new Date(feed.lastUpdatedAt).toLocaleString() : 'pending'}.
         {feed.stale ? ' Evidence is stale for this workspace until fresh telemetry arrives.' : ' Live evidence is updating for this workspace.'}
       </p>
     </section>
   );
 }
-
