@@ -6,15 +6,16 @@ function readAppFile(name: string): string {
   return fs.readFileSync(path.join(__dirname, '..', 'app', name), 'utf-8');
 }
 
-test('guided policy builders expose advanced JSON as optional mode', () => {
+test('threat operations panel emphasizes monitoring and investigation over manual runs', () => {
   const threat = readAppFile('threat-operations-panel.tsx');
-  const compliance = readAppFile('compliance-operations-panel.tsx');
-  const resilience = readAppFile('resilience-operations-panel.tsx');
 
-  expect(threat).toContain('Advanced policy configuration (JSON)');
-  expect(compliance).toContain('Advanced policy configuration (JSON)');
-  expect(resilience).toContain('Advanced policy configuration (JSON)');
-  expect(threat).toContain('Use advanced JSON for save');
+  expect(threat).toContain('Threat monitoring state');
+  expect(threat).toContain('This workspace is under continuous monitoring');
+  expect(threat).toContain('Protected assets and monitored targets');
+  expect(threat).toContain('Investigate and act from live workspace monitoring');
+  expect(threat).not.toContain('Advanced policy configuration (JSON)');
+  expect(threat).not.toContain('Run analysis');
+  expect(threat).not.toContain('scenario presets');
 });
 
 test('assets and targets management include search and richer CRUD actions', () => {

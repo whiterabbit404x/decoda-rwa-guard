@@ -10,20 +10,28 @@ test('dashboard and shared shell expose truthful live workspace state', async ()
   const hydrator = read('app/dashboard-live-hydrator.tsx');
   const shell = read('app/workspace-ownership-bar.tsx');
   expect(hydrator).toContain('useLiveWorkspaceFeed');
-  expect(shell).toContain('Monitoring state');
-  expect(shell).toContain('Evidence is stale');
-  expect(shell).toContain('Open alerts');
-  expect(shell).toContain('Open incidents');
+  expect(shell).toContain('This workspace');
+  expect(shell).toContain('Protected assets');
+  expect(shell).toContain('Monitored systems');
+  expect(shell).toContain('Alerts for this workspace');
+  expect(shell).toContain('Incidents affecting this workspace');
+  expect(shell).toContain('coverage freshness');
 });
 
-test('primary product pages do not expose demo selectors or run-once controls', async () => {
-  const alerts = read('app/(product)/alerts-page-client.tsx');
-  const targets = read('app/targets-manager.tsx');
-  const threat = read('app/threat-operations-panel.tsx');
-  expect(alerts).not.toContain('source=demo');
-  expect(targets).not.toContain('Demo scenario');
-  expect(threat).not.toContain('Run once now');
-  expect(threat).not.toContain('demo scenario');
+test('primary threat page uses always-on monitoring language and removes scenario-run flow', async () => {
+  const threatPage = read('app/(product)/threat/page.tsx');
+  const threatPanel = read('app/threat-operations-panel.tsx');
+
+  expect(threatPage).toContain('Live monitoring for this workspace');
+  expect(threatPanel).toContain('This workspace is under continuous monitoring');
+  expect(threatPanel).toContain('Monitored systems');
+  expect(threatPanel).toContain('Recent activity');
+  expect(threatPanel).toContain('Investigate and act from live workspace monitoring');
+
+  expect(threatPanel).not.toContain('scenario presets');
+  expect(threatPanel).not.toContain('Run analysis');
+  expect(threatPanel).not.toContain('Run once now');
+  expect(threatPanel).not.toContain('Advanced policy configuration (JSON)');
 });
 
 test('alerts and incidents include operator decisions with role-gated governance actions', async () => {
@@ -49,4 +57,3 @@ test('history includes first-class tabs and persisted filters', async () => {
   expect(alerts).toContain('window.localStorage.setItem(FILTER_KEY');
   expect(incidents).toContain('window.localStorage.setItem(FILTER_KEY');
 });
-
