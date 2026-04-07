@@ -49,7 +49,8 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <p><strong>Last confirmed checkpoint:</strong> {workspaceMonitoring.lastConfirmedCheckpoint}</p>
           <p><strong>Protected assets:</strong> {workspaceMonitoring.protectedAssets} · <strong>Monitored systems:</strong> {workspaceMonitoring.monitoredTargets}</p>
           <p><strong>Open alerts:</strong> {workspaceMonitoring.openAlerts} · <strong>Open incidents:</strong> {workspaceMonitoring.openIncidents}</p>
-          <p><strong>Recent activity:</strong> {backendBanner}</p>
+          <p><strong>Recent activity:</strong> {workspaceMonitoring.recentActivitySummary}</p>
+          <p><strong>System message:</strong> {backendBanner}</p>
           {liveFeed ? (
             <p>
               <strong>Workspace feed:</strong> {liveFeed.offline ? 'offline' : liveFeed.degraded ? 'degraded' : 'live'} · last update {workspaceMonitoring.lastUpdated} · checkpoint age {liveFeed.checkpointAgeSeconds ?? 'n/a'}s.

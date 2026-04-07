@@ -312,9 +312,9 @@ test.describe('dashboard production API flow', () => {
       const routePayload = (await response.json()) as {
         meta: {
           threatDiagnostics: {
-            source: string;
+            presentationState: string;
             degraded: boolean;
-            firstAlertSource: string;
+            activeAlerts: number;
             endpoint: {
               path: string;
               payloadState: string;
@@ -332,9 +332,9 @@ test.describe('dashboard production API flow', () => {
       expect(viewModel.summaryCards.some((card) => card.meta.includes('sample'))).toBe(false);
       expect(formatSourceLabel(data.diagnostics.endpoints.threatDashboard.payloadState)).toBe('Coverage currently limited');
       expect(routePayload.meta.threatDiagnostics).toEqual(expect.objectContaining({
-        source: 'fallback',
+        presentationState: 'limited_coverage',
         degraded: true,
-        firstAlertSource: 'live',
+        activeAlerts: data.threatDashboard.active_alerts.length,
         endpoint: expect.objectContaining({
           path: '/threat/dashboard',
           payloadState: 'limited_coverage',
@@ -379,10 +379,10 @@ test.describe('dashboard production API flow', () => {
       const routePayload = (await response.json()) as {
         meta: {
           threatDiagnostics: {
-            source: string;
+            presentationState: string;
             degraded: boolean;
             message: string;
-            firstAlertSource: string;
+            activeAlerts: number;
             endpoint: {
               path: string;
               payloadState: string;
@@ -401,10 +401,10 @@ test.describe('dashboard production API flow', () => {
       expect(viewModel.backendState).toBe('online');
       expect(viewModel.summaryCards.find((card) => card.label === 'Threat posture')?.meta).toContain('Verified telemetry');
       expect(routePayload.meta.threatDiagnostics).toEqual({
-        source: 'live',
+        presentationState: 'live',
         degraded: false,
         message: 'Threat monitoring scores use deterministic weighted rules with auditable evidence.',
-        firstAlertSource: 'live',
+        activeAlerts: data.threatDashboard.active_alerts.length,
         endpoint: expect.objectContaining({
           path: '/threat/dashboard',
           payloadState: 'live',

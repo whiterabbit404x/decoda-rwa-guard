@@ -1524,10 +1524,10 @@ type DashboardPageDataOptions = {
 };
 
 export type ThreatDashboardRuntimeDiagnostics = {
-  source: ThreatDashboardResponse['source'];
+  presentationState: DashboardPresentationState;
   degraded: boolean;
   message: string;
-  firstAlertSource: ThreatDetection['source'] | 'none';
+  activeAlerts: number;
   endpoint: DashboardEndpointMeta;
 };
 
@@ -1543,6 +1543,7 @@ export type DashboardViewModel = {
     lastUpdated: string;
     lastConfirmedCheckpoint: string;
     coverageLevel: string;
+    recentActivitySummary: string;
     openAlerts: number;
     openIncidents: number;
     protectedAssets: number;
@@ -1559,10 +1560,10 @@ export function buildThreatDashboardRuntimeDiagnostics(
   data: Pick<DashboardPageData, 'threatDashboard' | 'diagnostics'>
 ): ThreatDashboardRuntimeDiagnostics {
   return {
-    source: data.threatDashboard.source,
+    presentationState: data.diagnostics.endpoints.threatDashboard.presentationState,
     degraded: data.threatDashboard.degraded,
     message: data.threatDashboard.message,
-    firstAlertSource: data.threatDashboard.active_alerts[0]?.source ?? 'none',
+    activeAlerts: data.threatDashboard.active_alerts.length,
     endpoint: data.diagnostics.endpoints.threatDashboard,
   };
 }
@@ -1813,8 +1814,8 @@ export async function fetchDashboardPageData(
 
   const diagnostics = buildDashboardDiagnostics(apiConfig, endpoints);
 
-  if (process.env.NODE_ENV === 'development' && diagnostics.fallbackTriggered) {
-    console.debug('[dashboard] Live fetch fallback engaged.', diagnostics.degradedReasons);
+  if (process.env.NODE_ENV === 'development' && diagnostics.coverageLimited) {
+    console.debug('[dashboard] Coverage is currently limited for one or more feeds.', diagnostics.degradedReasons);
   }
 
   return {
@@ -1882,6 +1883,7 @@ export function buildDashboardViewModel(
     lastUpdated: lastCheckpointAt ? new Date(lastCheckpointAt).toLocaleString() : 'Telemetry unavailable',
     lastConfirmedCheckpoint: lastCheckpointAt ? new Date(lastCheckpointAt).toLocaleString() : 'Last confirmed checkpoint unavailable',
     coverageLevel: diagnostics.coverageLimited ? 'Coverage currently limited' : diagnostics.experienceState === 'live' ? 'Verified telemetry' : 'Monitoring state degraded',
+    recentActivitySummary: `${openAlerts} open alerts · ${openIncidents} open incidents · ${formatSourceLabel(diagnostics.endpoints.threatDashboard.payloadState)}`,
     openAlerts,
     openIncidents,
     protectedAssets,

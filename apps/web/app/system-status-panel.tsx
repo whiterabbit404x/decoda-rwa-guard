@@ -11,21 +11,10 @@ import {
 import StatusBadge from './status-badge';
 
 type HealthDetails = {
-  status?: string;
-  runtime_marker?: string;
-  modes?: {
-    pilot_mode?: string;
-    live_mode_enabled?: boolean;
-    app_mode?: string;
-  };
   dependencies?: Record<
     string,
     {
       status?: string;
-      last_used_mode?: string;
-      last_payload_source?: string;
-      last_error?: string | null;
-      degraded?: boolean;
     }
   >;
 };
@@ -48,7 +37,7 @@ export default function SystemStatusPanel({ diagnostics, workspaceMonitoring, he
   const gatewayReachable = diagnostics.endpoints.dashboard.ok;
   const dependencySummary = healthDetails?.dependencies
     ? Object.entries(healthDetails.dependencies)
-        .map(([name, dependency]) => `${name}: ${dependency.last_used_mode ?? dependency.status ?? 'unknown'}`)
+        .map(([name, dependency]) => `${name}: ${dependency.status ?? 'unknown'}`)
         .join(' · ')
     : 'Dependency diagnostics become richer when /health/details is reachable.';
 
@@ -68,7 +57,7 @@ export default function SystemStatusPanel({ diagnostics, workspaceMonitoring, he
         <p><span>Gateway reachable</span>{gatewayReachable ? 'Yes' : 'No'}</p>
         <p><span>API source</span>{diagnostics.apiUrlSource}</p>
         <p><span>Coverage currently limited</span>{workspaceMonitoring.coverageLevel === 'Coverage currently limited' ? 'Yes' : 'No'}</p>
-        <p><span>Dependency mode</span>{dependencySummary}</p>
+        <p><span>Dependency health</span>{dependencySummary}</p>
       </div>
       <div className="statusMatrix">
         {(Object.keys(FEATURE_LABELS) as Array<keyof typeof FEATURE_LABELS>).map((key) => {
