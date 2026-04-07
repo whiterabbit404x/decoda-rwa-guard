@@ -105,3 +105,12 @@ def mask_secret(value: str, keep: int = 4) -> str:
 def validate_encryption_bootstrap() -> dict[str, Any]:
     _secret_key_required()
     return {'configured': encryption_ready(), 'scheme': SECRET_SCHEME_V1}
+
+
+def read_encrypted_env(name: str, *, aad: str = '') -> str:
+    raw = os.getenv(name, '').strip()
+    if not raw:
+        return ''
+    if raw.startswith(f'{SECRET_SCHEME_V1}:') or raw.startswith('legacy_b64:'):
+        return decrypt_secret(raw, aad=aad)
+    return raw

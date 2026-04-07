@@ -118,6 +118,10 @@ from services.api.app.pilot import (
     list_alert_evidence,
     list_incidents,
     patch_incident,
+    create_enforcement_action,
+    approve_enforcement_action,
+    execute_enforcement_action,
+    rollback_enforcement_action,
     create_export_job,
     create_proof_bundle_export,
     get_mttd_metrics,
@@ -1830,6 +1834,26 @@ def incidents_list(request: Request, severity: str | None = None, target_id: str
 @app.patch('/incidents/{incident_id}', summary='Update incident status/owner')
 def incidents_patch(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: patch_incident(incident_id, payload, request))
+
+
+@app.post('/enforcement/actions', summary='Plan a workspace enforcement action')
+def enforcement_actions_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_enforcement_action(payload, request))
+
+
+@app.post('/enforcement/actions/{action_id}/approve', summary='Approve a planned enforcement action')
+def enforcement_actions_approve(action_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: approve_enforcement_action(action_id, request))
+
+
+@app.post('/enforcement/actions/{action_id}/execute', summary='Execute an approved enforcement action')
+def enforcement_actions_execute(action_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: execute_enforcement_action(action_id, request))
+
+
+@app.post('/enforcement/actions/{action_id}/rollback', summary='Rollback enforcement action by creating a compensating action')
+def enforcement_actions_rollback(action_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: rollback_enforcement_action(action_id, request))
 
 
 @app.post('/exports/history', summary='Export analysis history')

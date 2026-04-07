@@ -23,7 +23,7 @@ from urllib.request import Request as UrlRequest, urlopen
 
 import importlib
 from fastapi import HTTPException, Request, status
-from services.api.app.secret_crypto import decrypt_secret, encrypt_secret, validate_encryption_bootstrap
+from services.api.app.secret_crypto import encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
 from services.api.app.export_storage import load_export_storage
 
 ROLE_VALUES = {'owner', 'admin', 'analyst', 'viewer', 'workspace_owner', 'workspace_admin', 'workspace_member'}
@@ -4781,6 +4781,237 @@ def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) 
         log_audit(connection, action='incident.update', entity_type='incident', entity_id=incident_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'status': next_status})
         connection.commit()
         return {'id': incident_id, 'status': next_status}
+
+
+ENFORCEMENT_ACTION_TYPES = {'revoke_erc20_approval', 'freeze_wallet', 'pause_asset', 'notify_only', 'compensating_reapprove_erc20_approval'}
+ENFORCEMENT_STATUSES = {'planned', 'approved', 'executed', 'failed', 'rolled_back'}
+
+
+def _normalize_eth_address(value: str | None, *, field: str) -> str | None:
+    normalized = str(value or '').strip()
+    if not normalized:
+        return None
+    if not re.fullmatch(r'0x[a-fA-F0-9]{40}', normalized):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'{field} must be a 20-byte hex address.')
+    return normalized.lower()
+
+
+def _encode_erc20_approve_calldata(spender: str, amount: int) -> str:
+    if amount < 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='amount must be >= 0.')
+    spender_hex = spender[2:].lower()
+    spender_word = spender_hex.rjust(64, '0')
+    amount_word = format(amount, 'x').rjust(64, '0')
+    # selector approve(address,uint256) = 0x095ea7b3
+    return f'0x095ea7b3{spender_word}{amount_word}'
+
+
+def _enforcement_default_dry_run() -> bool:
+    return env_flag('ENFORCEMENT_DRY_RUN_DEFAULT', default=True)
+
+
+def _safe_signer_key() -> str:
+    return read_encrypted_env('SAFE_SIGNER_KEY', aad='safe-signer-key') or read_encrypted_env('SAFE_SIGNER_KEY_ENCRYPTED', aad='safe-signer-key')
+
+
+def _propose_safe_transaction(action_id: str, *, to: str, data: str, chain_network: str | None = None) -> str:
+    service_url = os.getenv('SAFE_TX_SERVICE_URL', '').strip().rstrip('/')
+    safe_wallet = _normalize_eth_address(os.getenv('SAFE_WALLET_ADDRESS', '').strip(), field='SAFE_WALLET_ADDRESS')
+    if not service_url or not safe_wallet:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='SAFE_TX_SERVICE_URL and SAFE_WALLET_ADDRESS are required for Safe execution.')
+    payload = {
+        'to': to,
+        'value': '0',
+        'data': data,
+        'operation': 0,
+        'safeTxGas': 0,
+        'baseGas': 0,
+        'gasPrice': '0',
+        'gasToken': '0x0000000000000000000000000000000000000000',
+        'refundReceiver': '0x0000000000000000000000000000000000000000',
+        'nonce': int(utc_now().timestamp()),
+        'contractTransactionHash': hashlib.sha256(f'{action_id}:{to}:{data}'.encode('utf-8')).hexdigest(),
+        'sender': safe_wallet,
+        'signature': _safe_signer_key() or '0x',
+        'origin': _json_dumps({'source': 'decoda-rwa-guard', 'action_id': action_id, 'chain_network': chain_network}),
+    }
+    request = UrlRequest(
+        f'{service_url}/api/v1/safes/{safe_wallet}/multisig-transactions/',
+        data=_json_dumps(payload).encode('utf-8'),
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            data = json.loads(response.read().decode('utf-8')) if response.readable() else {}
+    except (HTTPError, URLError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f'Safe transaction proposal failed: {exc}') from exc
+    safe_tx_hash = str(data.get('safeTxHash') or data.get('safe_tx_hash') or data.get('contractTransactionHash') or '').strip()
+    if not safe_tx_hash:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Safe transaction proposal did not return safeTxHash.')
+    return safe_tx_hash
+
+
+def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    action_type = str(payload.get('action_type', '')).strip().lower()
+    if action_type not in ENFORCEMENT_ACTION_TYPES - {'compensating_reapprove_erc20_approval'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported action_type.')
+    params = payload.get('params') if isinstance(payload.get('params'), dict) else {}
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        action_id = str(uuid.uuid4())
+        incident_id = payload.get('incident_id')
+        alert_id = payload.get('alert_id')
+        chain_network = str(params.get('chain_network') or '').strip() or None
+        token_contract = _normalize_eth_address(params.get('token_contract'), field='token_contract')
+        spender = _normalize_eth_address(params.get('spender'), field='spender')
+        target_wallet = _normalize_eth_address(params.get('target_wallet'), field='target_wallet')
+        dry_run = bool(payload.get('dry_run')) if payload.get('dry_run') is not None else _enforcement_default_dry_run()
+        execution_metadata = {'params': params, 'created_via': 'api'}
+        calldata: str | None = None
+        if action_type in {'revoke_erc20_approval', 'compensating_reapprove_erc20_approval'}:
+            if not token_contract or not spender:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='token_contract and spender are required for ERC20 approval actions.')
+            amount = 0 if action_type == 'revoke_erc20_approval' else int(params.get('amount') or 0)
+            calldata = _encode_erc20_approve_calldata(spender, amount)
+            execution_metadata['erc20_approve_amount'] = str(amount)
+            if params.get('previous_allowance') is not None:
+                execution_metadata['previous_allowance'] = str(params.get('previous_allowance'))
+        connection.execute(
+            '''
+            INSERT INTO enforcement_actions (
+                id, workspace_id, incident_id, alert_id, action_type, status, dry_run,
+                chain_network, target_wallet, token_contract, spender, calldata,
+                execution_metadata, created_by_user_id
+            )
+            VALUES (%s, %s, %s::uuid, %s::uuid, %s, 'planned', %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            ''',
+            (
+                action_id,
+                workspace_context['workspace_id'],
+                incident_id,
+                alert_id,
+                action_type,
+                dry_run,
+                chain_network,
+                target_wallet,
+                token_contract,
+                spender,
+                calldata,
+                _json_dumps(execution_metadata),
+                user['id'],
+            ),
+        )
+        log_audit(connection, action='enforcement.action.create', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'action_type': action_type, 'dry_run': dry_run})
+        connection.commit()
+        logger.info('enforcement_planned action_id=%s type=%s dry_run=%s', action_id, action_type, str(dry_run).lower())
+        return {'id': action_id, 'status': 'planned', 'action_type': action_type, 'dry_run': dry_run, 'calldata': calldata}
+
+
+def approve_enforcement_action(action_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        row = connection.execute('SELECT id, status FROM enforcement_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
+        if str(row.get('status')) not in {'planned', 'failed'}:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action cannot be approved from current status.')
+        connection.execute('UPDATE enforcement_actions SET status = %s, approved_by_user_id = %s, execution_metadata = execution_metadata || %s::jsonb WHERE id = %s', ('approved', user['id'], _json_dumps({'approved_at': utc_now_iso()}), action_id))
+        log_audit(connection, action='enforcement.action.approve', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'id': action_id, 'status': 'approved'}
+
+
+def execute_enforcement_action(action_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        row = connection.execute('SELECT * FROM enforcement_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
+        if str(row.get('status')) != 'approved':
+            logger.warning('execute_blocked_missing_approval action_id=%s', action_id)
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action must be approved before execute.')
+        action = _json_safe_value(dict(row))
+        safe_tx_hash = None
+        metadata = action.get('execution_metadata') if isinstance(action.get('execution_metadata'), dict) else {}
+        if bool(action.get('dry_run')):
+            metadata['execution_mode'] = 'dry_run'
+        elif action.get('action_type') in {'revoke_erc20_approval', 'compensating_reapprove_erc20_approval'}:
+            safe_tx_hash = _propose_safe_transaction(
+                action_id,
+                to=str(action.get('token_contract') or ''),
+                data=str(action.get('calldata') or ''),
+                chain_network=str(action.get('chain_network') or ''),
+            )
+            logger.info('enforcement_proposed_safe_tx action_id=%s safe_tx_hash=%s', action_id, safe_tx_hash)
+            metadata['execution_mode'] = 'safe_proposed'
+        else:
+            metadata['execution_mode'] = 'manual_or_notify'
+        connection.execute(
+            '''
+            UPDATE enforcement_actions
+            SET status = 'executed', safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, executed_at = NOW()
+            WHERE id = %s
+            ''',
+            (safe_tx_hash, _json_dumps(metadata), action_id),
+        )
+        log_audit(connection, action='enforcement.action.execute', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'safe_tx_hash': safe_tx_hash})
+        connection.commit()
+        return {'id': action_id, 'status': 'executed', 'safe_tx_hash': safe_tx_hash, 'dry_run': bool(action.get('dry_run'))}
+
+
+def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        row = connection.execute('SELECT * FROM enforcement_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
+        action = _json_safe_value(dict(row))
+        if str(action.get('status')) not in {'executed', 'failed'}:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Only executed/failed actions can be rolled back.')
+        metadata = action.get('execution_metadata') if isinstance(action.get('execution_metadata'), dict) else {}
+        rollback_id = str(uuid.uuid4())
+        compensating_type = 'notify_only'
+        compensating_calldata = None
+        if action.get('action_type') == 'revoke_erc20_approval' and metadata.get('previous_allowance') is not None:
+            compensating_type = 'compensating_reapprove_erc20_approval'
+            compensating_calldata = _encode_erc20_approve_calldata(str(action.get('spender')), int(metadata.get('previous_allowance')))
+        connection.execute(
+            '''
+            INSERT INTO enforcement_actions (
+                id, workspace_id, incident_id, alert_id, action_type, status, dry_run, chain_network, target_wallet,
+                token_contract, spender, calldata, execution_metadata, created_by_user_id
+            )
+            VALUES (%s, %s, %s::uuid, %s::uuid, %s, 'planned', %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            ''',
+            (
+                rollback_id,
+                workspace_context['workspace_id'],
+                action.get('incident_id'),
+                action.get('alert_id'),
+                compensating_type,
+                bool(action.get('dry_run')),
+                action.get('chain_network'),
+                action.get('target_wallet'),
+                action.get('token_contract'),
+                action.get('spender'),
+                compensating_calldata,
+                _json_dumps({'compensating_for_action_id': action_id, 'previous_allowance': metadata.get('previous_allowance')}),
+                user['id'],
+            ),
+        )
+        connection.execute('UPDATE enforcement_actions SET status = %s, rolled_back_at = NOW() WHERE id = %s', ('rolled_back', action_id))
+        log_audit(connection, action='enforcement.action.rollback', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'compensating_action_id': rollback_id})
+        connection.commit()
+        return {'id': action_id, 'status': 'rolled_back', 'compensating_action_id': rollback_id, 'compensating_action_type': compensating_type}
 
 
 def create_finding_decision(finding_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:

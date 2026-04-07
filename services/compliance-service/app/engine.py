@@ -189,8 +189,19 @@ class ComplianceEngine:
                 'frozen_wallets': len(state['frozen_wallets']),
                 'review_required_wallets': len(state['review_required_wallets']),
                 'paused_assets': list(state['paused_assets']),
+                'enforcement_candidates': self._suggest_enforcement_actions(request=request, decision=decision),
             },
         )
+
+    def _suggest_enforcement_actions(self, *, request: TransferScreeningRequest, decision: Decision) -> list[dict[str, Any]]:
+        if decision == Decision.blocked:
+            return [
+                {'action_type': 'freeze_wallet', 'target_wallet': request.sender_wallet, 'reason': 'Blocked transfer decision suggested wallet freeze.'},
+                {'action_type': 'notify_only', 'target_wallet': request.receiver_wallet, 'reason': 'Escalate blocked transfer for manual review.'},
+            ]
+        if decision == Decision.review:
+            return [{'action_type': 'notify_only', 'target_wallet': request.sender_wallet, 'reason': 'Review decision should notify compliance operators.'}]
+        return []
 
     def screen_residency(self, request: ResidencyScreeningRequest) -> ResidencyScreeningResponse:
         state = self.store.load_policy_state()

@@ -20,6 +20,10 @@ def test_new_live_workflow_routes_exist() -> None:
     assert "/integrations/slack/oauth/callback" in source
     assert "/integrations/routing/{channel_type}" in source
     assert "/billing/webhooks/paddle" in source
+    assert "/enforcement/actions" in source
+    assert "/enforcement/actions/{action_id}/approve" in source
+    assert "/enforcement/actions/{action_id}/execute" in source
+    assert "/enforcement/actions/{action_id}/rollback" in source
 
 
 def test_export_generation_is_not_placeholder_complete() -> None:
@@ -29,6 +33,11 @@ def test_export_generation_is_not_placeholder_complete() -> None:
     assert "status = 'completed'" in source
     assert "def begin_slack_oauth_install" in source
     assert "def complete_slack_oauth_install" in source
+    assert "def _encode_erc20_approve_calldata" in source
+    assert "0x095ea7b3" in source
+    assert "execute_blocked_missing_approval action_id=%s" in source
+    assert "enforcement_proposed_safe_tx action_id=%s safe_tx_hash=%s" in source
+    assert "compensating_reapprove_erc20_approval" in source
 
 
 def test_protected_pages_use_authenticated_client_fetch_flow() -> None:
