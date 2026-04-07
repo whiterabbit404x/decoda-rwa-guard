@@ -21,6 +21,9 @@ The repo now supports a production-oriented **public self-serve SaaS mode** alon
 - `DATABASE_URL=postgresql://...` (Neon connection string, with `sslmode=require`)
 - `AUTH_TOKEN_SECRET=<long-random-secret>`
 - `CORS_ALLOWED_ORIGINS=http://localhost:3000,https://<your-vercel-app>.vercel.app`
+- `EVM_RPC_URL=https://...` (required for live chain polling in production live mode)
+- `MONITOR_POLL_INTERVAL_SECONDS=30` (optional; worker polling cadence)
+- `ALERT_DEDUP_WINDOW_SECONDS=300` (optional; deduplication window for repeated detections)
 - Existing downstream service URLs (`RISK_ENGINE_URL`, `THREAT_ENGINE_URL`, `COMPLIANCE_SERVICE_URL`, `RECONCILIATION_SERVICE_URL`)
 
 #### Vercel / web

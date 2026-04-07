@@ -9,119 +9,94 @@ type Props = { apiUrl: string };
 type Asset = any;
 
 const EMPTY_ASSET = {
-  name: '', description: '', asset_type: 'contract', chain_network: 'ethereum-mainnet', identifier: '', asset_class: 'treasury_token', risk_tier: 'medium', owner_team: '', notes: '', enabled: true, tags: [] as string[],
-  issuer_name: '', asset_symbol: '', asset_identifier: '', token_contract_address: '', custody_wallets: [] as string[], treasury_ops_wallets: [] as string[], oracle_sources: [] as string[], venue_labels: [] as string[], expected_counterparties: [] as string[],
-  baseline_status: 'missing', baseline_source: 'manual', baseline_confidence: 0, baseline_coverage: 0, expected_oracle_freshness_seconds: 0
+  name: '', asset_type: 'wallet', chain_network: 'ethereum-mainnet', identifier: '', owner_team: '', tags: [] as string[], description: '', notes: '', enabled: true,
 };
+
+const ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 
 export default function AssetsManager({ apiUrl }: Props) {
   const { authHeaders } = usePilotAuth();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [form, setForm] = useState<any>(EMPTY_ASSET);
   const [search, setSearch] = useState('');
-  const [filterTier, setFilterTier] = useState('all');
+  const [filterType, setFilterType] = useState('all');
   const [message, setMessage] = useState('');
-  const [editing, setEditing] = useState<Asset | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   async function load() {
-    const response = await fetch(`${apiUrl}/assets`, { headers: { ...authHeaders() } });
+    const response = await fetch(`${apiUrl}/assets`, { headers: { ...authHeaders() }, cache: 'no-store' });
     if (!response.ok) return;
     const payload = await response.json();
     setAssets(payload.assets ?? []);
   }
 
-  async function createOrUpdate() {
-    const body = { ...form, tags: form.tags };
-    const target = editing ? `${apiUrl}/assets/${editing.id}` : `${apiUrl}/assets`;
-    const method = editing ? 'PATCH' : 'POST';
-    const response = await fetch(target, {
-      method,
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify(body)
-    });
-    setMessage(response.ok ? (editing ? 'Asset updated.' : 'Asset created.') : 'Unable to save asset. Check required fields.');
-    if (response.ok) {
-      setForm(EMPTY_ASSET);
-      setEditing(null);
-      void load();
+  async function createAsset() {
+    if (!form.name.trim() || !form.identifier.trim()) {
+      setMessage('Name and identifier are required.');
+      return;
     }
-  }
-
-  async function toggleEnabled(asset: Asset) {
-    await fetch(`${apiUrl}/assets/${asset.id}`, {
-      method: 'PATCH',
+    if (form.identifier.startsWith('0x') && !ADDRESS_REGEX.test(form.identifier)) {
+      setMessage('Identifier looks like an address but is invalid. Use a full 0x-prefixed 40-byte address.');
+      return;
+    }
+    const response = await fetch(`${apiUrl}/assets`, {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ ...asset, enabled: !asset.enabled })
+      body: JSON.stringify({ ...form, tags: form.tags }),
     });
+    const payload = await response.json().catch(() => ({}));
+    setMessage(response.ok ? 'Asset created and added to registry.' : (payload.detail ?? 'Unable to create asset.'));
+    if (!response.ok) return;
+    setForm(EMPTY_ASSET);
     void load();
   }
 
-  async function archive(asset: Asset) {
-    if (!confirm(`Archive asset ${asset.name}?`)) return;
-    const response = await fetch(`${apiUrl}/assets/${asset.id}`, { method: 'DELETE', headers: { ...authHeaders() } });
-    setMessage(response.ok ? 'Asset archived.' : 'Unable to archive asset.');
-    if (response.ok) void load();
-  }
-
   const filtered = useMemo(() => assets
-    .filter((asset) => filterTier === 'all' ? true : asset.risk_tier === filterTier)
-    .filter((asset) => `${asset.name} ${asset.identifier} ${asset.chain_network}`.toLowerCase().includes(search.toLowerCase()))
-    .sort((a, b) => String(a.name).localeCompare(String(b.name))), [assets, search, filterTier]);
+    .filter((asset) => filterType === 'all' ? true : asset.asset_type === filterType)
+    .filter((asset) => `${asset.name} ${asset.identifier} ${asset.chain_network} ${asset.owner_team || ''}`.toLowerCase().includes(search.toLowerCase())), [assets, search, filterType]);
 
   useEffect(() => { void load(); }, []);
 
   return (
-    <div className="dataCard">
-      <h1>Assets</h1>
-      <p className="muted">Track contracts, wallets, and monitored resources with rich metadata and ownership context.</p>
-      <div className="buttonRow">
-        <input placeholder="Search assets" value={search} onChange={(event) => setSearch(event.target.value)} />
-        <select value={filterTier} onChange={(event) => setFilterTier(event.target.value)}>
-          <option value="all">All risk tiers</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option>
-        </select>
-      </div>
+    <div className="stack compactStack">
+      <section className="dataCard">
+        <div className="listHeader">
+          <div>
+            <h1>Asset registry</h1>
+            <p className="muted">Assets are the wallets and contracts you protect. Add one to begin monitoring coverage.</p>
+          </div>
+          <button type="button" onClick={() => { document.getElementById('asset-create-form')?.scrollIntoView({ behavior: 'smooth' }); }}>Add asset</button>
+        </div>
+        <div className="buttonRow">
+          <input placeholder="Search by name, chain, identifier, or owner" value={search} onChange={(event) => setSearch(event.target.value)} />
+          <select value={filterType} onChange={(event) => setFilterType(event.target.value)}>
+            <option value="all">All asset types</option>
+            <option value="wallet">Wallet</option>
+            <option value="contract">Contract</option>
+            <option value="oracle">Oracle</option>
+            <option value="treasury-linked asset">Treasury-linked asset</option>
+          </select>
+        </div>
+        {filtered.length === 0 ? <div className="emptyStatePanel"><h4>No assets yet</h4><p className="muted">No assets match this view. Add the first wallet or contract you want to protect.</p><button type="button" onClick={() => { document.getElementById('asset-create-form')?.scrollIntoView({ behavior: 'smooth' }); }}>Add asset</button></div> : (
+          <div className="tableWrap"><table><thead><tr><th>Name</th><th>Type</th><th>Chain</th><th>Identifier</th><th>Owner</th><th>Status</th></tr></thead><tbody>{filtered.map((asset) => <tr key={asset.id}><td>{asset.name}</td><td>{asset.asset_type}</td><td>{asset.chain_network}</td><td>{asset.identifier}</td><td>{asset.owner_team || 'Unassigned'}</td><td>{asset.enabled ? 'Verified / active' : 'Disabled'}</td></tr>)}</tbody></table></div>
+        )}
+      </section>
 
-      <h3>{editing ? 'Edit asset' : 'Create asset'}</h3>
-      <input placeholder="Asset name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-      <input placeholder="Description" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
-      <select value={form.asset_type} onChange={(event) => setForm({ ...form, asset_type: event.target.value })}>
-        <option value="contract">Contract</option><option value="wallet">Wallet</option><option value="treasury-linked asset">Treasury-linked asset</option><option value="oracle">Oracle</option><option value="custody component">Custody component</option><option value="settlement component">Settlement component</option><option value="admin-controlled module">Admin-controlled module</option><option value="monitored counterparty">Monitored counterparty</option><option value="policy-controlled workflow object">Policy-controlled workflow object</option>
-      </select>
-      <input placeholder="Chain/network" value={form.chain_network} onChange={(event) => setForm({ ...form, chain_network: event.target.value })} />
-      <input placeholder="Contract, wallet, or identifier" value={form.identifier} onChange={(event) => setForm({ ...form, identifier: event.target.value })} />
-      <select value={form.asset_class} onChange={(event) => setForm({ ...form, asset_class: event.target.value })}>
-        <option value="treasury_token">treasury_token</option><option value="bond_token">bond_token</option><option value="money_market_token">money_market_token</option><option value="rwa_other">rwa_other</option>
-      </select>
-      <input placeholder="Issuer name" value={form.issuer_name} onChange={(event) => setForm({ ...form, issuer_name: event.target.value })} />
-      <input placeholder="Asset symbol" value={form.asset_symbol} onChange={(event) => setForm({ ...form, asset_symbol: event.target.value })} />
-      <input placeholder="Asset identifier (ISIN/CUSIP/internal)" value={form.asset_identifier} onChange={(event) => setForm({ ...form, asset_identifier: event.target.value })} />
-      <input placeholder="Token contract (0x...)" value={form.token_contract_address} onChange={(event) => setForm({ ...form, token_contract_address: event.target.value })} />
-      <input placeholder="Custody wallets" value={(form.custody_wallets || []).join(', ')} onChange={(event) => setForm({ ...form, custody_wallets: parseTagInput(event.target.value) })} />
-      <input placeholder="Treasury ops wallets" value={(form.treasury_ops_wallets || []).join(', ')} onChange={(event) => setForm({ ...form, treasury_ops_wallets: parseTagInput(event.target.value) })} />
-      <input placeholder="Oracle sources" value={(form.oracle_sources || []).join(', ')} onChange={(event) => setForm({ ...form, oracle_sources: parseTagInput(event.target.value) })} />
-      <input placeholder="Expected counterparties" value={(form.expected_counterparties || []).join(', ')} onChange={(event) => setForm({ ...form, expected_counterparties: parseTagInput(event.target.value) })} />
-      <div className="buttonRow">
-        <select value={form.baseline_status} onChange={(event) => setForm({ ...form, baseline_status: event.target.value })}>
-          <option value="missing">Baseline missing</option><option value="configured">Baseline configured</option><option value="observed">Baseline observed</option><option value="stale">Baseline stale</option>
-        </select>
-        <select value={form.baseline_source} onChange={(event) => setForm({ ...form, baseline_source: event.target.value })}>
-          <option value="manual">manual</option><option value="observed">observed</option><option value="imported">imported</option>
-        </select>
-      </div>
-      <input placeholder="Owner team" value={form.owner_team} onChange={(event) => setForm({ ...form, owner_team: event.target.value })} />
-      <input placeholder="Tags (comma-separated)" value={form.tags.join(', ')} onChange={(event) => setForm({ ...form, tags: parseTagInput(event.target.value) })} />
-      <textarea placeholder="Notes" rows={3} value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} />
-      <div className="buttonRow">
-        <button type="button" onClick={() => void createOrUpdate()}>{editing ? 'Save changes' : 'Create asset'}</button>
-        {editing ? <button type="button" onClick={() => { setEditing(null); setForm(EMPTY_ASSET); }}>Cancel edit</button> : null}
-      </div>
-      {message ? <p className="statusLine">{message}</p> : null}
-
-      <h3>Asset registry</h3>
-      {filtered.length === 0 ? <p className="muted">No assets match this view. Create your first asset to start coverage.</p> : (
-        <table><thead><tr><th>Name</th><th>Type</th><th>Network</th><th>Tier</th><th>Status</th><th>Owner</th><th>Actions</th></tr></thead>
-          <tbody>{filtered.map((asset) => <tr key={asset.id}><td>{asset.name}<br /><span className="muted">{asset.identifier}</span></td><td>{asset.asset_type}</td><td>{asset.chain_network}</td><td>{asset.risk_tier}</td><td>{asset.enabled ? 'Enabled' : 'Disabled'}</td><td>{asset.owner_team || '—'}</td><td><div className="buttonRow"><button type="button" onClick={() => { setEditing(asset); setForm({ ...asset, tags: asset.tags ?? [] }); }}>Edit</button><button type="button" onClick={() => void toggleEnabled(asset)}>{asset.enabled ? 'Disable' : 'Enable'}</button><button type="button" onClick={() => void archive(asset)}>Archive</button></div></td></tr>)}</tbody></table>
-      )}
+      <section id="asset-create-form" className="dataCard">
+        <p className="sectionEyebrow">Create asset</p>
+        <h2>Add your first protected system</h2>
+        <input placeholder="Friendly name (e.g., Treasury wallet)" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+        <div className="buttonRow">
+          <select value={form.asset_type} onChange={(event) => setForm({ ...form, asset_type: event.target.value })}><option value="wallet">Wallet</option><option value="contract">Contract</option><option value="oracle">Oracle</option><option value="treasury-linked asset">Treasury-linked asset</option></select>
+          <input placeholder="Chain / network (e.g., ethereum-mainnet)" value={form.chain_network} onChange={(event) => setForm({ ...form, chain_network: event.target.value })} />
+        </div>
+        <input placeholder="Wallet or contract address / identifier" value={form.identifier} onChange={(event) => setForm({ ...form, identifier: event.target.value.trim() })} />
+        <input placeholder="Owner team (e.g., Treasury Ops)" value={form.owner_team} onChange={(event) => setForm({ ...form, owner_team: event.target.value })} />
+        <button type="button" className="secondaryCta" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? 'Hide advanced settings' : 'Advanced settings'}</button>
+        {showAdvanced ? <><input placeholder="Tags (comma-separated)" value={form.tags.join(', ')} onChange={(event) => setForm({ ...form, tags: parseTagInput(event.target.value) })} /><textarea rows={3} placeholder="Optional metadata / notes" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></> : null}
+        <div className="buttonRow"><button type="button" onClick={() => void createAsset()}>Create asset</button></div>
+        {message ? <p className="statusLine">{message}</p> : null}
+      </section>
     </div>
   );
 }

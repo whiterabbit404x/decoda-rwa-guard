@@ -144,6 +144,9 @@ from services.api.app.pilot import (
     test_integration_slack,
     get_onboarding_state,
     update_onboarding_state,
+    get_onboarding_progress,
+    get_current_workspace,
+    set_target_enabled,
 )
 from services.api.app.monitoring_runner import (
     get_monitoring_health,
@@ -1598,6 +1601,11 @@ def workspace_invites_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_workspace_invitations(request))
 
 
+@app.get('/workspaces/current', summary='Get current workspace context')
+def workspaces_current(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_current_workspace(request))
+
+
 @app.post('/workspace/invitations/{invitation_id}/resend', summary='Resend workspace invitation')
 def workspace_invites_resend(invitation_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: resend_workspace_invitation(invitation_id, request))
@@ -1631,6 +1639,11 @@ def team_seats(request: Request) -> dict[str, Any]:
 @app.get('/onboarding/state', summary='Get onboarding checklist status for current workspace')
 def onboarding_state(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_onboarding_state(request))
+
+
+@app.get('/onboarding/progress', summary='Get derived onboarding progress for current workspace')
+def onboarding_progress(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_onboarding_progress(request))
 
 
 @app.patch('/onboarding/state', summary='Update onboarding checklist step for current workspace')
@@ -1712,6 +1725,16 @@ def monitoring_targets_list(request: Request) -> dict[str, Any]:
 @app.patch('/monitoring/targets/{target_id}', summary='Update target monitoring settings')
 def monitoring_targets_patch(target_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: patch_monitoring_target(target_id, payload, request))
+
+
+@app.post('/targets/{target_id}/enable', summary='Enable target and monitoring')
+def targets_enable(target_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: set_target_enabled(target_id, True, request))
+
+
+@app.post('/targets/{target_id}/disable', summary='Disable target and monitoring')
+def targets_disable(target_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: set_target_enabled(target_id, False, request))
 
 
 @app.post('/monitoring/run-once/{target_id}', summary='Debug-only: trigger one manual monitoring run for target (not enterprise-proof eligible)')
