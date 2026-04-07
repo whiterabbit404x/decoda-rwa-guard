@@ -1537,11 +1537,11 @@ export function formatSourceLabel(payloadState: DashboardPayloadState) {
   }
 
   if (payloadState === 'fallback') {
-    return 'Fallback coverage';
+    return 'Limited coverage';
   }
 
   if (payloadState === 'sample') {
-    return 'Sample coverage';
+    return 'Limited coverage';
   }
 
   return 'Unavailable';

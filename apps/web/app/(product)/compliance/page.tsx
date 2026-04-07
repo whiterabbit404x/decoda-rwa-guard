@@ -17,7 +17,7 @@ export default async function CompliancePage() {
           <h1>Sovereign-grade policy and governance controls</h1>
           <p className="lede">Screen transfers, route jurisdictional policy decisions, and record governance actions with deterministic customer-ready explanations.</p>
         </div>
-        <div className="heroPanel"><StatusBadge state={complianceDashboard.source === 'live' && !complianceDashboard.degraded ? 'live' : 'fallback'} /><p>{complianceDashboard.message}</p></div>
+        <div className="heroPanel"><StatusBadge state={complianceDashboard.source === 'live' && !complianceDashboard.degraded ? 'live' : complianceDashboard.source === 'live' ? 'live_degraded' : 'limited_coverage'} /><p>{complianceDashboard.message}</p></div>
       </section>
       <SystemStatusPanel diagnostics={data.diagnostics} dashboard={data.dashboard} />
       <section className="threeColumnSection">
@@ -36,7 +36,7 @@ export default async function CompliancePage() {
         <div className="stack compactStack">
           {complianceDashboard.latest_governance_actions.map((action) => (
             <article key={action.action_id} className="dataCard">
-              <div className="listHeader"><div><h3>{action.action_type}</h3><p className="muted">{action.target_type} · {action.target_id}</p></div><StatusBadge state={complianceDashboard.source === 'live' ? 'live' : 'fallback'} compact /></div>
+              <div className="listHeader"><div><h3>{action.action_type}</h3><p className="muted">{action.target_type} · {action.target_id}</p></div><StatusBadge state={complianceDashboard.source === 'live' ? 'live' : 'limited_coverage'} compact /></div>
               <p className="explanation small">{action.reason}</p>
             </article>
           ))}

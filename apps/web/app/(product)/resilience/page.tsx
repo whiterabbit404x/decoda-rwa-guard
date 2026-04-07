@@ -17,7 +17,7 @@ export default async function ResiliencePage() {
           <h1>Operational resilience for tokenized treasury programs</h1>
           <p className="lede">Track reconciliation health, backstop decisions, and incident handling for your workspace operations.</p>
         </div>
-        <div className="heroPanel"><StatusBadge state={resilienceDashboard.source === 'live' && !resilienceDashboard.degraded ? 'live' : 'fallback'} /><p>{resilienceDashboard.message}</p></div>
+        <div className="heroPanel"><StatusBadge state={resilienceDashboard.source === 'live' && !resilienceDashboard.degraded ? 'live' : resilienceDashboard.source === 'live' ? 'live_degraded' : 'limited_coverage'} /><p>{resilienceDashboard.message}</p></div>
       </section>
       <SystemStatusPanel diagnostics={data.diagnostics} dashboard={data.dashboard} />
       <section className="threeColumnSection">
@@ -26,7 +26,7 @@ export default async function ResiliencePage() {
             <article key={incident.event_id} className="dataCard">
               <div className="listHeader"><div><h3>{incident.event_type}</h3><p className="muted">{incident.trigger_source}</p></div><span className={`severityPill ${statusTone(incident.status)}`}>{incident.severity}</span></div>
               <p className="explanation small">{incident.summary}</p>
-              <StatusBadge state={incident.source === 'live' && !incident.degraded ? 'live' : 'fallback'} compact />
+              <StatusBadge state={incident.source === 'live' && !incident.degraded ? 'live' : incident.source === 'live' ? 'live_degraded' : 'limited_coverage'} compact />
             </article>
           ))}
         </div>

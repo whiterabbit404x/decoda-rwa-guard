@@ -39,10 +39,10 @@ function explainState(state: DashboardPayloadState) {
     return 'Primary live dependency is reachable.';
   }
   if (state === 'fallback') {
-    return 'A live dependency failed, so deterministic fallback coverage is active.';
+    return 'A live dependency failed, so limited deterministic coverage is active.';
   }
   if (state === 'sample') {
-    return 'Live connectivity is not configured, so sample-safe payloads are being rendered.';
+    return 'Live connectivity is not configured, so limited deterministic coverage is being rendered.';
   }
   return 'This feed is currently unavailable.';
 }
