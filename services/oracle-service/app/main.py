@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -25,6 +26,9 @@ DEFAULT_METRICS = [
 ]
 
 app = FastAPI(title=f'{SERVICE_NAME} service')
+logger = logging.getLogger(__name__)
+_CHAINLINK_LATEST_ROUND_DATA_SELECTOR = '0xfeaf968c'
+_CHAINLINK_DECIMALS_SELECTOR = '0x313ce567'
 
 
 @app.on_event('startup')
@@ -48,6 +52,122 @@ def _observations() -> list[dict[str, Any]]:
 
 class OracleProvider(Protocol):
     def fetch(self, *, asset_identifier: str, now: datetime) -> list[dict[str, Any]]: ...
+
+
+def _eth_call(rpc_url: str, *, to_address: str, data: str) -> str:
+    payload = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'eth_call', 'params': [{'to': to_address, 'data': data}, 'latest']}).encode('utf-8')
+    req = request.Request(rpc_url, data=payload, headers={'Content-Type': 'application/json'})
+    with request.urlopen(req, timeout=10) as resp:  # nosec B310
+        body = json.loads(resp.read().decode('utf-8') or '{}')
+    if body.get('error'):
+        raise RuntimeError(f"json-rpc error: {body['error']}")
+    return str(body.get('result') or '')
+
+
+def _decode_uint256(hex_value: str) -> int:
+    raw = hex_value[2:] if hex_value.startswith('0x') else hex_value
+    raw = raw or '0'
+    return int(raw, 16)
+
+
+def _decode_latest_round_data(hex_value: str) -> dict[str, int]:
+    raw = hex_value[2:] if hex_value.startswith('0x') else hex_value
+    if len(raw) < 64 * 5:
+        raise ValueError('latestRoundData response is too short')
+    chunks = [raw[i:i + 64] for i in range(0, 64 * 5, 64)]
+    round_id = int(chunks[0], 16)
+    answer_raw = int(chunks[1], 16)
+    if answer_raw >= (1 << 255):
+        answer_raw -= (1 << 256)
+    started_at = int(chunks[2], 16)
+    updated_at = int(chunks[3], 16)
+    answered_in_round = int(chunks[4], 16)
+    return {'round_id': round_id, 'answer': answer_raw, 'started_at': started_at, 'updated_at': updated_at, 'answered_in_round': answered_in_round}
+
+
+def _chainlink_env_feeds() -> list[dict[str, Any]]:
+    raw = str(os.getenv('ORACLE_CHAINLINK_FEEDS_JSON') or '[]').strip()
+    try:
+        feeds = json.loads(raw)
+    except Exception:
+        feeds = []
+    return [item for item in feeds if isinstance(item, dict)]
+
+
+class ChainlinkOnchainProvider:
+    def __init__(self, *, rpc_url: str | None = None, feeds: list[dict[str, Any]] | None = None) -> None:
+        self.rpc_url = str(rpc_url or os.getenv('ORACLE_CHAINLINK_RPC_URL') or '').strip()
+        self.feeds = feeds if feeds is not None else _chainlink_env_feeds()
+
+    def fetch(self, *, asset_identifier: str, now: datetime) -> list[dict[str, Any]]:
+        if not self.rpc_url or not self.feeds:
+            return []
+        expected_freshness = int(os.getenv('ORACLE_EXPECTED_FRESHNESS_SECONDS', '120') or '120')
+        expected_cadence = int(os.getenv('ORACLE_EXPECTED_CADENCE_SECONDS', '120') or '120')
+        rows: list[dict[str, Any]] = []
+        for feed in self.feeds:
+            if asset_identifier and str(feed.get('asset_identifier') or '').strip() not in {'', asset_identifier}:
+                continue
+            proxy_address = str(feed.get('proxy_address') or '').strip().lower()
+            if not proxy_address.startswith('0x'):
+                continue
+            try:
+                decimals = _decode_uint256(_eth_call(self.rpc_url, to_address=proxy_address, data=_CHAINLINK_DECIMALS_SELECTOR))
+                round_data = _decode_latest_round_data(_eth_call(self.rpc_url, to_address=proxy_address, data=_CHAINLINK_LATEST_ROUND_DATA_SELECTOR))
+                observed_at = datetime.fromtimestamp(round_data['updated_at'], tz=timezone.utc)
+                divisor = float(10 ** max(decimals, 0))
+                observed_value = float(round_data['answer']) / divisor if divisor else None
+                freshness_seconds = max(0, int((now - observed_at).total_seconds()))
+                status_value = 'ok' if freshness_seconds <= expected_freshness else 'stale'
+                rows.append(
+                    {
+                        'provider_name': 'chainlink_onchain',
+                        'source_name': str(feed.get('pair') or 'chainlink'),
+                        'source_type': 'chainlink_onchain',
+                        'asset_identifier': str(feed.get('asset_identifier') or asset_identifier),
+                        'observed_value': observed_value,
+                        'observed_at': observed_at.isoformat(),
+                        'update_interval_seconds': expected_cadence,
+                        'freshness_seconds': freshness_seconds,
+                        'status': status_value,
+                        'provider_status': status_value,
+                        'block_number': None,
+                        'external_timestamp': observed_at.isoformat(),
+                        'provenance': {
+                            'provider_layer': 'oracle-service',
+                            'provider_kind': 'chainlink_onchain',
+                            'chain_network': str(feed.get('chain_network') or ''),
+                            'proxy_address': proxy_address,
+                            'pair': str(feed.get('pair') or ''),
+                            'round_id': round_data['round_id'],
+                            'answered_in_round': round_data['answered_in_round'],
+                        },
+                    }
+                )
+                logger.info(
+                    'chainlink_fetch_ok asset=%s feed=%s roundId=%s freshness=%s',
+                    str(feed.get('asset_identifier') or asset_identifier or ''),
+                    str(feed.get('pair') or proxy_address),
+                    round_data['round_id'],
+                    freshness_seconds,
+                )
+            except Exception:
+                rows.append(
+                    {
+                        'provider_name': 'chainlink_onchain',
+                        'source_name': str(feed.get('pair') or 'chainlink'),
+                        'source_type': 'chainlink_onchain',
+                        'asset_identifier': str(feed.get('asset_identifier') or asset_identifier),
+                        'observed_value': None,
+                        'observed_at': None,
+                        'update_interval_seconds': expected_cadence,
+                        'freshness_seconds': None,
+                        'status': 'unavailable',
+                        'provider_status': 'unavailable',
+                        'provenance': {'provider_layer': 'oracle-service', 'provider_kind': 'chainlink_onchain', 'proxy_address': proxy_address, 'failure': 'eth_call_failed'},
+                    }
+                )
+        return rows
 
 
 class HttpJsonOracleProvider:
@@ -104,8 +224,16 @@ def _provider_configs() -> list[dict[str, str]]:
     return [item for item in items if item.get('url')]
 
 
+def _chainlink_configured() -> bool:
+    return bool(str(os.getenv('ORACLE_CHAINLINK_RPC_URL') or '').strip() and _chainlink_env_feeds())
+
+
 def _load_real_provider_observations(*, asset_identifier: str, now: datetime) -> list[dict[str, Any]]:
     observations: list[dict[str, Any]] = []
+    try:
+        observations.extend(ChainlinkOnchainProvider().fetch(asset_identifier=asset_identifier, now=now))
+    except Exception:
+        pass
     for provider in _provider_configs():
         fetcher = HttpJsonOracleProvider(
             source_name=str(provider.get('source_name') or 'oracle'),
@@ -191,14 +319,15 @@ def oracle_check() -> dict[str, object]:
     now = datetime.now(timezone.utc)
     asset_identifier = str(os.getenv('ORACLE_ASSET_IDENTIFIER', ''))
     sources = _provider_configs()
+    chainlink_configured = _chainlink_configured()
     expected_freshness = int(os.getenv('ORACLE_EXPECTED_FRESHNESS_SECONDS', '120') or '120')
     expected_cadence = int(os.getenv('ORACLE_EXPECTED_CADENCE_SECONDS', '120') or '120')
     observations: list[dict[str, Any]] = []
-    if sources:
+    if sources or chainlink_configured:
         observations = [_normalize_observation(obs, now, asset_identifier) for obs in _load_real_provider_observations(asset_identifier=asset_identifier, now=now) if isinstance(obs, dict)]
     elif _runtime_allows_demo_observations():
         observations = [_normalize_observation(obs, now, asset_identifier) for obs in _observations() if isinstance(obs, dict)]
-    if not sources and not _runtime_allows_demo_observations():
+    if not (sources or chainlink_configured) and not _runtime_allows_demo_observations():
         return {
             'status': 'degraded',
             'reason': 'no_real_oracle_sources_configured',
@@ -211,7 +340,7 @@ def oracle_check() -> dict[str, object]:
             'status': 'degraded',
             'reason': 'no_real_oracle_observations_available',
             'detector_status': 'insufficient_real_evidence',
-            'sources': [item['source_name'] for item in sources],
+            'sources': [item['source_name'] for item in sources] + (['chainlink_onchain'] if chainlink_configured else []),
             'checked_at': now.isoformat(),
         }
 
@@ -241,7 +370,7 @@ def oracle_check() -> dict[str, object]:
     return {
         'status': 'ok' if not anomaly else 'anomaly_detected',
         'detector_status': 'anomaly_detected' if anomaly else 'real_event_no_anomaly',
-        'sources': [item['source_name'] for item in sources],
+        'sources': [item['source_name'] for item in sources] + (['chainlink_onchain'] if chainlink_configured else []),
         'observations': observations,
         'stale_sources': stale_sources,
         'cadence_violations': cadence_violations,
@@ -254,7 +383,7 @@ def oracle_check() -> dict[str, object]:
 def oracle_observations(asset_identifier: str = '') -> dict[str, object]:
     now = datetime.now(timezone.utc)
     configured_asset = str(asset_identifier or os.getenv('ORACLE_ASSET_IDENTIFIER') or '').strip()
-    provider_configured = bool(_provider_configs())
+    provider_configured = bool(_provider_configs() or _chainlink_configured())
     observations: list[dict[str, Any]] = []
     if provider_configured:
         observations = [_normalize_observation(obs, now, configured_asset) for obs in _load_real_provider_observations(asset_identifier=configured_asset, now=now)]
@@ -329,7 +458,7 @@ def oracle_observations(asset_identifier: str = '') -> dict[str, object]:
         'asset_identifier': configured_asset or None,
         'observations': observations,
         'provider_coverage_summary': {
-            'configured_provider_count': len(_provider_configs()),
+            'configured_provider_count': len(_provider_configs()) + (1 if _chainlink_configured() else 0),
             'reachable_provider_count': len([item for item in observations if str(item.get('status') or '').lower() != 'unavailable']),
             'usable_observation_count': len(available),
             'stale_observation_count': len(stale),

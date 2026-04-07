@@ -102,6 +102,9 @@ from services.api.app.pilot import (
     get_asset,
     update_asset,
     delete_asset,
+    resolve_asset_onchain,
+    bind_asset_wallets,
+    bind_asset_chainlink_feeds,
     create_target,
     get_target,
     update_target,
@@ -1740,6 +1743,21 @@ def asset_profiles_patch(asset_id: str, payload: dict[str, Any], request: Reques
 @app.delete('/assets/{asset_id}', summary='Delete workspace asset')
 def assets_delete(asset_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: delete_asset(asset_id, request))
+
+
+@app.post('/assets/{asset_id}/bind/resolve-onchain', summary='Resolve asset on-chain token metadata')
+def assets_bind_resolve_onchain(asset_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: resolve_asset_onchain(asset_id, payload, request))
+
+
+@app.post('/assets/{asset_id}/bind/wallets', summary='Bind treasury/custody/counterparty wallets')
+def assets_bind_wallets(asset_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: bind_asset_wallets(asset_id, payload, request))
+
+
+@app.post('/assets/{asset_id}/bind/chainlink', summary='Bind chainlink feeds to asset')
+def assets_bind_chainlink(asset_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: bind_asset_chainlink_feeds(asset_id, payload, request))
 
 
 @app.post('/targets', summary='Create workspace target')
