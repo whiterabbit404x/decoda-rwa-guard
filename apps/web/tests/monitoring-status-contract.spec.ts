@@ -5,15 +5,19 @@ import { monitoringModeLabel, normalizeMonitoringMode } from '../app/monitoring-
 test.describe('monitoring status contract', () => {
   test('normalizes runtime payload modes including degraded', async () => {
     expect(normalizeMonitoringMode('live')).toBe('LIVE');
-    expect(normalizeMonitoringMode('hybrid')).toBe('HYBRID');
+    expect(normalizeMonitoringMode('hybrid')).toBe('LIMITED_COVERAGE');
+    expect(normalizeMonitoringMode('demo')).toBe('LIMITED_COVERAGE');
     expect(normalizeMonitoringMode('degraded')).toBe('DEGRADED');
-    expect(normalizeMonitoringMode('unknown')).toBe('DEMO');
+    expect(normalizeMonitoringMode('offline')).toBe('OFFLINE');
+    expect(normalizeMonitoringMode('stale')).toBe('STALE');
+    expect(normalizeMonitoringMode('unknown')).toBe('LIMITED_COVERAGE');
   });
 
   test('renders mode labels used in dashboard status surfaces', async () => {
-    expect(monitoringModeLabel('DEMO')).toBe('DEMO MODE');
-    expect(monitoringModeLabel('LIVE')).toBe('LIVE MODE');
-    expect(monitoringModeLabel('HYBRID')).toBe('HYBRID MODE');
+    expect(monitoringModeLabel('LIMITED_COVERAGE')).toBe('LIMITED COVERAGE');
+    expect(monitoringModeLabel('LIVE')).toBe('LIVE');
     expect(monitoringModeLabel('DEGRADED')).toBe('DEGRADED');
+    expect(monitoringModeLabel('OFFLINE')).toBe('OFFLINE');
+    expect(monitoringModeLabel('STALE')).toBe('STALE');
   });
 });

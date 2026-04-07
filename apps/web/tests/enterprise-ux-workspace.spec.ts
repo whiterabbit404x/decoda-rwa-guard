@@ -32,6 +32,9 @@ test('primary threat page uses always-on monitoring language and removes scenari
   expect(threatPanel).not.toContain('Run analysis');
   expect(threatPanel).not.toContain('Run once now');
   expect(threatPanel).not.toContain('Advanced policy configuration (JSON)');
+  expect(threatPanel.toLowerCase()).not.toContain('demo');
+  expect(threatPanel).not.toContain('synthetic_leak');
+  expect(threatPanel).not.toContain('monitoring_scenario');
 });
 
 test('alerts and incidents include operator decisions with role-gated governance actions', async () => {

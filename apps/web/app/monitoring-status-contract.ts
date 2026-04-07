@@ -1,4 +1,4 @@
-export type MonitoringMode = 'DEMO' | 'LIVE' | 'HYBRID' | 'DEGRADED';
+export type MonitoringMode = 'LIVE' | 'DEGRADED' | 'OFFLINE' | 'STALE' | 'LIMITED_COVERAGE';
 
 export type MonitoringRuntimeStatus = {
   mode: MonitoringMode;
@@ -33,15 +33,51 @@ export type MonitoringRuntimeStatus = {
 
 export function normalizeMonitoringMode(value: unknown): MonitoringMode {
   const normalized = String(value ?? '').trim().toUpperCase();
-  if (normalized === 'LIVE' || normalized === 'HYBRID' || normalized === 'DEGRADED') {
-    return normalized;
+  if (normalized === 'LIVE') {
+    return 'LIVE';
   }
-  return 'DEMO';
+  if (normalized === 'OFFLINE') {
+    return 'OFFLINE';
+  }
+  if (normalized === 'STALE') {
+    return 'STALE';
+  }
+  if (normalized === 'DEGRADED') {
+    return 'DEGRADED';
+  }
+  if (normalized === 'LIMITED_COVERAGE' || normalized === 'HYBRID' || normalized === 'DEMO') {
+    return 'LIMITED_COVERAGE';
+  }
+  if (normalized.includes('DEGRADED') || normalized.includes('FAILED')) {
+    return 'DEGRADED';
+  }
+  if (normalized.includes('OFFLINE') || normalized.includes('UNREACHABLE')) {
+    return 'OFFLINE';
+  }
+  if (normalized.includes('STALE')) {
+    return 'STALE';
+  }
+  if (normalized.includes('DEMO') || normalized.includes('FALLBACK') || normalized.includes('HYBRID')) {
+    return 'LIMITED_COVERAGE';
+  }
+  if (normalized.includes('LIVE')) {
+    return 'LIVE';
+  }
+  return 'LIMITED_COVERAGE';
 }
 
 export function monitoringModeLabel(mode: MonitoringMode): string {
+  if (mode === 'LIVE') {
+    return 'LIVE';
+  }
   if (mode === 'DEGRADED') {
     return 'DEGRADED';
   }
-  return `${mode} MODE`;
+  if (mode === 'OFFLINE') {
+    return 'OFFLINE';
+  }
+  if (mode === 'STALE') {
+    return 'STALE';
+  }
+  return 'LIMITED COVERAGE';
 }

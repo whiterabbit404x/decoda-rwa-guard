@@ -34,13 +34,13 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
 
   const modeLabel = monitoringModeLabel(status.mode);
   const noEvidence = (status.recent_real_event_count ?? 0) <= 0 || status.recent_truthfulness_state === 'unknown_risk';
-  const degraded = status.mode === 'DEGRADED' || noEvidence;
-  const tone = degraded ? 'statusBannerDegraded' : status.mode === 'DEMO' ? 'statusBannerDemo' : 'statusBannerLive';
+  const degraded = status.mode === 'DEGRADED' || status.mode === 'LIMITED_COVERAGE' || noEvidence;
+  const tone = degraded ? 'statusBannerDegraded' : status.mode === 'OFFLINE' ? 'statusBannerDegraded' : 'statusBannerLive';
   const evidenceCopy = status.recent_evidence_state === 'real'
-    ? 'No confirmed anomaly detected in observed evidence.'
+    ? 'Monitoring is operating with recent confirmed evidence.'
     : status.recent_evidence_state === 'degraded' || status.recent_evidence_state === 'failed'
-      ? 'Monitoring degraded.'
-      : 'No real evidence observed yet.';
+      ? 'Coverage currently degraded.'
+      : 'Live evidence unavailable.';
 
   return (
     <div className={`statusBanner ${tone}`}>
@@ -49,7 +49,7 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
         configured={status.configured_mode ?? 'n/a'} · source={status.source_type ?? 'unknown'} · lag={status.checkpoint_lag_blocks ?? 'n/a'} · claims={status.sales_claims_allowed ? 'allowed' : 'blocked'}
       </span>
       <span>
-        evidence={status.recent_evidence_state ?? 'missing'} · confidence={status.recent_confidence_basis ?? 'none'} · synthetic_leak={status.synthetic_leak_detected ? 'detected' : 'none'}
+        evidence={status.recent_evidence_state ?? 'missing'} · confidence={status.recent_confidence_basis ?? 'none'} · coverage={status.synthetic_leak_detected ? 'limited' : 'verified'}
       </span>
       <span>{evidenceCopy}</span>
       {status.degraded_reason ? <span>reason={status.degraded_reason}</span> : null}

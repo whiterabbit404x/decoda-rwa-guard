@@ -64,12 +64,12 @@ function liveThreatDashboard() {
   const payload = clone(fallbackThreatDashboard);
   payload.source = 'live';
   payload.degraded = false;
-  payload.message = 'Threat dashboard is driven by deterministic weighted rules so each score remains explainable and demoable.';
+  payload.message = 'Threat monitoring scores use deterministic weighted rules with auditable evidence.';
   payload.cards = [
     { label: 'Threat score', value: '82', detail: 'Contract scan composite score from deterministic rules.', tone: 'critical' },
     { label: 'Active alerts', value: '4', detail: 'Critical and high-confidence exploit or anomaly detections.', tone: 'high' },
     { label: 'Blocked / reviewed', value: '3/2', detail: 'Action decisions produced by the explainable scoring layer.', tone: 'medium' },
-    { label: 'Market anomaly avg', value: '70.0', detail: 'Average anomaly score across bundled treasury-token scenarios.', tone: 'high' },
+    { label: 'Market anomaly avg', value: '70.0', detail: 'Average anomaly score across monitored treasury-token activity.', tone: 'high' },
   ];
   payload.active_alerts.forEach((item) => {
     item.source = 'live';
@@ -210,6 +210,7 @@ test.describe('dashboard production API flow', () => {
       expect(data.diagnostics.failedEndpoints).toEqual([]);
       expect(data.diagnostics.endpoints.riskDashboard.source).toBe('live');
       expect(requestedUrls).toEqual([
+        'https://railway.example/ops/dashboard-page-data',
         'https://railway.example/dashboard',
         'https://railway.example/risk/dashboard',
         'https://railway.example/threat/dashboard',
@@ -392,7 +393,7 @@ test.describe('dashboard production API flow', () => {
 
       expect(data.threatDashboard.source).toBe('live');
       expect(data.threatDashboard.degraded).toBe(false);
-      expect(data.threatDashboard.message).toBe('Threat dashboard is driven by deterministic weighted rules so each score remains explainable and demoable.');
+      expect(data.threatDashboard.message).toBe('Threat monitoring scores use deterministic weighted rules with auditable evidence.');
       expect(data.threatDashboard.cards.some((card) => card.detail.toLowerCase().includes('fallback'))).toBe(false);
       expect(data.threatDashboard.active_alerts.every((alert) => alert.source === 'live')).toBe(true);
       expect(data.threatDashboard.recent_detections.every((detection) => detection.source === 'live')).toBe(true);
@@ -402,7 +403,7 @@ test.describe('dashboard production API flow', () => {
       expect(routePayload.meta.threatDiagnostics).toEqual({
         source: 'live',
         degraded: false,
-        message: 'Threat dashboard is driven by deterministic weighted rules so each score remains explainable and demoable.',
+        message: 'Threat monitoring scores use deterministic weighted rules with auditable evidence.',
         firstAlertSource: 'live',
         endpoint: expect.objectContaining({
           path: '/threat/dashboard',
@@ -478,8 +479,8 @@ test.describe('dashboard production API flow', () => {
 
       expect(data.threatDashboard.source).toBe('fallback');
       expect(data.threatDashboard.degraded).toBe(true);
-      expect(data.threatDashboard.cards.some((card) => card.detail.includes('Fallback contract threat score'))).toBe(true);
-      expect(data.threatDashboard.message).toContain('Threat-engine unavailable or timed out');
+      expect(data.threatDashboard.cards.some((card) => card.detail.includes('Coverage currently degraded'))).toBe(true);
+      expect(data.threatDashboard.message).toContain('Live evidence unavailable');
       expect(data.threatDashboard.active_alerts.some((alert) => shouldRenderThreatAlertSourceChip(data.threatDashboard, alert) && alert.source === 'fallback')).toBe(true);
       expect(data.diagnostics.endpoints.threatDashboard.path).toBe('/threat/dashboard');
       expect(formatSourceLabel(data.diagnostics.endpoints.threatDashboard.payloadState)).toBe('Fallback coverage');

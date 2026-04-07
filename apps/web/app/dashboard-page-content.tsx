@@ -41,7 +41,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
         <div>
           <p className="eyebrow">Operational workspace</p>
           <h1>Tokenized treasury control dashboard</h1>
-          <p className="lede">Monitor threats, compliance posture, and resilience readiness with clear outcomes and graceful fallback continuity.</p>
+          <p className="lede">Monitor threats, compliance posture, and resilience readiness with persistent workspace telemetry and history-backed operations.</p>
           <div className="heroActionRow">
             <StatusBadge state={diagnostics.experienceState === 'live_degraded' ? 'live_degraded' : diagnostics.experienceState} />
             <span className="ruleChip">Gateway: {diagnostics.endpoints.dashboard.ok ? 'reachable' : 'needs attention'}</span>
@@ -49,7 +49,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           </div>
         </div>
         <div className="heroPanel">
-          <p><strong>Platform state:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Live (degraded)' : 'Limited data mode'}</p>
+          <p><strong>Platform state:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Coverage degraded' : 'Telemetry offline'}</p>
           <p><strong>Readable explanation:</strong> {backendBanner}</p>
           <p><strong>Product areas:</strong> Dashboard, threat, compliance, resilience, history, and settings.</p>
           {liveFeed ? (
@@ -88,7 +88,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <div>
             <p className="eyebrow">Threat</p>
             <h2>Threat Operations</h2>
-            <p>Visible exploit and anomaly detections with deterministic explainability and preserved fallback behavior.</p>
+            <p>Visible exploit and anomaly detections with deterministic explainability and truthful coverage signals.</p>
           </div>
           <StatusBadge state={resolveBadgeState(threatDashboard.source, threatDashboard.degraded)} />
         </div>
