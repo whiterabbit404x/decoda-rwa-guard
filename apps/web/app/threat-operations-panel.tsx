@@ -46,29 +46,45 @@ type HistoryRun = {
   created_at: string;
 };
 
-type ThreatSignal = {
+type ThreatFeedState = 'Live' | 'Historical' | 'Test' | 'Stale' | 'Investigating' | 'Resolved';
+type PageOperationalState =
+  | 'healthy_live'
+  | 'configured_no_signals'
+  | 'degraded_partial'
+  | 'offline_no_telemetry'
+  | 'unconfigured_workspace'
+  | 'fetch_error'
+  | 'historical_only';
+
+type DetectionItem = {
   id: string;
   timestamp: string;
   severity: string;
   title: string;
-  asset: string;
-  explanation: string;
-  state: 'New' | 'Investigating' | 'Resolved';
+  assetName: string;
+  assetType: string;
+  monitoringStatus: string;
+  evidenceSummary: string;
+  state: ThreatFeedState;
   href: string;
+  source: 'alert' | 'incident';
 };
 
 type TimelineItem = {
   id: string;
   timestamp: string;
-  category: 'Alert' | 'Incident' | 'Checkpoint';
+  category: 'Alert' | 'Incident' | 'Checkpoint' | 'Monitoring';
   description: string;
   href: string;
 };
 
+const TELEMETRY_STALE_MS = 20 * 60 * 1000;
+const DETECTION_LIVE_MS = 15 * 60 * 1000;
+
 function formatRelativeTime(value?: string | null): string {
-  if (!value) return 'Pending';
+  if (!value) return 'Not available';
   const diffMs = Date.now() - new Date(value).getTime();
-  if (Number.isNaN(diffMs) || diffMs < 0) return 'Pending';
+  if (Number.isNaN(diffMs) || diffMs < 0) return 'Not available';
   const seconds = Math.floor(diffMs / 1000);
   if (seconds < 60) return `${seconds}s ago`;
   const minutes = Math.floor(seconds / 60);
@@ -80,15 +96,9 @@ function formatRelativeTime(value?: string | null): string {
 }
 
 function formatAbsoluteTime(value?: string | null): string {
-  if (!value) return 'Pending';
+  if (!value) return 'Not available';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? 'Pending' : date.toLocaleString();
-}
-
-function statusTone(status: MonitoringPresentationStatus): string {
-  if (status === 'offline') return 'offline';
-  if (status === 'degraded' || status === 'stale' || status === 'limited coverage') return 'attention';
-  return 'healthy';
+  return Number.isNaN(date.getTime()) ? 'Not available' : date.toLocaleString();
 }
 
 function severityClass(severity?: string) {
@@ -107,18 +117,124 @@ function severityLabel(severity?: string) {
   return 'Low';
 }
 
-function coverageLabel(target: TargetRow): 'Full' | 'Partial' | 'Missing' | 'Stale' {
-  if (!target.monitoring_enabled) return 'Missing';
-  const lastChecked = target.last_checked_at ? new Date(target.last_checked_at).getTime() : null;
-  if (!lastChecked) return 'Partial';
-  if (Date.now() - lastChecked > 20 * 60 * 1000) return 'Stale';
+function isTestOrLabSignal(text: string | undefined): boolean {
+  const value = String(text ?? '').toLowerCase();
+  return ['test', 'lab', 'synthetic', 'simulation'].some((term) => value.includes(term));
+}
+
+function normalizeCoverageStatus(target: TargetRow): 'Full' | 'Partial' | 'Stale' | 'Missing' | 'Offline' {
+  if (!target.monitoring_enabled) return 'Offline';
+  if (!target.last_checked_at) return 'Missing';
+  const lastChecked = new Date(target.last_checked_at).getTime();
+  if (Number.isNaN(lastChecked)) return 'Missing';
+  if (Date.now() - lastChecked > TELEMETRY_STALE_MS) return 'Stale';
+  if (!target.contract_identifier && !target.wallet_address) return 'Partial';
   return 'Full';
 }
 
-function coverageClass(label: ReturnType<typeof coverageLabel>) {
-  if (label === 'Full') return 'healthy';
-  if (label === 'Partial' || label === 'Stale') return 'attention';
+function coverageTone(status: ReturnType<typeof normalizeCoverageStatus>) {
+  if (status === 'Full') return 'healthy';
+  if (status === 'Partial' || status === 'Stale' || status === 'Missing') return 'attention';
   return 'offline';
+}
+
+function monitoringTone(status: MonitoringPresentationStatus) {
+  if (status === 'live') return 'healthy';
+  if (status === 'offline') return 'offline';
+  return 'attention';
+}
+
+function stateTone(state: ThreatFeedState) {
+  if (state === 'Live' || state === 'Investigating') return 'healthy';
+  if (state === 'Resolved') return 'low';
+  if (state === 'Test') return 'attention';
+  return 'offline';
+}
+
+function displayIdentifier(target: TargetRow): string {
+  if (target.wallet_address) {
+    const value = target.wallet_address;
+    return value.length > 12 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value;
+  }
+  return target.contract_identifier || 'Identifier unavailable';
+}
+
+function derivePageState(params: {
+  loadingSnapshot: boolean;
+  snapshotError: boolean;
+  monitoringStatus: MonitoringPresentationStatus;
+  targets: TargetRow[];
+  liveDetections: DetectionItem[];
+  historicalDetections: DetectionItem[];
+  telemetryAvailable: boolean;
+}): PageOperationalState {
+  const {
+    loadingSnapshot,
+    snapshotError,
+    monitoringStatus,
+    targets,
+    liveDetections,
+    historicalDetections,
+    telemetryAvailable,
+  } = params;
+
+  if (!loadingSnapshot && snapshotError && !telemetryAvailable) {
+    return 'fetch_error';
+  }
+
+  if (targets.length === 0) {
+    return 'unconfigured_workspace';
+  }
+
+  if (monitoringStatus === 'offline' && !telemetryAvailable) {
+    return 'offline_no_telemetry';
+  }
+
+  if (monitoringStatus === 'degraded' || monitoringStatus === 'stale' || monitoringStatus === 'limited coverage') {
+    if (liveDetections.length === 0 && historicalDetections.length > 0) {
+      return 'historical_only';
+    }
+    return 'degraded_partial';
+  }
+
+  if (liveDetections.length > 0) {
+    return 'healthy_live';
+  }
+
+  return 'configured_no_signals';
+}
+
+function PageStateBanner({ state, telemetryLabel, pollLabel }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string }) {
+  if (state === 'healthy_live') {
+    return <p className="explanation">Live monitoring is healthy. Telemetry freshness and threat detections reflect current workspace conditions.</p>;
+  }
+  if (state === 'configured_no_signals') {
+    return <p className="explanation">Monitoring is healthy with no active threat signals. Telemetry remains current across configured systems.</p>;
+  }
+  if (state === 'unconfigured_workspace') {
+    return <p className="explanation">No monitored systems are configured. Live threat detection will begin after at least one protected system is added.</p>;
+  }
+  if (state === 'offline_no_telemetry') {
+    return <p className="explanation">Monitoring is offline. Showing last known records only; continuous live protection is currently unavailable.</p>;
+  }
+  if (state === 'fetch_error') {
+    return (
+      <div className="emptyStatePanel">
+        <h4>Monitoring data unavailable</h4>
+        <p className="muted">The workspace is configured, but the latest telemetry could not be retrieved.</p>
+        <p className="tableMeta">Last telemetry: {telemetryLabel} · Last successful poll: {pollLabel}</p>
+        <div className="buttonRow">
+          <Link href="/threat" prefetch={false}>Retry</Link>
+          <Link href="/integrations" prefetch={false}>Inspect integration status</Link>
+          <Link href="/settings" prefetch={false}>Manage monitored systems</Link>
+        </div>
+      </div>
+    );
+  }
+  if (state === 'historical_only') {
+    return <p className="explanation">Current monitoring is degraded. The feed is limited to last recorded detections until telemetry recovers.</p>;
+  }
+  return <p className="explanation">Monitoring is partially degraded. Threat outcomes may be delayed or incomplete.</p>;
 }
 
 export default function ThreatOperationsPanel({ apiUrl }: Props) {
@@ -148,7 +264,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         ]);
         if (!active) return;
         if (!targetsResponse.ok || !alertsResponse.ok || !incidentsResponse.ok || !historyResponse.ok) {
-          throw new Error('Unable to refresh workspace monitoring snapshot.');
+          throw new Error('refresh_failed');
         }
         const targetsPayload = await targetsResponse.json();
         const alertsPayload = await alertsResponse.json();
@@ -160,9 +276,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         setIncidents((incidentsPayload.incidents ?? []) as IncidentRow[]);
         setHistoryRuns((historyPayload.analysis_runs ?? []) as HistoryRun[]);
         setSnapshotError(null);
-      } catch (error) {
+      } catch {
         if (active) {
-          setSnapshotError(error instanceof Error ? error.message : 'Unable to refresh monitoring data.');
+          setSnapshotError('Monitoring snapshot refresh failed');
         }
       } finally {
         if (active) {
@@ -215,62 +331,128 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     [targets],
   );
 
-  const threatSignals = useMemo<ThreatSignal[]>(() => {
-    const fromAlerts = alerts.slice(0, 10).map((item) => ({
-      id: `alert-${item.id}`,
-      timestamp: item.created_at || new Date(0).toISOString(),
-      severity: severityLabel(item.severity),
-      title: item.title,
-      asset: 'Alerted workspace asset',
-      explanation: item.explanation || 'Alert condition triggered and is waiting for operator review.',
-      state: 'New' as const,
-      href: '/alerts',
-    }));
-    const fromIncidents = incidents.slice(0, 10).map((item) => ({
-      id: `incident-${item.id}`,
-      timestamp: item.created_at || new Date(0).toISOString(),
-      severity: severityLabel(item.severity),
-      title: item.title || item.event_type || 'Incident escalation',
-      asset: 'Incident response queue',
-      explanation: 'An active incident is open for investigation and containment tracking.',
-      state: 'Investigating' as const,
-      href: '/incidents',
-    }));
+  const lastTelemetryAt = feed.runtimeStatus?.last_real_event_at || feed.lastUpdatedAt;
+  const telemetryLabel = formatRelativeTime(lastTelemetryAt);
+  const pollLabel = formatRelativeTime(feed.lastUpdatedAt);
+  const detectionEvalLabel = feed.runtimeStatus?.checkpoint_age_seconds != null
+    ? `${feed.runtimeStatus.checkpoint_age_seconds}s ago`
+    : formatRelativeTime(feed.lastUpdatedAt);
 
-    return [...fromAlerts, ...fromIncidents]
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-      .slice(0, 8);
-  }, [alerts, incidents]);
+  const baseDetections = useMemo<DetectionItem[]>(() => {
+    const matchedAsset = targets[0];
+    const fallbackAssetName = matchedAsset?.name || 'Unbound workspace asset';
+    const fallbackAssetType = matchedAsset?.target_type || matchedAsset?.asset_type || 'system';
+
+    const fromAlerts: DetectionItem[] = alerts.slice(0, 10).map((item) => {
+      const isTest = isTestOrLabSignal(item.title) || isTestOrLabSignal(item.explanation);
+      return {
+        id: `alert-${item.id}`,
+        timestamp: item.created_at || new Date(0).toISOString(),
+        severity: severityLabel(item.severity),
+        title: item.title,
+        assetName: fallbackAssetName,
+        assetType: fallbackAssetType,
+        monitoringStatus: matchedAsset?.monitoring_enabled ? 'Monitored' : 'Status unavailable',
+        evidenceSummary: item.explanation || 'Alert condition triggered and is waiting for operator review.',
+        state: isTest ? ('Test' as const) : ('Live' as const),
+        href: '/alerts',
+        source: 'alert' as const,
+      };
+    });
+
+    const fromIncidents: DetectionItem[] = incidents.slice(0, 10).map((item) => {
+      const isTest = isTestOrLabSignal(item.title) || isTestOrLabSignal(item.event_type);
+      return {
+        id: `incident-${item.id}`,
+        timestamp: item.created_at || new Date(0).toISOString(),
+        severity: severityLabel(item.severity),
+        title: item.title || item.event_type || 'Incident escalation',
+        assetName: fallbackAssetName,
+        assetType: fallbackAssetType,
+        monitoringStatus: 'Investigating',
+        evidenceSummary: 'An active incident is open for investigation and containment tracking.',
+        state: isTest ? ('Test' as const) : ('Investigating' as const),
+        href: '/incidents',
+        source: 'incident' as const,
+      };
+    });
+
+    return [...fromAlerts, ...fromIncidents].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  }, [alerts, incidents, targets]);
+
+  const categorizedDetections = useMemo(() => {
+    const now = Date.now();
+    const live: DetectionItem[] = [];
+    const historical: DetectionItem[] = [];
+
+    baseDetections.forEach((item) => {
+      const ageMs = now - new Date(item.timestamp).getTime();
+      const telemetryFresh = monitoringPresentation.status === 'live' && !feed.stale && !feed.offline;
+      const liveCandidate = telemetryFresh && ageMs <= DETECTION_LIVE_MS && item.state !== 'Test';
+      if (liveCandidate) {
+        live.push(item);
+        return;
+      }
+      historical.push({
+        ...item,
+        state: item.state === 'Test' ? 'Test' : ageMs > DETECTION_LIVE_MS ? 'Historical' : 'Stale',
+      });
+    });
+
+    return { live, historical };
+  }, [baseDetections, feed.offline, feed.stale, monitoringPresentation.status]);
+
+  const pageState = derivePageState({
+    loadingSnapshot,
+    snapshotError: Boolean(snapshotError),
+    monitoringStatus: monitoringPresentation.status,
+    targets,
+    liveDetections: categorizedDetections.live,
+    historicalDetections: categorizedDetections.historical,
+    telemetryAvailable: Boolean(feed.lastUpdatedAt || feed.runtimeStatus?.last_real_event_at),
+  });
 
   const timelineItems = useMemo<TimelineItem[]>(() => {
-    const alertItems = alerts.slice(0, 6).map((item) => ({
+    const alertItems = alerts.slice(0, 5).map((item) => ({
       id: `alert-${item.id}`,
       timestamp: item.created_at || new Date(0).toISOString(),
       category: 'Alert' as const,
       description: item.title,
       href: '/alerts',
     }));
-    const incidentItems = incidents.slice(0, 6).map((item) => ({
+    const incidentItems = incidents.slice(0, 5).map((item) => ({
       id: `incident-${item.id}`,
       timestamp: item.created_at || new Date(0).toISOString(),
       category: 'Incident' as const,
       description: item.title || item.event_type || 'Incident opened',
       href: '/incidents',
     }));
-    const historyItems = historyRuns.slice(0, 6).map((item) => ({
+    const historyItems = historyRuns.slice(0, 4).map((item) => ({
       id: `history-${item.id}`,
       timestamp: item.created_at || new Date(0).toISOString(),
       category: 'Checkpoint' as const,
       description: item.title,
       href: '/history',
     }));
+    const monitoringEvent = {
+      id: `monitoring-${feed.lastUpdatedAt ?? 'none'}`,
+      timestamp: feed.lastUpdatedAt || new Date().toISOString(),
+      category: 'Monitoring' as const,
+      description: pageState === 'offline_no_telemetry'
+        ? 'Monitoring offline: no fresh telemetry available.'
+        : pageState === 'degraded_partial' || pageState === 'historical_only'
+          ? 'Monitoring degraded: telemetry is partial or delayed.'
+          : 'Monitoring healthy: telemetry and polling are current.',
+      href: '/threat',
+    };
 
-    return [...alertItems, ...incidentItems, ...historyItems]
+    return [monitoringEvent, ...alertItems, ...incidentItems, ...historyItems]
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .slice(0, 12);
-  }, [alerts, historyRuns, incidents]);
+  }, [alerts, feed.lastUpdatedAt, historyRuns, incidents, pageState]);
 
   const reportingSystems = targets.filter((target) => target.monitoring_enabled).length;
+  const coverageSummary = `${reportingSystems} / ${targets.length || 0}`;
   const latestRiskScore = useMemo(() => {
     if (alerts.some((item) => severityClass(item.severity) === 'critical')) return { value: 92, tier: 'High' };
     if (alerts.some((item) => severityClass(item.severity) === 'high')) return { value: 78, tier: 'Elevated' };
@@ -278,14 +460,21 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     return { value: 28, tier: 'Low' };
   }, [alerts, incidents]);
 
-  const statusSummary =
-    openAlerts > 0
-      ? `Continuous monitoring is active across ${reportingSystems} monitored systems. ${openAlerts} open alert${openAlerts === 1 ? '' : 's'} require review.`
-      : `Continuous monitoring is active across ${reportingSystems} monitored systems with no open alerts.`;
+  const riskFreshness = pageState === 'healthy_live' || pageState === 'configured_no_signals'
+    ? `last evaluated ${detectionEvalLabel} across ${Math.max(reportingSystems, 0)} monitored systems`
+    : `last known score from ${detectionEvalLabel}; current telemetry unavailable`;
 
-  const lastTelemetryLabel = feed.checkpointAgeSeconds != null
-    ? `${feed.checkpointAgeSeconds}s ago`
-    : formatRelativeTime(feed.lastUpdatedAt);
+  const feedHeading = pageState === 'healthy_live'
+    ? 'Live detections available'
+    : pageState === 'configured_no_signals'
+      ? 'No active detections, monitoring healthy'
+      : pageState === 'historical_only'
+        ? 'Historical detections only'
+        : pageState === 'unconfigured_workspace'
+          ? 'Workspace not configured'
+          : 'Monitoring unavailable or partial';
+
+  const detectionsToRender = pageState === 'healthy_live' ? categorizedDetections.live : categorizedDetections.historical;
 
   return (
     <section className="stack monitoringConsoleStack">
@@ -296,36 +485,44 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <h2>{user?.current_workspace?.name ?? 'Workspace monitoring console'}</h2>
           </div>
           <div className="monitoringHeaderActions">
+            <Link href="/alerts" prefetch={false} className="secondaryCta">Review alerts</Link>
+            <Link href="/incidents" prefetch={false} className="secondaryCta">Open incident queue</Link>
             <Link href="/settings" prefetch={false} className="secondaryCta">Manage monitored systems</Link>
-            <Link href="/alerts" prefetch={false} className="secondaryCta">View alerts</Link>
-            <Link href="/incidents" prefetch={false} className="secondaryCta">Open incidents</Link>
           </div>
         </div>
         <div className="chipRow monitoringHeaderChips">
-          <span className={`statusBadge statusBadge-${statusTone(monitoringPresentation.status)}`}>{monitoringPresentation.status === 'live' ? 'Healthy' : monitoringPresentation.status === 'stale' ? 'Attention needed' : monitoringPresentation.status === 'limited coverage' ? 'Attention needed' : monitoringPresentation.status === 'degraded' ? 'Degraded' : 'Offline'}</span>
-          <span className="ruleChip">Last telemetry {lastTelemetryLabel}</span>
+          <span className={`statusBadge statusBadge-${monitoringTone(monitoringPresentation.status)}`}>{monitoringPresentation.statusLabel}</span>
+          <span className="ruleChip">Operational state {pageState.replaceAll('_', ' ')}</span>
+          <span className="ruleChip">Live telemetry {telemetryLabel}</span>
+          <span className="ruleChip">Threat feed updated {pollLabel}</span>
           <span className="ruleChip">Protected assets {protectedAssetCount}</span>
-          <span className="ruleChip">Monitored systems {feed.counts.monitoredTargets}</span>
-          <span className="ruleChip">Open alerts {feed.counts.openAlerts}</span>
-          <span className="ruleChip">Active incidents {feed.counts.openIncidents}</span>
+          <span className="ruleChip">Monitored systems {reportingSystems}</span>
+          <span className="ruleChip">Open alerts {openAlerts}</span>
+          <span className="ruleChip">Active incidents {activeIncidents}</span>
         </div>
-        <p className="explanation">{statusSummary}</p>
-        <p className="tableMeta">Updated {formatRelativeTime(feed.lastUpdatedAt)} · Last checkpoint {monitoringPresentation.lastCheckpointLabel}</p>
+        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} />
+        <p className="tableMeta">
+          Last telemetry received: {telemetryLabel} · Last detection evaluation: {detectionEvalLabel} · Last successful poll: {pollLabel}
+        </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
-        {snapshotError ? <p className="statusLine">{snapshotError}</p> : null}
       </article>
 
       <section className="monitoringKpiGrid" aria-label="Monitoring KPIs">
         <article className="dataCard kpiCard">
-          <p className="sectionEyebrow">Monitoring Health</p>
-          <p className="kpiValue">{monitoringPresentation.status === 'live' ? 'Healthy' : monitoringPresentation.status === 'limited coverage' ? 'Attention needed' : monitoringPresentation.status === 'stale' ? 'Attention needed' : monitoringPresentation.statusLabel}</p>
+          <p className="sectionEyebrow">Monitoring Status</p>
+          <p className="kpiValue">{monitoringPresentation.statusLabel}</p>
           <p className="tableMeta">{monitoringPresentation.summary}</p>
+        </article>
+        <article className="dataCard kpiCard">
+          <p className="sectionEyebrow">Telemetry Freshness</p>
+          <p className="kpiValue">{telemetryLabel}</p>
+          <p className="tableMeta">Detection evaluation {detectionEvalLabel}</p>
         </article>
         <article className="dataCard kpiCard">
           <p className="sectionEyebrow">Protected Assets</p>
           <p className="kpiValue">{loadingSnapshot ? '—' : protectedAssetCount}</p>
-          <p className="tableMeta">Assets with active monitoring definitions.</p>
+          <p className="tableMeta">Assets with monitoring definitions.</p>
         </article>
         <article className="dataCard kpiCard">
           <p className="sectionEyebrow">Open Alerts</p>
@@ -339,12 +536,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
         <article className="dataCard kpiCard">
           <p className="sectionEyebrow">Latest Risk Score</p>
-          <p className="kpiValue">{latestRiskScore.value}</p>
-          <p className="tableMeta">{latestRiskScore.tier} operational risk posture.</p>
+          <p className="kpiValue">{latestRiskScore.value} / {latestRiskScore.tier}</p>
+          <p className="tableMeta">{riskFreshness}</p>
         </article>
         <article className="dataCard kpiCard">
-          <p className="sectionEyebrow">Coverage Status</p>
-          <p className="kpiValue">{reportingSystems} of {targets.length || 0}</p>
+          <p className="sectionEyebrow">Coverage State</p>
+          <p className="kpiValue">{coverageSummary}</p>
           <p className="tableMeta">Systems reporting telemetry.</p>
         </article>
       </section>
@@ -352,33 +549,52 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       <article className="dataCard">
         <div className="listHeader">
           <div>
-            <p className="sectionEyebrow">Live Threat Feed</p>
-            <h3>Active threat signals</h3>
+            <p className="sectionEyebrow">Threat Feed</p>
+            <h3>{feedHeading}</h3>
           </div>
           <Link href="/alerts" prefetch={false}>Review alerts</Link>
         </div>
-        {loadingSnapshot ? <p className="muted">Loading active threat signals…</p> : null}
-        {!loadingSnapshot && threatSignals.length === 0 ? (
+        {loadingSnapshot ? <p className="muted">Loading threat feed…</p> : null}
+        {!loadingSnapshot && detectionsToRender.length === 0 ? (
           <div className="emptyStatePanel">
-            <h4>No active threat signals yet</h4>
-            <p className="muted">Monitoring is running, but no qualifying anomalies have been recorded for this workspace.</p>
+            <h4>
+              {pageState === 'configured_no_signals'
+                ? 'No active threat signals'
+                : pageState === 'unconfigured_workspace'
+                  ? 'No monitored systems configured'
+                  : 'No detections available'}
+            </h4>
+            <p className="muted">
+              {pageState === 'configured_no_signals'
+                ? 'Monitoring is healthy and no active detections are currently open.'
+                : pageState === 'unconfigured_workspace'
+                  ? 'Add at least one protected system to enable live telemetry and detections.'
+                  : 'No historical detections are available for display at this time.'}
+            </p>
             <div className="buttonRow">
-              <Link href="/settings" prefetch={false}>Add monitored systems</Link>
-              <Link href="/settings" prefetch={false}>Review detection coverage</Link>
-              <Link href="/alerts" prefetch={false}>Open alert history</Link>
+              <Link href="/settings" prefetch={false}>Manage monitored systems</Link>
+              <Link href="/history" prefetch={false}>View workspace history</Link>
+              <Link href="/integrations" prefetch={false}>Inspect integration health</Link>
             </div>
           </div>
         ) : null}
         <div className="stack compactStack">
-          {threatSignals.map((signal) => (
+          {detectionsToRender.map((signal) => (
             <div key={signal.id} className="overviewListItem signalRow">
               <div>
-                <p className="signalTitle"><span className={`statusBadge statusBadge-${severityClass(signal.severity)}`}>{signal.severity}</span> {signal.title}</p>
-                <p className="muted">{signal.asset} · {signal.explanation}</p>
-                <p className="tableMeta">{formatAbsoluteTime(signal.timestamp)} · {formatRelativeTime(signal.timestamp)}</p>
+                <p className="signalTitle">
+                  <span className={`statusBadge statusBadge-${severityClass(signal.severity)}`}>{signal.severity}</span>{' '}
+                  {signal.title}
+                </p>
+                <p className="muted">
+                  {signal.assetName} ({signal.assetType}) · {signal.monitoringStatus} · {signal.evidenceSummary}
+                </p>
+                <p className="tableMeta">
+                  {formatAbsoluteTime(signal.timestamp)} · {formatRelativeTime(signal.timestamp)} · Source: {signal.source}
+                </p>
               </div>
               <div className="signalActions">
-                <span className="ruleChip">{signal.state}</span>
+                <span className={`statusBadge statusBadge-${stateTone(signal.state)}`}>{signal.state}</span>
                 <Link href={signal.href} prefetch={false}>Review</Link>
               </div>
             </div>
@@ -390,16 +606,16 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         <article className="dataCard">
           <div className="listHeader">
             <div>
-              <p className="sectionEyebrow">Protected Assets & Coverage</p>
-              <h3>System coverage and telemetry health</h3>
+              <p className="sectionEyebrow">Asset Coverage</p>
+              <h3>Protected systems and telemetry coverage</h3>
             </div>
             <Link href="/settings" prefetch={false}>Manage monitored systems</Link>
           </div>
           {loadingSnapshot ? <p className="muted">Loading monitored systems…</p> : null}
           {!loadingSnapshot && targets.length === 0 ? (
             <div className="emptyStatePanel">
-              <h4>No monitored systems configured</h4>
-              <p className="muted">Active monitoring requires at least one protected system before telemetry and detections can be evaluated.</p>
+              <h4>No protected systems configured</h4>
+              <p className="muted">Live monitoring requires at least one protected system in this workspace.</p>
               <div className="buttonRow">
                 <Link href="/settings" prefetch={false}>Add first monitored system</Link>
                 <Link href="/help" prefetch={false}>View setup guide</Link>
@@ -413,28 +629,28 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   <tr>
                     <th>Asset/System</th>
                     <th>Type</th>
-                    <th>Health</th>
+                    <th>Status</th>
                     <th>Coverage</th>
-                    <th>Latest Signal</th>
-                    <th>Last Seen</th>
+                    <th>Last seen</th>
+                    <th>Latest signal</th>
                     <th>Risk</th>
-                    <th>Action</th>
+                    <th>Destination</th>
                   </tr>
                 </thead>
                 <tbody>
                   {targets.slice(0, 10).map((target) => {
-                    const coverage = coverageLabel(target);
+                    const coverage = normalizeCoverageStatus(target);
                     const risk = openAlerts > 0 ? 'High' : 'Low';
                     return (
                       <tr key={target.id}>
-                        <td>{target.name}<span className="tableMeta">{target.contract_identifier || target.wallet_address || 'Identifier unavailable'}</span></td>
-                        <td>{target.target_type || target.asset_type || 'system'}</td>
-                        <td><span className={`statusBadge statusBadge-${target.monitoring_enabled ? 'healthy' : 'offline'}`}>{target.monitoring_enabled ? 'Healthy' : 'Offline'}</span></td>
-                        <td><span className={`statusBadge statusBadge-${coverageClass(coverage)}`}>{coverage}</span></td>
-                        <td>{alerts[0]?.title || 'No active signals'}</td>
+                        <td>{target.name}<span className="tableMeta">{displayIdentifier(target)}</span></td>
+                        <td>{target.target_type || target.asset_type || 'System'}</td>
+                        <td><span className={`statusBadge statusBadge-${target.monitoring_enabled ? 'healthy' : 'offline'}`}>{target.monitoring_enabled ? 'Monitored' : 'Offline'}</span></td>
+                        <td><span className={`statusBadge statusBadge-${coverageTone(coverage)}`}>{coverage}</span></td>
                         <td>{formatRelativeTime(target.last_checked_at)}</td>
+                        <td>{alerts[0]?.title || incidents[0]?.title || 'No active signals'}</td>
                         <td><span className={`statusBadge statusBadge-${risk === 'High' ? 'high' : 'low'}`}>{risk}</span></td>
-                        <td><Link href="/settings" prefetch={false}>Review</Link></td>
+                        <td><Link href="/settings" prefetch={false}>Open asset coverage view</Link></td>
                       </tr>
                     );
                   })}
@@ -448,44 +664,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <article className="dataCard">
             <div className="listHeader">
               <div>
-                <p className="sectionEyebrow">Detection Evidence</p>
-                <h3>Recent detection outcomes</h3>
-              </div>
-              <Link href="/history" prefetch={false}>View workspace history</Link>
-            </div>
-            {alerts.length === 0 && incidents.length === 0 ? (
-              <div className="emptyStatePanel">
-                <h4>No detection evidence recorded yet</h4>
-                <p className="muted">Monitoring is active. Evidence items appear here automatically when alerts or incidents are created.</p>
-              </div>
-            ) : (
-              <div className="stack compactStack">
-                {alerts.slice(0, 3).map((alert) => (
-                  <div key={alert.id} className="overviewListItem">
-                    <div>
-                      <p>{alert.title}</p>
-                      <p className="muted">Impacted asset: Alerted workspace asset · Recommended action: Validate signal context and assign reviewer.</p>
-                      <p className="tableMeta">Incident opened: {activeIncidents > 0 ? 'Yes' : 'No'} · Governance follow-up: {historyRuns.length > 0 ? 'Recorded' : 'Pending'}</p>
-                    </div>
-                    <span className={`statusBadge statusBadge-${severityClass(alert.severity)}`}>{severityLabel(alert.severity)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </article>
-
-          <article className="dataCard">
-            <div className="listHeader">
-              <div>
-                <p className="sectionEyebrow">Investigation Timeline</p>
-                <h3>Recent monitoring activity</h3>
+                <p className="sectionEyebrow">Operational Timeline</p>
+                <h3>Alerts, incidents, and monitoring transitions</h3>
               </div>
               <Link href="/history" prefetch={false}>Open full history</Link>
             </div>
             {timelineItems.length === 0 ? (
               <div className="emptyStatePanel">
-                <h4>No alerts, incidents, or checkpoints yet</h4>
-                <p className="muted">Monitoring is active. As events arrive, this timeline will populate with linked investigation history.</p>
+                <h4>No activity recorded</h4>
+                <p className="muted">No alerts, incidents, or health transitions have been recorded yet.</p>
               </div>
             ) : (
               <div className="stack compactStack">
@@ -504,14 +691,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
           <article className="dataCard">
             <p className="sectionEyebrow">Action Center</p>
-            <h3>Investigation and response actions</h3>
-            <p className="muted">Use these queues to triage risk, coordinate response, and verify governance follow-through.</p>
+            <h3>Operational actions</h3>
+            <p className="muted">Use investigation and escalation workflows to restore healthy monitoring and resolve risk.</p>
             <div className="buttonRow">
               <Link href="/alerts" prefetch={false}>Review alerts</Link>
               <Link href="/incidents" prefetch={false}>Open incident queue</Link>
               <Link href="/history" prefetch={false}>View workspace history</Link>
               <Link href="/settings" prefetch={false}>Manage monitored systems</Link>
               <Link href="/compliance" prefetch={false}>Review governance actions</Link>
+              <Link href="/integrations" prefetch={false}>Inspect integration health</Link>
             </div>
           </article>
         </div>
