@@ -1830,6 +1830,14 @@ def _require_workspace_admin(connection: Any, request: Request) -> tuple[dict[st
     return user, workspace_context
 
 
+def require_ops_rbac_guard(connection: Any, request: Request) -> tuple[dict[str, Any], dict[str, Any]]:
+    user, workspace_context = _require_workspace_admin(connection, request)
+    role = str(workspace_context.get('role') or '')
+    if _normalize_workspace_role(role) not in {'owner', 'admin'}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Owner or admin role is required for ops monitoring actions.')
+    return user, workspace_context
+
+
 def list_workspace_members(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
