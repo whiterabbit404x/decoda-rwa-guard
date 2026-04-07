@@ -11,10 +11,9 @@ export default async function ThreatPage() {
       <section className="hero compactHero">
         <div>
           <p className="eyebrow">Threat monitoring</p>
-          <h1>Live monitoring for this workspace</h1>
+          <h1>Threat Monitoring Console</h1>
           <p className="lede">
-            This workspace view shows monitoring state, active coverage, live evidence freshness,
-            and investigation entry points for alerts, incidents, and governance actions.
+            Continuous protection status, active threat signals, and investigation workflows for the current workspace.
           </p>
         </div>
       </section>

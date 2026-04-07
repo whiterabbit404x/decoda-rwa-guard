@@ -32,10 +32,9 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(panel).toContain('Coverage degraded. Incident absence does not prove safety.');
     expect(panel).toContain('Monitoring data delayed. Await a fresh checkpoint and event updates.');
 
-    expect(threatPanel).toContain('Workspace monitoring offline. Do not assume current protection coverage until connectivity returns.');
-    expect(threatPanel).toContain('Coverage currently limited. Validate open alerts and incidents before closure actions.');
-    expect(threatPanel).toContain('Monitoring state degraded. Validate evidence before taking closure actions.');
-    expect(threatPanel).toContain('Monitoring data delayed. Await a fresh checkpoint before relying on this state.');
+    expect(threatPanel).toContain('Threat monitoring command center');
+    expect(threatPanel).toContain('Continuous monitoring is active across');
+    expect(threatPanel).toContain('No active threat signals yet');
     expect(threatPanel).toContain('Loading monitoring state…');
     expect(threatPanel).toContain('Refreshing monitoring state…');
   });

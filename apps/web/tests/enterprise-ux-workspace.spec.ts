@@ -22,11 +22,11 @@ test('primary threat page uses always-on monitoring language and removes scenari
   const threatPage = read('app/(product)/threat/page.tsx');
   const threatPanel = read('app/threat-operations-panel.tsx');
 
-  expect(threatPage).toContain('Live monitoring for this workspace');
-  expect(threatPanel).toContain('This workspace is under continuous monitoring');
-  expect(threatPanel).toContain('Monitored systems');
-  expect(threatPanel).toContain('Recent activity');
-  expect(threatPanel).toContain('Investigate and act from live workspace monitoring');
+  expect(threatPage).toContain('Threat Monitoring Console');
+  expect(threatPanel).toContain('Threat monitoring command center');
+  expect(threatPanel).toContain('Live Threat Feed');
+  expect(threatPanel).toContain('Protected Assets & Coverage');
+  expect(threatPanel).toContain('Investigation and response actions');
 
   expect(threatPanel).not.toContain('scenario presets');
   expect(threatPanel).not.toContain('Run analysis');

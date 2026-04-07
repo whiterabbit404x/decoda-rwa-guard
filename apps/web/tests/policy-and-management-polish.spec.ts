@@ -9,10 +9,10 @@ function readAppFile(name: string): string {
 test('threat operations panel emphasizes monitoring and investigation over manual runs', () => {
   const threat = readAppFile('threat-operations-panel.tsx');
 
-  expect(threat).toContain('Threat monitoring state');
-  expect(threat).toContain('This workspace is under continuous monitoring');
-  expect(threat).toContain('Protected assets and monitored targets');
-  expect(threat).toContain('Investigate and act from live workspace monitoring');
+  expect(threat).toContain('Threat monitoring command center');
+  expect(threat).toContain('Active threat signals');
+  expect(threat).toContain('System coverage and telemetry health');
+  expect(threat).toContain('Investigation and response actions');
   expect(threat).not.toContain('Advanced policy configuration (JSON)');
   expect(threat).not.toContain('Run analysis');
   expect(threat).not.toContain('scenario presets');
