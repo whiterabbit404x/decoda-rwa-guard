@@ -11,7 +11,7 @@ export type MonitoringRuntimeStatus = {
   claim_safe?: boolean;
   synthetic?: boolean;
   evidence_present?: boolean;
-  evidence_state?: 'real' | 'demo' | 'degraded' | 'missing' | 'failed' | 'no_evidence' | string;
+  evidence_state?: 'real' | 'degraded' | 'missing' | 'failed' | 'no_evidence' | string;
   truthfulness_state?: 'claim_safe' | 'not_claim_safe' | 'unknown_risk' | string;
   latest_processed_block?: number | null;
   latest_block?: number | null;
@@ -23,11 +23,11 @@ export type MonitoringRuntimeStatus = {
   error_code?: string | null;
   sales_claims_allowed?: boolean;
   claim_validator_status?: 'PASS' | 'FAIL' | string;
-  recent_evidence_state?: 'real' | 'demo' | 'degraded' | 'missing' | 'failed' | 'no_evidence' | string;
+  recent_evidence_state?: 'real' | 'degraded' | 'missing' | 'failed' | 'no_evidence' | string;
   recent_truthfulness_state?: 'claim_safe' | 'not_claim_safe' | 'unknown_risk' | string;
   recent_real_event_count?: number;
   last_real_event_at?: string | null;
-  recent_confidence_basis?: 'provider_evidence' | 'backfill_evidence' | 'demo_scenario' | 'none' | string;
+  recent_confidence_basis?: 'provider_evidence' | 'backfill_evidence' | 'none' | string;
   synthetic_leak_detected?: boolean;
 };
 
@@ -57,7 +57,7 @@ export function normalizeMonitoringMode(value: unknown): MonitoringMode {
   if (normalized.includes('STALE')) {
     return 'STALE';
   }
-  if (normalized.includes('DEMO') || normalized.includes('FALLBACK') || normalized.includes('HYBRID')) {
+  if (normalized.includes('DEMO') || normalized.includes('FALLBACK') || normalized.includes('HYBRID') || normalized.includes('SYNTHETIC')) {
     return 'LIMITED_COVERAGE';
   }
   if (normalized.includes('LIVE')) {

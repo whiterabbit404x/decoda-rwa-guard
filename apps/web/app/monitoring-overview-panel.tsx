@@ -1,19 +1,25 @@
 'use client';
 
-import { monitoringModeLabel } from './monitoring-status-contract';
+import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 
 export default function MonitoringOverviewPanel() {
   const liveFeed = useLiveWorkspaceFeed();
   const runtime = liveFeed.runtimeStatus;
-  const evidenceState = runtime?.recent_evidence_state ?? 'missing';
-  const truthCopy = liveFeed.offline
-    ? 'Telemetry is offline. Treat this workspace as unverified until connectivity returns.'
-    : liveFeed.degraded || evidenceState === 'degraded' || evidenceState === 'failed'
-      ? 'Monitoring is degraded. Incident absence does not prove safety.'
-      : liveFeed.stale
-        ? 'Evidence is stale. Await fresh checkpoint and event updates.'
-        : 'Monitoring is live with current evidence for this workspace.';
+  const presentation = normalizeMonitoringPresentation(runtime, {
+    degraded: liveFeed.degraded,
+    offline: liveFeed.offline,
+    stale: liveFeed.stale,
+  });
+  const truthCopy = presentation.status === 'offline'
+    ? 'Workspace monitoring offline. Fresh telemetry unavailable until connectivity returns.'
+    : presentation.status === 'limited coverage'
+      ? 'Limited coverage for this workspace. Verify open alerts and incidents before closing actions.'
+      : presentation.status === 'degraded'
+        ? 'Coverage degraded. Incident absence does not prove safety.'
+        : presentation.status === 'stale'
+          ? 'Monitoring data delayed. Await a fresh checkpoint and event updates.'
+          : 'Monitoring is live with verified telemetry for this workspace.';
 
   return (
     <section className="summaryGrid">
@@ -34,7 +40,7 @@ export default function MonitoringOverviewPanel() {
       </article>
       <article className="metricCard">
         <p className="metricLabel">Monitoring state</p>
-        <p className="metricValue">{runtime ? monitoringModeLabel(runtime.mode) : (liveFeed.offline ? 'OFFLINE' : 'PENDING')}</p>
+        <p className="metricValue">{runtime ? presentation.statusLabel : (liveFeed.offline ? 'OFFLINE' : 'PENDING')}</p>
         <p className="metricMeta">{truthCopy}</p>
       </article>
       <article className="metricCard">

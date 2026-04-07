@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
-import { monitoringModeLabel } from './monitoring-status-contract';
+import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 
 type Props = { apiUrl: string };
@@ -166,6 +166,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
   const statusBadge = feed.offline ? 'Offline' : feed.degraded ? 'Degraded' : feed.stale ? 'Stale' : 'Live';
 
+  const monitoringPresentation = normalizeMonitoringPresentation(feed.runtimeStatus, {
+    degraded: feed.degraded || Boolean(snapshotError),
+    offline: feed.offline,
+    stale: feed.stale,
+  });
+
   return (
     <section className="stack compactStack">
       <article className="dataCard">
@@ -173,7 +179,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         <h2>This workspace is under continuous monitoring</h2>
         <p className="muted">Active workspace: {user?.current_workspace?.name ?? 'No active workspace selected'}.</p>
         <div className="chipRow">
-          <span className="ruleChip">Monitoring mode: {feed.runtimeStatus ? monitoringModeLabel(feed.runtimeStatus.mode) : 'PENDING'}</span>
+          <span className="ruleChip">Monitoring mode: {feed.runtimeStatus ? monitoringPresentation.statusLabel : 'PENDING'}</span>
           <span className="ruleChip">Status: {statusBadge}</span>
           <span className="ruleChip">Protected assets: {loadingSnapshot ? '—' : protectedAssetCount}</span>
           <span className="ruleChip">Monitored targets: {feed.loading ? '—' : feed.counts.monitoredTargets}</span>
@@ -183,9 +189,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         <p className="tableMeta">Last checkpoint: {feed.checkpointAgeSeconds != null ? `${feed.checkpointAgeSeconds}s ago` : 'pending'} · Last update: {feed.lastUpdatedAt ? new Date(feed.lastUpdatedAt).toLocaleString() : 'pending'}.</p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
-        {feed.offline ? <p className="statusLine">Workspace telemetry is offline. Do not assume current protection coverage until connectivity returns.</p> : null}
-        {!feed.offline && (feed.degraded || snapshotError) ? <p className="statusLine">Monitoring is degraded for this workspace. Validate evidence before taking closure actions.</p> : null}
-        {!feed.offline && !feed.degraded && feed.stale ? <p className="statusLine">Coverage freshness is stale. Await a fresh checkpoint before relying on this state.</p> : null}
+        {monitoringPresentation.status === 'offline' ? <p className="statusLine">Workspace monitoring offline. Do not assume current protection coverage until connectivity returns.</p> : null}
+        {monitoringPresentation.status === 'limited coverage' ? <p className="statusLine">Coverage currently limited. Validate open alerts and incidents before closure actions.</p> : null}
+        {monitoringPresentation.status === 'degraded' ? <p className="statusLine">Monitoring state degraded. Validate evidence before taking closure actions.</p> : null}
+        {monitoringPresentation.status === 'stale' ? <p className="statusLine">Monitoring data delayed. Await a fresh checkpoint before relying on this state.</p> : null}
       </article>
 
       <article className="dataCard">
