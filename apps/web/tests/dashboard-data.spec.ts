@@ -166,7 +166,7 @@ test.describe('dashboard production API flow', () => {
       expect(data.diagnostics.endpoints.dashboard.payloadState).toBe('live');
       expect(data.diagnostics.experienceState).toBe('live');
       expect(viewModel.backendState).toBe('online');
-      expect(viewModel.summaryCards.some((card) => card.meta.includes('Fallback coverage'))).toBe(false);
+      expect(viewModel.summaryCards.some((card) => card.meta.includes('Coverage currently limited'))).toBe(false);
       expect(payload.meta.live).toBe(true);
       expect(payload.meta.experienceState).toBe('live');
       expect(payload.meta.diagnostics.fallbackTriggered).toBe(false);
@@ -273,11 +273,11 @@ test.describe('dashboard production API flow', () => {
       expect(data.diagnostics.fallbackTriggered).toBe(true);
       expect(data.diagnostics.failedEndpoints).toEqual(['resilienceDashboard']);
       expect(data.diagnostics.endpoints.resilienceDashboard.usedFallback).toBe(true);
-      expect(data.diagnostics.endpoints.resilienceDashboard.payloadState).toBe('fallback');
+      expect(data.diagnostics.endpoints.resilienceDashboard.payloadState).toBe('unavailable');
       expect(data.diagnostics.endpoints.resilienceDashboard.error).toContain('503');
       expect(data.resilienceDashboard.source).toBe('fallback');
-      expect(viewModel.summaryCards.find((card) => card.label === 'Resilience status')?.meta).toContain('Fallback coverage');
-      expect(viewModel.summaryCards.some((card) => card.meta.includes('Sample coverage'))).toBe(false);
+      expect(viewModel.summaryCards.find((card) => card.label === 'Resilience status')?.meta).toContain('Telemetry unavailable');
+      expect(viewModel.summaryCards.some((card) => card.meta.includes('sample'))).toBe(false);
       expect(viewModel.backendBanner).toContain('/resilience/dashboard');
     } finally {
       global.fetch = originalFetch;
@@ -324,20 +324,20 @@ test.describe('dashboard production API flow', () => {
       };
 
       expect(data.diagnostics.endpoints.threatDashboard.transport).toBe('ok');
-      expect(data.diagnostics.endpoints.threatDashboard.payloadState).toBe('fallback');
+      expect(data.diagnostics.endpoints.threatDashboard.payloadState).toBe('limited_coverage');
       expect(data.diagnostics.experienceState).toBe('live_degraded');
       expect(viewModel.backendState).toBe('degraded');
-      expect(viewModel.summaryCards.find((card) => card.label === 'Threat posture')?.meta).toContain('Fallback coverage');
-      expect(data.threatDashboard.message).toContain('Threat fallback payload from gateway.');
-      expect(viewModel.summaryCards.some((card) => card.meta.includes('Sample coverage'))).toBe(false);
-      expect(formatSourceLabel(data.diagnostics.endpoints.threatDashboard.payloadState)).toBe('Fallback coverage');
+      expect(viewModel.summaryCards.find((card) => card.label === 'Threat posture')?.meta).toContain('Coverage currently limited');
+      expect(data.threatDashboard.message.toLowerCase()).not.toContain('fallback');
+      expect(viewModel.summaryCards.some((card) => card.meta.includes('sample'))).toBe(false);
+      expect(formatSourceLabel(data.diagnostics.endpoints.threatDashboard.payloadState)).toBe('Coverage currently limited');
       expect(routePayload.meta.threatDiagnostics).toEqual(expect.objectContaining({
         source: 'fallback',
         degraded: true,
         firstAlertSource: 'live',
         endpoint: expect.objectContaining({
           path: '/threat/dashboard',
-          payloadState: 'fallback',
+          payloadState: 'limited_coverage',
         }),
       }));
     } finally {
@@ -399,7 +399,7 @@ test.describe('dashboard production API flow', () => {
       expect(data.threatDashboard.recent_detections.every((detection) => detection.source === 'live')).toBe(true);
       expect(data.diagnostics.endpoints.threatDashboard.payloadState).toBe('live');
       expect(viewModel.backendState).toBe('online');
-      expect(viewModel.summaryCards.find((card) => card.label === 'Threat posture')?.meta).toContain('Live feed');
+      expect(viewModel.summaryCards.find((card) => card.label === 'Threat posture')?.meta).toContain('Verified telemetry');
       expect(routePayload.meta.threatDiagnostics).toEqual({
         source: 'live',
         degraded: false,
@@ -483,13 +483,13 @@ test.describe('dashboard production API flow', () => {
       expect(data.threatDashboard.message).toContain('Live evidence unavailable');
       expect(data.threatDashboard.active_alerts.some((alert) => shouldRenderThreatAlertSourceChip(data.threatDashboard, alert) && alert.source === 'fallback')).toBe(true);
       expect(data.diagnostics.endpoints.threatDashboard.path).toBe('/threat/dashboard');
-      expect(formatSourceLabel(data.diagnostics.endpoints.threatDashboard.payloadState)).toBe('Fallback coverage');
+      expect(formatSourceLabel(data.diagnostics.endpoints.threatDashboard.payloadState)).toBe('Coverage currently limited');
     } finally {
       global.fetch = originalFetch;
     }
   });
 
-  test('enters sample mode when production has no live API configured', async () => {
+  test('enters degraded telemetry mode when production has no live API configured', async () => {
     const originalNodeEnv = process.env.NODE_ENV;
     const originalApiUrl = process.env.NEXT_PUBLIC_API_URL;
 
@@ -502,12 +502,12 @@ test.describe('dashboard production API flow', () => {
 
       expect(data.apiUrl).toBe('');
       expect(data.diagnostics.sampleMode).toBe(true);
-      expect(data.diagnostics.experienceState).toBe('sample');
+      expect(data.diagnostics.experienceState).toBe('degraded');
       expect(data.diagnostics.endpoints.riskDashboard.transport).toBe('skipped');
-      expect(data.diagnostics.endpoints.riskDashboard.payloadState).toBe('sample');
-      expect(viewModel.backendState).toBe('offline');
-      expect(viewModel.summaryCards.some((card) => card.meta.includes('Sample coverage'))).toBe(true);
-      expect(viewModel.backendBanner).toContain('sample mode');
+      expect(data.diagnostics.endpoints.riskDashboard.payloadState).toBe('limited_coverage');
+      expect(viewModel.backendState).toBe('degraded');
+      expect(viewModel.summaryCards.some((card) => card.meta.includes('Coverage currently limited'))).toBe(true);
+      expect(viewModel.backendBanner).not.toContain('sample mode');
     } finally {
       process.env.NODE_ENV = originalNodeEnv;
       if (originalApiUrl === undefined) {
