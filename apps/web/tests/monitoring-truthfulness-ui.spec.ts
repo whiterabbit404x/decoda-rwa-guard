@@ -33,8 +33,8 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(panel).toContain('Monitoring data delayed. Await a fresh checkpoint and event updates.');
 
     expect(threatPanel).toContain('Threat monitoring command center');
-    expect(threatPanel).toContain('Continuous monitoring is active across');
-    expect(threatPanel).toContain('No active threat signals yet');
+    expect(threatPanel).toContain('Operational state');
+    expect(threatPanel).toContain('Monitoring data unavailable');
     expect(threatPanel).toContain('Loading monitoring state…');
     expect(threatPanel).toContain('Refreshing monitoring state…');
   });
