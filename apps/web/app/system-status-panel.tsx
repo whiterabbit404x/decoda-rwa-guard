@@ -4,8 +4,8 @@ import {
 } from './dashboard-data';
 import {
   explainDashboardPresentationState,
-  formatDashboardPresentationLabel,
-  normalizeDashboardPresentationState,
+  getDashboardFreshnessLabel,
+  getDashboardPresentationLabel,
   toDashboardBadgeState,
 } from './dashboard-status-presentation';
 import StatusBadge from './status-badge';
@@ -53,26 +53,26 @@ export default function SystemStatusPanel({ diagnostics, dashboard, healthDetail
           <p className="sectionEyebrow">System status</p>
           <h2>Workspace monitoring state</h2>
         </div>
-        <StatusBadge state={toDashboardBadgeState(normalizeDashboardPresentationState({ payloadState: diagnostics.experienceState }))} />
+        <StatusBadge state={toDashboardBadgeState(diagnostics.experienceState)} />
       </div>
       <div className="kvGrid compactKvGrid">
         <p><span>Gateway reachable</span>{gatewayReachable ? 'Yes' : 'No'}</p>
         <p><span>API source</span>{diagnostics.apiUrlSource}</p>
-        <p><span>Coverage currently limited</span>{diagnostics.fallbackTriggered ? 'Yes' : 'No'}</p>
+        <p><span>Coverage currently limited</span>{diagnostics.coverageLimited ? 'Yes' : 'No'}</p>
         <p><span>Dependency mode</span>{dependencySummary}</p>
       </div>
       <div className="statusMatrix">
         {(Object.keys(FEATURE_LABELS) as Array<keyof typeof FEATURE_LABELS>).map((key) => {
-          const state = normalizeDashboardPresentationState({ payloadState: diagnostics.endpoints[key].payloadState });
+          const state = diagnostics.endpoints[key].presentationState;
           return (
             <article key={key} className="statusMatrixRow">
               <div>
                 <h3>{FEATURE_LABELS[key]}</h3>
-                <p className="muted">{formatDashboardPresentationLabel(state)}</p>
+                <p className="muted">{getDashboardPresentationLabel(state)}</p>
               </div>
               <div className="statusMatrixMeta">
                 <StatusBadge state={toDashboardBadgeState(state)} compact />
-                <p>{diagnostics.endpoints[key].error ?? explainDashboardPresentationState(state)}</p>
+                <p>{diagnostics.endpoints[key].error ?? `${explainDashboardPresentationState(state)} ${getDashboardFreshnessLabel(state)}.`}</p>
               </div>
             </article>
           );

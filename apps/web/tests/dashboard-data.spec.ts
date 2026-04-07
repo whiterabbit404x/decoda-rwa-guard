@@ -502,7 +502,7 @@ test.describe('dashboard production API flow', () => {
 
       expect(data.apiUrl).toBe('');
       expect(data.diagnostics.sampleMode).toBe(true);
-      expect(data.diagnostics.experienceState).toBe('degraded');
+      expect(data.diagnostics.experienceState).toBe('limited_coverage');
       expect(data.diagnostics.endpoints.riskDashboard.transport).toBe('skipped');
       expect(data.diagnostics.endpoints.riskDashboard.payloadState).toBe('limited_coverage');
       expect(viewModel.backendState).toBe('degraded');

@@ -1,4 +1,9 @@
 import { ApiConfig, resolveApiConfig } from './api-config';
+import {
+  DashboardPresentationState,
+  getDashboardFreshnessLabel,
+  normalizeDashboardPresentationState,
+} from './dashboard-status-presentation';
 
 export type DashboardCard = {
   title: string;
@@ -920,9 +925,8 @@ function normalizeThreatDashboardPayload(payload: ThreatDashboardResponse): Thre
 }
 
 export type BackendState = 'online' | 'degraded' | 'offline';
-export type InternalDashboardPayloadState = 'live' | 'fallback' | 'sample' | 'unavailable';
-export type DashboardExperienceState = 'live' | 'live_degraded' | 'degraded' | 'unavailable';
-export type DashboardPayloadState = 'live' | 'live_degraded' | 'limited_coverage' | 'unavailable';
+export type DashboardExperienceState = DashboardPresentationState;
+export type DashboardPayloadState = DashboardPresentationState;
 
 export const DEFAULT_FETCH_TIMEOUT_MS = 5000;
 export const EXPECTED_DOWNSTREAM_SERVICES = [
@@ -1063,6 +1067,10 @@ function buildEndpointMeta(
   key: DashboardEndpointKey,
   options: Partial<Omit<DashboardEndpointMeta, 'key' | 'path'>> = {}
 ): DashboardEndpointMeta {
+  const payloadState = options.payloadState ?? 'unavailable';
+  const presentationState = normalizeDashboardPresentationState({
+    internalEvidence: payloadState,
+  });
   return {
     key,
     path: DASHBOARD_ENDPOINT_PATHS[key],
@@ -1070,7 +1078,9 @@ function buildEndpointMeta(
     status: options.status ?? null,
     source: options.source ?? 'unavailable',
     transport: options.transport ?? 'skipped',
-    payloadState: options.payloadState ?? 'unavailable',
+    payloadState,
+    presentationState,
+    freshnessLabel: getDashboardFreshnessLabel(presentationState),
     usedFallback: options.usedFallback ?? false,
     error: options.error ?? null,
   };
@@ -1337,20 +1347,25 @@ function resolveDiagnosticsExperienceState(
   apiConfig: ApiConfig,
   endpoints: DashboardDiagnostics['endpoints']
 ): DashboardExperienceState {
-  const payloadStates = Object.values(endpoints).map((endpoint) => endpoint.payloadState);
-  const hasLivePayload = payloadStates.includes('live');
-  const hasLimitedCoveragePayload = payloadStates.includes('limited_coverage');
+  const presentationStates = Object.values(endpoints).map((endpoint) => endpoint.presentationState);
+  const hasLivePayload = presentationStates.includes('live');
+  const hasLimitedCoveragePayload = presentationStates.includes('limited_coverage');
+  const hasUnavailablePayload = presentationStates.includes('unavailable');
 
   if (hasAllFeatureFeedsLive(endpoints)) {
     return 'live';
   }
 
   if (!apiConfig.apiUrl && !hasLivePayload) {
-    return 'degraded';
+    return hasLimitedCoveragePayload ? 'limited_coverage' : 'degraded';
   }
 
   if (hasLivePayload || hasLimitedCoveragePayload) {
     return 'live_degraded';
+  }
+
+  if (hasUnavailablePayload) {
+    return 'unavailable';
   }
 
   return 'unavailable';
@@ -1360,12 +1375,25 @@ function buildDashboardDiagnostics(
   apiConfig: ApiConfig,
   endpoints: DashboardDiagnostics['endpoints']
 ): DashboardDiagnostics {
-  const failedEndpoints = (Object.keys(endpoints) as DashboardEndpointKey[]).filter((key) => !endpoints[key].ok);
+  const normalizedEndpoints = Object.fromEntries(
+    (Object.keys(endpoints) as DashboardEndpointKey[]).map((key) => {
+      const presentationState = normalizeDashboardPresentationState({
+        internalEvidence: endpoints[key].payloadState,
+      });
+      return [key, {
+        ...endpoints[key],
+        presentationState,
+        freshnessLabel: getDashboardFreshnessLabel(presentationState),
+      }];
+    })
+  ) as DashboardDiagnostics['endpoints'];
+
+  const failedEndpoints = (Object.keys(normalizedEndpoints) as DashboardEndpointKey[]).filter((key) => !normalizedEndpoints[key].ok);
   const degradedReasons = [
     apiConfig.diagnostic,
-    ...failedEndpoints.map((key) => `${endpoints[key].path}: ${endpoints[key].error ?? 'live request failed'}`),
+    ...failedEndpoints.map((key) => `${normalizedEndpoints[key].path}: ${normalizedEndpoints[key].error ?? 'live request failed'}`),
   ].filter((value): value is string => Boolean(value));
-  const experienceState = resolveDiagnosticsExperienceState(apiConfig, endpoints);
+  const experienceState = resolveDiagnosticsExperienceState(apiConfig, normalizedEndpoints);
 
   return {
     apiUrl: apiConfig.apiUrl,
@@ -1373,12 +1401,13 @@ function buildDashboardDiagnostics(
     isProduction: apiConfig.isProduction,
     liveFetchEnabled: Boolean(apiConfig.apiUrl),
     resolutionMessage: apiConfig.diagnostic,
-    fallbackTriggered: Object.values(endpoints).some((endpoint) => endpoint.usedFallback || endpoint.payloadState === 'limited_coverage'),
+    fallbackTriggered: Object.values(normalizedEndpoints).some((endpoint) => endpoint.usedFallback || endpoint.presentationState === 'limited_coverage'),
     sampleMode: !apiConfig.apiUrl,
+    coverageLimited: Object.values(normalizedEndpoints).some((endpoint) => endpoint.presentationState === 'limited_coverage'),
     experienceState,
     failedEndpoints,
     degradedReasons,
-    endpoints,
+    endpoints: normalizedEndpoints,
   };
 }
 
@@ -1458,6 +1487,8 @@ export type DashboardEndpointMeta = {
   source: 'live' | 'fallback' | 'unavailable';
   transport: 'ok' | 'error' | 'skipped';
   payloadState: DashboardPayloadState;
+  presentationState: DashboardPresentationState;
+  freshnessLabel: string;
   usedFallback: boolean;
   error: string | null;
 };
@@ -1470,6 +1501,7 @@ export type DashboardDiagnostics = {
   resolutionMessage: string | null;
   fallbackTriggered: boolean;
   sampleMode: boolean;
+  coverageLimited: boolean;
   experienceState: DashboardExperienceState;
   failedEndpoints: DashboardEndpointKey[];
   degradedReasons: string[];
@@ -1505,6 +1537,18 @@ export type DashboardViewModel = {
   services: ServiceStatus[];
   summaryCards: Array<{ label: string; value: string; meta: string }>;
   backendBanner: string;
+  workspaceMonitoring: {
+    presentationState: DashboardPresentationState;
+    freshness: string;
+    lastUpdated: string;
+    lastConfirmedCheckpoint: string;
+    coverageLevel: string;
+    openAlerts: number;
+    openIncidents: number;
+    protectedAssets: number;
+    monitoredTargets: number;
+  };
+  featurePresentation: Record<Exclude<DashboardEndpointKey, 'dashboard'>, DashboardPresentationState>;
 };
 
 export type DashboardViewModelOptions = {
@@ -1794,6 +1838,8 @@ export function buildDashboardViewModel(
       ? 'online'
       : diagnostics.experienceState === 'live_degraded'
         ? 'degraded'
+        : diagnostics.experienceState === 'limited_coverage'
+          ? 'degraded'
         : diagnostics.experienceState === 'degraded'
           ? 'degraded'
         : resolveBackendState(dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard);
@@ -1803,6 +1849,44 @@ export function buildDashboardViewModel(
       : resolvedBackendState;
   const cards = resolveDashboardCards(dashboard).map((card) => resolveGatewayCard(card, backendState));
   const services = dashboard?.services ?? [];
+  const featurePresentation = {
+    riskDashboard: diagnostics.endpoints.riskDashboard.presentationState,
+    threatDashboard: diagnostics.endpoints.threatDashboard.presentationState,
+    complianceDashboard: diagnostics.endpoints.complianceDashboard.presentationState,
+    resilienceDashboard: diagnostics.endpoints.resilienceDashboard.presentationState,
+  } as const;
+  const openAlerts = riskDashboard.summary.high_alert_count + threatDashboard.summary.critical_or_high_alerts;
+  const openIncidents = resilienceDashboard.summary.incident_count;
+  const protectedAssets = complianceDashboard.summary.paused_asset_count
+    + complianceDashboard.summary.allowlisted_wallet_count
+    + complianceDashboard.summary.blocklisted_wallet_count
+    + complianceDashboard.summary.frozen_wallet_count;
+  const monitoredTargets = Math.max(
+    riskDashboard.summary.total_transactions,
+    threatDashboard.active_alerts.length + threatDashboard.recent_detections.length,
+    resilienceDashboard.reconciliation_result.per_ledger_balances.length
+  );
+  const checkpoints = [
+    riskDashboard.generated_at,
+    threatDashboard.generated_at,
+    complianceDashboard.generated_at,
+    resilienceDashboard.generated_at,
+  ]
+    .filter(Boolean)
+    .map((value) => new Date(value).getTime())
+    .filter((value) => Number.isFinite(value));
+  const lastCheckpointAt = checkpoints.length > 0 ? new Date(Math.max(...checkpoints)).toISOString() : null;
+  const workspaceMonitoring = {
+    presentationState: diagnostics.experienceState,
+    freshness: getDashboardFreshnessLabel(diagnostics.experienceState),
+    lastUpdated: lastCheckpointAt ? new Date(lastCheckpointAt).toLocaleString() : 'Telemetry unavailable',
+    lastConfirmedCheckpoint: lastCheckpointAt ? new Date(lastCheckpointAt).toLocaleString() : 'Last confirmed checkpoint unavailable',
+    coverageLevel: diagnostics.coverageLimited ? 'Coverage currently limited' : diagnostics.experienceState === 'live' ? 'Verified telemetry' : 'Monitoring state degraded',
+    openAlerts,
+    openIncidents,
+    protectedAssets,
+    monitoredTargets,
+  };
   const summaryCards = [
     {
       label: 'Queued reviews',
@@ -1857,5 +1941,7 @@ export function buildDashboardViewModel(
     services,
     summaryCards,
     backendBanner,
+    workspaceMonitoring,
+    featurePresentation,
   };
 }
