@@ -1,6 +1,6 @@
 import {
   DashboardDiagnostics,
-  DashboardPageData,
+  DashboardViewModel,
 } from './dashboard-data';
 import {
   explainDashboardPresentationState,
@@ -38,8 +38,14 @@ const FEATURE_LABELS = {
   resilienceDashboard: 'Resilience',
 } as const;
 
-export default function SystemStatusPanel({ diagnostics, dashboard, healthDetails }: { diagnostics: DashboardDiagnostics; dashboard: DashboardPageData['dashboard']; healthDetails?: HealthDetails | null }) {
-  const gatewayReachable = diagnostics.endpoints.dashboard.ok || Boolean(dashboard);
+type Props = {
+  diagnostics: DashboardDiagnostics;
+  workspaceMonitoring: DashboardViewModel['workspaceMonitoring'];
+  healthDetails?: HealthDetails | null;
+};
+
+export default function SystemStatusPanel({ diagnostics, workspaceMonitoring, healthDetails }: Props) {
+  const gatewayReachable = diagnostics.endpoints.dashboard.ok;
   const dependencySummary = healthDetails?.dependencies
     ? Object.entries(healthDetails.dependencies)
         .map(([name, dependency]) => `${name}: ${dependency.last_used_mode ?? dependency.status ?? 'unknown'}`)
@@ -56,9 +62,12 @@ export default function SystemStatusPanel({ diagnostics, dashboard, healthDetail
         <StatusBadge state={toDashboardBadgeState(diagnostics.experienceState)} />
       </div>
       <div className="kvGrid compactKvGrid">
+        <p><span>Monitoring state</span>{getDashboardPresentationLabel(workspaceMonitoring.presentationState)}</p>
+        <p><span>Last updated</span>{workspaceMonitoring.lastUpdated}</p>
+        <p><span>Last confirmed checkpoint</span>{workspaceMonitoring.lastConfirmedCheckpoint}</p>
         <p><span>Gateway reachable</span>{gatewayReachable ? 'Yes' : 'No'}</p>
         <p><span>API source</span>{diagnostics.apiUrlSource}</p>
-        <p><span>Coverage currently limited</span>{diagnostics.coverageLimited ? 'Yes' : 'No'}</p>
+        <p><span>Coverage currently limited</span>{workspaceMonitoring.coverageLevel === 'Coverage currently limited' ? 'Yes' : 'No'}</p>
         <p><span>Dependency mode</span>{dependencySummary}</p>
       </div>
       <div className="statusMatrix">

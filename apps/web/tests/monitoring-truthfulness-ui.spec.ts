@@ -51,9 +51,19 @@ test.describe('monitoring truthfulness UI copy', () => {
     });
 
     expect(systemStatus).toContain('Workspace monitoring state');
+    expect(systemStatus).toContain('Monitoring state');
+    expect(systemStatus).toContain('Last updated');
+    expect(systemStatus).toContain('Last confirmed checkpoint');
     expect(systemStatus).toContain('Coverage currently limited');
+    expect(systemStatus).not.toContain('fallbackTriggered');
+    expect(systemStatus).not.toContain('sampleMode');
     expect(statusAdapter).toContain('normalizeDashboardPresentationState');
     expect(dashboardPage).toContain('featurepresentation');
+    expect(dashboardPage).toContain('monitoring state:');
+    expect(dashboardPage).toContain('last confirmed checkpoint:');
+    expect(dashboardPage).toContain('open alerts:');
+    expect(dashboardPage).toContain('open incidents:');
+    expect(dashboardPage).toContain('recent activity:');
     expect(dashboardPage).not.toContain("resolveBadgeState(source: 'live' | 'fallback'");
   });
 });

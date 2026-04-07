@@ -44,8 +44,12 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
         </div>
         <div className="heroPanel">
           <p><strong>Platform state:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Coverage degraded' : 'Telemetry offline'}</p>
-          <p><strong>Readable explanation:</strong> {backendBanner}</p>
-          <p><strong>Product areas:</strong> Dashboard, threat, compliance, resilience, history, and settings.</p>
+          <p><strong>Monitoring state:</strong> {workspaceMonitoring.coverageLevel}</p>
+          <p><strong>Last updated:</strong> {workspaceMonitoring.lastUpdated}</p>
+          <p><strong>Last confirmed checkpoint:</strong> {workspaceMonitoring.lastConfirmedCheckpoint}</p>
+          <p><strong>Protected assets:</strong> {workspaceMonitoring.protectedAssets} · <strong>Monitored systems:</strong> {workspaceMonitoring.monitoredTargets}</p>
+          <p><strong>Open alerts:</strong> {workspaceMonitoring.openAlerts} · <strong>Open incidents:</strong> {workspaceMonitoring.openIncidents}</p>
+          <p><strong>Recent activity:</strong> {backendBanner}</p>
           {liveFeed ? (
             <p>
               <strong>Workspace feed:</strong> {liveFeed.offline ? 'offline' : liveFeed.degraded ? 'degraded' : 'live'} · last update {workspaceMonitoring.lastUpdated} · checkpoint age {liveFeed.checkpointAgeSeconds ?? 'n/a'}s.
@@ -57,7 +61,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
 
       <PilotModeBanner />
       <DashboardOnboardingPanel liveApiReachable={diagnostics.endpoints.dashboard.ok} />
-      <SystemStatusPanel diagnostics={diagnostics} dashboard={data.dashboard} />
+      <SystemStatusPanel diagnostics={diagnostics} workspaceMonitoring={workspaceMonitoring} />
 
       <PilotOverviewPanel
         backendState={backendState}
