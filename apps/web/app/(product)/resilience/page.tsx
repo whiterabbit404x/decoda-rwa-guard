@@ -1,5 +1,5 @@
 import ResilienceOperationsPanel from '../../resilience-operations-panel';
-import { fetchDashboardPageData, statusTone } from '../../dashboard-data';
+import { buildDashboardViewModel, fetchDashboardPageData, statusTone } from '../../dashboard-data';
 import StatusBadge from '../../status-badge';
 import SystemStatusPanel from '../../system-status-panel';
 
@@ -8,6 +8,7 @@ export const dynamic = 'force-dynamic';
 export default async function ResiliencePage() {
   const data = await fetchDashboardPageData(undefined, { featureFeeds: ['resilienceDashboard'] });
   const { resilienceDashboard } = data;
+  const { workspaceMonitoring } = buildDashboardViewModel(data);
 
   return (
     <main className="productPage">
@@ -19,7 +20,7 @@ export default async function ResiliencePage() {
         </div>
         <div className="heroPanel"><StatusBadge state={resilienceDashboard.source === 'live' && !resilienceDashboard.degraded ? 'live' : resilienceDashboard.source === 'live' ? 'live_degraded' : 'limited_coverage'} /><p>{resilienceDashboard.message}</p></div>
       </section>
-      <SystemStatusPanel diagnostics={data.diagnostics} dashboard={data.dashboard} />
+      <SystemStatusPanel diagnostics={data.diagnostics} workspaceMonitoring={workspaceMonitoring} />
       <section className="threeColumnSection">
         <div className="stack compactStack">
           {resilienceDashboard.latest_incidents.map((incident) => (

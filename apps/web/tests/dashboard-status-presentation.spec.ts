@@ -25,5 +25,8 @@ test.describe('dashboard status presentation adapter', () => {
     expect(getDashboardPresentationLabel('delayed')).toBe('Telemetry delayed');
     expect(getDashboardPresentationLabel('unavailable')).toBe('Telemetry unavailable');
     expect(getDashboardFreshnessLabel('degraded')).toBe('Recent telemetry');
+    expect(normalizeDashboardPresentationState({ internalSource: 'fallback', internalEvidence: 'live' })).toBe('live');
+    expect(normalizeDashboardPresentationState({ internalSource: 'fallback', internalEvidence: 'degraded' })).toBe('degraded');
+    expect(normalizeDashboardPresentationState({ internalSource: 'sample', internalEvidence: 'delayed' })).toBe('delayed');
   });
 });

@@ -1295,14 +1295,14 @@ export function resolveGatewayCard(card: DashboardCard, backendState: BackendSta
     return {
       ...card,
       status: 'Live (degraded)',
-      detail: 'Gateway reachable, but one or more dashboard feeds are using fallback data.',
+      detail: 'Gateway reachable, but workspace monitoring is degraded.',
     };
   }
 
   return {
     ...card,
-    status: 'Sample mode',
-    detail: 'Live services are not reachable right now, so the dashboard is showing limited coverage.',
+    status: 'Telemetry unavailable',
+    detail: 'Fresh telemetry unavailable until connectivity is restored.',
   };
 }
 
@@ -1933,7 +1933,7 @@ export function buildDashboardViewModel(
                   resilienceDashboard.message,
                 ]
           )
-        : 'Live services are temporarily unavailable. Telemetry is unavailable until connectivity is restored.';
+        : 'Live services are temporarily unavailable. Fresh telemetry unavailable until connectivity is restored.';
 
   return {
     backendState,
