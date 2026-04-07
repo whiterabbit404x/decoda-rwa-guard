@@ -74,6 +74,51 @@ def _parse_ts(value: Any) -> datetime | None:
         return None
 
 
+def mark_receipt_removed(connection: Any, *, target_id: str, event_cursor: str, tx_hash: str | None, log_index: int | None, metadata: dict) -> None:
+    receipt = connection.execute(
+        '''
+        SELECT id, workspace_id
+        FROM monitoring_event_receipts
+        WHERE target_id = %s
+          AND (
+            event_cursor = %s
+            OR ((%s IS NOT NULL AND tx_hash = %s) AND (%s IS NULL OR log_index = %s))
+          )
+        ORDER BY processed_at DESC
+        LIMIT 1
+        ''',
+        (target_id, event_cursor, tx_hash, tx_hash, log_index, log_index),
+    ).fetchone()
+    if receipt is None:
+        return
+    connection.execute('UPDATE monitoring_event_receipts SET removed = TRUE WHERE id = %s', (receipt['id'],))
+    connection.execute(
+        '''
+        INSERT INTO monitoring_reorg_events (id, chain_network, block_number, tx_hash, log_index, observed_at, payload)
+        VALUES (%s, %s, %s, %s, %s, NOW(), %s::jsonb)
+        ''',
+        (
+            str(uuid.uuid4()),
+            str(metadata.get('chain_network') or 'unknown'),
+            metadata.get('block_number'),
+            tx_hash,
+            log_index,
+            _json_dumps({**metadata, 'target_id': target_id, 'event_cursor': event_cursor}),
+        ),
+    )
+    connection.execute(
+        '''
+        UPDATE incidents
+        SET timeline = COALESCE(timeline, '[]'::jsonb) || %s::jsonb,
+            updated_at = NOW()
+        WHERE workspace_id = %s
+          AND status IN ('open', 'acknowledged')
+        ''',
+        (_json_dumps([{'event': 'chain_reorg_invalidated_evidence', 'at': utc_now().isoformat(), 'event_cursor': event_cursor}]), receipt['workspace_id']),
+    )
+    logger.info('reorg_removed_receipt target_id=%s cursor=%s tx=%s log_index=%s', target_id, event_cursor, tx_hash, log_index)
+
+
 def monitoring_operational_mode(runtime: dict[str, Any], *, degraded: bool, degraded_reason: str | None) -> str:
     if degraded or degraded_reason:
         return 'DEGRADED'
@@ -2023,6 +2068,14 @@ def get_monitoring_health() -> dict[str, Any]:
         runtime = monitoring_ingestion_runtime()
         normalized['ingestion_mode'] = runtime.get('source')
         normalized['degraded'] = runtime.get('degraded')
+        watcher_state = connection.execute(
+            '''
+            SELECT watcher_name, source_status, degraded, degraded_reason, last_heartbeat_at, last_processed_block, metrics
+            FROM monitoring_watcher_state
+            ORDER BY COALESCE(last_heartbeat_at, updated_at) DESC
+            LIMIT 1
+            '''
+        ).fetchone()
         checkpoint_stats = connection.execute(
             '''
             SELECT
@@ -2049,7 +2102,18 @@ def get_monitoring_health() -> dict[str, Any]:
         normalized['checkpoint_lag_blocks'] = stats.get('max_checkpoint_lag_blocks')
         normalized['checkpoint_age_seconds'] = int((utc_now() - latest_checkpoint_at).total_seconds()) if latest_checkpoint_at else None
         normalized['event_count_last_15m'] = int((last_15m_events or {}).get('event_count') or 0)
-        normalized['degraded_reason'] = runtime.get('reason') if runtime.get('degraded') else ('target_source_degraded' if int(stats.get('degraded_targets') or 0) > 0 else None)
+        if watcher_state is not None:
+            watcher = _json_safe_value(dict(watcher_state))
+            normalized['watcher_state'] = watcher
+            normalized['source_type'] = watcher.get('source_status') or runtime.get('source')
+            normalized['latest_processed_block'] = watcher.get('last_processed_block') or normalized.get('latest_processed_block')
+            if watcher.get('degraded'):
+                normalized['degraded'] = True
+                normalized['degraded_reason'] = watcher.get('degraded_reason') or runtime.get('reason') or 'watcher_degraded'
+            else:
+                normalized['degraded_reason'] = runtime.get('reason') if runtime.get('degraded') else ('target_source_degraded' if int(stats.get('degraded_targets') or 0) > 0 else None)
+        else:
+            normalized['degraded_reason'] = runtime.get('reason') if runtime.get('degraded') else ('target_source_degraded' if int(stats.get('degraded_targets') or 0) > 0 else None)
         normalized['mode'] = runtime.get('mode')
         normalized['operational_mode'] = monitoring_operational_mode(
             runtime,
