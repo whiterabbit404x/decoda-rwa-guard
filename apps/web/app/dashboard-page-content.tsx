@@ -8,6 +8,7 @@ import ResilienceOperationsPanel from './resilience-operations-panel';
 import StatusBadge from './status-badge';
 import SystemStatusPanel from './system-status-panel';
 import ThreatOperationsPanel from './threat-operations-panel';
+import type { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import {
   buildDashboardViewModel,
   DashboardPageData,
@@ -18,6 +19,7 @@ import {
 type Props = {
   data: DashboardPageData;
   gatewayReachableOverride?: boolean;
+  liveFeed?: ReturnType<typeof useLiveWorkspaceFeed>;
 };
 
 function resolveBadgeState(source: 'live' | 'fallback', degraded?: boolean) {
@@ -27,7 +29,7 @@ function resolveBadgeState(source: 'live' | 'fallback', degraded?: boolean) {
   return 'fallback' as const;
 }
 
-export default function DashboardPageContent({ data, gatewayReachableOverride = false }: Props) {
+export default function DashboardPageContent({ data, gatewayReachableOverride = false, liveFeed }: Props) {
   const { threatDashboard, complianceDashboard, resilienceDashboard, apiUrl, diagnostics } = data;
   const { backendState, summaryCards, backendBanner } = buildDashboardViewModel(data, {
     gatewayReachableOverride,
@@ -50,6 +52,12 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <p><strong>Platform state:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Live (degraded)' : 'Limited data mode'}</p>
           <p><strong>Readable explanation:</strong> {backendBanner}</p>
           <p><strong>Product areas:</strong> Dashboard, threat, compliance, resilience, history, and settings.</p>
+          {liveFeed ? (
+            <p>
+              <strong>Workspace feed:</strong> {liveFeed.offline ? 'offline' : liveFeed.degraded ? 'degraded' : 'live'} · last update {liveFeed.lastUpdatedAt ? new Date(liveFeed.lastUpdatedAt).toLocaleString() : 'pending'} · checkpoint age {liveFeed.checkpointAgeSeconds ?? 'n/a'}s.
+              {liveFeed.stale ? ' Evidence is stale; review degraded telemetry before making policy claims.' : ''}
+            </p>
+          ) : null}
         </div>
       </section>
 
@@ -63,7 +71,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
         resilienceDashboard={resilienceDashboard}
         diagnostics={diagnostics}
       />
-      <MonitoringOverviewPanel apiUrl={apiUrl} />
+      <MonitoringOverviewPanel />
 
       <section className="summaryGrid">
         {summaryCards.map((card, index) => (

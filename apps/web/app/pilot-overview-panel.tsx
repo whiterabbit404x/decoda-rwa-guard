@@ -10,6 +10,7 @@ import type {
 } from './dashboard-data';
 import { formatSourceLabel, statusTone } from './dashboard-data';
 import { usePilotAuth } from 'app/pilot-auth-context';
+import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 
 type BackendState = 'online' | 'degraded' | 'offline';
 
@@ -71,6 +72,7 @@ export default function PilotOverviewPanel({
     user,
   } = usePilotAuth();
   const [history, setHistory] = useState<HistoryPayload | null>(null);
+  const liveFeed = useLiveWorkspaceFeed();
 
   useEffect(() => {
     let active = true;
@@ -110,14 +112,12 @@ export default function PilotOverviewPanel({
     <section className="pilotOverviewGrid">
       <article className="dataCard overviewCard">
         <p className="sectionEyebrow">Current workspace</p>
-        <h2>{user?.current_workspace?.name ?? 'Guest workspace view'}</h2>
+        <h2>{user?.current_workspace?.name ?? 'Workspace pending selection'}</h2>
         <p className="muted">
-          {isAuthenticated
-            ? `Signed in as ${user?.email}.`
-            : 'Sign in to connect this dashboard to a saved workspace.'}
+          {isAuthenticated ? `Signed in as ${user?.email}.` : 'Sign in to activate workspace operations.'}
         </p>
         <div className="chipRow">
-          <span className="ruleChip">{isAuthenticated ? 'Workspace active' : 'Guest mode'}</span>
+          <span className="ruleChip">{isAuthenticated ? 'Workspace active' : 'Authentication required'}</span>
           {user?.memberships?.length ? <span className="ruleChip">{user.memberships.length} workspaces</span> : null}
         </div>
         <div className="overviewActions">
@@ -133,7 +133,7 @@ export default function PilotOverviewPanel({
         <div className="kvGrid compactKvGrid">
           <p>
             <span>Access</span>
-            {liveModeConfigured ? 'Live workspace enabled' : 'Live workspace unavailable'}
+            {liveModeConfigured ? 'Workspace operations enabled' : 'Workspace operations unavailable'}
           </p>
           <p>
             <span>Threat feed</span>
@@ -142,6 +142,10 @@ export default function PilotOverviewPanel({
           <p>
             <span>Incident feed</span>
             {formatSourceLabel(diagnostics.endpoints.resilienceDashboard.payloadState)}
+          </p>
+          <p>
+            <span>Last update</span>
+            {liveFeed.lastUpdatedAt ? new Date(liveFeed.lastUpdatedAt).toLocaleTimeString() : 'pending'}
           </p>
         </div>
       </article>

@@ -1,29 +1,21 @@
 'use client';
 
-import { useEffect } from 'react';
-
 import DashboardPageContent from './dashboard-page-content';
 import { DashboardPageData } from './dashboard-data';
+import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 
 type Props = {
   initialData: DashboardPageData;
 };
 
-function debugHydrationDisabled() {
-  if (process.env.NODE_ENV === 'development') {
-    console.debug('[dashboard-page-data trace] source=hydrator status=disabled');
-  }
-}
-
 export default function DashboardLiveHydrator({ initialData }: Props) {
-  useEffect(() => {
-    debugHydrationDisabled();
-  }, []);
+  const liveFeed = useLiveWorkspaceFeed();
 
   return (
     <DashboardPageContent
       data={initialData}
-      gatewayReachableOverride={false}
+      gatewayReachableOverride={!liveFeed.offline}
+      liveFeed={liveFeed}
     />
   );
 }

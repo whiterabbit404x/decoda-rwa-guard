@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 
 import AppNavigation from './app-navigation';
 import { usePilotAuth } from 'app/pilot-auth-context';
+import WorkspaceOwnershipBar from './workspace-ownership-bar';
 
 export default function AppShell({ children, topBanner }: { children: React.ReactNode; topBanner?: React.ReactNode }) {
   const pathname = usePathname();
@@ -40,6 +41,7 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
       </aside>
       <div className="appShellContent">
         {topBanner}
+        <WorkspaceOwnershipBar />
         {children}
       </div>
     </div>
