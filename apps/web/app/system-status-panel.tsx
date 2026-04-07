@@ -1,9 +1,13 @@
 import {
   DashboardDiagnostics,
   DashboardPageData,
-  DashboardPayloadState,
-  formatSourceLabel,
 } from './dashboard-data';
+import {
+  explainDashboardPresentationState,
+  formatDashboardPresentationLabel,
+  normalizeDashboardPresentationState,
+  toDashboardBadgeState,
+} from './dashboard-status-presentation';
 import StatusBadge from './status-badge';
 
 type HealthDetails = {
@@ -34,19 +38,6 @@ const FEATURE_LABELS = {
   resilienceDashboard: 'Resilience',
 } as const;
 
-function explainState(state: DashboardPayloadState) {
-  if (state === 'live') {
-    return 'Primary live dependency is reachable.';
-  }
-  if (state === 'fallback') {
-    return 'A live dependency failed, so limited deterministic coverage is active.';
-  }
-  if (state === 'sample') {
-    return 'Live connectivity is not configured, so limited deterministic coverage is being rendered.';
-  }
-  return 'This feed is currently unavailable.';
-}
-
 export default function SystemStatusPanel({ diagnostics, dashboard, healthDetails }: { diagnostics: DashboardDiagnostics; dashboard: DashboardPageData['dashboard']; healthDetails?: HealthDetails | null }) {
   const gatewayReachable = diagnostics.endpoints.dashboard.ok || Boolean(dashboard);
   const dependencySummary = healthDetails?.dependencies
@@ -60,29 +51,32 @@ export default function SystemStatusPanel({ diagnostics, dashboard, healthDetail
       <div className="sectionHeader compact">
         <div>
           <p className="sectionEyebrow">System status</p>
-          <h2>Live readiness and fallback coverage</h2>
+          <h2>Workspace monitoring state</h2>
         </div>
-        <StatusBadge state={diagnostics.experienceState === 'live_degraded' ? 'live_degraded' : diagnostics.experienceState} />
+        <StatusBadge state={toDashboardBadgeState(normalizeDashboardPresentationState({ payloadState: diagnostics.experienceState }))} />
       </div>
       <div className="kvGrid compactKvGrid">
         <p><span>Gateway reachable</span>{gatewayReachable ? 'Yes' : 'No'}</p>
         <p><span>API source</span>{diagnostics.apiUrlSource}</p>
-        <p><span>Fallback engaged</span>{diagnostics.fallbackTriggered ? 'Yes' : 'No'}</p>
+        <p><span>Coverage currently limited</span>{diagnostics.fallbackTriggered ? 'Yes' : 'No'}</p>
         <p><span>Dependency mode</span>{dependencySummary}</p>
       </div>
       <div className="statusMatrix">
-        {(Object.keys(FEATURE_LABELS) as Array<keyof typeof FEATURE_LABELS>).map((key) => (
-          <article key={key} className="statusMatrixRow">
-            <div>
-              <h3>{FEATURE_LABELS[key]}</h3>
-              <p className="muted">{formatSourceLabel(diagnostics.endpoints[key].payloadState)}</p>
-            </div>
-            <div className="statusMatrixMeta">
-              <StatusBadge state={diagnostics.endpoints[key].payloadState} compact />
-              <p>{diagnostics.endpoints[key].error ?? explainState(diagnostics.endpoints[key].payloadState)}</p>
-            </div>
-          </article>
-        ))}
+        {(Object.keys(FEATURE_LABELS) as Array<keyof typeof FEATURE_LABELS>).map((key) => {
+          const state = normalizeDashboardPresentationState({ payloadState: diagnostics.endpoints[key].payloadState });
+          return (
+            <article key={key} className="statusMatrixRow">
+              <div>
+                <h3>{FEATURE_LABELS[key]}</h3>
+                <p className="muted">{formatDashboardPresentationLabel(state)}</p>
+              </div>
+              <div className="statusMatrixMeta">
+                <StatusBadge state={toDashboardBadgeState(state)} compact />
+                <p>{diagnostics.endpoints[key].error ?? explainDashboardPresentationState(state)}</p>
+              </div>
+            </article>
+          );
+        })}
       </div>
       {diagnostics.degradedReasons.length > 0 ? <p className="explanation small"><strong>Readable explanation:</strong> {diagnostics.degradedReasons[0]}</p> : null}
     </section>

@@ -39,4 +39,21 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(threatPanel).toContain('Loading monitoring state…');
     expect(threatPanel).toContain('Refreshing monitoring state…');
   });
+
+  test('dashboard and system status presentation exclude fallback/sample/demo wording', async () => {
+    const dashboardPage = source('dashboard-page-content.tsx').toLowerCase();
+    const systemStatus = source('system-status-panel.tsx');
+    const statusAdapter = source('dashboard-status-presentation.ts');
+
+    ['fallback engaged', 'fallback coverage', 'sample-safe', 'demo', 'scenario', 'simulation'].forEach((term) => {
+      expect(dashboardPage).not.toContain(term);
+      expect(systemStatus.toLowerCase()).not.toContain(term);
+    });
+
+    expect(systemStatus).toContain('Workspace monitoring state');
+    expect(systemStatus).toContain('Coverage currently limited');
+    expect(statusAdapter).toContain('normalizeDashboardPresentationState');
+    expect(dashboardPage).toContain('normalizedashboardpresentationstate');
+    expect(dashboardPage).not.toContain("resolveBadgeState(source: 'live' | 'fallback'");
+  });
 });

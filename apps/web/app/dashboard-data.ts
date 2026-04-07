@@ -876,6 +876,8 @@ const CUSTOMER_SAFE_COPY_REPLACEMENTS: Array<[RegExp, string]> = [
   [/\bsynthetic\b/gi, 'limited'],
   [/\bfallback\s+scenario\b/gi, 'last confirmed checkpoint'],
   [/\bsample\s+scenario\b/gi, 'last confirmed checkpoint'],
+  [/\bsimulation\b/gi, 'checkpoint'],
+  [/\bfallback\b/gi, 'limited coverage'],
   [/\bhybrid\s+mode\b/gi, 'limited coverage'],
   [/\bscenario\b/gi, 'checkpoint'],
   [/\bsample\b/gi, 'limited'],
@@ -918,8 +920,9 @@ function normalizeThreatDashboardPayload(payload: ThreatDashboardResponse): Thre
 }
 
 export type BackendState = 'online' | 'degraded' | 'offline';
-export type DashboardExperienceState = 'live' | 'live_degraded' | 'sample';
-export type DashboardPayloadState = 'live' | 'fallback' | 'sample' | 'unavailable';
+export type InternalDashboardPayloadState = 'live' | 'fallback' | 'sample' | 'unavailable';
+export type DashboardExperienceState = 'live' | 'live_degraded' | 'degraded' | 'unavailable';
+export type DashboardPayloadState = 'live' | 'live_degraded' | 'limited_coverage' | 'unavailable';
 
 export const DEFAULT_FETCH_TIMEOUT_MS = 5000;
 export const EXPECTED_DOWNSTREAM_SERVICES = [
@@ -1336,21 +1339,21 @@ function resolveDiagnosticsExperienceState(
 ): DashboardExperienceState {
   const payloadStates = Object.values(endpoints).map((endpoint) => endpoint.payloadState);
   const hasLivePayload = payloadStates.includes('live');
-  const hasFallbackPayload = payloadStates.includes('fallback');
+  const hasLimitedCoveragePayload = payloadStates.includes('limited_coverage');
 
   if (hasAllFeatureFeedsLive(endpoints)) {
     return 'live';
   }
 
   if (!apiConfig.apiUrl && !hasLivePayload) {
-    return 'sample';
+    return 'degraded';
   }
 
-  if (hasLivePayload || hasFallbackPayload) {
+  if (hasLivePayload || hasLimitedCoveragePayload) {
     return 'live_degraded';
   }
 
-  return 'sample';
+  return 'unavailable';
 }
 
 function buildDashboardDiagnostics(
@@ -1370,8 +1373,8 @@ function buildDashboardDiagnostics(
     isProduction: apiConfig.isProduction,
     liveFetchEnabled: Boolean(apiConfig.apiUrl),
     resolutionMessage: apiConfig.diagnostic,
-    fallbackTriggered: Object.values(endpoints).some((endpoint) => endpoint.usedFallback || endpoint.payloadState === 'fallback'),
-    sampleMode: experienceState === 'sample',
+    fallbackTriggered: Object.values(endpoints).some((endpoint) => endpoint.usedFallback || endpoint.payloadState === 'limited_coverage'),
+    sampleMode: !apiConfig.apiUrl,
     experienceState,
     failedEndpoints,
     degradedReasons,
@@ -1533,18 +1536,18 @@ export function shouldRenderThreatAlertSourceChip(
 
 export function formatSourceLabel(payloadState: DashboardPayloadState) {
   if (payloadState === 'live') {
-    return 'Live feed';
+    return 'Verified telemetry';
   }
 
-  if (payloadState === 'fallback') {
-    return 'Limited coverage';
+  if (payloadState === 'live_degraded') {
+    return 'Recent telemetry';
   }
 
-  if (payloadState === 'sample') {
-    return 'Limited coverage';
+  if (payloadState === 'limited_coverage') {
+    return 'Coverage currently limited';
   }
 
-  return 'Unavailable';
+  return 'Telemetry unavailable';
 }
 
 function formatDegradedBannerMessage(messages: string[]) {
@@ -1552,8 +1555,8 @@ function formatDegradedBannerMessage(messages: string[]) {
     .map((message) =>
       message
         .replace(/^Backend unavailable\.\s*/i, '')
-        .replace(/Rendering explicit fallback/gi, 'Using fallback')
-        .replace(/fallback-safe/gi, 'fallback')
+        .replace(/Rendering explicit fallback/gi, 'Using limited coverage')
+        .replace(/fallback-safe/gi, 'limited coverage')
         .replace(/demoable/gi, 'available').replace(/sample/gi, 'limited')
         .trim()
     )
@@ -1573,14 +1576,18 @@ function resolveEndpointPayloadState(
   options: { sampleMode: boolean }
 ): DashboardPayloadState {
   if (!payload) {
-    return options.sampleMode ? 'sample' : 'fallback';
+    return options.sampleMode ? 'limited_coverage' : 'unavailable';
   }
 
   if (payload.source === 'live' && !payload.degraded) {
     return 'live';
   }
 
-  return options.sampleMode ? 'sample' : 'fallback';
+  if (payload.source === 'live' && payload.degraded) {
+    return 'live_degraded';
+  }
+
+  return 'limited_coverage';
 }
 
 export async function fetchDashboardPageData(
@@ -1610,7 +1617,7 @@ export async function fetchDashboardPageData(
         status: 200,
         source: aggregatePayload.dashboard ? 'live' : 'unavailable',
         transport: 'ok',
-        payloadState: aggregatePayload.dashboard ? 'live' : sampleMode ? 'sample' : 'unavailable',
+        payloadState: aggregatePayload.dashboard ? 'live' : sampleMode ? 'limited_coverage' : 'unavailable',
       }),
       riskDashboard: buildEndpointMeta('riskDashboard', {
         ok: true,
@@ -1720,7 +1727,7 @@ export async function fetchDashboardPageData(
     dashboard: {
       ...dashboardResult.meta,
       source: dashboardResult.payload ? 'live' : 'unavailable',
-      payloadState: dashboardResult.payload ? 'live' : sampleMode ? 'sample' : 'unavailable',
+      payloadState: dashboardResult.payload ? 'live' : sampleMode ? 'limited_coverage' : 'unavailable',
     },
     riskDashboard: {
       ...riskResult.meta,
@@ -1787,6 +1794,8 @@ export function buildDashboardViewModel(
       ? 'online'
       : diagnostics.experienceState === 'live_degraded'
         ? 'degraded'
+        : diagnostics.experienceState === 'degraded'
+          ? 'degraded'
         : resolveBackendState(dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard);
   const backendState =
     options.gatewayReachableOverride && resolvedBackendState === 'offline'
@@ -1840,7 +1849,7 @@ export function buildDashboardViewModel(
                   resilienceDashboard.message,
                 ]
           )
-        : 'Live services are temporarily unavailable. The dashboard remains available in sample mode while connectivity is restored.';
+        : 'Live services are temporarily unavailable. Telemetry is unavailable until connectivity is restored.';
 
   return {
     backendState,
