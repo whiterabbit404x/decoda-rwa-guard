@@ -4907,6 +4907,76 @@ def create_export_job(export_type: str, payload: dict[str, Any], request: Reques
         return {'job_id': job_id, 'status': str(completed['status']), 'download_url': f'/exports/{job_id}/download' if str(completed['status']) == 'completed' else None, 'error_message': completed.get('error_message')}
 
 
+def get_mttd_metrics(request: Request, *, window_days: int = 7) -> dict[str, Any]:
+    require_live_mode()
+    bounded_window_days = max(1, min(int(window_days), 90))
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        base = connection.execute(
+            '''
+            SELECT COUNT(*) AS count,
+                   AVG(mttd_seconds) AS avg_mttd,
+                   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY mttd_seconds) AS p50_mttd,
+                   PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY mttd_seconds) AS p95_mttd
+            FROM detection_metrics
+            WHERE workspace_id = %s
+              AND detected_at >= NOW() - (%s || ' days')::interval
+            ''',
+            (workspace_context['workspace_id'], bounded_window_days),
+        ).fetchone() or {}
+        by_severity_rows = connection.execute(
+            '''
+            SELECT LOWER(COALESCE(a.severity, 'unknown')) AS severity, COUNT(*) AS count
+            FROM detection_metrics dm
+            LEFT JOIN alerts a ON a.id = dm.alert_id
+            WHERE dm.workspace_id = %s
+              AND dm.detected_at >= NOW() - (%s || ' days')::interval
+            GROUP BY 1
+            ORDER BY count DESC, severity ASC
+            ''',
+            (workspace_context['workspace_id'], bounded_window_days),
+        ).fetchall()
+        by_detector_rows = connection.execute(
+            '''
+            SELECT COALESCE(dm.evidence->>'detector_family', 'unknown') AS detector_family, COUNT(*) AS count
+            FROM detection_metrics dm
+            WHERE dm.workspace_id = %s
+              AND dm.detected_at >= NOW() - (%s || ' days')::interval
+            GROUP BY 1
+            ORDER BY count DESC, detector_family ASC
+            ''',
+            (workspace_context['workspace_id'], bounded_window_days),
+        ).fetchall()
+        return {
+            'window_days': bounded_window_days,
+            'count': int(base.get('count') or 0),
+            'avg': float(base.get('avg_mttd') or 0.0),
+            'p50': float(base.get('p50_mttd') or 0.0),
+            'p95': float(base.get('p95_mttd') or 0.0),
+            'by_severity': [_json_safe_value(dict(row)) for row in by_severity_rows],
+            'by_detector_family': [_json_safe_value(dict(row)) for row in by_detector_rows],
+        }
+
+
+def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    export_payload = {
+        'format': 'json',
+        'filters': {
+            'incident_id': payload.get('incident_id'),
+            'include_raw_events': bool(payload.get('include_raw_events', True)),
+        },
+    }
+    result = create_export_job('proof_bundle', export_payload, request)
+    return {
+        'export_job_id': result['job_id'],
+        'download_link': result.get('download_url'),
+        'status': result.get('status'),
+        'error_message': result.get('error_message'),
+    }
+
+
 def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: str) -> None:
     job = connection.execute('SELECT id, export_type, format, filters FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_id)).fetchone()
     if job is None:
@@ -5007,6 +5077,56 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                         'protected_asset_context': ((item.get('response_payload') or {}).get('protected_asset_context') or {}),
                     }
                     for item in worker_runs[:20]
+                ],
+            }]
+        case 'proof_bundle':
+            incident_id = str(filters.get('incident_id') or '').strip()
+            if not incident_id:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='incident_id is required for proof bundle export.')
+            include_raw_events = bool(filters.get('include_raw_events', True))
+            incident = connection.execute(
+                'SELECT * FROM incidents WHERE workspace_id = %s AND id = %s',
+                (workspace_id, incident_id),
+            ).fetchone()
+            if incident is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Incident not found.')
+            alerts = connection.execute(
+                '''
+                SELECT a.*
+                FROM alerts a
+                JOIN detection_metrics dm ON dm.alert_id = a.id
+                WHERE dm.workspace_id = %s
+                  AND dm.incident_id = %s
+                ORDER BY a.created_at DESC
+                ''',
+                (workspace_id, incident_id),
+            ).fetchall()
+            metrics = connection.execute(
+                '''
+                SELECT *
+                FROM detection_metrics
+                WHERE workspace_id = %s
+                  AND incident_id = %s
+                ORDER BY detected_at DESC
+                ''',
+                (workspace_id, incident_id),
+            ).fetchall()
+            evidence_rows = [_json_safe_value(dict(item)) for item in metrics]
+            summary = {
+                'generated_at': utc_now_iso(),
+                'workspace_id': workspace_id,
+                'incident_id': incident_id,
+                'include_raw_events': include_raw_events,
+                'detection_metric_count': len(evidence_rows),
+            }
+            rows = [{
+                'summary.json': summary,
+                'alerts.json': [_json_safe_value(dict(item)) for item in alerts],
+                'incidents.json': [_json_safe_value(dict(incident))],
+                'evidence.json': [item.get('evidence') for item in evidence_rows],
+                'detection_metrics.json': evidence_rows if include_raw_events else [
+                    {'id': item.get('id'), 'event_observed_at': item.get('event_observed_at'), 'detected_at': item.get('detected_at'), 'mttd_seconds': item.get('mttd_seconds'), 'evidence': item.get('evidence')}
+                    for item in evidence_rows
                 ],
             }]
         case _:

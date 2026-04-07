@@ -119,6 +119,8 @@ from services.api.app.pilot import (
     list_incidents,
     patch_incident,
     create_export_job,
+    create_proof_bundle_export,
+    get_mttd_metrics,
     list_exports,
     get_export,
     get_export_artifact_content,
@@ -1551,6 +1553,11 @@ def ops_monitoring_runtime_status() -> dict[str, Any]:
     return with_auth_schema_json(monitoring_runtime_status)
 
 
+@app.get('/ops/metrics/mttd', summary='Detection MTTD metrics')
+def ops_metrics_mttd(request: Request, window_days: int = 7) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_mttd_metrics(request, window_days=window_days))
+
+
 @app.get('/workspaces', summary='List workspaces for the authenticated user')
 def workspaces(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_user_workspaces(request))
@@ -1848,6 +1855,11 @@ def exports_report(payload: dict[str, Any], request: Request) -> dict[str, Any]:
 @app.post('/exports/feature1-evidence', summary='Export Feature 1 asset evidence bundle')
 def exports_feature1_evidence(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_export_job('feature1_evidence', payload, request))
+
+
+@app.post('/exports/proof-bundle', summary='Export incident proof bundle')
+def exports_proof_bundle(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_proof_bundle_export(payload, request))
 
 
 @app.get('/exports', summary='List workspace exports')

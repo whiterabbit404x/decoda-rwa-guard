@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from services.api.app import activity_providers, pilot
+from services.api.app import activity_providers, monitoring_runner, pilot
 
 
 def test_pilot_target_runtime_queries_do_not_use_monitoring_demo_scenario() -> None:
@@ -64,3 +65,9 @@ def test_run_once_is_debug_only_not_enterprise_proof(monkeypatch: pytest.MonkeyP
     }
     worker_runs = [item for item in summary['analysis_runs'] if str(((item.get('response_payload') or {}).get('monitoring_path') or '')).lower() == 'worker']
     assert worker_runs == []
+
+
+def test_compute_mttd_seconds_from_observed_and_detected_timestamps() -> None:
+    observed = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    detected = observed + timedelta(seconds=125)
+    assert monitoring_runner._compute_mttd_seconds(observed_at=observed, detected_at=detected) == 125

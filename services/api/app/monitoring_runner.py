@@ -74,6 +74,60 @@ def _parse_ts(value: Any) -> datetime | None:
         return None
 
 
+def _compute_mttd_seconds(*, observed_at: datetime, detected_at: datetime) -> int:
+    return max(0, int((detected_at - observed_at).total_seconds()))
+
+
+def _record_detection_metric(
+    connection: Any,
+    *,
+    workspace_id: str,
+    alert_id: str,
+    incident_id: str | None,
+    target_id: str,
+    asset_id: str | None,
+    event: ActivityEvent,
+    response: dict[str, Any],
+    policy_snapshot_hash: str,
+) -> None:
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+    evidence = {
+        'tx_hash': payload.get('tx_hash'),
+        'block_number': payload.get('block_number'),
+        'log_index': payload.get('log_index'),
+        'ingestion_source': event.ingestion_source,
+        'detector_family': response.get('detector_family') or response.get('detection_family'),
+        'policy_snapshot_hash': policy_snapshot_hash,
+        'truthfulness_state': ((response.get('metadata') or {}).get('truthfulness_state') if isinstance(response.get('metadata'), dict) else None) or 'not_claim_safe',
+        'provider_name': metadata.get('provider_name'),
+        'event_id': event.event_id,
+        'event_cursor': event.cursor,
+    }
+    detected_at = utc_now()
+    connection.execute(
+        '''
+        INSERT INTO detection_metrics (
+            id, workspace_id, alert_id, incident_id, target_id, asset_id,
+            event_observed_at, detected_at, mttd_seconds, evidence, created_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+        ''',
+        (
+            str(uuid.uuid4()),
+            workspace_id,
+            alert_id,
+            incident_id,
+            target_id,
+            asset_id,
+            event.observed_at,
+            detected_at,
+            _compute_mttd_seconds(observed_at=event.observed_at, detected_at=detected_at),
+            _json_dumps(evidence),
+        ),
+    )
+
+
 def mark_receipt_removed(connection: Any, *, target_id: str, event_cursor: str, tx_hash: str | None, log_index: int | None, metadata: dict) -> None:
     receipt = connection.execute(
         '''
@@ -1420,6 +1474,17 @@ def _process_single_event(
                 auto_create=bool(target.get('auto_create_incidents'))
                 and str(response.get('severity') or 'low').lower() in {'high', 'critical'}
                 and _severity_meets_threshold(str(response.get('severity') or 'low'), severity_threshold),
+            )
+            _record_detection_metric(
+                connection,
+                workspace_id=str(target['workspace_id']),
+                alert_id=alert_id,
+                incident_id=incident_id,
+                target_id=str(target['id']),
+                asset_id=str(target.get('asset_id')) if target.get('asset_id') else None,
+                event=event,
+                response=response,
+                policy_snapshot_hash=signature,
             )
     response['monitoring_state'] = (
         'anomaly_escalated_to_incident' if incident_id else (
