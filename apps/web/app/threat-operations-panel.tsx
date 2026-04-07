@@ -212,7 +212,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 <p>{target.name}</p>
                 <p className="muted">{target.target_type ?? 'target'} · {target.chain_network ?? 'network n/a'} · {target.contract_identifier || target.wallet_address || 'identifier n/a'}</p>
               </div>
-              <span className={`statusBadge ${target.monitoring_enabled ? 'statusBadge-live' : 'statusBadge-fallback'}`}>
+              <span className={`statusBadge ${target.monitoring_enabled ? 'statusBadge-live' : 'statusBadge-limited_coverage'}`}>
                 {target.monitoring_enabled ? 'Active coverage' : 'Coverage paused'}
               </span>
             </div>

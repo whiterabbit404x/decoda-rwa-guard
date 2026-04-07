@@ -37,7 +37,7 @@ export default async function MarketingHomePage() {
             <span className="ruleChip">Railway API</span>
             <span className="ruleChip">Vercel web</span>
             <span className="ruleChip">Neon Postgres</span>
-            <StatusBadge state="sample" compact />
+            <StatusBadge state="limited_coverage" compact />
           </div>
         </div>
         <div className="heroPanel marketingPanel">

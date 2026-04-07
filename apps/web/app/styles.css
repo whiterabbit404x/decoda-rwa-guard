@@ -805,12 +805,22 @@ td .tableMeta {
 }
 
 .statusBadge-live_degraded,
+.statusBadge-degraded,
 .statusBadge-fallback {
   background: rgba(255, 186, 73, 0.12);
   color: #ffd280;
   border-color: rgba(255, 186, 73, 0.24);
 }
 
+.statusBadge-offline {
+  background: rgba(255, 130, 130, 0.12);
+  color: #ffb3b3;
+  border-color: rgba(255, 130, 130, 0.24);
+}
+
+.statusBadge-stale,
+.statusBadge-delayed,
+.statusBadge-limited_coverage,
 .statusBadge-sample,
 .statusBadge-unavailable {
   background: rgba(143, 155, 179, 0.16);

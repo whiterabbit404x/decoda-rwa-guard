@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 import { APP_NAV_ITEMS } from '../app/product-nav';
+import { mapPayloadStateToCustomerBadge } from '../app/customer-status-badge';
 import { determineHistoryCategory, filterRecordsByRecentActivity } from '../app/pilot-history';
 import { getStatusBadgeLabel } from '../app/status-badge';
 
@@ -23,11 +24,12 @@ test('defines authenticated navigation for dashboard, feature routes, history, a
   expect(APP_NAV_ITEMS.map((item) => item.label)).toEqual(['Dashboard', 'Threat', 'Compliance', 'Resilience', 'History', 'Settings']);
 });
 
-test('maps product status badges for live, degraded, fallback, and sample states', async () => {
+test('maps product status badges to enterprise-safe customer labels', async () => {
   expect(getStatusBadgeLabel('live')).toBe('Live');
   expect(getStatusBadgeLabel('live_degraded')).toBe('Live (degraded)');
-  expect(getStatusBadgeLabel('fallback')).toBe('Fallback');
-  expect(getStatusBadgeLabel('sample')).toBe('Sample');
+  expect(getStatusBadgeLabel('limited_coverage')).toBe('Limited coverage');
+  expect(getStatusBadgeLabel(mapPayloadStateToCustomerBadge('fallback'))).toBe('Limited coverage');
+  expect(getStatusBadgeLabel(mapPayloadStateToCustomerBadge('sample'))).toBe('Limited coverage');
 });
 
 test('supports persisted history categorization and recent-activity filtering', async () => {

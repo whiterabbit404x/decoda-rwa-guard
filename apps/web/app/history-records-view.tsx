@@ -116,7 +116,7 @@ export default function HistoryRecordsView({ history, loading = false, error, wo
               <div className="sectionHeader compact"><h2>Threat analyses</h2><p>Saved contract, transaction, and market reviews.</p></div>
               {filtered.threatRuns.map((item) => (
                 <button key={item.id} type="button" className="dataCard detailButton" onClick={() => setDetailRecord({ kind: 'analysis', payload: item })}>
-                  <div className="listHeader"><div><h3>{item.title}</h3><p className="muted">{item.analysis_type} · {item.service_name}</p></div><StatusBadge state={item.source === 'live' ? 'live' : 'fallback'} compact /></div>
+                  <div className="listHeader"><div><h3>{item.title}</h3><p className="muted">{item.analysis_type} · {item.service_name}</p></div><StatusBadge state={item.source === 'live' ? 'live' : 'limited_coverage'} compact /></div>
                   <p className="explanation small">{item.summary}</p>
                   <p className="tableMeta">{new Date(item.created_at).toLocaleString()} · {history.workspace.name} · {item.status}</p>
                 </button>
@@ -127,7 +127,7 @@ export default function HistoryRecordsView({ history, loading = false, error, wo
               <div className="sectionHeader compact"><h2>Compliance screens & governance</h2><p>Transfer checks, residency decisions, and control actions.</p></div>
               {filtered.complianceRuns.map((item) => (
                 <button key={item.id} type="button" className="dataCard detailButton" onClick={() => setDetailRecord({ kind: 'analysis', payload: item })}>
-                  <div className="listHeader"><div><h3>{item.title}</h3><p className="muted">{item.analysis_type}</p></div><StatusBadge state={item.source === 'live' ? 'live' : 'fallback'} compact /></div>
+                  <div className="listHeader"><div><h3>{item.title}</h3><p className="muted">{item.analysis_type}</p></div><StatusBadge state={item.source === 'live' ? 'live' : 'limited_coverage'} compact /></div>
                   <p className="explanation small">{item.summary}</p>
                   <p className="tableMeta">{new Date(item.created_at).toLocaleString()} · {history.workspace.name} · {item.status}</p>
                 </button>

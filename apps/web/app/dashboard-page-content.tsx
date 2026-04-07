@@ -1,4 +1,5 @@
 import ComplianceOperationsPanel from './compliance-operations-panel';
+import { CustomerStatusBadgeInputState } from './customer-status-badge';
 import DashboardOnboardingPanel from './dashboard-onboarding-panel';
 import MonitoringOverviewPanel from './monitoring-overview-panel';
 import PilotHistoryPanel from './pilot-history-panel';
@@ -22,11 +23,14 @@ type Props = {
   liveFeed?: ReturnType<typeof useLiveWorkspaceFeed>;
 };
 
-function resolveBadgeState(source: 'live' | 'fallback', degraded?: boolean) {
+function resolveBadgeState(source: 'live' | 'fallback', degraded?: boolean): CustomerStatusBadgeInputState {
   if (source === 'live' && !degraded) {
     return 'live' as const;
   }
-  return 'fallback' as const;
+  if (source === 'live' && degraded) {
+    return 'live_degraded';
+  }
+  return 'limited_coverage';
 }
 
 export default function DashboardPageContent({ data, gatewayReachableOverride = false, liveFeed }: Props) {
@@ -96,7 +100,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <div className="stack compactStack">
             {threatDashboard.active_alerts.map((alert) => (
               <article key={alert.id} className="dataCard">
-                <div className="listHeader"><div><h3>{alert.title}</h3><p className="muted">{alert.category}</p></div><StatusBadge state={alert.source === 'live' ? 'live' : 'fallback'} compact /></div>
+                <div className="listHeader"><div><h3>{alert.title}</h3><p className="muted">{alert.category}</p></div><StatusBadge state={alert.source === 'live' ? 'live' : 'limited_coverage'} compact /></div>
                 <p className="explanation small">{alert.explanation}</p>
                 <div className="chipRow">{formatRules(alert.patterns).map((pattern) => <span key={pattern} className="ruleChip">{pattern}</span>)}</div>
               </article>
@@ -138,7 +142,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <div className="stack compactStack">
             {complianceDashboard.latest_governance_actions.map((action) => (
               <article key={action.action_id} className="dataCard">
-                <div className="listHeader"><div><h3>{action.action_type}</h3><p className="muted">{action.target_type} · {action.target_id}</p></div><StatusBadge state={complianceDashboard.source === 'live' ? 'live' : 'fallback'} compact /></div>
+                <div className="listHeader"><div><h3>{action.action_type}</h3><p className="muted">{action.target_type} · {action.target_id}</p></div><StatusBadge state={complianceDashboard.source === 'live' ? 'live' : 'limited_coverage'} compact /></div>
                 <p className="explanation small">{action.reason}</p>
               </article>
             ))}
@@ -159,7 +163,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <div className="stack compactStack">
             {resilienceDashboard.latest_incidents.map((incident) => (
               <article key={incident.event_id} className="dataCard">
-                <div className="listHeader"><div><h3>{incident.event_type}</h3><p className="muted">{incident.trigger_source}</p></div><StatusBadge state={incident.source === 'live' && !incident.degraded ? 'live' : 'fallback'} compact /></div>
+                <div className="listHeader"><div><h3>{incident.event_type}</h3><p className="muted">{incident.trigger_source}</p></div><StatusBadge state={incident.source === 'live' && !incident.degraded ? 'live' : incident.source === 'live' ? 'live_degraded' : 'limited_coverage'} compact /></div>
                 <p className="explanation small">{incident.summary}</p>
               </article>
             ))}
