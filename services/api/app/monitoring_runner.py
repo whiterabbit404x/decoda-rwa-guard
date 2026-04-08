@@ -2598,59 +2598,84 @@ def production_claim_validator() -> dict[str, Any]:
     }
 
 
-def monitoring_runtime_status() -> dict[str, Any]:
+def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     health = get_monitoring_health()
     now = utc_now()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        open_alerts = connection.execute("SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating')").fetchone()
-        open_incidents = connection.execute("SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged')").fetchone()
+        workspace_id: str | None = None
+        if request is not None:
+            user = authenticate_with_connection(connection, request)
+            workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+            workspace_id = str(workspace_context['workspace_id'])
+        workspace_filter = 'AND ms.workspace_id = %s::uuid' if workspace_id else ''
+        target_workspace_filter = 'AND t.workspace_id = %s::uuid' if workspace_id else ''
+        evidence_workspace_filter = 'WHERE e.workspace_id = %s::uuid' if workspace_id else ''
+        scoped_params: tuple[Any, ...] = (workspace_id,) if workspace_id else ()
+        open_alerts = connection.execute(
+            f"SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating') {'AND workspace_id = %s::uuid' if workspace_id else ''}",
+            scoped_params,
+        ).fetchone()
+        open_incidents = connection.execute(
+            f"SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged') {'AND workspace_id = %s::uuid' if workspace_id else ''}",
+            scoped_params,
+        ).fetchone()
         enabled_systems = connection.execute(
-            '''
+            f'''
             SELECT COUNT(*) AS c
             FROM monitored_systems ms
             JOIN targets t ON t.id = ms.target_id
             WHERE t.deleted_at IS NULL
               AND ms.is_enabled = TRUE
-            '''
+              {workspace_filter}
+            ''',
+            scoped_params,
         ).fetchone()
         active_runtime_systems = connection.execute(
-            '''
+            f'''
             SELECT COUNT(*) AS c
             FROM monitored_systems ms
             JOIN targets t ON t.id = ms.target_id
             WHERE t.deleted_at IS NULL
               AND ms.is_enabled = TRUE
               AND ms.runtime_status = 'active'
-            '''
+              {workspace_filter}
+            ''',
+            scoped_params,
         ).fetchone()
         monitored_systems_total = connection.execute(
-            '''
+            f'''
             SELECT COUNT(*) AS c
             FROM monitored_systems ms
             JOIN targets t ON t.id = ms.target_id
             WHERE t.deleted_at IS NULL
-            '''
+              {workspace_filter}
+            ''',
+            scoped_params,
         ).fetchone()
         protected_assets = connection.execute(
-            '''
+            f'''
             SELECT COUNT(DISTINCT ms.asset_id) AS c
             FROM monitored_systems ms
             JOIN targets t ON t.id = ms.target_id
             WHERE t.deleted_at IS NULL
               AND ms.runtime_status = 'active'
-            '''
+              {workspace_filter}
+            ''',
+            scoped_params,
         ).fetchone()
         latest_system_heartbeat = connection.execute(
-            '''
+            f'''
             SELECT MAX(ms.last_heartbeat) AS ts
             FROM monitored_systems ms
             JOIN targets t ON t.id = ms.target_id
             WHERE t.deleted_at IS NULL
-            '''
+              {workspace_filter}
+            ''',
+            scoped_params,
         ).fetchone()
         broken_targets = connection.execute(
-            '''
+            f'''
             SELECT COUNT(*) AS c
             FROM targets t
             LEFT JOIN assets a
@@ -2661,10 +2686,12 @@ def monitoring_runtime_status() -> dict[str, Any]:
               AND t.enabled = TRUE
               AND t.monitoring_enabled = TRUE
               AND (t.asset_id IS NULL OR a.id IS NULL)
-            '''
+              {target_workspace_filter}
+            ''',
+            scoped_params,
         ).fetchone()
         coverage = connection.execute(
-            '''
+            f'''
             SELECT COUNT(*) AS c
             FROM monitored_systems ms
             JOIN targets t ON t.id = ms.target_id
@@ -2672,10 +2699,13 @@ def monitoring_runtime_status() -> dict[str, Any]:
               AND ms.is_enabled = TRUE
               AND ms.last_heartbeat IS NOT NULL
               AND ms.last_heartbeat >= NOW() - (GREATEST(t.monitoring_interval_seconds, 30) * INTERVAL '2 second')
-            '''
+              {workspace_filter}
+            ''',
+            scoped_params,
         ).fetchone()
         latest_evidence = connection.execute(
-            "SELECT observed_at, block_number FROM evidence ORDER BY observed_at DESC LIMIT 1"
+            f"SELECT observed_at, block_number FROM evidence e {evidence_workspace_filter} ORDER BY observed_at DESC LIMIT 1",
+            scoped_params,
         ).fetchone()
     last_system_heartbeat = _parse_ts((latest_system_heartbeat or {}).get('ts'))
     worker_heartbeat = _parse_ts(health.get('last_heartbeat_at') or health.get('last_cycle_at'))

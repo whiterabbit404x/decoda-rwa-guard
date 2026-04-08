@@ -1,7 +1,7 @@
 export type MonitoringMode = 'LIVE' | 'DEGRADED' | 'OFFLINE' | 'STALE' | 'LIMITED_COVERAGE';
 
 export type MonitoringRuntimeStatus = {
-  monitoring_status?: 'active' | 'degraded' | 'offline';
+  monitoring_status?: 'active' | 'idle' | 'degraded' | 'offline' | 'error';
   monitored_systems?: number;
   protected_assets?: number;
   active_systems?: number;
@@ -41,6 +41,22 @@ export type MonitoringRuntimeStatus = {
   recent_confidence_basis?: 'provider_evidence' | 'backfill_evidence' | 'none' | string;
   synthetic_leak_detected?: boolean;
 };
+
+export function runtimeStatusModeFromMonitoringStatus(value: MonitoringRuntimeStatus['monitoring_status']): MonitoringMode {
+  if (value === 'active') {
+    return 'LIVE';
+  }
+  if (value === 'offline' || value === 'error') {
+    return 'OFFLINE';
+  }
+  if (value === 'degraded') {
+    return 'DEGRADED';
+  }
+  if (value === 'idle') {
+    return 'LIMITED_COVERAGE';
+  }
+  return 'LIMITED_COVERAGE';
+}
 
 export function normalizeMonitoringMode(value: unknown): MonitoringMode {
   const normalized = String(value ?? '').trim().toUpperCase();

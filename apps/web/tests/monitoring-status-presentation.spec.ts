@@ -40,4 +40,15 @@ test.describe('monitoring status presentation adapter', () => {
     expect(['verified', 'recent', 'delayed', 'unavailable']).toContain(value.freshness);
     expect(['verified telemetry', 'recent telemetry', 'limited telemetry', 'telemetry unavailable']).toContain(value.confidence);
   });
+
+  test('treats idle / limited coverage as non-offline', async () => {
+    const idle = normalizeMonitoringPresentation({
+      mode: 'LIMITED_COVERAGE',
+      monitoring_status: 'idle',
+      recent_evidence_state: 'missing',
+      recent_real_event_count: 0,
+    } as MonitoringRuntimeStatus);
+    expect(idle.status).not.toBe('offline');
+    expect(idle.statusLabel).not.toBe('OFFLINE');
+  });
 });

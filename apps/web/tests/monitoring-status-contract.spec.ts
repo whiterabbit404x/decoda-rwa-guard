@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { monitoringModeLabel, normalizeMonitoringMode } from '../app/monitoring-status-contract';
+import { monitoringModeLabel, normalizeMonitoringMode, runtimeStatusModeFromMonitoringStatus } from '../app/monitoring-status-contract';
 
 test.describe('monitoring status contract', () => {
   test('normalizes runtime payload modes including degraded', async () => {
@@ -20,5 +20,13 @@ test.describe('monitoring status contract', () => {
     expect(monitoringModeLabel('DEGRADED')).toBe('DEGRADED');
     expect(monitoringModeLabel('OFFLINE')).toBe('OFFLINE');
     expect(monitoringModeLabel('STALE')).toBe('STALE');
+  });
+
+  test('maps runtime monitoring statuses without collapsing idle into offline', async () => {
+    expect(runtimeStatusModeFromMonitoringStatus('active')).toBe('LIVE');
+    expect(runtimeStatusModeFromMonitoringStatus('degraded')).toBe('DEGRADED');
+    expect(runtimeStatusModeFromMonitoringStatus('idle')).toBe('LIMITED_COVERAGE');
+    expect(runtimeStatusModeFromMonitoringStatus('offline')).toBe('OFFLINE');
+    expect(runtimeStatusModeFromMonitoringStatus('error')).toBe('OFFLINE');
   });
 });
