@@ -13,8 +13,10 @@ type SystemRow = {
   asset_name?: string;
   target_name?: string;
   chain?: string;
-  status: 'active' | 'paused' | 'error';
+  is_enabled: boolean;
+  runtime_status: 'active' | 'idle' | 'degraded' | 'error' | 'offline';
   last_heartbeat?: string | null;
+  last_error_text?: string | null;
 };
 
 export default function MonitoredSystemsManager({ apiUrl }: Props) {
@@ -33,7 +35,8 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   }
 
   async function toggle(system: SystemRow) {
-    const enabled = system.status !== 'active';
+    setMessage('');
+    const enabled = !system.is_enabled;
     const response = await fetch(`${apiUrl}/monitoring/systems/${system.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -43,8 +46,8 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       setMessage('Unable to update system status.');
       return;
     }
-    setMessage(enabled ? 'Monitoring enabled for this target.' : 'Monitoring paused for this target.');
-    void load();
+    await load();
+    setMessage(enabled ? 'Monitoring enabled for this target.' : 'Monitoring disabled for this target.');
   }
 
   async function remove(systemId: string) {
@@ -68,10 +71,15 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         <article key={system.id} className="overviewListItem">
           <div>
             <p><strong>{system.asset_name || system.asset_id}</strong> → {system.target_name || system.target_id}</p>
-            <p className="tableMeta">{system.chain || 'unknown chain'} · Status: {system.status} · Last activity: {system.last_heartbeat ? new Date(system.last_heartbeat).toLocaleString() : 'Never'}</p>
+            <p className="tableMeta">
+              {system.chain || 'unknown chain'} · Config: {system.is_enabled ? 'Enabled' : 'Disabled'} · Runtime: {system.runtime_status}
+              {' · '}
+              Last heartbeat: {system.last_heartbeat ? new Date(system.last_heartbeat).toLocaleString() : 'Never'}
+            </p>
+            {system.last_error_text ? <p className="tableMeta">Last error: {system.last_error_text}</p> : null}
           </div>
           <div className="buttonRow">
-            <button type="button" onClick={() => void toggle(system)}>{system.status === 'active' ? 'Disable' : 'Enable'}</button>
+            <button type="button" onClick={() => void toggle(system)}>{system.is_enabled ? 'Disable' : 'Enable'}</button>
             <button type="button" onClick={() => void remove(system.id)}>Delete</button>
           </div>
         </article>

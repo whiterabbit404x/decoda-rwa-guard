@@ -4032,7 +4032,7 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-MONITORED_SYSTEM_STATUSES = {'active', 'paused', 'error'}
+MONITORED_SYSTEM_RUNTIME_STATUSES = {'active', 'idle', 'degraded', 'error', 'offline'}
 
 
 def _target_health_payload(
@@ -4102,13 +4102,15 @@ def ensure_monitored_system_for_target(
     normalized_chain = (str(target.get('chain_network') or '').strip() or 'unknown')
     row = connection.execute(
         '''
-        INSERT INTO monitored_systems (id, workspace_id, asset_id, target_id, chain, status)
-        VALUES (%s, %s, %s::uuid, %s::uuid, %s, 'active')
+        INSERT INTO monitored_systems (id, workspace_id, asset_id, target_id, chain, is_enabled, runtime_status, status)
+        VALUES (%s, %s, %s::uuid, %s::uuid, %s, TRUE, 'active', 'active')
         ON CONFLICT (workspace_id, target_id)
         DO UPDATE SET
             asset_id = EXCLUDED.asset_id,
             chain = EXCLUDED.chain,
-            status = CASE WHEN monitored_systems.status = 'error' THEN monitored_systems.status ELSE 'active' END
+            is_enabled = TRUE,
+            runtime_status = CASE WHEN monitored_systems.runtime_status = 'error' THEN monitored_systems.runtime_status ELSE 'active' END,
+            status = CASE WHEN monitored_systems.runtime_status = 'error' THEN 'error' ELSE 'active' END
         RETURNING id
         ''',
         (str(uuid.uuid4()), target_workspace_id, resolved_asset_id, target_id, normalized_chain),
@@ -4166,7 +4168,7 @@ def list_monitored_systems(request: Request) -> dict[str, Any]:
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.status, ms.last_heartbeat, ms.created_at,
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_error_text, ms.created_at,
                    a.name AS asset_name, t.name AS target_name
             FROM monitored_systems ms
             LEFT JOIN assets a ON a.id = ms.asset_id AND a.deleted_at IS NULL
@@ -4212,7 +4214,7 @@ def create_monitored_system(payload: dict[str, Any], request: Request) -> dict[s
         connection.commit()
         row = connection.execute(
             '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.status, ms.last_heartbeat, ms.created_at,
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_error_text, ms.created_at,
                    a.name AS asset_name, t.name AS target_name
             FROM monitored_systems ms
             JOIN assets a ON a.id = ms.asset_id
@@ -4226,32 +4228,47 @@ def create_monitored_system(payload: dict[str, Any], request: Request) -> dict[s
 
 def patch_monitored_system(system_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
-    if 'status' not in payload and 'enabled' not in payload:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Provide status or enabled.')
+    if 'runtime_status' not in payload and 'enabled' not in payload:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Provide runtime_status or enabled.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         row = connection.execute(
-            'SELECT id, status FROM monitored_systems WHERE id = %s::uuid AND workspace_id = %s',
+            'SELECT id, is_enabled, runtime_status FROM monitored_systems WHERE id = %s::uuid AND workspace_id = %s',
             (system_id, workspace_context['workspace_id']),
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Monitored system not found.')
-        status_value = str(payload.get('status') or '').strip().lower()
-        if payload.get('enabled') is True:
-            status_value = 'active'
-        elif payload.get('enabled') is False:
-            status_value = 'paused'
-        if status_value not in MONITORED_SYSTEM_STATUSES:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='status must be active/paused/error.')
+        is_enabled_value = bool(row.get('is_enabled'))
+        runtime_status_value = str(row.get('runtime_status') or 'offline')
+        if 'enabled' in payload:
+            if not isinstance(payload.get('enabled'), bool):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='enabled must be boolean.')
+            is_enabled_value = bool(payload.get('enabled'))
+            if is_enabled_value and runtime_status_value == 'offline':
+                runtime_status_value = 'idle'
+            if not is_enabled_value:
+                runtime_status_value = 'offline'
+        if 'runtime_status' in payload:
+            runtime_status_value = str(payload.get('runtime_status') or '').strip().lower()
+        if runtime_status_value not in MONITORED_SYSTEM_RUNTIME_STATUSES:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='runtime_status must be active/idle/degraded/error/offline.')
+        status_value = 'active' if is_enabled_value and runtime_status_value in {'active', 'idle', 'degraded'} else ('error' if runtime_status_value == 'error' else 'paused')
         connection.execute(
-            "UPDATE monitored_systems SET status = %s, last_heartbeat = CASE WHEN %s = 'active' THEN NOW() ELSE last_heartbeat END WHERE id = %s::uuid",
-            (status_value, status_value, system_id),
+            """
+            UPDATE monitored_systems
+            SET is_enabled = %s,
+                runtime_status = %s,
+                status = %s,
+                last_heartbeat = CASE WHEN %s = 'active' THEN NOW() ELSE last_heartbeat END
+            WHERE id = %s::uuid
+            """,
+            (is_enabled_value, runtime_status_value, status_value, runtime_status_value, system_id),
         )
-        log_audit(connection, action='monitored_system.update', entity_type='monitored_system', entity_id=system_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'status': status_value})
+        log_audit(connection, action='monitored_system.update', entity_type='monitored_system', entity_id=system_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'enabled': is_enabled_value, 'runtime_status': runtime_status_value})
         connection.commit()
         updated = connection.execute(
-            'SELECT id, workspace_id, asset_id, target_id, chain, status, last_heartbeat, created_at FROM monitored_systems WHERE id = %s::uuid',
+            'SELECT id, workspace_id, asset_id, target_id, chain, is_enabled, runtime_status, status, last_heartbeat, last_error_text, created_at FROM monitored_systems WHERE id = %s::uuid',
             (system_id,),
         ).fetchone()
         return {'system': _json_safe_value(dict(updated))}
@@ -5016,7 +5033,10 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
             if result.get('status') != 'ok':
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Enabled targets require a valid linked asset before monitoring can start.')
         else:
-            connection.execute("UPDATE monitored_systems SET status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s", (target_id, workspace_id))
+            connection.execute(
+                "UPDATE monitored_systems SET is_enabled = FALSE, runtime_status = 'offline', status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s",
+                (target_id, workspace_id),
+            )
         log_audit(connection, action='target.update', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={})
         connection.commit()
         return {'id': target_id, **validated}
@@ -5050,7 +5070,7 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Cannot enable target: linked asset is missing or deleted.')
         else:
             connection.execute(
-                "UPDATE monitored_systems SET status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s",
+                "UPDATE monitored_systems SET is_enabled = FALSE, runtime_status = 'offline', status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s",
                 (target_id, workspace_context['workspace_id']),
             )
         log_audit(
