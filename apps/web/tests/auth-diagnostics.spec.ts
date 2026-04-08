@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { classifyAuthResponseError, classifyAuthTransportError } from '../app/auth-diagnostics';
+import { classifyApiTransportError, classifyAuthResponseError, classifyAuthTransportError } from '../app/auth-diagnostics';
 import { resolveApiConfig } from '../app/api-config';
 
 test.describe('auth diagnostics helpers', () => {
@@ -20,6 +20,19 @@ test.describe('auth diagnostics helpers', () => {
 
     expect(message).toContain('Cannot reach the API at http://127.0.0.1:8000.');
     expect(message).toContain('API_URL or NEXT_PUBLIC_API_URL');
+  });
+
+  test('classifies missing API base URL for non-auth API requests clearly', async () => {
+    const message = classifyApiTransportError('create this asset', '', new TypeError('Failed to fetch'));
+
+    expect(message).toContain('API_URL / NEXT_PUBLIC_API_URL is missing or empty');
+  });
+
+  test('classifies generic cross-origin API transport failures with CORS hint', async () => {
+    const message = classifyApiTransportError('create this asset', 'https://api.decoda.example', new TypeError('Failed to fetch'));
+
+    expect(message).toContain('could not reach https://api.decoda.example');
+    expect(message).toContain('often CORS');
   });
 
   test('classifies same-origin proxy transport failures without blaming Railway CORS', async () => {
@@ -44,8 +57,7 @@ test.describe('auth diagnostics helpers', () => {
       }
     );
 
-    expect(message).toContain('same-origin proxy is reachable');
-    expect(message).toContain('runtime config is invalid');
+    expect(message).toContain('API_URL or NEXT_PUBLIC_API_URL is required.');
   });
 
   test('classifies backend-unreachable proxy responses separately from invalid credentials', async () => {
@@ -73,7 +85,7 @@ test.describe('auth diagnostics helpers', () => {
       }
     );
 
-    expect(unreachable).toContain('could not reach https://api.decoda.example');
+    expect(unreachable).toContain('could not reach the backend API at https://api.decoda.example');
     expect(invalidCredentials).toBe('Invalid email or password.');
   });
 
@@ -84,7 +96,6 @@ test.describe('auth diagnostics helpers', () => {
       configured: true,
     });
 
-    expect(message).toContain('backend authentication is misconfigured');
-    expect(message).toContain('AUTH_TOKEN_SECRET is missing');
+    expect(message).toContain('Authentication is temporarily unavailable');
   });
 });

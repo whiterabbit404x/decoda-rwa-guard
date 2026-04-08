@@ -35,6 +35,39 @@ function isSameOriginProxyTarget(target: string | null | undefined) {
   return typeof target === 'string' && target.startsWith('/api/auth/');
 }
 
+export function classifyApiTransportError(actionLabel: string, apiUrl: string | null | undefined, error: unknown) {
+  const message = toErrorMessage(error);
+  const normalizedApiUrl = normalizeApiBaseUrl(apiUrl);
+  const lowerMessage = message.toLowerCase();
+
+  if (!normalizedApiUrl) {
+    return `Cannot ${actionLabel} because API_URL / NEXT_PUBLIC_API_URL is missing or empty for this deployment.`;
+  }
+
+  if (!isValidUrl(normalizedApiUrl)) {
+    return `Cannot ${actionLabel} because the API base URL is invalid: ${normalizedApiUrl}.`;
+  }
+
+  if (isLikelyLocalApi(normalizedApiUrl)) {
+    return `Cannot reach the API at ${normalizedApiUrl}. Confirm API_URL or NEXT_PUBLIC_API_URL points to the deployed backend before you ${actionLabel}.`;
+  }
+
+  if (lowerMessage.includes('failed to fetch') || lowerMessage.includes('networkerror') || lowerMessage.includes('network request failed') || lowerMessage.includes('load failed')) {
+    return `Unable to ${actionLabel} right now. The browser could not reach ${normalizedApiUrl} (often CORS, TLS, or network configuration).`;
+  }
+
+  return message;
+}
+
+function isValidUrl(value: string) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export function classifyAuthTransportError(actionLabel: string, apiUrl: string | null | undefined, error: unknown) {
   const message = toErrorMessage(error);
   const normalizedApiUrl = normalizeApiBaseUrl(apiUrl);

@@ -44,6 +44,7 @@ def test_health_details_reports_safe_config_booleans_when_auth_secret_is_missing
     monkeypatch.setenv('APP_ENV', 'production')
     monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
     monkeypatch.setattr(api_main, 'ALLOWED_ORIGINS', ['https://web.decoda.example', 'https://ops.decoda.example'])
+    monkeypatch.setattr(api_main, 'CORS_ALLOW_CREDENTIALS', False)
     monkeypatch.setattr(api_main, 'database_url', lambda: None)
 
     diagnostics = api_main.fixture_diagnostics()
@@ -54,6 +55,7 @@ def test_health_details_reports_safe_config_booleans_when_auth_secret_is_missing
         'auth_token_secret_configured': False,
         'database_url_configured': False,
         'allowed_origins': ['https://web.decoda.example', 'https://ops.decoda.example'],
+        'cors_allow_credentials': False,
     }
 
 

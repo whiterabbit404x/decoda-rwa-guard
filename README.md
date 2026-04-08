@@ -20,7 +20,9 @@ The repo now supports a production-oriented **public self-serve SaaS mode** alon
 - `LIVE_MODE_ENABLED=true`
 - `DATABASE_URL=postgresql://...` (Neon connection string, with `sslmode=require`)
 - `AUTH_TOKEN_SECRET=<long-random-secret>`
-- `CORS_ALLOWED_ORIGINS=http://localhost:3000,https://<your-vercel-app>.vercel.app`
+- `CORS_ALLOWED_ORIGINS=https://rwa.decodasecurity.com,https://staging.rwa.decodasecurity.com,http://localhost:3000,http://127.0.0.1:3000`
+- `ALLOWED_ORIGINS=...` (optional legacy alias for `CORS_ALLOWED_ORIGINS`)
+- `CORS_ALLOW_CREDENTIALS=false` (set to `true` only if cross-origin cookie auth is intentionally enabled)
 - `EVM_RPC_URL=https://...` (required for live chain polling in production live mode)
 - `MONITOR_POLL_INTERVAL_SECONDS=30` (optional; worker polling cadence)
 - `ALERT_DEDUP_WINDOW_SECONDS=300` (optional; deduplication window for repeated detections)
@@ -1177,7 +1179,9 @@ This repo now ships with a **split experience**:
   - `LIVE_MODE_ENABLED=true` for persisted workspace records.
   - `DATABASE_URL=postgresql://...` using the Neon connection string and `sslmode=require`.
   - `AUTH_TOKEN_SECRET=<long-random-secret>`.
-  - `CORS_ALLOWED_ORIGINS=http://localhost:3000,https://<your-vercel-app>.vercel.app`.
+  - `CORS_ALLOWED_ORIGINS=https://rwa.decodasecurity.com,https://staging.rwa.decodasecurity.com,http://localhost:3000,http://127.0.0.1:3000`.
+  - `ALLOWED_ORIGINS=...` (optional legacy alias for `CORS_ALLOWED_ORIGINS`).
+  - `CORS_ALLOW_CREDENTIALS=false` (set to `true` only if cross-origin cookie auth is intentionally enabled).
   - `RISK_ENGINE_URL`, `THREAT_ENGINE_URL`, `COMPLIANCE_SERVICE_URL`, and `RECONCILIATION_SERVICE_URL` for the existing downstream services.
   - Any existing mode/build variables already used by `services/api` should stay in place.
 
