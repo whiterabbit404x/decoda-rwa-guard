@@ -7,6 +7,9 @@ import { usePilotAuth } from './pilot-auth-context';
 
 type LiveWorkspaceCounts = {
   monitoredTargets: number;
+  protectedAssets: number;
+  monitoredSystems: number;
+  systemsWithRecentHeartbeat: number;
   openAlerts: number;
   openIncidents: number;
   historyRecords: number;
@@ -26,6 +29,9 @@ type LiveWorkspaceFeed = {
 
 const DEFAULT_COUNTS: LiveWorkspaceCounts = {
   monitoredTargets: 0,
+  protectedAssets: 0,
+  monitoredSystems: 0,
+  systemsWithRecentHeartbeat: 0,
   openAlerts: 0,
   openIncidents: 0,
   historyRecords: 0,
@@ -54,29 +60,34 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
         setRefreshing(true);
       }
       try {
-        const [statusRes, historyRes, alertsRes, incidentsRes, targetsRes] = await Promise.all([
+        const [statusRes, historyRes, alertsRes, incidentsRes, systemsRes] = await Promise.all([
           fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/pilot/history?limit=20`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/incidents?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/monitoring/targets`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/monitoring/systems`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         const statusPayload = statusRes.ok ? await statusRes.json() as MonitoringRuntimeStatus : null;
         const historyPayload = historyRes.ok ? await historyRes.json() : {};
         const alertsPayload = alertsRes.ok ? await alertsRes.json() : {};
         const incidentsPayload = incidentsRes.ok ? await incidentsRes.json() : {};
-        const targetsPayload = targetsRes.ok ? await targetsRes.json() : {};
+        const systemsPayload = systemsRes.ok ? await systemsRes.json() : {};
         const nextRuntime = statusPayload ? { ...statusPayload, mode: normalizeMonitoringMode(statusPayload.mode) } : null;
-        const targets = (targetsPayload.targets ?? []) as Array<{ monitoring_enabled?: boolean }>;
+        const systems = (systemsPayload.systems ?? []) as Array<{ status?: string; asset_id?: string }>;
         const historyCount = Number(historyPayload?.counts?.analysis_runs ?? (historyPayload.analysis_runs ?? []).length ?? 0);
+        const activeSystems = systems.filter((item) => (item.status ?? '').toLowerCase() === 'active');
+        const uniqueAssetCount = new Set(activeSystems.map((item) => item.asset_id).filter(Boolean)).size;
         setRuntimeStatus(nextRuntime);
         setCounts({
-          monitoredTargets: targets.filter((item) => item.monitoring_enabled).length,
+          monitoredTargets: Number(nextRuntime?.targets_monitored ?? activeSystems.length),
+          protectedAssets: Number(nextRuntime?.protected_assets_count ?? uniqueAssetCount),
+          monitoredSystems: Number(nextRuntime?.monitored_systems_count ?? activeSystems.length),
+          systemsWithRecentHeartbeat: Number(nextRuntime?.systems_with_recent_heartbeat ?? 0),
           openAlerts: (alertsPayload.alerts ?? []).length,
           openIncidents: (incidentsPayload.incidents ?? []).length,
           historyRecords: historyCount,
         });
-        setDegraded(Boolean(nextRuntime?.degraded_reason) || !statusRes.ok || !alertsRes.ok || !incidentsRes.ok || !targetsRes.ok || !historyRes.ok);
+        setDegraded(Boolean(nextRuntime?.degraded_reason) || !statusRes.ok || !alertsRes.ok || !incidentsRes.ok || !systemsRes.ok || !historyRes.ok);
         setOffline(false);
         setLastUpdatedAt(new Date().toISOString());
       } catch {

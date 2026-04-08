@@ -26,8 +26,8 @@ export default function WorkspaceOwnershipBar() {
       <h2>{user?.current_workspace?.name ?? 'No active workspace selected'}</h2>
       <div className="chipRow">
         <span className="ruleChip">Role: {role}</span>
-        <span className="ruleChip">Protected assets: {feed.counts.monitoredTargets}</span>
-        <span className="ruleChip">Monitored systems: {feed.counts.monitoredTargets}</span>
+        <span className="ruleChip">Protected assets: {feed.counts.protectedAssets}</span>
+        <span className="ruleChip">Monitored systems: {feed.counts.monitoredSystems}</span>
         <span className="ruleChip">Alerts for this workspace: {feed.counts.openAlerts}</span>
         <span className="ruleChip">Incidents affecting this workspace: {feed.counts.openIncidents}</span>
       </div>

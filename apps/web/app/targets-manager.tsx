@@ -50,7 +50,7 @@ export default function TargetsManager({ apiUrl }: Props) {
       body: JSON.stringify(form),
     });
     const payload = await response.json().catch(() => ({}));
-    setMessage(response.ok ? 'Target created and monitoring configuration saved.' : (payload.detail ?? 'Unable to create target.'));
+    setMessage(response.ok ? 'Target created. Monitoring system created automatically.' : (payload.detail ?? 'Unable to create target.'));
     if (!response.ok) return;
     setForm(EMPTY_TARGET);
     void load();
@@ -83,7 +83,7 @@ export default function TargetsManager({ apiUrl }: Props) {
             <article key={target.id} className="overviewListItem">
               <div>
                 <p><strong>{target.name}</strong> · {target.target_type}</p>
-                <p className="muted">Asset: {assets.find((asset) => asset.id === target.asset_id)?.name || 'Unlinked'} · Rules: {target.owner_notes || 'Default monitoring rules'}.</p>
+                <p className="muted">Asset: {assets.find((asset) => asset.id === target.asset_id)?.name || 'Missing asset'} · Rules: {target.owner_notes || 'Default monitoring rules'}.</p>
                 <p className="tableMeta">Health: {target.last_checked_at ? 'Active' : (target.monitoring_enabled ? 'Idle' : 'Disabled')} · Last evaluation: {target.last_checked_at ? new Date(target.last_checked_at).toLocaleString() : 'Never'}</p>
               </div>
               <div className="buttonRow"><button type="button" onClick={() => void toggleTarget(target)}>{target.enabled && target.monitoring_enabled ? 'Disable' : 'Enable'}</button></div>
@@ -95,7 +95,7 @@ export default function TargetsManager({ apiUrl }: Props) {
       <section id="target-create-form" className="dataCard">
         <p className="sectionEyebrow">Create target</p>
         <h2>Define behavior to monitor</h2>
-        <select value={form.asset_id} onChange={(event) => setForm({ ...form, asset_id: event.target.value })}>
+        <select required value={form.asset_id} onChange={(event) => setForm({ ...form, asset_id: event.target.value })}>
           <option value="">Select asset</option>
           {assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name} ({asset.chain_network})</option>)}
         </select>

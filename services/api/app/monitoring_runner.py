@@ -1839,16 +1839,23 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             ''',
             (worker_name,),
         )
-        candidate_targets = connection.execute(
+        candidate_systems = connection.execute(
             '''
-            SELECT targets.*,
-                   workspace.id AS workspace_exists_id,
-                   monitored_workspace.id AS monitored_workspace_exists_id
-            FROM targets
-            LEFT JOIN workspaces AS workspace ON workspace.id = targets.workspace_id
-            LEFT JOIN workspaces AS monitored_workspace ON monitored_workspace.id = targets.monitored_by_workspace_id
-            WHERE targets.deleted_at IS NULL
-            ORDER BY COALESCE(targets.last_checked_at, '1970-01-01'::timestamptz) ASC, targets.created_at ASC
+            SELECT ms.id AS monitored_system_id,
+                   ms.workspace_id,
+                   ms.target_id,
+                   ms.asset_id,
+                   ms.status AS monitored_system_status,
+                   ms.last_heartbeat AS monitored_system_last_heartbeat,
+                   t.last_checked_at,
+                   t.monitoring_interval_seconds,
+                   t.monitoring_enabled,
+                   t.enabled,
+                   t.is_active
+            FROM monitored_systems ms
+            JOIN targets t ON t.id = ms.target_id
+            WHERE t.deleted_at IS NULL
+            ORDER BY COALESCE(ms.last_heartbeat, t.last_checked_at, '1970-01-01'::timestamptz) ASC, ms.created_at ASC
             ''',
         ).fetchall()
         now = utc_now()
@@ -1859,24 +1866,24 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         skipped_not_due = 0
         skipped_null_handling = 0
         due_target_ids: list[Any] = []
-        for row in candidate_targets:
-            target = dict(row)
-            if not bool(target.get('monitoring_enabled')) or not bool(target.get('enabled')):
+        due_system_ids: dict[str, str] = {}
+        for row in candidate_systems:
+            system = dict(row)
+            if str(system.get('monitored_system_status') or 'paused') != 'active':
                 skipped_disabled += 1
                 continue
-            if not bool(target.get('is_active')):
+            if not bool(system.get('monitoring_enabled')) or not bool(system.get('enabled')):
+                skipped_disabled += 1
+                continue
+            if not bool(system.get('is_active')):
                 skipped_inactive += 1
                 continue
-            if target.get('workspace_exists_id') is None or (
-                target.get('monitored_by_workspace_id') is not None and target.get('monitored_workspace_exists_id') is None
-            ):
-                skipped_missing_workspace += 1
-                continue
-            last_checked_at = _parse_ts(target.get('last_checked_at'))
+            last_checked_at = _parse_ts(system.get('last_checked_at'))
             if last_checked_at is None:
-                due_target_ids.append(target['id'])
+                due_target_ids.append(system['target_id'])
+                due_system_ids[str(system['target_id'])] = str(system['monitored_system_id'])
             else:
-                interval_raw = target.get('monitoring_interval_seconds')
+                interval_raw = system.get('monitoring_interval_seconds')
                 if interval_raw is None:
                     skipped_null_handling += 1
                     interval_seconds = 30
@@ -1887,7 +1894,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         skipped_null_handling += 1
                         interval_seconds = 30
                 if last_checked_at <= now - timedelta(seconds=interval_seconds):
-                    due_target_ids.append(target['id'])
+                    due_target_ids.append(system['target_id'])
+                    due_system_ids[str(system['target_id'])] = str(system['monitored_system_id'])
                 else:
                     skipped_not_due += 1
             if len(due_target_ids) >= max_targets:
@@ -1895,7 +1903,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         logger.info(
             'monitoring due selection total_candidate_targets=%s skipped_disabled=%s skipped_inactive=%s '
             'skipped_missing_workspace=%s skipped_not_due=%s skipped_null_handling=%s due_target_ids=%s',
-            len(candidate_targets),
+            len(candidate_systems),
             skipped_disabled,
             skipped_inactive,
             skipped_missing_workspace,
@@ -1930,6 +1938,17 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 with connection.transaction():
                     connection.execute('UPDATE targets SET monitoring_claimed_by = %s, monitoring_claimed_at = NOW() WHERE id = %s', (worker_name, target['id']))
                     result = process_monitoring_target(connection, target)
+                    monitored_system_id = due_system_ids.get(str(target['id']))
+                    if monitored_system_id:
+                        connection.execute(
+                            '''
+                            UPDATE monitored_systems
+                            SET last_heartbeat = NOW(),
+                                status = CASE WHEN %s = 0 THEN 'error' ELSE 'active' END
+                            WHERE id = %s::uuid
+                            ''',
+                            (int(result.get('events_ingested', 0)), monitored_system_id),
+                        )
                 alerts_generated += int(result['alerts_generated'])
                 live_targets_checked += 1 if str(target.get('target_type') or '').lower() in {'wallet','contract'} else 0
                 events_ingested += int(result.get('events_ingested', 0))
@@ -1943,6 +1962,12 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     'UPDATE targets SET last_checked_at = NOW(), last_run_status = %s, monitoring_claimed_by = NULL, monitoring_claimed_at = NULL WHERE id = %s',
                     ('error', target['id']),
                 )
+                monitored_system_id = due_system_ids.get(str(target['id']))
+                if monitored_system_id:
+                    connection.execute(
+                        'UPDATE monitored_systems SET status = %s, last_heartbeat = NOW() WHERE id = %s::uuid',
+                        ('error', monitored_system_id),
+                    )
         connection.execute(
             '''
             UPDATE monitoring_worker_state
@@ -2494,7 +2519,39 @@ def monitoring_runtime_status() -> dict[str, Any]:
         open_alerts = connection.execute("SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating')").fetchone()
         open_incidents = connection.execute("SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged')").fetchone()
         targets_monitored = connection.execute(
-            "SELECT COUNT(*) AS c FROM targets WHERE deleted_at IS NULL AND monitoring_enabled = TRUE AND enabled = TRUE AND is_active = TRUE"
+            '''
+            SELECT COUNT(*) AS c
+            FROM monitored_systems ms
+            JOIN targets t ON t.id = ms.target_id
+            WHERE t.deleted_at IS NULL
+              AND ms.status = 'active'
+              AND t.monitoring_enabled = TRUE
+              AND t.enabled = TRUE
+              AND t.is_active = TRUE
+            '''
+        ).fetchone()
+        protected_assets = connection.execute(
+            '''
+            SELECT COUNT(DISTINCT ms.asset_id) AS c
+            FROM monitored_systems ms
+            JOIN targets t ON t.id = ms.target_id
+            WHERE t.deleted_at IS NULL
+              AND ms.status = 'active'
+              AND t.monitoring_enabled = TRUE
+              AND t.enabled = TRUE
+              AND t.is_active = TRUE
+            '''
+        ).fetchone()
+        coverage = connection.execute(
+            '''
+            SELECT COUNT(*) AS c
+            FROM monitored_systems ms
+            JOIN targets t ON t.id = ms.target_id
+            WHERE t.deleted_at IS NULL
+              AND ms.status = 'active'
+              AND ms.last_heartbeat IS NOT NULL
+              AND ms.last_heartbeat >= NOW() - (GREATEST(t.monitoring_interval_seconds, 30) * INTERVAL '2 second')
+            '''
         ).fetchone()
         latest_evidence = connection.execute(
             "SELECT observed_at, block_number FROM evidence ORDER BY observed_at DESC LIMIT 1"
@@ -2518,6 +2575,9 @@ def monitoring_runtime_status() -> dict[str, Any]:
         'last_successful_ingest': evidence_at.isoformat() if evidence_at else None,
         'last_processed_block': (latest_evidence or {}).get('block_number') or health.get('latest_processed_block'),
         'targets_monitored': int((targets_monitored or {}).get('c') or 0),
+        'protected_assets_count': int((protected_assets or {}).get('c') or 0),
+        'monitored_systems_count': int((targets_monitored or {}).get('c') or 0),
+        'systems_with_recent_heartbeat': int((coverage or {}).get('c') or 0),
         'active_alerts': int((open_alerts or {}).get('c') or 0),
         'open_incidents': int((open_incidents or {}).get('c') or 0),
         'evidence_freshness_seconds': evidence_freshness,

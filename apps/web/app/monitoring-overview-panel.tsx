@@ -25,7 +25,7 @@ export default function MonitoringOverviewPanel() {
     <section className="summaryGrid">
       <article className="metricCard">
         <p className="metricLabel">Monitored systems</p>
-        <p className="metricValue">{liveFeed.loading ? '—' : liveFeed.counts.monitoredTargets}</p>
+        <p className="metricValue">{liveFeed.loading ? '—' : liveFeed.counts.monitoredSystems}</p>
         <p className="metricMeta">Protected assets with automatic monitoring enabled.</p>
       </article>
       <article className="metricCard">

@@ -240,7 +240,7 @@ function PageStateBanner({ state, telemetryLabel, pollLabel }: { state: PageOper
         <div className="buttonRow">
           <Link href="/threat" prefetch={false}>Retry</Link>
           <Link href="/integrations" prefetch={false}>Inspect integration status</Link>
-          <Link href="/settings" prefetch={false}>Manage monitored systems</Link>
+          <Link href="/monitored-systems" prefetch={false}>Manage monitored systems</Link>
         </div>
       </div>
     );
@@ -509,7 +509,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <div className="monitoringHeaderActions">
             <Link href="/alerts" prefetch={false} className="secondaryCta">Review alerts</Link>
             <Link href="/incidents" prefetch={false} className="secondaryCta">Open incident queue</Link>
-            <Link href="/settings" prefetch={false} className="secondaryCta">Manage monitored systems</Link>
+            <Link href="/monitored-systems" prefetch={false} className="secondaryCta">Manage monitored systems</Link>
           </div>
         </div>
         <div className="chipRow monitoringHeaderChips">
@@ -594,7 +594,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   : 'No historical detections are available for display at this time.'}
             </p>
             <div className="buttonRow">
-              <Link href="/settings" prefetch={false}>Manage monitored systems</Link>
+              <Link href="/monitored-systems" prefetch={false}>Manage monitored systems</Link>
               <Link href="/history" prefetch={false}>View workspace history</Link>
               <Link href="/integrations" prefetch={false}>Inspect integration health</Link>
             </div>
@@ -635,7 +635,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               <p className="sectionEyebrow">Asset Coverage</p>
               <h3>Protected systems and telemetry coverage</h3>
             </div>
-            <Link href="/settings" prefetch={false}>Manage monitored systems</Link>
+            <Link href="/monitored-systems" prefetch={false}>Manage monitored systems</Link>
           </div>
           {loadingSnapshot ? <p className="muted">Loading monitored systems…</p> : null}
           {!loadingSnapshot && targets.length === 0 ? (
@@ -643,7 +643,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               <h4>No protected systems configured</h4>
               <p className="muted">Live monitoring requires at least one protected system in this workspace.</p>
               <div className="buttonRow">
-                <Link href="/settings" prefetch={false}>Add first monitored system</Link>
+                <Link href="/monitored-systems" prefetch={false}>Enable monitoring on this target</Link>
                 <Link href="/help" prefetch={false}>View setup guide</Link>
               </div>
             </div>
@@ -676,7 +676,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                         <td>{formatRelativeTime(target.last_checked_at)}</td>
                         <td>{alerts[0]?.title || incidents[0]?.title || 'No active signals'}</td>
                         <td><span className={`statusBadge statusBadge-${risk === 'High' ? 'high' : 'low'}`}>{risk}</span></td>
-                        <td><Link href="/settings" prefetch={false}>Open asset coverage view</Link></td>
+                        <td><Link href="/monitored-systems" prefetch={false}>Open asset coverage view</Link></td>
                       </tr>
                     );
                   })}
@@ -723,7 +723,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               <Link href="/alerts" prefetch={false}>Review alerts</Link>
               <Link href="/incidents" prefetch={false}>Open incident queue</Link>
               <Link href="/history" prefetch={false}>View workspace history</Link>
-              <Link href="/settings" prefetch={false}>Manage monitored systems</Link>
+              <Link href="/monitored-systems" prefetch={false}>Manage monitored systems</Link>
               <Link href="/compliance" prefetch={false}>Review governance actions</Link>
               <Link href="/integrations" prefetch={false}>Inspect integration health</Link>
             </div>

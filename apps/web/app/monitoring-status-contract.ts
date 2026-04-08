@@ -17,6 +17,10 @@ export type MonitoringRuntimeStatus = {
   latest_block?: number | null;
   checkpoint_lag_blocks?: number | null;
   checkpoint_age_seconds?: number | null;
+  targets_monitored?: number;
+  protected_assets_count?: number;
+  monitored_systems_count?: number;
+  systems_with_recent_heartbeat?: number;
   provider_name?: string | null;
   provider_kind?: string | null;
   degraded_reason?: string | null;

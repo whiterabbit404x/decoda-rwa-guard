@@ -4023,6 +4023,157 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+MONITORED_SYSTEM_STATUSES = {'active', 'paused', 'error'}
+
+
+def _ensure_monitored_system_for_target(
+    connection: Any,
+    *,
+    workspace_id: str,
+    asset_id: str | None,
+    target_id: str,
+    chain: str | None,
+) -> str | None:
+    if not asset_id:
+        return None
+    normalized_chain = (chain or '').strip() or 'unknown'
+    row = connection.execute(
+        '''
+        INSERT INTO monitored_systems (id, workspace_id, asset_id, target_id, chain, status)
+        VALUES (%s, %s, %s::uuid, %s::uuid, %s, 'active')
+        ON CONFLICT (workspace_id, target_id)
+        DO UPDATE SET
+            asset_id = EXCLUDED.asset_id,
+            chain = EXCLUDED.chain,
+            status = CASE WHEN monitored_systems.status = 'error' THEN monitored_systems.status ELSE 'active' END
+        RETURNING id
+        ''',
+        (str(uuid.uuid4()), workspace_id, asset_id, target_id, normalized_chain),
+    ).fetchone()
+    return str((row or {}).get('id')) if row else None
+
+
+def list_monitored_systems(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.status, ms.last_heartbeat, ms.created_at,
+                   a.name AS asset_name, t.name AS target_name
+            FROM monitored_systems ms
+            JOIN assets a ON a.id = ms.asset_id
+            JOIN targets t ON t.id = ms.target_id
+            WHERE ms.workspace_id = %s
+              AND a.deleted_at IS NULL
+              AND t.deleted_at IS NULL
+            ORDER BY ms.created_at DESC
+            ''',
+            (workspace_context['workspace_id'],),
+        ).fetchall()
+        return {'systems': [_json_safe_value(dict(row)) for row in rows], 'workspace': workspace_context['workspace']}
+
+
+def create_monitored_system(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    asset_id = str(payload.get('asset_id') or '').strip()
+    target_id = str(payload.get('target_id') or '').strip()
+    if not asset_id or not target_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='asset_id and target_id are required.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        asset = connection.execute(
+            'SELECT id, chain_network FROM assets WHERE id = %s::uuid AND workspace_id = %s AND deleted_at IS NULL',
+            (asset_id, workspace_id),
+        ).fetchone()
+        if asset is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='asset_id must reference an asset in this workspace.')
+        target = connection.execute(
+            'SELECT id, asset_id, chain_network FROM targets WHERE id = %s::uuid AND workspace_id = %s AND deleted_at IS NULL',
+            (target_id, workspace_id),
+        ).fetchone()
+        if target is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='target_id must reference a target in this workspace.')
+        if str(target.get('asset_id') or '') != asset_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='target.asset_id must match asset_id.')
+        monitored_system_id = _ensure_monitored_system_for_target(
+            connection,
+            workspace_id=workspace_id,
+            asset_id=asset_id,
+            target_id=target_id,
+            chain=str(target.get('chain_network') or asset.get('chain_network') or ''),
+        )
+        log_audit(connection, action='monitored_system.create', entity_type='monitored_system', entity_id=monitored_system_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'asset_id': asset_id, 'target_id': target_id})
+        connection.commit()
+        row = connection.execute(
+            '''
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.status, ms.last_heartbeat, ms.created_at,
+                   a.name AS asset_name, t.name AS target_name
+            FROM monitored_systems ms
+            JOIN assets a ON a.id = ms.asset_id
+            JOIN targets t ON t.id = ms.target_id
+            WHERE ms.id = %s::uuid
+            ''',
+            (monitored_system_id,),
+        ).fetchone()
+        return {'system': _json_safe_value(dict(row))}
+
+
+def patch_monitored_system(system_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    if 'status' not in payload and 'enabled' not in payload:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Provide status or enabled.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        row = connection.execute(
+            'SELECT id, status FROM monitored_systems WHERE id = %s::uuid AND workspace_id = %s',
+            (system_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Monitored system not found.')
+        status_value = str(payload.get('status') or '').strip().lower()
+        if payload.get('enabled') is True:
+            status_value = 'active'
+        elif payload.get('enabled') is False:
+            status_value = 'paused'
+        if status_value not in MONITORED_SYSTEM_STATUSES:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='status must be active/paused/error.')
+        connection.execute(
+            "UPDATE monitored_systems SET status = %s, last_heartbeat = CASE WHEN %s = 'active' THEN NOW() ELSE last_heartbeat END WHERE id = %s::uuid",
+            (status_value, status_value, system_id),
+        )
+        log_audit(connection, action='monitored_system.update', entity_type='monitored_system', entity_id=system_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'status': status_value})
+        connection.commit()
+        updated = connection.execute(
+            'SELECT id, workspace_id, asset_id, target_id, chain, status, last_heartbeat, created_at FROM monitored_systems WHERE id = %s::uuid',
+            (system_id,),
+        ).fetchone()
+        return {'system': _json_safe_value(dict(updated))}
+
+
+def delete_monitored_system(system_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        row = connection.execute(
+            'SELECT id, target_id FROM monitored_systems WHERE id = %s::uuid AND workspace_id = %s',
+            (system_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Monitored system not found.')
+        connection.execute('DELETE FROM monitored_systems WHERE id = %s::uuid', (system_id,))
+        connection.execute('UPDATE targets SET monitoring_enabled = FALSE, updated_by_user_id = %s, updated_at = NOW() WHERE id = %s::uuid', (user['id'], row['target_id']))
+        log_audit(connection, action='monitored_system.delete', entity_type='monitored_system', entity_id=system_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        connection.commit()
+        return {'deleted': True, 'id': system_id}
+
+
 def _derive_asset_verification(*, identifier: str, chain_network: str) -> dict[str, Any]:
     normalized_identifier = identifier.strip().lower()
     summary: dict[str, Any] = {
@@ -4593,6 +4744,8 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         count_row = connection.execute('SELECT COUNT(*) AS count FROM targets WHERE workspace_id = %s AND deleted_at IS NULL', (workspace_id,)).fetchone()
         if int((count_row or {}).get('count') or 0) >= int(entitlements.get('max_targets') or 0):
             raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Target limit reached for current plan.')
+        if validated['asset_id'] is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='asset_id is required when creating a target.')
         if validated['asset_id'] is not None:
             asset_row = connection.execute(
                 'SELECT id FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
@@ -4644,6 +4797,13 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 'INSERT INTO target_tags (id, workspace_id, target_id, tag) VALUES (%s, %s, %s, %s) ON CONFLICT (target_id, tag) DO NOTHING',
                 (str(uuid.uuid4()), workspace_id, target_id, tag),
             )
+        _ensure_monitored_system_for_target(
+            connection,
+            workspace_id=workspace_id,
+            asset_id=validated['asset_id'],
+            target_id=target_id,
+            chain=validated['chain_network'],
+        )
         log_audit(connection, action='target.create', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'target_type': validated['target_type']})
         connection.commit()
         return {'id': target_id, **validated}
@@ -4718,6 +4878,13 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
         connection.execute('DELETE FROM target_tags WHERE target_id = %s', (target_id,))
         for tag in validated['tags']:
             connection.execute('INSERT INTO target_tags (id, workspace_id, target_id, tag) VALUES (%s, %s, %s, %s)', (str(uuid.uuid4()), workspace_id, target_id, tag))
+        _ensure_monitored_system_for_target(
+            connection,
+            workspace_id=workspace_id,
+            asset_id=validated['asset_id'],
+            target_id=target_id,
+            chain=validated['chain_network'],
+        )
         log_audit(connection, action='target.update', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={})
         connection.commit()
         return {'id': target_id, **validated}
@@ -4729,7 +4896,7 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         row = connection.execute(
-            'SELECT id FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
+            'SELECT id, asset_id, chain_network FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
             (target_id, workspace_context['workspace_id']),
         ).fetchone()
         if row is None:
@@ -4738,6 +4905,19 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
             'UPDATE targets SET enabled = %s, monitoring_enabled = %s, updated_by_user_id = %s, updated_at = NOW() WHERE id = %s',
             (enabled, enabled, user['id'], target_id),
         )
+        if enabled:
+            _ensure_monitored_system_for_target(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                asset_id=str(row.get('asset_id') or '') or None,
+                target_id=target_id,
+                chain=str(row.get('chain_network') or ''),
+            )
+        else:
+            connection.execute(
+                "UPDATE monitored_systems SET status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s",
+                (target_id, workspace_context['workspace_id']),
+            )
         log_audit(
             connection,
             action='target.enable' if enabled else 'target.disable',
@@ -4761,6 +4941,7 @@ def delete_target(target_id: str, request: Request) -> dict[str, Any]:
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
         connection.execute('UPDATE targets SET deleted_at = NOW(), updated_by_user_id = %s, updated_at = NOW() WHERE id = %s', (user['id'], target_id))
+        connection.execute('DELETE FROM monitored_systems WHERE target_id = %s::uuid AND workspace_id = %s', (target_id, workspace_context['workspace_id']))
         log_audit(connection, action='target.delete', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
         connection.commit()
         return {'deleted': True, 'id': target_id}

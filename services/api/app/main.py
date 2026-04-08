@@ -149,6 +149,10 @@ from services.api.app.pilot import (
     get_onboarding_progress,
     get_current_workspace,
     set_target_enabled,
+    list_monitored_systems,
+    create_monitored_system,
+    patch_monitored_system,
+    delete_monitored_system,
 )
 from services.api.app.monitoring_runner import (
     get_monitoring_health,
@@ -1852,6 +1856,26 @@ def monitoring_targets_list(request: Request) -> dict[str, Any]:
 @app.patch('/monitoring/targets/{target_id}', summary='Update target monitoring settings')
 def monitoring_targets_patch(target_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: patch_monitoring_target(target_id, payload, request))
+
+
+@app.get('/monitoring/systems', summary='List monitored systems')
+def monitoring_systems_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_monitored_systems(request))
+
+
+@app.post('/monitoring/systems', summary='Create monitored system')
+def monitoring_systems_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_monitored_system(payload, request))
+
+
+@app.patch('/monitoring/systems/{system_id}', summary='Update monitored system status')
+def monitoring_systems_patch(system_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: patch_monitored_system(system_id, payload, request))
+
+
+@app.delete('/monitoring/systems/{system_id}', summary='Delete monitored system')
+def monitoring_systems_delete(system_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: delete_monitored_system(system_id, request))
 
 
 @app.post('/targets/{target_id}/enable', summary='Enable target and monitoring')
