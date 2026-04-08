@@ -21,6 +21,7 @@ export type MonitoringRuntimeStatus = {
   protected_assets_count?: number;
   monitored_systems_count?: number;
   systems_with_recent_heartbeat?: number;
+  invalid_enabled_targets?: number;
   provider_name?: string | null;
   provider_kind?: string | null;
   degraded_reason?: string | null;

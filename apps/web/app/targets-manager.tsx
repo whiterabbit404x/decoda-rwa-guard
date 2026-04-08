@@ -60,7 +60,8 @@ export default function TargetsManager({ apiUrl }: Props) {
     const enable = !(target.enabled && target.monitoring_enabled);
     const response = await fetch(`${apiUrl}/targets/${target.id}/${enable ? 'enable' : 'disable'}`, { method: 'POST', headers: authHeaders() });
     if (!response.ok) {
-      setMessage('Unable to update target state.');
+      const payload = await response.json().catch(() => ({}));
+      setMessage(payload?.detail ?? 'Unable to update target state.');
       return;
     }
     setMessage(enable ? 'Target enabled.' : 'Target disabled.');
@@ -84,7 +85,7 @@ export default function TargetsManager({ apiUrl }: Props) {
               <div>
                 <p><strong>{target.name}</strong> · {target.target_type}</p>
                 <p className="muted">Asset: {assets.find((asset) => asset.id === target.asset_id)?.name || 'Missing asset'} · Rules: {target.owner_notes || 'Default monitoring rules'}.</p>
-                <p className="tableMeta">Health: {target.last_checked_at ? 'Active' : (target.monitoring_enabled ? 'Idle' : 'Disabled')} · Last evaluation: {target.last_checked_at ? new Date(target.last_checked_at).toLocaleString() : 'Never'}</p>
+                <p className="tableMeta">Health: {target.health_status === 'broken' ? 'Broken: linked asset missing' : target.health_status === 'degraded' ? 'Degraded: monitored system missing' : (target.last_checked_at ? 'Active' : (target.monitoring_enabled ? 'Idle' : 'Disabled'))} · Last evaluation: {target.last_checked_at ? new Date(target.last_checked_at).toLocaleString() : 'Never'}</p>
               </div>
               <div className="buttonRow"><button type="button" onClick={() => void toggleTarget(target)}>{target.enabled && target.monitoring_enabled ? 'Disable' : 'Enable'}</button></div>
             </article>
