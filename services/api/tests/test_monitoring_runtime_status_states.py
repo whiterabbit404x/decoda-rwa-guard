@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from services.api.app import monitoring_runner
 
@@ -134,3 +135,47 @@ def test_runtime_status_offline_without_active_systems(monkeypatch):
     payload = monitoring_runner.monitoring_runtime_status()
     assert payload['monitoring_status'] == 'offline'
     assert payload['status'] == 'Offline'
+
+
+def test_runtime_status_scopes_counts_to_active_workspace(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _WorkspaceConn:
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            workspace_id = (params or (None,))[0]
+            if 'FROM alerts' in q:
+                return _Result({'c': 0})
+            if 'FROM incidents' in q:
+                return _Result({'c': 0})
+            if 'FROM monitored_systems ms JOIN targets t' in q and "ms.is_enabled = TRUE" in q and "ms.runtime_status = 'active'" not in q:
+                return _Result({'c': 1 if workspace_id == 'ws-1' else 3})
+            if 'FROM monitored_systems ms JOIN targets t' in q and "ms.runtime_status = 'active'" in q:
+                return _Result({'c': 1 if workspace_id == 'ws-1' else 2})
+            if 'FROM monitored_systems ms JOIN targets t' in q and "ms.is_enabled = TRUE" not in q and "ms.runtime_status = 'active'" not in q:
+                return _Result({'c': 1 if workspace_id == 'ws-1' else 4})
+            if 'COUNT(DISTINCT ms.asset_id)' in q:
+                return _Result({'c': 1 if workspace_id == 'ws-1' else 3})
+            if 'MAX(ms.last_heartbeat)' in q:
+                return _Result({'ts': now.isoformat()})
+            if 'LEFT JOIN assets a' in q and 'FROM targets t' in q:
+                return _Result({'c': 0})
+            if 'FROM evidence e WHERE e.workspace_id = %s::uuid' in q:
+                return _Result({'observed_at': now - timedelta(seconds=20), 'block_number': 42})
+            return _Result({})
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling'},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_WorkspaceConn()))
+    monkeypatch.setattr(monitoring_runner, 'authenticate_with_connection', lambda _c, _r: {'id': 'user-1'})
+    monkeypatch.setattr(monitoring_runner, 'resolve_workspace', lambda _c, _u, _h: {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}})
+
+    payload = monitoring_runner.monitoring_runtime_status(SimpleNamespace(headers={'x-workspace-id': 'ws-1'}))
+    assert payload['monitored_systems'] == 1
+    assert payload['enabled_systems'] == 1
+    assert payload['active_systems'] == 1
+    assert payload['monitoring_status'] == 'active'

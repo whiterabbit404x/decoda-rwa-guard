@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { normalizeMonitoringMode, type MonitoringRuntimeStatus } from './monitoring-status-contract';
+import { normalizeMonitoringMode, runtimeStatusModeFromMonitoringStatus, type MonitoringRuntimeStatus } from './monitoring-status-contract';
 import { usePilotAuth } from './pilot-auth-context';
 
 type LiveWorkspaceCounts = {
@@ -68,11 +68,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
         const historyPayload = historyRes.ok ? await historyRes.json() : {};
         const alertsPayload = alertsRes.ok ? await alertsRes.json() : {};
         const incidentsPayload = incidentsRes.ok ? await incidentsRes.json() : {};
-        const runtimeMode = statusPayload?.monitoring_status === 'active'
-          ? 'LIVE'
-          : statusPayload?.monitoring_status === 'degraded'
-            ? 'DEGRADED'
-            : 'OFFLINE';
+        const runtimeMode = runtimeStatusModeFromMonitoringStatus(statusPayload?.monitoring_status);
         const nextRuntime = statusPayload ? { ...statusPayload, mode: normalizeMonitoringMode(runtimeMode) } : null;
         const historyCount = Number(historyPayload?.counts?.analysis_runs ?? (historyPayload.analysis_runs ?? []).length ?? 0);
         setRuntimeStatus(nextRuntime);
@@ -85,7 +81,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
           historyRecords: historyCount,
         });
         setDegraded((nextRuntime?.monitoring_status === 'degraded') || !statusRes.ok || !alertsRes.ok || !incidentsRes.ok || !historyRes.ok);
-        setOffline(false);
+        setOffline(nextRuntime?.monitoring_status === 'offline' || nextRuntime?.monitoring_status === 'error');
         setLastUpdatedAt(new Date().toISOString());
       } catch {
         if (active) {

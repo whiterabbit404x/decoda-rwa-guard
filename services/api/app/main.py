@@ -1692,8 +1692,8 @@ def ops_production_claim_validator() -> dict[str, Any]:
 
 
 @app.get('/ops/monitoring/runtime-status', summary='Monitoring runtime status for admin/settings surfaces')
-def ops_monitoring_runtime_status() -> dict[str, Any]:
-    return with_auth_schema_json(monitoring_runtime_status)
+def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: monitoring_runtime_status(request))
 
 
 @app.get('/ops/monitoring/evidence', summary='Latest monitoring evidence stream')
