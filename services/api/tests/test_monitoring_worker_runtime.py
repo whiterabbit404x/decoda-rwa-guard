@@ -231,3 +231,35 @@ def test_due_target_selection_query_keeps_monitoring_filters() -> None:
     assert 'last_error = CAST(%s AS text)' in source
     assert "UPDATE monitored_systems ms" in source
     assert "SET last_heartbeat = NOW()" in source
+
+
+def test_monitor_checkpoint_upsert_and_load():
+    class _CheckpointConn:
+        def __init__(self):
+            self.value = None
+
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if q.startswith('INSERT INTO monitor_checkpoint'):
+                self.value = int(params[4])
+                return _Result()
+            if q.startswith('SELECT last_processed_block FROM monitor_checkpoint'):
+                return _Result(row={'last_processed_block': self.value})
+            return _Result()
+
+    conn = _CheckpointConn()
+    monitoring_runner._upsert_checkpoint(
+        conn,
+        workspace_id='ws-1',
+        monitored_system_id=None,
+        chain='ethereum',
+        last_processed_block=145,
+    )
+    loaded = monitoring_runner._load_checkpoint(
+        conn,
+        workspace_id='ws-1',
+        monitored_system_id=None,
+        chain='ethereum',
+        fallback_block=12,
+    )
+    assert loaded == 145

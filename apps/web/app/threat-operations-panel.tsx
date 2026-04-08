@@ -54,6 +54,24 @@ type HistoryRun = {
   title: string;
   created_at: string;
 };
+type EvidenceRow = {
+  id: string;
+  observed_at?: string;
+  severity?: string;
+  summary?: string;
+  event_type?: string;
+  tx_hash?: string | null;
+  block_number?: number | null;
+  counterparty?: string | null;
+  amount_text?: string | null;
+  token_address?: string | null;
+  contract_address?: string | null;
+  risk_score?: number | null;
+  rule_label?: string | null;
+  source_provider?: string | null;
+  asset_name?: string | null;
+  target_name?: string | null;
+};
 
 type ThreatFeedState = 'Live' | 'Historical' | 'Test' | 'Stale' | 'Investigating' | 'Resolved';
 type PageOperationalState =
@@ -272,6 +290,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [historyRuns, setHistoryRuns] = useState<HistoryRun[]>([]);
+  const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -282,25 +301,28 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         return;
       }
       try {
-        const [targetsResponse, alertsResponse, incidentsResponse, historyResponse] = await Promise.all([
+        const [targetsResponse, alertsResponse, incidentsResponse, historyResponse, evidenceResponse] = await Promise.all([
           fetch(`${apiUrl}/monitoring/targets`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/incidents?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/pilot/history?limit=12`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         if (!active) return;
-        if (!targetsResponse.ok || !alertsResponse.ok || !incidentsResponse.ok || !historyResponse.ok) {
+        if (!targetsResponse.ok || !alertsResponse.ok || !incidentsResponse.ok || !historyResponse.ok || !evidenceResponse.ok) {
           throw new Error('refresh_failed');
         }
         const targetsPayload = await targetsResponse.json();
         const alertsPayload = await alertsResponse.json();
         const incidentsPayload = await incidentsResponse.json();
         const historyPayload = await historyResponse.json();
+        const evidencePayload = await evidenceResponse.json();
 
         setTargets((targetsPayload.targets ?? []) as TargetRow[]);
         setAlerts((alertsPayload.alerts ?? []) as AlertRow[]);
         setIncidents((incidentsPayload.incidents ?? []) as IncidentRow[]);
         setHistoryRuns((historyPayload.analysis_runs ?? []) as HistoryRun[]);
+        setEvidence((evidencePayload.evidence ?? []) as EvidenceRow[]);
         setSnapshotError(null);
       } catch {
         if (active) {
@@ -366,6 +388,28 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const fallbackAssetName = matchedAsset?.name || 'Unbound workspace asset';
     const fallbackAssetType = matchedAsset?.target_type || matchedAsset?.asset_type || 'system';
 
+    const fromEvidence: DetectionItem[] = evidence.slice(0, 20).map((item) => ({
+      id: `evidence-${item.id}`,
+      timestamp: item.observed_at || new Date(0).toISOString(),
+      severity: severityLabel(item.severity),
+      title: item.summary || item.event_type || 'Observed monitoring event',
+      assetName: item.asset_name || fallbackAssetName,
+      assetType: fallbackAssetType,
+      monitoringStatus: 'Monitored',
+      evidenceSummary: item.summary || 'Evidence ingested from provider-backed monitoring.',
+      txHash: item.tx_hash ?? null,
+      blockNumber: item.block_number ?? null,
+      counterparty: item.counterparty ?? null,
+      amount: item.amount_text ?? null,
+      tokenOrContract: item.contract_address ?? item.token_address ?? null,
+      ruleId: item.rule_label ?? item.event_type ?? null,
+      sourceProvider: item.source_provider ?? null,
+      targetName: item.target_name ?? null,
+      state: 'Live',
+      href: '/alerts',
+      source: 'alert',
+    }));
+
     const fromAlerts: DetectionItem[] = alerts.slice(0, 10).map((item) => {
       const isTest = isTestOrLabSignal(item.title) || isTestOrLabSignal(item.explanation);
       return {
@@ -408,8 +452,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       };
     });
 
-    return [...fromAlerts, ...fromIncidents].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  }, [alerts, incidents, targets]);
+    return [...fromEvidence, ...fromAlerts, ...fromIncidents].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  }, [alerts, incidents, targets, evidence]);
 
   const categorizedDetections = useMemo(() => {
     const now = Date.now();

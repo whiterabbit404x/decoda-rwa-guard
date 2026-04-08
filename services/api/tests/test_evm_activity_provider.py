@@ -94,6 +94,30 @@ def test_contract_selector_decode_and_cursor(monkeypatch):
     assert later == []
 
 
+def test_websocket_mode_selected_when_ws_head_available(monkeypatch):
+    monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
+    monkeypatch.setenv('EVM_WS_URL', 'ws://rpc')
+    async def _ws_head(*_args, **_kwargs):
+        return 120
+    monkeypatch.setattr('services.api.app.evm_activity_provider._ws_subscribe_new_head', _ws_head)
+    target = {'id': 't3', 'target_type': 'contract', 'chain_network': 'ethereum', 'contract_identifier': '0xcccccccccccccccccccccccccccccccccccccccc'}
+    events = fetch_evm_activity(target, None, rpc_client=_Rpc())
+    assert events
+    assert any(event.ingestion_source == 'websocket' for event in events)
+
+
+def test_polling_fallback_when_ws_unavailable(monkeypatch):
+    monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
+    monkeypatch.setenv('EVM_WS_URL', 'ws://rpc')
+    async def _ws_none(*_args, **_kwargs):
+        return None
+    monkeypatch.setattr('services.api.app.evm_activity_provider._ws_subscribe_new_head', _ws_none)
+    target = {'id': 't4', 'target_type': 'contract', 'chain_network': 'ethereum', 'contract_identifier': '0xcccccccccccccccccccccccccccccccccccccccc'}
+    events = fetch_evm_activity(target, None, rpc_client=_Rpc())
+    assert events
+    assert all(event.ingestion_source in {'polling', 'rpc_backfill'} for event in events)
+
+
 def test_market_observations_fail_closed_without_provider_config(monkeypatch):
     monkeypatch.delenv('MARKET_TELEMETRY_SOURCE_URLS', raising=False)
     observations = _fetch_market_observations({'asset_identifier': 'USTB'})

@@ -149,10 +149,10 @@ def _persist_evidence(
         '''
         INSERT INTO evidence (
             id, workspace_id, asset_id, target_id, alert_id, chain, block_number, tx_hash, log_index, event_type,
-            severity, risk_score, summary, counterparty, amount_text, token_address, contract_address, source_provider,
+            monitored_system_id, severity, risk_score, summary, counterparty, amount_text, token_address, contract_address, source_provider,
             raw_payload_json, observed_at, created_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW())
         ON CONFLICT (target_id, tx_hash, log_index, event_type)
         DO UPDATE SET
             alert_id = COALESCE(EXCLUDED.alert_id, evidence.alert_id),
@@ -178,6 +178,7 @@ def _persist_evidence(
             payload.get('tx_hash'),
             payload.get('log_index'),
             payload.get('event_type') or event.kind,
+            target.get('monitored_system_id'),
             str(response.get('severity') or 'low'),
             response.get('score'),
             str(response.get('explanation') or 'Observed monitored activity'),
@@ -191,6 +192,36 @@ def _persist_evidence(
         ),
     ).fetchone()
     return evidence_id
+
+
+def _load_checkpoint(connection: Any, *, workspace_id: str, monitored_system_id: str | None, chain: str, fallback_block: int) -> int:
+    row = connection.execute(
+        '''
+        SELECT last_processed_block
+        FROM monitor_checkpoint
+        WHERE workspace_id = %s
+          AND ((%s::uuid IS NULL AND monitored_system_id IS NULL) OR monitored_system_id = %s::uuid)
+          AND chain = %s
+        ''',
+        (workspace_id, monitored_system_id, monitored_system_id, chain),
+    ).fetchone()
+    value = (row or {}).get('last_processed_block')
+    try:
+        return max(int(value), fallback_block)
+    except Exception:
+        return fallback_block
+
+
+def _upsert_checkpoint(connection: Any, *, workspace_id: str, monitored_system_id: str | None, chain: str, last_processed_block: int) -> None:
+    connection.execute(
+        '''
+        INSERT INTO monitor_checkpoint (id, workspace_id, monitored_system_id, chain, last_processed_block, updated_at)
+        VALUES (%s, %s, %s::uuid, %s, %s, NOW())
+        ON CONFLICT (workspace_id, monitored_system_id, chain)
+        DO UPDATE SET last_processed_block = GREATEST(monitor_checkpoint.last_processed_block, EXCLUDED.last_processed_block), updated_at = NOW()
+        ''',
+        (str(uuid.uuid4()), workspace_id, monitored_system_id, chain, max(0, int(last_processed_block or 0))),
+    )
 
 def mark_receipt_removed(connection: Any, *, target_id: str, event_cursor: str, tx_hash: str | None, log_index: int | None, metadata: dict) -> None:
     receipt = connection.execute(
@@ -1581,6 +1612,17 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     monitoring_run_id = str(uuid.uuid4())
     monitoring_path = 'manual_run_once' if triggered_by_user_id else 'worker'
     checkpoint = _parse_ts(target.get('monitoring_checkpoint_at') or target.get('last_checked_at'))
+    chain = str(target.get('chain_network') or os.getenv('EVM_CHAIN_NETWORK', 'ethereum')).strip().lower()
+    monitored_system_id = str(target.get('monitored_system_id') or '') or None
+    checkpoint_block = _load_checkpoint(
+        connection,
+        workspace_id=str(target['workspace_id']),
+        monitored_system_id=monitored_system_id,
+        chain=chain,
+        fallback_block=int(target.get('watcher_last_observed_block') or 0),
+    )
+    if checkpoint_block > 0:
+        target['monitoring_checkpoint_cursor'] = f"{checkpoint_block}:checkpoint:-1"
     provider_result: ActivityProviderResult = fetch_target_activity_result(target, checkpoint)
     events = provider_result.events
     evaluation_id = str(uuid.uuid4())
@@ -1749,6 +1791,13 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             provider_result.degraded_reason if provider_result.status == 'failed' else None,
             evaluation_id,
         ),
+    )
+    _upsert_checkpoint(
+        connection,
+        workspace_id=str(target['workspace_id']),
+        monitored_system_id=monitored_system_id,
+        chain=chain,
+        last_processed_block=latest_processed_block,
     )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, incidents_created)
     WORKER_STATE['metrics']['live_events_ingested'] += len(events)
@@ -1949,6 +1998,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         logger.info('due targets: %s', due_count)
         for row in due_targets:
             target = dict(row)
+            target['monitored_system_id'] = due_system_ids.get(str(target['id']))
             try:
                 with connection.transaction():
                     connection.execute('UPDATE targets SET monitoring_claimed_by = %s, monitoring_claimed_at = NOW() WHERE id = %s', (worker_name, target['id']))
@@ -2620,12 +2670,22 @@ def monitoring_runtime_status() -> dict[str, Any]:
     system_count = int((monitored_systems_total or {}).get('c') or 0)
     protected_assets_count = int((protected_assets or {}).get('c') or 0)
     recent_heartbeat_systems = int((coverage or {}).get('c') or 0)
-    monitoring_status = 'active' if active_system_count > 0 else ('degraded' if system_count > 0 else 'offline')
-    telemetry_available = recent_heartbeat_systems > 0
     evidence_at = _parse_ts((latest_evidence or {}).get('observed_at'))
     evidence_freshness = int((now - evidence_at).total_seconds()) if evidence_at else None
+    runner_alive = bool(health.get('worker_running')) or not stale_heartbeat
+    if system_count == 0 or active_system_count == 0:
+        monitoring_status = 'offline'
+    elif not runner_alive or health.get('last_error') or health.get('degraded') or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
+        monitoring_status = 'degraded'
+    elif evidence_freshness is None or evidence_freshness > max(900, MONITOR_POLL_INTERVAL_SECONDS * 10):
+        monitoring_status = 'idle'
+    else:
+        monitoring_status = 'active'
+    telemetry_available = recent_heartbeat_systems > 0
     degraded_reason = health.get('degraded_reason')
-    if health.get('last_error'):
+    if monitoring_status == 'offline':
+        runtime_status = 'Offline'
+    elif health.get('last_error'):
         runtime_status = 'Error'
     elif health.get('degraded') or degraded_reason or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
         runtime_status = 'Degraded'
