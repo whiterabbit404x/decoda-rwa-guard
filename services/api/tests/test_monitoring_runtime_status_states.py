@@ -66,6 +66,11 @@ def test_runtime_status_active_with_recent_evidence(monkeypatch):
 
     payload = monitoring_runner.monitoring_runtime_status()
     assert payload['status'] == 'Active'
+    assert payload['monitoring_status'] == 'active'
+    assert payload['active_systems'] == 2
+    assert payload['monitored_systems'] == 3
+    assert payload['protected_assets'] == 2
+    assert payload['telemetry_available'] is True
     assert payload['monitored_systems_count'] == 3
     assert payload['protected_assets_count'] == 2
 

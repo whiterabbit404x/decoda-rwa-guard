@@ -1,6 +1,12 @@
 export type MonitoringMode = 'LIVE' | 'DEGRADED' | 'OFFLINE' | 'STALE' | 'LIMITED_COVERAGE';
 
 export type MonitoringRuntimeStatus = {
+  monitoring_status?: 'active' | 'degraded' | 'offline';
+  monitored_systems?: number;
+  protected_assets?: number;
+  active_systems?: number;
+  last_heartbeat?: string | null;
+  telemetry_available?: boolean;
   mode: MonitoringMode;
   configured_mode?: MonitoringMode;
   status?: string;

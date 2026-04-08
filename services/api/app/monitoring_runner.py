@@ -1860,6 +1860,19 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             ORDER BY COALESCE(ms.last_heartbeat, t.last_checked_at, '1970-01-01'::timestamptz) ASC, ms.created_at ASC
             ''',
         ).fetchall()
+        connection.execute(
+            '''
+            UPDATE monitored_systems ms
+            SET last_heartbeat = NOW()
+            FROM targets t
+            WHERE t.id = ms.target_id
+              AND t.deleted_at IS NULL
+              AND ms.status = 'active'
+              AND t.monitoring_enabled = TRUE
+              AND t.enabled = TRUE
+              AND t.is_active = TRUE
+            '''
+        )
         now = utc_now()
         max_targets = max(1, min(limit, 200))
         skipped_disabled = 0
@@ -2532,23 +2545,17 @@ def production_claim_validator() -> dict[str, Any]:
 def monitoring_runtime_status() -> dict[str, Any]:
     health = get_monitoring_health()
     now = utc_now()
-    last_heartbeat = _parse_ts(health.get('last_heartbeat_at') or health.get('last_cycle_at'))
-    heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
-    stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         open_alerts = connection.execute("SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating')").fetchone()
         open_incidents = connection.execute("SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged')").fetchone()
-        targets_monitored = connection.execute(
+        active_systems = connection.execute(
             '''
             SELECT COUNT(*) AS c
             FROM monitored_systems ms
             JOIN targets t ON t.id = ms.target_id
             WHERE t.deleted_at IS NULL
               AND ms.status = 'active'
-              AND t.monitoring_enabled = TRUE
-              AND t.enabled = TRUE
-              AND t.is_active = TRUE
             '''
         ).fetchone()
         monitored_systems_total = connection.execute(
@@ -2566,9 +2573,14 @@ def monitoring_runtime_status() -> dict[str, Any]:
             JOIN targets t ON t.id = ms.target_id
             WHERE t.deleted_at IS NULL
               AND ms.status = 'active'
-              AND t.monitoring_enabled = TRUE
-              AND t.enabled = TRUE
-              AND t.is_active = TRUE
+            '''
+        ).fetchone()
+        latest_system_heartbeat = connection.execute(
+            '''
+            SELECT MAX(ms.last_heartbeat) AS ts
+            FROM monitored_systems ms
+            JOIN targets t ON t.id = ms.target_id
+            WHERE t.deleted_at IS NULL
             '''
         ).fetchone()
         broken_targets = connection.execute(
@@ -2599,6 +2611,17 @@ def monitoring_runtime_status() -> dict[str, Any]:
         latest_evidence = connection.execute(
             "SELECT observed_at, block_number FROM evidence ORDER BY observed_at DESC LIMIT 1"
         ).fetchone()
+    last_system_heartbeat = _parse_ts((latest_system_heartbeat or {}).get('ts'))
+    worker_heartbeat = _parse_ts(health.get('last_heartbeat_at') or health.get('last_cycle_at'))
+    last_heartbeat = last_system_heartbeat or worker_heartbeat
+    heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
+    stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
+    active_system_count = int((active_systems or {}).get('c') or 0)
+    system_count = int((monitored_systems_total or {}).get('c') or 0)
+    protected_assets_count = int((protected_assets or {}).get('c') or 0)
+    recent_heartbeat_systems = int((coverage or {}).get('c') or 0)
+    monitoring_status = 'active' if active_system_count > 0 else ('degraded' if system_count > 0 else 'offline')
+    telemetry_available = recent_heartbeat_systems > 0
     evidence_at = _parse_ts((latest_evidence or {}).get('observed_at'))
     evidence_freshness = int((now - evidence_at).total_seconds()) if evidence_at else None
     degraded_reason = health.get('degraded_reason')
@@ -2612,15 +2635,20 @@ def monitoring_runtime_status() -> dict[str, Any]:
     else:
         runtime_status = 'Active'
     return {
+        'monitoring_status': monitoring_status,
+        'monitored_systems': system_count,
+        'protected_assets': protected_assets_count,
+        'active_systems': active_system_count,
+        'last_heartbeat': last_heartbeat.isoformat() if last_heartbeat else None,
+        'telemetry_available': telemetry_available,
         'status': runtime_status,
         'provider_mode': health.get('source_type') or health.get('ingestion_mode') or 'polling',
-        'last_heartbeat': last_heartbeat.isoformat() if last_heartbeat else None,
         'last_successful_ingest': evidence_at.isoformat() if evidence_at else None,
         'last_processed_block': (latest_evidence or {}).get('block_number') or health.get('latest_processed_block'),
-        'targets_monitored': int((targets_monitored or {}).get('c') or 0),
-        'protected_assets_count': int((protected_assets or {}).get('c') or 0),
-        'monitored_systems_count': int((monitored_systems_total or {}).get('c') or 0),
-        'systems_with_recent_heartbeat': int((coverage or {}).get('c') or 0),
+        'targets_monitored': active_system_count,
+        'protected_assets_count': protected_assets_count,
+        'monitored_systems_count': system_count,
+        'systems_with_recent_heartbeat': recent_heartbeat_systems,
         'invalid_enabled_targets': int((broken_targets or {}).get('c') or 0),
         'active_alerts': int((open_alerts or {}).get('c') or 0),
         'open_incidents': int((open_incidents or {}).get('c') or 0),
