@@ -14,6 +14,7 @@ test('assets manager includes explicit validation and clear create states', () =
   expect(assets).toContain('scrollIntoView');
   expect(assets).toContain('Asset created successfully.');
   expect(assets).toContain('Asset create failed');
+  expect(assets).toContain('classifyApiTransportError');
 });
 
 test('assets manager presets keep required fields visible and guide name entry', () => {

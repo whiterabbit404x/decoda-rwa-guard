@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 import { usePilotAuth } from './pilot-auth-context';
 import { parseTagInput } from './policy-builders';
+import { classifyApiTransportError } from './auth-diagnostics';
 
 type Props = { apiUrl: string };
 type Asset = any;
@@ -126,7 +127,7 @@ export default function AssetsManager({ apiUrl }: Props) {
       setSuccessMessage(`Asset created successfully. Verification status: ${payload.verification_status ?? 'pending'}.`);
       await load();
     } catch (error) {
-      setSubmitError('Network error while creating asset. Check your connection and try again.');
+      setSubmitError(classifyApiTransportError('create this asset', apiUrl, error));
       // eslint-disable-next-line no-console
       console.error('Asset create request failed', error);
     } finally {

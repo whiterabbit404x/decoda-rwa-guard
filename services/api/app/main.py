@@ -371,10 +371,55 @@ DEFAULT_BACKSTOP_STATE = {
     'compliance_incident_score': 74,
     'current_market_mode': 'restricted',
 }
-ALLOWED_ORIGINS = parse_csv_env('CORS_ALLOWED_ORIGINS', [
+DEFAULT_LOCAL_CORS_ORIGINS = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
-])
+]
+
+
+def _is_production_like_runtime() -> bool:
+    mode = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
+    return mode in {'production', 'prod'}
+
+
+def _normalize_origin(origin: str) -> str | None:
+    value = (origin or '').strip()
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+        return None
+    return f'{parsed.scheme}://{parsed.netloc}'.rstrip('/')
+
+
+def resolve_allowed_origins() -> list[str]:
+    configured_values = parse_csv_env('CORS_ALLOWED_ORIGINS', [])
+    if not configured_values:
+        configured_values = parse_csv_env('ALLOWED_ORIGINS', [])
+    if not configured_values and not _is_production_like_runtime():
+        configured_values = list(DEFAULT_LOCAL_CORS_ORIGINS)
+
+    normalized_origins: list[str] = []
+    for raw_origin in configured_values:
+        normalized = _normalize_origin(raw_origin)
+        if not normalized:
+            logger.warning('Ignoring invalid CORS origin value: %s', raw_origin)
+            continue
+        if normalized not in normalized_origins:
+            normalized_origins.append(normalized)
+    if not normalized_origins and _is_production_like_runtime():
+        logger.warning('No CORS origins configured for production-like runtime. Set CORS_ALLOWED_ORIGINS or ALLOWED_ORIGINS.')
+    return normalized_origins
+
+
+def resolve_cors_allow_credentials() -> bool:
+    return os.getenv('CORS_ALLOW_CREDENTIALS', 'false').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+ALLOWED_ORIGINS = resolve_allowed_origins()
+CORS_ALLOW_CREDENTIALS = resolve_cors_allow_credentials()
+CORS_ALLOWED_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
+CORS_ALLOWED_HEADERS = ['Authorization', 'Content-Type', 'X-CSRF-Token', 'X-Workspace-Id']
 
 
 def masked_database_url() -> str | None:
@@ -1059,6 +1104,7 @@ def fixture_diagnostics() -> dict[str, Any]:
             'auth_token_secret_configured': auth_token_secret_configured(),
             'database_url_configured': database_url() is not None,
             'allowed_origins': ALLOWED_ORIGINS,
+            'cors_allow_credentials': CORS_ALLOW_CREDENTIALS,
         },
         **pilot_runtime_diagnostics(),
         'startupBootstrap': STARTUP_BOOTSTRAP_STATUS,
@@ -1142,10 +1188,32 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=['*'],
-    allow_headers=['*'],
+    allow_credentials=CORS_ALLOW_CREDENTIALS,
+    allow_methods=CORS_ALLOWED_METHODS,
+    allow_headers=CORS_ALLOWED_HEADERS,
 )
+logger.info(
+    'configured CORS origins=%s allow_credentials=%s methods=%s headers=%s',
+    ALLOWED_ORIGINS,
+    CORS_ALLOW_CREDENTIALS,
+    CORS_ALLOWED_METHODS,
+    CORS_ALLOWED_HEADERS,
+)
+
+
+@app.middleware('http')
+async def log_disallowed_cors_origin(request: Request, call_next):
+    origin = request.headers.get('origin', '').strip()
+    if origin:
+        normalized_origin = _normalize_origin(origin)
+        if normalized_origin and normalized_origin not in ALLOWED_ORIGINS:
+            logger.warning(
+                'CORS origin blocked origin=%s method=%s path=%s',
+                normalized_origin,
+                request.method,
+                request.url.path,
+            )
+    return await call_next(request)
 
 
 @app.get('/health', summary='API health check', description='Returns the API runtime mode and local persistence configuration.')
