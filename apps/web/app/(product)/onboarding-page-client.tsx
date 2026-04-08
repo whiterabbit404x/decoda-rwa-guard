@@ -4,17 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { usePilotAuth } from '../pilot-auth-context';
 
-type ProgressStep = { key: string; complete: boolean; source: 'automatic' | 'pending' };
-type OnboardingProgress = {
-  workspace_name: string | null;
-  steps: ProgressStep[];
-  completed_steps: number;
-  total_steps: number;
-  progress_percent: number;
-  completed: boolean;
-  next_step: string | null;
-  counts: { assets: number; targets: number; monitoring_targets: number; evaluated_targets: number; event_receipts: number };
-};
+import type { OnboardingProgress } from '../onboarding-progress';
 
 const STEP_COPY: Record<string, { title: string; detail: string; href: string; cta: string }> = {
   asset_added: { title: 'Step 1: Add your first asset', detail: 'Register the first wallet or contract your team needs to protect.', href: '/assets', cta: 'Add asset' },

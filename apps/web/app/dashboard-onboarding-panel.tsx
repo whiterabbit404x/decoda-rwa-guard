@@ -4,41 +4,37 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
+import type { OnboardingProgress } from './onboarding-progress';
 
 export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApiReachable: boolean }) {
   const { user, apiUrl, authHeaders } = usePilotAuth();
-  const [onboardingProgress, setOnboardingProgress] = useState<{ completed_steps: number; total_steps: number; progress_percent: number } | null>(null);
+  const [onboardingProgress, setOnboardingProgress] = useState<OnboardingProgress | null>(null);
 
   useEffect(() => {
     if (!apiUrl || !user?.current_workspace?.id) {
       setOnboardingProgress(null);
       return;
     }
-    void fetch(`${apiUrl}/onboarding/state`, { headers: authHeaders(), cache: 'no-store' })
+    void fetch(`${apiUrl}/onboarding/progress`, { headers: authHeaders(), cache: 'no-store' })
       .then(async (response) => response.ok ? response.json() : null)
-      .then((payload) => {
-        if (!payload) {
-          return;
-        }
-        setOnboardingProgress({
-          completed_steps: Number(payload.completed_steps ?? 0),
-          total_steps: Number(payload.total_steps ?? 7),
-          progress_percent: Number(payload.progress_percent ?? 0),
-        });
-      })
+      .then((payload) => payload ? setOnboardingProgress(payload as OnboardingProgress) : null)
       .catch(() => setOnboardingProgress(null));
   }, [apiUrl, authHeaders, user?.current_workspace?.id]);
 
+  const workspaceName = user?.current_workspace?.name ?? (user?.memberships?.[0]?.workspace.name ?? 'Workspace unavailable');
+
   const checklist = useMemo(() => {
-    const hasWorkspace = Boolean(user?.current_workspace);
+    const steps = onboardingProgress?.steps ?? [];
+    const stepMap = new Map(steps.map((step) => [step.key, step.complete]));
     return [
-      { label: 'Account created', complete: Boolean(user?.id) },
-      { label: 'Workspace ready', complete: hasWorkspace },
+      { label: 'Step 1: Add asset', complete: Boolean(stepMap.get('asset_added')) },
+      { label: 'Step 2: Create target', complete: Boolean(stepMap.get('target_created')) },
+      { label: 'Step 3: Start monitoring', complete: Boolean(stepMap.get('monitoring_started')) },
+      { label: 'Step 4: Review first evidence', complete: Boolean(stepMap.get('evidence_recorded')) },
+      { label: onboardingProgress ? `Progress ${onboardingProgress.completed_steps}/${onboardingProgress.total_steps}` : 'Progress pending', complete: Boolean(onboardingProgress?.completed_steps) },
       { label: 'Live API reachable', complete: liveApiReachable },
-      { label: 'Monitoring coverage reviewed', complete: Boolean(onboardingProgress && onboardingProgress.completed_steps > 0) },
-      { label: onboardingProgress ? `Setup progress ${onboardingProgress.completed_steps}/${onboardingProgress.total_steps}` : 'Setup progress pending', complete: Boolean(onboardingProgress && onboardingProgress.completed_steps > 0) },
     ];
-  }, [liveApiReachable, onboardingProgress, user?.current_workspace, user?.id]);
+  }, [liveApiReachable, onboardingProgress]);
 
   return (
     <section className="dataCard">
@@ -46,10 +42,10 @@ export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApi
         <div>
           <p className="sectionEyebrow">Welcome</p>
           <h2>Start here</h2>
-          <p className="muted">Decoda RWA Guard helps your team detect threats, apply compliance controls, and maintain operational resilience.</p>
+          <p className="muted">Complete the four-step launch flow to move from setup to evidence-backed monitoring.</p>
         </div>
       </div>
-      <p className="muted">Signed in as <strong>{user?.email ?? 'unknown user'}</strong> in <strong>{user?.current_workspace?.name ?? 'no workspace selected'}</strong>.</p>
+      <p className="muted">Signed in as <strong>{user?.email ?? 'unknown user'}</strong> in <strong>{workspaceName}</strong>.</p>
       <div className="chipRow">
         {checklist.map((item) => (
           <span key={item.label} className="ruleChip">{item.complete ? '✓' : '○'} {item.label}</span>
@@ -58,8 +54,7 @@ export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApi
       <p className="muted">{onboardingProgress ? `Workspace onboarding completion: ${onboardingProgress.progress_percent}%` : 'Load onboarding checklist to track setup completion.'}</p>
       <div className="heroActionRow">
         <Link href="/onboarding" prefetch={false}>Open setup wizard</Link>
-        <Link href="/threat" prefetch={false}>Review monitoring coverage</Link>
-        {!user?.current_workspace ? <Link href="/workspaces" prefetch={false}>Set up workspace</Link> : null}
+        <Link href="/threat" prefetch={false}>Review first evidence</Link>
       </div>
     </section>
   );
