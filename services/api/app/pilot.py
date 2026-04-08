@@ -4842,7 +4842,22 @@ def get_alert(alert_id: str, request: Request) -> dict[str, Any]:
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found.')
         events = connection.execute('SELECT id, event_type, details, created_at FROM alert_events WHERE alert_id = %s ORDER BY created_at DESC', (alert_id,)).fetchall()
-        return {'alert': _json_safe_value(dict(row)), 'events': [_json_safe_value(dict(item)) for item in events]}
+        evidence = connection.execute(
+            '''
+            SELECT id, observed_at, event_type, severity, risk_score, summary, tx_hash, block_number, log_index, counterparty, amount_text, source_provider, created_at
+            FROM evidence
+            WHERE alert_id = %s
+            ORDER BY observed_at DESC
+            LIMIT 200
+            ''',
+            (alert_id,),
+        ).fetchall()
+        return {
+            'alert': _json_safe_value(dict(row)),
+            'events': [_json_safe_value(dict(item)) for item in events],
+            'evidence_timeline': [_json_safe_value(dict(item)) for item in evidence],
+            'evidence_count': len(evidence),
+        }
 
 
 def patch_alert(alert_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -4876,6 +4891,44 @@ def patch_alert(alert_id: str, payload: dict[str, Any], request: Request) -> dic
         connection.execute('INSERT INTO alert_events (id, workspace_id, alert_id, actor_user_id, event_type, details) VALUES (%s, %s, %s, %s, %s, %s::jsonb)', (str(uuid.uuid4()), workspace_context['workspace_id'], alert_id, user['id'], f'alert.{next_status}', _json_dumps({'status': next_status, 'owner_user_id': payload.get('owner_user_id'), 'suppressed_until': payload.get('suppressed_until')})))
         connection.commit()
         return {'id': alert_id, 'status': next_status}
+
+
+def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        alert = connection.execute(
+            'SELECT id, target_id, analysis_run_id, title, severity, summary FROM alerts WHERE id = %s AND workspace_id = %s',
+            (alert_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if alert is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found.')
+        incident_id = str(uuid.uuid4())
+        title = str(payload.get('title') or f"Escalated alert: {alert.get('title') or alert_id}")
+        summary = str(payload.get('summary') or alert.get('summary') or 'Escalated from alert')
+        connection.execute(
+            '''
+            INSERT INTO incidents (id, workspace_id, user_id, analysis_run_id, target_id, event_type, title, severity, status, summary, linked_alert_ids, timeline, payload, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, 'alert_escalation', %s, %s, 'open', %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW(), NOW())
+            ''',
+            (
+                incident_id,
+                workspace_context['workspace_id'],
+                user['id'],
+                alert.get('analysis_run_id'),
+                alert.get('target_id'),
+                title,
+                str(alert.get('severity') or 'medium'),
+                summary,
+                _json_dumps([alert_id]),
+                _json_dumps([{'event': 'incident.created_from_alert', 'at': datetime.now(timezone.utc).isoformat(), 'alert_id': alert_id}]),
+                _json_dumps({'source': 'alert_escalation', 'alert_id': alert_id}),
+            ),
+        )
+        connection.execute('INSERT INTO alert_events (id, workspace_id, alert_id, actor_user_id, event_type, details) VALUES (%s, %s, %s, %s, %s, %s::jsonb)', (str(uuid.uuid4()), workspace_context['workspace_id'], alert_id, user['id'], 'alert.escalated', _json_dumps({'incident_id': incident_id})))
+        connection.commit()
+        return {'incident_id': incident_id, 'alert_id': alert_id, 'status': 'open'}
 
 
 def create_alert_suppression(payload: dict[str, Any], request: Request) -> dict[str, Any]:
