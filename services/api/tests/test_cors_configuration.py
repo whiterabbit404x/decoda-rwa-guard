@@ -71,7 +71,7 @@ def test_production_defaults_do_not_allow_wildcard_or_localhost_without_env(monk
 
     api_main = load_api_main_module()
 
-    assert api_main.ALLOWED_ORIGINS == []
+    assert api_main.ALLOWED_ORIGINS == ['https://rwa.decodasecurity.com']
 
 
 def test_preflight_and_actual_response_include_cors_headers_for_allowed_origin(monkeypatch):
@@ -100,6 +100,41 @@ def test_preflight_and_actual_response_include_cors_headers_for_allowed_origin(m
     assert actual.headers.get('access-control-allow-origin') == 'https://rwa.decodasecurity.com'
 
 
+def test_preflight_for_runtime_status_supports_monitoring_endpoints(monkeypatch):
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('CORS_ALLOWED_ORIGINS', 'https://rwa.decodasecurity.com')
+
+    api_main = load_api_main_module()
+    client = TestClient(api_main.app)
+
+    preflight = client.options(
+        '/ops/monitoring/runtime-status',
+        headers={
+            'Origin': 'https://rwa.decodasecurity.com',
+            'Access-Control-Request-Method': 'GET',
+            'Access-Control-Request-Headers': 'x-workspace-id,x-csrf-token',
+        },
+    )
+
+    assert preflight.status_code == 200
+    assert preflight.headers.get('access-control-allow-origin') == 'https://rwa.decodasecurity.com'
+    assert 'x-workspace-id' in (preflight.headers.get('access-control-allow-headers') or '').lower()
+
+
+def test_post_and_get_operations_include_cors_headers_for_allowed_origin(monkeypatch):
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('CORS_ALLOWED_ORIGINS', 'https://rwa.decodasecurity.com')
+
+    api_main = load_api_main_module()
+    client = TestClient(api_main.app)
+
+    post_response = client.post('/assets', json={}, headers={'Origin': 'https://rwa.decodasecurity.com'})
+    get_response = client.get('/alerts', headers={'Origin': 'https://rwa.decodasecurity.com'})
+
+    assert post_response.headers.get('access-control-allow-origin') == 'https://rwa.decodasecurity.com'
+    assert get_response.headers.get('access-control-allow-origin') == 'https://rwa.decodasecurity.com'
+
+
 def test_disallowed_origin_does_not_get_allow_origin_header(monkeypatch):
     monkeypatch.setenv('APP_ENV', 'production')
     monkeypatch.setenv('CORS_ALLOWED_ORIGINS', 'https://rwa.decodasecurity.com')
@@ -122,3 +157,13 @@ def test_disallowed_origin_does_not_get_allow_origin_header(monkeypatch):
 
     assert actual.status_code == 200
     assert actual.headers.get('access-control-allow-origin') is None
+
+
+def test_cors_middleware_is_installed_on_api_app_entrypoint(monkeypatch):
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('CORS_ALLOWED_ORIGINS', 'https://rwa.decodasecurity.com')
+
+    api_main = load_api_main_module()
+    middleware_classes = [middleware.cls.__name__ for middleware in api_main.app.user_middleware]
+
+    assert 'CORSMiddleware' in middleware_classes

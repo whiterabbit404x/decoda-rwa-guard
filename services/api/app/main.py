@@ -375,6 +375,9 @@ DEFAULT_LOCAL_CORS_ORIGINS = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
 ]
+DEFAULT_PRODUCTION_CORS_ORIGINS = [
+    'https://rwa.decodasecurity.com',
+]
 
 
 def _is_production_like_runtime() -> bool:
@@ -396,6 +399,8 @@ def resolve_allowed_origins() -> list[str]:
     configured_values = parse_csv_env('CORS_ALLOWED_ORIGINS', [])
     if not configured_values:
         configured_values = parse_csv_env('ALLOWED_ORIGINS', [])
+    if not configured_values and _is_production_like_runtime():
+        configured_values = list(DEFAULT_PRODUCTION_CORS_ORIGINS)
     if not configured_values and not _is_production_like_runtime():
         configured_values = list(DEFAULT_LOCAL_CORS_ORIGINS)
 
@@ -419,7 +424,15 @@ def resolve_cors_allow_credentials() -> bool:
 ALLOWED_ORIGINS = resolve_allowed_origins()
 CORS_ALLOW_CREDENTIALS = resolve_cors_allow_credentials()
 CORS_ALLOWED_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
-CORS_ALLOWED_HEADERS = ['Authorization', 'Content-Type', 'X-CSRF-Token', 'X-Workspace-Id']
+CORS_ALLOWED_HEADERS = [
+    'Accept',
+    'Authorization',
+    'Cache-Control',
+    'Content-Type',
+    'Pragma',
+    'X-CSRF-Token',
+    'X-Workspace-Id',
+]
 
 
 def masked_database_url() -> str | None:
@@ -1241,6 +1254,22 @@ def health() -> dict[str, object]:
         'monitoring_ingestion_degraded': ingestion_runtime.get('degraded'),
         'monitoring_ingestion_reason': ingestion_runtime.get('reason'),
         'billing': billing_runtime_status(),
+    }
+
+
+@app.get('/ops/runtime/cors', summary='Runtime CORS diagnostics', description='Returns safe runtime CORS origin configuration for operators.')
+def runtime_cors_diagnostics() -> dict[str, Any]:
+    return {
+        'allowed_origins': ALLOWED_ORIGINS,
+        'allow_credentials': CORS_ALLOW_CREDENTIALS,
+        'allowed_methods': CORS_ALLOWED_METHODS,
+        'allowed_headers': CORS_ALLOWED_HEADERS,
+        'runtime': {
+            'app_env': os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')),
+            'source_env': 'CORS_ALLOWED_ORIGINS' if parse_csv_env('CORS_ALLOWED_ORIGINS', []) else (
+                'ALLOWED_ORIGINS' if parse_csv_env('ALLOWED_ORIGINS', []) else 'default'
+            ),
+        },
     }
 
 

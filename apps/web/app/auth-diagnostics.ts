@@ -13,6 +13,16 @@ function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isTimeoutError(error: unknown, lowerMessage: string) {
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return true;
+  }
+  if (error instanceof Error && error.name.toLowerCase().includes('timeout')) {
+    return true;
+  }
+  return lowerMessage.includes('timed out') || lowerMessage.includes('timeout') || lowerMessage.includes('aborted');
+}
+
 function apiHost(apiUrl: string | null | undefined) {
   const normalized = normalizeApiBaseUrl(apiUrl);
   if (!normalized) {
@@ -50,6 +60,14 @@ export function classifyApiTransportError(actionLabel: string, apiUrl: string | 
 
   if (isLikelyLocalApi(normalizedApiUrl)) {
     return `Cannot reach the API at ${normalizedApiUrl}. Confirm API_URL or NEXT_PUBLIC_API_URL points to the deployed backend before you ${actionLabel}.`;
+  }
+
+  if (isTimeoutError(error, lowerMessage)) {
+    return `Unable to ${actionLabel} because requests to ${normalizedApiUrl} timed out. Confirm the API host is reachable and responding.`;
+  }
+
+  if (lowerMessage.includes('enotfound') || lowerMessage.includes('dns') || lowerMessage.includes('name not resolved')) {
+    return `Unable to ${actionLabel} because ${normalizedApiUrl} could not be resolved. Verify API_URL / NEXT_PUBLIC_API_URL and DNS configuration.`;
   }
 
   if (lowerMessage.includes('failed to fetch') || lowerMessage.includes('networkerror') || lowerMessage.includes('network request failed') || lowerMessage.includes('load failed')) {

@@ -89,7 +89,7 @@ def utc_now_iso() -> str:
 
 def parse_csv_env(name: str, defaults: list[str]) -> list[str]:
     raw = os.getenv(name, '')
-    values = [item.strip() for item in raw.split(',') if item.strip()]
+    values = [item.strip() for item in re.split(r'[\n,]', raw) if item.strip()]
     return values or defaults
 
 

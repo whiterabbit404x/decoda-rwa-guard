@@ -35,6 +35,21 @@ test.describe('auth diagnostics helpers', () => {
     expect(message).toContain('often CORS');
   });
 
+  test('classifies API timeout failures distinctly from generic CORS/network failures', async () => {
+    const message = classifyApiTransportError('create this asset', 'https://api.decoda.example', new Error('Request timed out after 5000ms'));
+
+    expect(message).toContain('timed out');
+    expect(message).toContain('https://api.decoda.example');
+    expect(message).not.toContain('often CORS');
+  });
+
+  test('classifies API DNS failures as host resolution issues', async () => {
+    const message = classifyApiTransportError('create this asset', 'https://api.decoda.example', new Error('getaddrinfo ENOTFOUND api.decoda.example'));
+
+    expect(message).toContain('could not be resolved');
+    expect(message).toContain('API_URL / NEXT_PUBLIC_API_URL');
+  });
+
   test('classifies same-origin proxy transport failures without blaming Railway CORS', async () => {
     const message = classifyAuthTransportError('sign in', '/api/auth/signin', new TypeError('Failed to fetch'));
 
