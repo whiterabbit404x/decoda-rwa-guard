@@ -47,6 +47,21 @@ def test_validate_asset_payload_rejects_unknown_asset_type() -> None:
         })
 
 
+def test_validate_asset_payload_returns_field_specific_error_shape() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        pilot._validate_asset_payload({
+            'name': '',
+            'asset_type': 'wallet',
+            'chain_network': 'ethereum-mainnet',
+            'identifier': '0x1111111111111111111111111111111111111111',
+        })
+
+    detail = exc_info.value.detail
+    assert isinstance(detail, dict)
+    assert detail['message'] == 'Asset name is required (max 120 chars).'
+    assert detail['field_errors']['name'] == 'Asset name is required (max 120 chars).'
+
+
 class _FakeRow:
     def __init__(self, row):
         self._row = row
