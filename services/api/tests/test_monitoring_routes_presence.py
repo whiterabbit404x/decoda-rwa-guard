@@ -7,6 +7,10 @@ def test_monitoring_routes_registered() -> None:
     content = (REPO_ROOT / 'services/api/app/main.py').read_text(encoding='utf-8')
     assert "@app.get('/monitoring/targets'" in content
     assert "@app.patch('/monitoring/targets/{target_id}'" in content
+    assert "@app.get('/monitoring/systems'" in content
+    assert "@app.post('/monitoring/systems'" in content
+    assert "@app.patch('/monitoring/systems/{system_id}'" in content
+    assert "@app.delete('/monitoring/systems/{system_id}'" in content
     assert "@app.post('/monitoring/run-once/{target_id}'" in content
     assert "@app.get('/ops/monitoring/health'" in content
     assert "@app.get('/ops/monitoring/runtime-status'" in content

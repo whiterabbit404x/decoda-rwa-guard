@@ -3,6 +3,7 @@ export const APP_NAV_ITEMS = [
   { href: '/onboarding', label: 'Onboarding' },
   { href: '/assets', label: 'Assets' },
   { href: '/targets', label: 'Targets' },
+  { href: '/monitored-systems', label: 'Monitored Systems' },
   { href: '/threat', label: 'Threat Monitoring' },
   { href: '/compliance', label: 'Compliance Controls' },
   { href: '/resilience', label: 'Resilience Monitoring' },
