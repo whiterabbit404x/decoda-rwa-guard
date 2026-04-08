@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import asyncio
 import json
 import logging
 import os
@@ -8,7 +9,7 @@ import subprocess
 import sys
 import types
 from datetime import datetime, timezone
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from copy import deepcopy
 from functools import lru_cache
 from hashlib import sha256
@@ -114,6 +115,7 @@ from services.api.app.pilot import (
     list_alerts,
     get_alert,
     patch_alert,
+    escalate_alert_to_incident,
     create_alert_suppression,
     list_alert_evidence,
     list_incidents,
@@ -150,6 +152,8 @@ from services.api.app.pilot import (
 )
 from services.api.app.monitoring_runner import (
     get_monitoring_health,
+    list_monitoring_evidence,
+    list_monitoring_heartbeats,
     list_monitoring_targets,
     monitoring_runtime_status,
     patch_monitoring_target,
@@ -231,6 +235,7 @@ RECONCILIATION_SERVICE_TIMEOUT_SECONDS = float(os.getenv('RECONCILIATION_SERVICE
 RECONCILIATION_DATA_DIR = Path(__file__).resolve().parents[2] / 'reconciliation-service' / 'data'
 OPTIONAL_FIXTURE_WARNINGS_EMITTED: set[tuple[str, str]] = set()
 STARTUP_BOOTSTRAP_STATUS: dict[str, Any] = {'enabled': False, 'ran': False, 'applied_versions': []}
+MONITORING_BACKGROUND_TASK: asyncio.Task[Any] | None = None
 RUNTIME_MARKER_ENV_VARS = (
     'APP_VERSION',
     'APP_BUILD_COMMIT',
@@ -1185,11 +1190,26 @@ def bootstrap_live_pilot() -> dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global MONITORING_BACKGROUND_TASK
     seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
     seed_embedded_dependency_registry()
     bootstrap_live_pilot()
     emit_startup_fixture_diagnostics()
+    if str(os.getenv('LIVE_MONITORING_ENABLED', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'}:
+        async def _monitoring_loop() -> None:
+            interval = max(10, int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30')))
+            while True:
+                try:
+                    run_monitoring_cycle(worker_name='monitoring-worker', limit=100)
+                except Exception:
+                    logger.exception('background_monitoring_cycle_failed')
+                await asyncio.sleep(interval)
+        MONITORING_BACKGROUND_TASK = asyncio.create_task(_monitoring_loop())
     yield
+    if MONITORING_BACKGROUND_TASK is not None:
+        MONITORING_BACKGROUND_TASK.cancel()
+        with suppress(asyncio.CancelledError):
+            await MONITORING_BACKGROUND_TASK
 
 
 app = FastAPI(
@@ -1660,6 +1680,16 @@ def ops_monitoring_runtime_status() -> dict[str, Any]:
     return with_auth_schema_json(monitoring_runtime_status)
 
 
+@app.get('/ops/monitoring/evidence', summary='Latest monitoring evidence stream')
+def ops_monitoring_evidence(request: Request, limit: int = 50) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_monitoring_evidence(request, limit=limit))
+
+
+@app.get('/ops/monitoring/heartbeats', summary='Latest monitoring heartbeat rows')
+def ops_monitoring_heartbeats(request: Request, limit: int = 50) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_monitoring_heartbeats(request, limit=limit))
+
+
 @app.get('/ops/metrics/mttd', summary='Detection MTTD metrics')
 def ops_metrics_mttd(request: Request, window_days: int = 7) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_mttd_metrics(request, window_days=window_days))
@@ -1937,6 +1967,21 @@ def alerts_get(alert_id: str, request: Request) -> dict[str, Any]:
 @app.patch('/alerts/{alert_id}', summary='Acknowledge or resolve alert')
 def alerts_patch(alert_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: patch_alert(alert_id, payload, request))
+
+
+@app.post('/alerts/{alert_id}/acknowledge', summary='Acknowledge alert')
+def alerts_acknowledge(alert_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: patch_alert(alert_id, {'status': 'acknowledged'}, request))
+
+
+@app.post('/alerts/{alert_id}/resolve', summary='Resolve alert')
+def alerts_resolve(alert_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: patch_alert(alert_id, {'status': 'resolved'}, request))
+
+
+@app.post('/alerts/{alert_id}/escalate', summary='Escalate alert to incident')
+def alerts_escalate(alert_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: escalate_alert_to_incident(alert_id, payload, request))
 
 
 @app.get('/alerts/{alert_id}/evidence', summary='List alert evidence payload')

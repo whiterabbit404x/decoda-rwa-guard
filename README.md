@@ -1700,3 +1700,57 @@ You may publicly claim **Strategic Infrastructure Guard live protection** only w
 - degraded conditions are surfaced and auditable (no silent demo substitution).
 
 If any check fails, public claims must remain limited to pilot/demo capabilities.
+
+## Live monitoring engine (worker + evidence + alerts)
+
+The monitoring pipeline now runs as a real background loop:
+
+`EVM provider (websocket-first, HTTP polling fallback) -> ingestion -> normalization -> rule evaluation -> evidence persistence -> alert dedup/update -> incident escalation`.
+
+### Required monitoring env vars
+
+- `LIVE_MONITORING_ENABLED=true|false`
+- `EVM_RPC_URL=https://...` (required for live ingestion)
+- `EVM_WS_URL=wss://...` (optional; websocket subscriptions used when present)
+- `MONITOR_POLL_INTERVAL_SECONDS=30` (background cycle interval)
+- `MONITOR_REPLAY_BLOCKS=12` (optional replay window)
+- `MONITOR_BATCH_BLOCKS=100` (optional batch size for block polling/backfill)
+- `ALERT_DEDUP_WINDOW_SECONDS=900`
+
+### Websocket vs polling behavior
+
+- With `EVM_WS_URL`, watcher subscriptions use `newHeads` and `logs` and continuously ingest qualifying events.
+- If websocket is unavailable, monitoring continues via HTTP RPC block/log polling and replay-safe checkpoint backfill.
+
+### Local run steps
+
+1. Set API env vars (`LIVE_MODE_ENABLED=true`, `DATABASE_URL`, `AUTH_TOKEN_SECRET`, and monitoring vars above).
+2. Apply migrations:
+   - `python services/api/scripts/migrate.py`
+3. Start API:
+   - `uvicorn services.api.app.main:app --host 0.0.0.0 --port 8000`
+4. Optional dedicated worker process (in addition to startup background loop):
+   - `python -m services.api.app.run_monitoring_worker --worker-name local-monitor-worker --interval-seconds 15 --limit 50`
+
+### Verify live monitoring end-to-end
+
+1. Configure at least one active wallet/contract target in `/targets`.
+2. Confirm runtime health:
+   - `GET /ops/monitoring/runtime-status`
+3. Confirm heartbeat rows:
+   - `GET /ops/monitoring/heartbeats`
+4. Trigger real onchain activity for monitored targets (or explicit dev/test-only generator if enabled in non-production).
+5. Verify evidence stream:
+   - `GET /ops/monitoring/evidence?limit=50`
+6. Verify alert lifecycle:
+   - `GET /alerts`
+   - `POST /alerts/{id}/acknowledge`
+   - `POST /alerts/{id}/resolve`
+   - `POST /alerts/{id}/escalate`
+7. Verify incidents:
+   - `GET /incidents`
+
+### Notes/limitations
+
+- If only HTTP RPC is configured (no websocket), event latency depends on polling interval and batch/backfill settings.
+- Production mode does not create synthetic telemetry when `LIVE_MONITORING_ENABLED=true`.

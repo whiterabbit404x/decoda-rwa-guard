@@ -32,8 +32,11 @@ from services.api.app.pilot import (
 from services.api.app.threat_payloads import ThreatKind, normalize_threat_payload
 
 THREAT_ENGINE_URL = (os.getenv('THREAT_ENGINE_URL') or 'http://localhost:8002').rstrip('/')
-ALERT_DEDUPE_WINDOW_SECONDS = int(os.getenv('MONITORING_ALERT_DEDUPE_WINDOW_SECONDS', '900'))
+ALERT_DEDUPE_WINDOW_SECONDS = int(
+    os.getenv('ALERT_DEDUP_WINDOW_SECONDS', os.getenv('MONITORING_ALERT_DEDUPE_WINDOW_SECONDS', '900'))
+)
 WORKER_HEARTBEAT_TTL_SECONDS = int(os.getenv('MONITORING_WORKER_HEARTBEAT_TTL_SECONDS', '180'))
+MONITOR_POLL_INTERVAL_SECONDS = int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30'))
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +130,65 @@ def _record_detection_metric(
         ),
     )
 
+
+def _persist_evidence(
+    connection: Any,
+    *,
+    workspace_id: str,
+    target: dict[str, Any],
+    event: ActivityEvent,
+    response: dict[str, Any],
+    alert_id: str | None,
+) -> str:
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    counterparty = payload.get('to') or payload.get('spender') or payload.get('from')
+    evidence_id = str(uuid.uuid4())
+    connection.execute(
+        '''
+        INSERT INTO evidence (
+            id, workspace_id, asset_id, target_id, alert_id, chain, block_number, tx_hash, log_index, event_type,
+            severity, risk_score, summary, counterparty, amount_text, token_address, contract_address, source_provider,
+            raw_payload_json, observed_at, created_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW())
+        ON CONFLICT (target_id, tx_hash, log_index, event_type)
+        DO UPDATE SET
+            alert_id = COALESCE(EXCLUDED.alert_id, evidence.alert_id),
+            severity = EXCLUDED.severity,
+            risk_score = EXCLUDED.risk_score,
+            summary = EXCLUDED.summary,
+            counterparty = EXCLUDED.counterparty,
+            amount_text = EXCLUDED.amount_text,
+            token_address = EXCLUDED.token_address,
+            contract_address = EXCLUDED.contract_address,
+            source_provider = EXCLUDED.source_provider,
+            raw_payload_json = EXCLUDED.raw_payload_json
+        RETURNING id
+        ''',
+        (
+            evidence_id,
+            workspace_id,
+            target.get('asset_id'),
+            target['id'],
+            alert_id,
+            target.get('chain_network'),
+            payload.get('block_number'),
+            payload.get('tx_hash'),
+            payload.get('log_index'),
+            payload.get('event_type') or event.kind,
+            str(response.get('severity') or 'low'),
+            response.get('score'),
+            str(response.get('explanation') or 'Observed monitored activity'),
+            counterparty,
+            payload.get('amount'),
+            payload.get('asset_address'),
+            payload.get('contract_address'),
+            event.ingestion_source,
+            _json_dumps(payload),
+            event.observed_at,
+        ),
+    ).fetchone()
+    return evidence_id
 
 def mark_receipt_removed(connection: Any, *, target_id: str, event_cursor: str, tx_hash: str | None, log_index: int | None, metadata: dict) -> None:
     receipt = connection.execute(
@@ -1486,6 +1548,14 @@ def _process_single_event(
                 response=response,
                 policy_snapshot_hash=signature,
             )
+    _persist_evidence(
+        connection,
+        workspace_id=str(target['workspace_id']),
+        target=target,
+        event=event,
+        response=response,
+        alert_id=alert_id,
+    )
     response['monitoring_state'] = (
         'anomaly_escalated_to_incident' if incident_id else (
             'real_event_anomaly_detected' if asset_detection.get('detector_status') == 'anomaly_detected' else (
@@ -1511,6 +1581,14 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     checkpoint = _parse_ts(target.get('monitoring_checkpoint_at') or target.get('last_checked_at'))
     provider_result: ActivityProviderResult = fetch_target_activity_result(target, checkpoint)
     events = provider_result.events
+    evaluation_id = str(uuid.uuid4())
+    connection.execute(
+        '''
+        INSERT INTO target_evaluation (id, target_id, status, started_at, events_seen, matches_found)
+        VALUES (%s, %s, %s, NOW(), 0, 0)
+        ''',
+        (evaluation_id, target['id'], 'running'),
+    )
 
     alerts_generated = 0
     incidents_created = 0
@@ -1648,6 +1726,26 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             int(provider_result.recent_real_event_count),
             recent_confidence_basis,
             target['id'],
+        ),
+    )
+    connection.execute(
+        '''
+        UPDATE target_evaluation
+        SET status = %s,
+            finished_at = NOW(),
+            checkpoint_block = %s,
+            events_seen = %s,
+            matches_found = %s,
+            error_text = %s
+        WHERE id = %s
+        ''',
+        (
+            'completed' if provider_result.status != 'failed' else 'failed',
+            latest_processed_block,
+            len(events),
+            alerts_generated,
+            provider_result.degraded_reason if provider_result.status == 'failed' else None,
+            evaluation_id,
         ),
     )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, incidents_created)
@@ -1860,6 +1958,24 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             WHERE worker_name = %s
             ''',
             (error_message, due_count, checked, alerts_generated, error_message, worker_name),
+        )
+        connection.execute(
+            '''
+            INSERT INTO monitor_heartbeat (
+                id, workspace_id, chain, status, last_success_at, last_error_at, last_error_text, last_processed_block, provider_mode, updated_at
+            )
+            VALUES (%s, NULL, %s, %s, CASE WHEN %s::text IS NULL THEN NOW() ELSE NULL END, CASE WHEN %s::text IS NULL THEN NULL ELSE NOW() END, %s, %s, %s, NOW())
+            ''',
+            (
+                str(uuid.uuid4()),
+                str(os.getenv('EVM_CHAIN_NETWORK', 'ethereum')),
+                'error' if error_message else ('idle' if checked == 0 else 'active'),
+                error_message,
+                error_message,
+                error_message,
+                max([int(item.get('latest_processed_block') or 0) for item in runs], default=0),
+                ingestion_runtime.get('source') or 'polling',
+            ),
         )
         connection.commit()
     WORKER_STATE.update(
@@ -2369,52 +2485,78 @@ def production_claim_validator() -> dict[str, Any]:
 
 def monitoring_runtime_status() -> dict[str, Any]:
     health = get_monitoring_health()
-    claim = production_claim_validator()
-    recent_evidence_state = claim.get('recent_evidence_state')
-    recent_real_event_count = int(claim.get('recent_real_event_count') or 0)
-    recent_truthfulness_state = str(claim.get('recent_truthfulness_state') or 'unknown_risk')
-    evidence_gap = recent_evidence_state in {'missing', 'no_evidence', 'degraded', 'failed'} or recent_real_event_count <= 0 or recent_truthfulness_state == 'unknown_risk'
-    provider_health = 'degraded' if health.get('degraded') or evidence_gap else 'healthy'
-    runtime_mode = str(health.get('operational_mode') or claim.get('operational_mode') or 'DEMO').upper()
-    configured_mode = str(health.get('mode') or claim.get('mode') or 'demo').upper()
-    if configured_mode in {'LIVE', 'HYBRID'} and evidence_gap:
-        runtime_mode = 'DEGRADED'
-    claim_safe = bool(
-        claim.get('status') == 'PASS'
-        and str(claim.get('recent_evidence_state') or '') == 'real'
-        and int(claim.get('recent_real_event_count') or 0) > 0
-        and str(claim.get('recent_truthfulness_state') or '') != 'unknown_risk'
-    )
-    evidence_state = str(claim.get('recent_evidence_state') or 'missing')
-    truthfulness_state = str(claim.get('recent_truthfulness_state') or 'unknown_risk')
-    error_code = 'UNKNOWN_RISK' if evidence_gap else None
+    now = utc_now()
+    last_heartbeat = _parse_ts(health.get('last_heartbeat_at') or health.get('last_cycle_at'))
+    heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
+    stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        open_alerts = connection.execute("SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating')").fetchone()
+        open_incidents = connection.execute("SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged')").fetchone()
+        targets_monitored = connection.execute(
+            "SELECT COUNT(*) AS c FROM targets WHERE deleted_at IS NULL AND monitoring_enabled = TRUE AND enabled = TRUE AND is_active = TRUE"
+        ).fetchone()
+        latest_evidence = connection.execute(
+            "SELECT observed_at, block_number FROM evidence ORDER BY observed_at DESC LIMIT 1"
+        ).fetchone()
+    evidence_at = _parse_ts((latest_evidence or {}).get('observed_at'))
+    evidence_freshness = int((now - evidence_at).total_seconds()) if evidence_at else None
+    degraded_reason = health.get('degraded_reason')
+    if health.get('last_error'):
+        runtime_status = 'Error'
+    elif health.get('degraded') or degraded_reason or stale_heartbeat:
+        runtime_status = 'Degraded'
+        degraded_reason = degraded_reason or ('stale_heartbeat' if stale_heartbeat else None)
+    elif evidence_freshness is None or evidence_freshness > max(900, MONITOR_POLL_INTERVAL_SECONDS * 10):
+        runtime_status = 'Idle'
+    else:
+        runtime_status = 'Active'
     return {
-        'mode': runtime_mode,
-        'configured_mode': configured_mode,
-        'status': 'MONITORING_DEGRADED' if evidence_gap else 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
-        'detection_outcome': 'MONITORING_DEGRADED' if evidence_gap else 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
-        'source_type': health.get('source_type') or claim.get('source_type'),
-        'provider_health': provider_health,
-        'provider_reachable': bool(claim.get('checks', {}).get('evm_rpc_reachable')),
-        'claim_safe': claim_safe,
-        'synthetic': bool(claim.get('synthetic_leak_detected')),
-        'evidence_present': not evidence_gap,
-        'evidence_state': evidence_state,
-        'truthfulness_state': truthfulness_state,
-        'latest_processed_block': health.get('latest_processed_block'),
-        'latest_block': health.get('latest_processed_block'),
-        'checkpoint_lag_blocks': health.get('checkpoint_lag_blocks'),
-        'checkpoint_age_seconds': health.get('checkpoint_age_seconds'),
-        'provider_name': 'evm_activity_provider',
-        'provider_kind': 'rpc',
-        'degraded_reason': health.get('degraded_reason') or claim.get('reason'),
-        'error_code': error_code,
-        'sales_claims_allowed': bool(claim.get('sales_claims_allowed')),
-        'claim_validator_status': claim.get('status'),
-        'recent_evidence_state': claim.get('recent_evidence_state'),
-        'recent_truthfulness_state': claim.get('recent_truthfulness_state'),
-        'recent_real_event_count': claim.get('recent_real_event_count'),
-        'last_real_event_at': claim.get('last_real_event_at'),
-        'recent_confidence_basis': claim.get('recent_confidence_basis'),
-        'synthetic_leak_detected': claim.get('synthetic_leak_detected'),
+        'status': runtime_status,
+        'provider_mode': health.get('source_type') or health.get('ingestion_mode') or 'polling',
+        'last_heartbeat': last_heartbeat.isoformat() if last_heartbeat else None,
+        'last_successful_ingest': evidence_at.isoformat() if evidence_at else None,
+        'last_processed_block': (latest_evidence or {}).get('block_number') or health.get('latest_processed_block'),
+        'targets_monitored': int((targets_monitored or {}).get('c') or 0),
+        'active_alerts': int((open_alerts or {}).get('c') or 0),
+        'open_incidents': int((open_incidents or {}).get('c') or 0),
+        'evidence_freshness_seconds': evidence_freshness,
+        'degraded_reason': degraded_reason,
     }
+
+
+def list_monitoring_evidence(request: Request, *, limit: int = 50) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT e.*, a.name AS asset_name, t.name AS target_name
+            FROM evidence e
+            LEFT JOIN assets a ON a.id = e.asset_id
+            LEFT JOIN targets t ON t.id = e.target_id
+            WHERE e.workspace_id = %s
+            ORDER BY e.observed_at DESC
+            LIMIT %s
+            ''',
+            (workspace_context['workspace_id'], max(1, min(limit, 200))),
+        ).fetchall()
+        return {'evidence': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def list_monitoring_heartbeats(request: Request, *, limit: int = 50) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT id, workspace_id, chain, status, last_success_at, last_error_at, last_error_text, last_processed_block, provider_mode, updated_at
+            FROM monitor_heartbeat
+            ORDER BY updated_at DESC
+            LIMIT %s
+            ''',
+            (max(1, min(limit, 200)),),
+        ).fetchall()
+        return {'heartbeats': [_json_safe_value(dict(row)) for row in rows]}
