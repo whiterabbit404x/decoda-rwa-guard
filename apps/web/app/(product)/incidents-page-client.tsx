@@ -1,54 +1,24 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-
 import { usePilotAuth } from '../pilot-auth-context';
-import { useLiveWorkspaceFeed } from '../use-live-workspace-feed';
 
-type WorkspaceRole = 'owner' | 'admin' | 'analyst' | 'viewer';
-const FILTER_KEY = 'incidents_filters_v2';
+const WORKFLOW_STATUSES = ['open', 'investigating', 'contained', 'resolved', 'reopened'] as const;
 
 export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
-  const { authHeaders, user } = usePilotAuth();
-  const role = (user?.memberships.find((item) => item.workspace_id === user.current_workspace?.id)?.role ?? 'viewer') as WorkspaceRole;
-  const feed = useLiveWorkspaceFeed();
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const { authHeaders } = usePilotAuth();
   const [incidents, setIncidents] = useState<any[]>([]);
   const [selectedId, setSelectedId] = useState('');
-  const [status, setStatus] = useState(searchParams?.get('status') ?? '');
-  const [assignee, setAssignee] = useState(searchParams?.get('assignee') ?? '');
-  const [message, setMessage] = useState('');
+  const [status, setStatus] = useState('');
+  const [owner, setOwner] = useState('');
   const [timeline, setTimeline] = useState<any[]>([]);
   const [note, setNote] = useState('');
-
-  useEffect(() => {
-    const persisted = window.localStorage.getItem(FILTER_KEY);
-    if (!persisted || searchParams?.get('status')) return;
-    try {
-      const parsed = JSON.parse(persisted) as { status?: string; assignee?: string };
-      if (parsed.status) setStatus(parsed.status);
-      if (parsed.assignee) setAssignee(parsed.assignee);
-    } catch {
-      // noop
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    const next = new URLSearchParams(searchParams?.toString() ?? '');
-    status ? next.set('status', status) : next.delete('status');
-    assignee ? next.set('assignee', assignee) : next.delete('assignee');
-    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
-    window.localStorage.setItem(FILTER_KEY, JSON.stringify({ status, assignee }));
-  }, [assignee, pathname, router, searchParams, status]);
+  const [message, setMessage] = useState('');
 
   async function load() {
     const params = new URLSearchParams();
     if (status) params.set('status_value', status);
-    if (assignee) params.set('assignee_user_id', assignee);
+    if (owner) params.set('assignee_user_id', owner);
     const response = await fetch(`${apiUrl}/incidents?${params.toString()}`, { headers: authHeaders(), cache: 'no-store' });
     if (!response.ok) return;
     const rows = (await response.json()).incidents ?? [];
@@ -56,43 +26,40 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
     if (!selectedId && rows.length) setSelectedId(rows[0].id);
   }
 
-  useEffect(() => { void load(); }, [status, assignee]);
+  useEffect(() => { void load(); }, [status, owner]);
 
   useEffect(() => {
-    if (!selectedId) {
-      setTimeline([]);
-      return;
-    }
-    const loadTimeline = async () => {
-      const response = await fetch(`${apiUrl}/incidents/${selectedId}/timeline`, { headers: authHeaders(), cache: 'no-store' });
-      if (!response.ok) return;
-      const payload = await response.json();
-      setTimeline(payload.timeline ?? []);
-    };
-    void loadTimeline();
+    if (!selectedId) return;
+    void fetch(`${apiUrl}/incidents/${selectedId}/timeline`, { headers: authHeaders(), cache: 'no-store' })
+      .then((response) => response.ok ? response.json() : null)
+      .then((payload) => setTimeline(payload?.timeline ?? []));
   }, [apiUrl, authHeaders, selectedId]);
 
-  async function createAction(actionType: string) {
-    if (!selectedId) return;
-    const response = await fetch(`${apiUrl}/findings/${selectedId}/actions`, {
-      method: 'POST',
+  const selected = useMemo(() => incidents.find((item) => item.id === selectedId), [incidents, selectedId]);
+
+  async function updateWorkflow(nextStatus: typeof WORKFLOW_STATUSES[number]) {
+    if (!selected) return;
+    const response = await fetch(`${apiUrl}/incidents/${selected.id}`, {
+      method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ action_type: actionType, title: `${actionType} for incident`, notes: 'Created from incidents queue', status: 'open' }),
+      body: JSON.stringify({ workflow_status: nextStatus }),
     });
-    setMessage(response.ok ? `${actionType} created.` : `Unable to create ${actionType}.`);
+    setMessage(response.ok ? `Incident moved to ${nextStatus}.` : 'Unable to update incident workflow.');
     if (response.ok) {
-      window.dispatchEvent(new Event('pilot-history-refresh'));
+      await load();
+      const timelineResponse = await fetch(`${apiUrl}/incidents/${selected.id}/timeline`, { headers: authHeaders(), cache: 'no-store' });
+      if (timelineResponse.ok) setTimeline((await timelineResponse.json()).timeline ?? []);
     }
   }
 
-  async function appendNote() {
+  async function addNote() {
     if (!selectedId || !note.trim()) return;
     const response = await fetch(`${apiUrl}/incidents/${selectedId}/timeline`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ message: note.trim() }),
     });
-    setMessage(response.ok ? 'Timeline note added.' : 'Unable to add timeline note.');
+    setMessage(response.ok ? 'Note added.' : 'Unable to add note.');
     if (response.ok) {
       setNote('');
       const timelineResponse = await fetch(`${apiUrl}/incidents/${selectedId}/timeline`, { headers: authHeaders(), cache: 'no-store' });
@@ -100,81 +67,39 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
     }
   }
 
-  async function exportIncidentReport() {
-    if (!selectedId) return;
-    const response = await fetch(`${apiUrl}/exports/incident-report`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ incident_id: selectedId, format: 'json' }),
-    });
-    setMessage(response.ok ? 'Incident report export started.' : 'Unable to export incident report.');
-  }
-
-  const selected = useMemo(() => incidents.find((item) => item.id === selectedId), [incidents, selectedId]);
-  const canGovern = role === 'owner' || role === 'admin';
-  const canTriage = canGovern || role === 'analyst';
-
   return (
     <main className="productPage">
       <section className="featureSection">
-        <div className="sectionHeader">
-          <div>
-            <p className="eyebrow">Workspace incidents</p>
-            <h1>Incidents for this workspace</h1>
-            <p className="lede">Manage incident lifecycle, assign ownership, and capture operator actions.</p>
-          </div>
-        </div>
+        <div className="sectionHeader"><div><p className="eyebrow">Incident lifecycle</p><h1>Incidents</h1><p className="lede">Track open → investigating → contained → resolved → reopened with persistent activity logs.</p></div></div>
         <div className="buttonRow">
-          <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All workflow statuses</option><option value="open">open</option><option value="triaging">triaging</option><option value="contained">contained</option><option value="resolved">resolved</option><option value="closed">closed</option></select>
-          <input value={assignee} onChange={(event) => setAssignee(event.target.value)} placeholder="Filter by assignee user id" />
-          <span className="ruleChip">{feed.offline ? 'Offline' : feed.degraded ? 'Degraded' : 'Live'} workspace feed</span>
-          {feed.stale ? <span className="ruleChip">Evidence stale</span> : null}
+          <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option>{WORKFLOW_STATUSES.map((value) => <option key={value} value={value}>{value}</option>)}</select>
+          <input value={owner} onChange={(event) => setOwner(event.target.value)} placeholder="Owner user id" />
         </div>
-        <div className="threeColumnSection">
+        <div className="twoColumnSection">
           <article className="dataCard">
-            <p className="sectionEyebrow">Open incidents</p>
-            {incidents.length === 0 ? <p className="muted">No incidents</p> : null}
-            {incidents.map((incident) => (
-              <p key={incident.id}>
-                <button type="button" onClick={() => setSelectedId(incident.id)}>{incident.title || incident.event_type}</button> · <span className={`statusBadge statusBadge--${incident.workflow_status || incident.status}`}>{incident.workflow_status || incident.status}</span>
-                <br />
-                <span className="muted">workspace {user?.current_workspace?.name} · monitored target {incident.target_id || 'n/a'} · assignee {incident.assignee_user_id || 'unassigned'}</span>
-              </p>
-            ))}
+            <p className="sectionEyebrow">Incident queue</p>
+            {incidents.map((incident) => <button key={incident.id} type="button" className="overviewListItem" onClick={() => setSelectedId(incident.id)}><strong>{incident.title || incident.event_type}</strong> · {incident.workflow_status || incident.status}</button>)}
           </article>
           <article className="dataCard">
-            <p className="sectionEyebrow">Operator actions</p>
-            {!selected ? <p className="muted">Select an incident.</p> : (
-              <>
-                <p><strong>{selected.title || selected.event_type}</strong></p>
-                <p className="muted">{selected.summary || 'No summary'}</p>
-                <p className="muted">No evidence ≠ safe. Capture verification artifacts before closing.</p>
-                <div className="buttonRow">
-                  <button type="button" disabled={!canTriage} title={canTriage ? 'Escalate incident' : 'Viewer role is read-only'} onClick={() => void createAction('escalate_incident')}>Escalate incident</button>
-                  <button type="button" disabled={!canTriage} title={canTriage ? 'Assign owner' : 'Viewer role is read-only'} onClick={() => void createAction('assign_owner')}>Assign owner</button>
-                  <button type="button" disabled={!canTriage} title={canTriage ? 'Create remediation task' : 'Viewer role is read-only'} onClick={() => void createAction('remediation_task')}>Create remediation task</button>
-                </div>
-                <div className="buttonRow">
-                  <button type="button" disabled={!canGovern} title={canGovern ? 'Apply governance action' : 'Only admin/owner can apply governance actions'} onClick={() => void createAction('block_transaction')}>Block transaction</button>
-                  <button type="button" disabled={!canGovern} title={canGovern ? 'Apply governance action' : 'Only admin/owner can apply governance actions'} onClick={() => void createAction('freeze_wallet')}>Freeze wallet</button>
-                  <button type="button" disabled={!canGovern} title={canGovern ? 'Apply governance action' : 'Only admin/owner can apply governance actions'} onClick={() => void createAction('pause_asset')}>Pause asset</button>
-                </div>
-                <div className="buttonRow">
-                  <button type="button" onClick={() => void exportIncidentReport()}>Export incident report</button>
-                </div>
-              </>
-            )}
+            {!selected ? <p className="muted">Select an incident.</p> : <>
+              <h3>{selected.title || selected.event_type}</h3>
+              <p className="muted">Severity: {selected.severity || 'n/a'} · Owner: {selected.owner_user_id || selected.assignee_user_id || 'unassigned'}</p>
+              <p className="muted">Linked alerts: {(selected.linked_alert_ids || []).join(', ') || 'none'}</p>
+              <p className="muted">Created: {selected.created_at ? new Date(selected.created_at).toLocaleString() : 'n/a'} · Resolved: {selected.resolved_at ? new Date(selected.resolved_at).toLocaleString() : 'not resolved'}</p>
+              <div className="buttonRow">
+                <button type="button" onClick={() => void updateWorkflow('investigating')}>Mark investigating</button>
+                <button type="button" onClick={() => void updateWorkflow('contained')}>Mark contained</button>
+                <button type="button" onClick={() => void updateWorkflow('resolved')}>Resolve</button>
+                <button type="button" onClick={() => void updateWorkflow('reopened')}>Reopen</button>
+              </div>
+              <p className="sectionEyebrow">Merged event timeline</p>
+              {timeline.map((item, index) => <p key={`${item.id || index}`}>{item.event_type}: {item.message || ''} · {item.created_at ? new Date(item.created_at).toLocaleString() : 'n/a'}</p>)}
+              <div className="buttonRow">
+                <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Add incident note" />
+                <button type="button" onClick={() => void addNote()}>Add note</button>
+              </div>
+            </>}
             {message ? <p className="statusLine">{message}</p> : null}
-          </article>
-          <article className="dataCard">
-            <p className="sectionEyebrow">Incident timeline</p>
-            {timeline.length === 0 ? <p className="muted">No timeline events.</p> : timeline.map((item: any, index: number) => (
-              <p key={`${item.event_type || item.event}-${index}`}>{item.event_type || item.event} · {item.message || ''} · {(item.created_at || item.at) ? new Date(item.created_at || item.at).toLocaleString() : 'n/a'}</p>
-            ))}
-            <div className="buttonRow">
-              <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Add investigator note" />
-              <button type="button" disabled={!canTriage} onClick={() => void appendNote()}>Add note</button>
-            </div>
           </article>
         </div>
       </section>

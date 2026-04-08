@@ -22,14 +22,17 @@ export default function SettingsPageClient() {
   const [inviteRole, setInviteRole] = useState('viewer');
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const currentMembership = useMemo(() => user?.memberships.find((m) => m.workspace_id === user.current_workspace?.id) ?? null, [user]);
+  const fallbackWorkspace = user?.memberships?.[0]?.workspace ?? null;
+  const resolvedWorkspace = user?.current_workspace ?? fallbackWorkspace;
+  const hasWorkspace = Boolean(resolvedWorkspace?.id);
+  const currentMembership = useMemo(() => user?.memberships.find((m) => m.workspace_id === resolvedWorkspace?.id) ?? null, [resolvedWorkspace?.id, user]);
 
   async function call(path: string, init?: RequestInit) {
     return fetch(`${apiUrl}${path}`, { cache: 'no-store', ...init, headers: { ...(init?.headers ?? {}), ...authHeaders() } });
   }
 
   async function loadAll() {
-    if (!apiUrl || !user?.current_workspace?.id) return;
+    if (!apiUrl || !resolvedWorkspace?.id) return;
     const [membersResponse, inviteResponse, seatsResponse, subscriptionResponse, plansResponse] = await Promise.all([
       call('/workspace/members'),
       call('/workspace/invitations'),
@@ -48,7 +51,7 @@ export default function SettingsPageClient() {
     if (plansResponse.ok) setPlans((await plansResponse.json()).plans ?? []);
   }
 
-  useEffect(() => { void loadAll(); }, [apiUrl, user?.current_workspace?.id]);
+  useEffect(() => { void loadAll(); }, [apiUrl, resolvedWorkspace?.id]);
 
   async function inviteMember() {
     if (!apiUrl || !inviteEmail) return;
@@ -123,7 +126,7 @@ export default function SettingsPageClient() {
         <div className="sectionHeader"><div><p className="eyebrow">Settings</p><h1>Workspace administration</h1><p className="lede">Manage users, seats, entitlements, and workspace governance in one place.</p></div></div>
         <div className="threeColumnSection">
           <article className="dataCard"><p className="sectionEyebrow">Current user</p><h2>{user?.full_name ?? 'Unknown user'}</h2><p className="muted">{user?.email}</p><p className="muted">Role: {currentMembership?.role ?? 'unknown'}</p></article>
-          <article className="dataCard"><p className="sectionEyebrow">Workspace</p><h2>{user?.current_workspace?.name ?? 'No workspace selected'}</h2><label className="label compactLabel">Switch workspace<select value={user?.current_workspace?.id ?? ''} onChange={(event) => void selectWorkspace(event.target.value)} disabled={loading}>{(user?.memberships ?? []).map((membership) => (<option key={membership.workspace_id} value={membership.workspace_id}>{membership.workspace.name}</option>))}</select></label></article>
+          <article className="dataCard"><p className="sectionEyebrow">Workspace</p><h2>{resolvedWorkspace?.name ?? 'No workspace available yet'}</h2><label className="label compactLabel">Switch workspace<select value={resolvedWorkspace?.id ?? ''} onChange={(event) => void selectWorkspace(event.target.value)} disabled={loading}>{(user?.memberships ?? []).map((membership) => (<option key={membership.workspace_id} value={membership.workspace_id}>{membership.workspace.name}</option>))}</select></label></article>
           <article className="dataCard"><p className="sectionEyebrow">API diagnostics</p><h2>{liveModeConfigured ? 'Live mode configured' : 'Sample mode only'}</h2><p className="muted">{apiUrl || 'NEXT_PUBLIC_API_URL not configured'}</p>{error ? <p className="statusLine">{error}</p> : null}</article>
           <article className="dataCard">
             <p className="sectionEyebrow">Security</p>

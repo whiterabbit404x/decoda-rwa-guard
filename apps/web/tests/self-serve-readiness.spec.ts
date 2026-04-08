@@ -46,8 +46,8 @@ test('dashboard and history expose self-serve onboarding and first-run empty sta
   const history = read('history-records-view.tsx');
 
   expect(dashboard).toContain('DashboardOnboardingPanel');
-  expect(onboarding).toContain('Review monitoring coverage');
-  expect(onboarding).toContain('Monitoring coverage reviewed');
+  expect(onboarding).toContain('Review first evidence');
+  expect(onboarding).toContain('Step 4: Review first evidence');
   expect(history).toContain('Check monitoring status');
   expect(history).toContain('No checkpoints yet');
   expect(history).toContain('history.workspace.name');
@@ -78,7 +78,7 @@ test('onboarding wizard and help/legal pages are present for self-serve setup', 
   const settingsPage = read('settings-page-client.tsx');
 
   expect(onboarding).toContain('Self-serve setup wizard');
-  expect(onboarding).toContain('/onboarding/state');
+  expect(onboarding).toContain('/onboarding/progress');
   expect(help).toContain('self-serve workspace onboarding');
   expect(nav).toContain("{ href: '/onboarding', label: 'Onboarding' }");
   expect(nav).toContain("{ href: '/help', label: 'Help' }");

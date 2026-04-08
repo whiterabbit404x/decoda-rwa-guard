@@ -95,8 +95,8 @@ test('staging evidence flow', async ({ page, request }, testInfo) => {
     return response.json();
   });
 
-  const onboardingState = await test.step('onboarding state can be read', async () => {
-    const response = await request.get(`${apiUrl.replace(/\/$/, '')}/onboarding/state`, {
+  const onboardingState = await test.step('onboarding progress can be read', async () => {
+    const response = await request.get(`${apiUrl.replace(/\/$/, '')}/onboarding/progress`, {
       headers: authHeaders(accessToken)
     });
     expect(response.ok(), `onboarding/state failed with status ${response.status()}`).toBeTruthy();
@@ -157,12 +157,12 @@ test('staging evidence flow', async ({ page, request }, testInfo) => {
       signup_route_and_api_reachable: signupProbe.attempted,
       signed_in: true,
       protected_route: true,
-      onboarding_state_read: Boolean(onboardingState),
+      onboarding_progress_read: Boolean(onboardingState),
       core_workflow_asset_create: Boolean(createdAsset?.id),
       alerts_exports_history_reachable: Boolean(evidenceDataSurfaces)
     },
     workspace: me?.user?.current_workspace ?? null,
-    onboarding_state: onboardingState,
+    onboarding_progress: onboardingState,
     created_asset_id: createdAsset?.id ?? null,
     data_surface_snapshot: evidenceDataSurfaces,
     trace_enabled: process.env.STAGING_EVIDENCE_TRACE === 'true'

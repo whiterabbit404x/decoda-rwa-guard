@@ -29,6 +29,12 @@ type AlertRow = {
   status?: string;
   created_at?: string;
   explanation?: string;
+  payload?: Record<string, any>;
+  findings?: Record<string, any>;
+  alert_type?: string;
+  source?: string;
+  source_service?: string;
+  target_id?: string;
 };
 
 type IncidentRow = {
@@ -65,6 +71,14 @@ type DetectionItem = {
   assetType: string;
   monitoringStatus: string;
   evidenceSummary: string;
+  txHash?: string | null;
+  blockNumber?: string | number | null;
+  counterparty?: string | null;
+  amount?: string | null;
+  tokenOrContract?: string | null;
+  ruleId?: string | null;
+  sourceProvider?: string | null;
+  targetName?: string | null;
   state: ThreatFeedState;
   href: string;
   source: 'alert' | 'incident';
@@ -209,7 +223,7 @@ function PageStateBanner({ state, telemetryLabel, pollLabel }: { state: PageOper
     return <p className="explanation">Live monitoring is healthy. Telemetry freshness and threat detections reflect current workspace conditions.</p>;
   }
   if (state === 'configured_no_signals') {
-    return <p className="explanation">Monitoring is healthy with no active threat signals. Telemetry remains current across configured systems.</p>;
+    return <p className="explanation">Monitoring active. Waiting for activity. Telemetry remains current across configured systems.</p>;
   }
   if (state === 'unconfigured_workspace') {
     return <p className="explanation">No monitored systems are configured. Live threat detection will begin after at least one protected system is added.</p>;
@@ -354,6 +368,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         assetType: fallbackAssetType,
         monitoringStatus: matchedAsset?.monitoring_enabled ? 'Monitored' : 'Status unavailable',
         evidenceSummary: item.explanation || 'Alert condition triggered and is waiting for operator review.',
+        txHash: item.payload?.tx_hash ?? null,
+        blockNumber: item.payload?.block_number ?? null,
+        counterparty: item.payload?.counterparty ?? item.payload?.from ?? null,
+        amount: item.payload?.amount ? String(item.payload?.amount) : null,
+        tokenOrContract: item.payload?.contract_address ?? item.payload?.token_address ?? null,
+        ruleId: item.findings?.rule_id ?? item.alert_type ?? null,
+        sourceProvider: item.source_service ?? item.source ?? null,
+        targetName: item.target_id ?? null,
         state: isTest ? ('Test' as const) : ('Live' as const),
         href: '/alerts',
         source: 'alert' as const,
@@ -592,10 +614,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 <p className="tableMeta">
                   {formatAbsoluteTime(signal.timestamp)} · {formatRelativeTime(signal.timestamp)} · Source: {signal.source}
                 </p>
+                <p className="tableMeta">tx: {signal.txHash || 'n/a'} · block: {signal.blockNumber || 'n/a'} · counterparty: {signal.counterparty || 'n/a'} · amount: {signal.amount || 'n/a'} · contract/token: {signal.tokenOrContract || 'n/a'} · rule: {signal.ruleId || 'n/a'} · target: {signal.targetName || 'n/a'} · provider: {signal.sourceProvider || 'n/a'}</p>
               </div>
               <div className="signalActions">
                 <span className={`statusBadge statusBadge-${stateTone(signal.state)}`}>{signal.state}</span>
-                <Link href={signal.href} prefetch={false}>Review</Link>
+                <Link href="/alerts" prefetch={false}>View alert</Link>
+                <Link href="/incidents" prefetch={false}>Open incident</Link>
+                <Link href="/alerts" prefetch={false}>Mute rule</Link>
+                <Link href={signal.href} prefetch={false}>View raw evidence</Link>
               </div>
             </div>
           ))}

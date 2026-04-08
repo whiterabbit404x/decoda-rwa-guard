@@ -7,6 +7,7 @@ import { usePilotAuth } from 'app/pilot-auth-context';
 
 export default function SecuritySettingsPageClient() {
   const { authHeaders, user, enrollMfa, confirmMfaEnrollment, disableMfa } = usePilotAuth();
+  const resolvedWorkspace = user?.current_workspace ?? user?.memberships?.[0]?.workspace ?? null;
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [mfaSetup, setMfaSetup] = useState<{ otpauth_uri: string; secret: string | null } | null>(null);
@@ -145,8 +146,8 @@ export default function SecuritySettingsPageClient() {
         <div className="threeColumnSection">
           <article className="dataCard">
             <p className="sectionEyebrow">Current workspace</p>
-            <h3>{user?.current_workspace?.name ?? 'No workspace selected'}</h3>
-            <p className="muted">Decoda enforces workspace-scoped roles, audit logging, and least-privilege access controls.</p>
+            <h3>{resolvedWorkspace?.name ?? 'No workspace available yet'}</h3>
+            <p className="muted">{resolvedWorkspace ? 'Decoda enforces workspace-scoped roles, audit logging, and least-privilege access controls.' : 'Create or join workspace to enable security controls and monitoring.'}</p>{!resolvedWorkspace ? <div className="buttonRow"><Link href="/workspaces" prefetch={false}>Create or join workspace</Link></div> : null}
           </article>
           <article className="dataCard">
             <p className="sectionEyebrow">Role protections</p>

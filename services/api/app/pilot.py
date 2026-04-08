@@ -1293,19 +1293,11 @@ def get_current_workspace(request: Request) -> dict[str, Any]:
 
 
 def get_onboarding_state(request: Request) -> dict[str, Any]:
-    require_live_mode()
-    with pg_connection() as connection:
-        ensure_pilot_schema(connection)
-        user = authenticate_with_connection(connection, request)
-        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
-        payload = _build_onboarding_response(
-            connection,
-            workspace_id=workspace_context['workspace_id'],
-            user_id=user['id'],
-            workspace_name=workspace_context['workspace']['name'],
-        )
-        connection.commit()
-        return payload
+    """Legacy endpoint retained for backward compatibility; mirrors /onboarding/progress."""
+    payload = get_onboarding_progress(request)
+    payload['deprecated'] = True
+    payload['source_of_truth'] = '/onboarding/progress'
+    return payload
 
 
 def update_onboarding_state(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -4031,6 +4023,73 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _derive_asset_verification(*, identifier: str, chain_network: str) -> dict[str, Any]:
+    normalized_identifier = identifier.strip().lower()
+    summary: dict[str, Any] = {
+        'normalized_identifier': normalized_identifier,
+        'chain_network': chain_network,
+        'reachable': False,
+        'recent_activity': 'unknown',
+        'confidence': 0,
+        'status_detail': 'verification_pending',
+    }
+    if re.fullmatch(r'^0x[a-f0-9]{40}$', normalized_identifier):
+        summary['normalized_identifier'] = normalized_identifier
+    if not chain_network.lower().startswith(('ethereum', 'base', 'arbitrum')):
+        return {
+            'normalized_identifier': summary['normalized_identifier'],
+            'verification_status': 'pending',
+            'verification_summary': summary,
+        }
+    rpc_url = _rpc_url_for_chain(chain_network)
+    if not rpc_url:
+        summary['status_detail'] = 'provider_unavailable'
+        return {
+            'normalized_identifier': summary['normalized_identifier'],
+            'verification_status': 'unavailable',
+            'verification_summary': summary,
+        }
+    try:
+        block_payload = {'jsonrpc': '2.0', 'id': 1, 'method': 'eth_blockNumber', 'params': []}
+        block_request = UrlRequest(rpc_url, data=_json_dumps(block_payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
+        with urlopen(block_request, timeout=10) as response:  # nosec B310
+            block_body = json.loads(response.read().decode('utf-8') or '{}')
+        latest_block_hex = str(block_body.get('result') or '0x0')
+        code_payload = {'jsonrpc': '2.0', 'id': 1, 'method': 'eth_getCode', 'params': [summary['normalized_identifier'], 'latest']}
+        code_request = UrlRequest(rpc_url, data=_json_dumps(code_payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
+        with urlopen(code_request, timeout=10) as response:  # nosec B310
+            code_body = json.loads(response.read().decode('utf-8') or '{}')
+        tx_count_payload = {'jsonrpc': '2.0', 'id': 1, 'method': 'eth_getTransactionCount', 'params': [summary['normalized_identifier'], 'latest']}
+        tx_request = UrlRequest(rpc_url, data=_json_dumps(tx_count_payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
+        with urlopen(tx_request, timeout=10) as response:  # nosec B310
+            tx_body = json.loads(response.read().decode('utf-8') or '{}')
+        code = str(code_body.get('result') or '0x')
+        tx_count = int(str(tx_body.get('result') or '0x0'), 16)
+        latest_block = int(latest_block_hex, 16)
+        reachable = bool(code and code != '0x') or tx_count >= 0
+        summary.update({
+            'reachable': reachable,
+            'is_contract': code not in {'', '0x'},
+            'tx_count': tx_count,
+            'latest_block': latest_block,
+            'recent_activity': 'observed' if tx_count > 0 else 'none_observed',
+            'confidence': 85 if reachable else 40,
+            'status_detail': 'verified',
+        })
+        return {
+            'normalized_identifier': summary['normalized_identifier'],
+            'verification_status': 'verified' if reachable else 'needs_attention',
+            'verification_summary': summary,
+        }
+    except Exception as exc:
+        summary['status_detail'] = f'verification_unavailable:{exc.__class__.__name__}'
+        return {
+            'normalized_identifier': summary['normalized_identifier'],
+            'verification_status': 'unavailable',
+            'verification_summary': summary,
+        }
+
+
 def _validate_asset_payload(payload: dict[str, Any]) -> dict[str, Any]:
     name = str(payload.get('name', '')).strip()
     description = str(payload.get('description', '')).strip() or None
@@ -4075,6 +4134,7 @@ def _validate_asset_payload(payload: dict[str, Any]) -> dict[str, Any]:
         'asset_type': asset_type,
         'chain_network': chain_network,
         'identifier': identifier,
+        'normalized_identifier': identifier.strip().lower(),
         'asset_class': asset_class,
         'risk_tier': risk_tier,
         'owner_team': owner_team,
@@ -4118,6 +4178,8 @@ def list_assets(request: Request) -> dict[str, Any]:
                    expected_counterparties, expected_flow_patterns, expected_approval_patterns, expected_liquidity_baseline,
                    expected_oracle_freshness_seconds, expected_oracle_update_cadence_seconds, policy_tags, jurisdiction_tags,
                    baseline_status, baseline_source, baseline_updated_at, baseline_confidence, baseline_coverage,
+                   normalized_identifier, verification_status, verification_summary, verification_checked_at,
+                   (SELECT COUNT(*) FROM targets t WHERE t.workspace_id = assets.workspace_id AND t.asset_id = assets.id AND t.deleted_at IS NULL) AS monitoring_target_count,
                    created_at, updated_at
             FROM assets
             WHERE workspace_id = %s AND deleted_at IS NULL
@@ -4169,6 +4231,7 @@ def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         if duplicate is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='An asset with this chain and identifier already exists in this workspace.')
         asset_id = str(uuid.uuid4())
+        verification = _derive_asset_verification(identifier=validated['identifier'], chain_network=validated['chain_network'])
         connection.execute(
             '''
             INSERT INTO assets (
@@ -4177,8 +4240,9 @@ def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 expected_counterparties, expected_flow_patterns, expected_approval_patterns, expected_liquidity_baseline,
                 expected_oracle_freshness_seconds, expected_oracle_update_cadence_seconds, policy_tags, jurisdiction_tags,
                 baseline_status, baseline_source, baseline_updated_at, baseline_confidence, baseline_coverage,
+                normalized_identifier, verification_status, verification_summary, verification_checked_at,
                 created_by_user_id, updated_by_user_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb, %s, %s, NOW(), %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb, %s, %s, NOW(), %s, %s, %s, %s, %s, %s::jsonb, NOW(), %s, %s)
             ''',
             (
                 asset_id,
@@ -4213,6 +4277,9 @@ def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 validated['baseline_source'],
                 validated['baseline_confidence'],
                 validated['baseline_coverage'],
+                verification['normalized_identifier'],
+                verification['verification_status'],
+                _json_dumps(verification['verification_summary']),
                 user['id'],
                 user['id'],
             ),
@@ -4233,7 +4300,7 @@ def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             )
         log_audit(connection, action='asset.create', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'asset_type': validated['asset_type']})
         connection.commit()
-        return {'id': asset_id, **validated}
+        return {'id': asset_id, **validated, 'verification_status': verification['verification_status'], 'verification_summary': verification['verification_summary'], 'normalized_identifier': verification['normalized_identifier']}
 
 
 def get_asset(asset_id: str, request: Request) -> dict[str, Any]:
@@ -4297,7 +4364,7 @@ def update_asset(asset_id: str, payload: dict[str, Any], request: Request) -> di
             connection.execute('INSERT INTO asset_tags (id, workspace_id, asset_id, tag) VALUES (%s, %s, %s, %s)', (str(uuid.uuid4()), workspace_id, asset_id, tag))
         log_audit(connection, action='asset.update', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={})
         connection.commit()
-        return {'id': asset_id, **validated}
+        return {'id': asset_id, **validated, 'verification_status': verification['verification_status'], 'verification_summary': verification['verification_summary'], 'normalized_identifier': verification['normalized_identifier']}
 
 
 def delete_asset(asset_id: str, request: Request) -> dict[str, Any]:
@@ -4862,7 +4929,7 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, event_type, title, severity, status, workflow_status, target_id, linked_alert_ids, owner_user_id, assignee_user_id, summary, resolution_note, timeline, created_at, updated_at
+            SELECT id, event_type, title, severity, status, workflow_status, target_id, linked_alert_ids, owner_user_id, assignee_user_id, summary, resolution_note, timeline, resolved_at, created_at, updated_at
             FROM incidents
             WHERE workspace_id = %s
               AND (%s::text IS NULL OR severity = %s::text)
@@ -4880,8 +4947,8 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
 def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     next_workflow_status = str(payload.get('workflow_status', payload.get('status', ''))).strip().lower()
-    if next_workflow_status not in {'open', 'triaging', 'contained', 'resolved', 'closed'}:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='workflow_status must be open/triaging/contained/resolved/closed.')
+    if next_workflow_status not in {'open', 'investigating', 'contained', 'resolved', 'reopened'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='workflow_status must be open/investigating/contained/resolved/reopened.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
@@ -4898,6 +4965,7 @@ def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) 
             UPDATE incidents
             SET status = %s,
                 workflow_status = %s,
+                resolved_at = CASE WHEN %s = 'resolved' THEN NOW() WHEN %s = 'reopened' THEN NULL ELSE resolved_at END,
                 owner_user_id = COALESCE(%s, owner_user_id),
                 assignee_user_id = COALESCE(%s, assignee_user_id),
                 resolution_note = COALESCE(%s, resolution_note),
@@ -4906,6 +4974,8 @@ def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) 
             WHERE id = %s
             ''',
             (
+                next_workflow_status,
+                next_workflow_status,
                 next_workflow_status,
                 next_workflow_status,
                 payload.get('owner_user_id'),
