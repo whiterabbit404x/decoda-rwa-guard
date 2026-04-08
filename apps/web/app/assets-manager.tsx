@@ -5,6 +5,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { usePilotAuth } from './pilot-auth-context';
 import { parseTagInput } from './policy-builders';
 import { classifyApiTransportError } from './auth-diagnostics';
+import { normalizeApiBaseUrl, isValidApiBaseUrl } from './api-config';
 
 type Props = { apiUrl: string };
 type Asset = any;
@@ -43,7 +44,12 @@ export default function AssetsManager({ apiUrl }: Props) {
     identifier: null,
   });
 
-  async function load() {
+async function load() {
+    const normalizedApiUrl = normalizeApiBaseUrl(apiUrl);
+    if (!normalizedApiUrl || !isValidApiBaseUrl(normalizedApiUrl)) {
+      setSubmitError('Cannot load assets because NEXT_PUBLIC_API_URL / API_URL is missing or invalid for this deployment.');
+      return;
+    }
     const response = await fetch(`${apiUrl}/assets`, { headers: { ...authHeaders() }, cache: 'no-store' });
     if (!response.ok) return;
     const payload = await response.json();
@@ -97,6 +103,11 @@ export default function AssetsManager({ apiUrl }: Props) {
     }
     setSubmitting(true);
     try {
+      const normalizedApiUrl = normalizeApiBaseUrl(apiUrl);
+      if (!normalizedApiUrl || !isValidApiBaseUrl(normalizedApiUrl)) {
+        setSubmitError('Cannot create this asset because NEXT_PUBLIC_API_URL / API_URL is missing or invalid for this deployment.');
+        return;
+      }
       const response = await fetch(`${apiUrl}/assets`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },

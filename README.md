@@ -36,6 +36,39 @@ The repo now supports a production-oriented **public self-serve SaaS mode** alon
 | Preview | `API_URL=https://<preview-or-shared-railway-api>.up.railway.app` (preferred) or `NEXT_PUBLIC_API_URL=https://<preview-or-shared-railway-api>.up.railway.app`; `NEXT_PUBLIC_LIVE_MODE_ENABLED=true` or `false` is recommended | Preview builds now pass when `API_URL` exists even if `NEXT_PUBLIC_API_URL` is absent, because the same-origin auth proxy prefers `API_URL`. Preview still fails fast if both API URL vars are missing, and the build log now tells operators exactly which Vercel environment setting to fix. |
 | Development | `NEXT_PUBLIC_LIVE_MODE_ENABLED=false` (or `true` if you are exercising pilot mode locally), `NEXT_PUBLIC_API_URL=http://127.0.0.1:8000`, optional `NEXT_PUBLIC_API_TIMEOUT_MS=5000` | Local development still falls back to localhost defaults, but explicitly setting the vars keeps local behavior aligned with Vercel. |
 
+### CORS + browser reachability verification (Railway API)
+
+1. Confirm the API runtime is loading the expected CORS allowlist:
+   - `GET https://<api-host>/ops/runtime/cors`
+   - The `allowed_origins` array must include `https://rwa.decodasecurity.com` for production web traffic.
+2. Confirm preflight response from Railway:
+
+```bash
+curl -i -X OPTIONS "https://decoda-rwa-guard-api-production.up.railway.app/assets" \
+  -H "Origin: https://rwa.decodasecurity.com" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: content-type,x-workspace-id,x-csrf-token"
+```
+
+Expected response headers include:
+- `Access-Control-Allow-Origin: https://rwa.decodasecurity.com`
+- `Access-Control-Allow-Methods` containing `POST`
+- `Access-Control-Allow-Headers` containing `content-type` and workspace/auth headers.
+
+3. Confirm actual request CORS header (not just OPTIONS):
+
+```bash
+curl -i "https://decoda-rwa-guard-api-production.up.railway.app/ops/monitoring/runtime-status" \
+  -H "Origin: https://rwa.decodasecurity.com"
+```
+
+Expected response includes `Access-Control-Allow-Origin: https://rwa.decodasecurity.com`.
+
+4. Browser validation after deploy:
+   - Open DevTools → Network on `https://rwa.decodasecurity.com/assets`.
+   - Submit **Create asset** and confirm both OPTIONS + POST succeed.
+   - Verify `assets`, `targets`, `alerts`, `incidents`, and `ops/monitoring/runtime-status` calls return HTTP responses (not browser-level CORS failures).
+
 Recommended Vercel project settings:
 
 - **Root Directory:** `apps/web`
