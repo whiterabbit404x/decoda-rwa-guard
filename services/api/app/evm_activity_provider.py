@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -240,6 +241,27 @@ def _iter_block_ranges(from_block: int, to_block: int, chunk_size: int) -> list[
     return ranges
 
 
+async def _ws_subscribe_new_head(ws_url: str, timeout_seconds: float = 1.0) -> int | None:
+    try:
+        import websockets
+    except Exception:
+        return None
+    try:
+        async with websockets.connect(ws_url, ping_interval=20, open_timeout=3) as socket:
+            await socket.send(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'eth_subscribe', 'params': ['newHeads']}))
+            _ = await asyncio.wait_for(socket.recv(), timeout=timeout_seconds)
+            payload_raw = await asyncio.wait_for(socket.recv(), timeout=timeout_seconds)
+            payload = json.loads(payload_raw)
+            params = payload.get('params') if isinstance(payload, dict) else {}
+            result = params.get('result') if isinstance(params, dict) else {}
+            head_number = result.get('number') if isinstance(result, dict) else None
+            if isinstance(head_number, str):
+                return _hex_to_int(head_number)
+    except Exception:
+        return None
+    return None
+
+
 def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc_client: RpcClient | None = None) -> list[ActivityEvent]:
     rpc_url = (os.getenv('EVM_RPC_URL') or '').strip()
     if not rpc_url:
@@ -249,17 +271,24 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
         return []
 
     confirmations = max(0, int(os.getenv('EVM_CONFIRMATIONS_REQUIRED', '3')))
-    lookback = max(5, int(os.getenv('EVM_BLOCK_LOOKBACK', '25')))
-    block_scan_chunk = max(1, int(os.getenv('EVM_BLOCK_SCAN_CHUNK_SIZE', '25')))
+    replay_blocks = max(1, int(os.getenv('MONITOR_REPLAY_BLOCKS', os.getenv('EVM_BLOCK_LOOKBACK', '25'))))
+    block_scan_chunk = max(1, int(os.getenv('MONITOR_BATCH_BLOCKS', os.getenv('EVM_BLOCK_SCAN_CHUNK_SIZE', '25'))))
     target_address = str(target.get('wallet_address') or target.get('contract_identifier') or '').lower()
     if not target_address.startswith('0x'):
         return []
 
     client = rpc_client or JsonRpcClient(rpc_url)
     ws_configured = bool((os.getenv('EVM_WS_URL') or '').strip())
-    preferred_source = 'websocket' if ws_configured else 'polling'
-    fallback_source = 'rpc_backfill' if ws_configured else 'polling'
-    latest = _hex_to_int(client.call('eth_blockNumber', [])) or 0
+    preferred_source = 'polling'
+    fallback_source = 'polling'
+    latest = None
+    if ws_configured:
+        latest = asyncio.run(_ws_subscribe_new_head((os.getenv('EVM_WS_URL') or '').strip()))
+        if latest is not None:
+            preferred_source = 'websocket'
+            fallback_source = 'rpc_backfill'
+    if latest is None:
+        latest = _hex_to_int(client.call('eth_blockNumber', [])) or 0
     safe_to = max(0, latest - confirmations)
 
     cursor = str(target.get('monitoring_checkpoint_cursor') or '').strip()
@@ -269,7 +298,7 @@ def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc
             last_block = int(cursor.split(':', 1)[0])
         except ValueError:
             last_block = None
-    from_block = max(0, safe_to - lookback if last_block is None else max(last_block - lookback, 0))
+    from_block = max(0, safe_to - replay_blocks if last_block is None else max(last_block - replay_blocks, 0))
     if safe_to < from_block:
         return []
 

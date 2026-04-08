@@ -1676,6 +1676,22 @@ If external market or real oracle coverage is missing/unreachable/stale/insuffic
 - See `docs/FEATURE1_NO_DATA_TRUTH_AUDIT.md` for the file-by-file no-data truthfulness remediation list.
 - See `docs/FEATURE1_FAIL_OPEN_AUDIT.md` for the latest no-data/no-alert fail-open removals.
 
+### Monitoring runtime env vars
+
+- `LIVE_MONITORING_ENABLED` (default true): starts/stops the FastAPI lifespan monitoring loop.
+- `EVM_RPC_URL`: required for chain polling and websocket backfill continuity.
+- `EVM_WS_URL`: optional websocket endpoint; runner attempts `newHeads` subscription first.
+- `MONITOR_POLL_INTERVAL_SECONDS`: cycle interval for the background monitoring worker.
+- `MONITOR_REPLAY_BLOCKS`: replay window applied when resuming checkpoints.
+- `MONITOR_BATCH_BLOCKS`: max block span processed per poll batch.
+- `ALERT_DEDUP_WINDOW_SECONDS`: alert dedup/update window.
+
+Runtime verification APIs:
+
+- `GET /ops/monitoring/runtime-status`
+- `GET /ops/monitoring/evidence?limit=50`
+- `GET /ops/monitoring/heartbeats`
+
 ## How to prove live on-chain monitoring
 
 1. Configure `LIVE_MONITORING_ENABLED=true`, `MONITORING_INGESTION_MODE=hybrid`, and a reachable `EVM_RPC_URL`.
