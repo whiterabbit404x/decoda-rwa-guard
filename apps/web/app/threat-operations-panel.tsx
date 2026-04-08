@@ -485,7 +485,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }, [alerts, feed.lastUpdatedAt, historyRuns, incidents, pageState]);
 
   const reportingSystems = feed.counts.monitoredSystems;
-  const coverageSummary = `${feed.counts.systemsWithRecentHeartbeat} / ${Math.max(reportingSystems, 0)}`;
+  const coverageSummary = `${feed.counts.activeSystems} / ${Math.max(reportingSystems, 0)}`;
   const latestRiskScore = useMemo(() => {
     if (alerts.some((item) => severityClass(item.severity) === 'critical')) return { value: 92, tier: 'High' };
     if (alerts.some((item) => severityClass(item.severity) === 'high')) return { value: 78, tier: 'Elevated' };

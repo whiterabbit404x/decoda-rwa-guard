@@ -6,10 +6,9 @@ import { normalizeMonitoringMode, type MonitoringRuntimeStatus } from './monitor
 import { usePilotAuth } from './pilot-auth-context';
 
 type LiveWorkspaceCounts = {
-  monitoredTargets: number;
   protectedAssets: number;
   monitoredSystems: number;
-  systemsWithRecentHeartbeat: number;
+  activeSystems: number;
   openAlerts: number;
   openIncidents: number;
   historyRecords: number;
@@ -28,10 +27,9 @@ type LiveWorkspaceFeed = {
 };
 
 const DEFAULT_COUNTS: LiveWorkspaceCounts = {
-  monitoredTargets: 0,
   protectedAssets: 0,
   monitoredSystems: 0,
-  systemsWithRecentHeartbeat: 0,
+  activeSystems: 0,
   openAlerts: 0,
   openIncidents: 0,
   historyRecords: 0,
@@ -60,34 +58,33 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
         setRefreshing(true);
       }
       try {
-        const [statusRes, historyRes, alertsRes, incidentsRes, systemsRes] = await Promise.all([
+        const [statusRes, historyRes, alertsRes, incidentsRes] = await Promise.all([
           fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/pilot/history?limit=20`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/incidents?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/monitoring/systems`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         const statusPayload = statusRes.ok ? await statusRes.json() as MonitoringRuntimeStatus : null;
         const historyPayload = historyRes.ok ? await historyRes.json() : {};
         const alertsPayload = alertsRes.ok ? await alertsRes.json() : {};
         const incidentsPayload = incidentsRes.ok ? await incidentsRes.json() : {};
-        const systemsPayload = systemsRes.ok ? await systemsRes.json() : {};
-        const nextRuntime = statusPayload ? { ...statusPayload, mode: normalizeMonitoringMode(statusPayload.mode) } : null;
-        const systems = (systemsPayload.systems ?? []) as Array<{ status?: string; asset_id?: string }>;
+        const runtimeMode = statusPayload?.monitoring_status === 'active'
+          ? 'LIVE'
+          : statusPayload?.monitoring_status === 'degraded'
+            ? 'DEGRADED'
+            : 'OFFLINE';
+        const nextRuntime = statusPayload ? { ...statusPayload, mode: normalizeMonitoringMode(runtimeMode) } : null;
         const historyCount = Number(historyPayload?.counts?.analysis_runs ?? (historyPayload.analysis_runs ?? []).length ?? 0);
-        const activeSystems = systems.filter((item) => (item.status ?? '').toLowerCase() === 'active');
-        const uniqueAssetCount = new Set(activeSystems.map((item) => item.asset_id).filter(Boolean)).size;
         setRuntimeStatus(nextRuntime);
         setCounts({
-          monitoredTargets: Number(nextRuntime?.targets_monitored ?? activeSystems.length),
-          protectedAssets: Number(nextRuntime?.protected_assets_count ?? uniqueAssetCount),
-          monitoredSystems: Number(nextRuntime?.monitored_systems_count ?? activeSystems.length),
-          systemsWithRecentHeartbeat: Number(nextRuntime?.systems_with_recent_heartbeat ?? 0),
+          protectedAssets: Number(nextRuntime?.protected_assets ?? 0),
+          monitoredSystems: Number(nextRuntime?.monitored_systems ?? 0),
+          activeSystems: Number(nextRuntime?.active_systems ?? 0),
           openAlerts: (alertsPayload.alerts ?? []).length,
           openIncidents: (incidentsPayload.incidents ?? []).length,
           historyRecords: historyCount,
         });
-        setDegraded(Boolean(nextRuntime?.degraded_reason) || !statusRes.ok || !alertsRes.ok || !incidentsRes.ok || !systemsRes.ok || !historyRes.ok);
+        setDegraded((nextRuntime?.monitoring_status === 'degraded') || !statusRes.ok || !alertsRes.ok || !incidentsRes.ok || !historyRes.ok);
         setOffline(false);
         setLastUpdatedAt(new Date().toISOString());
       } catch {

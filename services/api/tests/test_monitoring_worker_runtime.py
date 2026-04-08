@@ -39,6 +39,25 @@ class _FakeConnection:
 
     def execute(self, query, params=None):
         normalized = ' '.join(str(query).split())
+        if 'FROM monitored_systems ms JOIN targets t ON t.id = ms.target_id' in normalized:
+            rows = [
+                {
+                    'monitored_system_id': f"system-{target['id']}",
+                    'workspace_id': target.get('workspace_exists_id') or 'ws-1',
+                    'target_id': target['id'],
+                    'asset_id': None,
+                    'monitored_system_status': 'active',
+                    'monitored_system_last_heartbeat': None,
+                    'last_checked_at': target.get('last_checked_at'),
+                    'monitoring_interval_seconds': target.get('monitoring_interval_seconds'),
+                    'monitoring_enabled': target.get('monitoring_enabled', True),
+                    'enabled': target.get('enabled', True),
+                    'is_active': target.get('is_active', True),
+                    'created_at': target.get('created_at'),
+                }
+                for target in self.due_targets
+            ]
+            return _Result(rows=rows)
         if 'LEFT JOIN workspaces AS workspace' in normalized:
             return _Result(rows=self.due_targets)
         if 'FROM targets' in normalized and 'FOR UPDATE SKIP LOCKED' in normalized:
@@ -210,3 +229,5 @@ def test_due_target_selection_query_keeps_monitoring_filters() -> None:
     assert 'last_cycle_targets_checked = CAST(%s AS integer)' in source
     assert 'last_cycle_alerts_generated = CAST(%s AS integer)' in source
     assert 'last_error = CAST(%s AS text)' in source
+    assert "UPDATE monitored_systems ms" in source
+    assert "SET last_heartbeat = NOW()" in source
