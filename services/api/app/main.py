@@ -73,6 +73,7 @@ from services.api.app.pilot import (
     mfa_complete_signin,
     mfa_disable,
     run_background_jobs,
+    reconcile_monitored_systems_for_enabled_targets,
     get_workspace_subscription,
     list_workspace_members,
     list_webhook_deliveries,
@@ -1189,6 +1190,17 @@ def bootstrap_live_pilot() -> dict[str, Any]:
             STARTUP_BOOTSTRAP_STATUS.get('process_role', 'api'),
             STARTUP_BOOTSTRAP_STATUS.get('reason', 'migration startup is disabled'),
         )
+    try:
+        reconcile_result = reconcile_monitored_systems_for_enabled_targets()
+        STARTUP_BOOTSTRAP_STATUS['monitored_systems_reconcile'] = reconcile_result
+        logger.info(
+            'startup monitored systems reconcile scanned=%s upserted=%s invalid=%s',
+            reconcile_result.get('enabled_targets_scanned', 0),
+            reconcile_result.get('created_or_updated', 0),
+            len(reconcile_result.get('invalid_targets', [])),
+        )
+    except Exception as exc:  # pragma: no cover - startup safety
+        logger.warning('startup monitored systems reconcile failed: %s', exc)
     return STARTUP_BOOTSTRAP_STATUS
 
 

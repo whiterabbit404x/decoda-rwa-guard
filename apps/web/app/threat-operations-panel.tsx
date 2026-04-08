@@ -20,6 +20,9 @@ type TargetRow = {
   last_checked_at?: string | null;
   last_run_status?: string | null;
   asset_type?: string | null;
+  health_status?: string | null;
+  health_reason?: string | null;
+  asset_missing?: boolean;
 };
 
 type AlertRow = {
@@ -137,6 +140,7 @@ function isTestOrLabSignal(text: string | undefined): boolean {
 }
 
 function normalizeCoverageStatus(target: TargetRow): 'Full' | 'Partial' | 'Stale' | 'Missing' | 'Offline' {
+  if (target.health_status === 'broken' || target.asset_missing) return 'Missing';
   if (!target.monitoring_enabled) return 'Offline';
   if (!target.last_checked_at) return 'Missing';
   const lastChecked = new Date(target.last_checked_at).getTime();
@@ -181,6 +185,8 @@ function derivePageState(params: {
   liveDetections: DetectionItem[];
   historicalDetections: DetectionItem[];
   telemetryAvailable: boolean;
+  monitoredSystems: number;
+  invalidTargets: number;
 }): PageOperationalState {
   const {
     loadingSnapshot,
@@ -190,14 +196,20 @@ function derivePageState(params: {
     liveDetections,
     historicalDetections,
     telemetryAvailable,
+    monitoredSystems,
+    invalidTargets,
   } = params;
 
   if (!loadingSnapshot && snapshotError && !telemetryAvailable) {
     return 'fetch_error';
   }
 
-  if (targets.length === 0) {
+  if (targets.length === 0 && monitoredSystems === 0) {
     return 'unconfigured_workspace';
+  }
+
+  if (invalidTargets > 0 && monitoredSystems === 0) {
+    return 'degraded_partial';
   }
 
   if (monitoringStatus === 'offline' && !telemetryAvailable) {
@@ -340,10 +352,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
   const openAlerts = alerts.length;
   const activeIncidents = incidents.length;
-  const protectedAssetCount = useMemo(
-    () => new Set(targets.map((target) => target.asset_type || target.name).filter(Boolean)).size,
-    [targets],
-  );
+  const protectedAssetCount = feed.counts.protectedAssets;
 
   const lastTelemetryAt = feed.runtimeStatus?.last_real_event_at || feed.lastUpdatedAt;
   const telemetryLabel = formatRelativeTime(lastTelemetryAt);
@@ -432,6 +441,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     liveDetections: categorizedDetections.live,
     historicalDetections: categorizedDetections.historical,
     telemetryAvailable: Boolean(feed.lastUpdatedAt || feed.runtimeStatus?.last_real_event_at),
+    monitoredSystems: feed.counts.monitoredSystems,
+    invalidTargets: Number(feed.runtimeStatus?.invalid_enabled_targets ?? 0),
   });
 
   const timelineItems = useMemo<TimelineItem[]>(() => {
@@ -473,8 +484,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       .slice(0, 12);
   }, [alerts, feed.lastUpdatedAt, historyRuns, incidents, pageState]);
 
-  const reportingSystems = targets.filter((target) => target.monitoring_enabled).length;
-  const coverageSummary = `${reportingSystems} / ${targets.length || 0}`;
+  const reportingSystems = feed.counts.monitoredSystems;
+  const coverageSummary = `${feed.counts.systemsWithRecentHeartbeat} / ${Math.max(reportingSystems, 0)}`;
   const latestRiskScore = useMemo(() => {
     if (alerts.some((item) => severityClass(item.severity) === 'critical')) return { value: 92, tier: 'High' };
     if (alerts.some((item) => severityClass(item.severity) === 'high')) return { value: 78, tier: 'Elevated' };
@@ -519,6 +530,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Threat feed updated {pollLabel}</span>
           <span className="ruleChip">Protected assets {protectedAssetCount}</span>
           <span className="ruleChip">Monitored systems {reportingSystems}</span>
+          {Number(feed.runtimeStatus?.invalid_enabled_targets ?? 0) > 0 ? <span className="ruleChip">Invalid targets {Number(feed.runtimeStatus?.invalid_enabled_targets ?? 0)}</span> : null}
           <span className="ruleChip">Open alerts {openAlerts}</span>
           <span className="ruleChip">Active incidents {activeIncidents}</span>
         </div>
@@ -671,7 +683,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                       <tr key={target.id}>
                         <td>{target.name}<span className="tableMeta">{displayIdentifier(target)}</span></td>
                         <td>{target.target_type || target.asset_type || 'System'}</td>
-                        <td><span className={`statusBadge statusBadge-${target.monitoring_enabled ? 'healthy' : 'offline'}`}>{target.monitoring_enabled ? 'Monitored' : 'Offline'}</span></td>
+                        <td><span className={`statusBadge statusBadge-${target.health_status === 'broken' ? 'attention' : (target.monitoring_enabled ? 'healthy' : 'offline')}`}>{target.health_status === 'broken' ? 'Broken' : (target.monitoring_enabled ? 'Monitored' : 'Offline')}</span></td>
                         <td><span className={`statusBadge statusBadge-${coverageTone(coverage)}`}>{coverage}</span></td>
                         <td>{formatRelativeTime(target.last_checked_at)}</td>
                         <td>{alerts[0]?.title || incidents[0]?.title || 'No active signals'}</td>

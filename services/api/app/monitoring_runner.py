@@ -28,6 +28,8 @@ from services.api.app.pilot import (
     persist_analysis_run,
     pg_connection,
     resolve_workspace,
+    ensure_monitored_system_for_target,
+    _target_health_payload,
 )
 from services.api.app.threat_payloads import ThreatKind, normalize_threat_payload
 
@@ -2028,20 +2030,33 @@ def list_monitoring_targets(request: Request) -> dict[str, Any]:
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, workspace_id, name, target_type, chain_network, enabled, monitoring_enabled, monitoring_mode,
-                   monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents,
-                   notification_channels, last_checked_at, last_run_status, last_run_id, last_alert_at, is_active,
-                   monitoring_checkpoint_at, monitoring_checkpoint_cursor, watcher_last_observed_block, watcher_checkpoint_lag_blocks, watcher_source_status, watcher_degraded_reason,
-                   last_real_event_at, last_no_evidence_at, last_degraded_at, last_failed_monitoring_at, recent_evidence_state, recent_truthfulness_state, recent_real_event_count
-            FROM targets
-            WHERE workspace_id = %s AND deleted_at IS NULL
-            ORDER BY created_at DESC
+            SELECT t.id, t.workspace_id, t.name, t.target_type, t.chain_network, t.enabled, t.monitoring_enabled, t.monitoring_mode,
+                   t.monitoring_interval_seconds, t.severity_threshold, t.auto_create_alerts, t.auto_create_incidents,
+                   t.notification_channels, t.last_checked_at, t.last_run_status, t.last_run_id, t.last_alert_at, t.is_active,
+                   t.monitoring_checkpoint_at, t.monitoring_checkpoint_cursor, t.watcher_last_observed_block, t.watcher_checkpoint_lag_blocks, t.watcher_source_status, t.watcher_degraded_reason,
+                   t.last_real_event_at, t.last_no_evidence_at, t.last_degraded_at, t.last_failed_monitoring_at, t.recent_evidence_state, t.recent_truthfulness_state, t.recent_real_event_count,
+                   t.asset_id, a.id AS resolved_asset_id, a.name AS asset_name, ms.id AS monitored_system_id
+            FROM targets t
+            LEFT JOIN assets a ON a.id = t.asset_id AND a.workspace_id = t.workspace_id AND a.deleted_at IS NULL
+            LEFT JOIN monitored_systems ms ON ms.target_id = t.id AND ms.workspace_id = t.workspace_id
+            WHERE t.workspace_id = %s AND t.deleted_at IS NULL
+            ORDER BY t.created_at DESC
             ''',
             (workspace_context['workspace_id'],),
         ).fetchall()
         targets: list[dict[str, Any]] = []
         for row in rows:
             item = _json_safe_value(dict(row))
+            health_status, health_reason = _target_health_payload(
+                enabled=bool(row.get('enabled')),
+                monitoring_enabled=bool(row.get('monitoring_enabled')),
+                asset_id=str(row.get('asset_id') or '') or None,
+                asset_exists=bool(row.get('resolved_asset_id')),
+                monitored_system_id=str(row.get('monitored_system_id') or '') or None,
+            )
+            item['asset_missing'] = not bool(row.get('resolved_asset_id'))
+            item['health_status'] = health_status
+            item['health_reason'] = health_reason
             targets.append(item)
         return {'targets': targets, 'workspace': workspace_context['workspace']}
 
@@ -2052,7 +2067,7 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
         user, workspace_context = _require_workspace_admin(connection, request)
         row = connection.execute(
             '''
-            SELECT id, monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold,
+            SELECT id, asset_id, enabled, monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold,
                    auto_create_alerts, auto_create_incidents, notification_channels, is_active
             FROM targets
             WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL
@@ -2108,6 +2123,12 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
                 target_id,
             ),
         )
+        if monitoring_enabled and bool(current.get('enabled')):
+            result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_context['workspace_id'])
+            if result.get('status') != 'ok':
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Cannot enable monitoring: linked asset is missing or deleted.')
+        elif not monitoring_enabled:
+            connection.execute("UPDATE monitored_systems SET status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s::uuid", (target_id, workspace_context['workspace_id']))
         logger.info('monitoring config persisted target=%s monitoring_enabled=%s threshold=%s', target_id, monitoring_enabled, threshold)
         log_audit(
             connection,
@@ -2530,6 +2551,14 @@ def monitoring_runtime_status() -> dict[str, Any]:
               AND t.is_active = TRUE
             '''
         ).fetchone()
+        monitored_systems_total = connection.execute(
+            '''
+            SELECT COUNT(*) AS c
+            FROM monitored_systems ms
+            JOIN targets t ON t.id = ms.target_id
+            WHERE t.deleted_at IS NULL
+            '''
+        ).fetchone()
         protected_assets = connection.execute(
             '''
             SELECT COUNT(DISTINCT ms.asset_id) AS c
@@ -2540,6 +2569,20 @@ def monitoring_runtime_status() -> dict[str, Any]:
               AND t.monitoring_enabled = TRUE
               AND t.enabled = TRUE
               AND t.is_active = TRUE
+            '''
+        ).fetchone()
+        broken_targets = connection.execute(
+            '''
+            SELECT COUNT(*) AS c
+            FROM targets t
+            LEFT JOIN assets a
+              ON a.id = t.asset_id
+             AND a.workspace_id = t.workspace_id
+             AND a.deleted_at IS NULL
+            WHERE t.deleted_at IS NULL
+              AND t.enabled = TRUE
+              AND t.monitoring_enabled = TRUE
+              AND (t.asset_id IS NULL OR a.id IS NULL)
             '''
         ).fetchone()
         coverage = connection.execute(
@@ -2561,9 +2604,9 @@ def monitoring_runtime_status() -> dict[str, Any]:
     degraded_reason = health.get('degraded_reason')
     if health.get('last_error'):
         runtime_status = 'Error'
-    elif health.get('degraded') or degraded_reason or stale_heartbeat:
+    elif health.get('degraded') or degraded_reason or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
         runtime_status = 'Degraded'
-        degraded_reason = degraded_reason or ('stale_heartbeat' if stale_heartbeat else None)
+        degraded_reason = degraded_reason or ('invalid_enabled_targets' if int((broken_targets or {}).get('c') or 0) > 0 else ('stale_heartbeat' if stale_heartbeat else None))
     elif evidence_freshness is None or evidence_freshness > max(900, MONITOR_POLL_INTERVAL_SECONDS * 10):
         runtime_status = 'Idle'
     else:
@@ -2576,8 +2619,9 @@ def monitoring_runtime_status() -> dict[str, Any]:
         'last_processed_block': (latest_evidence or {}).get('block_number') or health.get('latest_processed_block'),
         'targets_monitored': int((targets_monitored or {}).get('c') or 0),
         'protected_assets_count': int((protected_assets or {}).get('c') or 0),
-        'monitored_systems_count': int((targets_monitored or {}).get('c') or 0),
+        'monitored_systems_count': int((monitored_systems_total or {}).get('c') or 0),
         'systems_with_recent_heartbeat': int((coverage or {}).get('c') or 0),
+        'invalid_enabled_targets': int((broken_targets or {}).get('c') or 0),
         'active_alerts': int((open_alerts or {}).get('c') or 0),
         'open_incidents': int((open_incidents or {}).get('c') or 0),
         'evidence_freshness_seconds': evidence_freshness,

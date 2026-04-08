@@ -2294,6 +2294,15 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
     return {'processed': processed, 'failed': failed}
 
 
+def reconcile_monitored_systems_for_enabled_targets() -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        result = reconcile_enabled_targets_monitored_systems(connection)
+        connection.commit()
+        return result
+
+
 def _deliver_webhook_attempt(payload: dict[str, Any]) -> None:
     webhook_id = str(payload.get('webhook_id', ''))
     delivery_id = str(payload.get('delivery_id', ''))
@@ -4026,17 +4035,71 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
 MONITORED_SYSTEM_STATUSES = {'active', 'paused', 'error'}
 
 
-def _ensure_monitored_system_for_target(
+def _target_health_payload(
+    *,
+    enabled: bool,
+    monitoring_enabled: bool,
+    asset_id: str | None,
+    asset_exists: bool,
+    monitored_system_id: str | None,
+) -> tuple[str, str | None]:
+    if not asset_id or not asset_exists:
+        return 'broken', 'linked_asset_missing'
+    if enabled and monitoring_enabled and not monitored_system_id:
+        return 'degraded', 'monitored_system_missing'
+    if enabled and monitoring_enabled:
+        return 'healthy', None
+    if enabled:
+        return 'idle', 'monitoring_disabled'
+    return 'disabled', None
+
+
+def ensure_monitored_system_for_target(
     connection: Any,
     *,
-    workspace_id: str,
-    asset_id: str | None,
     target_id: str,
-    chain: str | None,
-) -> str | None:
-    if not asset_id:
-        return None
-    normalized_chain = (chain or '').strip() or 'unknown'
+    workspace_id: str | None = None,
+    require_enabled: bool = True,
+) -> dict[str, Any]:
+    target = connection.execute(
+        '''
+        SELECT t.id, t.workspace_id, t.asset_id, t.chain_network, t.enabled, t.monitoring_enabled,
+               a.id AS resolved_asset_id
+        FROM targets t
+        LEFT JOIN assets a
+            ON a.id = t.asset_id
+           AND a.workspace_id = t.workspace_id
+           AND a.deleted_at IS NULL
+        WHERE t.id = %s::uuid
+          AND t.deleted_at IS NULL
+          AND (%s::uuid IS NULL OR t.workspace_id = %s::uuid)
+        ''',
+        (target_id, workspace_id, workspace_id),
+    ).fetchone()
+    if target is None:
+        return {'status': 'target_not_found', 'reason': 'target_not_found'}
+
+    target_workspace_id = str(target['workspace_id'])
+    if require_enabled and (not bool(target.get('enabled')) or not bool(target.get('monitoring_enabled'))):
+        return {'status': 'target_not_enabled', 'reason': 'target_not_enabled', 'workspace_id': target_workspace_id, 'target_id': target_id}
+
+    asset_id = str(target.get('asset_id') or '') or None
+    resolved_asset_id = str(target.get('resolved_asset_id') or '') or None
+    if not asset_id or not resolved_asset_id:
+        connection.execute(
+            '''
+            UPDATE targets
+            SET last_run_status = 'invalid_missing_asset',
+                watcher_degraded_reason = 'linked_asset_missing',
+                updated_at = NOW()
+            WHERE id = %s::uuid
+            ''',
+            (target_id,),
+        )
+        connection.execute('DELETE FROM monitored_systems WHERE target_id = %s::uuid AND workspace_id = %s::uuid', (target_id, target_workspace_id))
+        return {'status': 'invalid_target', 'reason': 'linked_asset_missing', 'workspace_id': target_workspace_id, 'target_id': target_id}
+
+    normalized_chain = (str(target.get('chain_network') or '').strip() or 'unknown')
     row = connection.execute(
         '''
         INSERT INTO monitored_systems (id, workspace_id, asset_id, target_id, chain, status)
@@ -4048,9 +4111,51 @@ def _ensure_monitored_system_for_target(
             status = CASE WHEN monitored_systems.status = 'error' THEN monitored_systems.status ELSE 'active' END
         RETURNING id
         ''',
-        (str(uuid.uuid4()), workspace_id, asset_id, target_id, normalized_chain),
+        (str(uuid.uuid4()), target_workspace_id, resolved_asset_id, target_id, normalized_chain),
     ).fetchone()
-    return str((row or {}).get('id')) if row else None
+    connection.execute(
+        '''
+        UPDATE targets
+        SET last_run_status = 'ready',
+            watcher_degraded_reason = NULL,
+            updated_at = NOW()
+        WHERE id = %s::uuid
+        ''',
+        (target_id,),
+    )
+    return {
+        'status': 'ok',
+        'workspace_id': target_workspace_id,
+        'target_id': target_id,
+        'asset_id': resolved_asset_id,
+        'monitored_system_id': str((row or {}).get('id')) if row else None,
+    }
+
+
+def reconcile_enabled_targets_monitored_systems(connection: Any) -> dict[str, Any]:
+    rows = connection.execute(
+        '''
+        SELECT id
+        FROM targets
+        WHERE deleted_at IS NULL
+          AND enabled = TRUE
+          AND monitoring_enabled = TRUE
+        ORDER BY created_at ASC
+        '''
+    ).fetchall()
+    created_or_updated = 0
+    invalid_targets: list[str] = []
+    for row in rows:
+        result = ensure_monitored_system_for_target(connection, target_id=str(row['id']))
+        if result.get('status') == 'ok':
+            created_or_updated += 1
+        elif result.get('status') == 'invalid_target':
+            invalid_targets.append(str(result.get('target_id')))
+    return {
+        'enabled_targets_scanned': len(rows),
+        'created_or_updated': created_or_updated,
+        'invalid_targets': invalid_targets,
+    }
 
 
 def list_monitored_systems(request: Request) -> dict[str, Any]:
@@ -4064,10 +4169,9 @@ def list_monitored_systems(request: Request) -> dict[str, Any]:
             SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.status, ms.last_heartbeat, ms.created_at,
                    a.name AS asset_name, t.name AS target_name
             FROM monitored_systems ms
-            JOIN assets a ON a.id = ms.asset_id
+            LEFT JOIN assets a ON a.id = ms.asset_id AND a.deleted_at IS NULL
             JOIN targets t ON t.id = ms.target_id
             WHERE ms.workspace_id = %s
-              AND a.deleted_at IS NULL
               AND t.deleted_at IS NULL
             ORDER BY ms.created_at DESC
             ''',
@@ -4100,13 +4204,10 @@ def create_monitored_system(payload: dict[str, Any], request: Request) -> dict[s
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='target_id must reference a target in this workspace.')
         if str(target.get('asset_id') or '') != asset_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='target.asset_id must match asset_id.')
-        monitored_system_id = _ensure_monitored_system_for_target(
-            connection,
-            workspace_id=workspace_id,
-            asset_id=asset_id,
-            target_id=target_id,
-            chain=str(target.get('chain_network') or asset.get('chain_network') or ''),
-        )
+        result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id, require_enabled=False)
+        if result.get('status') != 'ok':
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Target cannot be bridged to monitoring until its linked asset is valid.')
+        monitored_system_id = str(result.get('monitored_system_id') or '')
         log_audit(connection, action='monitored_system.create', entity_type='monitored_system', entity_id=monitored_system_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'asset_id': asset_id, 'target_id': target_id})
         connection.commit()
         row = connection.execute(
@@ -4704,15 +4805,24 @@ def list_targets(request: Request) -> dict[str, Any]:
         workspace_id = workspace_context['workspace_id']
         rows = connection.execute(
             '''
-            SELECT id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
-                   asset_id,
-                   chain_id, target_metadata,
-                   monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents,
-                   notification_channels, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
-                   created_at, updated_at
-            FROM targets
-            WHERE workspace_id = %s AND deleted_at IS NULL
-            ORDER BY created_at DESC
+            SELECT t.id, t.name, t.target_type, t.chain_network, t.contract_identifier, t.wallet_address, t.asset_type, t.owner_notes, t.severity_preference, t.enabled,
+                   t.asset_id,
+                   t.chain_id, t.target_metadata,
+                   t.monitoring_enabled, t.monitoring_mode, t.monitoring_interval_seconds, t.severity_threshold, t.auto_create_alerts, t.auto_create_incidents,
+                   t.notification_channels, t.last_checked_at, t.last_run_status, t.last_run_id, t.last_alert_at, t.monitored_by_workspace_id, t.is_active,
+                   t.created_at, t.updated_at,
+                   a.id AS resolved_asset_id, a.name AS asset_name,
+                   ms.id AS monitored_system_id
+            FROM targets t
+            LEFT JOIN assets a
+              ON a.id = t.asset_id
+             AND a.workspace_id = t.workspace_id
+             AND a.deleted_at IS NULL
+            LEFT JOIN monitored_systems ms
+              ON ms.target_id = t.id
+             AND ms.workspace_id = t.workspace_id
+            WHERE t.workspace_id = %s AND t.deleted_at IS NULL
+            ORDER BY t.created_at DESC
             ''',
             (workspace_id,),
         ).fetchall()
@@ -4728,6 +4838,16 @@ def list_targets(request: Request) -> dict[str, Any]:
         targets: list[dict[str, Any]] = []
         for row in rows:
             item = _json_safe_value(dict(row))
+            health_status, health_reason = _target_health_payload(
+                enabled=bool(row.get('enabled')),
+                monitoring_enabled=bool(row.get('monitoring_enabled')),
+                asset_id=str(row.get('asset_id') or '') or None,
+                asset_exists=bool(row.get('resolved_asset_id')),
+                monitored_system_id=str(row.get('monitored_system_id') or '') or None,
+            )
+            item['asset_missing'] = not bool(row.get('resolved_asset_id'))
+            item['health_status'] = health_status
+            item['health_reason'] = health_reason
             item['tags'] = tags_map.get(str(row['id']), [])
             targets.append(item)
         return {'targets': targets, 'workspace': workspace_context['workspace']}
@@ -4797,13 +4917,10 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 'INSERT INTO target_tags (id, workspace_id, target_id, tag) VALUES (%s, %s, %s, %s) ON CONFLICT (target_id, tag) DO NOTHING',
                 (str(uuid.uuid4()), workspace_id, target_id, tag),
             )
-        _ensure_monitored_system_for_target(
-            connection,
-            workspace_id=workspace_id,
-            asset_id=validated['asset_id'],
-            target_id=target_id,
-            chain=validated['chain_network'],
-        )
+        if validated['enabled'] and validated['monitoring_enabled']:
+            result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id)
+            if result.get('status') != 'ok':
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Enabled targets require a valid linked asset before monitoring can start.')
         log_audit(connection, action='target.create', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'target_type': validated['target_type']})
         connection.commit()
         return {'id': target_id, **validated}
@@ -4817,12 +4934,16 @@ def get_target(target_id: str, request: Request) -> dict[str, Any]:
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         row = connection.execute(
             '''
-            SELECT id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
-                   asset_id, chain_id, target_metadata, monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts,
-                   auto_create_incidents, notification_channels, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
-                   created_at, updated_at
-            FROM targets
-            WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL
+            SELECT t.id, t.workspace_id, t.name, t.target_type, t.chain_network, t.contract_identifier, t.wallet_address, t.asset_type, t.owner_notes, t.severity_preference, t.enabled,
+                   t.asset_id, t.chain_id, t.target_metadata, t.monitoring_enabled, t.monitoring_mode, t.monitoring_interval_seconds, t.severity_threshold, t.auto_create_alerts,
+                   t.auto_create_incidents, t.notification_channels, t.last_checked_at, t.last_run_status, t.last_run_id, t.last_alert_at, t.monitored_by_workspace_id, t.is_active,
+                   t.created_at, t.updated_at,
+                   a.id AS resolved_asset_id,
+                   ms.id AS monitored_system_id
+            FROM targets t
+            LEFT JOIN assets a ON a.id = t.asset_id AND a.workspace_id = t.workspace_id AND a.deleted_at IS NULL
+            LEFT JOIN monitored_systems ms ON ms.target_id = t.id AND ms.workspace_id = t.workspace_id
+            WHERE t.id = %s AND t.workspace_id = %s AND t.deleted_at IS NULL
             ''',
             (target_id, workspace_context['workspace_id']),
         ).fetchone()
@@ -4830,6 +4951,16 @@ def get_target(target_id: str, request: Request) -> dict[str, Any]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
         tags = connection.execute('SELECT tag FROM target_tags WHERE target_id = %s ORDER BY tag ASC', (target_id,)).fetchall()
         item = _json_safe_value(dict(row))
+        health_status, health_reason = _target_health_payload(
+            enabled=bool(row.get('enabled')),
+            monitoring_enabled=bool(row.get('monitoring_enabled')),
+            asset_id=str(row.get('asset_id') or '') or None,
+            asset_exists=bool(row.get('resolved_asset_id')),
+            monitored_system_id=str(row.get('monitored_system_id') or '') or None,
+        )
+        item['asset_missing'] = not bool(row.get('resolved_asset_id'))
+        item['health_status'] = health_status
+        item['health_reason'] = health_reason
         item['tags'] = [str(tag['tag']) for tag in tags]
         return {'target': item}
 
@@ -4852,6 +4983,8 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
         merged_payload = dict(payload)
         validated = _validate_target_payload(merged_payload)
+        if validated['enabled'] and validated['monitoring_enabled'] and validated['asset_id'] is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Enabled monitoring requires asset_id.')
         if validated['asset_id'] is not None:
             asset_row = connection.execute(
                 'SELECT id, name FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
@@ -4878,13 +5011,12 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
         connection.execute('DELETE FROM target_tags WHERE target_id = %s', (target_id,))
         for tag in validated['tags']:
             connection.execute('INSERT INTO target_tags (id, workspace_id, target_id, tag) VALUES (%s, %s, %s, %s)', (str(uuid.uuid4()), workspace_id, target_id, tag))
-        _ensure_monitored_system_for_target(
-            connection,
-            workspace_id=workspace_id,
-            asset_id=validated['asset_id'],
-            target_id=target_id,
-            chain=validated['chain_network'],
-        )
+        if validated['enabled'] and validated['monitoring_enabled']:
+            result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id)
+            if result.get('status') != 'ok':
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Enabled targets require a valid linked asset before monitoring can start.')
+        else:
+            connection.execute("UPDATE monitored_systems SET status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s", (target_id, workspace_id))
         log_audit(connection, action='target.update', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={})
         connection.commit()
         return {'id': target_id, **validated}
@@ -4901,18 +5033,21 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
+        if enabled:
+            asset_valid = connection.execute(
+                'SELECT a.id FROM assets a WHERE a.id = %s::uuid AND a.workspace_id = %s::uuid AND a.deleted_at IS NULL',
+                (row.get('asset_id'), workspace_context['workspace_id']),
+            ).fetchone()
+            if asset_valid is None:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Cannot enable target: linked asset is missing or deleted.')
         connection.execute(
             'UPDATE targets SET enabled = %s, monitoring_enabled = %s, updated_by_user_id = %s, updated_at = NOW() WHERE id = %s',
             (enabled, enabled, user['id'], target_id),
         )
         if enabled:
-            _ensure_monitored_system_for_target(
-                connection,
-                workspace_id=workspace_context['workspace_id'],
-                asset_id=str(row.get('asset_id') or '') or None,
-                target_id=target_id,
-                chain=str(row.get('chain_network') or ''),
-            )
+            result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_context['workspace_id'])
+            if result.get('status') != 'ok':
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Cannot enable target: linked asset is missing or deleted.')
         else:
             connection.execute(
                 "UPDATE monitored_systems SET status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s",
