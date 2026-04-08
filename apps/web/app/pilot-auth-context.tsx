@@ -18,6 +18,10 @@ const UNLOADED_RUNTIME_CONFIG: RuntimeConfig = {
   },
 };
 
+const ACCESS_TOKEN_COOKIE_NAME = 'decoda_access_token';
+const ACCESS_TOKEN_STORAGE_KEY = 'decoda.accessToken';
+const MISSING_SESSION_MESSAGE = 'Your session is missing or expired. Please sign in again.';
+
 export type WorkspaceSummary = {
   id: string;
   name: string;
@@ -115,6 +119,41 @@ function safeAuthFailureMessage(message: string, fallback: string) {
   return normalized;
 }
 
+function readCookie(name: string) {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = document.cookie.match(new RegExp(`(?:^|; )${escapedName}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function readStoredAccessToken() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const fromStorage = window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)?.trim() || null;
+  if (fromStorage) {
+    return fromStorage;
+  }
+  const fromCookie = readCookie(ACCESS_TOKEN_COOKIE_NAME)?.trim() || null;
+  if (fromCookie) {
+    window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, fromCookie);
+  }
+  return fromCookie;
+}
+
+function persistAccessToken(token: string | null) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  if (!token) {
+    window.localStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
+    return;
+  }
+  window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, token);
+}
+
 export async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
   const response = await fetch('/api/runtime-config', {
     cache: 'no-store',
@@ -137,6 +176,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>(UNLOADED_RUNTIME_CONFIG);
   const [configLoading, setConfigLoading] = useState(true);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
   const [user, setUser] = useState<PilotUser | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -156,7 +196,11 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   }, [configLoading, runtimeConfig.apiUrl, runtimeConfig.diagnostic]);
 
   const authHeaders = useCallback(() => {
+    const token = accessToken || readStoredAccessToken();
     const headers: Record<string, string> = {};
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
     if (user?.current_workspace?.id) {
       headers['X-Workspace-Id'] = user.current_workspace.id;
     }
@@ -164,7 +208,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       headers['X-CSRF-Token'] = csrfToken;
     }
     return headers;
-  }, [csrfToken, user?.current_workspace?.id]);
+  }, [accessToken, csrfToken, user?.current_workspace?.id]);
 
   const refreshUser = useCallback(async () => {
     if (typeof window === 'undefined') {
@@ -187,7 +231,9 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       }));
       setUser(null);
       setMfaChallengeToken(null);
-      setError(response.status === 401 ? 'Your session expired. Please sign in again.' : (data.detail ?? 'Unable to restore your session. Please sign in again.'));
+      setAccessToken(null);
+      persistAccessToken(null);
+      setError(response.status === 401 ? MISSING_SESSION_MESSAGE : (data.detail ?? MISSING_SESSION_MESSAGE));
       setSessionLoading(false);
       console.debug('[dashboard-page-data trace] source=auth-session-restore', {
         phase: 'response-error',
@@ -200,7 +246,9 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     if (!payload.user) {
       setUser(null);
       setMfaChallengeToken(null);
-      setError(payload.detail ?? 'Your session expired. Please sign in again.');
+      setAccessToken(null);
+      persistAccessToken(null);
+      setError(payload.detail ?? MISSING_SESSION_MESSAGE);
       setSessionLoading(false);
       console.debug('[dashboard-page-data trace] source=auth-session-restore', {
         phase: 'response-missing-user',
@@ -208,6 +256,10 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       return null;
     }
     setUser(payload.user);
+    const restoredToken = readStoredAccessToken();
+    if (restoredToken) {
+      setAccessToken(restoredToken);
+    }
     const csrfResponse = await fetch('/api/auth/csrf', { cache: 'no-store' });
     if (csrfResponse.ok) {
       const csrfPayload = await csrfResponse.json().catch(() => ({}));
@@ -287,13 +339,26 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
         phase: 'effect-catch',
         message,
       });
-      setError(safeAuthFailureMessage(message, 'Unable to restore your session. Please sign in again.'));
+      setError(safeAuthFailureMessage(message, MISSING_SESSION_MESSAGE));
       setSessionLoading(false);
     });
   }, [configLoading, refreshUser]);
 
-  const saveAuthPayload = useCallback((nextUser: PilotUser) => {
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const restored = readStoredAccessToken();
+    if (restored) {
+      setAccessToken(restored);
+    }
+  }, []);
+
+  const saveAuthPayload = useCallback((nextUser: PilotUser, nextAccessToken?: string | null) => {
     setUser(nextUser);
+    const token = (nextAccessToken ?? '').trim() || readStoredAccessToken();
+    setAccessToken(token);
+    persistAccessToken(token);
     setError(null);
   }, []);
 
@@ -320,6 +385,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       backendApiUrl?: string | null;
       configured?: boolean;
       code?: string;
+      access_token?: string;
     }>(response);
     if (!response.ok) {
       throw new Error(classifyAuthResponseError('sign in', proxyUrl, response.status, data.detail, data));
@@ -334,6 +400,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     if (!data.user) {
       throw new Error(classifyAuthResponseError('sign in', proxyUrl, response.status, data.detail, data));
     }
+    saveAuthPayload(data.user, data.access_token ?? null);
     setMfaChallengeToken(null);
     console.debug('[dashboard-page-data trace] source=auth-signin-response', {
       phase: 'success',
@@ -342,7 +409,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       requiresSessionConfirmation: true,
     });
     return data.user;
-  }, []);
+  }, [saveAuthPayload]);
 
   const completeMfaSignIn = useCallback(async (code: string) => {
     if (!mfaChallengeToken) {
@@ -354,10 +421,11 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mfa_token: mfaChallengeToken, code }),
     });
-    const data = await readApiResponse<{ user?: PilotUser; detail?: string }>(response);
+    const data = await readApiResponse<{ user?: PilotUser; detail?: string; access_token?: string }>(response);
     if (!response.ok || !data.user) {
       throw new Error(data.detail ?? 'Invalid MFA code.');
     }
+    saveAuthPayload(data.user, data.access_token ?? null);
     setMfaChallengeToken(null);
     console.debug('[dashboard-page-data trace] source=auth-signin-response', {
       phase: 'mfa-success',
@@ -366,7 +434,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       requiresSessionConfirmation: true,
     });
     return data.user;
-  }, [mfaChallengeToken]);
+  }, [mfaChallengeToken, saveAuthPayload]);
 
   const enrollMfa = useCallback(async () => {
     const response = await fetch('/api/auth/mfa/enroll', {
@@ -429,6 +497,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       backendApiUrl?: string | null;
       configured?: boolean;
       code?: string;
+      access_token?: string;
     }>(response);
     if (!response.ok) {
       throw new Error(classifyAuthResponseError('create an account', proxyUrl, response.status, data.detail, data));
@@ -443,7 +512,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     if (!data.user) {
       throw new Error(classifyAuthResponseError('create an account', proxyUrl, response.status, data.detail, data));
     }
-    saveAuthPayload(data.user);
+    saveAuthPayload(data.user, data.access_token ?? null);
     const csrfResponse = await fetch('/api/auth/csrf', { cache: 'no-store' });
     if (csrfResponse.ok) {
       const csrfPayload = await csrfResponse.json().catch(() => ({}));
@@ -457,6 +526,8 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setMfaChallengeToken(null);
     setCsrfToken(null);
+    setAccessToken(null);
+    persistAccessToken(null);
     setError(null);
     setSessionLoading(false);
   }, [authHeaders]);

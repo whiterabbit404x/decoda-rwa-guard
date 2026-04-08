@@ -26,7 +26,7 @@ const QUICK_PRESETS = [
 const ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 
 export default function AssetsManager({ apiUrl }: Props) {
-  const { authHeaders } = usePilotAuth();
+  const { authHeaders, signOut } = usePilotAuth();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [form, setForm] = useState<AssetForm>(EMPTY_ASSET);
   const [search, setSearch] = useState('');
@@ -50,7 +50,17 @@ async function load() {
       setSubmitError('Cannot load assets because NEXT_PUBLIC_API_URL / API_URL is missing or invalid for this deployment.');
       return;
     }
-    const response = await fetch(`${apiUrl}/assets`, { headers: { ...authHeaders() }, cache: 'no-store' });
+    const headers = authHeaders();
+    if (!headers.Authorization) {
+      setSubmitError('Your session is missing or expired. Please sign in again.');
+      return;
+    }
+    const response = await fetch(`${apiUrl}/assets`, { headers: { ...headers }, cache: 'no-store' });
+    if (response.status === 401 || response.status === 403) {
+      await signOut();
+      setSubmitError('Your session is missing or expired. Please sign in again.');
+      return;
+    }
     if (!response.ok) return;
     const payload = await response.json();
     setAssets(payload.assets ?? []);
@@ -108,13 +118,23 @@ async function load() {
         setSubmitError('Cannot create this asset because NEXT_PUBLIC_API_URL / API_URL is missing or invalid for this deployment.');
         return;
       }
+      const headers = authHeaders();
+      if (!headers.Authorization) {
+        setSubmitError('Your session is missing or expired. Please sign in again.');
+        return;
+      }
       const response = await fetch(`${apiUrl}/assets`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify({ ...form, tags: form.tags }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          await signOut();
+          setSubmitError('Your session is missing or expired. Please sign in again.');
+          return;
+        }
         const detail = payload?.detail;
         const responseFieldErrors = (typeof detail === 'object' && detail?.field_errors && typeof detail.field_errors === 'object') ? detail.field_errors : null;
         if (responseFieldErrors) {

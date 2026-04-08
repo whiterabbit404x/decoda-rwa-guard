@@ -6,6 +6,7 @@ import { getRuntimeConfig } from '../../../runtime-config';
 
 const SESSION_COOKIE_NAME = 'decoda_session';
 const CSRF_COOKIE_NAME = 'decoda_csrf';
+const ACCESS_TOKEN_COOKIE_NAME = 'decoda_access_token';
 const JSON_HEADERS = {
   'Cache-Control': 'no-store',
   'Content-Type': 'application/json',
@@ -80,6 +81,17 @@ function csrfCookieOptions() {
   };
 }
 
+function accessTokenCookieOptions() {
+  const isProd = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: false,
+    secure: isProd,
+    sameSite: 'lax' as const,
+    path: '/',
+    maxAge: 60 * 60 * 24,
+  };
+}
+
 function readRequestSessionToken(request: Request) {
   const authorizationHeader = request.headers.get('authorization');
   if (authorizationHeader) {
@@ -138,16 +150,14 @@ async function buildBackendResponse(response: Response, cookieAction: AuthCookie
       const csrfToken = crypto.randomUUID().replace(/-/g, '');
       proxyResponse.cookies.set(SESSION_COOKIE_NAME, sessionToken, authCookieOptions());
       proxyResponse.cookies.set(CSRF_COOKIE_NAME, csrfToken, csrfCookieOptions());
-    }
-
-    if (typeof responseBody.access_token === 'string') {
-      delete responseBody.access_token;
+      proxyResponse.cookies.set(ACCESS_TOKEN_COOKIE_NAME, sessionToken, accessTokenCookieOptions());
     }
   }
 
   if (cookieAction === 'clear-session') {
     proxyResponse.cookies.set(SESSION_COOKIE_NAME, '', { ...authCookieOptions(), maxAge: 0 });
     proxyResponse.cookies.set(CSRF_COOKIE_NAME, '', { ...csrfCookieOptions(), maxAge: 0 });
+    proxyResponse.cookies.set(ACCESS_TOKEN_COOKIE_NAME, '', { ...accessTokenCookieOptions(), maxAge: 0 });
   }
 
   return proxyResponse;
