@@ -1896,7 +1896,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                    ms.workspace_id,
                    ms.target_id,
                    ms.asset_id,
-                   ms.status AS monitored_system_status,
+                   ms.is_enabled AS monitored_system_enabled,
+                   ms.runtime_status AS monitored_system_runtime_status,
                    ms.last_heartbeat AS monitored_system_last_heartbeat,
                    t.last_checked_at,
                    t.monitoring_interval_seconds,
@@ -1916,7 +1917,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             FROM targets t
             WHERE t.id = ms.target_id
               AND t.deleted_at IS NULL
-              AND ms.status = 'active'
+              AND ms.is_enabled = TRUE
               AND t.monitoring_enabled = TRUE
               AND t.enabled = TRUE
               AND t.is_active = TRUE
@@ -1933,7 +1934,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         due_system_ids: dict[str, str] = {}
         for row in candidate_systems:
             system = dict(row)
-            if str(system.get('monitored_system_status') or 'paused') != 'active':
+            if not bool(system.get('monitored_system_enabled')):
                 skipped_disabled += 1
                 continue
             if not bool(system.get('monitoring_enabled')) or not bool(system.get('enabled')):
@@ -2009,10 +2010,12 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                             '''
                             UPDATE monitored_systems
                             SET last_heartbeat = NOW(),
-                                status = CASE WHEN %s = 0 THEN 'error' ELSE 'active' END
+                                runtime_status = CASE WHEN %s = 0 THEN 'error' ELSE 'active' END,
+                                status = CASE WHEN %s = 0 THEN 'error' ELSE 'active' END,
+                                last_error_text = CASE WHEN %s = 0 THEN 'No events ingested in cycle' ELSE NULL END
                             WHERE id = %s::uuid
                             ''',
-                            (int(result.get('events_ingested', 0)), monitored_system_id),
+                            (int(result.get('events_ingested', 0)), int(result.get('events_ingested', 0)), int(result.get('events_ingested', 0)), monitored_system_id),
                         )
                 alerts_generated += int(result['alerts_generated'])
                 live_targets_checked += 1 if str(target.get('target_type') or '').lower() in {'wallet','contract'} else 0
@@ -2030,8 +2033,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 monitored_system_id = due_system_ids.get(str(target['id']))
                 if monitored_system_id:
                     connection.execute(
-                        'UPDATE monitored_systems SET status = %s, last_heartbeat = NOW() WHERE id = %s::uuid',
-                        ('error', monitored_system_id),
+                        "UPDATE monitored_systems SET runtime_status = 'error', status = 'error', last_error_text = %s, last_heartbeat = NOW() WHERE id = %s::uuid",
+                        (error_message, monitored_system_id),
                     )
         connection.execute(
             '''
@@ -2191,7 +2194,10 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
             if result.get('status') != 'ok':
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Cannot enable monitoring: linked asset is missing or deleted.')
         elif not monitoring_enabled:
-            connection.execute("UPDATE monitored_systems SET status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s::uuid", (target_id, workspace_context['workspace_id']))
+            connection.execute(
+                "UPDATE monitored_systems SET is_enabled = FALSE, runtime_status = 'offline', status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s::uuid",
+                (target_id, workspace_context['workspace_id']),
+            )
         logger.info('monitoring config persisted target=%s monitoring_enabled=%s threshold=%s', target_id, monitoring_enabled, threshold)
         log_audit(
             connection,
@@ -2599,13 +2605,23 @@ def monitoring_runtime_status() -> dict[str, Any]:
         ensure_pilot_schema(connection)
         open_alerts = connection.execute("SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating')").fetchone()
         open_incidents = connection.execute("SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged')").fetchone()
-        active_systems = connection.execute(
+        enabled_systems = connection.execute(
             '''
             SELECT COUNT(*) AS c
             FROM monitored_systems ms
             JOIN targets t ON t.id = ms.target_id
             WHERE t.deleted_at IS NULL
-              AND ms.status = 'active'
+              AND ms.is_enabled = TRUE
+            '''
+        ).fetchone()
+        active_runtime_systems = connection.execute(
+            '''
+            SELECT COUNT(*) AS c
+            FROM monitored_systems ms
+            JOIN targets t ON t.id = ms.target_id
+            WHERE t.deleted_at IS NULL
+              AND ms.is_enabled = TRUE
+              AND ms.runtime_status = 'active'
             '''
         ).fetchone()
         monitored_systems_total = connection.execute(
@@ -2622,7 +2638,7 @@ def monitoring_runtime_status() -> dict[str, Any]:
             FROM monitored_systems ms
             JOIN targets t ON t.id = ms.target_id
             WHERE t.deleted_at IS NULL
-              AND ms.status = 'active'
+              AND ms.runtime_status = 'active'
             '''
         ).fetchone()
         latest_system_heartbeat = connection.execute(
@@ -2653,7 +2669,7 @@ def monitoring_runtime_status() -> dict[str, Any]:
             FROM monitored_systems ms
             JOIN targets t ON t.id = ms.target_id
             WHERE t.deleted_at IS NULL
-              AND ms.status = 'active'
+              AND ms.is_enabled = TRUE
               AND ms.last_heartbeat IS NOT NULL
               AND ms.last_heartbeat >= NOW() - (GREATEST(t.monitoring_interval_seconds, 30) * INTERVAL '2 second')
             '''
@@ -2666,14 +2682,15 @@ def monitoring_runtime_status() -> dict[str, Any]:
     last_heartbeat = last_system_heartbeat or worker_heartbeat
     heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
     stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
-    active_system_count = int((active_systems or {}).get('c') or 0)
+    enabled_system_count = int((enabled_systems or {}).get('c') or 0)
+    active_system_count = int((active_runtime_systems or {}).get('c') or 0)
     system_count = int((monitored_systems_total or {}).get('c') or 0)
     protected_assets_count = int((protected_assets or {}).get('c') or 0)
     recent_heartbeat_systems = int((coverage or {}).get('c') or 0)
     evidence_at = _parse_ts((latest_evidence or {}).get('observed_at'))
     evidence_freshness = int((now - evidence_at).total_seconds()) if evidence_at else None
     runner_alive = bool(health.get('worker_running')) or not stale_heartbeat
-    if system_count == 0 or active_system_count == 0:
+    if system_count == 0 or enabled_system_count == 0:
         monitoring_status = 'offline'
     elif not runner_alive or health.get('last_error') or health.get('degraded') or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
         monitoring_status = 'degraded'
@@ -2698,6 +2715,7 @@ def monitoring_runtime_status() -> dict[str, Any]:
         'monitoring_status': monitoring_status,
         'monitored_systems': system_count,
         'protected_assets': protected_assets_count,
+        'enabled_systems': enabled_system_count,
         'active_systems': active_system_count,
         'last_heartbeat': last_heartbeat.isoformat() if last_heartbeat else None,
         'telemetry_available': telemetry_available,
@@ -2705,7 +2723,7 @@ def monitoring_runtime_status() -> dict[str, Any]:
         'provider_mode': health.get('source_type') or health.get('ingestion_mode') or 'polling',
         'last_successful_ingest': evidence_at.isoformat() if evidence_at else None,
         'last_processed_block': (latest_evidence or {}).get('block_number') or health.get('latest_processed_block'),
-        'targets_monitored': active_system_count,
+        'targets_monitored': enabled_system_count,
         'protected_assets_count': protected_assets_count,
         'monitored_systems_count': system_count,
         'systems_with_recent_heartbeat': recent_heartbeat_systems,

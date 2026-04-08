@@ -24,9 +24,11 @@ class _Conn:
             return _Result({'c': 1})
         if 'FROM incidents' in q:
             return _Result({'c': 1})
-        if 'FROM monitored_systems ms JOIN targets t' in q and "ms.status = 'active'" in q:
+        if 'FROM monitored_systems ms JOIN targets t' in q and "ms.is_enabled = TRUE" in q:
             return _Result({'c': 2})
-        if 'FROM monitored_systems ms JOIN targets t' in q and "ms.status = 'active'" not in q:
+        if 'FROM monitored_systems ms JOIN targets t' in q and "ms.runtime_status = 'active'" in q:
+            return _Result({'c': 2})
+        if 'FROM monitored_systems ms JOIN targets t' in q and "ms.is_enabled = TRUE" not in q and "ms.runtime_status = 'active'" not in q:
             return _Result({'c': 3})
         if 'LEFT JOIN assets a' in q and 'FROM targets t' in q:
             return _Result({'c': 0})
@@ -118,7 +120,7 @@ def test_runtime_status_offline_without_active_systems(monkeypatch):
     class _OfflineConn(_Conn):
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
-            if 'FROM monitored_systems ms JOIN targets t' in q and "ms.status = 'active'" in q:
+            if 'FROM monitored_systems ms JOIN targets t' in q and "ms.is_enabled = TRUE" in q:
                 return _Result({'c': 0})
             return super().execute(query, params)
 
