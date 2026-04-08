@@ -4091,6 +4091,17 @@ def _derive_asset_verification(*, identifier: str, chain_network: str) -> dict[s
 
 
 def _validate_asset_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    def validation_error(*, field: str, message: str) -> None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                'message': message,
+                'field_errors': {
+                    field: message,
+                },
+            },
+        )
+
     name = str(payload.get('name', '')).strip()
     description = str(payload.get('description', '')).strip() or None
     asset_type = str(payload.get('asset_type', '')).strip().lower()
@@ -4101,13 +4112,13 @@ def _validate_asset_payload(payload: dict[str, Any]) -> dict[str, Any]:
     owner_team = str(payload.get('owner_team', '')).strip() or None
     notes = str(payload.get('notes', '')).strip() or None
     if not name or len(name) > 120:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='name is required (max 120 chars).')
+        validation_error(field='name', message='Asset name is required (max 120 chars).')
     if asset_type not in ASSET_TYPES:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid asset_type.')
+        validation_error(field='asset_type', message='Asset type is invalid.')
     if not chain_network or len(chain_network) > 64:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='chain_network is required (max 64 chars).')
+        validation_error(field='chain_network', message='Chain / network is required (max 64 chars).')
     if not identifier or len(identifier) > 180:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='identifier is required (max 180 chars).')
+        validation_error(field='identifier', message='Wallet address / identifier is required (max 180 chars).')
     if risk_tier not in {'low', 'medium', 'high', 'critical'}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='risk_tier must be low/medium/high/critical.')
     if asset_class is not None and asset_class not in ASSET_CLASSES:

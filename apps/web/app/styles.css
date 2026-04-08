@@ -418,6 +418,39 @@ p {
   min-height: 84px;
 }
 
+.formField {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0.65rem;
+}
+
+.formField label {
+  margin-bottom: 0.35rem;
+  color: #e6edf3;
+  font-weight: 600;
+}
+
+.requiredMark {
+  color: #ff7b72;
+}
+
+.inputHint {
+  margin: 0.2rem 0 0;
+  color: #9fb0c4;
+  font-size: 0.85rem;
+}
+
+.fieldError {
+  margin: 0.25rem 0 0;
+  color: #ffb4af;
+  font-size: 0.85rem;
+}
+
+.successLine {
+  border-color: rgba(46, 160, 67, 0.55);
+  color: #bff1c6;
+}
+
 .tableWrap {
   overflow-x: auto;
   border: 1px solid #30363d;
