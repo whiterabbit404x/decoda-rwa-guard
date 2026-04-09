@@ -4160,26 +4160,37 @@ def reconcile_enabled_targets_monitored_systems(connection: Any) -> dict[str, An
     }
 
 
+def resolve_workspace_context_for_request(connection: psycopg.Connection, request: Request) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    user = authenticate_with_connection(connection, request)
+    header_workspace_id = request.headers.get('x-workspace-id')
+    workspace_context = resolve_workspace(connection, user['id'], header_workspace_id)
+    return user, workspace_context, bool((header_workspace_id or '').strip())
+
+
+def list_workspace_monitored_system_rows(connection: psycopg.Connection, workspace_id: str) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        '''
+        SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_error_text, ms.created_at,
+               ms.monitoring_interval_seconds, a.name AS asset_name, t.name AS target_name
+        FROM monitored_systems ms
+        LEFT JOIN assets a ON a.id = ms.asset_id AND a.deleted_at IS NULL
+        JOIN targets t ON t.id = ms.target_id
+        WHERE ms.workspace_id = %s
+          AND t.deleted_at IS NULL
+        ORDER BY ms.created_at DESC
+        ''',
+        (workspace_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def list_monitored_systems(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user = authenticate_with_connection(connection, request)
-        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
-        rows = connection.execute(
-            '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_error_text, ms.created_at,
-                   a.name AS asset_name, t.name AS target_name
-            FROM monitored_systems ms
-            LEFT JOIN assets a ON a.id = ms.asset_id AND a.deleted_at IS NULL
-            JOIN targets t ON t.id = ms.target_id
-            WHERE ms.workspace_id = %s
-              AND t.deleted_at IS NULL
-            ORDER BY ms.created_at DESC
-            ''',
-            (workspace_context['workspace_id'],),
-        ).fetchall()
-        return {'systems': [_json_safe_value(dict(row)) for row in rows], 'workspace': workspace_context['workspace']}
+        _, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
+        rows = list_workspace_monitored_system_rows(connection, workspace_context['workspace_id'])
+        return {'systems': [_json_safe_value(row) for row in rows], 'workspace': workspace_context['workspace']}
 
 
 def create_monitored_system(payload: dict[str, Any], request: Request) -> dict[str, Any]:
