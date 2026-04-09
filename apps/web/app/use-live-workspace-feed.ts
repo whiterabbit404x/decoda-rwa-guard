@@ -35,6 +35,37 @@ const DEFAULT_COUNTS: LiveWorkspaceCounts = {
   historyRecords: 0,
 };
 
+export function shouldLogLiveWorkspaceFeedDebug(): boolean {
+  return process.env.NODE_ENV === 'development';
+}
+
+type RuntimeStatusResolution = {
+  nextRuntime: MonitoringRuntimeStatus | null;
+  offline: boolean;
+  degraded: boolean;
+};
+
+export function resolveRuntimeStatus(
+  statusPayload: MonitoringRuntimeStatus | null,
+  statusOk: boolean,
+): RuntimeStatusResolution {
+  if (!statusPayload || !statusOk) {
+    return { nextRuntime: null, offline: true, degraded: true };
+  }
+  const runtimeMode = runtimeStatusModeFromMonitoringStatus(statusPayload.monitoring_status);
+  const nextRuntime = { ...statusPayload, mode: normalizeMonitoringMode(runtimeMode) };
+  const offline = nextRuntime.monitoring_status === 'offline' || nextRuntime.monitoring_status === 'error';
+  const degraded = nextRuntime.monitoring_status === 'degraded';
+  return { nextRuntime, offline, degraded };
+}
+
+export function deriveWorkspaceHealth(runtime: RuntimeStatusResolution, ancillaryFailed: boolean): { degraded: boolean; offline: boolean } {
+  return {
+    degraded: runtime.degraded || ancillaryFailed,
+    offline: runtime.offline,
+  };
+}
+
 export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
   const { apiUrl, authHeaders, isAuthenticated, user } = usePilotAuth();
   const [loading, setLoading] = useState(true);
@@ -58,19 +89,30 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
         setRefreshing(true);
       }
       try {
-        const [statusRes, historyRes, alertsRes, incidentsRes] = await Promise.all([
-          fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' }),
+        const statusRes = await fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' });
+        const statusPayload = statusRes.ok ? await statusRes.json() as MonitoringRuntimeStatus : null;
+        const { nextRuntime, offline: runtimeOffline, degraded: runtimeDegraded } = resolveRuntimeStatus(statusPayload, statusRes.ok);
+        const ancillaryResults = await Promise.allSettled([
           fetch(`${apiUrl}/pilot/history?limit=20`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/incidents?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
-        const statusPayload = statusRes.ok ? await statusRes.json() as MonitoringRuntimeStatus : null;
-        const historyPayload = historyRes.ok ? await historyRes.json() : {};
-        const alertsPayload = alertsRes.ok ? await alertsRes.json() : {};
-        const incidentsPayload = incidentsRes.ok ? await incidentsRes.json() : {};
-        const runtimeMode = runtimeStatusModeFromMonitoringStatus(statusPayload?.monitoring_status);
-        const nextRuntime = statusPayload ? { ...statusPayload, mode: normalizeMonitoringMode(runtimeMode) } : null;
+        const historyRes = ancillaryResults[0].status === 'fulfilled' ? ancillaryResults[0].value : null;
+        const alertsRes = ancillaryResults[1].status === 'fulfilled' ? ancillaryResults[1].value : null;
+        const incidentsRes = ancillaryResults[2].status === 'fulfilled' ? ancillaryResults[2].value : null;
+        const historyPayload = historyRes?.ok ? await historyRes.json() : {};
+        const alertsPayload = alertsRes?.ok ? await alertsRes.json() : {};
+        const incidentsPayload = incidentsRes?.ok ? await incidentsRes.json() : {};
+        const ancillaryFailed = !historyRes?.ok || !alertsRes?.ok || !incidentsRes?.ok;
         const historyCount = Number(historyPayload?.counts?.analysis_runs ?? (historyPayload.analysis_runs ?? []).length ?? 0);
+        if (shouldLogLiveWorkspaceFeedDebug()) {
+          console.debug('useLiveWorkspaceFeed runtime-status', {
+            statusCode: statusRes.status,
+            payload: statusPayload,
+            monitoredSystems: nextRuntime?.monitored_systems ?? null,
+            enabledSystems: nextRuntime?.enabled_systems ?? null,
+          });
+        }
         setRuntimeStatus(nextRuntime);
         setCounts({
           protectedAssets: Number(nextRuntime?.protected_assets ?? 0),
@@ -80,8 +122,12 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
           openIncidents: (incidentsPayload.incidents ?? []).length,
           historyRecords: historyCount,
         });
-        setDegraded((nextRuntime?.monitoring_status === 'degraded') || !statusRes.ok || !alertsRes.ok || !incidentsRes.ok || !historyRes.ok);
-        setOffline(nextRuntime?.monitoring_status === 'offline' || nextRuntime?.monitoring_status === 'error');
+        const health = deriveWorkspaceHealth(
+          { nextRuntime, offline: runtimeOffline, degraded: runtimeDegraded },
+          ancillaryFailed,
+        );
+        setDegraded(health.degraded);
+        setOffline(health.offline);
         setLastUpdatedAt(new Date().toISOString());
       } catch {
         if (active) {
