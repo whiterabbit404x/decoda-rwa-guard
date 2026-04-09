@@ -19,10 +19,29 @@ type SystemRow = {
   last_error_text?: string | null;
 };
 
+type ReconcileSummary = {
+  targets_scanned: number;
+  created_or_updated: number;
+  invalid_reasons: Record<string, number>;
+  skipped_reasons: Record<string, number>;
+  repaired_monitored_system_ids: string[];
+};
+
+function formatReasonCounts(label: string, reasons: Record<string, number>): string {
+  const entries = Object.entries(reasons);
+  if (!entries.length) {
+    return `${label}: none`;
+  }
+  const details = entries.map(([reason, count]) => `${reason} (${count})`).join(', ');
+  return `${label}: ${details}`;
+}
+
 export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const { authHeaders } = usePilotAuth();
   const [systems, setSystems] = useState<SystemRow[]>([]);
   const [message, setMessage] = useState('');
+  const [isReconciling, setIsReconciling] = useState(false);
+  const [reconcileSummary, setReconcileSummary] = useState<ReconcileSummary | null>(null);
 
   async function load() {
     const response = await fetch(`${apiUrl}/monitoring/systems`, { headers: authHeaders(), cache: 'no-store' });
@@ -32,6 +51,35 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
     }
     const payload = await response.json();
     setSystems(payload.systems ?? []);
+  }
+
+  async function runReconcile() {
+    setMessage('');
+    setIsReconciling(true);
+    const response = await fetch(`${apiUrl}/monitoring/systems/reconcile`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!response.ok) {
+      setIsReconciling(false);
+      setMessage('Unable to repair monitored systems.');
+      return;
+    }
+
+    const payload = await response.json();
+    const summary: ReconcileSummary = {
+      targets_scanned: Number(payload?.reconcile?.targets_scanned ?? 0),
+      created_or_updated: Number(payload?.reconcile?.created_or_updated ?? 0),
+      invalid_reasons: payload?.reconcile?.invalid_reasons ?? {},
+      skipped_reasons: payload?.reconcile?.skipped_reasons ?? {},
+      repaired_monitored_system_ids: payload?.reconcile?.repaired_monitored_system_ids ?? [],
+    };
+    setReconcileSummary(summary);
+    setMessage(
+      `Repair completed. ${summary.created_or_updated} monitored systems created or updated from ${summary.targets_scanned} targets scanned.`,
+    );
+    await load();
+    setIsReconciling(false);
   }
 
   async function toggle(system: SystemRow) {
@@ -60,17 +108,40 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
     void load();
   }
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+  }, []);
 
   return (
     <section className="dataCard stack compactStack">
       <h1>Monitored Systems</h1>
       <p className="muted">Bridge assets to runtime monitoring through target-linked monitored systems.</p>
-      {systems.length === 0 ? <p className="muted">No monitored systems yet. Enable monitoring on a target to create one.</p> : null}
+      <div className="buttonRow">
+        <button type="button" onClick={() => void runReconcile()} disabled={isReconciling}>
+          {isReconciling ? 'Repairing monitored systems…' : 'Repair monitored systems'}
+        </button>
+      </div>
+      {systems.length === 0 ? (
+        <p className="muted">
+          No monitored systems yet. If you already have enabled targets, use Repair monitored systems to backfill missing links.
+        </p>
+      ) : null}
+      {reconcileSummary ? (
+        <div className="stack compactStack">
+          <p className="tableMeta">
+            Reconcile summary: scanned {reconcileSummary.targets_scanned} targets, created/updated {reconcileSummary.created_or_updated}, repaired IDs{' '}
+            {reconcileSummary.repaired_monitored_system_ids.length}
+          </p>
+          <p className="tableMeta">{formatReasonCounts('Invalid reasons', reconcileSummary.invalid_reasons)}</p>
+          <p className="tableMeta">{formatReasonCounts('Skipped reasons', reconcileSummary.skipped_reasons)}</p>
+        </div>
+      ) : null}
       {systems.map((system) => (
         <article key={system.id} className="overviewListItem">
           <div>
-            <p><strong>{system.asset_name || system.asset_id}</strong> → {system.target_name || system.target_id}</p>
+            <p>
+              <strong>{system.asset_name || system.asset_id}</strong> → {system.target_name || system.target_id}
+            </p>
             <p className="tableMeta">
               {system.chain || 'unknown chain'} · Config: {system.is_enabled ? 'Enabled' : 'Disabled'} · Runtime: {system.runtime_status}
               {' · '}
@@ -79,8 +150,12 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
             {system.last_error_text ? <p className="tableMeta">Last error: {system.last_error_text}</p> : null}
           </div>
           <div className="buttonRow">
-            <button type="button" onClick={() => void toggle(system)}>{system.is_enabled ? 'Disable' : 'Enable'}</button>
-            <button type="button" onClick={() => void remove(system.id)}>Delete</button>
+            <button type="button" onClick={() => void toggle(system)}>
+              {system.is_enabled ? 'Disable' : 'Enable'}
+            </button>
+            <button type="button" onClick={() => void remove(system.id)}>
+              Delete
+            </button>
           </div>
         </article>
       ))}

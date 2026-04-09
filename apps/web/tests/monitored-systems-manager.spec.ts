@@ -18,3 +18,13 @@ test('monitored systems toggle waits for backend and re-fetches state', () => {
   expect(source).toContain('if (!response.ok)');
   expect(source).toContain('await load();');
 });
+
+test('monitored systems UI exposes repair action and reconcile summary', () => {
+  const source = readAppFile('monitored-systems-manager.tsx');
+  expect(source).toContain("fetch(`${apiUrl}/monitoring/systems/reconcile`");
+  expect(source).toContain('Repair monitored systems');
+  expect(source).toContain('reconcileSummary');
+  expect(source).toContain('created_or_updated');
+  expect(source).toContain('invalid_reasons');
+  expect(source).toContain('skipped_reasons');
+});
