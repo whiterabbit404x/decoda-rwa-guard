@@ -173,6 +173,25 @@ def test_reconcile_enabled_targets_backfills_and_reports_invalid_and_skipped_rea
     assert 'target-valid' in conn.monitored_systems
 
 
+def test_reconcile_enabled_targets_is_idempotent_for_existing_rows():
+    conn = _Conn()
+    first = pilot.reconcile_enabled_targets_monitored_systems(conn)
+    second = pilot.reconcile_enabled_targets_monitored_systems(conn)
+    assert first['created_or_updated'] == 1
+    assert second['created_or_updated'] == 1
+    assert len(conn.monitored_systems) == 1
+    assert conn.monitored_systems['target-valid']['id'] == 'ms-target-valid'
+
+
+def test_normalize_reconcile_result_provides_render_safe_fields():
+    result = pilot._normalize_reconcile_result({})
+    assert result['targets_scanned'] == 0
+    assert result['created_or_updated'] == 0
+    assert result['invalid_reasons'] == {}
+    assert result['skipped_reasons'] == {}
+    assert result['repaired_monitored_system_ids'] == []
+
+
 def test_runtime_status_count_reflects_backfilled_monitored_system_rows(monkeypatch):
     conn = _Conn()
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _ConnCtx(conn))

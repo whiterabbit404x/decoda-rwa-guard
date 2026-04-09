@@ -2309,7 +2309,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         workspace_id = workspace_context['workspace_id']
-        result = reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
+        result = _normalize_reconcile_result(reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id))
         log_audit(
             connection,
             action='monitoring.reconcile',
@@ -4262,7 +4262,7 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
             result.get('reason'),
             result.get('monitored_system_id'),
         )
-    return {
+    return _normalize_reconcile_result({
         'enabled_targets_scanned': eligible_targets + len(invalid_targets),
         'targets_scanned': len(rows),
         'eligible_targets': eligible_targets,
@@ -4272,6 +4272,20 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         'skipped_reasons': skipped_reasons,
         'repaired_monitored_system_ids': repaired_monitored_system_ids,
         'workspace_id': workspace_id,
+    })
+
+
+def _normalize_reconcile_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'enabled_targets_scanned': int(result.get('enabled_targets_scanned', 0) or 0),
+        'targets_scanned': int(result.get('targets_scanned', 0) or 0),
+        'eligible_targets': int(result.get('eligible_targets', 0) or 0),
+        'created_or_updated': int(result.get('created_or_updated', 0) or 0),
+        'invalid_targets': [str(value) for value in (result.get('invalid_targets') or []) if str(value).strip()],
+        'invalid_reasons': {str(key): int(value) for key, value in dict(result.get('invalid_reasons') or {}).items()},
+        'skipped_reasons': {str(key): int(value) for key, value in dict(result.get('skipped_reasons') or {}).items()},
+        'repaired_monitored_system_ids': [str(value) for value in (result.get('repaired_monitored_system_ids') or []) if str(value).strip()],
+        'workspace_id': result.get('workspace_id'),
     }
 
 
