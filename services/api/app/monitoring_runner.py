@@ -25,9 +25,11 @@ from services.api.app.pilot import (
     ensure_pilot_schema,
     live_mode_enabled,
     log_audit,
+    list_workspace_monitored_system_rows,
     persist_analysis_run,
     pg_connection,
     resolve_workspace,
+    resolve_workspace_context_for_request,
     ensure_monitored_system_for_target,
     _target_health_payload,
 )
@@ -2606,47 +2608,27 @@ def production_claim_validator() -> dict[str, Any]:
 def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     health = get_monitoring_health()
     now = utc_now()
+    workspace_id: str | None = None
+    user_id: str | None = None
+    workspace_header_present = False
+    monitored_rows: list[dict[str, Any]] = []
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        workspace_id: str | None = None
         if request is not None:
-            user = authenticate_with_connection(connection, request)
-            workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+            user, workspace_context, workspace_header_present = resolve_workspace_context_for_request(connection, request)
+            user_id = str(user.get('id') or '')
             workspace_id = str(workspace_context['workspace_id'])
-        target_workspace_filter = 'AND t.workspace_id = %s::uuid' if workspace_id else ''
-        evidence_workspace_filter = 'WHERE e.workspace_id = %s::uuid' if workspace_id else ''
+            monitored_rows = list_workspace_monitored_system_rows(connection, workspace_id)
+        target_workspace_filter = 'AND t.workspace_id = %s' if workspace_id else ''
+        evidence_workspace_filter = 'WHERE e.workspace_id = %s' if workspace_id else ''
         scoped_params: tuple[Any, ...] = (workspace_id,) if workspace_id else ()
-        monitored_systems_scope = '''
-            FROM monitored_systems ms
-            JOIN targets t
-              ON t.id = ms.target_id
-             AND t.deleted_at IS NULL
-            WHERE (%s::uuid IS NULL OR ms.workspace_id = %s::uuid)
-        '''
         open_alerts = connection.execute(
-            f"SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating') {'AND workspace_id = %s::uuid' if workspace_id else ''}",
+            f"SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating') {'AND workspace_id = %s' if workspace_id else ''}",
             scoped_params,
         ).fetchone()
         open_incidents = connection.execute(
-            f"SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged') {'AND workspace_id = %s::uuid' if workspace_id else ''}",
+            f"SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged') {'AND workspace_id = %s' if workspace_id else ''}",
             scoped_params,
-        ).fetchone()
-        scope_aggregates = connection.execute(
-            f'''
-            SELECT
-                COUNT(*) AS monitored_systems_count,
-                COUNT(*) FILTER (WHERE ms.is_enabled = TRUE) AS enabled_systems_count,
-                COUNT(*) FILTER (WHERE ms.is_enabled = TRUE AND ms.runtime_status = 'active') AS active_systems_count,
-                COUNT(DISTINCT ms.asset_id) FILTER (WHERE ms.runtime_status = 'active') AS protected_assets_count,
-                MAX(ms.last_heartbeat) AS latest_system_heartbeat,
-                COUNT(*) FILTER (
-                    WHERE ms.is_enabled = TRUE
-                      AND ms.last_heartbeat IS NOT NULL
-                      AND ms.last_heartbeat >= NOW() - (GREATEST(ms.monitoring_interval_seconds, 30) * INTERVAL '2 second')
-                ) AS recent_heartbeat_systems
-            {monitored_systems_scope}
-            ''',
-            (workspace_id, workspace_id),
         ).fetchone()
         broken_targets = connection.execute(
             f'''
@@ -2668,16 +2650,38 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             f"SELECT observed_at, block_number FROM evidence e {evidence_workspace_filter} ORDER BY observed_at DESC LIMIT 1",
             scoped_params,
         ).fetchone()
-    last_system_heartbeat = _parse_ts((scope_aggregates or {}).get('latest_system_heartbeat'))
+        if request is None:
+            monitored_rows = connection.execute(
+                '''
+                SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat,
+                       ms.monitoring_interval_seconds, ms.created_at
+                FROM monitored_systems ms
+                JOIN targets t
+                  ON t.id = ms.target_id
+                 AND t.deleted_at IS NULL
+                ORDER BY ms.created_at DESC
+                '''
+            ).fetchall()
+            monitored_rows = [dict(row) for row in monitored_rows]
+    parsed_heartbeats = [_parse_ts(row.get('last_heartbeat')) for row in monitored_rows]
+    recent_heartbeat_systems = 0
+    for row, parsed_heartbeat in zip(monitored_rows, parsed_heartbeats):
+        if not bool(row.get('is_enabled')) or parsed_heartbeat is None:
+            continue
+        heartbeat_window = max(int(row.get('monitoring_interval_seconds') or 30), 30) * 2
+        if int((now - parsed_heartbeat).total_seconds()) <= heartbeat_window:
+            recent_heartbeat_systems += 1
+    last_system_heartbeat = max((ts for ts in parsed_heartbeats if ts is not None), default=None)
     worker_heartbeat = _parse_ts(health.get('last_heartbeat_at') or health.get('last_cycle_at'))
     last_heartbeat = last_system_heartbeat or worker_heartbeat
     heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
     stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
-    enabled_system_count = int((scope_aggregates or {}).get('enabled_systems_count') or 0)
-    active_system_count = int((scope_aggregates or {}).get('active_systems_count') or 0)
-    system_count = int((scope_aggregates or {}).get('monitored_systems_count') or 0)
-    protected_assets_count = int((scope_aggregates or {}).get('protected_assets_count') or 0)
-    recent_heartbeat_systems = int((scope_aggregates or {}).get('recent_heartbeat_systems') or 0)
+    enabled_rows = [row for row in monitored_rows if bool(row.get('is_enabled'))]
+    active_rows = [row for row in enabled_rows if str(row.get('runtime_status') or '').strip().lower() == 'active']
+    enabled_system_count = len(enabled_rows)
+    active_system_count = len(active_rows)
+    system_count = len(monitored_rows)
+    protected_assets_count = len({str(row.get('asset_id') or '') for row in active_rows if row.get('asset_id')})
     evidence_at = _parse_ts((latest_evidence or {}).get('observed_at'))
     evidence_freshness = int((now - evidence_at).total_seconds()) if evidence_at else None
     runner_alive = bool(health.get('worker_running')) or not stale_heartbeat
@@ -2725,12 +2729,23 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'degraded_reason': degraded_reason,
     }
     if _runtime_status_debug_enabled():
+        monitored_system_ids = [str(row.get('id') or '') for row in monitored_rows if row.get('id')]
+        enabled_monitored_system_ids = [str(row.get('id') or '') for row in enabled_rows if row.get('id')]
+        target_ids = [str(row.get('target_id') or '') for row in monitored_rows if row.get('target_id')]
         payload.update(
             {
                 'workspace_id': workspace_id,
+                'resolved_workspace_id': workspace_id,
+                'request_user_resolved': bool(user_id),
+                'request_user_id': user_id,
+                'workspace_header_present': workspace_header_present,
                 'counted_monitored_systems': system_count,
                 'counted_enabled_systems': enabled_system_count,
                 'counted_active_systems': active_system_count,
+                'counted_monitored_system_ids': monitored_system_ids,
+                'counted_enabled_monitored_system_ids': enabled_monitored_system_ids,
+                'sample_target_ids': target_ids[:5],
+                'sample_target_ids_count': len(target_ids),
                 'systems_with_recent_heartbeat': recent_heartbeat_systems,
             }
         )

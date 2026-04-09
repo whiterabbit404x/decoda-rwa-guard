@@ -8,11 +8,15 @@ from services.api.app import monitoring_runner
 
 
 class _Result:
-    def __init__(self, row=None):
+    def __init__(self, row=None, rows=None):
         self._row = row or {}
+        self._rows = rows or []
 
     def fetchone(self):
         return self._row
+
+    def fetchall(self):
+        return self._rows
 
 
 class _Conn:
@@ -25,16 +29,14 @@ class _Conn:
             return _Result({'c': 1})
         if 'FROM incidents' in q:
             return _Result({'c': 1})
-        if 'COUNT(*) AS monitored_systems_count' in q and 'FROM monitored_systems ms' in q:
+        if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+            now = datetime.now(timezone.utc).isoformat()
             return _Result(
-                {
-                    'monitored_systems_count': 3,
-                    'enabled_systems_count': 2,
-                    'active_systems_count': 2,
-                    'protected_assets_count': 2,
-                    'latest_system_heartbeat': datetime.now(timezone.utc).isoformat(),
-                    'recent_heartbeat_systems': 2,
-                }
+                rows=[
+                    {'id': 'sys-1', 'workspace_id': 'ws-1', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'active', 'last_heartbeat': now, 'monitoring_interval_seconds': 30, 'created_at': now},
+                    {'id': 'sys-2', 'workspace_id': 'ws-1', 'asset_id': 'asset-2', 'target_id': 'target-2', 'is_enabled': True, 'runtime_status': 'active', 'last_heartbeat': now, 'monitoring_interval_seconds': 30, 'created_at': now},
+                    {'id': 'sys-3', 'workspace_id': 'ws-1', 'asset_id': 'asset-3', 'target_id': 'target-3', 'is_enabled': False, 'runtime_status': 'idle', 'last_heartbeat': now, 'monitoring_interval_seconds': 30, 'created_at': now},
+                ]
             )
         if 'LEFT JOIN assets a' in q and 'FROM targets t' in q:
             return _Result({'c': 0})
@@ -89,9 +91,10 @@ def test_runtime_status_degraded_on_stale_heartbeat(monkeypatch):
     class _StaleConn(_Conn):
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
-            if 'COUNT(*) AS monitored_systems_count' in q and 'FROM monitored_systems ms' in q:
-                row = super().execute(query, params).fetchone()
-                return _Result({**row, 'latest_system_heartbeat': None, 'recent_heartbeat_systems': 0})
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                rows = super().execute(query, params)._rows
+                stale = now - timedelta(minutes=15)
+                return _Result(rows=[{**row, 'last_heartbeat': stale.isoformat()} for row in rows])
             return super().execute(query, params)
 
     monkeypatch.setattr(
@@ -135,17 +138,9 @@ def test_runtime_status_offline_without_active_systems(monkeypatch):
     class _OfflineConn(_Conn):
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
-            if 'COUNT(*) AS monitored_systems_count' in q and 'FROM monitored_systems ms' in q:
-                return _Result(
-                    {
-                        'monitored_systems_count': 3,
-                        'enabled_systems_count': 0,
-                        'active_systems_count': 0,
-                        'protected_assets_count': 0,
-                        'latest_system_heartbeat': now.isoformat(),
-                        'recent_heartbeat_systems': 0,
-                    }
-                )
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                rows = super().execute(query, params)._rows
+                return _Result(rows=[{**row, 'is_enabled': False, 'runtime_status': 'offline'} for row in rows])
             return super().execute(query, params)
 
     monkeypatch.setattr(
@@ -166,36 +161,29 @@ def test_runtime_status_scopes_counts_to_active_workspace(monkeypatch):
     class _WorkspaceConn:
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
-            workspace_id = (params or (None,))[0]
+            workspace_id = (params or (None,))[0] if params else None
             if 'FROM alerts' in q:
                 return _Result({'c': 0})
             if 'FROM incidents' in q:
                 return _Result({'c': 0})
-            if 'COUNT(*) AS monitored_systems_count' in q and 'FROM monitored_systems ms' in q:
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
                 if workspace_id == 'ws-1':
                     return _Result(
-                        {
-                            'monitored_systems_count': 1,
-                            'enabled_systems_count': 1,
-                            'active_systems_count': 1,
-                            'protected_assets_count': 1,
-                            'latest_system_heartbeat': now.isoformat(),
-                            'recent_heartbeat_systems': 1,
-                        }
+                        rows=[
+                            {'id': 'sys-1', 'workspace_id': 'ws-1', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'active', 'last_heartbeat': now.isoformat(), 'monitoring_interval_seconds': 30, 'created_at': now.isoformat()}
+                        ]
                     )
                 return _Result(
-                    {
-                        'monitored_systems_count': 4,
-                        'enabled_systems_count': 3,
-                        'active_systems_count': 2,
-                        'protected_assets_count': 3,
-                        'latest_system_heartbeat': now.isoformat(),
-                        'recent_heartbeat_systems': 3,
-                    }
+                    rows=[
+                        {'id': 'sys-1', 'workspace_id': 'ws-2', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'active', 'last_heartbeat': now.isoformat(), 'monitoring_interval_seconds': 30, 'created_at': now.isoformat()},
+                        {'id': 'sys-2', 'workspace_id': 'ws-2', 'asset_id': 'asset-2', 'target_id': 'target-2', 'is_enabled': True, 'runtime_status': 'active', 'last_heartbeat': now.isoformat(), 'monitoring_interval_seconds': 30, 'created_at': now.isoformat()},
+                        {'id': 'sys-3', 'workspace_id': 'ws-2', 'asset_id': 'asset-3', 'target_id': 'target-3', 'is_enabled': True, 'runtime_status': 'idle', 'last_heartbeat': now.isoformat(), 'monitoring_interval_seconds': 30, 'created_at': now.isoformat()},
+                        {'id': 'sys-4', 'workspace_id': 'ws-2', 'asset_id': 'asset-4', 'target_id': 'target-4', 'is_enabled': False, 'runtime_status': 'offline', 'last_heartbeat': now.isoformat(), 'monitoring_interval_seconds': 30, 'created_at': now.isoformat()},
+                    ]
                 )
             if 'LEFT JOIN assets a' in q and 'FROM targets t' in q:
                 return _Result({'c': 0})
-            if 'FROM evidence e WHERE e.workspace_id = %s::uuid' in q:
+            if 'FROM evidence e WHERE e.workspace_id = %s' in q:
                 return _Result({'observed_at': now - timedelta(seconds=20), 'block_number': 42})
             return _Result({})
 
@@ -206,8 +194,18 @@ def test_runtime_status_scopes_counts_to_active_workspace(monkeypatch):
     )
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_WorkspaceConn()))
-    monkeypatch.setattr(monitoring_runner, 'authenticate_with_connection', lambda _c, _r: {'id': 'user-1'})
-    monkeypatch.setattr(monitoring_runner, 'resolve_workspace', lambda _c, _u, _h: {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}})
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda _c, _r: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}, True),
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'list_workspace_monitored_system_rows',
+        lambda _c, _w: [
+            {'id': 'sys-1', 'workspace_id': 'ws-1', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'active', 'last_heartbeat': now.isoformat(), 'monitoring_interval_seconds': 30, 'created_at': now.isoformat()}
+        ],
+    )
 
     payload = monitoring_runner.monitoring_runtime_status(SimpleNamespace(headers={'x-workspace-id': 'ws-1'}))
     assert payload['monitored_systems'] == 1
@@ -216,6 +214,8 @@ def test_runtime_status_scopes_counts_to_active_workspace(monkeypatch):
     assert payload['monitoring_status'] == 'active'
     assert payload['counted_monitored_systems'] == 1
     assert payload['counted_enabled_systems'] == 1
+    assert payload['workspace_header_present'] is True
+    assert payload['request_user_resolved'] is True
 
 
 def test_runtime_status_not_offline_when_workspace_has_enabled_monitored_systems(monkeypatch):
@@ -231,3 +231,72 @@ def test_runtime_status_not_offline_when_workspace_has_enabled_monitored_systems
     assert payload['monitored_systems'] > 0
     assert payload['enabled_systems'] > 0
     assert payload['monitoring_status'] != 'offline'
+
+
+def test_runtime_status_and_monitored_system_listing_use_same_workspace_rows(monkeypatch):
+    now = datetime.now(timezone.utc).isoformat()
+
+    class _RowsConn:
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM alerts' in q or 'FROM incidents' in q:
+                return _Result({'c': 0})
+            if 'LEFT JOIN assets a' in q and 'FROM targets t' in q:
+                return _Result({'c': 0})
+            if 'FROM evidence' in q:
+                return _Result({'observed_at': datetime.now(timezone.utc), 'block_number': 1})
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(rows=[{'id': 'sys-1', 'workspace_id': 'ws-1', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'active', 'last_heartbeat': now, 'monitoring_interval_seconds': 30, 'created_at': now}])
+            return _Result({})
+
+    conn = _RowsConn()
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': datetime.now(timezone.utc).isoformat(), 'last_cycle_at': datetime.now(timezone.utc).isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda _c, _r: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}, True),
+    )
+    monkeypatch.setattr(monitoring_runner, 'list_workspace_monitored_system_rows', lambda _c, _w: conn.execute('SELECT ... FROM monitored_systems ms ORDER BY ms.created_at DESC').fetchall())
+
+    payload = monitoring_runner.monitoring_runtime_status(SimpleNamespace(headers={'x-workspace-id': 'ws-1'}))
+    assert payload['monitored_systems'] == 1
+    assert len(payload['counted_monitored_system_ids']) == 1
+
+
+def test_runtime_status_workspace_resolution_reports_header_presence(monkeypatch):
+    now = datetime.now(timezone.utc).isoformat()
+
+    class _HeaderConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(rows=[{'id': 'sys-1', 'workspace_id': 'ws-current', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'active', 'last_heartbeat': now, 'monitoring_interval_seconds': 30, 'created_at': now}])
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': datetime.now(timezone.utc).isoformat(), 'last_cycle_at': datetime.now(timezone.utc).isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_HeaderConn(datetime.now(timezone.utc))))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda _c, _r: ({'id': 'user-1'}, {'workspace_id': 'ws-current', 'workspace': {'id': 'ws-current'}}, False),
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'list_workspace_monitored_system_rows',
+        lambda _c, _w: [{'id': 'sys-1', 'workspace_id': 'ws-current', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'active', 'last_heartbeat': now, 'monitoring_interval_seconds': 30, 'created_at': now}],
+    )
+
+    payload = monitoring_runner.monitoring_runtime_status(SimpleNamespace(headers={}))
+    assert payload['resolved_workspace_id'] == 'ws-current'
+    assert payload['workspace_header_present'] is False
