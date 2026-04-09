@@ -3,6 +3,7 @@ export type MonitoringMode = 'LIVE' | 'DEGRADED' | 'OFFLINE' | 'STALE' | 'LIMITE
 export type MonitoringRuntimeStatus = {
   monitoring_status?: 'active' | 'idle' | 'degraded' | 'offline' | 'error';
   monitored_systems?: number;
+  enabled_systems?: number;
   protected_assets?: number;
   active_systems?: number;
   last_heartbeat?: string | null;

@@ -65,6 +65,11 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _runtime_status_debug_enabled() -> bool:
+    app_env = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
+    return app_env not in {'production', 'prod'}
+
+
 def _parse_ts(value: Any) -> datetime | None:
     if value is None:
         return None
@@ -2608,10 +2613,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             user = authenticate_with_connection(connection, request)
             workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
             workspace_id = str(workspace_context['workspace_id'])
-        workspace_filter = 'AND ms.workspace_id = %s::uuid' if workspace_id else ''
+        workspace_filter = 'AND scoped.workspace_id = %s::uuid' if workspace_id else ''
         target_workspace_filter = 'AND t.workspace_id = %s::uuid' if workspace_id else ''
         evidence_workspace_filter = 'WHERE e.workspace_id = %s::uuid' if workspace_id else ''
         scoped_params: tuple[Any, ...] = (workspace_id,) if workspace_id else ()
+        monitored_systems_scope = '''
+            FROM monitored_systems ms
+            JOIN targets t ON t.id = ms.target_id
+            WHERE t.deleted_at IS NULL
+        '''
         open_alerts = connection.execute(
             f"SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating') {'AND workspace_id = %s::uuid' if workspace_id else ''}",
             scoped_params,
@@ -2623,10 +2633,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         enabled_systems = connection.execute(
             f'''
             SELECT COUNT(*) AS c
-            FROM monitored_systems ms
-            JOIN targets t ON t.id = ms.target_id
-            WHERE t.deleted_at IS NULL
-              AND ms.is_enabled = TRUE
+            FROM ({monitored_systems_scope}) scoped
+            WHERE scoped.is_enabled = TRUE
               {workspace_filter}
             ''',
             scoped_params,
@@ -2634,11 +2642,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         active_runtime_systems = connection.execute(
             f'''
             SELECT COUNT(*) AS c
-            FROM monitored_systems ms
-            JOIN targets t ON t.id = ms.target_id
-            WHERE t.deleted_at IS NULL
-              AND ms.is_enabled = TRUE
-              AND ms.runtime_status = 'active'
+            FROM ({monitored_systems_scope}) scoped
+            WHERE scoped.is_enabled = TRUE
+              AND scoped.runtime_status = 'active'
               {workspace_filter}
             ''',
             scoped_params,
@@ -2646,30 +2652,26 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         monitored_systems_total = connection.execute(
             f'''
             SELECT COUNT(*) AS c
-            FROM monitored_systems ms
-            JOIN targets t ON t.id = ms.target_id
-            WHERE t.deleted_at IS NULL
+            FROM ({monitored_systems_scope}) scoped
+            WHERE 1 = 1
               {workspace_filter}
             ''',
             scoped_params,
         ).fetchone()
         protected_assets = connection.execute(
             f'''
-            SELECT COUNT(DISTINCT ms.asset_id) AS c
-            FROM monitored_systems ms
-            JOIN targets t ON t.id = ms.target_id
-            WHERE t.deleted_at IS NULL
-              AND ms.runtime_status = 'active'
+            SELECT COUNT(DISTINCT scoped.asset_id) AS c
+            FROM ({monitored_systems_scope}) scoped
+            WHERE scoped.runtime_status = 'active'
               {workspace_filter}
             ''',
             scoped_params,
         ).fetchone()
         latest_system_heartbeat = connection.execute(
             f'''
-            SELECT MAX(ms.last_heartbeat) AS ts
-            FROM monitored_systems ms
-            JOIN targets t ON t.id = ms.target_id
-            WHERE t.deleted_at IS NULL
+            SELECT MAX(scoped.last_heartbeat) AS ts
+            FROM ({monitored_systems_scope}) scoped
+            WHERE 1 = 1
               {workspace_filter}
             ''',
             scoped_params,
@@ -2693,12 +2695,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         coverage = connection.execute(
             f'''
             SELECT COUNT(*) AS c
-            FROM monitored_systems ms
-            JOIN targets t ON t.id = ms.target_id
-            WHERE t.deleted_at IS NULL
-              AND ms.is_enabled = TRUE
-              AND ms.last_heartbeat IS NOT NULL
-              AND ms.last_heartbeat >= NOW() - (GREATEST(t.monitoring_interval_seconds, 30) * INTERVAL '2 second')
+            FROM ({monitored_systems_scope}) scoped
+            WHERE scoped.is_enabled = TRUE
+              AND scoped.last_heartbeat IS NOT NULL
+              AND scoped.last_heartbeat >= NOW() - (GREATEST(scoped.monitoring_interval_seconds, 30) * INTERVAL '2 second')
               {workspace_filter}
             ''',
             scoped_params,
@@ -2741,7 +2741,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         runtime_status = 'Idle'
     else:
         runtime_status = 'Active'
-    return {
+    payload = {
         'monitoring_status': monitoring_status,
         'monitored_systems': system_count,
         'protected_assets': protected_assets_count,
@@ -2763,6 +2763,17 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'evidence_freshness_seconds': evidence_freshness,
         'degraded_reason': degraded_reason,
     }
+    if _runtime_status_debug_enabled():
+        payload.update(
+            {
+                'workspace_id': workspace_id,
+                'counted_monitored_systems': system_count,
+                'counted_enabled_systems': enabled_system_count,
+                'counted_active_systems': active_system_count,
+                'systems_with_recent_heartbeat': recent_heartbeat_systems,
+            }
+        )
+    return payload
 
 
 def list_monitoring_evidence(request: Request, *, limit: int = 50) -> dict[str, Any]:

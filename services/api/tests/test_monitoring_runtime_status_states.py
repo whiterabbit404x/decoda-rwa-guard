@@ -25,12 +25,18 @@ class _Conn:
             return _Result({'c': 1})
         if 'FROM incidents' in q:
             return _Result({'c': 1})
-        if 'FROM monitored_systems ms JOIN targets t' in q and "ms.is_enabled = TRUE" in q:
+        if 'FROM ( FROM monitored_systems ms JOIN targets t ON t.id = ms.target_id WHERE t.deleted_at IS NULL ) scoped' in q and 'scoped.is_enabled = TRUE' in q and "scoped.runtime_status = 'active'" not in q and 'scoped.last_heartbeat IS NOT NULL' not in q:
             return _Result({'c': 2})
-        if 'FROM monitored_systems ms JOIN targets t' in q and "ms.runtime_status = 'active'" in q:
+        if 'FROM ( FROM monitored_systems ms JOIN targets t ON t.id = ms.target_id WHERE t.deleted_at IS NULL ) scoped' in q and "scoped.runtime_status = 'active'" in q and 'COUNT(DISTINCT scoped.asset_id)' not in q:
             return _Result({'c': 2})
-        if 'FROM monitored_systems ms JOIN targets t' in q and "ms.is_enabled = TRUE" not in q and "ms.runtime_status = 'active'" not in q:
+        if 'FROM ( FROM monitored_systems ms JOIN targets t ON t.id = ms.target_id WHERE t.deleted_at IS NULL ) scoped' in q and 'WHERE 1 = 1' in q:
             return _Result({'c': 3})
+        if 'COUNT(DISTINCT scoped.asset_id)' in q:
+            return _Result({'c': 2})
+        if 'MAX(scoped.last_heartbeat)' in q:
+            return _Result({'ts': datetime.now(timezone.utc).isoformat()})
+        if 'scoped.last_heartbeat IS NOT NULL' in q:
+            return _Result({'c': 2})
         if 'LEFT JOIN assets a' in q and 'FROM targets t' in q:
             return _Result({'c': 0})
         if 'FROM evidence' in q:
@@ -121,7 +127,7 @@ def test_runtime_status_offline_without_active_systems(monkeypatch):
     class _OfflineConn(_Conn):
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
-            if 'FROM monitored_systems ms JOIN targets t' in q and "ms.is_enabled = TRUE" in q:
+            if 'scoped.is_enabled = TRUE' in q and "scoped.runtime_status = 'active'" not in q:
                 return _Result({'c': 0})
             return super().execute(query, params)
 
@@ -148,16 +154,18 @@ def test_runtime_status_scopes_counts_to_active_workspace(monkeypatch):
                 return _Result({'c': 0})
             if 'FROM incidents' in q:
                 return _Result({'c': 0})
-            if 'FROM monitored_systems ms JOIN targets t' in q and "ms.is_enabled = TRUE" in q and "ms.runtime_status = 'active'" not in q:
+            if 'scoped.is_enabled = TRUE' in q and "scoped.runtime_status = 'active'" not in q and 'scoped.last_heartbeat IS NOT NULL' not in q:
                 return _Result({'c': 1 if workspace_id == 'ws-1' else 3})
-            if 'FROM monitored_systems ms JOIN targets t' in q and "ms.runtime_status = 'active'" in q:
+            if "scoped.runtime_status = 'active'" in q and 'COUNT(DISTINCT scoped.asset_id)' not in q:
                 return _Result({'c': 1 if workspace_id == 'ws-1' else 2})
-            if 'FROM monitored_systems ms JOIN targets t' in q and "ms.is_enabled = TRUE" not in q and "ms.runtime_status = 'active'" not in q:
+            if 'WHERE 1 = 1' in q and 'FROM ( FROM monitored_systems ms JOIN targets t ON t.id = ms.target_id WHERE t.deleted_at IS NULL ) scoped' in q:
                 return _Result({'c': 1 if workspace_id == 'ws-1' else 4})
-            if 'COUNT(DISTINCT ms.asset_id)' in q:
+            if 'COUNT(DISTINCT scoped.asset_id)' in q:
                 return _Result({'c': 1 if workspace_id == 'ws-1' else 3})
-            if 'MAX(ms.last_heartbeat)' in q:
+            if 'MAX(scoped.last_heartbeat)' in q:
                 return _Result({'ts': now.isoformat()})
+            if 'scoped.last_heartbeat IS NOT NULL' in q:
+                return _Result({'c': 1 if workspace_id == 'ws-1' else 3})
             if 'LEFT JOIN assets a' in q and 'FROM targets t' in q:
                 return _Result({'c': 0})
             if 'FROM evidence e WHERE e.workspace_id = %s::uuid' in q:
@@ -179,3 +187,20 @@ def test_runtime_status_scopes_counts_to_active_workspace(monkeypatch):
     assert payload['enabled_systems'] == 1
     assert payload['active_systems'] == 1
     assert payload['monitoring_status'] == 'active'
+    assert payload['counted_monitored_systems'] == 1
+    assert payload['counted_enabled_systems'] == 1
+
+
+def test_runtime_status_not_offline_when_workspace_has_enabled_monitored_systems(monkeypatch):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_Conn(now - timedelta(seconds=15))))
+    payload = monitoring_runner.monitoring_runtime_status()
+    assert payload['monitored_systems'] > 0
+    assert payload['enabled_systems'] > 0
+    assert payload['monitoring_status'] != 'offline'
