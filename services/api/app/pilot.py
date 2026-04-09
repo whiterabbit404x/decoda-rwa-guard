@@ -2303,6 +2303,32 @@ def reconcile_monitored_systems_for_enabled_targets() -> dict[str, Any]:
         return result
 
 
+def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        result = reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
+        log_audit(
+            connection,
+            action='monitoring.reconcile',
+            entity_type='workspace',
+            entity_id=workspace_id,
+            request=request,
+            user_id=user['id'],
+            workspace_id=workspace_id,
+            metadata={
+                'targets_scanned': result.get('targets_scanned', 0),
+                'created_or_updated': result.get('created_or_updated', 0),
+                'invalid_reasons': result.get('invalid_reasons', {}),
+                'skipped_reasons': result.get('skipped_reasons', {}),
+            },
+        )
+        connection.commit()
+        return {'workspace': workspace_context['workspace'], 'reconcile': result}
+
+
 def _deliver_webhook_attempt(payload: dict[str, Any]) -> None:
     webhook_id = str(payload.get('webhook_id', ''))
     delivery_id = str(payload.get('delivery_id', ''))
@@ -4061,15 +4087,26 @@ def ensure_monitored_system_for_target(
     workspace_id: str | None = None,
     require_enabled: bool = True,
 ) -> dict[str, Any]:
+    logger.info(
+        'target_monitoring_bridge start target_id=%s workspace_filter=%s require_enabled=%s',
+        target_id,
+        workspace_id,
+        require_enabled,
+    )
     target = connection.execute(
         '''
         SELECT t.id, t.workspace_id, t.asset_id, t.chain_network, t.enabled, t.monitoring_enabled,
-               a.id AS resolved_asset_id
+               a.id AS resolved_asset_id,
+               aa.id AS any_asset_id,
+               aa.workspace_id AS any_asset_workspace_id
         FROM targets t
         LEFT JOIN assets a
             ON a.id = t.asset_id
            AND a.workspace_id = t.workspace_id
            AND a.deleted_at IS NULL
+        LEFT JOIN assets aa
+            ON aa.id = t.asset_id
+           AND aa.deleted_at IS NULL
         WHERE t.id = %s::uuid
           AND t.deleted_at IS NULL
           AND (%s::uuid IS NULL OR t.workspace_id = %s::uuid)
@@ -4077,27 +4114,69 @@ def ensure_monitored_system_for_target(
         (target_id, workspace_id, workspace_id),
     ).fetchone()
     if target is None:
-        return {'status': 'target_not_found', 'reason': 'target_not_found'}
+        result = {'status': 'target_not_found', 'reason': 'target_not_found', 'target_id': target_id}
+        logger.info('target_monitoring_bridge result=%s', result)
+        return result
 
     target_workspace_id = str(target['workspace_id'])
-    if require_enabled and (not bool(target.get('enabled')) or not bool(target.get('monitoring_enabled'))):
-        return {'status': 'target_not_enabled', 'reason': 'target_not_enabled', 'workspace_id': target_workspace_id, 'target_id': target_id}
-
+    enabled = bool(target.get('enabled'))
+    monitoring_enabled = bool(target.get('monitoring_enabled'))
     asset_id = str(target.get('asset_id') or '') or None
     resolved_asset_id = str(target.get('resolved_asset_id') or '') or None
+    any_asset_id = str(target.get('any_asset_id') or '') or None
+    any_asset_workspace_id = str(target.get('any_asset_workspace_id') or '') or None
+    if require_enabled and not enabled:
+        result = {
+            'status': 'target_not_enabled',
+            'reason': 'target_not_enabled',
+            'workspace_id': target_workspace_id,
+            'target_id': target_id,
+            'enabled': enabled,
+            'monitoring_enabled': monitoring_enabled,
+            'asset_id': asset_id,
+            'resolved_asset_id': resolved_asset_id,
+        }
+        logger.info('target_monitoring_bridge result=%s', result)
+        return result
+    if require_enabled and not monitoring_enabled:
+        result = {
+            'status': 'target_not_enabled',
+            'reason': 'monitoring_disabled',
+            'workspace_id': target_workspace_id,
+            'target_id': target_id,
+            'enabled': enabled,
+            'monitoring_enabled': monitoring_enabled,
+            'asset_id': asset_id,
+            'resolved_asset_id': resolved_asset_id,
+        }
+        logger.info('target_monitoring_bridge result=%s', result)
+        return result
+
     if not asset_id or not resolved_asset_id:
+        reason = 'workspace_mismatch' if (asset_id and any_asset_id and any_asset_workspace_id != target_workspace_id) else 'linked_asset_missing'
         connection.execute(
             '''
             UPDATE targets
             SET last_run_status = 'invalid_missing_asset',
-                watcher_degraded_reason = 'linked_asset_missing',
+                watcher_degraded_reason = %s,
                 updated_at = NOW()
             WHERE id = %s::uuid
             ''',
-            (target_id,),
+            (reason, target_id),
         )
         connection.execute('DELETE FROM monitored_systems WHERE target_id = %s::uuid AND workspace_id = %s::uuid', (target_id, target_workspace_id))
-        return {'status': 'invalid_target', 'reason': 'linked_asset_missing', 'workspace_id': target_workspace_id, 'target_id': target_id}
+        result = {
+            'status': 'invalid_target',
+            'reason': reason,
+            'workspace_id': target_workspace_id,
+            'target_id': target_id,
+            'enabled': enabled,
+            'monitoring_enabled': monitoring_enabled,
+            'asset_id': asset_id,
+            'resolved_asset_id': resolved_asset_id,
+        }
+        logger.info('target_monitoring_bridge result=%s', result)
+        return result
 
     normalized_chain = (str(target.get('chain_network') or '').strip() or 'unknown')
     row = connection.execute(
@@ -4125,38 +4204,74 @@ def ensure_monitored_system_for_target(
         ''',
         (target_id,),
     )
-    return {
+    result = {
         'status': 'ok',
         'workspace_id': target_workspace_id,
         'target_id': target_id,
         'asset_id': resolved_asset_id,
+        'enabled': enabled,
+        'monitoring_enabled': monitoring_enabled,
+        'resolved_asset_id': resolved_asset_id,
         'monitored_system_id': str((row or {}).get('id')) if row else None,
     }
+    logger.info('target_monitoring_bridge result=%s', result)
+    return result
 
 
-def reconcile_enabled_targets_monitored_systems(connection: Any) -> dict[str, Any]:
+def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id: str | None = None) -> dict[str, Any]:
     rows = connection.execute(
         '''
         SELECT id
         FROM targets
         WHERE deleted_at IS NULL
-          AND enabled = TRUE
-          AND monitoring_enabled = TRUE
+          AND (%s::uuid IS NULL OR workspace_id = %s::uuid)
         ORDER BY created_at ASC
         '''
+        ,
+        (workspace_id, workspace_id),
     ).fetchall()
     created_or_updated = 0
+    eligible_targets = 0
     invalid_targets: list[str] = []
+    invalid_reasons: dict[str, int] = {}
+    skipped_reasons: dict[str, int] = {}
+    repaired_monitored_system_ids: list[str] = []
     for row in rows:
-        result = ensure_monitored_system_for_target(connection, target_id=str(row['id']))
+        result = ensure_monitored_system_for_target(connection, target_id=str(row['id']), workspace_id=workspace_id)
         if result.get('status') == 'ok':
             created_or_updated += 1
+            eligible_targets += 1
+            if result.get('monitored_system_id'):
+                repaired_monitored_system_ids.append(str(result['monitored_system_id']))
         elif result.get('status') == 'invalid_target':
             invalid_targets.append(str(result.get('target_id')))
+            invalid_reason = str(result.get('reason') or 'invalid_target')
+            invalid_reasons[invalid_reason] = invalid_reasons.get(invalid_reason, 0) + 1
+        else:
+            skipped_reason = str(result.get('reason') or 'skipped')
+            skipped_reasons[skipped_reason] = skipped_reasons.get(skipped_reason, 0) + 1
+        logger.info(
+            'target_monitoring_reconcile target_id=%s workspace_id=%s enabled=%s monitoring_enabled=%s asset_id=%s resolved_asset_id=%s status=%s reason=%s monitored_system_id=%s',
+            result.get('target_id') or row.get('id'),
+            result.get('workspace_id') or workspace_id,
+            result.get('enabled'),
+            result.get('monitoring_enabled'),
+            result.get('asset_id'),
+            result.get('resolved_asset_id'),
+            result.get('status'),
+            result.get('reason'),
+            result.get('monitored_system_id'),
+        )
     return {
-        'enabled_targets_scanned': len(rows),
+        'enabled_targets_scanned': eligible_targets + len(invalid_targets),
+        'targets_scanned': len(rows),
+        'eligible_targets': eligible_targets,
         'created_or_updated': created_or_updated,
         'invalid_targets': invalid_targets,
+        'invalid_reasons': invalid_reasons,
+        'skipped_reasons': skipped_reasons,
+        'repaired_monitored_system_ids': repaired_monitored_system_ids,
+        'workspace_id': workspace_id,
     }
 
 

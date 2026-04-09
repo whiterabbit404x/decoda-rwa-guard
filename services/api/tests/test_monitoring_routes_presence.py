@@ -8,6 +8,7 @@ def test_monitoring_routes_registered() -> None:
     assert "@app.get('/monitoring/targets'" in content
     assert "@app.patch('/monitoring/targets/{target_id}'" in content
     assert "@app.get('/monitoring/systems'" in content
+    assert "@app.post('/monitoring/systems/reconcile'" in content
     assert "@app.post('/monitoring/systems'" in content
     assert "@app.patch('/monitoring/systems/{system_id}'" in content
     assert "@app.delete('/monitoring/systems/{system_id}'" in content
