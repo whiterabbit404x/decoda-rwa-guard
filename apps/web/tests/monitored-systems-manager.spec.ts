@@ -27,4 +27,7 @@ test('monitored systems UI exposes repair action and reconcile summary', () => {
   expect(source).toContain('created_or_updated');
   expect(source).toContain('invalid_reasons');
   expect(source).toContain('skipped_reasons');
+  expect(source).toContain('payload?.systems');
+  expect(source).toContain('await load();');
+  expect(source).toContain('Repair reported success, but no monitored systems were visible after reload.');
 });
