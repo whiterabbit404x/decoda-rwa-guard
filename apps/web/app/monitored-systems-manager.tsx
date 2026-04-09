@@ -47,39 +47,53 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
     const response = await fetch(`${apiUrl}/monitoring/systems`, { headers: authHeaders(), cache: 'no-store' });
     if (!response.ok) {
       setMessage('Unable to load monitored systems.');
-      return;
+      return null;
     }
     const payload = await response.json();
-    setSystems(payload.systems ?? []);
+    const loadedSystems = payload.systems ?? [];
+    setSystems(loadedSystems);
+    return loadedSystems;
   }
 
   async function runReconcile() {
     setMessage('');
     setIsReconciling(true);
-    const response = await fetch(`${apiUrl}/monitoring/systems/reconcile`, {
-      method: 'POST',
-      headers: authHeaders(),
-    });
-    if (!response.ok) {
-      setIsReconciling(false);
-      setMessage('Unable to repair monitored systems.');
-      return;
-    }
+    try {
+      const response = await fetch(`${apiUrl}/monitoring/systems/reconcile`, {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+      if (!response.ok) {
+        setMessage('Unable to repair monitored systems.');
+        return;
+      }
 
-    const payload = await response.json();
-    const summary: ReconcileSummary = {
-      targets_scanned: Number(payload?.reconcile?.targets_scanned ?? 0),
-      created_or_updated: Number(payload?.reconcile?.created_or_updated ?? 0),
-      invalid_reasons: payload?.reconcile?.invalid_reasons ?? {},
-      skipped_reasons: payload?.reconcile?.skipped_reasons ?? {},
-      repaired_monitored_system_ids: payload?.reconcile?.repaired_monitored_system_ids ?? [],
-    };
-    setReconcileSummary(summary);
-    setMessage(
-      `Repair completed. ${summary.created_or_updated} monitored systems created or updated from ${summary.targets_scanned} targets scanned.`,
-    );
-    await load();
-    setIsReconciling(false);
+      const payload = await response.json();
+      const summary: ReconcileSummary = {
+        targets_scanned: Number(payload?.reconcile?.targets_scanned ?? 0),
+        created_or_updated: Number(payload?.reconcile?.created_or_updated ?? 0),
+        invalid_reasons: payload?.reconcile?.invalid_reasons ?? {},
+        skipped_reasons: payload?.reconcile?.skipped_reasons ?? {},
+        repaired_monitored_system_ids: payload?.reconcile?.repaired_monitored_system_ids ?? [],
+      };
+      setReconcileSummary(summary);
+      const reconciledSystems = Array.isArray(payload?.systems) ? payload.systems : null;
+      if (reconciledSystems) {
+        setSystems(reconciledSystems);
+      }
+      const reloadedSystems = await load();
+      const visibleSystems = reloadedSystems ?? reconciledSystems ?? [];
+      if (summary.created_or_updated > 0 && visibleSystems.length === 0) {
+        setMessage('Repair reported success, but no monitored systems were visible after reload.');
+        return;
+      }
+
+      setMessage(
+        `Repair completed. ${summary.created_or_updated} monitored systems created or updated from ${summary.targets_scanned} targets scanned.`,
+      );
+    } finally {
+      setIsReconciling(false);
+    }
   }
 
   async function toggle(system: SystemRow) {

@@ -113,6 +113,13 @@ class _Conn:
             return _Result(rows=rows)
         if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
             return _Result(rows=self._monitored_rows())
+        if 'SELECT id FROM monitored_systems WHERE workspace_id =' in q and 'AND target_id =' in q:
+            workspace_id = str(params[0])
+            target_id = str(params[1])
+            row = self.monitored_systems.get(target_id)
+            if row and workspace_id == 'ws-1':
+                return _Result(row={'id': row['id']})
+            return _Result(row=None)
         if "SELECT COUNT(*) AS c FROM alerts" in q:
             return _Result(row={'c': 0})
         if "SELECT COUNT(*) AS c FROM incidents" in q:
@@ -205,3 +212,22 @@ def test_runtime_status_count_reflects_backfilled_monitored_system_rows(monkeypa
     after = monitoring_runner.monitoring_runtime_status()
     assert after['monitored_systems'] == 1
     assert after['monitored_systems_count'] == 1
+
+
+def test_reconcile_does_not_claim_success_for_non_visible_rows():
+    conn = _Conn()
+
+    original = conn.execute
+
+    def execute(query, params=None):
+        q = ' '.join(str(query).split())
+        if 'SELECT id FROM monitored_systems WHERE workspace_id =' in q and 'AND target_id =' in q and str((params or [None, None])[1]) == 'target-valid':
+            return _Result(row=None)
+        return original(query, params)
+
+    conn.execute = execute  # type: ignore[method-assign]
+
+    result = pilot.reconcile_enabled_targets_monitored_systems(conn)
+    assert result['created_or_updated'] == 0
+    assert result['repaired_monitored_system_ids'] == []
+    assert result['skipped_reasons']['post_upsert_not_visible'] == 1

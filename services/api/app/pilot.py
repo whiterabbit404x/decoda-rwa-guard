@@ -2326,7 +2326,24 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
             },
         )
         connection.commit()
-        return {'workspace': workspace_context['workspace'], 'reconcile': result}
+        rows = list_workspace_monitored_system_rows(connection, workspace_id)
+        systems = [_json_safe_value(row) for row in rows]
+        response: dict[str, Any] = {
+            'workspace': workspace_context['workspace'],
+            'reconcile': result,
+            'systems': systems,
+            'monitored_systems_count': len(systems),
+        }
+        if os.getenv('APP_ENV', 'development').strip().lower() != 'production':
+            response['diagnostics'] = {
+                'resolved_workspace_id': workspace_id,
+                'post_reconcile_monitored_systems_count': len(systems),
+                'post_reconcile_monitored_system_ids': [str(row.get('id')) for row in systems if row.get('id')],
+                'targets_scanned': result.get('targets_scanned', 0),
+                'created_or_updated': result.get('created_or_updated', 0),
+                'repaired_monitored_system_ids': result.get('repaired_monitored_system_ids', []),
+            }
+        return response
 
 
 def _deliver_webhook_attempt(payload: dict[str, Any]) -> None:
@@ -4239,10 +4256,21 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
     for row in rows:
         result = ensure_monitored_system_for_target(connection, target_id=str(row['id']), workspace_id=workspace_id)
         if result.get('status') == 'ok':
-            created_or_updated += 1
             eligible_targets += 1
-            if result.get('monitored_system_id'):
-                repaired_monitored_system_ids.append(str(result['monitored_system_id']))
+            verified_row = connection.execute(
+                '''
+                SELECT id
+                FROM monitored_systems
+                WHERE workspace_id = %s::uuid
+                  AND target_id = %s::uuid
+                ''',
+                (str(result.get('workspace_id') or workspace_id), str(result.get('target_id') or row.get('id'))),
+            ).fetchone()
+            if verified_row:
+                created_or_updated += 1
+                repaired_monitored_system_ids.append(str(verified_row['id']))
+            else:
+                skipped_reasons['post_upsert_not_visible'] = skipped_reasons.get('post_upsert_not_visible', 0) + 1
         elif result.get('status') == 'invalid_target':
             invalid_targets.append(str(result.get('target_id')))
             invalid_reason = str(result.get('reason') or 'invalid_target')
