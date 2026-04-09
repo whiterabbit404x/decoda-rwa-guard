@@ -19,15 +19,41 @@ test('monitored systems toggle waits for backend and re-fetches state', () => {
   expect(source).toContain('await load();');
 });
 
-test('monitored systems UI exposes repair action and reconcile summary', () => {
+test('clicking repair with fetch rejection shows error message', () => {
+  const source = readAppFile('monitored-systems-manager.tsx');
+  expect(source).toContain("setMessage('Repair request failed before the server responded.')");
+});
+
+test('clicking repair with non-json response shows parse error message', () => {
+  const source = readAppFile('monitored-systems-manager.tsx');
+  expect(source).toContain("contentType.toLowerCase().includes('application/json')");
+  expect(source).toContain("setMessage('Repair response could not be parsed.')");
+});
+
+test('clicking repair with success shows success message', () => {
+  const source = readAppFile('monitored-systems-manager.tsx');
+  expect(source).toContain('Repair completed. ${summary.created_or_updated} monitored systems created or updated from ${summary.targets_scanned} targets scanned.');
+});
+
+test('clicking repair with reconcile success but reload failure shows partial failure message', () => {
+  const source = readAppFile('monitored-systems-manager.tsx');
+  expect(source).toContain("failureMessage: 'Repair may have completed, but reloading monitored systems failed.'");
+  expect(source).toContain("setMessage('Repair may have completed, but reloading monitored systems failed.')");
+});
+
+test('monitored systems UI exposes repair action, status line, and reconcile diagnostics', () => {
   const source = readAppFile('monitored-systems-manager.tsx');
   expect(source).toContain("fetch(`${apiUrl}/monitoring/systems/reconcile`");
   expect(source).toContain('Repair monitored systems');
+  expect(source).toContain('Repairing monitored systems…');
   expect(source).toContain('reconcileSummary');
   expect(source).toContain('created_or_updated');
   expect(source).toContain('invalid_reasons');
   expect(source).toContain('skipped_reasons');
-  expect(source).toContain('payload?.systems');
-  expect(source).toContain('await load();');
+  expect(source).toContain("console.debug('[monitored-systems] reconcile request started')");
+  expect(source).toContain("console.debug('[monitored-systems] reconcile HTTP status', response.status)");
+  expect(source).toContain("console.debug('[monitored-systems] reconcile response content-type', contentType || '(none)')");
+  expect(source).toContain("console.debug('[monitored-systems] reconcile parsed payload', payload)");
+  expect(source).toContain("console.debug('[monitored-systems] reconcile reload result count', reloadedSystems?.length ?? 0)");
   expect(source).toContain('Repair reported success, but no monitored systems were visible after reload.');
 });
