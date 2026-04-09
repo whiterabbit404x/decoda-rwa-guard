@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from services.api.app import pilot
+from datetime import datetime, timezone
+
+from services.api.app import monitoring_runner, pilot
 
 
 class _Result:
@@ -26,6 +28,8 @@ class _Conn:
                 'enabled': True,
                 'monitoring_enabled': True,
                 'resolved_asset_id': 'asset-1',
+                'any_asset_id': 'asset-1',
+                'any_asset_workspace_id': 'ws-1',
             },
             'target-missing-asset': {
                 'id': 'target-missing-asset',
@@ -35,6 +39,19 @@ class _Conn:
                 'enabled': True,
                 'monitoring_enabled': True,
                 'resolved_asset_id': None,
+                'any_asset_id': None,
+                'any_asset_workspace_id': None,
+            },
+            'target-monitoring-disabled': {
+                'id': 'target-monitoring-disabled',
+                'workspace_id': 'ws-1',
+                'asset_id': 'asset-1',
+                'chain_network': 'ethereum-mainnet',
+                'enabled': True,
+                'monitoring_enabled': False,
+                'resolved_asset_id': 'asset-1',
+                'any_asset_id': 'asset-1',
+                'any_asset_workspace_id': 'ws-1',
             },
             'target-disabled': {
                 'id': 'target-disabled',
@@ -44,10 +61,31 @@ class _Conn:
                 'enabled': False,
                 'monitoring_enabled': False,
                 'resolved_asset_id': 'asset-1',
+                'any_asset_id': 'asset-1',
+                'any_asset_workspace_id': 'ws-1',
             },
         }
         self.monitored_systems: dict[str, dict] = {}
-        self.invalid_marked: list[str] = []
+        self.invalid_marked: list[tuple[str, str]] = []
+
+    def _monitored_rows(self):
+        now = datetime.now(timezone.utc)
+        return [
+            {
+                'id': row['id'],
+                'workspace_id': 'ws-1',
+                'asset_id': row['asset_id'],
+                'target_id': target_id,
+                'chain': 'ethereum-mainnet',
+                'is_enabled': True,
+                'runtime_status': 'active',
+                'status': 'active',
+                'last_heartbeat': now,
+                'monitoring_interval_seconds': 30,
+                'created_at': now,
+            }
+            for target_id, row in self.monitored_systems.items()
+        ]
 
     def execute(self, query, params=None):
         q = ' '.join(str(query).split())
@@ -61,17 +99,40 @@ class _Conn:
             self.monitored_systems[target_id] = {'id': row['id'], 'target_id': target_id, 'asset_id': params[2]}
             return _Result(row)
         if "SET last_run_status = 'invalid_missing_asset'" in q:
-            self.invalid_marked.append(str(params[0]))
+            reason = str(params[0])
+            target_id = str(params[1])
+            self.invalid_marked.append((target_id, reason))
             return _Result()
         if 'DELETE FROM monitored_systems WHERE target_id' in q:
             self.monitored_systems.pop(str(params[0]), None)
             return _Result()
         if "SET last_run_status = 'ready'" in q:
             return _Result()
-        if 'SELECT id FROM targets WHERE deleted_at IS NULL AND enabled = TRUE AND monitoring_enabled = TRUE' in q:
-            rows = [{'id': 'target-valid'}, {'id': 'target-missing-asset'}]
+        if 'SELECT id FROM targets WHERE deleted_at IS NULL' in q:
+            rows = [{'id': target_id} for target_id in self.targets.keys()]
             return _Result(rows=rows)
+        if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+            return _Result(rows=self._monitored_rows())
+        if "SELECT COUNT(*) AS c FROM alerts" in q:
+            return _Result(row={'c': 0})
+        if "SELECT COUNT(*) AS c FROM incidents" in q:
+            return _Result(row={'c': 0})
+        if 'LEFT JOIN assets a' in q and 'FROM targets t' in q and 'COUNT(*) AS c' in q:
+            return _Result(row={'c': 0})
+        if 'SELECT observed_at, block_number FROM evidence e' in q:
+            return _Result(row=None)
         return _Result()
+
+
+class _ConnCtx:
+    def __init__(self, conn: _Conn):
+        self.conn = conn
+
+    def __enter__(self):
+        return self.conn
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
 def test_ensure_monitored_system_for_enabled_target_creates_row():
@@ -87,21 +148,41 @@ def test_ensure_monitored_system_rejects_target_with_missing_asset():
     result = pilot.ensure_monitored_system_for_target(conn, target_id='target-missing-asset')
     assert result['status'] == 'invalid_target'
     assert result['reason'] == 'linked_asset_missing'
-    assert 'target-missing-asset' in conn.invalid_marked
+    assert ('target-missing-asset', 'linked_asset_missing') in conn.invalid_marked
     assert 'target-missing-asset' not in conn.monitored_systems
 
 
-def test_ensure_monitored_system_skips_disabled_targets_by_default():
+def test_ensure_monitored_system_skips_monitoring_disabled_targets_by_default():
     conn = _Conn()
-    result = pilot.ensure_monitored_system_for_target(conn, target_id='target-disabled')
+    result = pilot.ensure_monitored_system_for_target(conn, target_id='target-monitoring-disabled')
     assert result['status'] == 'target_not_enabled'
-    assert 'target-disabled' not in conn.monitored_systems
+    assert result['reason'] == 'monitoring_disabled'
+    assert 'target-monitoring-disabled' not in conn.monitored_systems
 
 
-def test_reconcile_enabled_targets_backfills_and_reports_invalid():
+def test_reconcile_enabled_targets_backfills_and_reports_invalid_and_skipped_reasons():
     conn = _Conn()
     result = pilot.reconcile_enabled_targets_monitored_systems(conn)
+    assert result['targets_scanned'] == 4
     assert result['enabled_targets_scanned'] == 2
+    assert result['eligible_targets'] == 1
     assert result['created_or_updated'] == 1
     assert result['invalid_targets'] == ['target-missing-asset']
+    assert result['invalid_reasons'] == {'linked_asset_missing': 1}
+    assert result['skipped_reasons'] == {'monitoring_disabled': 1, 'target_not_enabled': 1}
     assert 'target-valid' in conn.monitored_systems
+
+
+def test_runtime_status_count_reflects_backfilled_monitored_system_rows(monkeypatch):
+    conn = _Conn()
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _ConnCtx(conn))
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'status': 'running', 'last_cycle_at': None, 'last_heartbeat_at': None})
+
+    before = monitoring_runner.monitoring_runtime_status()
+    assert before['monitored_systems'] == 0
+
+    pilot.reconcile_enabled_targets_monitored_systems(conn)
+    after = monitoring_runner.monitoring_runtime_status()
+    assert after['monitored_systems'] == 1
+    assert after['monitored_systems_count'] == 1

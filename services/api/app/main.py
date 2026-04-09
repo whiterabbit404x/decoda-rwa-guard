@@ -74,6 +74,7 @@ from services.api.app.pilot import (
     mfa_disable,
     run_background_jobs,
     reconcile_monitored_systems_for_enabled_targets,
+    reconcile_workspace_monitored_systems,
     get_workspace_subscription,
     list_workspace_members,
     list_webhook_deliveries,
@@ -1199,8 +1200,8 @@ def bootstrap_live_pilot() -> dict[str, Any]:
             reconcile_result.get('created_or_updated', 0),
             len(reconcile_result.get('invalid_targets', [])),
         )
-    except Exception as exc:  # pragma: no cover - startup safety
-        logger.warning('startup monitored systems reconcile failed: %s', exc)
+    except Exception:  # pragma: no cover - startup safety
+        logger.exception('startup monitored systems reconcile failed')
     return STARTUP_BOOTSTRAP_STATUS
 
 
@@ -1873,6 +1874,11 @@ def monitoring_targets_patch(target_id: str, payload: dict[str, Any], request: R
 @app.get('/monitoring/systems', summary='List monitored systems')
 def monitoring_systems_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_monitored_systems(request))
+
+
+@app.post('/monitoring/systems/reconcile', summary='Repair monitored systems from eligible targets')
+def monitoring_systems_reconcile(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: reconcile_workspace_monitored_systems(request))
 
 
 @app.post('/monitoring/systems', summary='Create monitored system')
