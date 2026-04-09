@@ -25,18 +25,17 @@ class _Conn:
             return _Result({'c': 1})
         if 'FROM incidents' in q:
             return _Result({'c': 1})
-        if 'FROM ( FROM monitored_systems ms JOIN targets t ON t.id = ms.target_id WHERE t.deleted_at IS NULL ) scoped' in q and 'scoped.is_enabled = TRUE' in q and "scoped.runtime_status = 'active'" not in q and 'scoped.last_heartbeat IS NOT NULL' not in q:
-            return _Result({'c': 2})
-        if 'FROM ( FROM monitored_systems ms JOIN targets t ON t.id = ms.target_id WHERE t.deleted_at IS NULL ) scoped' in q and "scoped.runtime_status = 'active'" in q and 'COUNT(DISTINCT scoped.asset_id)' not in q:
-            return _Result({'c': 2})
-        if 'FROM ( FROM monitored_systems ms JOIN targets t ON t.id = ms.target_id WHERE t.deleted_at IS NULL ) scoped' in q and 'WHERE 1 = 1' in q:
-            return _Result({'c': 3})
-        if 'COUNT(DISTINCT scoped.asset_id)' in q:
-            return _Result({'c': 2})
-        if 'MAX(scoped.last_heartbeat)' in q:
-            return _Result({'ts': datetime.now(timezone.utc).isoformat()})
-        if 'scoped.last_heartbeat IS NOT NULL' in q:
-            return _Result({'c': 2})
+        if 'COUNT(*) AS monitored_systems_count' in q and 'FROM monitored_systems ms' in q:
+            return _Result(
+                {
+                    'monitored_systems_count': 3,
+                    'enabled_systems_count': 2,
+                    'active_systems_count': 2,
+                    'protected_assets_count': 2,
+                    'latest_system_heartbeat': datetime.now(timezone.utc).isoformat(),
+                    'recent_heartbeat_systems': 2,
+                }
+            )
         if 'LEFT JOIN assets a' in q and 'FROM targets t' in q:
             return _Result({'c': 0})
         if 'FROM evidence' in q:
@@ -86,13 +85,22 @@ def test_runtime_status_active_with_recent_evidence(monkeypatch):
 
 def test_runtime_status_degraded_on_stale_heartbeat(monkeypatch):
     now = datetime.now(timezone.utc)
+
+    class _StaleConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'COUNT(*) AS monitored_systems_count' in q and 'FROM monitored_systems ms' in q:
+                row = super().execute(query, params).fetchone()
+                return _Result({**row, 'latest_system_heartbeat': None, 'recent_heartbeat_systems': 0})
+            return super().execute(query, params)
+
     monkeypatch.setattr(
         monitoring_runner,
         'get_monitoring_health',
         lambda: {'last_heartbeat_at': (now - timedelta(minutes=20)).isoformat(), 'last_cycle_at': (now - timedelta(minutes=20)).isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling'},
     )
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
-    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_Conn(now - timedelta(seconds=30))))
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_StaleConn(now - timedelta(seconds=30))))
 
     payload = monitoring_runner.monitoring_runtime_status()
     assert payload['status'] == 'Degraded'
@@ -127,8 +135,17 @@ def test_runtime_status_offline_without_active_systems(monkeypatch):
     class _OfflineConn(_Conn):
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
-            if 'scoped.is_enabled = TRUE' in q and "scoped.runtime_status = 'active'" not in q:
-                return _Result({'c': 0})
+            if 'COUNT(*) AS monitored_systems_count' in q and 'FROM monitored_systems ms' in q:
+                return _Result(
+                    {
+                        'monitored_systems_count': 3,
+                        'enabled_systems_count': 0,
+                        'active_systems_count': 0,
+                        'protected_assets_count': 0,
+                        'latest_system_heartbeat': now.isoformat(),
+                        'recent_heartbeat_systems': 0,
+                    }
+                )
             return super().execute(query, params)
 
     monkeypatch.setattr(
@@ -154,18 +171,28 @@ def test_runtime_status_scopes_counts_to_active_workspace(monkeypatch):
                 return _Result({'c': 0})
             if 'FROM incidents' in q:
                 return _Result({'c': 0})
-            if 'scoped.is_enabled = TRUE' in q and "scoped.runtime_status = 'active'" not in q and 'scoped.last_heartbeat IS NOT NULL' not in q:
-                return _Result({'c': 1 if workspace_id == 'ws-1' else 3})
-            if "scoped.runtime_status = 'active'" in q and 'COUNT(DISTINCT scoped.asset_id)' not in q:
-                return _Result({'c': 1 if workspace_id == 'ws-1' else 2})
-            if 'WHERE 1 = 1' in q and 'FROM ( FROM monitored_systems ms JOIN targets t ON t.id = ms.target_id WHERE t.deleted_at IS NULL ) scoped' in q:
-                return _Result({'c': 1 if workspace_id == 'ws-1' else 4})
-            if 'COUNT(DISTINCT scoped.asset_id)' in q:
-                return _Result({'c': 1 if workspace_id == 'ws-1' else 3})
-            if 'MAX(scoped.last_heartbeat)' in q:
-                return _Result({'ts': now.isoformat()})
-            if 'scoped.last_heartbeat IS NOT NULL' in q:
-                return _Result({'c': 1 if workspace_id == 'ws-1' else 3})
+            if 'COUNT(*) AS monitored_systems_count' in q and 'FROM monitored_systems ms' in q:
+                if workspace_id == 'ws-1':
+                    return _Result(
+                        {
+                            'monitored_systems_count': 1,
+                            'enabled_systems_count': 1,
+                            'active_systems_count': 1,
+                            'protected_assets_count': 1,
+                            'latest_system_heartbeat': now.isoformat(),
+                            'recent_heartbeat_systems': 1,
+                        }
+                    )
+                return _Result(
+                    {
+                        'monitored_systems_count': 4,
+                        'enabled_systems_count': 3,
+                        'active_systems_count': 2,
+                        'protected_assets_count': 3,
+                        'latest_system_heartbeat': now.isoformat(),
+                        'recent_heartbeat_systems': 3,
+                    }
+                )
             if 'LEFT JOIN assets a' in q and 'FROM targets t' in q:
                 return _Result({'c': 0})
             if 'FROM evidence e WHERE e.workspace_id = %s::uuid' in q:
