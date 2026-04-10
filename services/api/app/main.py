@@ -1251,6 +1251,27 @@ logger.info(
 )
 
 
+
+
+@app.middleware('http')
+async def log_monitoring_reconcile_transport(request: Request, call_next):
+    path = request.url.path
+    is_reconcile_request = path == '/monitoring/systems/reconcile'
+    is_reconcile_preflight = request.method == 'OPTIONS' and request.headers.get('access-control-request-method', '').strip().upper() == 'POST' and path == '/monitoring/systems/reconcile'
+
+    if is_reconcile_request or is_reconcile_preflight:
+        logger.info(
+            'monitoring_reconcile_transport method=%s path=%s origin=%s access_control_request_method=%s access_control_request_headers=%s',
+            request.method,
+            path,
+            request.headers.get('origin', ''),
+            request.headers.get('access-control-request-method', ''),
+            request.headers.get('access-control-request-headers', ''),
+        )
+
+    return await call_next(request)
+
+
 @app.middleware('http')
 async def log_disallowed_cors_origin(request: Request, call_next):
     origin = request.headers.get('origin', '').strip()
@@ -1878,6 +1899,12 @@ def monitoring_systems_list(request: Request) -> dict[str, Any]:
 
 @app.post('/monitoring/systems/reconcile', summary='Repair monitored systems from eligible targets')
 def monitoring_systems_reconcile(request: Request) -> dict[str, Any]:
+    logger.info(
+        'monitoring_reconcile_handler_entered method=%s path=%s origin=%s',
+        request.method,
+        request.url.path,
+        request.headers.get('origin', ''),
+    )
     return with_auth_schema_json(lambda: reconcile_workspace_monitored_systems(request))
 
 

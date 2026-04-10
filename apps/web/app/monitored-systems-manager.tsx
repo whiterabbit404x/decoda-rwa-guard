@@ -71,6 +71,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
     if (isDev) {
       console.debug('[monitored-systems] repair click received');
       console.debug('[monitored-systems] client build tag', monitoredSystemsClientBuildTag);
+      console.debug('[monitored-systems] runtime apiUrl', apiUrl);
       setLastRepairClickAt(new Date().toISOString());
     }
 
@@ -84,7 +85,13 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         console.debug('[monitored-systems] reconcile request started');
       }
 
-      const response = await fetch(`${apiUrl}/monitoring/systems/reconcile`, {
+      const reconcileUrl = `${apiUrl}/monitoring/systems/reconcile`;
+      if (isDev) {
+        console.debug('[monitored-systems] reconcile URL', reconcileUrl);
+        console.debug('[monitored-systems] reconcile request origin', window.location.origin);
+      }
+
+      const response = await fetch(reconcileUrl, {
         method: 'POST',
         headers: authHeaders(),
       });
@@ -157,7 +164,10 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       }
 
       if (isDev) {
-        console.debug('[monitored-systems] reconcile failed', { stage, error });
+        const normalizedError = error instanceof Error
+          ? { name: error.name, message: error.message }
+          : { name: typeof error, message: String(error) };
+        console.debug('[monitored-systems] reconcile failed', { stage, error: normalizedError });
       }
     } finally {
       setIsReconciling(false);
