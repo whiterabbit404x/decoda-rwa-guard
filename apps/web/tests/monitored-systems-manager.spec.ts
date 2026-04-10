@@ -41,10 +41,17 @@ test('clicking repair with reconcile success but reload failure shows partial fa
   expect(source).toContain("setMessage('Repair may have completed, but reloading monitored systems failed.')");
 });
 
+
+test('clicking repair surfaces backend detail from proxy errors when available', () => {
+  const source = readAppFile('monitored-systems-manager.tsx');
+  expect(source).toContain("const errorPayload = await response.json().catch(() => null);");
+  expect(source).toContain("setMessage(detail ? `Repair failed: ${detail}` : 'Unable to repair monitored systems.');");
+});
+
 test('monitored systems UI exposes repair action, status line, and reconcile diagnostics', () => {
   const source = readAppFile('monitored-systems-manager.tsx');
   expect(source).toContain("const effectiveApiUrl = runtimeApiUrl || apiUrl;");
-  expect(source).toContain("const reconcileUrl = `${effectiveApiUrl}/monitoring/systems/reconcile`;");
+  expect(source).toContain("const reconcileUrl = '/api/monitoring/systems/reconcile';");
   expect(source).toContain('Repair monitored systems');
   expect(source).toContain('Repairing monitored systems…');
   expect(source).toContain('reconcileSummary');

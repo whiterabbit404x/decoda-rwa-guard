@@ -88,7 +88,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         console.debug('[monitored-systems] reconcile request started');
       }
 
-      const reconcileUrl = `${effectiveApiUrl}/monitoring/systems/reconcile`;
+      const reconcileUrl = '/api/monitoring/systems/reconcile';
       console.info('[monitored-systems] reconcile URL', reconcileUrl);
       if (isDev) {
         console.debug('[monitored-systems] reconcile request origin', window.location.origin);
@@ -106,7 +106,9 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       }
 
       if (!response.ok) {
-        setMessage('Unable to repair monitored systems.');
+        const errorPayload = await response.json().catch(() => null);
+        const detail = typeof errorPayload?.detail === 'string' ? errorPayload.detail.trim() : '';
+        setMessage(detail ? `Repair failed: ${detail}` : 'Unable to repair monitored systems.');
         return;
       }
 

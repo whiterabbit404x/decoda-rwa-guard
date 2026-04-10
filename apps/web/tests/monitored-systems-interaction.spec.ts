@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('repair button becomes loading immediately when clicked', async ({ page }) => {
   const pageErrors: string[] = [];
+  let monitoredSystemsRequestCount = 0;
 
   page.on('pageerror', (error) => {
     pageErrors.push(error.message);
@@ -41,6 +42,7 @@ test('repair button becomes loading immediately when clicked', async ({ page }) 
   });
 
   await page.route('**/monitoring/systems', async (route) => {
+    monitoredSystemsRequestCount += 1;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -48,7 +50,7 @@ test('repair button becomes loading immediately when clicked', async ({ page }) 
     });
   });
 
-  await page.route('**/monitoring/systems/reconcile', async (route) => {
+  await page.route('**/api/monitoring/systems/reconcile', async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     await route.fulfill({
       status: 200,
@@ -76,6 +78,7 @@ test('repair button becomes loading immediately when clicked', async ({ page }) 
 
   await expect(page.getByRole('button', { name: 'Repairing monitored systems…' })).toBeDisabled();
   await expect(page.getByRole('status').filter({ hasText: 'Repairing monitored systems…' })).toBeVisible();
+  await expect.poll(() => monitoredSystemsRequestCount).toBeGreaterThanOrEqual(2);
 
   expect(pageErrors, `Unexpected browser runtime errors: ${pageErrors.join('\n')}`).toEqual([]);
 });
