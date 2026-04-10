@@ -37,6 +37,7 @@ function formatReasonCounts(label: string, reasons: Record<string, number>): str
 }
 
 const isDev = process.env.NODE_ENV !== 'production';
+const monitoredSystemsClientBuildTag = process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? 'local';
 
 export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const { authHeaders } = usePilotAuth();
@@ -44,6 +45,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const [message, setMessage] = useState('');
   const [isReconciling, setIsReconciling] = useState(false);
   const [reconcileSummary, setReconcileSummary] = useState<ReconcileSummary | null>(null);
+  const [lastRepairClickAt, setLastRepairClickAt] = useState<string | null>(null);
 
   async function load(options?: { failureMessage?: string; rethrow?: boolean }) {
     try {
@@ -66,6 +68,12 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   }
 
   async function runReconcile() {
+    if (isDev) {
+      console.debug('[monitored-systems] repair click received');
+      console.debug('[monitored-systems] client build tag', monitoredSystemsClientBuildTag);
+      setLastRepairClickAt(new Date().toISOString());
+    }
+
     setMessage('');
     setIsReconciling(true);
 
@@ -187,7 +195,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   }, []);
 
   return (
-    <section className="dataCard stack compactStack">
+    <section className="dataCard stack compactStack" data-monitored-systems-build={monitoredSystemsClientBuildTag}>
       <h1>Monitored Systems</h1>
       <p className="muted">Bridge assets to runtime monitoring through target-linked monitored systems.</p>
       <div className="buttonRow">
@@ -198,6 +206,11 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       {isReconciling ? (
         <p className="statusLine" role="status" aria-live="polite">
           Repairing monitored systems…
+        </p>
+      ) : null}
+      {isDev && lastRepairClickAt ? (
+        <p className="tableMeta" data-testid="repair-click-debug">
+          Debug: repair click received at {lastRepairClickAt} · build {monitoredSystemsClientBuildTag}
         </p>
       ) : null}
       {message ? (

@@ -51,6 +51,10 @@ test('monitored systems UI exposes repair action, status line, and reconcile dia
   expect(source).toContain('invalid_reasons');
   expect(source).toContain('skipped_reasons');
   expect(source).toContain("console.debug('[monitored-systems] reconcile request started')");
+  expect(source).toContain("console.debug('[monitored-systems] repair click received')");
+  expect(source).toContain("console.debug('[monitored-systems] client build tag', monitoredSystemsClientBuildTag)");
+  expect(source).toContain('data-monitored-systems-build={monitoredSystemsClientBuildTag}');
+  expect(source).toContain('data-testid="repair-click-debug"');
   expect(source).toContain("console.debug('[monitored-systems] reconcile HTTP status', response.status)");
   expect(source).toContain("console.debug('[monitored-systems] reconcile response content-type', contentType || '(none)')");
   expect(source).toContain("console.debug('[monitored-systems] reconcile parsed payload', payload)");
