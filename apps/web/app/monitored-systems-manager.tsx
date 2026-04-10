@@ -40,7 +40,8 @@ const isDev = process.env.NODE_ENV !== 'production';
 const monitoredSystemsClientBuildTag = process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? 'local';
 
 export default function MonitoredSystemsManager({ apiUrl }: Props) {
-  const { authHeaders } = usePilotAuth();
+  const { apiUrl: runtimeApiUrl, authHeaders } = usePilotAuth();
+  const effectiveApiUrl = runtimeApiUrl || apiUrl;
   const [systems, setSystems] = useState<SystemRow[]>([]);
   const [message, setMessage] = useState('');
   const [isReconciling, setIsReconciling] = useState(false);
@@ -49,7 +50,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
 
   async function load(options?: { failureMessage?: string; rethrow?: boolean }) {
     try {
-      const response = await fetch(`${apiUrl}/monitoring/systems`, { headers: authHeaders(), cache: 'no-store' });
+      const response = await fetch(`${effectiveApiUrl}/monitoring/systems`, { headers: authHeaders(), cache: 'no-store' });
       if (!response.ok) {
         setMessage(options?.failureMessage ?? 'Unable to load monitored systems.');
         return null;
@@ -71,7 +72,9 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
     if (isDev) {
       console.debug('[monitored-systems] repair click received');
       console.debug('[monitored-systems] client build tag', monitoredSystemsClientBuildTag);
-      console.debug('[monitored-systems] runtime apiUrl', apiUrl);
+      console.debug('[monitored-systems] runtime config apiUrl', runtimeApiUrl || '(missing)');
+      console.debug('[monitored-systems] server-rendered apiUrl', apiUrl || '(missing)');
+      console.debug('[monitored-systems] effective apiUrl', effectiveApiUrl || '(missing)');
       setLastRepairClickAt(new Date().toISOString());
     }
 
@@ -85,9 +88,9 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         console.debug('[monitored-systems] reconcile request started');
       }
 
-      const reconcileUrl = `${apiUrl}/monitoring/systems/reconcile`;
+      const reconcileUrl = `${effectiveApiUrl}/monitoring/systems/reconcile`;
+      console.info('[monitored-systems] reconcile URL', reconcileUrl);
       if (isDev) {
-        console.debug('[monitored-systems] reconcile URL', reconcileUrl);
         console.debug('[monitored-systems] reconcile request origin', window.location.origin);
       }
 
@@ -177,7 +180,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   async function toggle(system: SystemRow) {
     setMessage('');
     const enabled = !system.is_enabled;
-    const response = await fetch(`${apiUrl}/monitoring/systems/${system.id}`, {
+    const response = await fetch(`${effectiveApiUrl}/monitoring/systems/${system.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ enabled }),
@@ -191,7 +194,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   }
 
   async function remove(systemId: string) {
-    const response = await fetch(`${apiUrl}/monitoring/systems/${systemId}`, { method: 'DELETE', headers: authHeaders() });
+    const response = await fetch(`${effectiveApiUrl}/monitoring/systems/${systemId}`, { method: 'DELETE', headers: authHeaders() });
     if (!response.ok) {
       setMessage('Unable to delete monitored system.');
       return;
@@ -220,7 +223,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       ) : null}
       {isDev && lastRepairClickAt ? (
         <p className="tableMeta" data-testid="repair-click-debug">
-          Debug: repair click received at {lastRepairClickAt} · build {monitoredSystemsClientBuildTag}
+          Debug: repair click received at {lastRepairClickAt} · build {monitoredSystemsClientBuildTag} · api {effectiveApiUrl || '(missing)'}
         </p>
       ) : null}
       {message ? (

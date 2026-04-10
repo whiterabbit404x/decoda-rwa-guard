@@ -43,7 +43,8 @@ test('clicking repair with reconcile success but reload failure shows partial fa
 
 test('monitored systems UI exposes repair action, status line, and reconcile diagnostics', () => {
   const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain("fetch(`${apiUrl}/monitoring/systems/reconcile`");
+  expect(source).toContain("const effectiveApiUrl = runtimeApiUrl || apiUrl;");
+  expect(source).toContain("const reconcileUrl = `${effectiveApiUrl}/monitoring/systems/reconcile`;");
   expect(source).toContain('Repair monitored systems');
   expect(source).toContain('Repairing monitored systems…');
   expect(source).toContain('reconcileSummary');
@@ -53,6 +54,10 @@ test('monitored systems UI exposes repair action, status line, and reconcile dia
   expect(source).toContain("console.debug('[monitored-systems] reconcile request started')");
   expect(source).toContain("console.debug('[monitored-systems] repair click received')");
   expect(source).toContain("console.debug('[monitored-systems] client build tag', monitoredSystemsClientBuildTag)");
+  expect(source).toContain("console.debug('[monitored-systems] runtime config apiUrl', runtimeApiUrl || '(missing)')");
+  expect(source).toContain("console.debug('[monitored-systems] server-rendered apiUrl', apiUrl || '(missing)')");
+  expect(source).toContain("console.debug('[monitored-systems] effective apiUrl', effectiveApiUrl || '(missing)')");
+  expect(source).toContain("console.info('[monitored-systems] reconcile URL', reconcileUrl)");
   expect(source).toContain('data-monitored-systems-build={monitoredSystemsClientBuildTag}');
   expect(source).toContain('data-testid="repair-click-debug"');
   expect(source).toContain("console.debug('[monitored-systems] reconcile HTTP status', response.status)");

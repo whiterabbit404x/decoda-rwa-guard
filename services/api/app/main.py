@@ -1268,8 +1268,26 @@ async def log_monitoring_reconcile_transport(request: Request, call_next):
             request.headers.get('access-control-request-method', ''),
             request.headers.get('access-control-request-headers', ''),
         )
+    try:
+        response = await call_next(request)
+    except Exception:
+        if is_reconcile_request or is_reconcile_preflight:
+            logger.exception(
+                'monitoring_reconcile_transport_failed method=%s path=%s',
+                request.method,
+                path,
+            )
+        raise
 
-    return await call_next(request)
+    if is_reconcile_request or is_reconcile_preflight:
+        logger.info(
+            'monitoring_reconcile_transport_response method=%s path=%s status=%s',
+            request.method,
+            path,
+            response.status_code,
+        )
+
+    return response
 
 
 @app.middleware('http')
