@@ -38,6 +38,17 @@ function formatReasonCounts(label: string, reasons: Record<string, number>): str
 
 const isDev = process.env.NODE_ENV !== 'production';
 const monitoredSystemsClientBuildTag = process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? 'local';
+const REQUEST_TIMEOUT_MS = 15000;
+
+async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const { apiUrl: runtimeApiUrl, authHeaders } = usePilotAuth();
@@ -49,18 +60,33 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const [lastRepairClickAt, setLastRepairClickAt] = useState<string | null>(null);
 
   async function load(options?: { failureMessage?: string; rethrow?: boolean }) {
+    if (isDev) {
+      console.debug('[monitored-systems] loading monitored systems');
+    }
     try {
-      const response = await fetch(`${effectiveApiUrl}/monitoring/systems`, { headers: authHeaders(), cache: 'no-store' });
+      const response = await fetchWithTimeout(`${effectiveApiUrl}/monitoring/systems`, { headers: authHeaders(), cache: 'no-store' });
       if (!response.ok) {
         setMessage(options?.failureMessage ?? 'Unable to load monitored systems.');
+        if (isDev) {
+          console.debug('[monitored-systems] reload failure', { status: response.status });
+        }
         return null;
       }
       const payload = await response.json();
       const loadedSystems = payload.systems ?? [];
       setSystems(loadedSystems);
+      if (isDev) {
+        console.debug('[monitored-systems] reload success', { count: loadedSystems.length });
+      }
       return loadedSystems;
     } catch (error) {
       setMessage(options?.failureMessage ?? 'Unable to load monitored systems.');
+      if (isDev) {
+        const normalizedError = error instanceof Error
+          ? { name: error.name, message: error.message }
+          : { name: typeof error, message: String(error) };
+        console.debug('[monitored-systems] reload failure', normalizedError);
+      }
       if (options?.rethrow) {
         throw error;
       }
@@ -94,10 +120,13 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         console.debug('[monitored-systems] reconcile request origin', window.location.origin);
       }
 
-      const response = await fetch(reconcileUrl, {
+      const response = await fetchWithTimeout(reconcileUrl, {
         method: 'POST',
         headers: authHeaders(),
       });
+      if (isDev) {
+        console.debug('[monitored-systems] reconcile response received');
+      }
 
       const contentType = response.headers.get('content-type') ?? '';
       if (isDev) {
@@ -124,6 +153,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
 
       const payload = await response.json();
       if (isDev) {
+        console.debug('[monitored-systems] reconcile response parsed');
         console.debug('[monitored-systems] reconcile parsed payload', payload);
       }
 
@@ -141,8 +171,11 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       }
 
       stage = 'reload';
+      if (isDev) {
+        console.debug('[monitored-systems] reloading monitored systems');
+      }
       const reloadedSystems = await load({
-        failureMessage: 'Repair may have completed, but reloading monitored systems failed.',
+        failureMessage: 'Repair request completed or failed, but refreshing monitored systems did not succeed.',
         rethrow: true,
       });
 
@@ -165,7 +198,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       } else if (stage === 'parse') {
         setMessage('Repair response could not be parsed.');
       } else {
-        setMessage('Repair may have completed, but reloading monitored systems failed.');
+        setMessage('Repair request completed or failed, but refreshing monitored systems did not succeed.');
       }
 
       if (isDev) {
@@ -175,6 +208,9 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         console.debug('[monitored-systems] reconcile failed', { stage, error: normalizedError });
       }
     } finally {
+      if (isDev) {
+        console.debug('[monitored-systems] finally clearing isReconciling');
+      }
       setIsReconciling(false);
     }
   }

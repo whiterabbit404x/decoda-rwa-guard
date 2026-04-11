@@ -130,4 +130,28 @@ test.describe('same-origin monitoring reconcile proxy', () => {
       });
     });
   });
+
+  test('returns structured 504 when backend reconcile times out', async () => {
+    await withEnv({ NODE_ENV: 'production', API_URL: 'https://railway.decoda.example' }, async () => {
+      await withMockFetch(async () => {
+        throw new DOMException('Aborted', 'AbortError');
+      }, async () => {
+        const response = await postMonitoringSystemsReconcileRoute(new Request('http://localhost/api/monitoring/systems/reconcile', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer web-token',
+          },
+        }));
+
+        expect(response.status).toBe(504);
+        await expect(response.json()).resolves.toEqual({
+          detail: 'Timed out waiting for backend reconcile response.',
+          code: 'backend_timeout',
+          transport: 'same-origin proxy',
+          backendApiUrl: 'https://railway.decoda.example',
+          configured: true,
+        });
+      });
+    });
+  });
 });

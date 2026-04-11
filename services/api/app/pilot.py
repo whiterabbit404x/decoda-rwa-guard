@@ -4419,11 +4419,30 @@ def list_workspace_monitored_system_rows(connection: psycopg.Connection, workspa
 
 
 def list_monitored_systems(request: Request) -> dict[str, Any]:
-    require_live_mode()
+    logger.info('monitoring_systems_list step=start')
+    stage = 'require_live_mode'
+    logger.info('monitoring_systems_list step=%s', stage)
+    try:
+        require_live_mode()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception('monitoring_systems_list_failed stage=%s', stage)
+        raise HTTPException(status_code=500, detail='Unable to load monitored systems.') from exc
+
     with pg_connection() as connection:
+        stage = 'ensure_schema'
+        logger.info('monitoring_systems_list step=%s', stage)
         ensure_pilot_schema(connection)
+        stage = 'workspace_resolve'
+        logger.info('monitoring_systems_list step=%s', stage)
         _, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
-        rows = list_workspace_monitored_system_rows(connection, workspace_context['workspace_id'])
+        workspace_id = workspace_context['workspace_id']
+        logger.info('monitoring_systems_list step=workspace_resolved workspace_id=%s', workspace_id)
+        stage = 'list_rows'
+        logger.info('monitoring_systems_list step=%s workspace_id=%s', stage, workspace_id)
+        rows = list_workspace_monitored_system_rows(connection, workspace_id)
+        logger.info('monitoring_systems_list step=rows_loaded workspace_id=%s count=%s', workspace_id, len(rows))
         return {'systems': [_json_safe_value(row) for row in rows], 'workspace': workspace_context['workspace']}
 
 

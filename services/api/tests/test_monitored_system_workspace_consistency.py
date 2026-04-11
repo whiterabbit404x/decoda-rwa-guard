@@ -122,3 +122,26 @@ def test_reconcile_workspace_returns_structured_error_when_reconcile_targets_fai
     assert exc.value.detail['stage'] == 'reconcile_targets'
     assert exc.value.detail['debug_error_type'] == 'ValueError'
     assert 'upsert violated unique constraint' in exc.value.detail['debug_error_message']
+
+
+def test_get_monitored_systems_remains_queryable_after_reconcile(monkeypatch):
+    conn = _Conn()
+    request = _Request('ws-9')
+    rows = [{'id': 'ms-9', 'workspace_id': 'ws-9', 'target_id': 't-9', 'asset_id': 'a-9'}]
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-9'}, {'workspace_id': 'ws-9', 'workspace': {'id': 'ws-9'}}))
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda *_a, **_k: {'id': 'user-9'})
+    monkeypatch.setattr(pilot, 'resolve_workspace', lambda *_a, **_k: {'workspace_id': 'ws-9', 'workspace': {'id': 'ws-9'}, 'role': 'owner'})
+    monkeypatch.setattr(pilot, 'reconcile_enabled_targets_monitored_systems', lambda *_a, **_k: {'targets_scanned': 1, 'created_or_updated': 1})
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+    monkeypatch.setattr(pilot, 'list_workspace_monitored_system_rows', lambda *_a, **_k: rows)
+
+    reconcile_payload = pilot.reconcile_workspace_monitored_systems(request)
+    listed_payload = pilot.list_monitored_systems(request)
+
+    assert conn.commits == 1
+    assert reconcile_payload['systems'][0]['id'] == 'ms-9'
+    assert listed_payload['systems'][0]['id'] == 'ms-9'
