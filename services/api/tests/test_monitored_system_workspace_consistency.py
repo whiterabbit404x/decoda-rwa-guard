@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
+
+import pytest
+from fastapi import HTTPException
 
 from services.api.app import pilot
 
@@ -75,3 +79,46 @@ def test_list_and_reconcile_resolve_the_same_workspace(monkeypatch):
 
     assert listed['workspace']['id'] == repaired['workspace']['id'] == 'ws-7'
     assert resolved_workspace_headers == ['ws-7', 'ws-7']
+
+
+def test_reconcile_workspace_returns_structured_error_when_audit_log_fails(monkeypatch, caplog: pytest.LogCaptureFixture):
+    conn = _Conn()
+    request = _Request('ws-1')
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}))
+    monkeypatch.setattr(pilot, 'reconcile_enabled_targets_monitored_systems', lambda *_a, **_k: {'targets_scanned': 1, 'created_or_updated': 1})
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError('audit insert failed')))
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(HTTPException) as exc:
+            pilot.reconcile_workspace_monitored_systems(request)
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail['code'] == 'monitoring_reconcile_failed'
+    assert exc.value.detail['stage'] == 'audit_log'
+    assert exc.value.detail['debug_error_type'] == 'RuntimeError'
+    assert 'audit insert failed' in exc.value.detail['debug_error_message']
+    assert 'monitoring_reconcile_failed stage=audit_log' in caplog.text
+
+
+def test_reconcile_workspace_returns_structured_error_when_reconcile_targets_fails(monkeypatch):
+    conn = _Conn()
+    request = _Request('ws-1')
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}))
+    monkeypatch.setattr(pilot, 'reconcile_enabled_targets_monitored_systems', lambda *_a, **_k: (_ for _ in ()).throw(ValueError('upsert violated unique constraint')))
+
+    with pytest.raises(HTTPException) as exc:
+        pilot.reconcile_workspace_monitored_systems(request)
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail['code'] == 'monitoring_reconcile_failed'
+    assert exc.value.detail['stage'] == 'reconcile_targets'
+    assert exc.value.detail['debug_error_type'] == 'ValueError'
+    assert 'upsert violated unique constraint' in exc.value.detail['debug_error_message']

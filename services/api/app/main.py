@@ -1916,14 +1916,37 @@ def monitoring_systems_list(request: Request) -> dict[str, Any]:
 
 
 @app.post('/monitoring/systems/reconcile', summary='Repair monitored systems from eligible targets')
-def monitoring_systems_reconcile(request: Request) -> dict[str, Any]:
+def monitoring_systems_reconcile(request: Request) -> Any:
     logger.info(
         'monitoring_reconcile_handler_entered method=%s path=%s origin=%s',
         request.method,
         request.url.path,
         request.headers.get('origin', ''),
     )
-    return with_auth_schema_json(lambda: reconcile_workspace_monitored_systems(request))
+    try:
+        return with_auth_schema_json(lambda: reconcile_workspace_monitored_systems(request))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        resolved_path = request.url.path
+        logger.exception(
+            'monitoring_reconcile_unexpected_error method=%s path=%s origin=%s has_auth_header=%s has_workspace_header=%s has_user_header=%s',
+            request.method,
+            resolved_path,
+            request.headers.get('origin', ''),
+            bool((request.headers.get('authorization') or '').strip()),
+            bool((request.headers.get('x-workspace-id') or '').strip()),
+            bool((request.headers.get('x-user-id') or '').strip()),
+        )
+        payload: dict[str, Any] = {
+            'code': 'monitoring_reconcile_failed',
+            'detail': 'Unexpected backend error during monitored systems reconcile.',
+            'stage': 'unhandled_route_exception',
+        }
+        if not _is_production_like_runtime():
+            payload['debug_error_type'] = type(exc).__name__
+            payload['debug_error_message'] = str(exc)
+        return JSONResponse(payload, status_code=500)
 
 
 @app.post('/monitoring/systems', summary='Create monitored system')
