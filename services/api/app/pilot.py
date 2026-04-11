@@ -2304,29 +2304,93 @@ def reconcile_monitored_systems_for_enabled_targets() -> dict[str, Any]:
 
 
 def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
-    require_live_mode()
+    logger.info('monitoring_reconcile step=start')
+    stage = 'require_live_mode'
+    logger.info('monitoring_reconcile step=%s', stage)
+    try:
+        require_live_mode()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _reconcile_error(stage, exc) from exc
     with pg_connection() as connection:
-        ensure_pilot_schema(connection)
-        user, workspace_context = _require_workspace_admin(connection, request)
+        stage = 'ensure_schema'
+        logger.info('monitoring_reconcile step=%s', stage)
+        try:
+            ensure_pilot_schema(connection)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _reconcile_error(stage, exc) from exc
+        stage = 'workspace_admin'
+        logger.info('monitoring_reconcile step=%s', stage)
+        try:
+            user, workspace_context = _require_workspace_admin(connection, request)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _reconcile_error(stage, exc) from exc
         workspace_id = workspace_context['workspace_id']
-        result = _normalize_reconcile_result(reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id))
-        log_audit(
-            connection,
-            action='monitoring.reconcile',
-            entity_type='workspace',
-            entity_id=workspace_id,
-            request=request,
-            user_id=user['id'],
-            workspace_id=workspace_id,
-            metadata={
-                'targets_scanned': result.get('targets_scanned', 0),
-                'created_or_updated': result.get('created_or_updated', 0),
-                'invalid_reasons': result.get('invalid_reasons', {}),
-                'skipped_reasons': result.get('skipped_reasons', {}),
-            },
+        logger.info('monitoring_reconcile step=workspace_resolved workspace_id=%s', workspace_id)
+
+        stage = 'reconcile_targets'
+        logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
+        try:
+            result = _normalize_reconcile_result(reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id))
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _reconcile_error(stage, exc) from exc
+        logger.info(
+            'monitoring_reconcile step=reconcile_completed workspace_id=%s created_or_updated=%s',
+            workspace_id,
+            result.get('created_or_updated', 0),
         )
-        connection.commit()
-        rows = list_workspace_monitored_system_rows(connection, workspace_id)
+
+        stage = 'audit_log'
+        logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
+        try:
+            log_audit(
+                connection,
+                action='monitoring.reconcile',
+                entity_type='workspace',
+                entity_id=workspace_id,
+                request=request,
+                user_id=user['id'],
+                workspace_id=workspace_id,
+                metadata={
+                    'targets_scanned': result.get('targets_scanned', 0),
+                    'created_or_updated': result.get('created_or_updated', 0),
+                    'invalid_reasons': result.get('invalid_reasons', {}),
+                    'skipped_reasons': result.get('skipped_reasons', {}),
+                },
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _reconcile_error(stage, exc) from exc
+        logger.info('monitoring_reconcile step=audit_logged workspace_id=%s', workspace_id)
+
+        stage = 'list_rows'
+        logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
+        try:
+            rows = list_workspace_monitored_system_rows(connection, workspace_id)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _reconcile_error(stage, exc) from exc
+        logger.info('monitoring_reconcile step=rows_loaded workspace_id=%s count=%s', workspace_id, len(rows))
+
+        stage = 'commit'
+        logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
+        try:
+            connection.commit()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _reconcile_error(stage, exc) from exc
+        logger.info('monitoring_reconcile step=commit_completed workspace_id=%s', workspace_id)
+
         systems = [_json_safe_value(row) for row in rows]
         response: dict[str, Any] = {
             'workspace': workspace_context['workspace'],
@@ -2344,6 +2408,19 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                 'repaired_monitored_system_ids': result.get('repaired_monitored_system_ids', []),
             }
         return response
+
+
+def _reconcile_error(stage: str, exc: Exception) -> HTTPException:
+    logger.exception('monitoring_reconcile_failed stage=%s', stage)
+    detail: dict[str, Any] = {
+        'code': 'monitoring_reconcile_failed',
+        'detail': 'Unexpected backend error during monitored systems reconcile.',
+        'stage': stage,
+    }
+    if os.getenv('APP_ENV', 'development').strip().lower() not in {'production', 'prod'}:
+        detail['debug_error_type'] = type(exc).__name__
+        detail['debug_error_message'] = str(exc)
+    return HTTPException(status_code=500, detail=detail)
 
 
 def _deliver_webhook_attempt(payload: dict[str, Any]) -> None:
