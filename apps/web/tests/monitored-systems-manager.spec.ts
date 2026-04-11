@@ -42,10 +42,23 @@ test('clicking repair with reconcile success but reload failure shows partial fa
 });
 
 
-test('clicking repair surfaces backend detail from proxy errors when available', () => {
+test('clicking repair surfaces backend detail from flat string errors', () => {
   const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain("const errorPayload = await response.json().catch(() => null);");
-  expect(source).toContain("setMessage(detail ? `Repair failed: ${detail}` : 'Unable to repair monitored systems.');");
+  expect(source).toContain('function extractErrorDetail(payload: unknown): ErrorDetail');
+  expect(source).toContain("typeof value.detail === 'string' ? value.detail.trim() : ''");
+  expect(source).toContain('Repair failed: ${errorDetail.message}${stageSuffix}${codeSuffix}');
+});
+
+test('clicking repair surfaces backend detail from nested FastAPI error payloads', () => {
+  const source = readAppFile('monitored-systems-manager.tsx');
+  expect(source).toContain("const errorObject = nestedDetail && typeof nestedDetail === 'object'");
+  expect(source).toContain("typeof errorObject.detail === 'string' ? errorObject.detail.trim() : ''");
+});
+
+test('clicking repair includes stage context when present and logs non-OK payload in dev', () => {
+  const source = readAppFile('monitored-systems-manager.tsx');
+  expect(source).toContain("const stageSuffix = errorDetail.stage ? ` (stage: ${errorDetail.stage})` : '';");
+  expect(source).toContain("console.debug('[monitored-systems] reconcile non-OK payload', errorPayload);");
 });
 
 test('monitored systems UI exposes repair action, status line, and reconcile diagnostics', () => {

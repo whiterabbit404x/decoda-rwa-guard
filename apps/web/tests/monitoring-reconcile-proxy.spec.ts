@@ -154,4 +154,56 @@ test.describe('same-origin monitoring reconcile proxy', () => {
       });
     });
   });
+  test('flattens nested FastAPI HTTPException detail payloads from backend', async () => {
+    await withEnv({ NODE_ENV: 'production', API_URL: 'https://railway.decoda.example' }, async () => {
+      await withMockFetch(async () => new Response(JSON.stringify({
+        detail: {
+          code: 'monitoring_reconcile_failed',
+          detail: 'Unexpected backend error during monitored systems reconcile.',
+          stage: 'reconcile_targets',
+        },
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }), async () => {
+        const response = await postMonitoringSystemsReconcileRoute(new Request('http://localhost/api/monitoring/systems/reconcile', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer web-token',
+          },
+        }));
+
+        expect(response.status).toBe(500);
+        await expect(response.json()).resolves.toEqual({
+          code: 'monitoring_reconcile_failed',
+          detail: 'Unexpected backend error during monitored systems reconcile.',
+          stage: 'reconcile_targets',
+        });
+      });
+    });
+  });
+
+  test('preserves flat backend error payloads', async () => {
+    await withEnv({ NODE_ENV: 'production', API_URL: 'https://railway.decoda.example' }, async () => {
+      await withMockFetch(async () => new Response(JSON.stringify({
+        detail: 'Authorization is required.',
+      }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }), async () => {
+        const response = await postMonitoringSystemsReconcileRoute(new Request('http://localhost/api/monitoring/systems/reconcile', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer web-token',
+          },
+        }));
+
+        expect(response.status).toBe(401);
+        await expect(response.json()).resolves.toEqual({
+          detail: 'Authorization is required.',
+        });
+      });
+    });
+  });
+
 });
