@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from services.api.app import main as api_main
@@ -47,4 +48,35 @@ def test_monitoring_reconcile_route_returns_structured_error_for_unexpected_exce
         'stage': 'unhandled_route_exception',
         'debug_error_type': 'RuntimeError',
         'debug_error_message': 'unexpected reconcile exception',
+    }
+
+
+def test_monitoring_reconcile_route_flattens_http_exception_dict_detail(monkeypatch):
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        api_main,
+        'reconcile_workspace_monitored_systems',
+        lambda _request: (_ for _ in ()).throw(
+            HTTPException(
+                status_code=500,
+                detail={
+                    'code': 'monitoring_reconcile_failed',
+                    'detail': 'Unexpected backend error during monitored systems reconcile.',
+                    'stage': 'reconcile_targets',
+                    'debug_error_type': 'ValueError',
+                    'debug_error_message': 'upsert violated unique constraint',
+                },
+            )
+        ),
+    )
+
+    response = client.post('/monitoring/systems/reconcile')
+
+    assert response.status_code == 500
+    assert response.json() == {
+        'code': 'monitoring_reconcile_failed',
+        'detail': 'Unexpected backend error during monitored systems reconcile.',
+        'stage': 'reconcile_targets',
+        'debug_error_type': 'ValueError',
+        'debug_error_message': 'upsert violated unique constraint',
     }

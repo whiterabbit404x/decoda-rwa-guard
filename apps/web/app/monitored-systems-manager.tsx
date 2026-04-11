@@ -19,6 +19,41 @@ type SystemRow = {
   last_error_text?: string | null;
 };
 
+
+
+type ErrorDetail = {
+  message: string;
+  code?: string;
+  stage?: string;
+};
+
+function extractErrorDetail(payload: unknown): ErrorDetail {
+  const fallback: ErrorDetail = { message: '' };
+  if (!payload || typeof payload !== 'object') {
+    return fallback;
+  }
+
+  const value = payload as Record<string, unknown>;
+  const nestedDetail = value.detail;
+  const errorObject = nestedDetail && typeof nestedDetail === 'object'
+    ? nestedDetail as Record<string, unknown>
+    : value;
+
+  const message = [
+    typeof errorObject.detail === 'string' ? errorObject.detail.trim() : '',
+    typeof value.detail === 'string' ? value.detail.trim() : '',
+    typeof value.message === 'string' ? value.message.trim() : '',
+  ].find((candidate) => candidate.length > 0) ?? '';
+
+  const code = typeof errorObject.code === 'string'
+    ? errorObject.code.trim() || undefined
+    : (typeof value.code === 'string' ? value.code.trim() || undefined : undefined);
+  const stage = typeof errorObject.stage === 'string'
+    ? errorObject.stage.trim() || undefined
+    : (typeof value.stage === 'string' ? value.stage.trim() || undefined : undefined);
+
+  return { message, code, stage };
+}
 type ReconcileSummary = {
   targets_scanned: number;
   created_or_updated: number;
@@ -136,8 +171,15 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
 
       if (!response.ok) {
         const errorPayload = await response.json().catch(() => null);
-        const detail = typeof errorPayload?.detail === 'string' ? errorPayload.detail.trim() : '';
-        setMessage(detail ? `Repair failed: ${detail}` : 'Unable to repair monitored systems.');
+        if (isDev) {
+          console.debug('[monitored-systems] reconcile non-OK payload', errorPayload);
+        }
+        const errorDetail = extractErrorDetail(errorPayload);
+        const stageSuffix = errorDetail.stage ? ` (stage: ${errorDetail.stage})` : '';
+        const codeSuffix = isDev && errorDetail.code ? ` [code: ${errorDetail.code}]` : '';
+        setMessage(errorDetail.message
+          ? `Repair failed: ${errorDetail.message}${stageSuffix}${codeSuffix}`
+          : 'Unable to repair monitored systems.');
         return;
       }
 

@@ -17,6 +17,18 @@ function jsonError(status: number, body: Record<string, unknown>) {
   });
 }
 
+
+
+function normalizeErrorPayload(payload: unknown): Record<string, unknown> | unknown {
+  if (!payload || typeof payload !== 'object') {
+    return payload;
+  }
+  const value = payload as Record<string, unknown>;
+  if (value.detail && typeof value.detail === 'object' && !Array.isArray(value.detail)) {
+    return value.detail as Record<string, unknown>;
+  }
+  return value;
+}
 function readBearerToken(request: Request) {
   const authorizationHeader = request.headers.get('authorization')?.trim();
   if (!authorizationHeader) {
@@ -38,11 +50,12 @@ async function buildProxyResponse(response: Response) {
   const contentType = response.headers.get('content-type') ?? '';
   const isJson = contentType.toLowerCase().includes('application/json');
   console.info('[monitoring-reconcile-proxy] backend response parsing', { isJson });
-  const payload = isJson
+  const parsedPayload = isJson
     ? await response.json().catch(() => ({ detail: 'Backend returned invalid JSON.' }))
     : {
       detail: (await response.text().catch(() => '')).trim() || (response.ok ? 'Request completed.' : 'Request failed. Please try again.'),
     };
+  const payload = response.ok ? parsedPayload : normalizeErrorPayload(parsedPayload);
   console.info('[monitoring-reconcile-proxy] backend response parsed');
 
   return Response.json(payload, {

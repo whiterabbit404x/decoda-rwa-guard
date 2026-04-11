@@ -1925,7 +1925,9 @@ def monitoring_systems_reconcile(request: Request) -> Any:
     )
     try:
         return with_auth_schema_json(lambda: reconcile_workspace_monitored_systems(request))
-    except HTTPException:
+    except HTTPException as exc:
+        if isinstance(exc.detail, dict):
+            return JSONResponse(exc.detail, status_code=exc.status_code)
         raise
     except Exception as exc:
         resolved_path = request.url.path
