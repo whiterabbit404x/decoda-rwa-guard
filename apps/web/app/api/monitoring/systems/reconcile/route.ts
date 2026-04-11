@@ -3,6 +3,7 @@ import { getRuntimeConfig } from 'app/runtime-config';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+const PROXY_TIMEOUT_MS = 15000;
 
 const JSON_HEADERS = {
   'Cache-Control': 'no-store',
@@ -33,13 +34,16 @@ async function readRequestBody(request: Request) {
 }
 
 async function buildProxyResponse(response: Response) {
+  console.info('[monitoring-reconcile-proxy] backend response received', { status: response.status });
   const contentType = response.headers.get('content-type') ?? '';
   const isJson = contentType.toLowerCase().includes('application/json');
+  console.info('[monitoring-reconcile-proxy] backend response parsing', { isJson });
   const payload = isJson
     ? await response.json().catch(() => ({ detail: 'Backend returned invalid JSON.' }))
     : {
       detail: (await response.text().catch(() => '')).trim() || (response.ok ? 'Request completed.' : 'Request failed. Please try again.'),
     };
+  console.info('[monitoring-reconcile-proxy] backend response parsed');
 
   return Response.json(payload, {
     status: response.status,
@@ -90,6 +94,9 @@ export async function POST(request: Request) {
   }
 
   const body = await readRequestBody(request);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
+  console.info('[monitoring-reconcile-proxy] forwarding request to backend', { backendApiUrl });
 
   try {
     const response = await fetch(`${backendApiUrl}/monitoring/systems/reconcile`, {
@@ -97,10 +104,21 @@ export async function POST(request: Request) {
       headers,
       cache: 'no-store',
       body: JSON.stringify(body),
+      signal: controller.signal,
     });
-
+    clearTimeout(timeoutId);
     return buildProxyResponse(response);
-  } catch {
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof Error && error.name === 'AbortError') {
+      return jsonError(504, {
+        detail: 'Timed out waiting for backend reconcile response.',
+        code: 'backend_timeout',
+        transport: 'same-origin proxy',
+        backendApiUrl,
+        configured: true,
+      });
+    }
     return jsonError(502, {
       detail: 'Backend unreachable.',
       code: 'backend_unreachable',
