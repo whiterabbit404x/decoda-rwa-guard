@@ -2654,7 +2654,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             monitored_rows = connection.execute(
                 '''
                 SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat,
-                       ms.monitoring_interval_seconds, ms.created_at
+                       t.monitoring_interval_seconds AS monitoring_interval_seconds, ms.created_at
                 FROM monitored_systems ms
                 JOIN targets t
                   ON t.id = ms.target_id
