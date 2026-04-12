@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -30,7 +32,7 @@ def test_monitoring_reconcile_route_returns_200_for_success(monkeypatch):
     assert payload['monitored_systems_count'] == 1
 
 
-def test_monitoring_reconcile_route_returns_structured_error_for_unexpected_exception(monkeypatch):
+def test_monitoring_reconcile_route_returns_structured_error_for_unexpected_exception(monkeypatch, caplog):
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
     monkeypatch.setenv('APP_ENV', 'development')
     monkeypatch.setattr(
@@ -39,7 +41,8 @@ def test_monitoring_reconcile_route_returns_structured_error_for_unexpected_exce
         lambda _request: (_ for _ in ()).throw(RuntimeError('unexpected reconcile exception')),
     )
 
-    response = client.post('/monitoring/systems/reconcile')
+    with caplog.at_level(logging.ERROR):
+        response = client.post('/monitoring/systems/reconcile')
 
     assert response.status_code == 500
     assert response.json() == {
@@ -49,9 +52,10 @@ def test_monitoring_reconcile_route_returns_structured_error_for_unexpected_exce
         'debug_error_type': 'RuntimeError',
         'debug_error_message': 'unexpected reconcile exception',
     }
+    assert 'monitoring_reconcile_unexpected_error method=POST path=/monitoring/systems/reconcile' in caplog.text
 
 
-def test_monitoring_reconcile_route_flattens_http_exception_dict_detail(monkeypatch):
+def test_monitoring_reconcile_route_flattens_http_exception_dict_detail(monkeypatch, caplog):
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
     monkeypatch.setattr(
         api_main,
@@ -70,7 +74,8 @@ def test_monitoring_reconcile_route_flattens_http_exception_dict_detail(monkeypa
         ),
     )
 
-    response = client.post('/monitoring/systems/reconcile')
+    with caplog.at_level(logging.ERROR):
+        response = client.post('/monitoring/systems/reconcile')
 
     assert response.status_code == 500
     assert response.json() == {
@@ -80,3 +85,4 @@ def test_monitoring_reconcile_route_flattens_http_exception_dict_detail(monkeypa
         'debug_error_type': 'ValueError',
         'debug_error_message': 'upsert violated unique constraint',
     }
+    assert 'monitoring_reconcile_http_exception method=POST path=/monitoring/systems/reconcile' in caplog.text

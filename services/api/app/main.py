@@ -1917,25 +1917,41 @@ def monitoring_systems_list(request: Request) -> dict[str, Any]:
 
 @app.post('/monitoring/systems/reconcile', summary='Repair monitored systems from eligible targets')
 def monitoring_systems_reconcile(request: Request) -> Any:
+    workspace_hint = (request.headers.get('x-workspace-id') or '').strip() or None
+    user_hint = (request.headers.get('x-user-id') or '').strip() or None
     logger.info(
-        'monitoring_reconcile_handler_entered method=%s path=%s origin=%s',
+        'monitoring_reconcile_handler_entered method=%s path=%s origin=%s workspace_id_hint=%s user_id_hint=%s',
         request.method,
         request.url.path,
         request.headers.get('origin', ''),
+        workspace_hint,
+        user_hint,
     )
     try:
         return with_auth_schema_json(lambda: reconcile_workspace_monitored_systems(request))
     except HTTPException as exc:
         if isinstance(exc.detail, dict):
+            logger.error(
+                'monitoring_reconcile_http_exception method=%s path=%s workspace_id=%s user_id=%s stage=%s code=%s',
+                request.method,
+                request.url.path,
+                workspace_hint,
+                user_hint,
+                exc.detail.get('stage'),
+                exc.detail.get('code'),
+            )
             return JSONResponse(exc.detail, status_code=exc.status_code)
         raise
     except Exception as exc:
         resolved_path = request.url.path
         logger.exception(
-            'monitoring_reconcile_unexpected_error method=%s path=%s origin=%s has_auth_header=%s has_workspace_header=%s has_user_header=%s',
+            'monitoring_reconcile_unexpected_error method=%s path=%s origin=%s workspace_id=%s user_id=%s stage=%s has_auth_header=%s has_workspace_header=%s has_user_header=%s',
             request.method,
             resolved_path,
             request.headers.get('origin', ''),
+            workspace_hint,
+            user_hint,
+            'unhandled_route_exception',
             bool((request.headers.get('authorization') or '').strip()),
             bool((request.headers.get('x-workspace-id') or '').strip()),
             bool((request.headers.get('x-user-id') or '').strip()),
