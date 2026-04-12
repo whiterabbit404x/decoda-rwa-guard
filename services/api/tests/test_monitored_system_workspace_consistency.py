@@ -124,6 +124,53 @@ def test_reconcile_workspace_returns_structured_error_when_reconcile_targets_fai
     assert 'upsert violated unique constraint' in exc.value.detail['debug_error_message']
 
 
+def test_reconcile_workspace_sets_reconcile_targets_stage_when_target_ensure_raises(monkeypatch):
+    conn = _Conn()
+    request = _Request('ws-1')
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}))
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+
+    def _raise_from_target_ensure(_connection, *, workspace_id=None):
+        raise RuntimeError(f'failed ensure for workspace {workspace_id}')
+
+    monkeypatch.setattr(pilot, 'reconcile_enabled_targets_monitored_systems', _raise_from_target_ensure)
+
+    with pytest.raises(HTTPException) as exc:
+        pilot.reconcile_workspace_monitored_systems(request)
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail['code'] == 'monitoring_reconcile_failed'
+    assert exc.value.detail['stage'] == 'reconcile_targets'
+    assert exc.value.detail['debug_error_type'] == 'RuntimeError'
+    assert 'failed ensure for workspace ws-1' in exc.value.detail['debug_error_message']
+
+
+def test_reconcile_workspace_returns_structured_error_when_list_rows_fails(monkeypatch):
+    conn = _Conn()
+    request = _Request('ws-1')
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}))
+    monkeypatch.setattr(pilot, 'reconcile_enabled_targets_monitored_systems', lambda *_a, **_k: {'targets_scanned': 1, 'created_or_updated': 1})
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+    monkeypatch.setattr(pilot, 'list_workspace_monitored_system_rows', lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError('list failed')))
+
+    with pytest.raises(HTTPException) as exc:
+        pilot.reconcile_workspace_monitored_systems(request)
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail['code'] == 'monitoring_reconcile_failed'
+    assert exc.value.detail['stage'] == 'list_rows'
+    assert exc.value.detail['debug_error_type'] == 'RuntimeError'
+    assert 'list failed' in exc.value.detail['debug_error_message']
+
+
 def test_get_monitored_systems_remains_queryable_after_reconcile(monkeypatch):
     conn = _Conn()
     request = _Request('ws-9')

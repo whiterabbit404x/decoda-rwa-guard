@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import threading
+import traceback
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -2306,13 +2307,15 @@ def reconcile_monitored_systems_for_enabled_targets() -> dict[str, Any]:
 def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
     logger.info('monitoring_reconcile step=start')
     stage = 'require_live_mode'
+    workspace_id: str | None = None
+    user_id: str | None = None
     logger.info('monitoring_reconcile step=%s', stage)
     try:
         require_live_mode()
     except HTTPException:
         raise
     except Exception as exc:
-        raise _reconcile_error(stage, exc) from exc
+        raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
     with pg_connection() as connection:
         stage = 'ensure_schema'
         logger.info('monitoring_reconcile step=%s', stage)
@@ -2321,16 +2324,17 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc) from exc
-        stage = 'workspace_admin'
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
+        stage = 'require_workspace_admin'
         logger.info('monitoring_reconcile step=%s', stage)
         try:
             user, workspace_context = _require_workspace_admin(connection, request)
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
         workspace_id = workspace_context['workspace_id']
+        user_id = str(user.get('id') or '')
         logger.info('monitoring_reconcile step=workspace_resolved workspace_id=%s', workspace_id)
 
         stage = 'reconcile_targets'
@@ -2340,7 +2344,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
         logger.info(
             'monitoring_reconcile step=reconcile_completed workspace_id=%s created_or_updated=%s',
             workspace_id,
@@ -2356,7 +2360,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                 entity_type='workspace',
                 entity_id=workspace_id,
                 request=request,
-                user_id=user['id'],
+                user_id=user_id,
                 workspace_id=workspace_id,
                 metadata={
                     'targets_scanned': result.get('targets_scanned', 0),
@@ -2368,7 +2372,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
         logger.info('monitoring_reconcile step=audit_logged workspace_id=%s', workspace_id)
 
         stage = 'list_rows'
@@ -2378,7 +2382,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
         logger.info('monitoring_reconcile step=rows_loaded workspace_id=%s count=%s', workspace_id, len(rows))
 
         stage = 'commit'
@@ -2388,7 +2392,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
         logger.info('monitoring_reconcile step=commit_completed workspace_id=%s', workspace_id)
 
         systems = [_json_safe_value(row) for row in rows]
@@ -2410,8 +2414,28 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         return response
 
 
-def _reconcile_error(stage: str, exc: Exception) -> HTTPException:
-    logger.exception('monitoring_reconcile_failed stage=%s', stage)
+def _reconcile_error(
+    stage: str,
+    exc: Exception,
+    *,
+    request: Request | None = None,
+    workspace_id: str | None = None,
+    user_id: str | None = None,
+) -> HTTPException:
+    method = getattr(request, 'method', None) if request else None
+    url = getattr(request, 'url', None) if request else None
+    path = getattr(url, 'path', None) if url is not None else None
+    logger.exception(
+        'monitoring_reconcile_failed stage=%s method=%s path=%s workspace_id=%s user_id=%s error_type=%s error_message=%s traceback=%s',
+        stage,
+        method,
+        path,
+        workspace_id,
+        user_id,
+        type(exc).__name__,
+        str(exc),
+        traceback.format_exc(),
+    )
     detail: dict[str, Any] = {
         'code': 'monitoring_reconcile_failed',
         'detail': 'Unexpected backend error during monitored systems reconcile.',
