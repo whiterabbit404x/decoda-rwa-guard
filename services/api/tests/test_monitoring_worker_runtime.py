@@ -33,6 +33,7 @@ class _FakeConnection:
         self.due_targets = due_targets
         self.health_row = None
         self.last_worker_state_update_params = None
+        self.monitored_system_updates = []
 
     def transaction(self):
         return _FakeTransaction()
@@ -84,6 +85,9 @@ class _FakeConnection:
                 'last_error': params[4],
                 'updated_at': datetime.now(timezone.utc),
             }
+            return _Result()
+        if normalized.startswith('UPDATE monitored_systems SET last_heartbeat = NOW()'):
+            self.monitored_system_updates.append(params)
             return _Result()
         return _Result()
 
@@ -198,6 +202,53 @@ def test_monitoring_cycle_updates_health_with_null_error_message(monkeypatch):
     assert summary['live_mode'] is True
     assert connection.last_worker_state_update_params[0] is None
     assert connection.last_worker_state_update_params[4] is None
+    assert len(connection.monitored_system_updates) == 1
+    assert connection.monitored_system_updates[0][0] == 'idle'
+    assert connection.monitored_system_updates[0][1] == 'idle'
+
+
+def test_monitoring_cycle_zero_events_does_not_mark_monitored_system_error(monkeypatch):
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'quiet-target',
+            'name': 'Quiet Target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'monitored_by_workspace_id': None,
+            'monitored_workspace_exists_id': None,
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda _connection, target, triggered_by_user_id=None: {
+            'alerts_generated': 0,
+            'incidents_created': 0,
+            'events_ingested': 0,
+            'target_id': target['id'],
+            'runs': ['run-1'],
+            'status': 'completed',
+        },
+    )
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+    assert summary['checked'] == 1
+    assert summary['events_ingested'] == 0
+    assert len(connection.monitored_system_updates) == 1
+    runtime_status, status, _monitored_system_id = connection.monitored_system_updates[0]
+    assert runtime_status == 'idle'
+    assert status == 'idle'
 
 
 def test_worker_once_mode_runs_single_cycle(monkeypatch):

@@ -2013,16 +2013,18 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     result = process_monitoring_target(connection, target)
                     monitored_system_id = due_system_ids.get(str(target['id']))
                     if monitored_system_id:
+                        events_ingested_for_target = int(result.get('events_ingested', 0))
+                        runtime_status = 'active' if events_ingested_for_target > 0 else 'idle'
                         connection.execute(
                             '''
                             UPDATE monitored_systems
                             SET last_heartbeat = NOW(),
-                                runtime_status = CASE WHEN %s = 0 THEN 'error' ELSE 'active' END,
-                                status = CASE WHEN %s = 0 THEN 'error' ELSE 'active' END,
-                                last_error_text = CASE WHEN %s = 0 THEN 'No events ingested in cycle' ELSE NULL END
+                                runtime_status = %s,
+                                status = %s,
+                                last_error_text = NULL
                             WHERE id = %s::uuid
                             ''',
-                            (int(result.get('events_ingested', 0)), int(result.get('events_ingested', 0)), int(result.get('events_ingested', 0)), monitored_system_id),
+                            (runtime_status, runtime_status, monitored_system_id),
                         )
                 alerts_generated += int(result['alerts_generated'])
                 live_targets_checked += 1 if str(target.get('target_type') or '').lower() in {'wallet','contract'} else 0
@@ -2678,10 +2680,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
     enabled_rows = [row for row in monitored_rows if bool(row.get('is_enabled'))]
     active_rows = [row for row in enabled_rows if str(row.get('runtime_status') or '').strip().lower() == 'active']
+    enabled_asset_rows = [row for row in enabled_rows if row.get('asset_id')]
     enabled_system_count = len(enabled_rows)
     active_system_count = len(active_rows)
     system_count = len(monitored_rows)
-    protected_assets_count = len({str(row.get('asset_id') or '') for row in active_rows if row.get('asset_id')})
+    protected_assets_count = len({str(row.get('asset_id') or '') for row in enabled_asset_rows})
     evidence_at = _parse_ts((latest_evidence or {}).get('observed_at'))
     evidence_freshness = int((now - evidence_at).total_seconds()) if evidence_at else None
     runner_alive = bool(health.get('worker_running')) or not stale_heartbeat
