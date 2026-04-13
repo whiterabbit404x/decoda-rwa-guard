@@ -220,6 +220,30 @@ def test_runtime_status_degraded_when_enabled_targets_are_invalid(monkeypatch):
     assert payload['invalid_enabled_targets'] == 2
 
 
+def test_runtime_status_stays_degraded_when_linked_asset_missing_exists(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _LinkedAssetMissingConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'LEFT JOIN assets a' in q and 'FROM targets t' in q:
+                return _Result({'c': 1})
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling'},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_LinkedAssetMissingConn(now - timedelta(seconds=30))))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    assert payload['status'] == 'Degraded'
+    assert payload['degraded_reason'] == 'invalid_enabled_targets'
+    assert payload['invalid_enabled_targets'] == 1
+
+
 def test_runtime_status_offline_without_active_systems(monkeypatch):
     now = datetime.now(timezone.utc)
 

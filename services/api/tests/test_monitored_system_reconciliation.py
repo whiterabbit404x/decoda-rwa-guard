@@ -95,8 +95,17 @@ class _Conn:
             return _Result(dict(target) if target else None)
         if 'INSERT INTO monitored_systems' in q:
             target_id = str(params[3])
+            existing = self.monitored_systems.get(target_id, {})
+            runtime_status = 'active' if existing.get('runtime_status') == 'active' else 'idle'
             row = {'id': f'ms-{target_id}'}
-            self.monitored_systems[target_id] = {'id': row['id'], 'target_id': target_id, 'asset_id': params[2]}
+            self.monitored_systems[target_id] = {
+                'id': row['id'],
+                'target_id': target_id,
+                'asset_id': params[2],
+                'runtime_status': runtime_status,
+                'status': runtime_status,
+                'last_error_text': None,
+            }
             return _Result(row)
         if "SET last_run_status = 'invalid_missing_asset'" in q:
             reason = str(params[0])
@@ -188,6 +197,26 @@ def test_reconcile_enabled_targets_is_idempotent_for_existing_rows():
     assert second['created_or_updated'] == 1
     assert len(conn.monitored_systems) == 1
     assert conn.monitored_systems['target-valid']['id'] == 'ms-target-valid'
+
+
+def test_repair_reconcile_clears_stale_monitored_system_error_state():
+    conn = _Conn()
+    conn.monitored_systems['target-valid'] = {
+        'id': 'ms-target-valid',
+        'target_id': 'target-valid',
+        'asset_id': 'asset-1',
+        'runtime_status': 'error',
+        'status': 'error',
+        'last_error_text': 'No events ingested in cycle',
+    }
+
+    result = pilot.ensure_monitored_system_for_target(conn, target_id='target-valid')
+
+    assert result['status'] == 'ok'
+    repaired = conn.monitored_systems['target-valid']
+    assert repaired['runtime_status'] == 'idle'
+    assert repaired['status'] == 'idle'
+    assert repaired['last_error_text'] is None
 
 
 def test_normalize_reconcile_result_provides_render_safe_fields():
