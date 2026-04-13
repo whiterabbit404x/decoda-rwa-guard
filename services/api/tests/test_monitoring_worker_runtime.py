@@ -204,7 +204,7 @@ def test_monitoring_cycle_updates_health_with_null_error_message(monkeypatch):
     assert connection.last_worker_state_update_params[4] is None
     assert len(connection.monitored_system_updates) == 1
     assert connection.monitored_system_updates[0][0] == 'idle'
-    assert connection.monitored_system_updates[0][1] == 'idle'
+    assert connection.monitored_system_updates[0][1] == 'active'
 
 
 def test_monitoring_cycle_zero_events_does_not_mark_monitored_system_error(monkeypatch):
@@ -248,7 +248,7 @@ def test_monitoring_cycle_zero_events_does_not_mark_monitored_system_error(monke
     assert len(connection.monitored_system_updates) == 1
     runtime_status, status, _monitored_system_id = connection.monitored_system_updates[0]
     assert runtime_status == 'idle'
-    assert status == 'idle'
+    assert status == 'active'
 
 
 def test_worker_once_mode_runs_single_cycle(monkeypatch):
@@ -283,6 +283,14 @@ def test_due_target_selection_query_keeps_monitoring_filters() -> None:
     assert 'last_error = CAST(%s AS text)' in source
     assert "UPDATE monitored_systems ms" in source
     assert "SET last_heartbeat = NOW()" in source
+
+
+def test_monitoring_worker_never_writes_idle_legacy_status_for_monitored_systems() -> None:
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+    assert "(runtime_status, 'active', monitored_system_id)" in source
+    assert "status = %s" in source
+    assert "'error', status = 'error'" in source
+    assert "status = CASE WHEN CAST(%s AS text) IS NULL THEN 'idle' ELSE 'error' END" in source
 
 
 def test_monitor_checkpoint_upsert_and_load():

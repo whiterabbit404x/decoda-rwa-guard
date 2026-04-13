@@ -4300,20 +4300,19 @@ def ensure_monitored_system_for_target(
     row = connection.execute(
         '''
         INSERT INTO monitored_systems (id, workspace_id, asset_id, target_id, chain, is_enabled, runtime_status, status)
-        VALUES (%s, %s, %s::uuid, %s::uuid, %s, TRUE, 'idle', 'idle')
+        VALUES (%s, %s, %s::uuid, %s::uuid, %s, TRUE, 'idle', 'active')
         ON CONFLICT (workspace_id, target_id)
         DO UPDATE SET
             asset_id = EXCLUDED.asset_id,
             chain = EXCLUDED.chain,
             is_enabled = TRUE,
             runtime_status = CASE
-                WHEN monitored_systems.runtime_status = 'active' THEN 'active'
+                WHEN monitored_systems.runtime_status = 'active'
+                     AND monitored_systems.last_heartbeat IS NOT NULL
+                     AND monitored_systems.last_heartbeat >= NOW() - INTERVAL '10 minutes' THEN 'active'
                 ELSE 'idle'
             END,
-            status = CASE
-                WHEN monitored_systems.runtime_status = 'active' THEN 'active'
-                ELSE 'idle'
-            END,
+            status = 'active',
             last_error_text = NULL
         RETURNING id
         ''',
