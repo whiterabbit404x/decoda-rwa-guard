@@ -17,4 +17,7 @@ test('threat UI uses monitored systems runtime counts and invalid target signal'
   expect(threat).toContain('feed.counts.monitoredSystems');
   expect(threat).toContain('feed.counts.protectedAssets');
   expect(threat).toContain('invalid_enabled_targets');
+  expect(threat).toContain('fetch(`${apiUrl}/monitoring/systems`');
+  expect(threat).toContain('const shouldUseMonitoredSystemFallback = targets.length === 0 && hasSystemsFromApi;');
+  expect(threat).toContain('const showCoverageEmptyState = !loadingSnapshot && targets.length === 0 && !shouldUseMonitoredSystemFallback && !hasCoverageFromRuntime;');
 });

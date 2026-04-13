@@ -25,6 +25,19 @@ type TargetRow = {
   asset_missing?: boolean;
 };
 
+type MonitoredSystemRow = {
+  id: string;
+  target_id?: string | null;
+  target_name?: string | null;
+  asset_name?: string | null;
+  chain?: string | null;
+  is_enabled?: boolean;
+  runtime_status?: string | null;
+  status?: string | null;
+  last_heartbeat?: string | null;
+  last_error_text?: string | null;
+};
+
 type AlertRow = {
   id: string;
   title: string;
@@ -291,6 +304,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [historyRuns, setHistoryRuns] = useState<HistoryRun[]>([]);
   const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
+  const [monitoredSystems, setMonitoredSystems] = useState<MonitoredSystemRow[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -301,24 +315,27 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         return;
       }
       try {
-        const [targetsResponse, alertsResponse, incidentsResponse, historyResponse, evidenceResponse] = await Promise.all([
+        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, historyResponse, evidenceResponse] = await Promise.all([
           fetch(`${apiUrl}/monitoring/targets`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/monitoring/systems`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/incidents?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/pilot/history?limit=12`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         if (!active) return;
-        if (!targetsResponse.ok || !alertsResponse.ok || !incidentsResponse.ok || !historyResponse.ok || !evidenceResponse.ok) {
+        if (!targetsResponse.ok || !systemsResponse.ok || !alertsResponse.ok || !incidentsResponse.ok || !historyResponse.ok || !evidenceResponse.ok) {
           throw new Error('refresh_failed');
         }
         const targetsPayload = await targetsResponse.json();
+        const systemsPayload = await systemsResponse.json();
         const alertsPayload = await alertsResponse.json();
         const incidentsPayload = await incidentsResponse.json();
         const historyPayload = await historyResponse.json();
         const evidencePayload = await evidenceResponse.json();
 
         setTargets((targetsPayload.targets ?? []) as TargetRow[]);
+        setMonitoredSystems((systemsPayload.systems ?? []) as MonitoredSystemRow[]);
         setAlerts((alertsPayload.alerts ?? []) as AlertRow[]);
         setIncidents((incidentsPayload.incidents ?? []) as IncidentRow[]);
         setHistoryRuns((historyPayload.analysis_runs ?? []) as HistoryRun[]);
@@ -531,6 +548,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const reportingSystems = feed.counts.monitoredSystems;
   const recentHeartbeatSystems = Number(feed.runtimeStatus?.systems_with_recent_heartbeat ?? 0);
   const coverageSummary = `${recentHeartbeatSystems} / ${Math.max(reportingSystems, 0)}`;
+  const hasCoverageFromRuntime = protectedAssetCount > 0 || reportingSystems > 0;
+  const hasSystemsFromApi = monitoredSystems.length > 0;
+  const shouldUseMonitoredSystemFallback = targets.length === 0 && hasSystemsFromApi;
+  const showCoverageEmptyState = !loadingSnapshot && targets.length === 0 && !shouldUseMonitoredSystemFallback && !hasCoverageFromRuntime;
   const latestRiskScore = useMemo(() => {
     if (alerts.some((item) => severityClass(item.severity) === 'critical')) return { value: 92, tier: 'High' };
     if (alerts.some((item) => severityClass(item.severity) === 'high')) return { value: 78, tier: 'Elevated' };
@@ -695,7 +716,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <Link href="/monitored-systems" prefetch={false}>Manage monitored systems</Link>
           </div>
           {loadingSnapshot ? <p className="muted">Loading monitored systems…</p> : null}
-          {!loadingSnapshot && targets.length === 0 ? (
+          {showCoverageEmptyState ? (
             <div className="emptyStatePanel">
               <h4>No protected systems configured</h4>
               <p className="muted">Live monitoring requires at least one protected system in this workspace.</p>
@@ -705,7 +726,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               </div>
             </div>
           ) : null}
-          {targets.length > 0 ? (
+          {(targets.length > 0 || shouldUseMonitoredSystemFallback) ? (
             <div className="tableWrap">
               <table>
                 <thead>
@@ -721,7 +742,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {targets.slice(0, 10).map((target) => {
+                  {targets.length > 0 ? targets.slice(0, 10).map((target) => {
                     const coverage = normalizeCoverageStatus(target);
                     const risk = openAlerts > 0 ? 'High' : 'Low';
                     return (
@@ -732,6 +753,40 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                         <td><span className={`statusBadge statusBadge-${coverageTone(coverage)}`}>{coverage}</span></td>
                         <td>{formatRelativeTime(target.last_checked_at)}</td>
                         <td>{alerts[0]?.title || incidents[0]?.title || 'No active signals'}</td>
+                        <td><span className={`statusBadge statusBadge-${risk === 'High' ? 'high' : 'low'}`}>{risk}</span></td>
+                        <td><Link href="/monitored-systems" prefetch={false}>Open asset coverage view</Link></td>
+                      </tr>
+                    );
+                  }) : monitoredSystems.slice(0, 10).map((system) => {
+                    const runtimeStatus = String(system.runtime_status || 'idle').toLowerCase();
+                    const statusTone = runtimeStatus === 'error' || runtimeStatus === 'degraded'
+                      ? 'attention'
+                      : (runtimeStatus === 'offline' || !system.is_enabled ? 'offline' : 'healthy');
+                    const statusLabel = runtimeStatus === 'active'
+                      ? 'Monitored'
+                      : runtimeStatus === 'error'
+                        ? 'Error'
+                        : runtimeStatus === 'degraded'
+                          ? 'Degraded'
+                          : runtimeStatus === 'offline'
+                            ? 'Offline'
+                            : 'Idle';
+                    const coverage = runtimeStatus === 'active'
+                      ? 'Full'
+                      : runtimeStatus === 'idle'
+                        ? 'Partial'
+                        : runtimeStatus === 'offline'
+                          ? 'Offline'
+                          : 'Stale';
+                    const risk = openAlerts > 0 ? 'High' : 'Low';
+                    return (
+                      <tr key={system.id}>
+                        <td>{system.target_name || system.asset_name || 'Monitored system'}<span className="tableMeta">{system.chain || 'Unknown chain'}</span></td>
+                        <td>System</td>
+                        <td><span className={`statusBadge statusBadge-${statusTone}`}>{statusLabel}</span></td>
+                        <td><span className={`statusBadge statusBadge-${coverageTone(coverage)}`}>{coverage}</span></td>
+                        <td>{formatRelativeTime(system.last_heartbeat)}</td>
+                        <td>{system.last_error_text || alerts[0]?.title || incidents[0]?.title || 'No active signals'}</td>
                         <td><span className={`statusBadge statusBadge-${risk === 'High' ? 'high' : 'low'}`}>{risk}</span></td>
                         <td><Link href="/monitored-systems" prefetch={false}>Open asset coverage view</Link></td>
                       </tr>
