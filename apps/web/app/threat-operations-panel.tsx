@@ -549,9 +549,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const recentHeartbeatSystems = Number(feed.runtimeStatus?.systems_with_recent_heartbeat ?? 0);
   const coverageSummary = `${recentHeartbeatSystems} / ${Math.max(reportingSystems, 0)}`;
   const hasCoverageFromRuntime = protectedAssetCount > 0 || reportingSystems > 0;
-  const hasSystemsFromApi = monitoredSystems.length > 0;
-  const shouldUseMonitoredSystemFallback = targets.length === 0 && hasSystemsFromApi;
-  const showCoverageEmptyState = !loadingSnapshot && targets.length === 0 && !shouldUseMonitoredSystemFallback && !hasCoverageFromRuntime;
+  const hasTargetCoverageRows = targets.length > 0;
+  const hasMonitoredSystemCoverageRows = !hasTargetCoverageRows && monitoredSystems.length > 0;
+  const showRuntimeCoverageFallback = !loadingSnapshot && !hasTargetCoverageRows && !hasMonitoredSystemCoverageRows && hasCoverageFromRuntime;
+  const showCoverageEmptyState = !loadingSnapshot && !hasTargetCoverageRows && !hasMonitoredSystemCoverageRows && !hasCoverageFromRuntime;
+  const runtimeCoverageStatusNote = monitoringPresentation.status === 'offline'
+    ? 'Runtime reports coverage, but telemetry is currently offline.'
+    : monitoringPresentation.status === 'degraded' || monitoringPresentation.status === 'stale' || monitoringPresentation.status === 'limited coverage'
+      ? 'Runtime reports partial or stale telemetry. Detailed protected system rows are still syncing.'
+      : 'Runtime reports healthy coverage. Detailed protected system rows are still syncing.';
   const latestRiskScore = useMemo(() => {
     if (alerts.some((item) => severityClass(item.severity) === 'critical')) return { value: 92, tier: 'High' };
     if (alerts.some((item) => severityClass(item.severity) === 'high')) return { value: 78, tier: 'Elevated' };
@@ -726,7 +732,22 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               </div>
             </div>
           ) : null}
-          {(targets.length > 0 || shouldUseMonitoredSystemFallback) ? (
+          {showRuntimeCoverageFallback ? (
+            <div className="emptyStatePanel">
+              <h4>Coverage detected from runtime telemetry</h4>
+              <p className="muted">{runtimeCoverageStatusNote}</p>
+              <ul className="tableMeta">
+                <li>Monitored systems: {Math.max(reportingSystems, 0)}</li>
+                <li>Systems with recent heartbeat: {recentHeartbeatSystems}</li>
+                <li>Protected assets: {protectedAssetCount}</li>
+                <li>Telemetry freshness: {telemetryLabel}</li>
+              </ul>
+              <div className="buttonRow">
+                <Link href="/monitored-systems" prefetch={false}>Open monitored systems</Link>
+              </div>
+            </div>
+          ) : null}
+          {(hasTargetCoverageRows || hasMonitoredSystemCoverageRows) ? (
             <div className="tableWrap">
               <table>
                 <thead>
@@ -742,7 +763,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {targets.length > 0 ? targets.slice(0, 10).map((target) => {
+                  {hasTargetCoverageRows ? targets.slice(0, 10).map((target) => {
                     const coverage = normalizeCoverageStatus(target);
                     const risk = openAlerts > 0 ? 'High' : 'Low';
                     return (

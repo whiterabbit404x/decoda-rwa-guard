@@ -18,6 +18,10 @@ test('threat UI uses monitored systems runtime counts and invalid target signal'
   expect(threat).toContain('feed.counts.protectedAssets');
   expect(threat).toContain('invalid_enabled_targets');
   expect(threat).toContain('fetch(`${apiUrl}/monitoring/systems`');
-  expect(threat).toContain('const shouldUseMonitoredSystemFallback = targets.length === 0 && hasSystemsFromApi;');
-  expect(threat).toContain('const showCoverageEmptyState = !loadingSnapshot && targets.length === 0 && !shouldUseMonitoredSystemFallback && !hasCoverageFromRuntime;');
+  expect(threat).toContain('const hasTargetCoverageRows = targets.length > 0;');
+  expect(threat).toContain('const hasMonitoredSystemCoverageRows = !hasTargetCoverageRows && monitoredSystems.length > 0;');
+  expect(threat).toContain('const showRuntimeCoverageFallback = !loadingSnapshot && !hasTargetCoverageRows && !hasMonitoredSystemCoverageRows && hasCoverageFromRuntime;');
+  expect(threat).toContain('const showCoverageEmptyState = !loadingSnapshot && !hasTargetCoverageRows && !hasMonitoredSystemCoverageRows && !hasCoverageFromRuntime;');
+  expect(threat).toContain('Coverage detected from runtime telemetry');
+  expect(threat).toContain('Detailed protected system rows are still syncing.');
 });
