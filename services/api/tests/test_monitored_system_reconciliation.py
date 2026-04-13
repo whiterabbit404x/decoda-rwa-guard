@@ -103,7 +103,7 @@ class _Conn:
                 'target_id': target_id,
                 'asset_id': params[2],
                 'runtime_status': runtime_status,
-                'status': runtime_status,
+                'status': 'active',
                 'last_error_text': None,
             }
             return _Result(row)
@@ -199,6 +199,13 @@ def test_reconcile_enabled_targets_is_idempotent_for_existing_rows():
     assert conn.monitored_systems['target-valid']['id'] == 'ms-target-valid'
 
 
+def test_reconcile_uses_legacy_status_values_allowed_by_constraint():
+    conn = _Conn()
+    pilot.reconcile_enabled_targets_monitored_systems(conn)
+    monitored = conn.monitored_systems['target-valid']
+    assert monitored['status'] in {'active', 'paused', 'error'}
+
+
 def test_repair_reconcile_clears_stale_monitored_system_error_state():
     conn = _Conn()
     conn.monitored_systems['target-valid'] = {
@@ -215,8 +222,15 @@ def test_repair_reconcile_clears_stale_monitored_system_error_state():
     assert result['status'] == 'ok'
     repaired = conn.monitored_systems['target-valid']
     assert repaired['runtime_status'] == 'idle'
-    assert repaired['status'] == 'idle'
+    assert repaired['status'] == 'active'
     assert repaired['last_error_text'] is None
+
+
+def test_repair_reconcile_never_writes_idle_legacy_status():
+    source = open('services/api/app/pilot.py', encoding='utf-8').read()
+    assert "VALUES (%s, %s, %s::uuid, %s::uuid, %s, TRUE, 'idle', 'active')" in source
+    assert "status = 'active'" in source
+    assert "'idle', 'idle'" not in source
 
 
 def test_normalize_reconcile_result_provides_render_safe_fields():

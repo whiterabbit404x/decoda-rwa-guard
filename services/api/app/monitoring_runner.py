@@ -2024,7 +2024,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                                 last_error_text = NULL
                             WHERE id = %s::uuid
                             ''',
-                            (runtime_status, runtime_status, monitored_system_id),
+                            (runtime_status, 'active', monitored_system_id),
                         )
                 alerts_generated += int(result['alerts_generated'])
                 live_targets_checked += 1 if str(target.get('target_type') or '').lower() in {'wallet','contract'} else 0
