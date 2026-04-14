@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from services.api.app import monitoring_runner, pilot
 
@@ -117,6 +118,11 @@ class _Conn:
             return _Result()
         if "SET last_run_status = 'ready'" in q:
             return _Result()
+        if "SET monitoring_enabled = TRUE" in q:
+            target_id = str(params[0])
+            if target_id in self.targets:
+                self.targets[target_id]['monitoring_enabled'] = True
+            return _Result()
         if 'SELECT id FROM targets WHERE deleted_at IS NULL' in q:
             rows = [{'id': target_id} for target_id in self.targets.keys()]
             return _Result(rows=rows)
@@ -129,6 +135,49 @@ class _Conn:
                     'asset_id': target.get('asset_id'),
                 }
                 for target_id, target in self.targets.items()
+            ]
+            return _Result(rows=rows)
+        if 'SELECT id, workspace_id, asset_id, enabled, monitoring_enabled, deleted_at FROM targets' in q:
+            rows = [
+                {
+                    'id': target_id,
+                    'workspace_id': target.get('workspace_id'),
+                    'asset_id': target.get('asset_id'),
+                    'enabled': bool(target.get('enabled')),
+                    'monitoring_enabled': bool(target.get('monitoring_enabled')),
+                    'deleted_at': None,
+                }
+                for target_id, target in self.targets.items()
+                if str(target.get('workspace_id')) == str((params or [None])[0])
+            ]
+            return _Result(rows=rows)
+        if 'SELECT t.id, t.workspace_id, t.asset_id, t.enabled, t.monitoring_enabled FROM targets t JOIN assets a' in q:
+            rows = [
+                {
+                    'id': target_id,
+                    'workspace_id': target.get('workspace_id'),
+                    'asset_id': target.get('asset_id'),
+                    'enabled': bool(target.get('enabled')),
+                    'monitoring_enabled': bool(target.get('monitoring_enabled')),
+                }
+                for target_id, target in self.targets.items()
+                if str(target.get('workspace_id')) == str((params or [None])[0])
+                and bool(target.get('enabled'))
+                and bool(target.get('resolved_asset_id'))
+            ]
+            return _Result(rows=rows)
+        if 'SELECT id, workspace_id, target_id, asset_id, is_enabled, runtime_status, status FROM monitored_systems' in q:
+            rows = [
+                {
+                    'id': row['id'],
+                    'workspace_id': 'ws-1',
+                    'target_id': target_id,
+                    'asset_id': row.get('asset_id'),
+                    'is_enabled': True,
+                    'runtime_status': row.get('runtime_status'),
+                    'status': row.get('status'),
+                }
+                for target_id, row in self.monitored_systems.items()
             ]
             return _Result(rows=rows)
         if 'SELECT id, target_id FROM monitored_systems' in q:
@@ -220,32 +269,34 @@ def test_reconcile_enabled_targets_backfills_and_reports_invalid_and_skipped_rea
     conn = _Conn()
     result = pilot.reconcile_enabled_targets_monitored_systems(conn)
     assert result['targets_scanned'] == 4
-    assert result['enabled_targets_scanned'] == 2
-    assert result['eligible_targets'] == 1
-    assert result['created_or_updated'] == 1
+    assert result['enabled_targets_scanned'] == 3
+    assert result['eligible_targets'] == 2
+    assert result['created_or_updated'] == 2
     assert result['invalid_targets'] == ['target-missing-asset']
     assert result['invalid_reasons'] == {'linked_asset_missing': 1}
-    assert result['skipped_reasons'] == {'monitoring_disabled': 1, 'target_not_enabled': 1}
-    assert result['created_monitored_systems'] == 1
+    assert result['skipped_reasons'] == {'target_not_enabled': 1}
+    assert result['created_monitored_systems'] == 2
     assert result['preserved_monitored_systems'] == 0
     assert result['removed_monitored_systems'] == 0
-    assert result['final_workspace_monitored_system_count'] == 1
-    assert result['enabled_valid_targets_found'] == 1
-    assert result['disabled_or_invalid_targets_found'] == 3
+    assert result['final_workspace_monitored_system_count'] == 2
+    assert result['enabled_valid_targets_found'] == 2
+    assert result['disabled_or_invalid_targets_found'] == 2
     assert 'target-valid' in conn.monitored_systems
+    assert 'target-monitoring-disabled' in conn.monitored_systems
 
 
 def test_reconcile_enabled_targets_is_idempotent_for_existing_rows():
     conn = _Conn()
     first = pilot.reconcile_enabled_targets_monitored_systems(conn)
     second = pilot.reconcile_enabled_targets_monitored_systems(conn)
-    assert first['created_or_updated'] == 1
-    assert second['created_or_updated'] == 1
+    assert first['created_or_updated'] == 2
+    assert second['created_or_updated'] == 2
     assert second['created_monitored_systems'] == 0
-    assert second['preserved_monitored_systems'] == 1
-    assert second['final_workspace_monitored_system_count'] == 1
-    assert len(conn.monitored_systems) == 1
+    assert second['preserved_monitored_systems'] == 2
+    assert second['final_workspace_monitored_system_count'] == 2
+    assert len(conn.monitored_systems) == 2
     assert conn.monitored_systems['target-valid']['id'] == 'ms-target-valid'
+    assert conn.monitored_systems['target-monitoring-disabled']['id'] == 'ms-target-monitoring-disabled'
 
 
 def test_reconcile_repairs_healthy_targets_after_broken_target_is_disabled():
@@ -255,10 +306,11 @@ def test_reconcile_repairs_healthy_targets_after_broken_target_is_disabled():
 
     result = pilot.reconcile_enabled_targets_monitored_systems(conn)
 
-    assert result['created_or_updated'] == 1
+    assert result['created_or_updated'] == 2
     assert result['invalid_targets'] == []
     assert 'target-valid' in conn.monitored_systems
-    assert result['final_workspace_monitored_system_count'] == 1
+    assert 'target-monitoring-disabled' in conn.monitored_systems
+    assert result['final_workspace_monitored_system_count'] == 2
 
 
 def test_reconcile_recreates_missing_monitored_rows_for_healthy_targets():
@@ -269,10 +321,11 @@ def test_reconcile_recreates_missing_monitored_rows_for_healthy_targets():
 
     result = pilot.reconcile_enabled_targets_monitored_systems(conn)
 
-    assert result['enabled_valid_targets_found'] == 1
-    assert result['created_monitored_systems'] == 1
-    assert result['final_workspace_monitored_system_count'] == 1
+    assert result['enabled_valid_targets_found'] == 2
+    assert result['created_monitored_systems'] == 2
+    assert result['final_workspace_monitored_system_count'] == 2
     assert 'target-valid' in conn.monitored_systems
+    assert 'target-monitoring-disabled' in conn.monitored_systems
 
 
 def test_reconcile_uses_legacy_status_values_allowed_by_constraint():
@@ -335,8 +388,73 @@ def test_runtime_status_count_reflects_backfilled_monitored_system_rows(monkeypa
 
     pilot.reconcile_enabled_targets_monitored_systems(conn)
     after = monitoring_runner.monitoring_runtime_status()
-    assert after['monitored_systems'] == 1
-    assert after['monitored_systems_count'] == 1
+    assert after['monitored_systems'] == 2
+    assert after['monitored_systems_count'] == 2
+
+
+def test_repair_and_runtime_summary_with_three_healthy_targets(monkeypatch):
+    conn = _Conn()
+    conn.targets = {
+        'target-h1': {
+            'id': 'target-h1',
+            'workspace_id': 'ws-1',
+            'asset_id': 'asset-1',
+            'chain_network': 'ethereum-mainnet',
+            'enabled': True,
+            'monitoring_enabled': True,
+            'resolved_asset_id': 'asset-1',
+            'any_asset_id': 'asset-1',
+            'any_asset_workspace_id': 'ws-1',
+        },
+        'target-h2': {
+            'id': 'target-h2',
+            'workspace_id': 'ws-1',
+            'asset_id': 'asset-2',
+            'chain_network': 'ethereum-mainnet',
+            'enabled': True,
+            'monitoring_enabled': True,
+            'resolved_asset_id': 'asset-2',
+            'any_asset_id': 'asset-2',
+            'any_asset_workspace_id': 'ws-1',
+        },
+        'target-h3': {
+            'id': 'target-h3',
+            'workspace_id': 'ws-1',
+            'asset_id': 'asset-3',
+            'chain_network': 'ethereum-mainnet',
+            'enabled': True,
+            'monitoring_enabled': True,
+            'resolved_asset_id': 'asset-3',
+            'any_asset_id': 'asset-3',
+            'any_asset_workspace_id': 'ws-1',
+        },
+        'target-broken-disabled': {
+            'id': 'target-broken-disabled',
+            'workspace_id': 'ws-1',
+            'asset_id': 'asset-missing',
+            'chain_network': 'ethereum-mainnet',
+            'enabled': False,
+            'monitoring_enabled': False,
+            'resolved_asset_id': None,
+            'any_asset_id': None,
+            'any_asset_workspace_id': None,
+        },
+    }
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _ConnCtx(conn))
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'status': 'running', 'last_cycle_at': None, 'last_heartbeat_at': None})
+
+    result = pilot.reconcile_enabled_targets_monitored_systems(conn)
+    payload = monitoring_runner.monitoring_runtime_status()
+
+    assert result['created_monitored_systems'] == 3
+    assert result['final_workspace_monitored_system_count'] == 3
+    assert payload['monitored_systems'] > 0
+    assert payload['monitored_systems_count'] > 0
+    assert payload['protected_assets'] > 0
+    assert payload['monitoring_status'] != 'offline'
+    assert payload['status'] != 'Offline'
+    assert payload['monitored_systems_count'] != 0
 
 
 def test_reconcile_does_not_claim_success_for_non_visible_rows():
@@ -353,6 +471,27 @@ def test_reconcile_does_not_claim_success_for_non_visible_rows():
     conn.execute = execute  # type: ignore[method-assign]
 
     result = pilot.reconcile_enabled_targets_monitored_systems(conn)
-    assert result['created_or_updated'] == 0
-    assert result['repaired_monitored_system_ids'] == []
+    assert result['created_or_updated'] == 1
+    assert result['repaired_monitored_system_ids'] == ['ms-target-monitoring-disabled']
     assert result['skipped_reasons']['post_upsert_not_visible'] == 1
+
+
+def test_workspace_monitoring_debug_snapshot_reports_source_counts(monkeypatch):
+    conn = _Conn()
+    pilot.reconcile_enabled_targets_monitored_systems(conn)
+
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _ConnCtx(conn))
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(
+        pilot,
+        'resolve_workspace_context_for_request',
+        lambda _c, _r: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}, True),
+    )
+
+    payload = pilot.get_workspace_monitoring_debug(SimpleNamespace(headers={'x-workspace-id': 'ws-1'}))
+    debug = payload['debug']
+    assert debug['target_count'] == 4
+    assert debug['enabled_valid_target_count'] == 2
+    assert debug['monitored_systems_count'] == 2
+    assert debug['protected_asset_count'] == 1

@@ -151,6 +151,7 @@ from services.api.app.pilot import (
     get_onboarding_progress,
     get_current_workspace,
     set_target_enabled,
+    get_workspace_monitoring_debug,
     list_monitored_systems,
     create_monitored_system,
     patch_monitored_system,
@@ -1965,6 +1966,11 @@ def monitoring_systems_reconcile(request: Request) -> Any:
             payload['debug_error_type'] = type(exc).__name__
             payload['debug_error_message'] = str(exc)
         return JSONResponse(payload, status_code=500)
+
+
+@app.get('/monitoring/workspace-debug', summary='Workspace monitoring source-of-truth debug snapshot')
+def monitoring_workspace_debug(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_workspace_monitoring_debug(request))
 
 
 @app.post('/monitoring/systems', summary='Create monitored system')
