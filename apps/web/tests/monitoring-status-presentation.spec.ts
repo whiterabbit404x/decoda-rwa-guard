@@ -51,4 +51,31 @@ test.describe('monitoring status presentation adapter', () => {
     expect(idle.status).not.toBe('offline');
     expect(idle.statusLabel).not.toBe('OFFLINE');
   });
+
+  test('treats healthy idle heartbeats as recent telemetry', async () => {
+    const idleHealthy = normalizeMonitoringPresentation({
+      mode: 'LIMITED_COVERAGE',
+      monitoring_status: 'idle',
+      monitored_systems: 3,
+      systems_with_recent_heartbeat: 3,
+      successful_detection_evaluation_recent: true,
+      recent_evidence_state: 'missing',
+      recent_real_event_count: 0,
+      recent_confidence_basis: 'provider_evidence',
+      last_heartbeat: new Date().toISOString(),
+    } as MonitoringRuntimeStatus);
+    expect(idleHealthy.freshness).toBe('recent');
+    expect(idleHealthy.confidence).toBe('recent telemetry');
+    expect(idleHealthy.status).toBe('live');
+  });
+
+  test('prefers successful monitoring cycle timestamp as last checkpoint label', async () => {
+    const value = normalizeMonitoringPresentation({
+      mode: 'LIVE',
+      recent_evidence_state: 'real',
+      recent_real_event_count: 0,
+      last_confirmed_checkpoint: '2026-04-13T10:00:00Z',
+    } as MonitoringRuntimeStatus);
+    expect(value.lastCheckpointLabel).not.toContain('unavailable');
+  });
 });

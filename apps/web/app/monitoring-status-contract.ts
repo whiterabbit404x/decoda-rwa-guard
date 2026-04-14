@@ -7,6 +7,8 @@ export type MonitoringRuntimeStatus = {
   protected_assets?: number;
   active_systems?: number;
   last_heartbeat?: string | null;
+  last_confirmed_checkpoint?: string | null;
+  last_detection_evaluation_at?: string | null;
   telemetry_available?: boolean;
   mode: MonitoringMode;
   configured_mode?: MonitoringMode;
@@ -40,6 +42,8 @@ export type MonitoringRuntimeStatus = {
   recent_real_event_count?: number;
   last_real_event_at?: string | null;
   recent_confidence_basis?: 'provider_evidence' | 'backfill_evidence' | 'none' | string;
+  successful_detection_evaluation?: boolean;
+  successful_detection_evaluation_recent?: boolean;
   synthetic_leak_detected?: boolean;
 };
 
