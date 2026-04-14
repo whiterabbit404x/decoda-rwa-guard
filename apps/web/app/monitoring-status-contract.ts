@@ -14,7 +14,10 @@ export type MonitoringRuntimeStatus = {
   configured_mode?: MonitoringMode;
   status?: string;
   detection_outcome?: 'DETECTION_CONFIRMED' | 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE' | 'NO_EVIDENCE' | 'MONITORING_DEGRADED' | 'ANALYSIS_FAILED' | 'DEMO_ONLY' | string;
+  source_of_evidence?: string | null;
   source_type?: string | null;
+  freshness_status?: string | null;
+  confidence_status?: string | null;
   provider_health?: 'healthy' | 'degraded';
   provider_reachable?: boolean;
   claim_safe?: boolean;
