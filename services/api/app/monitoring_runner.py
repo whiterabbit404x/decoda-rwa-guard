@@ -293,6 +293,25 @@ def _safe_error_message(exc: Exception) -> str:
     return text[:240]
 
 
+def _derive_system_runtime_state(result: dict[str, Any], *, is_enabled: bool) -> tuple[str, str, str, str | None]:
+    if not is_enabled:
+        return 'disabled', 'unavailable', 'unavailable', 'monitoring_disabled'
+    provider_status = str(result.get('provider_status') or '').lower()
+    events_ingested = int(result.get('events_ingested', 0) or 0)
+    recent_real_event_count = int(result.get('recent_real_event_count', 0) or 0)
+    source_status = str(result.get('source_status') or '').lower()
+    degraded_reason = str(result.get('degraded_reason') or '').strip() or None
+    if provider_status == 'failed':
+        return 'failed', 'unavailable', 'low', degraded_reason or 'provider_failed'
+    if provider_status == 'degraded' or source_status == 'degraded':
+        return 'degraded', 'stale', 'low', degraded_reason or 'monitoring_degraded'
+    if provider_status == 'no_evidence':
+        return 'degraded', 'stale', 'low', degraded_reason or 'no_evidence'
+    if events_ingested > 0 or recent_real_event_count > 0:
+        return 'healthy', 'fresh', 'high', None
+    return 'idle', 'stale', 'medium', 'no_events_detected_yet'
+
+
 def _payload_shape(payload: dict[str, Any]) -> dict[str, Any]:
     metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
     return {
@@ -1817,7 +1836,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, incidents_created)
     WORKER_STATE['metrics']['live_events_ingested'] += len(events)
-    return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'status': last_status, 'latest_processed_block': latest_processed_block, 'source_status': source_status, 'degraded_reason': degraded_reason, 'provider_status': provider_result.status, 'provider_source_type': provider_result.source_type, 'synthetic': provider_result.synthetic, 'recent_evidence_state': recent_evidence_state, 'recent_truthfulness_state': recent_truthfulness_state, 'recent_real_event_count': int(provider_result.recent_real_event_count), 'protected_asset_coverage_record': last_protected_asset_coverage_record}
+    return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'status': last_status, 'latest_processed_block': latest_processed_block, 'source_status': source_status, 'degraded_reason': degraded_reason, 'provider_status': provider_result.status, 'provider_source_type': provider_result.source_type, 'synthetic': provider_result.synthetic, 'recent_evidence_state': recent_evidence_state, 'recent_truthfulness_state': recent_truthfulness_state, 'recent_real_event_count': int(provider_result.recent_real_event_count), 'last_real_event_at': last_real_event_at.isoformat() if last_real_event_at else None, 'protected_asset_coverage_record': last_protected_asset_coverage_record}
 
 
 def process_ingested_event(connection: Any, *, target: dict[str, Any], event: ActivityEvent, ingestion_mode: str = 'live') -> dict[str, Any]:
@@ -2022,18 +2041,32 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     result = process_monitoring_target(connection, target)
                     monitored_system_id = due_system_ids.get(str(target['id']))
                     if monitored_system_id:
-                        events_ingested_for_target = int(result.get('events_ingested', 0))
-                        runtime_status = 'active' if events_ingested_for_target > 0 else 'idle'
+                        runtime_status, freshness_status, confidence_status, coverage_reason = _derive_system_runtime_state(
+                            result,
+                            is_enabled=True,
+                        )
                         connection.execute(
                             '''
                             UPDATE monitored_systems
                             SET last_heartbeat = NOW(),
+                                last_event_at = COALESCE(%s, last_event_at),
                                 runtime_status = %s,
                                 status = %s,
+                                freshness_status = %s,
+                                confidence_status = %s,
+                                coverage_reason = %s,
                                 last_error_text = NULL
                             WHERE id = %s::uuid
                             ''',
-                            (runtime_status, 'active', monitored_system_id),
+                            (
+                                result.get('last_real_event_at') or target.get('last_real_event_at'),
+                                runtime_status,
+                                'active' if runtime_status in {'provisioning', 'healthy', 'idle', 'degraded'} else ('error' if runtime_status == 'failed' else 'paused'),
+                                freshness_status,
+                                confidence_status,
+                                coverage_reason,
+                                monitored_system_id,
+                            ),
                         )
                 alerts_generated += int(result['alerts_generated'])
                 live_targets_checked += 1 if str(target.get('target_type') or '').lower() in {'wallet','contract'} else 0
@@ -2051,7 +2084,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 monitored_system_id = due_system_ids.get(str(target['id']))
                 if monitored_system_id:
                     connection.execute(
-                        "UPDATE monitored_systems SET runtime_status = 'error', status = 'error', last_error_text = %s, last_heartbeat = NOW() WHERE id = %s::uuid",
+                        "UPDATE monitored_systems SET runtime_status = 'failed', status = 'error', freshness_status = 'unavailable', confidence_status = 'low', coverage_reason = 'monitoring_worker_error', last_error_text = %s, last_heartbeat = NOW() WHERE id = %s::uuid",
                         (error_message, monitored_system_id),
                     )
         connection.execute(
@@ -2213,7 +2246,7 @@ def patch_monitoring_target(target_id: str, payload: dict[str, Any], request: Re
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Cannot enable monitoring: linked asset is missing or deleted.')
         elif not monitoring_enabled:
             connection.execute(
-                "UPDATE monitored_systems SET is_enabled = FALSE, runtime_status = 'offline', status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s::uuid",
+                "UPDATE monitored_systems SET is_enabled = FALSE, runtime_status = 'disabled', status = 'paused', freshness_status = 'unavailable', confidence_status = 'unavailable', coverage_reason = 'monitoring_disabled' WHERE target_id = %s::uuid AND workspace_id = %s::uuid",
                 (target_id, workspace_context['workspace_id']),
             )
         logger.info('monitoring config persisted target=%s monitoring_enabled=%s threshold=%s', target_id, monitoring_enabled, threshold)
@@ -2642,7 +2675,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             return normalized
         rows = connection.execute(
             '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat,
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
                    COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at
             FROM monitored_systems ms
             LEFT JOIN targets t
@@ -2661,7 +2694,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     def _load_workspace_monitored_rows_raw(connection: Any, workspace_scope_id: str) -> list[dict[str, Any]]:
         rows = connection.execute(
             '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat,
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
                    COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at
             FROM monitored_systems ms
             LEFT JOIN targets t
@@ -2850,7 +2883,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
     stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
     enabled_rows = [row for row in monitored_rows if monitored_system_row_enabled(row)]
-    active_rows = [row for row in enabled_rows if str(row.get('runtime_status') or '').strip().lower() == 'active']
+    active_rows = [row for row in enabled_rows if str(row.get('runtime_status') or '').strip().lower() == 'healthy']
     enabled_asset_rows = [row for row in enabled_rows if row.get('asset_id')]
     enabled_system_count = max(len(enabled_rows), healthy_enabled_targets_count)
     active_system_count = len(active_rows)
@@ -2943,6 +2976,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'recent_real_event_count': recent_real_event_count,
         'recent_confidence_basis': str((latest_detection_metadata or {}).get('confidence_basis') or latest_detection_payload.get('confidence_basis') or 'none') if isinstance(latest_detection_payload, dict) else 'none',
         'last_real_event_at': (latest_detection_metadata or {}).get('last_real_event_at') if isinstance(latest_detection_metadata, dict) else None,
+        'freshness_status': (
+            'fresh'
+            if evidence_freshness is not None and evidence_freshness <= max(300, MONITOR_POLL_INTERVAL_SECONDS * 6)
+            else ('stale' if evidence_freshness is not None else 'unavailable')
+        ),
+        'confidence_status': (
+            'high'
+            if successful_detection_evaluation and recent_real_event_count > 0
+            else ('medium' if successful_detection_evaluation_recent or recent_heartbeat_systems > 0 else ('low' if has_monitorable_targets else 'unavailable'))
+        ),
+        'coverage_reason': degraded_reason or ('no_evidence' if monitoring_status == 'idle' else (None if monitoring_status == 'active' else 'monitoring_unavailable')),
+        'worker_last_error': health.get('last_error'),
+        'latest_telemetry_checkpoint': (latest_detection_evaluation_at or evidence_at).isoformat() if (latest_detection_evaluation_at or evidence_at) else None,
+        'source_of_evidence': 'live' if (recent_real_event_count > 0 and not bool(health.get('degraded'))) else ('simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none'),
     }
     logger.info(
         'monitoring_runtime_status_summary workspace_id=%s healthy_enabled_targets=%s monitored_rows=%s enabled_rows=%s protected_assets=%s monitoring_status=%s systems_with_recent_heartbeat=%s status_inputs=%s',
@@ -3034,3 +3081,37 @@ def list_monitoring_heartbeats(request: Request, *, limit: int = 50) -> dict[str
             (max(1, min(limit, 200)),),
         ).fetchall()
         return {'heartbeats': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def list_monitoring_worker_errors(request: Request, *, limit: int = 50) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        worker_rows = connection.execute(
+            '''
+            SELECT worker_name, status, last_error, last_cycle_at, last_heartbeat_at, updated_at
+            FROM monitoring_worker_state
+            WHERE last_error IS NOT NULL
+            ORDER BY updated_at DESC
+            LIMIT %s
+            ''',
+            (max(1, min(limit, 200)),),
+        ).fetchall()
+        target_rows = connection.execute(
+            '''
+            SELECT t.id AS target_id, t.name AS target_name, t.last_run_status, t.watcher_degraded_reason, t.last_failed_monitoring_at, t.updated_at
+            FROM targets t
+            WHERE t.workspace_id = %s
+              AND t.deleted_at IS NULL
+              AND (t.last_run_status IN ('error', 'failed') OR t.watcher_degraded_reason IS NOT NULL)
+            ORDER BY COALESCE(t.last_failed_monitoring_at, t.updated_at) DESC
+            LIMIT %s
+            ''',
+            (workspace_context['workspace_id'], max(1, min(limit, 200))),
+        ).fetchall()
+        return {
+            'workspace': workspace_context['workspace'],
+            'worker_errors': [_json_safe_value(dict(row)) for row in worker_rows],
+            'target_errors': [_json_safe_value(dict(row)) for row in target_rows],
+        }

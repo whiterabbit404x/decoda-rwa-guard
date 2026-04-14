@@ -79,9 +79,14 @@ class _Conn:
                 'target_id': target_id,
                 'chain': 'ethereum-mainnet',
                 'is_enabled': row.get('is_enabled', True),
-                'runtime_status': 'active',
+                'runtime_status': row.get('runtime_status', 'healthy'),
                 'status': 'active',
                 'last_heartbeat': now,
+                'last_event_at': now,
+                'freshness_status': row.get('freshness_status', 'fresh'),
+                'confidence_status': row.get('confidence_status', 'medium'),
+                'coverage_reason': row.get('coverage_reason'),
+                'last_error_text': row.get('last_error_text'),
                 'monitoring_interval_seconds': 30,
                 'created_at': now,
             }
@@ -97,13 +102,16 @@ class _Conn:
         if 'INSERT INTO monitored_systems' in q:
             target_id = str(params[3])
             existing = self.monitored_systems.get(target_id, {})
-            runtime_status = 'active' if existing.get('runtime_status') == 'active' else 'idle'
+            runtime_status = 'healthy' if existing.get('runtime_status') == 'healthy' else 'idle'
             row = {'id': f'ms-{target_id}'}
             self.monitored_systems[target_id] = {
                 'id': row['id'],
                 'target_id': target_id,
                 'asset_id': params[2],
                 'runtime_status': runtime_status,
+                'freshness_status': 'fresh' if runtime_status == 'healthy' else 'unavailable',
+                'confidence_status': 'medium' if runtime_status == 'healthy' else 'unavailable',
+                'coverage_reason': None if runtime_status == 'healthy' else 'waiting_for_runtime_telemetry',
                 'status': 'active',
                 'last_error_text': None,
             }
@@ -166,7 +174,7 @@ class _Conn:
                 and bool(target.get('resolved_asset_id'))
             ]
             return _Result(rows=rows)
-        if 'SELECT id, workspace_id, target_id, asset_id, is_enabled, runtime_status, status FROM monitored_systems' in q:
+        if 'SELECT id, workspace_id, target_id, asset_id, is_enabled, runtime_status, status, freshness_status, confidence_status' in q:
             rows = [
                 {
                     'id': row['id'],
@@ -176,6 +184,12 @@ class _Conn:
                     'is_enabled': True,
                     'runtime_status': row.get('runtime_status'),
                     'status': row.get('status'),
+                    'freshness_status': row.get('freshness_status', 'unavailable'),
+                    'confidence_status': row.get('confidence_status', 'unavailable'),
+                    'last_heartbeat': datetime.now(timezone.utc),
+                    'last_event_at': datetime.now(timezone.utc),
+                    'last_error_text': row.get('last_error_text'),
+                    'coverage_reason': row.get('coverage_reason'),
                 }
                 for target_id, row in self.monitored_systems.items()
             ]
@@ -357,7 +371,7 @@ def test_repair_reconcile_clears_stale_monitored_system_error_state():
 
 def test_repair_reconcile_never_writes_idle_legacy_status():
     source = open('services/api/app/pilot.py', encoding='utf-8').read()
-    assert "VALUES (%s, %s, %s::uuid, %s::uuid, %s, TRUE, 'idle', 'active')" in source
+    assert "VALUES (%s, %s, %s::uuid, %s::uuid, %s, TRUE, 'provisioning', 'active'" in source
     assert "status = 'active'" in source
     assert "'idle', 'idle'" not in source
 

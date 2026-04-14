@@ -4262,7 +4262,9 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-MONITORED_SYSTEM_RUNTIME_STATUSES = {'active', 'idle', 'degraded', 'error', 'offline'}
+MONITORED_SYSTEM_RUNTIME_STATUSES = {'provisioning', 'healthy', 'degraded', 'idle', 'failed', 'disabled'}
+MONITORED_SYSTEM_FRESHNESS_STATUSES = {'fresh', 'stale', 'unavailable'}
+MONITORED_SYSTEM_CONFIDENCE_STATUSES = {'high', 'medium', 'low', 'unavailable'}
 
 
 def _target_health_payload(
@@ -4385,20 +4387,35 @@ def ensure_monitored_system_for_target(
     normalized_chain = (str(target.get('chain_network') or '').strip() or 'unknown')
     row = connection.execute(
         '''
-        INSERT INTO monitored_systems (id, workspace_id, asset_id, target_id, chain, is_enabled, runtime_status, status)
-        VALUES (%s, %s, %s::uuid, %s::uuid, %s, TRUE, 'idle', 'active')
+        INSERT INTO monitored_systems (id, workspace_id, asset_id, target_id, chain, is_enabled, runtime_status, status, freshness_status, confidence_status, coverage_reason)
+        VALUES (%s, %s, %s::uuid, %s::uuid, %s, TRUE, 'provisioning', 'active', 'unavailable', 'unavailable', 'provisioning_pending_first_heartbeat')
         ON CONFLICT (workspace_id, target_id)
         DO UPDATE SET
             asset_id = EXCLUDED.asset_id,
             chain = EXCLUDED.chain,
             is_enabled = TRUE,
             runtime_status = CASE
-                WHEN monitored_systems.runtime_status = 'active'
+                WHEN monitored_systems.runtime_status = 'healthy'
                      AND monitored_systems.last_heartbeat IS NOT NULL
-                     AND monitored_systems.last_heartbeat >= NOW() - INTERVAL '10 minutes' THEN 'active'
+                     AND monitored_systems.last_heartbeat >= NOW() - INTERVAL '10 minutes' THEN 'healthy'
                 ELSE 'idle'
             END,
             status = 'active',
+            freshness_status = CASE
+                WHEN monitored_systems.last_heartbeat IS NOT NULL
+                     AND monitored_systems.last_heartbeat >= NOW() - INTERVAL '10 minutes' THEN 'fresh'
+                ELSE 'unavailable'
+            END,
+            confidence_status = CASE
+                WHEN monitored_systems.last_heartbeat IS NOT NULL
+                     AND monitored_systems.last_heartbeat >= NOW() - INTERVAL '10 minutes' THEN 'medium'
+                ELSE 'unavailable'
+            END,
+            coverage_reason = CASE
+                WHEN monitored_systems.last_heartbeat IS NOT NULL
+                     AND monitored_systems.last_heartbeat >= NOW() - INTERVAL '10 minutes' THEN NULL
+                ELSE 'waiting_for_runtime_telemetry'
+            END,
             last_error_text = NULL
         RETURNING id
         ''',
@@ -4682,7 +4699,7 @@ def workspace_monitoring_debug_snapshot(connection: Any, *, workspace_id: str) -
         dict(row)
         for row in connection.execute(
             '''
-            SELECT id, workspace_id, target_id, asset_id, is_enabled, runtime_status, status
+            SELECT id, workspace_id, target_id, asset_id, is_enabled, runtime_status, status, freshness_status, confidence_status, last_heartbeat, last_event_at, last_error_text, coverage_reason
             FROM monitored_systems
             WHERE workspace_id = %s
             ORDER BY created_at ASC
@@ -4779,7 +4796,8 @@ def resolve_workspace_context_for_request(connection: psycopg.Connection, reques
 def list_workspace_monitored_system_rows(connection: psycopg.Connection, workspace_id: str) -> list[dict[str, Any]]:
     rows = connection.execute(
         '''
-        SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_error_text, ms.created_at,
+        SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_error_text, ms.coverage_reason,
+               ms.freshness_status, ms.confidence_status, ms.created_at,
                COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, a.name AS asset_name, t.name AS target_name
         FROM monitored_systems ms
         LEFT JOIN assets a ON a.id = ms.asset_id AND a.workspace_id = ms.workspace_id AND a.deleted_at IS NULL
@@ -4862,7 +4880,8 @@ def create_monitored_system(payload: dict[str, Any], request: Request) -> dict[s
         connection.commit()
         row = connection.execute(
             '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_error_text, ms.created_at,
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_error_text, ms.coverage_reason,
+                   ms.freshness_status, ms.confidence_status, ms.created_at,
                    a.name AS asset_name, t.name AS target_name
             FROM monitored_systems ms
             JOIN assets a ON a.id = ms.asset_id
@@ -4882,41 +4901,60 @@ def patch_monitored_system(system_id: str, payload: dict[str, Any], request: Req
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         row = connection.execute(
-            'SELECT id, is_enabled, runtime_status FROM monitored_systems WHERE id = %s::uuid AND workspace_id = %s',
+            'SELECT id, is_enabled, runtime_status, freshness_status, confidence_status FROM monitored_systems WHERE id = %s::uuid AND workspace_id = %s',
             (system_id, workspace_context['workspace_id']),
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Monitored system not found.')
         is_enabled_value = bool(row.get('is_enabled'))
-        runtime_status_value = str(row.get('runtime_status') or 'offline')
+        runtime_status_value = str(row.get('runtime_status') or 'disabled')
+        freshness_status_value = str(row.get('freshness_status') or 'unavailable')
+        confidence_status_value = str(row.get('confidence_status') or 'unavailable')
         if 'enabled' in payload:
             if not isinstance(payload.get('enabled'), bool):
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='enabled must be boolean.')
             is_enabled_value = bool(payload.get('enabled'))
-            if is_enabled_value and runtime_status_value == 'offline':
-                runtime_status_value = 'idle'
+            if is_enabled_value and runtime_status_value == 'disabled':
+                runtime_status_value = 'provisioning'
             if not is_enabled_value:
-                runtime_status_value = 'offline'
+                runtime_status_value = 'disabled'
+                freshness_status_value = 'unavailable'
+                confidence_status_value = 'unavailable'
         if 'runtime_status' in payload:
             runtime_status_value = str(payload.get('runtime_status') or '').strip().lower()
+        if 'freshness_status' in payload:
+            freshness_status_value = str(payload.get('freshness_status') or '').strip().lower()
+        if 'confidence_status' in payload:
+            confidence_status_value = str(payload.get('confidence_status') or '').strip().lower()
         if runtime_status_value not in MONITORED_SYSTEM_RUNTIME_STATUSES:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='runtime_status must be active/idle/degraded/error/offline.')
-        status_value = 'active' if is_enabled_value and runtime_status_value in {'active', 'idle', 'degraded'} else ('error' if runtime_status_value == 'error' else 'paused')
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='runtime_status must be provisioning/healthy/degraded/idle/failed/disabled.')
+        if freshness_status_value not in MONITORED_SYSTEM_FRESHNESS_STATUSES:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='freshness_status must be fresh/stale/unavailable.')
+        if confidence_status_value not in MONITORED_SYSTEM_CONFIDENCE_STATUSES:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='confidence_status must be high/medium/low/unavailable.')
+        status_value = 'active' if is_enabled_value and runtime_status_value in {'provisioning', 'healthy', 'idle', 'degraded'} else ('error' if runtime_status_value == 'failed' else 'paused')
         connection.execute(
             """
             UPDATE monitored_systems
             SET is_enabled = %s,
                 runtime_status = %s,
                 status = %s,
-                last_heartbeat = CASE WHEN %s = 'active' THEN NOW() ELSE last_heartbeat END
+                freshness_status = %s,
+                confidence_status = %s,
+                coverage_reason = CASE
+                    WHEN %s = 'healthy' THEN NULL
+                    WHEN %s = 'disabled' THEN 'monitoring_disabled'
+                    ELSE coverage_reason
+                END,
+                last_heartbeat = CASE WHEN %s = 'healthy' THEN NOW() ELSE last_heartbeat END
             WHERE id = %s::uuid
             """,
-            (is_enabled_value, runtime_status_value, status_value, runtime_status_value, system_id),
+            (is_enabled_value, runtime_status_value, status_value, freshness_status_value, confidence_status_value, runtime_status_value, runtime_status_value, runtime_status_value, system_id),
         )
         log_audit(connection, action='monitored_system.update', entity_type='monitored_system', entity_id=system_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'enabled': is_enabled_value, 'runtime_status': runtime_status_value})
         connection.commit()
         updated = connection.execute(
-            'SELECT id, workspace_id, asset_id, target_id, chain, is_enabled, runtime_status, status, last_heartbeat, last_error_text, created_at FROM monitored_systems WHERE id = %s::uuid',
+            'SELECT id, workspace_id, asset_id, target_id, chain, is_enabled, runtime_status, status, freshness_status, confidence_status, last_heartbeat, last_event_at, last_error_text, coverage_reason, created_at FROM monitored_systems WHERE id = %s::uuid',
             (system_id,),
         ).fetchone()
         return {'system': _json_safe_value(dict(updated))}

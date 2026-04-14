@@ -14,9 +14,13 @@ type SystemRow = {
   target_name?: string;
   chain?: string;
   is_enabled: boolean;
-  runtime_status: 'active' | 'idle' | 'degraded' | 'error' | 'offline';
+  runtime_status: 'provisioning' | 'healthy' | 'degraded' | 'idle' | 'failed' | 'disabled';
+  freshness_status?: 'fresh' | 'stale' | 'unavailable' | null;
+  confidence_status?: 'high' | 'medium' | 'low' | 'unavailable' | null;
   last_heartbeat?: string | null;
+  last_event_at?: string | null;
   last_error_text?: string | null;
+  coverage_reason?: string | null;
 };
 
 
@@ -91,6 +95,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const [systems, setSystems] = useState<SystemRow[]>([]);
   const [message, setMessage] = useState('');
   const [isReconciling, setIsReconciling] = useState(false);
+  const [isTogglingId, setIsTogglingId] = useState<string | null>(null);
   const [reconcileSummary, setReconcileSummary] = useState<ReconcileSummary | null>(null);
   const [lastRepairClickAt, setLastRepairClickAt] = useState<string | null>(null);
 
@@ -259,18 +264,23 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
 
   async function toggle(system: SystemRow) {
     setMessage('');
+    setIsTogglingId(system.id);
     const enabled = !system.is_enabled;
-    const response = await fetch(`${effectiveApiUrl}/monitoring/systems/${system.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ enabled }),
-    });
-    if (!response.ok) {
-      setMessage('Unable to update system status.');
-      return;
+    try {
+      const response = await fetchWithTimeout(`${effectiveApiUrl}/monitoring/systems/${system.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!response.ok) {
+        setMessage('Unable to update system status.');
+        return;
+      }
+      await load();
+      setMessage(enabled ? 'Monitoring enabled for this target.' : 'Monitoring disabled for this target.');
+    } finally {
+      setIsTogglingId(null);
     }
-    await load();
-    setMessage(enabled ? 'Monitoring enabled for this target.' : 'Monitoring disabled for this target.');
   }
 
   async function remove(systemId: string) {
@@ -333,14 +343,17 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
               <strong>{system.asset_name || system.asset_id}</strong> → {system.target_name || system.target_id}
             </p>
             <p className="tableMeta">
-              {system.chain || 'unknown chain'} · Config: {system.is_enabled ? 'Enabled' : 'Disabled'} · Runtime: {system.runtime_status}
+              {system.chain || 'unknown chain'} · Config: {system.is_enabled ? 'Enabled' : 'Disabled'} · Runtime: {system.runtime_status} · Freshness: {system.freshness_status || 'unavailable'} · Confidence: {system.confidence_status || 'unavailable'}
               {' · '}
               Last heartbeat: {system.last_heartbeat ? new Date(system.last_heartbeat).toLocaleString() : 'Never'}
+            </p>
+            <p className="tableMeta">
+              Last event: {system.last_event_at ? new Date(system.last_event_at).toLocaleString() : 'Never'} · Coverage reason: {system.coverage_reason || 'none'}
             </p>
             {system.last_error_text ? <p className="tableMeta">Last error: {system.last_error_text}</p> : null}
           </div>
           <div className="buttonRow">
-            <button type="button" onClick={() => void toggle(system)}>
+            <button type="button" onClick={() => void toggle(system)} disabled={isTogglingId === system.id || isReconciling}>
               {system.is_enabled ? 'Disable' : 'Enable'}
             </button>
             <button type="button" onClick={() => void remove(system.id)}>

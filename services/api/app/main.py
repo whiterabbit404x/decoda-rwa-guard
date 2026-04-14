@@ -161,6 +161,7 @@ from services.api.app.monitoring_runner import (
     get_monitoring_health,
     list_monitoring_evidence,
     list_monitoring_heartbeats,
+    list_monitoring_worker_errors,
     list_monitoring_targets,
     monitoring_runtime_status,
     patch_monitoring_target,
@@ -1745,6 +1746,11 @@ def ops_monitoring_evidence(request: Request, limit: int = 50) -> dict[str, Any]
 @app.get('/ops/monitoring/heartbeats', summary='Latest monitoring heartbeat rows')
 def ops_monitoring_heartbeats(request: Request, limit: int = 50) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_monitoring_heartbeats(request, limit=limit))
+
+
+@app.get('/ops/monitoring/worker-errors', summary='Recent monitoring worker and target errors')
+def ops_monitoring_worker_errors(request: Request, limit: int = 50) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_monitoring_worker_errors(request, limit=limit))
 
 
 @app.get('/ops/metrics/mttd', summary='Detection MTTD metrics')
