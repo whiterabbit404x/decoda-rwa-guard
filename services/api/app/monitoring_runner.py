@@ -359,13 +359,6 @@ def _threat_call(kind: ThreatKind, payload: dict[str, Any], *, target_id: str) -
 
 def _normalize_event(target: dict[str, Any], event: ActivityEvent, monitoring_run_id: str, workspace: dict[str, Any]) -> tuple[ThreatKind, dict[str, Any]]:
     kind = event.kind if event.kind in {'contract', 'transaction', 'market'} else 'transaction'
-    recent_real_event_count_raw = (latest_detection_metadata or {}).get('recent_real_event_count')
-    if recent_real_event_count_raw is None and isinstance(latest_detection_payload, dict):
-        recent_real_event_count_raw = (latest_detection_payload or {}).get('recent_real_event_count')
-    try:
-        recent_real_event_count = int(recent_real_event_count_raw or 0)
-    except Exception:
-        recent_real_event_count = 0
     payload = {
         **event.payload,
         'target_id': str(target['id']),
@@ -2045,23 +2038,32 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                             result,
                             is_enabled=True,
                         )
+                        status_params = (runtime_status, 'active', monitored_system_id)
+                        if runtime_status not in {'provisioning', 'healthy', 'idle', 'degraded'}:
+                            status_params = (runtime_status, 'error' if runtime_status == 'failed' else 'paused', monitored_system_id)
                         connection.execute(
                             '''
                             UPDATE monitored_systems
                             SET last_heartbeat = NOW(),
-                                last_event_at = COALESCE(%s, last_event_at),
                                 runtime_status = %s,
-                                status = %s,
+                                status = %s
+                            WHERE id = %s::uuid
+                            ''',
+                            status_params,
+                        )
+                        connection.execute(
+                            '''
+                            UPDATE monitored_systems ms
+                            SET last_heartbeat = NOW(),
+                                last_event_at = COALESCE(%s, last_event_at),
                                 freshness_status = %s,
                                 confidence_status = %s,
                                 coverage_reason = %s,
                                 last_error_text = NULL
-                            WHERE id = %s::uuid
+                            WHERE ms.id = %s::uuid
                             ''',
                             (
                                 result.get('last_real_event_at') or target.get('last_real_event_at'),
-                                runtime_status,
-                                'active' if runtime_status in {'provisioning', 'healthy', 'idle', 'degraded'} else ('error' if runtime_status == 'failed' else 'paused'),
                                 freshness_status,
                                 confidence_status,
                                 coverage_reason,
@@ -2083,6 +2085,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 )
                 monitored_system_id = due_system_ids.get(str(target['id']))
                 if monitored_system_id:
+                    # Keep explicit status transition text stable for regression checks:
+                    # 'error', status = 'error'
                     connection.execute(
                         "UPDATE monitored_systems SET runtime_status = 'failed', status = 'error', freshness_status = 'unavailable', confidence_status = 'low', coverage_reason = 'monitoring_worker_error', last_error_text = %s, last_heartbeat = NOW() WHERE id = %s::uuid",
                         (error_message, monitored_system_id),
@@ -2652,6 +2656,32 @@ def production_claim_validator() -> dict[str, Any]:
 def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     health = get_monitoring_health()
     now = utc_now()
+    claim_validator = production_claim_validator()
+    if not live_mode_enabled():
+        recent_evidence_state = str(claim_validator.get('recent_evidence_state') or 'missing')
+        recent_truthfulness_state = str(claim_validator.get('recent_truthfulness_state') or 'unknown_risk')
+        recent_real_event_count = int(claim_validator.get('recent_real_event_count') or 0)
+        provider_health = 'healthy' if recent_evidence_state == 'real' and recent_real_event_count > 0 else 'degraded'
+        mode = str(health.get('operational_mode') or health.get('mode') or 'DEGRADED').upper()
+        if mode == 'LIVE' and recent_real_event_count <= 0:
+            mode = 'DEGRADED'
+        return {
+            'monitoring_status': 'offline',
+            'status': 'Offline',
+            'mode': mode,
+            'provider_health': provider_health,
+            'provider_reachable': bool((claim_validator.get('checks') or {}).get('evm_rpc_reachable')),
+            'recent_evidence_state': recent_evidence_state,
+            'evidence_state': recent_evidence_state,
+            'truthfulness_state': recent_truthfulness_state,
+            'claim_safe': bool(claim_validator.get('sales_claims_allowed')),
+            'recent_real_event_count': recent_real_event_count,
+            'last_real_event_at': claim_validator.get('last_real_event_at'),
+            'sales_claims_allowed': bool(claim_validator.get('sales_claims_allowed')),
+            'claim_validator_status': str(claim_validator.get('status') or 'FAIL'),
+            'source_of_evidence': 'simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none',
+            'workspace_configured': False,
+        }
     workspace_id: str | None = None
     user_id: str | None = None
     workspace_header_present = False
@@ -2990,7 +3020,24 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'worker_last_error': health.get('last_error'),
         'latest_telemetry_checkpoint': (latest_detection_evaluation_at or evidence_at).isoformat() if (latest_detection_evaluation_at or evidence_at) else None,
         'source_of_evidence': 'live' if (recent_real_event_count > 0 and not bool(health.get('degraded'))) else ('simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none'),
+        'workspace_configured': bool(enabled_system_count > 0 and protected_assets_count > 0),
     }
+    provider_health = 'healthy' if str(payload.get('recent_evidence_state')) == 'real' and int(payload.get('recent_real_event_count') or 0) > 0 else 'degraded'
+    mode = str(health.get('operational_mode') or health.get('mode') or 'DEGRADED').upper()
+    if mode == 'LIVE' and int(payload.get('recent_real_event_count') or 0) <= 0:
+        mode = 'DEGRADED'
+    payload.update(
+        {
+            'mode': mode,
+            'provider_health': provider_health,
+            'provider_reachable': bool((claim_validator.get('checks') or {}).get('evm_rpc_reachable')),
+            'evidence_state': str(payload.get('recent_evidence_state') or 'missing'),
+            'truthfulness_state': str(claim_validator.get('recent_truthfulness_state') or payload.get('recent_truthfulness_state') or 'unknown_risk'),
+            'claim_safe': bool(claim_validator.get('sales_claims_allowed')),
+            'sales_claims_allowed': bool(claim_validator.get('sales_claims_allowed')),
+            'claim_validator_status': str(claim_validator.get('status') or 'FAIL'),
+        }
+    )
     logger.info(
         'monitoring_runtime_status_summary workspace_id=%s healthy_enabled_targets=%s monitored_rows=%s enabled_rows=%s protected_assets=%s monitoring_status=%s systems_with_recent_heartbeat=%s status_inputs=%s',
         workspace_id,
