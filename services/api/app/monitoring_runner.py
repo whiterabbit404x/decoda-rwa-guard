@@ -2815,16 +2815,22 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             f"SELECT observed_at, block_number FROM evidence e {evidence_workspace_filter} ORDER BY observed_at DESC LIMIT 1",
             scoped_params,
         ).fetchone()
-        latest_detection_eval = connection.execute(
-            f'''
+        latest_detection_eval_query = '''
             SELECT created_at, response_payload
             FROM analysis_runs
-            WHERE analysis_type LIKE 'monitoring_%'
-            {'AND workspace_id = %s' if workspace_id else ''}
+            WHERE analysis_type LIKE %s
+        '''
+        latest_detection_eval_params: list[Any] = ['monitoring_%']
+        if workspace_id:
+            latest_detection_eval_query += ' AND workspace_id = %s'
+            latest_detection_eval_params.append(workspace_id)
+        latest_detection_eval_query += '''
             ORDER BY created_at DESC
             LIMIT 1
-            ''',
-            scoped_params,
+        '''
+        latest_detection_eval = connection.execute(
+            latest_detection_eval_query,
+            tuple(latest_detection_eval_params),
         ).fetchone()
         latest_detection_evaluation_at = _parse_ts((latest_detection_eval or {}).get('created_at'))
         latest_detection_payload = _json_safe_value((latest_detection_eval or {}).get('response_payload') or {}) if latest_detection_eval else None
