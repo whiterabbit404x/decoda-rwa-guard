@@ -48,11 +48,33 @@ def test_monitoring_reconcile_route_returns_structured_error_for_unexpected_exce
     assert response.json() == {
         'code': 'monitoring_reconcile_failed',
         'detail': 'Unexpected backend error during monitored systems reconcile.',
-        'stage': 'unhandled_route_exception',
+        'stage': 'reconcile_workspace_monitored_systems',
         'debug_error_type': 'RuntimeError',
         'debug_error_message': 'unexpected reconcile exception',
     }
     assert 'monitoring_reconcile_unexpected_error method=POST path=/monitoring/systems/reconcile' in caplog.text
+
+
+def test_monitoring_reconcile_route_returns_structured_error_when_runtime_attachment_fails(monkeypatch):
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setenv('APP_ENV', 'development')
+    monkeypatch.setattr(
+        api_main,
+        'reconcile_workspace_monitored_systems',
+        lambda _request: {'workspace': {'id': 'ws-1'}, 'reconcile': {'created_or_updated': 1}, 'systems': [], 'monitored_systems_count': 0},
+    )
+    monkeypatch.setattr(
+        api_main,
+        'monitoring_runtime_status',
+        lambda _request: (_ for _ in ()).throw(TypeError('runtime summary attachment failed')),
+    )
+
+    response = client.post('/monitoring/systems/reconcile')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['diagnostics']['runtime_status_after_repair'] is None
+    assert payload['diagnostics']['runtime_status_after_repair_error']['error_type'] == 'TypeError'
 
 
 def test_monitoring_reconcile_route_flattens_http_exception_dict_detail(monkeypatch, caplog):

@@ -2622,6 +2622,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     user_id: str | None = None
     workspace_header_present = False
     monitored_rows: list[dict[str, Any]] = []
+    listed_monitored_rows: list[dict[str, Any]] = []
     latest_detection_evaluation_at = None
     latest_detection_payload: dict[str, Any] | None = None
     healthy_enabled_targets_count = 0
@@ -2631,19 +2632,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
 
     def _load_runtime_monitored_rows(connection: Any, workspace_scope_id: str | None) -> list[dict[str, Any]]:
         if workspace_scope_id:
-            rows = connection.execute(
-                '''
-                SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat,
-                       COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at
-                FROM monitored_systems ms
-                LEFT JOIN targets t
-                  ON t.id = ms.target_id
-                 AND t.workspace_id = ms.workspace_id
-                WHERE ms.workspace_id = %s
-                ORDER BY ms.created_at DESC
-                ''',
-                (workspace_scope_id,),
-            ).fetchall()
+            rows = list_workspace_monitored_system_rows(connection, workspace_scope_id)
             normalized: list[dict[str, Any]] = []
             for row in rows:
                 item = dict(row)
@@ -2677,6 +2666,25 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             user_id = str(user.get('id') or '')
             workspace_id = str(workspace_context['workspace_id'])
             monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
+            try:
+                listed_monitored_rows = list_workspace_monitored_system_rows(connection, workspace_id)
+            except Exception:
+                logger.exception('monitoring_runtime_status_list_rows_load_failed workspace_id=%s', workspace_id)
+                listed_monitored_rows = []
+            logger.info(
+                'monitoring_runtime_status_workspace_resolution workspace_id=%s workspace_header_present=%s user_id=%s',
+                workspace_id,
+                workspace_header_present,
+                user_id,
+            )
+            logger.info(
+                'monitoring_runtime_status_workspace_rows workspace_id=%s list_route_rows=%s list_route_row_ids=%s runtime_rows=%s runtime_row_ids=%s',
+                workspace_id,
+                len(listed_monitored_rows),
+                [str((row or {}).get('id') or '') for row in listed_monitored_rows if (row or {}).get('id')],
+                len(monitored_rows),
+                [str((row or {}).get('id') or '') for row in monitored_rows if (row or {}).get('id')],
+            )
         target_workspace_filter = 'AND t.workspace_id = %s' if workspace_id else ''
         evidence_workspace_filter = 'WHERE e.workspace_id = %s' if workspace_id else ''
         scoped_params: tuple[Any, ...] = (workspace_id,) if workspace_id else ()
@@ -2807,6 +2815,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     active_system_count = len(active_rows)
     system_count = max(len(monitored_rows), healthy_enabled_targets_count)
     protected_assets_count = max(len({str(row.get('asset_id') or '') for row in enabled_asset_rows}), healthy_enabled_assets_count)
+    logger.info(
+        'monitoring_runtime_status_counts workspace_id=%s enabled_monitored_systems=%s protected_assets=%s runtime_rows=%s list_route_rows=%s',
+        workspace_id,
+        len(enabled_rows),
+        protected_assets_count,
+        len(monitored_rows),
+        len(listed_monitored_rows),
+    )
     evidence_at = _parse_ts((latest_evidence or {}).get('observed_at'))
     evidence_freshness = int((now - evidence_at).total_seconds()) if evidence_at else None
     detection_eval_freshness = int((now - latest_detection_evaluation_at).total_seconds()) if latest_detection_evaluation_at else None

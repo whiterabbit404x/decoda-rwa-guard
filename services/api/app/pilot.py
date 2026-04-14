@@ -4698,8 +4698,8 @@ def list_workspace_monitored_system_rows(connection: psycopg.Connection, workspa
         SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_error_text, ms.created_at,
                t.monitoring_interval_seconds AS monitoring_interval_seconds, a.name AS asset_name, t.name AS target_name
         FROM monitored_systems ms
-        LEFT JOIN assets a ON a.id = ms.asset_id AND a.deleted_at IS NULL
-        JOIN targets t ON t.id = ms.target_id
+        LEFT JOIN assets a ON a.id = ms.asset_id AND a.workspace_id = ms.workspace_id AND a.deleted_at IS NULL
+        JOIN targets t ON t.id = ms.target_id AND t.workspace_id = ms.workspace_id
         WHERE ms.workspace_id = %s
           AND t.deleted_at IS NULL
         ORDER BY ms.created_at DESC
@@ -4733,7 +4733,17 @@ def list_monitored_systems(request: Request) -> dict[str, Any]:
         stage = 'list_rows'
         logger.info('monitoring_systems_list step=%s workspace_id=%s', stage, workspace_id)
         rows = list_workspace_monitored_system_rows(connection, workspace_id)
-        logger.info('monitoring_systems_list step=rows_loaded workspace_id=%s count=%s', workspace_id, len(rows))
+        enabled_rows = [row for row in rows if bool((row or {}).get('is_enabled')) or (row or {}).get('is_enabled') is None]
+        protected_assets = len({str((row or {}).get('asset_id') or '') for row in enabled_rows if (row or {}).get('asset_id')})
+        logger.info(
+            'monitoring_systems_list step=rows_loaded workspace_id=%s count=%s row_ids=%s enabled_count=%s protected_assets=%s rows=%s',
+            workspace_id,
+            len(rows),
+            [str((row or {}).get('id') or '') for row in rows if (row or {}).get('id')],
+            len(enabled_rows),
+            protected_assets,
+            rows,
+        )
         return {'systems': [_json_safe_value(row) for row in rows], 'workspace': workspace_context['workspace']}
 
 
