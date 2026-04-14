@@ -4376,28 +4376,30 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         (workspace_id, workspace_id),
     ).fetchall()
     existing_target_to_system_id = {str(item['target_id']): str(item['id']) for item in existing_rows if item.get('target_id') and item.get('id')}
+    enabled_target_ids = [str(row.get('id')) for row in rows if bool(row.get('enabled')) and row.get('id')]
+    enabled_with_valid_asset_rows = connection.execute(
+        '''
+        SELECT t.id
+        FROM targets t
+        JOIN assets a
+          ON a.id = t.asset_id
+         AND a.workspace_id = t.workspace_id
+         AND a.deleted_at IS NULL
+        WHERE t.deleted_at IS NULL
+          AND t.enabled = TRUE
+          AND (%s::uuid IS NULL OR t.workspace_id = %s::uuid)
+        ''',
+        (workspace_id, workspace_id),
+    ).fetchall()
+    enabled_with_valid_asset_target_ids = [str(item.get('id')) for item in enabled_with_valid_asset_rows if item.get('id')]
     logger.info(
-        'target_monitoring_reconcile_data_path workspace_id=%s step=before_repair total_targets=%s enabled_targets=%s enabled_targets_with_valid_assets=%s monitored_system_rows_before=%s',
+        'target_monitoring_reconcile_data_path workspace_id=%s step=before_repair targets=%s enabled_target_ids=%s enabled_targets_with_valid_asset_ids=%s monitored_system_rows_before=%s monitored_system_row_ids_before=%s',
         workspace_id,
-        len(rows),
-        sum(1 for row in rows if bool(row.get('enabled'))),
-        len(
-            connection.execute(
-                '''
-                SELECT t.id
-                FROM targets t
-                JOIN assets a
-                  ON a.id = t.asset_id
-                 AND a.workspace_id = t.workspace_id
-                 AND a.deleted_at IS NULL
-                WHERE t.deleted_at IS NULL
-                  AND t.enabled = TRUE
-                  AND (%s::uuid IS NULL OR t.workspace_id = %s::uuid)
-                ''',
-                (workspace_id, workspace_id),
-            ).fetchall()
-        ),
+        [str(row.get('id')) for row in rows if row.get('id')],
+        enabled_target_ids,
+        enabled_with_valid_asset_target_ids,
         len(existing_rows),
+        [str(item.get('id')) for item in existing_rows if item.get('id')],
     )
     enabled_valid_targets_found = 0
     disabled_or_invalid_targets_found = 0
@@ -4487,9 +4489,10 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         (workspace_id, workspace_id),
     ).fetchall()
     logger.info(
-        'target_monitoring_reconcile_data_path workspace_id=%s step=after_repair monitored_system_rows_after=%s repaired_monitored_system_ids=%s',
+        'target_monitoring_reconcile_data_path workspace_id=%s step=after_repair monitored_system_rows_after=%s monitored_system_row_ids_after=%s repaired_monitored_system_ids=%s',
         workspace_id,
         len(refreshed_rows),
+        [str(item.get('id')) for item in refreshed_rows if item.get('id')],
         repaired_monitored_system_ids,
     )
     refreshed_target_to_system_id = {str(item['target_id']): str(item['id']) for item in refreshed_rows if item.get('target_id') and item.get('id')}
