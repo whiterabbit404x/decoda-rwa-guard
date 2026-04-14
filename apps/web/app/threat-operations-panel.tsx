@@ -33,8 +33,12 @@ type MonitoredSystemRow = {
   chain?: string | null;
   is_enabled?: boolean;
   runtime_status?: string | null;
+  freshness_status?: string | null;
+  confidence_status?: string | null;
   status?: string | null;
   last_heartbeat?: string | null;
+  last_event_at?: string | null;
+  coverage_reason?: string | null;
   last_error_text?: string | null;
 };
 
@@ -115,7 +119,7 @@ type DetectionItem = {
   targetName?: string | null;
   state: ThreatFeedState;
   href: string;
-  source: 'alert' | 'incident';
+  source: 'alert' | 'incident' | 'evidence';
 };
 
 type TimelineItem = {
@@ -424,7 +428,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       targetName: item.target_name ?? null,
       state: 'Live',
       href: '/alerts',
-      source: 'alert',
+      source: 'evidence',
     }));
 
     const fromAlerts: DetectionItem[] = alerts.slice(0, 10).map((item) => {
@@ -452,25 +456,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       };
     });
 
-    const fromIncidents: DetectionItem[] = incidents.slice(0, 10).map((item) => {
-      const isTest = isTestOrLabSignal(item.title) || isTestOrLabSignal(item.event_type);
-      return {
-        id: `incident-${item.id}`,
-        timestamp: item.created_at || new Date(0).toISOString(),
-        severity: severityLabel(item.severity),
-        title: item.title || item.event_type || 'Incident escalation',
-        assetName: fallbackAssetName,
-        assetType: fallbackAssetType,
-        monitoringStatus: 'Investigating',
-        evidenceSummary: 'An active incident is open for investigation and containment tracking.',
-        state: isTest ? ('Test' as const) : ('Investigating' as const),
-        href: '/incidents',
-        source: 'incident' as const,
-      };
-    });
-
-    return [...fromEvidence, ...fromAlerts, ...fromIncidents].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  }, [alerts, incidents, targets, evidence]);
+    return [...fromEvidence, ...fromAlerts].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  }, [alerts, targets, evidence]);
 
   const categorizedDetections = useMemo(() => {
     const now = Date.now();
@@ -600,6 +587,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Operational state {pageState.replaceAll('_', ' ')}</span>
           <span className="ruleChip">Live telemetry {telemetryLabel}</span>
           <span className="ruleChip">Threat feed updated {pollLabel}</span>
+          <span className="ruleChip">Evidence source {String(feed.runtimeStatus?.source_of_evidence || 'replay_or_none')}</span>
           <span className="ruleChip">Protected assets {protectedAssetCount}</span>
           <span className="ruleChip">Monitored systems {reportingSystems}</span>
           {Number(feed.runtimeStatus?.invalid_enabled_targets ?? 0) > 0 ? <span className="ruleChip">Invalid targets {Number(feed.runtimeStatus?.invalid_enabled_targets ?? 0)}</span> : null}
@@ -608,7 +596,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </div>
         <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} />
         <p className="tableMeta">
-          Last telemetry received: {telemetryLabel} · Last detection evaluation: {detectionEvalLabel} · Last successful poll: {pollLabel}
+          Last telemetry received: {telemetryLabel} · Last detection evaluation: {detectionEvalLabel} · Last successful poll: {pollLabel} · Runtime freshness {String(feed.runtimeStatus?.freshness_status || 'unavailable')} · Runtime confidence {String(feed.runtimeStatus?.confidence_status || 'unavailable')}
         </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
@@ -780,23 +768,23 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                     );
                   }) : monitoredSystems.slice(0, 10).map((system) => {
                     const runtimeStatus = String(system.runtime_status || 'idle').toLowerCase();
-                    const statusTone = runtimeStatus === 'error' || runtimeStatus === 'degraded'
+                    const statusTone = runtimeStatus === 'failed' || runtimeStatus === 'degraded'
                       ? 'attention'
-                      : (runtimeStatus === 'offline' || !system.is_enabled ? 'offline' : 'healthy');
-                    const statusLabel = runtimeStatus === 'active'
+                      : (runtimeStatus === 'disabled' || !system.is_enabled ? 'offline' : 'healthy');
+                    const statusLabel = runtimeStatus === 'healthy'
                       ? 'Monitored'
-                      : runtimeStatus === 'error'
+                      : runtimeStatus === 'failed'
                         ? 'Error'
                         : runtimeStatus === 'degraded'
                           ? 'Degraded'
-                          : runtimeStatus === 'offline'
+                          : runtimeStatus === 'disabled'
                             ? 'Offline'
                             : 'Idle';
-                    const coverage = runtimeStatus === 'active'
+                    const coverage = runtimeStatus === 'healthy'
                       ? 'Full'
                       : runtimeStatus === 'idle'
                         ? 'Partial'
-                        : runtimeStatus === 'offline'
+                        : runtimeStatus === 'disabled'
                           ? 'Offline'
                           : 'Stale';
                     const risk = openAlerts > 0 ? 'High' : 'Low';
@@ -807,7 +795,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                         <td><span className={`statusBadge statusBadge-${statusTone}`}>{statusLabel}</span></td>
                         <td><span className={`statusBadge statusBadge-${coverageTone(coverage)}`}>{coverage}</span></td>
                         <td>{formatRelativeTime(system.last_heartbeat)}</td>
-                        <td>{system.last_error_text || alerts[0]?.title || incidents[0]?.title || 'No active signals'}</td>
+                        <td>{system.last_error_text || system.coverage_reason || alerts[0]?.title || incidents[0]?.title || 'No active signals'}</td>
                         <td><span className={`statusBadge statusBadge-${risk === 'High' ? 'high' : 'low'}`}>{risk}</span></td>
                         <td><Link href="/monitored-systems" prefetch={false}>Open asset coverage view</Link></td>
                       </tr>

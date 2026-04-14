@@ -58,15 +58,12 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
 
   async function escalateIncident() {
     if (!selectedAlert) return;
-    const response = await fetch(`${apiUrl}/pilot/resilience/incidents/record`, {
+    const response = await fetch(`${apiUrl}/alerts/${selectedAlert.id}/escalate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
-        event_type: 'alert_escalation',
         title: `Escalated alert: ${selectedAlert.title}`,
         summary: selectedAlert.summary || selectedAlert.title,
-        severity: selectedAlert.severity || 'high',
-        target_id: selectedAlert.target_id,
       }),
     });
     setMessage(response.ok ? 'Escalated to incident.' : 'Unable to escalate alert to incident.');
