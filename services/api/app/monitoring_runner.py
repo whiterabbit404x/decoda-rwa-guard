@@ -2644,7 +2644,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 ''',
                 (workspace_scope_id,),
             ).fetchall()
-            return [dict(row) for row in rows]
+            normalized: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                if item.get('is_enabled') is None:
+                    item['is_enabled'] = True
+                normalized.append(item)
+            return normalized
         rows = connection.execute(
             '''
             SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat,
@@ -2656,7 +2662,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ORDER BY ms.created_at DESC
             '''
         ).fetchall()
-        return [dict(row) for row in rows]
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if item.get('is_enabled') is None:
+                item['is_enabled'] = True
+            normalized.append(item)
+        return normalized
 
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -2727,6 +2739,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         enabled_monitored_rows_count = sum(1 for row in monitored_rows if bool(row.get('is_enabled')))
         enabled_monitored_target_ids = {str(row.get('target_id')) for row in monitored_rows if bool(row.get('is_enabled')) and row.get('target_id')}
         missing_healthy_target_ids = healthy_enabled_target_ids - enabled_monitored_target_ids
+        logger.info(
+            'monitoring_runtime_status_data_path workspace_id=%s targets_enabled_valid=%s target_ids_enabled_valid=%s monitored_rows_before=%s monitored_row_ids_before=%s enabled_monitored_rows_before=%s',
+            workspace_id,
+            healthy_enabled_targets_count,
+            sorted(healthy_enabled_target_ids),
+            len(monitored_rows),
+            [str(row.get('id') or '') for row in monitored_rows if row.get('id')],
+            enabled_monitored_rows_count,
+        )
         if healthy_enabled_targets_count > 0 and (enabled_monitored_rows_count < healthy_enabled_targets_count or bool(missing_healthy_target_ids)):
             reconcile_result = reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
             logger.info(
@@ -2741,6 +2762,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 reconcile_result.get('removed_monitored_systems'),
             )
             monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
+            logger.info(
+                'monitoring_runtime_status_data_path workspace_id=%s monitored_rows_after=%s monitored_row_ids_after=%s',
+                workspace_id,
+                len(monitored_rows),
+                [str(row.get('id') or '') for row in monitored_rows if row.get('id')],
+            )
         latest_evidence = connection.execute(
             f"SELECT observed_at, block_number FROM evidence e {evidence_workspace_filter} ORDER BY observed_at DESC LIMIT 1",
             scoped_params,
@@ -2877,6 +2904,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'stale_heartbeat': stale_heartbeat,
             'workspace_id': workspace_id,
         },
+    )
+    logger.info(
+        'monitoring_runtime_status_decision workspace_id=%s healthy_enabled_targets=%s monitored_system_rows=%s protected_assets=%s systems_with_recent_heartbeat=%s decision=%s',
+        workspace_id,
+        healthy_enabled_targets_count,
+        len(monitored_rows),
+        protected_assets_count,
+        recent_heartbeat_systems,
+        monitoring_status,
     )
     if _runtime_status_debug_enabled():
         monitored_system_ids = [str(row.get('id') or '') for row in monitored_rows if row.get('id')]
