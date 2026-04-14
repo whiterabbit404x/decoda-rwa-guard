@@ -2336,6 +2336,8 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         workspace_id = workspace_context['workspace_id']
         user_id = str(user.get('id') or '')
         logger.info('monitoring_reconcile step=workspace_resolved workspace_id=%s', workspace_id)
+        pre_repair_snapshot = workspace_monitoring_debug_snapshot(connection, workspace_id=workspace_id)
+        logger.info('monitoring_reconcile snapshot_before workspace_id=%s snapshot=%s', workspace_id, pre_repair_snapshot)
 
         stage = 'reconcile_targets'
         logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
@@ -2367,6 +2369,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                     'created_or_updated': result.get('created_or_updated', 0),
                     'invalid_reasons': result.get('invalid_reasons', {}),
                     'skipped_reasons': result.get('skipped_reasons', {}),
+                    'debug_before': pre_repair_snapshot,
                 },
             )
         except HTTPException:
@@ -2384,6 +2387,8 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except Exception as exc:
             raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
         logger.info('monitoring_reconcile step=rows_loaded workspace_id=%s count=%s', workspace_id, len(rows))
+        post_repair_snapshot = workspace_monitoring_debug_snapshot(connection, workspace_id=workspace_id)
+        logger.info('monitoring_reconcile snapshot_after workspace_id=%s snapshot=%s', workspace_id, post_repair_snapshot)
 
         stage = 'commit'
         logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
@@ -2410,6 +2415,8 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                 'targets_scanned': result.get('targets_scanned', 0),
                 'created_or_updated': result.get('created_or_updated', 0),
                 'repaired_monitored_system_ids': result.get('repaired_monitored_system_ids', []),
+                'debug_before': pre_repair_snapshot,
+                'debug_after': post_repair_snapshot,
             }
         return response
 
@@ -4376,7 +4383,39 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         target_enabled = bool(row.get('enabled'))
         target_monitoring_enabled = bool(row.get('monitoring_enabled'))
         target_has_asset_id = bool(row.get('asset_id'))
-        result = ensure_monitored_system_for_target(connection, target_id=str(row['id']), workspace_id=workspace_id)
+        if not target_enabled:
+            disabled_or_invalid_targets_found += 1
+            skipped_reasons['target_not_enabled'] = skipped_reasons.get('target_not_enabled', 0) + 1
+            logger.info(
+                'target_monitoring_reconcile target_id=%s workspace_id=%s enabled=%s monitoring_enabled=%s asset_id=%s resolved_asset_id=%s status=%s reason=%s monitored_system_id=%s',
+                target_id,
+                workspace_id,
+                target_enabled,
+                target_monitoring_enabled,
+                row.get('asset_id'),
+                None,
+                'target_not_enabled',
+                'target_not_enabled',
+                None,
+            )
+            continue
+        if target_enabled and target_has_asset_id and not target_monitoring_enabled:
+            connection.execute(
+                '''
+                UPDATE targets
+                SET monitoring_enabled = TRUE,
+                    updated_at = NOW()
+                WHERE id = %s::uuid
+                ''',
+                (target_id,),
+            )
+            target_monitoring_enabled = True
+        result = ensure_monitored_system_for_target(
+            connection,
+            target_id=str(row['id']),
+            workspace_id=workspace_id,
+            require_enabled=False,
+        )
         if result.get('status') == 'ok':
             eligible_targets += 1
             enabled_valid_targets_found += 1
@@ -4479,6 +4518,76 @@ def _normalize_reconcile_result(result: dict[str, Any]) -> dict[str, Any]:
         'repaired_monitored_system_ids': [str(value) for value in (result.get('repaired_monitored_system_ids') or []) if str(value).strip()],
         'workspace_id': result.get('workspace_id'),
     }
+
+
+def workspace_monitoring_debug_snapshot(connection: Any, *, workspace_id: str) -> dict[str, Any]:
+    all_targets = [
+        dict(row)
+        for row in connection.execute(
+            '''
+            SELECT id, workspace_id, asset_id, enabled, monitoring_enabled, deleted_at
+            FROM targets
+            WHERE workspace_id = %s::uuid
+              AND deleted_at IS NULL
+            ORDER BY created_at ASC
+            ''',
+            (workspace_id,),
+        ).fetchall()
+    ]
+    enabled_targets = [row for row in all_targets if bool(row.get('enabled'))]
+    valid_linked_targets = [
+        dict(row)
+        for row in connection.execute(
+            '''
+            SELECT t.id, t.workspace_id, t.asset_id, t.enabled, t.monitoring_enabled
+            FROM targets t
+            JOIN assets a
+              ON a.id = t.asset_id
+             AND a.workspace_id = t.workspace_id
+             AND a.deleted_at IS NULL
+            WHERE t.workspace_id = %s::uuid
+              AND t.deleted_at IS NULL
+              AND t.enabled = TRUE
+            ORDER BY t.created_at ASC
+            ''',
+            (workspace_id,),
+        ).fetchall()
+    ]
+    monitored_rows = [
+        dict(row)
+        for row in connection.execute(
+            '''
+            SELECT id, workspace_id, target_id, asset_id, is_enabled, runtime_status, status
+            FROM monitored_systems
+            WHERE workspace_id = %s::uuid
+            ORDER BY created_at ASC
+            ''',
+            (workspace_id,),
+        ).fetchall()
+    ]
+    protected_assets = len({str(row.get('asset_id')) for row in monitored_rows if row.get('asset_id') and bool(row.get('is_enabled'))})
+    return {
+        'workspace_id': workspace_id,
+        'target_count': len(all_targets),
+        'targets': all_targets,
+        'enabled_targets': enabled_targets,
+        'enabled_target_count': len(enabled_targets),
+        'enabled_valid_target_count': len(valid_linked_targets),
+        'valid_linked_asset_targets': valid_linked_targets,
+        'monitored_systems_count': len(monitored_rows),
+        'monitored_system_rows': monitored_rows,
+        'protected_asset_count': protected_assets,
+    }
+
+
+def get_workspace_monitoring_debug(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        snapshot = workspace_monitoring_debug_snapshot(connection, workspace_id=workspace_id)
+        return {'workspace': workspace_context['workspace'], 'debug': _json_safe_value(snapshot)}
 
 
 def resolve_workspace_context_for_request(connection: psycopg.Connection, request: Request) -> tuple[dict[str, Any], dict[str, Any], bool]:

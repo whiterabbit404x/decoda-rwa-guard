@@ -2656,7 +2656,6 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
              AND a.deleted_at IS NULL
             WHERE t.deleted_at IS NULL
               AND t.enabled = TRUE
-              AND t.monitoring_enabled = TRUE
               AND (t.asset_id IS NULL OR a.id IS NULL)
               {target_workspace_filter}
             ''',
@@ -2672,7 +2671,6 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
              AND a.deleted_at IS NULL
             WHERE t.deleted_at IS NULL
               AND t.enabled = TRUE
-              AND t.monitoring_enabled = TRUE
               AND t.asset_id IS NOT NULL
               {target_workspace_filter}
             ''',
@@ -2690,7 +2688,6 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
              AND a.deleted_at IS NULL
             WHERE t.deleted_at IS NULL
               AND t.enabled = TRUE
-              AND t.monitoring_enabled = TRUE
               AND t.asset_id IS NOT NULL
               {target_workspace_filter}
             ''',
@@ -2856,6 +2853,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'recent_confidence_basis': str((latest_detection_metadata or {}).get('confidence_basis') or latest_detection_payload.get('confidence_basis') or 'none') if isinstance(latest_detection_payload, dict) else 'none',
         'last_real_event_at': (latest_detection_metadata or {}).get('last_real_event_at') if isinstance(latest_detection_metadata, dict) else None,
     }
+    logger.info(
+        'monitoring_runtime_status_summary workspace_id=%s healthy_enabled_targets=%s monitored_rows=%s enabled_rows=%s protected_assets=%s monitoring_status=%s systems_with_recent_heartbeat=%s',
+        workspace_id,
+        healthy_enabled_targets_count,
+        len(monitored_rows),
+        enabled_system_count,
+        protected_assets_count,
+        monitoring_status,
+        recent_heartbeat_systems,
+    )
     if _runtime_status_debug_enabled():
         monitored_system_ids = [str(row.get('id') or '') for row in monitored_rows if row.get('id')]
         enabled_monitored_system_ids = [str(row.get('id') or '') for row in enabled_rows if row.get('id')]
