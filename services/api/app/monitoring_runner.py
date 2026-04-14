@@ -2627,6 +2627,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     healthy_enabled_targets_count = 0
     healthy_enabled_assets_count = 0
     enabled_monitored_rows_count = 0
+    healthy_enabled_target_ids: set[str] = set()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         if request is not None:
@@ -2679,14 +2680,34 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         ).fetchone()
         healthy_enabled_targets_count = int((healthy_enabled_targets or {}).get('target_count') or 0)
         healthy_enabled_assets_count = int((healthy_enabled_targets or {}).get('asset_count') or 0)
+        healthy_enabled_target_rows = connection.execute(
+            f'''
+            SELECT t.id
+            FROM targets t
+            JOIN assets a
+              ON a.id = t.asset_id
+             AND a.workspace_id = t.workspace_id
+             AND a.deleted_at IS NULL
+            WHERE t.deleted_at IS NULL
+              AND t.enabled = TRUE
+              AND t.monitoring_enabled = TRUE
+              AND t.asset_id IS NOT NULL
+              {target_workspace_filter}
+            ''',
+            scoped_params,
+        ).fetchall()
+        healthy_enabled_target_ids = {str(row.get('id')) for row in healthy_enabled_target_rows if row.get('id')}
         enabled_monitored_rows_count = sum(1 for row in monitored_rows if bool(row.get('is_enabled')))
-        if healthy_enabled_targets_count > 0 and enabled_monitored_rows_count < healthy_enabled_targets_count:
+        enabled_monitored_target_ids = {str(row.get('target_id')) for row in monitored_rows if bool(row.get('is_enabled')) and row.get('target_id')}
+        missing_healthy_target_ids = healthy_enabled_target_ids - enabled_monitored_target_ids
+        if healthy_enabled_targets_count > 0 and (enabled_monitored_rows_count < healthy_enabled_targets_count or bool(missing_healthy_target_ids)):
             reconcile_result = reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
             logger.info(
-                'monitoring_runtime_status_reconcile workspace_id=%s healthy_enabled_targets=%s enabled_monitored_rows_before=%s created_or_updated=%s created_monitored_systems=%s preserved_monitored_systems=%s removed_monitored_systems=%s',
+                'monitoring_runtime_status_reconcile workspace_id=%s healthy_enabled_targets=%s enabled_monitored_rows_before=%s missing_healthy_target_ids=%s created_or_updated=%s created_monitored_systems=%s preserved_monitored_systems=%s removed_monitored_systems=%s',
                 workspace_id,
                 healthy_enabled_targets_count,
                 enabled_monitored_rows_count,
+                len(missing_healthy_target_ids),
                 reconcile_result.get('created_or_updated'),
                 reconcile_result.get('created_monitored_systems'),
                 reconcile_result.get('preserved_monitored_systems'),

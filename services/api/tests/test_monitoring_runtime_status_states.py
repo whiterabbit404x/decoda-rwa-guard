@@ -42,6 +42,8 @@ class _Conn:
             return _Result({'c': 0})
         if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
             return _Result({'target_count': 2, 'asset_count': 2})
+        if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+            return _Result(rows=[{'id': 'target-1'}, {'id': 'target-2'}])
         if 'FROM evidence' in q:
             return _Result({'observed_at': self.evidence_at, 'block_number': 123})
         if 'FROM analysis_runs' in q and "analysis_type LIKE 'monitoring_%'" in q:
@@ -457,6 +459,43 @@ def test_runtime_status_triggers_reconcile_when_enabled_rows_missing_for_healthy
     )
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_OnlyDisabledRowsConn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    assert reconcile_calls == [None]
+    assert payload['monitoring_status'] != 'offline'
+
+
+def test_runtime_status_triggers_reconcile_when_healthy_target_ids_are_missing_even_if_counts_match(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _MismatchedTargetRowsConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(
+                    rows=[
+                        {'id': 'sys-enabled', 'workspace_id': 'ws-1', 'asset_id': 'asset-9', 'target_id': 'target-stale', 'is_enabled': True, 'runtime_status': 'idle', 'last_heartbeat': now.isoformat(), 'monitoring_interval_seconds': 30, 'created_at': now.isoformat()},
+                    ]
+                )
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 1, 'asset_count': 1})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[{'id': 'target-healthy'}])
+            return super().execute(query, params)
+
+    reconcile_calls: list[str | None] = []
+    monkeypatch.setattr(
+        monitoring_runner,
+        'reconcile_enabled_targets_monitored_systems',
+        lambda _c, workspace_id=None: reconcile_calls.append(workspace_id) or {'created_or_updated': 1, 'created_monitored_systems': 1, 'preserved_monitored_systems': 0, 'removed_monitored_systems': 0},
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_MismatchedTargetRowsConn(None)))
 
     payload = monitoring_runner.monitoring_runtime_status()
     assert reconcile_calls == [None]

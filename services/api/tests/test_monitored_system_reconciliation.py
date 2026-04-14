@@ -229,6 +229,7 @@ def test_reconcile_enabled_targets_backfills_and_reports_invalid_and_skipped_rea
     assert result['created_monitored_systems'] == 1
     assert result['preserved_monitored_systems'] == 0
     assert result['removed_monitored_systems'] == 0
+    assert result['final_workspace_monitored_system_count'] == 1
     assert result['enabled_valid_targets_found'] == 1
     assert result['disabled_or_invalid_targets_found'] == 3
     assert 'target-valid' in conn.monitored_systems
@@ -242,6 +243,7 @@ def test_reconcile_enabled_targets_is_idempotent_for_existing_rows():
     assert second['created_or_updated'] == 1
     assert second['created_monitored_systems'] == 0
     assert second['preserved_monitored_systems'] == 1
+    assert second['final_workspace_monitored_system_count'] == 1
     assert len(conn.monitored_systems) == 1
     assert conn.monitored_systems['target-valid']['id'] == 'ms-target-valid'
 
@@ -255,6 +257,21 @@ def test_reconcile_repairs_healthy_targets_after_broken_target_is_disabled():
 
     assert result['created_or_updated'] == 1
     assert result['invalid_targets'] == []
+    assert 'target-valid' in conn.monitored_systems
+    assert result['final_workspace_monitored_system_count'] == 1
+
+
+def test_reconcile_recreates_missing_monitored_rows_for_healthy_targets():
+    conn = _Conn()
+    conn.targets['target-missing-asset']['enabled'] = False
+    conn.targets['target-missing-asset']['monitoring_enabled'] = False
+    conn.monitored_systems.clear()
+
+    result = pilot.reconcile_enabled_targets_monitored_systems(conn)
+
+    assert result['enabled_valid_targets_found'] == 1
+    assert result['created_monitored_systems'] == 1
+    assert result['final_workspace_monitored_system_count'] == 1
     assert 'target-valid' in conn.monitored_systems
 
 
@@ -302,6 +319,7 @@ def test_normalize_reconcile_result_provides_render_safe_fields():
     assert result['created_monitored_systems'] == 0
     assert result['preserved_monitored_systems'] == 0
     assert result['removed_monitored_systems'] == 0
+    assert result['final_workspace_monitored_system_count'] == 0
     assert result['enabled_valid_targets_found'] == 0
     assert result['disabled_or_invalid_targets_found'] == 0
 
