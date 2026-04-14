@@ -2628,13 +2628,43 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     healthy_enabled_assets_count = 0
     enabled_monitored_rows_count = 0
     healthy_enabled_target_ids: set[str] = set()
+
+    def _load_runtime_monitored_rows(connection: Any, workspace_scope_id: str | None) -> list[dict[str, Any]]:
+        if workspace_scope_id:
+            rows = connection.execute(
+                '''
+                SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat,
+                       COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at
+                FROM monitored_systems ms
+                LEFT JOIN targets t
+                  ON t.id = ms.target_id
+                 AND t.workspace_id = ms.workspace_id
+                WHERE ms.workspace_id = %s::uuid
+                ORDER BY ms.created_at DESC
+                ''',
+                (workspace_scope_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        rows = connection.execute(
+            '''
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat,
+                   COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at
+            FROM monitored_systems ms
+            LEFT JOIN targets t
+              ON t.id = ms.target_id
+             AND t.workspace_id = ms.workspace_id
+            ORDER BY ms.created_at DESC
+            '''
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         if request is not None:
             user, workspace_context, workspace_header_present = resolve_workspace_context_for_request(connection, request)
             user_id = str(user.get('id') or '')
             workspace_id = str(workspace_context['workspace_id'])
-            monitored_rows = list_workspace_monitored_system_rows(connection, workspace_id)
+            monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
         target_workspace_filter = 'AND t.workspace_id = %s' if workspace_id else ''
         evidence_workspace_filter = 'WHERE e.workspace_id = %s' if workspace_id else ''
         scoped_params: tuple[Any, ...] = (workspace_id,) if workspace_id else ()
@@ -2710,21 +2740,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 reconcile_result.get('preserved_monitored_systems'),
                 reconcile_result.get('removed_monitored_systems'),
             )
-            if request is not None and workspace_id:
-                monitored_rows = list_workspace_monitored_system_rows(connection, workspace_id)
-            elif request is None:
-                monitored_rows = connection.execute(
-                    '''
-                    SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat,
-                           t.monitoring_interval_seconds AS monitoring_interval_seconds, ms.created_at
-                    FROM monitored_systems ms
-                    JOIN targets t
-                      ON t.id = ms.target_id
-                     AND t.deleted_at IS NULL
-                    ORDER BY ms.created_at DESC
-                    '''
-                ).fetchall()
-                monitored_rows = [dict(row) for row in monitored_rows]
+            monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
         latest_evidence = connection.execute(
             f"SELECT observed_at, block_number FROM evidence e {evidence_workspace_filter} ORDER BY observed_at DESC LIMIT 1",
             scoped_params,
@@ -2743,18 +2759,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         latest_detection_evaluation_at = _parse_ts((latest_detection_eval or {}).get('created_at'))
         latest_detection_payload = _json_safe_value((latest_detection_eval or {}).get('response_payload') or {}) if latest_detection_eval else None
         if request is None:
-            monitored_rows = connection.execute(
-                '''
-                SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat,
-                       t.monitoring_interval_seconds AS monitoring_interval_seconds, ms.created_at
-                FROM monitored_systems ms
-                JOIN targets t
-                  ON t.id = ms.target_id
-                 AND t.deleted_at IS NULL
-                ORDER BY ms.created_at DESC
-                '''
-            ).fetchall()
-            monitored_rows = [dict(row) for row in monitored_rows]
+            monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
     parsed_heartbeats = [_parse_ts(row.get('last_heartbeat')) for row in monitored_rows]
     recent_heartbeat_systems = 0
     for row, parsed_heartbeat in zip(monitored_rows, parsed_heartbeats):
@@ -2794,7 +2799,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     runner_alive = bool(health.get('worker_running')) or not stale_heartbeat
     has_monitorable_targets = healthy_enabled_targets_count > 0
     has_any_monitored_rows = len(monitored_rows) > 0
-    if not has_monitorable_targets and not has_any_monitored_rows:
+    if healthy_enabled_targets_count == 0 and len(monitored_rows) == 0:
         monitoring_status = 'offline'
     elif not runner_alive or health.get('last_error') or health.get('degraded') or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
         monitoring_status = 'degraded'
@@ -2854,7 +2859,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'last_real_event_at': (latest_detection_metadata or {}).get('last_real_event_at') if isinstance(latest_detection_metadata, dict) else None,
     }
     logger.info(
-        'monitoring_runtime_status_summary workspace_id=%s healthy_enabled_targets=%s monitored_rows=%s enabled_rows=%s protected_assets=%s monitoring_status=%s systems_with_recent_heartbeat=%s',
+        'monitoring_runtime_status_summary workspace_id=%s healthy_enabled_targets=%s monitored_rows=%s enabled_rows=%s protected_assets=%s monitoring_status=%s systems_with_recent_heartbeat=%s status_inputs=%s',
         workspace_id,
         healthy_enabled_targets_count,
         len(monitored_rows),
@@ -2862,6 +2867,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         protected_assets_count,
         monitoring_status,
         recent_heartbeat_systems,
+        {
+            'healthy_enabled_targets': healthy_enabled_targets_count,
+            'monitored_system_rows': len(monitored_rows),
+            'enabled_monitored_rows': len(enabled_rows),
+            'protected_assets': protected_assets_count,
+            'invalid_enabled_targets': int((broken_targets or {}).get('c') or 0),
+            'runner_alive': runner_alive,
+            'stale_heartbeat': stale_heartbeat,
+            'workspace_id': workspace_id,
+        },
     )
     if _runtime_status_debug_enabled():
         monitored_system_ids = [str(row.get('id') or '') for row in monitored_rows if row.get('id')]
