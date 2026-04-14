@@ -29,6 +29,9 @@ const INTERNAL_LIMITED_MARKERS = ['demo', 'hybrid', 'fallback', 'synthetic'];
 
 function normalizeEvidence(status: MonitoringRuntimeStatus | null): MonitoringPresentationEvidence {
   const recentEvidence = String(status?.recent_evidence_state ?? '').trim().toLowerCase();
+  const systemsWithRecentHeartbeat = Number(status?.systems_with_recent_heartbeat ?? 0);
+  const successfulDetectionEvaluation = Boolean(status?.successful_detection_evaluation_recent);
+  const confidenceBasis = String(status?.recent_confidence_basis ?? '').toLowerCase();
 
   if (recentEvidence === 'real') {
     return 'verified';
@@ -36,6 +39,10 @@ function normalizeEvidence(status: MonitoringRuntimeStatus | null): MonitoringPr
 
   if (recentEvidence === 'degraded') {
     return 'delayed';
+  }
+
+  if (systemsWithRecentHeartbeat > 0 && (successfulDetectionEvaluation || confidenceBasis === 'provider_evidence' || confidenceBasis === 'backfill_evidence')) {
+    return 'recent';
   }
 
   if (recentEvidence === 'failed' || recentEvidence === 'missing' || recentEvidence === 'no_evidence') {
@@ -54,18 +61,22 @@ function normalizeEvidence(status: MonitoringRuntimeStatus | null): MonitoringPr
 }
 
 function normalizeFreshness(status: MonitoringRuntimeStatus | null, evidence: MonitoringPresentationEvidence): MonitoringPresentationFreshness {
-  if (evidence === 'unavailable') {
+  const heartbeatIso = status?.last_heartbeat ? Date.parse(status.last_heartbeat) : Number.NaN;
+  const heartbeatAgeSeconds = Number.isFinite(heartbeatIso) ? Math.max(0, Math.round((Date.now() - heartbeatIso) / 1000)) : null;
+
+  if (evidence === 'unavailable' && !(Number(status?.systems_with_recent_heartbeat ?? 0) > 0 && heartbeatAgeSeconds !== null && heartbeatAgeSeconds <= 300)) {
     return 'unavailable';
   }
 
   const checkpointAge = status?.checkpoint_age_seconds;
-  if (typeof checkpointAge !== 'number') {
+  if (typeof checkpointAge !== 'number' && heartbeatAgeSeconds === null) {
     return 'unavailable';
   }
-  if (checkpointAge <= 300) {
+  const freshnessAge = typeof checkpointAge === 'number' ? checkpointAge : heartbeatAgeSeconds;
+  if (freshnessAge !== null && freshnessAge <= 300) {
     return evidence === 'verified' ? 'verified' : 'recent';
   }
-  if (checkpointAge <= 900) {
+  if (freshnessAge !== null && freshnessAge <= 900) {
     return 'recent';
   }
   return 'delayed';
@@ -85,7 +96,10 @@ function normalizeStatus(
   const detectionOutcome = String(status?.detection_outcome ?? '').toLowerCase();
 
   if (
-    runtimeMode === 'LIMITED_COVERAGE'
+    (runtimeMode === 'LIMITED_COVERAGE' && !(Number(status?.invalid_enabled_targets ?? 0) === 0
+      && Number(status?.monitored_systems ?? 0) > 0
+      && Number(status?.systems_with_recent_heartbeat ?? 0) > 0
+      && Boolean(status?.successful_detection_evaluation_recent)))
     || Boolean(status?.synthetic_leak_detected)
     || INTERNAL_LIMITED_MARKERS.some((marker) => detectionOutcome.includes(marker))
   ) {
@@ -159,6 +173,12 @@ export function normalizeMonitoringPresentation(
     freshness,
     confidence,
     summary: summarizeStatus(presentationStatus, freshness),
-    lastCheckpointLabel: status?.last_real_event_at ? new Date(status.last_real_event_at).toLocaleString() : 'Last confirmed checkpoint unavailable',
+    lastCheckpointLabel: status?.last_confirmed_checkpoint
+      ? new Date(status.last_confirmed_checkpoint).toLocaleString()
+      : status?.last_detection_evaluation_at
+        ? new Date(status.last_detection_evaluation_at).toLocaleString()
+        : status?.last_heartbeat
+          ? new Date(status.last_heartbeat).toLocaleString()
+          : 'Last confirmed checkpoint unavailable',
   };
 }

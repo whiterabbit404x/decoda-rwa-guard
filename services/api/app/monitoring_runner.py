@@ -338,6 +338,13 @@ def _threat_call(kind: ThreatKind, payload: dict[str, Any], *, target_id: str) -
 
 def _normalize_event(target: dict[str, Any], event: ActivityEvent, monitoring_run_id: str, workspace: dict[str, Any]) -> tuple[ThreatKind, dict[str, Any]]:
     kind = event.kind if event.kind in {'contract', 'transaction', 'market'} else 'transaction'
+    recent_real_event_count_raw = (latest_detection_metadata or {}).get('recent_real_event_count')
+    if recent_real_event_count_raw is None and isinstance(latest_detection_payload, dict):
+        recent_real_event_count_raw = (latest_detection_payload or {}).get('recent_real_event_count')
+    try:
+        recent_real_event_count = int(recent_real_event_count_raw or 0)
+    except Exception:
+        recent_real_event_count = 0
     payload = {
         **event.payload,
         'target_id': str(target['id']),
@@ -2614,6 +2621,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     user_id: str | None = None
     workspace_header_present = False
     monitored_rows: list[dict[str, Any]] = []
+    latest_detection_evaluation_at = None
+    latest_detection_payload: dict[str, Any] | None = None
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         if request is not None:
@@ -2652,6 +2661,19 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             f"SELECT observed_at, block_number FROM evidence e {evidence_workspace_filter} ORDER BY observed_at DESC LIMIT 1",
             scoped_params,
         ).fetchone()
+        latest_detection_eval = connection.execute(
+            f'''
+            SELECT created_at, response_payload
+            FROM analysis_runs
+            WHERE analysis_type LIKE 'monitoring_%'
+            {'AND workspace_id = %s' if workspace_id else ''}
+            ORDER BY created_at DESC
+            LIMIT 1
+            ''',
+            scoped_params,
+        ).fetchone()
+        latest_detection_evaluation_at = _parse_ts((latest_detection_eval or {}).get('created_at'))
+        latest_detection_payload = _json_safe_value((latest_detection_eval or {}).get('response_payload') or {}) if latest_detection_eval else None
         if request is None:
             monitored_rows = connection.execute(
                 '''
@@ -2687,6 +2709,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     protected_assets_count = len({str(row.get('asset_id') or '') for row in enabled_asset_rows})
     evidence_at = _parse_ts((latest_evidence or {}).get('observed_at'))
     evidence_freshness = int((now - evidence_at).total_seconds()) if evidence_at else None
+    detection_eval_freshness = int((now - latest_detection_evaluation_at).total_seconds()) if latest_detection_evaluation_at else None
+    successful_detection_outcomes = {'DETECTION_CONFIRMED', 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}
+    latest_detection_metadata = latest_detection_payload.get('metadata') if isinstance(latest_detection_payload, dict) and isinstance(latest_detection_payload.get('metadata'), dict) else {}
+    latest_detection_outcome = str(
+        (latest_detection_metadata or {}).get('detection_outcome')
+        or ((latest_detection_payload or {}).get('detection_outcome') if isinstance(latest_detection_payload, dict) else '')
+        or ''
+    ).upper()
+    successful_detection_evaluation = bool(latest_detection_outcome in successful_detection_outcomes)
+    successful_detection_evaluation_recent = bool(
+        successful_detection_evaluation
+        and detection_eval_freshness is not None
+        and detection_eval_freshness <= max(900, MONITOR_POLL_INTERVAL_SECONDS * 10)
+    )
     runner_alive = bool(health.get('worker_running')) or not stale_heartbeat
     if system_count == 0 or enabled_system_count == 0:
         monitoring_status = 'offline'
@@ -2709,6 +2745,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         runtime_status = 'Idle'
     else:
         runtime_status = 'Active'
+    recent_real_event_count_raw = (latest_detection_metadata or {}).get('recent_real_event_count')
+    if recent_real_event_count_raw is None and isinstance(latest_detection_payload, dict):
+        recent_real_event_count_raw = (latest_detection_payload or {}).get('recent_real_event_count')
+    try:
+        recent_real_event_count = int(recent_real_event_count_raw or 0)
+    except Exception:
+        recent_real_event_count = 0
     payload = {
         'monitoring_status': monitoring_status,
         'monitored_systems': system_count,
@@ -2720,6 +2763,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'status': runtime_status,
         'provider_mode': health.get('source_type') or health.get('ingestion_mode') or 'polling',
         'last_successful_ingest': evidence_at.isoformat() if evidence_at else None,
+        'last_detection_evaluation_at': latest_detection_evaluation_at.isoformat() if latest_detection_evaluation_at else None,
+        'last_confirmed_checkpoint': latest_detection_evaluation_at.isoformat() if successful_detection_evaluation else None,
+        'successful_detection_evaluation': successful_detection_evaluation,
+        'successful_detection_evaluation_recent': successful_detection_evaluation_recent,
         'last_processed_block': (latest_evidence or {}).get('block_number') or health.get('latest_processed_block'),
         'targets_monitored': enabled_system_count,
         'protected_assets_count': protected_assets_count,
@@ -2730,6 +2777,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'open_incidents': int((open_incidents or {}).get('c') or 0),
         'evidence_freshness_seconds': evidence_freshness,
         'degraded_reason': degraded_reason,
+        'recent_evidence_state': str((latest_detection_metadata or {}).get('evidence_state') or latest_detection_payload.get('evidence_state') or 'missing') if isinstance(latest_detection_payload, dict) else 'missing',
+        'recent_real_event_count': recent_real_event_count,
+        'recent_confidence_basis': str((latest_detection_metadata or {}).get('confidence_basis') or latest_detection_payload.get('confidence_basis') or 'none') if isinstance(latest_detection_payload, dict) else 'none',
+        'last_real_event_at': (latest_detection_metadata or {}).get('last_real_event_at') if isinstance(latest_detection_metadata, dict) else None,
     }
     if _runtime_status_debug_enabled():
         monitored_system_ids = [str(row.get('id') or '') for row in monitored_rows if row.get('id')]
