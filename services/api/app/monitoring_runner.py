@@ -2793,8 +2793,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     )
     runner_alive = bool(health.get('worker_running')) or not stale_heartbeat
     has_monitorable_targets = healthy_enabled_targets_count > 0
-    has_enabled_monitoring_rows = enabled_system_count > 0
-    if not has_monitorable_targets and not has_enabled_monitoring_rows:
+    has_any_monitored_rows = len(monitored_rows) > 0
+    if not has_monitorable_targets and not has_any_monitored_rows:
         monitoring_status = 'offline'
     elif not runner_alive or health.get('last_error') or health.get('degraded') or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
         monitoring_status = 'degraded'
@@ -2883,7 +2883,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'sample_target_ids_count': len(target_ids),
                 'systems_with_recent_heartbeat': recent_heartbeat_systems,
                 'has_monitorable_targets': has_monitorable_targets,
-                'has_enabled_monitoring_rows': has_enabled_monitoring_rows,
+                'has_monitored_system_rows': has_any_monitored_rows,
             }
         )
     return payload

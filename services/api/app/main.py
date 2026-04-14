@@ -1929,7 +1929,13 @@ def monitoring_systems_reconcile(request: Request) -> Any:
         user_hint,
     )
     try:
-        return with_auth_schema_json(lambda: reconcile_workspace_monitored_systems(request))
+        reconcile_payload = with_auth_schema_json(lambda: reconcile_workspace_monitored_systems(request))
+        runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
+        if isinstance(reconcile_payload, dict):
+            diagnostics = reconcile_payload.setdefault('diagnostics', {})
+            if isinstance(diagnostics, dict):
+                diagnostics['runtime_status_after_repair'] = runtime_payload
+        return reconcile_payload
     except HTTPException as exc:
         if isinstance(exc.detail, dict):
             logger.error(
@@ -1970,7 +1976,19 @@ def monitoring_systems_reconcile(request: Request) -> Any:
 
 @app.get('/monitoring/workspace-debug', summary='Workspace monitoring source-of-truth debug snapshot')
 def monitoring_workspace_debug(request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: get_workspace_monitoring_debug(request))
+    snapshot_payload = with_auth_schema_json(lambda: get_workspace_monitoring_debug(request))
+    runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
+    return {
+        **snapshot_payload,
+        'status_decision_inputs': {
+            'healthy_enabled_targets': int(runtime_payload.get('healthy_enabled_targets') or 0),
+            'invalid_enabled_targets': int(runtime_payload.get('invalid_enabled_targets') or 0),
+            'monitored_systems_count': int(runtime_payload.get('monitored_systems_count') or runtime_payload.get('monitored_systems') or 0),
+            'protected_assets_count': int(runtime_payload.get('protected_assets_count') or runtime_payload.get('protected_assets') or 0),
+            'systems_with_recent_heartbeat': int(runtime_payload.get('systems_with_recent_heartbeat') or 0),
+        },
+        'runtime_summary': runtime_payload,
+    }
 
 
 @app.post('/monitoring/systems', summary='Create monitored system')
