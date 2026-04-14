@@ -1930,11 +1930,26 @@ def monitoring_systems_reconcile(request: Request) -> Any:
     )
     try:
         reconcile_payload = with_auth_schema_json(lambda: reconcile_workspace_monitored_systems(request))
-        runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
+        runtime_payload: dict[str, Any] | None = None
+        runtime_error: dict[str, Any] | None = None
+        try:
+            runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
+        except Exception as runtime_exc:
+            logger.exception(
+                'monitoring_reconcile_runtime_status_after_repair_failed method=%s path=%s workspace_id=%s user_id=%s error_type=%s',
+                request.method,
+                request.url.path,
+                workspace_hint,
+                user_hint,
+                type(runtime_exc).__name__,
+            )
+            runtime_error = {'error_type': type(runtime_exc).__name__, 'error_message': str(runtime_exc)}
         if isinstance(reconcile_payload, dict):
             diagnostics = reconcile_payload.setdefault('diagnostics', {})
             if isinstance(diagnostics, dict):
                 diagnostics['runtime_status_after_repair'] = runtime_payload
+                if runtime_error is not None:
+                    diagnostics['runtime_status_after_repair_error'] = runtime_error
         return reconcile_payload
     except HTTPException as exc:
         if isinstance(exc.detail, dict):

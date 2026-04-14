@@ -2639,7 +2639,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 LEFT JOIN targets t
                   ON t.id = ms.target_id
                  AND t.workspace_id = ms.workspace_id
-                WHERE ms.workspace_id = %s::uuid
+                WHERE ms.workspace_id = %s
                 ORDER BY ms.created_at DESC
                 ''',
                 (workspace_scope_id,),
