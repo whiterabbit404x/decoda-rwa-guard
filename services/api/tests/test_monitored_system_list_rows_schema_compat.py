@@ -50,6 +50,37 @@ class _SchemaStrictConn:
         self.commits += 1
 
 
+class _DeletedTargetCompatibleConn:
+    def __init__(self):
+        self.query_text = ''
+
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        self.query_text = normalized
+        if 'FROM monitored_systems ms' in normalized and 'ORDER BY ms.created_at DESC' in normalized:
+            return _Result(
+                rows=[
+                    {
+                        'id': 'ms-orphan',
+                        'workspace_id': 'ws-1',
+                        'asset_id': 'asset-1',
+                        'target_id': 'target-deleted',
+                        'chain': 'ethereum-mainnet',
+                        'is_enabled': True,
+                        'runtime_status': 'idle',
+                        'status': 'active',
+                        'last_heartbeat': None,
+                        'last_error_text': None,
+                        'created_at': '2026-04-10T00:00:00+00:00',
+                        'monitoring_interval_seconds': 30,
+                        'asset_name': 'Treasury',
+                        'target_name': None,
+                    }
+                ]
+            )
+        return _Result(rows=[])
+
+
 @contextmanager
 def _fake_pg(conn: _SchemaStrictConn):
     yield conn
@@ -71,6 +102,18 @@ def test_list_workspace_monitored_system_rows_uses_target_interval_alias():
     assert len(rows) == 1
     assert rows[0]['id'] == 'ms-1'
     assert rows[0]['monitoring_interval_seconds'] == 45
+
+
+def test_list_workspace_monitored_system_rows_does_not_filter_deleted_targets():
+    conn = _DeletedTargetCompatibleConn()
+
+    rows = pilot.list_workspace_monitored_system_rows(conn, 'ws-1')
+
+    assert len(rows) == 1
+    assert rows[0]['id'] == 'ms-orphan'
+    assert rows[0]['target_name'] is None
+    assert 'LEFT JOIN targets t' in conn.query_text
+    assert 't.deleted_at IS NULL' not in conn.query_text
 
 
 def test_reconcile_workspace_monitored_systems_passes_list_rows_stage(monkeypatch):

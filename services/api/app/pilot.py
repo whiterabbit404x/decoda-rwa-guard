@@ -4696,12 +4696,11 @@ def list_workspace_monitored_system_rows(connection: psycopg.Connection, workspa
     rows = connection.execute(
         '''
         SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_error_text, ms.created_at,
-               t.monitoring_interval_seconds AS monitoring_interval_seconds, a.name AS asset_name, t.name AS target_name
+               COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, a.name AS asset_name, t.name AS target_name
         FROM monitored_systems ms
         LEFT JOIN assets a ON a.id = ms.asset_id AND a.workspace_id = ms.workspace_id AND a.deleted_at IS NULL
-        JOIN targets t ON t.id = ms.target_id AND t.workspace_id = ms.workspace_id
+        LEFT JOIN targets t ON t.id = ms.target_id AND t.workspace_id = ms.workspace_id
         WHERE ms.workspace_id = %s
-          AND t.deleted_at IS NULL
         ORDER BY ms.created_at DESC
         ''',
         (workspace_id,),

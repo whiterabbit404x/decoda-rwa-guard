@@ -2659,6 +2659,28 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             normalized.append(item)
         return normalized
 
+    def _load_workspace_monitored_rows_raw(connection: Any, workspace_scope_id: str) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            '''
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat,
+                   COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at
+            FROM monitored_systems ms
+            LEFT JOIN targets t
+              ON t.id = ms.target_id
+             AND t.workspace_id = ms.workspace_id
+            WHERE ms.workspace_id = %s::uuid
+            ORDER BY ms.created_at DESC
+            ''',
+            (workspace_scope_id,),
+        ).fetchall()
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if item.get('is_enabled') is None:
+                item['is_enabled'] = True
+            normalized.append(item)
+        return normalized
+
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         if request is not None:
@@ -2666,6 +2688,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             user_id = str(user.get('id') or '')
             workspace_id = str(workspace_context['workspace_id'])
             monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
+            raw_workspace_rows = _load_workspace_monitored_rows_raw(connection, workspace_id)
+            if len(monitored_rows) == 0 and len(raw_workspace_rows) > 0:
+                monitored_rows = raw_workspace_rows
+                logger.warning(
+                    'monitoring_runtime_status_workspace_rows_recovered_from_raw workspace_id=%s raw_rows=%s raw_row_ids=%s',
+                    workspace_id,
+                    len(raw_workspace_rows),
+                    [str((row or {}).get('id') or '') for row in raw_workspace_rows if (row or {}).get('id')],
+                )
             try:
                 listed_monitored_rows = list_workspace_monitored_system_rows(connection, workspace_id)
             except Exception:

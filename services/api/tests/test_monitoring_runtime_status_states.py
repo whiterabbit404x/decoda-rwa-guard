@@ -243,6 +243,61 @@ def test_runtime_status_includes_recent_successful_checkpoint_without_events(mon
     assert payload['successful_detection_evaluation'] is True
     assert payload['successful_detection_evaluation_recent'] is True
     assert payload['last_confirmed_checkpoint'] is not None
+
+
+def test_runtime_status_counts_workspace_rows_even_when_target_join_metadata_is_missing(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _OrphanRowConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(
+                    rows=[
+                        {
+                            'id': 'ms-orphan',
+                            'workspace_id': 'ws-1',
+                            'asset_id': 'asset-1',
+                            'target_id': 'target-deleted',
+                            'chain': 'ethereum-mainnet',
+                            'is_enabled': True,
+                            'runtime_status': 'idle',
+                            'status': 'active',
+                            'last_heartbeat': now.isoformat(),
+                            'monitoring_interval_seconds': 30,
+                            'created_at': now.isoformat(),
+                        }
+                    ]
+                )
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 0, 'asset_count': 0})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[])
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_OrphanRowConn(None)))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}, True),
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'reconcile_enabled_targets_monitored_systems',
+        lambda *_a, **_k: {'created_or_updated': 0, 'created_monitored_systems': 0, 'preserved_monitored_systems': 1, 'removed_monitored_systems': 0},
+    )
+
+    payload = monitoring_runner.monitoring_runtime_status(request=SimpleNamespace(headers={'authorization': 'Bearer token', 'x-workspace-id': 'ws-1'}))
+    assert payload['monitored_systems'] == 1
+    assert payload['protected_assets'] == 1
+    assert payload['status'] != 'Offline'
+    assert payload['monitoring_status'] != 'offline'
     assert payload['recent_real_event_count'] == 0
 
 
