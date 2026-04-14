@@ -5331,6 +5331,7 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
                 "UPDATE monitored_systems SET is_enabled = FALSE, runtime_status = 'offline', status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s",
                 (target_id, workspace_id),
             )
+            reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
         log_audit(connection, action='target.update', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={})
         connection.commit()
         return {'id': target_id, **validated}
@@ -5367,6 +5368,7 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
                 "UPDATE monitored_systems SET is_enabled = FALSE, runtime_status = 'offline', status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s",
                 (target_id, workspace_context['workspace_id']),
             )
+            reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_context['workspace_id'])
         log_audit(
             connection,
             action='target.enable' if enabled else 'target.disable',
