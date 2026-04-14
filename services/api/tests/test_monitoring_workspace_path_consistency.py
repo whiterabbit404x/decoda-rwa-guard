@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+from contextlib import contextmanager
+from datetime import datetime, timezone
+
+from fastapi.testclient import TestClient
+
+from services.api.app import main as api_main
+from services.api.app import monitoring_runner, pilot
+
+
+class _Result:
+    def __init__(self, row=None, rows=None):
+        self._row = row or {}
+        self._rows = rows or []
+
+    def fetchone(self):
+        return self._row
+
+    def fetchall(self):
+        return self._rows
+
+
+class _Conn:
+    def __init__(self):
+        self.commits = 0
+        now = datetime.now(timezone.utc).isoformat()
+        self._runtime_rows = [
+            {
+                'id': 'ms-1',
+                'workspace_id': 'ws-legacy',
+                'asset_id': 'asset-1',
+                'target_id': 'target-1',
+                'chain': 'ethereum-mainnet',
+                'is_enabled': True,
+                'runtime_status': 'idle',
+                'status': 'active',
+                'last_heartbeat': now,
+                'monitoring_interval_seconds': 30,
+                'created_at': now,
+                'asset_name': 'Asset 1',
+                'target_name': 'Target 1',
+            },
+            {
+                'id': 'ms-2',
+                'workspace_id': 'ws-legacy',
+                'asset_id': 'asset-2',
+                'target_id': 'target-2',
+                'chain': 'ethereum-mainnet',
+                'is_enabled': True,
+                'runtime_status': 'idle',
+                'status': 'active',
+                'last_heartbeat': now,
+                'monitoring_interval_seconds': 30,
+                'created_at': now,
+                'asset_name': 'Asset 2',
+                'target_name': 'Target 2',
+            },
+            {
+                'id': 'ms-3',
+                'workspace_id': 'ws-legacy',
+                'asset_id': 'asset-3',
+                'target_id': 'target-3',
+                'chain': 'ethereum-mainnet',
+                'is_enabled': True,
+                'runtime_status': 'idle',
+                'status': 'active',
+                'last_heartbeat': now,
+                'monitoring_interval_seconds': 30,
+                'created_at': now,
+                'asset_name': 'Asset 3',
+                'target_name': 'Target 3',
+            },
+        ]
+
+    def execute(self, query, params=None):
+        q = ' '.join(str(query).split())
+        if 'FROM alerts' in q:
+            return _Result({'c': 0})
+        if 'FROM incidents' in q:
+            return _Result({'c': 0})
+        if 'FROM evidence' in q:
+            return _Result({'observed_at': datetime.now(timezone.utc).isoformat(), 'block_number': 321})
+        if 'FROM analysis_runs' in q and "analysis_type LIKE 'monitoring_%'" in q:
+            return _Result(None)
+        if 'LEFT JOIN assets a' in q and 'FROM targets t' in q and 'COUNT(*) AS c' in q:
+            return _Result({'c': 0})
+        if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+            return _Result({'target_count': 3, 'asset_count': 3})
+        if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+            return _Result(rows=[{'id': 'target-1'}, {'id': 'target-2'}, {'id': 'target-3'}])
+        if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+            return _Result(rows=[dict(row) for row in self._runtime_rows])
+        if q.startswith('SELECT id, workspace_id, asset_id, enabled, monitoring_enabled, deleted_at FROM targets'):
+            return _Result(
+                rows=[
+                    {'id': 'target-1', 'workspace_id': 'ws-legacy', 'asset_id': 'asset-1', 'enabled': True, 'monitoring_enabled': True, 'deleted_at': None},
+                    {'id': 'target-2', 'workspace_id': 'ws-legacy', 'asset_id': 'asset-2', 'enabled': True, 'monitoring_enabled': True, 'deleted_at': None},
+                    {'id': 'target-3', 'workspace_id': 'ws-legacy', 'asset_id': 'asset-3', 'enabled': True, 'monitoring_enabled': True, 'deleted_at': None},
+                ]
+            )
+        if q.startswith('SELECT t.id, t.workspace_id, t.asset_id, t.enabled, t.monitoring_enabled FROM targets t JOIN assets a'):
+            return _Result(
+                rows=[
+                    {'id': 'target-1', 'workspace_id': 'ws-legacy', 'asset_id': 'asset-1', 'enabled': True, 'monitoring_enabled': True},
+                    {'id': 'target-2', 'workspace_id': 'ws-legacy', 'asset_id': 'asset-2', 'enabled': True, 'monitoring_enabled': True},
+                    {'id': 'target-3', 'workspace_id': 'ws-legacy', 'asset_id': 'asset-3', 'enabled': True, 'monitoring_enabled': True},
+                ]
+            )
+        if q.startswith('SELECT id, workspace_id, target_id, asset_id, is_enabled, runtime_status, status FROM monitored_systems'):
+            return _Result(rows=[{k: row[k] for k in ('id', 'workspace_id', 'target_id', 'asset_id', 'is_enabled', 'runtime_status', 'status')} for row in self._runtime_rows])
+        return _Result({})
+
+    def commit(self):
+        self.commits += 1
+
+
+@contextmanager
+def _fake_pg(conn: _Conn):
+    yield conn
+
+
+class _WorkspaceRequest:
+    def __init__(self):
+        self.headers = {'authorization': 'Bearer token', 'x-workspace-id': 'ws-legacy'}
+
+
+
+def _workspace_context():
+    return {'workspace_id': 'ws-legacy', 'workspace': {'id': 'ws-legacy', 'name': 'Legacy Workspace', 'slug': 'legacy'}, 'role': 'owner'}
+
+
+def test_monitoring_list_runtime_debug_and_reconcile_stay_consistent(monkeypatch):
+    conn = _Conn()
+    client = TestClient(api_main.app)
+    now = datetime.now(timezone.utc)
+
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda *_a, **_k: {'id': 'user-1'})
+    monkeypatch.setattr(pilot, 'resolve_workspace', lambda *_a, **_k: _workspace_context())
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda *_a, **_k: ({'id': 'user-1'}, _workspace_context(), True),
+    )
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, _workspace_context()))
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        pilot,
+        'reconcile_enabled_targets_monitored_systems',
+        lambda *_a, **_k: {'targets_scanned': 3, 'created_or_updated': 0, 'repaired_monitored_system_ids': []},
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'reconcile_enabled_targets_monitored_systems',
+        lambda *_a, **_k: {'targets_scanned': 3, 'created_or_updated': 0, 'created_monitored_systems': 0, 'preserved_monitored_systems': 3, 'removed_monitored_systems': 0},
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(),
+            'last_cycle_at': now.isoformat(),
+            'degraded': False,
+            'last_error': None,
+            'source_type': 'polling',
+            'worker_running': True,
+        },
+    )
+
+    headers = {'authorization': 'Bearer token', 'x-workspace-id': 'ws-legacy'}
+    listed = client.get('/monitoring/systems', headers=headers)
+    runtime = client.get('/ops/monitoring/runtime-status', headers=headers)
+    debug = client.get('/monitoring/workspace-debug', headers=headers)
+    repair = client.post('/monitoring/systems/reconcile', headers=headers)
+
+    assert listed.status_code == 200
+    assert len(listed.json()['systems']) == 3
+
+    assert runtime.status_code == 200
+    runtime_payload = runtime.json()
+    assert runtime_payload['monitored_systems'] == 3
+    assert runtime_payload['protected_assets'] == 3
+    assert runtime_payload['monitoring_status'] != 'offline'
+    assert runtime_payload['status'] != 'Offline'
+    assert str(runtime_payload['systems_with_recent_heartbeat']) != '0'
+
+    assert debug.status_code == 200
+    debug_payload = debug.json()
+    assert debug_payload['list_route_snapshot']['monitored_systems_count'] == 3
+    assert debug_payload['status_decision_inputs']['monitored_systems_count'] == 3
+    assert debug_payload['status_decision_inputs']['protected_assets_count'] == 3
+
+    assert repair.status_code == 200
+    repair_payload = repair.json()
+    assert repair_payload['monitored_systems_count'] == 3
+    assert repair_payload.get('stage') != 'unhandled_route_exception'

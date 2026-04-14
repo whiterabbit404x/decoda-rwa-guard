@@ -2336,7 +2336,13 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         workspace_id = workspace_context['workspace_id']
         user_id = str(user.get('id') or '')
         logger.info('monitoring_reconcile step=workspace_resolved workspace_id=%s', workspace_id)
-        pre_repair_snapshot = workspace_monitoring_debug_snapshot(connection, workspace_id=workspace_id)
+        stage = 'debug_snapshot_before'
+        logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
+        try:
+            pre_repair_snapshot = workspace_monitoring_debug_snapshot(connection, workspace_id=workspace_id)
+        except Exception:
+            logger.exception('monitoring_reconcile_debug_snapshot_before_failed workspace_id=%s', workspace_id)
+            pre_repair_snapshot = {'workspace_id': workspace_id, 'error': 'snapshot_before_failed'}
         logger.info('monitoring_reconcile snapshot_before workspace_id=%s snapshot=%s', workspace_id, pre_repair_snapshot)
 
         stage = 'reconcile_targets'
@@ -2387,7 +2393,13 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except Exception as exc:
             raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
         logger.info('monitoring_reconcile step=rows_loaded workspace_id=%s count=%s', workspace_id, len(rows))
-        post_repair_snapshot = workspace_monitoring_debug_snapshot(connection, workspace_id=workspace_id)
+        stage = 'debug_snapshot_after'
+        logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
+        try:
+            post_repair_snapshot = workspace_monitoring_debug_snapshot(connection, workspace_id=workspace_id)
+        except Exception:
+            logger.exception('monitoring_reconcile_debug_snapshot_after_failed workspace_id=%s', workspace_id)
+            post_repair_snapshot = {'workspace_id': workspace_id, 'error': 'snapshot_after_failed'}
         logger.info('monitoring_reconcile snapshot_after workspace_id=%s snapshot=%s', workspace_id, post_repair_snapshot)
 
         stage = 'commit'
@@ -4573,7 +4585,7 @@ def workspace_monitoring_debug_snapshot(connection: Any, *, workspace_id: str) -
             '''
             SELECT id, workspace_id, asset_id, enabled, monitoring_enabled, deleted_at
             FROM targets
-            WHERE workspace_id = %s::uuid
+            WHERE workspace_id = %s
               AND deleted_at IS NULL
             ORDER BY created_at ASC
             ''',
@@ -4591,7 +4603,7 @@ def workspace_monitoring_debug_snapshot(connection: Any, *, workspace_id: str) -
               ON a.id = t.asset_id
              AND a.workspace_id = t.workspace_id
              AND a.deleted_at IS NULL
-            WHERE t.workspace_id = %s::uuid
+            WHERE t.workspace_id = %s
               AND t.deleted_at IS NULL
               AND t.enabled = TRUE
             ORDER BY t.created_at ASC
@@ -4605,7 +4617,7 @@ def workspace_monitoring_debug_snapshot(connection: Any, *, workspace_id: str) -
             '''
             SELECT id, workspace_id, target_id, asset_id, is_enabled, runtime_status, status
             FROM monitored_systems
-            WHERE workspace_id = %s::uuid
+            WHERE workspace_id = %s
             ORDER BY created_at ASC
             ''',
             (workspace_id,),
@@ -4650,7 +4662,27 @@ def get_workspace_monitoring_debug(request: Request) -> dict[str, Any]:
         workspace_id = workspace_context['workspace_id']
         snapshot = workspace_monitoring_debug_snapshot(connection, workspace_id=workspace_id)
         status_inputs = workspace_monitoring_status_inputs(connection, workspace_id=workspace_id)
-        return {'workspace': workspace_context['workspace'], 'debug': _json_safe_value(snapshot), 'status_inputs': _json_safe_value(status_inputs)}
+        listed_rows = list_workspace_monitored_system_rows(connection, workspace_id)
+        listed_enabled_rows = [row for row in listed_rows if bool((row or {}).get('is_enabled')) or (row or {}).get('is_enabled') is None]
+        listed_protected_assets = len({str((row or {}).get('asset_id') or '') for row in listed_enabled_rows if (row or {}).get('asset_id')})
+        return {
+            'workspace': workspace_context['workspace'],
+            'workspace_resolution': {
+                'resolved_workspace_id': workspace_id,
+                'workspace_header': (request.headers.get('x-workspace-id') or '').strip() or None,
+            },
+            'debug': _json_safe_value(snapshot),
+            'status_inputs': _json_safe_value(status_inputs),
+            'list_route_snapshot': _json_safe_value(
+                {
+                    'resolved_workspace_id': workspace_id,
+                    'monitored_system_rows': listed_rows,
+                    'monitored_systems_count': len(listed_rows),
+                    'enabled_monitored_systems_count': len(listed_enabled_rows),
+                    'protected_asset_count': listed_protected_assets,
+                }
+            ),
+        }
 
 
 def resolve_workspace_context_for_request(connection: psycopg.Connection, request: Request) -> tuple[dict[str, Any], dict[str, Any], bool]:
