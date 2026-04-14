@@ -78,7 +78,7 @@ class _Conn:
                 'asset_id': row['asset_id'],
                 'target_id': target_id,
                 'chain': 'ethereum-mainnet',
-                'is_enabled': True,
+                'is_enabled': row.get('is_enabled', True),
                 'runtime_status': 'active',
                 'status': 'active',
                 'last_heartbeat': now,
@@ -463,6 +463,74 @@ def test_repair_and_runtime_summary_with_three_healthy_targets(monkeypatch):
     assert payload['status'] != 'Offline'
 
 
+def test_repair_runtime_summary_treats_nullable_enabled_rows_as_enabled(monkeypatch):
+    conn = _Conn()
+    conn.targets = {
+        'target-h1': {
+            'id': 'target-h1',
+            'workspace_id': 'ws-1',
+            'asset_id': 'asset-1',
+            'chain_network': 'ethereum-mainnet',
+            'enabled': True,
+            'monitoring_enabled': True,
+            'resolved_asset_id': 'asset-1',
+            'any_asset_id': 'asset-1',
+            'any_asset_workspace_id': 'ws-1',
+        },
+        'target-h2': {
+            'id': 'target-h2',
+            'workspace_id': 'ws-1',
+            'asset_id': 'asset-2',
+            'chain_network': 'ethereum-mainnet',
+            'enabled': True,
+            'monitoring_enabled': True,
+            'resolved_asset_id': 'asset-2',
+            'any_asset_id': 'asset-2',
+            'any_asset_workspace_id': 'ws-1',
+        },
+        'target-h3': {
+            'id': 'target-h3',
+            'workspace_id': 'ws-1',
+            'asset_id': 'asset-3',
+            'chain_network': 'ethereum-mainnet',
+            'enabled': True,
+            'monitoring_enabled': True,
+            'resolved_asset_id': 'asset-3',
+            'any_asset_id': 'asset-3',
+            'any_asset_workspace_id': 'ws-1',
+        },
+        'target-broken-disabled': {
+            'id': 'target-broken-disabled',
+            'workspace_id': 'ws-1',
+            'asset_id': 'asset-missing',
+            'chain_network': 'ethereum-mainnet',
+            'enabled': False,
+            'monitoring_enabled': False,
+            'resolved_asset_id': None,
+            'any_asset_id': None,
+            'any_asset_workspace_id': None,
+        },
+    }
+    conn.monitored_systems = {
+        'target-h1': {'id': 'ms-target-h1', 'target_id': 'target-h1', 'asset_id': 'asset-1', 'is_enabled': None},
+        'target-h2': {'id': 'ms-target-h2', 'target_id': 'target-h2', 'asset_id': 'asset-2', 'is_enabled': None},
+        'target-h3': {'id': 'ms-target-h3', 'target_id': 'target-h3', 'asset_id': 'asset-3', 'is_enabled': None},
+    }
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _ConnCtx(conn))
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'status': 'running', 'last_cycle_at': None, 'last_heartbeat_at': None})
+
+    result = pilot.reconcile_enabled_targets_monitored_systems(conn)
+    payload = monitoring_runner.monitoring_runtime_status()
+
+    assert result['final_workspace_monitored_system_count'] == 3
+    assert payload['monitored_systems'] == 3
+    assert payload['protected_assets'] > 0
+    assert payload['monitored_systems_count'] > 0
+    assert f"{payload.get('systems_with_recent_heartbeat', 0)}/{payload.get('monitored_systems_count', 0)}" != '0/0'
+    assert payload['status'] != 'Offline'
+
+
 def test_reconcile_does_not_claim_success_for_non_visible_rows():
     conn = _Conn()
 
@@ -497,7 +565,10 @@ def test_workspace_monitoring_debug_snapshot_reports_source_counts(monkeypatch):
 
     payload = pilot.get_workspace_monitoring_debug(SimpleNamespace(headers={'x-workspace-id': 'ws-1'}))
     debug = payload['debug']
+    status_inputs = payload['status_inputs']
     assert debug['target_count'] == 4
     assert debug['enabled_valid_target_count'] == 2
     assert debug['monitored_systems_count'] == 2
     assert debug['protected_asset_count'] == 1
+    assert status_inputs['enabled_valid_targets'] == 2
+    assert status_inputs['monitored_systems'] == 2

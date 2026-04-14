@@ -4393,13 +4393,20 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
     ).fetchall()
     enabled_with_valid_asset_target_ids = [str(item.get('id')) for item in enabled_with_valid_asset_rows if item.get('id')]
     logger.info(
-        'target_monitoring_reconcile_data_path workspace_id=%s step=before_repair targets=%s enabled_target_ids=%s enabled_targets_with_valid_asset_ids=%s monitored_system_rows_before=%s monitored_system_row_ids_before=%s',
+        'target_monitoring_reconcile_data_path workspace_id=%s step=before_repair targets=%s enabled_target_ids=%s enabled_targets_with_valid_asset_ids=%s monitored_system_rows_before=%s monitored_system_row_ids_before=%s monitored_system_rows_before_detail=%s',
         workspace_id,
         [str(row.get('id')) for row in rows if row.get('id')],
         enabled_target_ids,
         enabled_with_valid_asset_target_ids,
         len(existing_rows),
         [str(item.get('id')) for item in existing_rows if item.get('id')],
+        [
+            {
+                'id': str(item.get('id') or ''),
+                'target_id': str(item.get('target_id') or ''),
+            }
+            for item in existing_rows
+        ],
     )
     enabled_valid_targets_found = 0
     disabled_or_invalid_targets_found = 0
@@ -4489,10 +4496,17 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         (workspace_id, workspace_id),
     ).fetchall()
     logger.info(
-        'target_monitoring_reconcile_data_path workspace_id=%s step=after_repair monitored_system_rows_after=%s monitored_system_row_ids_after=%s repaired_monitored_system_ids=%s',
+        'target_monitoring_reconcile_data_path workspace_id=%s step=after_repair monitored_system_rows_after=%s monitored_system_row_ids_after=%s monitored_system_rows_after_detail=%s repaired_monitored_system_ids=%s',
         workspace_id,
         len(refreshed_rows),
         [str(item.get('id')) for item in refreshed_rows if item.get('id')],
+        [
+            {
+                'id': str(item.get('id') or ''),
+                'target_id': str(item.get('target_id') or ''),
+            }
+            for item in refreshed_rows
+        ],
         repaired_monitored_system_ids,
     )
     refreshed_target_to_system_id = {str(item['target_id']): str(item['id']) for item in refreshed_rows if item.get('target_id') and item.get('id')}
@@ -4612,6 +4626,22 @@ def workspace_monitoring_debug_snapshot(connection: Any, *, workspace_id: str) -
     }
 
 
+def workspace_monitoring_status_inputs(connection: Any, *, workspace_id: str) -> dict[str, Any]:
+    snapshot = workspace_monitoring_debug_snapshot(connection, workspace_id=workspace_id)
+    monitored_rows = snapshot.get('monitored_system_rows') if isinstance(snapshot.get('monitored_system_rows'), list) else []
+    monitored_enabled_rows = [row for row in monitored_rows if bool((row or {}).get('is_enabled')) or (row or {}).get('is_enabled') is None]
+    status_inputs = {
+        'workspace_id': workspace_id,
+        'total_targets': int(snapshot.get('target_count') or 0),
+        'enabled_valid_targets': int(snapshot.get('enabled_valid_target_count') or 0),
+        'monitored_systems': int(snapshot.get('monitored_systems_count') or 0),
+        'protected_assets': len({str((row or {}).get('asset_id') or '') for row in monitored_enabled_rows if (row or {}).get('asset_id')}),
+        'enabled_monitored_systems': len(monitored_enabled_rows),
+    }
+    logger.info('workspace_monitoring_status_inputs workspace_id=%s status_inputs=%s', workspace_id, status_inputs)
+    return status_inputs
+
+
 def get_workspace_monitoring_debug(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -4619,7 +4649,8 @@ def get_workspace_monitoring_debug(request: Request) -> dict[str, Any]:
         _, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
         workspace_id = workspace_context['workspace_id']
         snapshot = workspace_monitoring_debug_snapshot(connection, workspace_id=workspace_id)
-        return {'workspace': workspace_context['workspace'], 'debug': _json_safe_value(snapshot)}
+        status_inputs = workspace_monitoring_status_inputs(connection, workspace_id=workspace_id)
+        return {'workspace': workspace_context['workspace'], 'debug': _json_safe_value(snapshot), 'status_inputs': _json_safe_value(status_inputs)}
 
 
 def resolve_workspace_context_for_request(connection: psycopg.Connection, request: Request) -> tuple[dict[str, Any], dict[str, Any], bool]:
