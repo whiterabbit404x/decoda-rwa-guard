@@ -55,11 +55,10 @@ class _Result:
         return self._rows[0] if self._rows else None
 
 
-def test_run_migrations_replays_idempotent_foundation_sql_and_records_versions_once(pilot_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_run_migrations_applies_only_pending_versions(pilot_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     migration_path = tmp_path / '0001_pilot_foundation.sql'
     migration_path.write_text('CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY);')
     executed_statements: list[str] = []
-    inserted_versions: list[str] = []
 
     class _Connection:
         def execute(self, statement, params=None):
@@ -71,13 +70,13 @@ def test_run_migrations_replays_idempotent_foundation_sql_and_records_versions_o
                 return _Result()
             if 'SELECT version FROM schema_migrations' in normalized:
                 return _Result([{'version': migration_path.name}])
-            if 'INSERT INTO schema_migrations' in normalized:
-                inserted_versions.append(params[0])
-                return _Result()
             return _Result()
 
         def commit(self):
             executed_statements.append('COMMIT')
+
+        def rollback(self):
+            executed_statements.append('ROLLBACK')
 
     @contextmanager
     def fake_pg_connection():
@@ -90,12 +89,12 @@ def test_run_migrations_replays_idempotent_foundation_sql_and_records_versions_o
     applied = pilot_module.run_migrations()
 
     assert applied == []
-    assert any('CREATE TABLE IF NOT EXISTS users' in statement for statement in executed_statements)
-    assert inserted_versions == [migration_path.name]
+    assert not any('CREATE TABLE IF NOT EXISTS users' in str(statement) for statement in executed_statements)
+    assert not any('INSERT INTO schema_migrations' in str(statement) for statement in executed_statements)
     assert any('SELECT pg_advisory_unlock' in statement for statement in executed_statements)
 
 
-def test_run_migrations_skips_when_migration_lock_wait_times_out(pilot_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_run_migrations_skips_and_waits_for_readiness_when_lock_not_acquired(pilot_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     migration_path = tmp_path / '0001_pilot_foundation.sql'
     migration_path.write_text('CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY);')
     executed_statements: list[str] = []
@@ -108,7 +107,14 @@ def test_run_migrations_skips_when_migration_lock_wait_times_out(pilot_module, m
                 return _Result([{'locked': False}])
             if 'SELECT pg_advisory_unlock' in normalized:
                 raise AssertionError('unlock should not run if lock was never acquired')
+            if 'SELECT version FROM schema_migrations' in normalized:
+                return _Result([{'version': migration_path.name}])
+            if 'SELECT required.table_name FROM unnest' in normalized:
+                return _Result([])
             return _Result()
+
+        def rollback(self):
+            executed_statements.append('ROLLBACK')
 
     @contextmanager
     def fake_pg_connection():
@@ -118,6 +124,7 @@ def test_run_migrations_skips_when_migration_lock_wait_times_out(pilot_module, m
     monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
     monkeypatch.setattr(pilot_module, 'migration_dir', lambda: tmp_path)
     monkeypatch.setenv('MIGRATION_LOCK_WAIT_SECONDS', '0')
+    monkeypatch.setenv('MIGRATION_READINESS_WAIT_SECONDS', '0')
 
     applied = pilot_module.run_migrations()
 
@@ -173,14 +180,120 @@ def test_run_migrations_retries_transient_deadlock_before_success(pilot_module, 
 
     assert applied == [migration_path.name]
     assert deadlock_injected['raised'] is True
-    assert rollbacks['count'] == 1
+    assert rollbacks['count'] >= 2
     assert commits['count'] == 1
     assert sum(1 for statement in executed_statements if 'CREATE TABLE IF NOT EXISTS users' in statement) == 2
 
 
-def test_run_migrations_verifies_core_tables_after_replaying_sql(pilot_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_run_migrations_rolls_back_before_unlock_when_migration_fails(pilot_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    migration_path = tmp_path / '0001_pilot_foundation.sql'
+    migration_path.write_text('CREATE TABLE will_fail;')
+    events: list[str] = []
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT pg_try_advisory_lock' in normalized:
+                events.append('lock')
+                return _Result([{'locked': True}])
+            if 'SELECT pg_advisory_unlock' in normalized:
+                events.append('unlock')
+                return _Result()
+            if 'CREATE TABLE will_fail' in normalized:
+                events.append('migration')
+                raise ValueError('boom')
+            return _Result()
+
+        def rollback(self):
+            events.append('rollback')
+
+    @contextmanager
+    def fake_pg_connection():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
+    monkeypatch.setattr(pilot_module, 'migration_dir', lambda: tmp_path)
+    monkeypatch.setenv('MIGRATION_RETRY_ATTEMPTS', '1')
+
+    with pytest.raises(pilot_module.MigrationExecutionError):
+        pilot_module.run_migrations()
+
+    assert events.index('rollback') < events.index('unlock')
+
+
+def test_run_migrations_raises_when_lock_not_acquired_and_readiness_times_out(pilot_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     migration_path = tmp_path / '0001_pilot_foundation.sql'
     migration_path.write_text('CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY);')
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT pg_try_advisory_lock' in normalized:
+                return _Result([{'locked': False}])
+            if 'SELECT version FROM schema_migrations' in normalized:
+                return _Result([])
+            return _Result()
+
+        def rollback(self):
+            return None
+
+    @contextmanager
+    def fake_pg_connection():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
+    monkeypatch.setattr(pilot_module, 'migration_dir', lambda: tmp_path)
+    monkeypatch.setenv('MIGRATION_LOCK_WAIT_SECONDS', '0')
+    monkeypatch.setenv('MIGRATION_READINESS_WAIT_SECONDS', '0')
+
+    with pytest.raises(RuntimeError, match='schema readiness was not reached'):
+        pilot_module.run_migrations()
+
+
+def test_run_migrations_retries_deadlock_and_exits_when_unrecoverable(pilot_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    migration_path = tmp_path / '0001_pilot_foundation.sql'
+    migration_path.write_text('CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY);')
+    rollbacks = {'count': 0}
+
+    class DeadlockDetected(Exception):
+        pass
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT pg_try_advisory_lock' in normalized:
+                return _Result([{'locked': True}])
+            if 'SELECT pg_advisory_unlock' in normalized:
+                return _Result()
+            if 'CREATE TABLE IF NOT EXISTS users' in normalized:
+                raise DeadlockDetected('deadlock detected')
+            return _Result()
+
+        def rollback(self):
+            rollbacks['count'] += 1
+
+    @contextmanager
+    def fake_pg_connection():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
+    monkeypatch.setattr(pilot_module, 'migration_dir', lambda: tmp_path)
+    monkeypatch.setenv('MIGRATION_RETRY_ATTEMPTS', '2')
+    monkeypatch.setenv('MIGRATION_RETRY_BACKOFF_SECONDS', '0')
+
+    with pytest.raises(pilot_module.MigrationExecutionError):
+        pilot_module.run_migrations()
+
+    assert rollbacks['count'] >= 2
+
+
+def test_run_migrations_verifies_core_tables_after_applying_sql(pilot_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    migration_path = tmp_path / '0001_pilot_foundation.sql'
+    migration_path.write_text('CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY);')
+    commits = {'count': 0}
 
     class _Connection:
         def execute(self, statement, params=None):
@@ -196,7 +309,10 @@ def test_run_migrations_verifies_core_tables_after_replaying_sql(pilot_module, m
             return _Result()
 
         def commit(self):
-            raise AssertionError('commit should not run when required pilot tables are still missing')
+            commits['count'] += 1
+
+        def rollback(self):
+            return None
 
     @contextmanager
     def fake_pg_connection():
@@ -209,6 +325,7 @@ def test_run_migrations_verifies_core_tables_after_replaying_sql(pilot_module, m
     with pytest.raises(HTTPException) as exc_info:
         pilot_module.run_migrations()
 
+    assert commits['count'] == 1
     assert 'Pilot auth schema is not initialized.' in str(exc_info.value.detail)
     assert 'workspaces' in str(exc_info.value.detail)
 
