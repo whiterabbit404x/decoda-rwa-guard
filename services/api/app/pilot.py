@@ -72,7 +72,16 @@ MIGRATION_LOCK_WAIT_SECONDS_ENV = 'MIGRATION_LOCK_WAIT_SECONDS'
 MIGRATION_LOCK_RETRY_INTERVAL_SECONDS_ENV = 'MIGRATION_LOCK_RETRY_INTERVAL_SECONDS'
 MIGRATION_RETRY_ATTEMPTS_ENV = 'MIGRATION_RETRY_ATTEMPTS'
 MIGRATION_RETRY_BACKOFF_SECONDS_ENV = 'MIGRATION_RETRY_BACKOFF_SECONDS'
+MIGRATION_READINESS_WAIT_SECONDS_ENV = 'MIGRATION_READINESS_WAIT_SECONDS'
+MIGRATION_READINESS_POLL_SECONDS_ENV = 'MIGRATION_READINESS_POLL_SECONDS'
 MIGRATION_RETRYABLE_ERROR_NAMES = {'DeadlockDetected', 'LockNotAvailable', 'SerializationFailure', 'OperationalError'}
+
+
+class MigrationExecutionError(RuntimeError):
+    def __init__(self, migration_name: str, original: Exception):
+        super().__init__(f'migration {migration_name} failed: {original}')
+        self.migration_name = migration_name
+        self.original = original
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -411,7 +420,10 @@ def run_migrations() -> list[str]:
                 MIGRATION_LOCK_KEY,
                 lock_state['waited_seconds'],
             )
-            return []
+            if _wait_for_migration_readiness(connection):
+                logger.info('migration runner readiness check passed while lock owner completed schema changes')
+                return []
+            raise RuntimeError('migration runner could not acquire lock and schema readiness was not reached before timeout')
         try:
             attempts = _migration_int_setting(MIGRATION_RETRY_ATTEMPTS_ENV, default=3, minimum=1)
             retry_backoff_seconds = _migration_float_setting(MIGRATION_RETRY_BACKOFF_SECONDS_ENV, default=1.0, minimum=0.0)
@@ -426,13 +438,16 @@ def run_migrations() -> list[str]:
                     )
                     return applied_versions
                 except Exception as exc:
-                    if attempt >= attempts or not _is_transient_migration_error(exc):
+                    transient = _is_transient_migration_error(exc)
+                    migration_name = exc.migration_name if isinstance(exc, MigrationExecutionError) else 'unknown'
+                    if attempt >= attempts or not transient:
                         raise
-                    _rollback_connection_safely(connection)
+                    _rollback_connection_safely(connection, reason='after transient migration failure')
                     delay = retry_backoff_seconds * attempt
                     logger.warning(
-                        'migration runner transient error (%s) attempt=%s/%s, retrying in %.2fs',
+                        'migration runner transient error (%s) migration=%s attempt=%s/%s, retrying in %.2fs',
                         exc.__class__.__name__,
+                        migration_name,
                         attempt,
                         attempts,
                         delay,
@@ -483,23 +498,28 @@ def _acquire_migration_lock(connection: Any) -> dict[str, Any]:
 
 
 def _release_migration_lock(connection: Any) -> None:
+    _rollback_connection_safely(connection, reason='before migration advisory unlock')
     try:
         connection.execute('SELECT pg_advisory_unlock(%s)', (MIGRATION_LOCK_KEY,))
+        logger.info('migration lock released key=%s', MIGRATION_LOCK_KEY)
     except Exception:
         logger.exception('failed to release migration advisory lock key=%s', MIGRATION_LOCK_KEY)
 
 
-def _rollback_connection_safely(connection: Any) -> None:
+def _rollback_connection_safely(connection: Any, *, reason: str = 'after migration error') -> None:
     rollback = getattr(connection, 'rollback', None)
     if not callable(rollback):
         return
     try:
         rollback()
+        logger.info('migration rollback completed reason=%s', reason)
     except Exception:
-        logger.exception('migration rollback failed after transient error')
+        logger.exception('migration rollback failed reason=%s', reason)
 
 
 def _is_transient_migration_error(exc: Exception) -> bool:
+    if isinstance(exc, MigrationExecutionError):
+        return _is_transient_migration_error(exc.original)
     error_name = exc.__class__.__name__
     if error_name in MIGRATION_RETRYABLE_ERROR_NAMES:
         return True
@@ -514,18 +534,65 @@ def _run_migrations_once(connection: Any) -> list[str]:
         row['version'] for row in connection.execute('SELECT version FROM schema_migrations').fetchall()
     }
     for path in sorted(migration_dir().glob('*.sql')):
-        connection.execute(path.read_text())
-        connection.execute(
-            'INSERT INTO schema_migrations (version) VALUES (%s) ON CONFLICT (version) DO NOTHING',
-            (path.name,),
-        )
-        if path.name not in already_applied:
-            applied_versions.append(path.name)
+        if path.name in already_applied:
+            continue
+        logger.info('migration runner executing file=%s', path.name)
+        try:
+            connection.execute(path.read_text())
+            connection.execute(
+                'INSERT INTO schema_migrations (version) VALUES (%s) ON CONFLICT (version) DO NOTHING',
+                (path.name,),
+            )
+            connection.commit()
+        except Exception as exc:
+            _rollback_connection_safely(connection, reason=f'after migration file failure: {path.name}')
+            logger.warning(
+                'migration runner failed while executing file=%s error=%s',
+                path.name,
+                exc.__class__.__name__,
+            )
+            raise MigrationExecutionError(path.name, exc) from exc
+        applied_versions.append(path.name)
     missing_tables = _fetch_missing_pilot_tables(connection)
     if missing_tables:
         raise _schema_missing_http_exception(missing_tables)
-    connection.commit()
     return applied_versions
+
+
+def _wait_for_migration_readiness(connection: Any) -> bool:
+    wait_timeout_seconds = _migration_float_setting(MIGRATION_READINESS_WAIT_SECONDS_ENV, default=90.0, minimum=0.0)
+    poll_seconds = _migration_float_setting(MIGRATION_READINESS_POLL_SECONDS_ENV, default=1.0, minimum=0.05)
+    started = monotonic()
+    while True:
+        if _all_migrations_applied(connection):
+            return True
+        elapsed = monotonic() - started
+        if elapsed >= wait_timeout_seconds:
+            logger.error('migration readiness wait timed out after %.2fs', elapsed)
+            return False
+        sleep(min(poll_seconds, max(0.01, wait_timeout_seconds - elapsed)))
+
+
+def _all_migrations_applied(connection: Any) -> bool:
+    versions = sorted(path.name for path in migration_dir().glob('*.sql'))
+    try:
+        ensure_migration_table(connection)
+        applied_versions = {
+            row['version'] for row in connection.execute('SELECT version FROM schema_migrations').fetchall()
+        }
+    except Exception as exc:
+        _rollback_connection_safely(connection, reason='after migration readiness check failure')
+        logger.info('migration readiness check pending reason=%s', exc.__class__.__name__)
+        return False
+    pending_count = len([version for version in versions if version not in applied_versions])
+    if pending_count > 0:
+        logger.info('migration readiness check pending remaining=%s', pending_count)
+        return False
+    missing_tables = _fetch_missing_pilot_tables(connection)
+    if missing_tables:
+        logger.info('migration readiness check pending missing_tables=%s', ','.join(missing_tables))
+        return False
+    return True
 
 
 def _missing_relation_error(exc: Exception) -> bool:
