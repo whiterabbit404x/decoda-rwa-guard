@@ -11,6 +11,7 @@ export type MonitoringRuntimeStatus = {
   last_detection_evaluation_at?: string | null;
   telemetry_available?: boolean;
   mode: MonitoringMode;
+  provider_mode?: string | null;
   configured_mode?: MonitoringMode;
   status?: string;
   detection_outcome?: 'DETECTION_CONFIRMED' | 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE' | 'NO_EVIDENCE' | 'MONITORING_DEGRADED' | 'ANALYSIS_FAILED' | 'DEMO_ONLY' | string;

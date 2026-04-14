@@ -395,8 +395,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
   const openAlerts = alerts.length;
   const activeIncidents = incidents.length;
-  const simulatorMode = String(feed.runtimeStatus?.source_of_evidence || '').toLowerCase() === 'simulator'
-    || String(feed.runtimeStatus?.provider_mode || '').toLowerCase() === 'demo';
+  const simulatorMode =
+    String(feed.runtimeStatus?.source_of_evidence ?? '').toLowerCase() === 'simulator' ||
+    String(
+      feed.runtimeStatus?.provider_mode ??
+      feed.runtimeStatus?.configured_mode ??
+      feed.runtimeStatus?.mode ??
+      ''
+    ).toLowerCase() === 'demo';
   const protectedAssetCount = Number(feed.runtimeStatus?.protected_assets_count ?? feed.counts.protectedAssets);
 
   const lastTelemetryAt = feed.runtimeStatus?.last_real_event_at || feed.lastUpdatedAt;
