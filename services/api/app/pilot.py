@@ -4428,8 +4428,9 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
     created_monitored_systems = max(0, len(set(refreshed_target_to_system_id.values()) - set(existing_target_to_system_id.values())))
     preserved_monitored_systems = sum(1 for target_id, system_id in existing_target_to_system_id.items() if refreshed_target_to_system_id.get(target_id) == system_id)
     removed_monitored_systems = max(0, len(set(existing_target_to_system_id.values()) - set(refreshed_target_to_system_id.values())))
+    final_workspace_monitored_system_count = len(refreshed_target_to_system_id)
     logger.info(
-        'target_monitoring_reconcile_summary workspace_id=%s targets_scanned=%s enabled_valid_targets_found=%s disabled_or_invalid_targets_found=%s monitored_systems_created=%s monitored_systems_preserved=%s monitored_systems_removed=%s invalid_reasons=%s skipped_reasons=%s',
+        'target_monitoring_reconcile_summary workspace_id=%s targets_scanned=%s enabled_valid_targets_found=%s disabled_or_invalid_targets_found=%s monitored_systems_created=%s monitored_systems_preserved=%s monitored_systems_removed=%s final_workspace_monitored_system_count=%s invalid_reasons=%s skipped_reasons=%s',
         workspace_id,
         len(rows),
         enabled_valid_targets_found,
@@ -4437,6 +4438,7 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         created_monitored_systems,
         preserved_monitored_systems,
         removed_monitored_systems,
+        final_workspace_monitored_system_count,
         invalid_reasons,
         skipped_reasons,
     )
@@ -4448,6 +4450,7 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         'created_monitored_systems': created_monitored_systems,
         'preserved_monitored_systems': preserved_monitored_systems,
         'removed_monitored_systems': removed_monitored_systems,
+        'final_workspace_monitored_system_count': final_workspace_monitored_system_count,
         'enabled_valid_targets_found': enabled_valid_targets_found,
         'disabled_or_invalid_targets_found': disabled_or_invalid_targets_found,
         'invalid_targets': invalid_targets,
@@ -4467,6 +4470,7 @@ def _normalize_reconcile_result(result: dict[str, Any]) -> dict[str, Any]:
         'created_monitored_systems': int(result.get('created_monitored_systems', 0) or 0),
         'preserved_monitored_systems': int(result.get('preserved_monitored_systems', 0) or 0),
         'removed_monitored_systems': int(result.get('removed_monitored_systems', 0) or 0),
+        'final_workspace_monitored_system_count': int(result.get('final_workspace_monitored_system_count', 0) or 0),
         'enabled_valid_targets_found': int(result.get('enabled_valid_targets_found', 0) or 0),
         'disabled_or_invalid_targets_found': int(result.get('disabled_or_invalid_targets_found', 0) or 0),
         'invalid_targets': [str(value) for value in (result.get('invalid_targets') or []) if str(value).strip()],
