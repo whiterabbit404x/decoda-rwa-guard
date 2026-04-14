@@ -26,6 +26,7 @@ from services.api.app.pilot import (
     live_mode_enabled,
     log_audit,
     list_workspace_monitored_system_rows,
+    monitored_system_row_enabled,
     persist_analysis_run,
     pg_connection,
     resolve_workspace,
@@ -2636,8 +2637,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             normalized: list[dict[str, Any]] = []
             for row in rows:
                 item = dict(row)
-                if item.get('is_enabled') is None:
-                    item['is_enabled'] = True
+                item['is_enabled'] = monitored_system_row_enabled(item)
                 normalized.append(item)
             return normalized
         rows = connection.execute(
@@ -2654,8 +2654,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         normalized: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
-            if item.get('is_enabled') is None:
-                item['is_enabled'] = True
+            item['is_enabled'] = monitored_system_row_enabled(item)
             normalized.append(item)
         return normalized
 
@@ -2668,7 +2667,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             LEFT JOIN targets t
               ON t.id = ms.target_id
              AND t.workspace_id = ms.workspace_id
-            WHERE ms.workspace_id = %s::uuid
+            WHERE ms.workspace_id = %s
             ORDER BY ms.created_at DESC
             ''',
             (workspace_scope_id,),
@@ -2676,8 +2675,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         normalized: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
-            if item.get('is_enabled') is None:
-                item['is_enabled'] = True
+            item['is_enabled'] = monitored_system_row_enabled(item)
             normalized.append(item)
         return normalized
 
@@ -2688,7 +2686,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             user_id = str(user.get('id') or '')
             workspace_id = str(workspace_context['workspace_id'])
             monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
-            raw_workspace_rows = _load_workspace_monitored_rows_raw(connection, workspace_id)
+            try:
+                raw_workspace_rows = _load_workspace_monitored_rows_raw(connection, workspace_id)
+            except Exception:
+                logger.exception('monitoring_runtime_status_raw_rows_load_failed workspace_id=%s', workspace_id)
+                raw_workspace_rows = []
             if len(monitored_rows) == 0 and len(raw_workspace_rows) > 0:
                 monitored_rows = raw_workspace_rows
                 logger.warning(
@@ -2709,12 +2711,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 user_id,
             )
             logger.info(
-                'monitoring_runtime_status_workspace_rows workspace_id=%s list_route_rows=%s list_route_row_ids=%s runtime_rows=%s runtime_row_ids=%s',
+                'monitoring_runtime_status_workspace_rows workspace_id=%s list_route_rows=%s list_route_row_ids=%s list_route_rows_detail=%s runtime_rows=%s runtime_row_ids=%s runtime_rows_detail=%s',
                 workspace_id,
                 len(listed_monitored_rows),
                 [str((row or {}).get('id') or '') for row in listed_monitored_rows if (row or {}).get('id')],
+                listed_monitored_rows,
                 len(monitored_rows),
                 [str((row or {}).get('id') or '') for row in monitored_rows if (row or {}).get('id')],
+                monitored_rows,
             )
         target_workspace_filter = 'AND t.workspace_id = %s' if workspace_id else ''
         evidence_workspace_filter = 'WHERE e.workspace_id = %s' if workspace_id else ''
@@ -2775,8 +2779,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             scoped_params,
         ).fetchall()
         healthy_enabled_target_ids = {str(row.get('id')) for row in healthy_enabled_target_rows if row.get('id')}
-        enabled_monitored_rows_count = sum(1 for row in monitored_rows if bool(row.get('is_enabled')))
-        enabled_monitored_target_ids = {str(row.get('target_id')) for row in monitored_rows if bool(row.get('is_enabled')) and row.get('target_id')}
+        enabled_monitored_rows_count = sum(1 for row in monitored_rows if monitored_system_row_enabled(row))
+        enabled_monitored_target_ids = {str(row.get('target_id')) for row in monitored_rows if monitored_system_row_enabled(row) and row.get('target_id')}
         missing_healthy_target_ids = healthy_enabled_target_ids - enabled_monitored_target_ids
         logger.info(
             'monitoring_runtime_status_data_path workspace_id=%s targets_enabled_valid=%s target_ids_enabled_valid=%s monitored_rows_before=%s monitored_row_ids_before=%s enabled_monitored_rows_before=%s',
@@ -2829,7 +2833,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     parsed_heartbeats = [_parse_ts(row.get('last_heartbeat')) for row in monitored_rows]
     recent_heartbeat_systems = 0
     for row, parsed_heartbeat in zip(monitored_rows, parsed_heartbeats):
-        if not bool(row.get('is_enabled')) or parsed_heartbeat is None:
+        if not monitored_system_row_enabled(row) or parsed_heartbeat is None:
             continue
         heartbeat_window = max(int(row.get('monitoring_interval_seconds') or 30), 30) * 2
         if int((now - parsed_heartbeat).total_seconds()) <= heartbeat_window:
@@ -2839,7 +2843,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     last_heartbeat = last_system_heartbeat or worker_heartbeat
     heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
     stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
-    enabled_rows = [row for row in monitored_rows if bool(row.get('is_enabled'))]
+    enabled_rows = [row for row in monitored_rows if monitored_system_row_enabled(row)]
     active_rows = [row for row in enabled_rows if str(row.get('runtime_status') or '').strip().lower() == 'active']
     enabled_asset_rows = [row for row in enabled_rows if row.get('asset_id')]
     enabled_system_count = max(len(enabled_rows), healthy_enabled_targets_count)
@@ -2847,12 +2851,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     system_count = max(len(monitored_rows), healthy_enabled_targets_count)
     protected_assets_count = max(len({str(row.get('asset_id') or '') for row in enabled_asset_rows}), healthy_enabled_assets_count)
     logger.info(
-        'monitoring_runtime_status_counts workspace_id=%s enabled_monitored_systems=%s protected_assets=%s runtime_rows=%s list_route_rows=%s',
+        'monitoring_runtime_status_counts workspace_id=%s enabled_monitored_systems=%s protected_assets=%s runtime_rows=%s list_route_rows=%s enabled_monitored_systems_list_route=%s protected_assets_list_route=%s',
         workspace_id,
         len(enabled_rows),
         protected_assets_count,
         len(monitored_rows),
         len(listed_monitored_rows),
+        sum(1 for row in listed_monitored_rows if monitored_system_row_enabled(row)),
+        len({str((row or {}).get('asset_id') or '') for row in listed_monitored_rows if monitored_system_row_enabled(row) and (row or {}).get('asset_id')}),
     )
     evidence_at = _parse_ts((latest_evidence or {}).get('observed_at'))
     evidence_freshness = int((now - evidence_at).total_seconds()) if evidence_at else None

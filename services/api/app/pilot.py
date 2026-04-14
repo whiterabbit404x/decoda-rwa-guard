@@ -4623,7 +4623,8 @@ def workspace_monitoring_debug_snapshot(connection: Any, *, workspace_id: str) -
             (workspace_id,),
         ).fetchall()
     ]
-    protected_assets = len({str(row.get('asset_id')) for row in monitored_rows if row.get('asset_id') and bool(row.get('is_enabled'))})
+    enabled_monitored_rows = [row for row in monitored_rows if monitored_system_row_enabled(row)]
+    protected_assets = len({str(row.get('asset_id')) for row in enabled_monitored_rows if row.get('asset_id')})
     return {
         'workspace_id': workspace_id,
         'target_count': len(all_targets),
@@ -4634,14 +4635,30 @@ def workspace_monitoring_debug_snapshot(connection: Any, *, workspace_id: str) -
         'valid_linked_asset_targets': valid_linked_targets,
         'monitored_systems_count': len(monitored_rows),
         'monitored_system_rows': monitored_rows,
+        'enabled_monitored_system_rows': enabled_monitored_rows,
+        'enabled_monitored_system_count': len(enabled_monitored_rows),
         'protected_asset_count': protected_assets,
     }
+
+
+def monitored_system_row_enabled(row: dict[str, Any] | None) -> bool:
+    value = (row or {}).get('is_enabled')
+    if value is None:
+        return True
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {'', '0', 'false', 'f', 'off', 'disabled', 'no'}:
+            return False
+        return True
+    if isinstance(value, (int, float)):
+        return int(value) != 0
+    return bool(value)
 
 
 def workspace_monitoring_status_inputs(connection: Any, *, workspace_id: str) -> dict[str, Any]:
     snapshot = workspace_monitoring_debug_snapshot(connection, workspace_id=workspace_id)
     monitored_rows = snapshot.get('monitored_system_rows') if isinstance(snapshot.get('monitored_system_rows'), list) else []
-    monitored_enabled_rows = [row for row in monitored_rows if bool((row or {}).get('is_enabled')) or (row or {}).get('is_enabled') is None]
+    monitored_enabled_rows = [row for row in monitored_rows if monitored_system_row_enabled(row)]
     status_inputs = {
         'workspace_id': workspace_id,
         'total_targets': int(snapshot.get('target_count') or 0),
@@ -4663,7 +4680,7 @@ def get_workspace_monitoring_debug(request: Request) -> dict[str, Any]:
         snapshot = workspace_monitoring_debug_snapshot(connection, workspace_id=workspace_id)
         status_inputs = workspace_monitoring_status_inputs(connection, workspace_id=workspace_id)
         listed_rows = list_workspace_monitored_system_rows(connection, workspace_id)
-        listed_enabled_rows = [row for row in listed_rows if bool((row or {}).get('is_enabled')) or (row or {}).get('is_enabled') is None]
+        listed_enabled_rows = [row for row in listed_rows if monitored_system_row_enabled(row)]
         listed_protected_assets = len({str((row or {}).get('asset_id') or '') for row in listed_enabled_rows if (row or {}).get('asset_id')})
         return {
             'workspace': workspace_context['workspace'],
@@ -4732,7 +4749,7 @@ def list_monitored_systems(request: Request) -> dict[str, Any]:
         stage = 'list_rows'
         logger.info('monitoring_systems_list step=%s workspace_id=%s', stage, workspace_id)
         rows = list_workspace_monitored_system_rows(connection, workspace_id)
-        enabled_rows = [row for row in rows if bool((row or {}).get('is_enabled')) or (row or {}).get('is_enabled') is None]
+        enabled_rows = [row for row in rows if monitored_system_row_enabled(row)]
         protected_assets = len({str((row or {}).get('asset_id') or '') for row in enabled_rows if (row or {}).get('asset_id')})
         logger.info(
             'monitoring_systems_list step=rows_loaded workspace_id=%s count=%s row_ids=%s enabled_count=%s protected_assets=%s rows=%s',

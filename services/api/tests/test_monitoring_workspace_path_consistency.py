@@ -62,7 +62,7 @@ class _Conn:
                 'asset_id': 'asset-3',
                 'target_id': 'target-3',
                 'chain': 'ethereum-mainnet',
-                'is_enabled': True,
+                'is_enabled': None,
                 'runtime_status': 'idle',
                 'status': 'active',
                 'last_heartbeat': now,
@@ -190,14 +190,69 @@ def test_monitoring_list_runtime_debug_and_reconcile_stay_consistent(monkeypatch
     assert runtime_payload['monitoring_status'] != 'offline'
     assert runtime_payload['status'] != 'Offline'
     assert str(runtime_payload['systems_with_recent_heartbeat']) != '0'
+    assert runtime_payload['enabled_systems'] == 3
 
     assert debug.status_code == 200
     debug_payload = debug.json()
     assert debug_payload['list_route_snapshot']['monitored_systems_count'] == 3
+    assert debug_payload['list_route_snapshot']['enabled_monitored_systems_count'] == 3
     assert debug_payload['status_decision_inputs']['monitored_systems_count'] == 3
     assert debug_payload['status_decision_inputs']['protected_assets_count'] == 3
+    assert debug_payload['status_decision_inputs']['list_route_monitored_systems_count'] == 3
+    assert debug_payload['status_decision_inputs']['list_route_enabled_monitored_systems_count'] == 3
+    assert debug_payload['status_decision_inputs']['list_route_protected_asset_count'] == 3
+    assert debug_payload['status_decision_inputs']['runtime_enabled_systems_count'] == 3
 
     assert repair.status_code == 200
     repair_payload = repair.json()
     assert repair_payload['monitored_systems_count'] == 3
     assert repair_payload.get('stage') != 'unhandled_route_exception'
+
+
+def test_monitored_system_row_enabled_treats_idle_null_enabled_rows_as_configured():
+    assert pilot.monitored_system_row_enabled({'is_enabled': None}) is True
+    assert pilot.monitored_system_row_enabled({'is_enabled': 'true'}) is True
+    assert pilot.monitored_system_row_enabled({'is_enabled': 'false'}) is False
+    assert pilot.monitored_system_row_enabled({'is_enabled': 0}) is False
+
+
+def test_runtime_status_keeps_list_path_counts_when_raw_workspace_query_fails(monkeypatch):
+    class _RawQueryFailConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'WHERE ms.workspace_id = %s ORDER BY ms.created_at DESC' in q and 'ms.last_error_text' not in q:
+                raise RuntimeError('raw workspace loader failed')
+            return super().execute(query, params)
+
+    conn = _RawQueryFailConn()
+    client = TestClient(api_main.app)
+    now = datetime.now(timezone.utc)
+
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda *_a, **_k: ({'id': 'user-1'}, _workspace_context(), True),
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(),
+            'last_cycle_at': now.isoformat(),
+            'degraded': False,
+            'last_error': None,
+            'source_type': 'polling',
+            'worker_running': True,
+        },
+    )
+
+    response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer token', 'x-workspace-id': 'ws-legacy'})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['monitored_systems'] == 3
+    assert payload['protected_assets'] == 3
