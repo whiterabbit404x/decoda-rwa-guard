@@ -587,7 +587,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Operational state {pageState.replaceAll('_', ' ')}</span>
           <span className="ruleChip">Live telemetry {telemetryLabel}</span>
           <span className="ruleChip">Threat feed updated {pollLabel}</span>
-          <span className="ruleChip">Evidence source {String(feed.runtimeStatus?.source_of_evidence || 'replay_or_none')}</span>
+          <span className="ruleChip">Evidence source {String(feed.runtimeStatus?.source_of_evidence || feed.runtimeStatus?.source_type || 'replay_or_none')}</span>
           <span className="ruleChip">Protected assets {protectedAssetCount}</span>
           <span className="ruleChip">Monitored systems {reportingSystems}</span>
           {Number(feed.runtimeStatus?.invalid_enabled_targets ?? 0) > 0 ? <span className="ruleChip">Invalid targets {Number(feed.runtimeStatus?.invalid_enabled_targets ?? 0)}</span> : null}
