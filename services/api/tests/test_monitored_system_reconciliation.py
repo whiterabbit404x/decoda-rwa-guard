@@ -168,6 +168,32 @@ def test_ensure_monitored_system_rejects_target_with_missing_asset():
     assert 'target-missing-asset' not in conn.monitored_systems
 
 
+def test_invalid_target_cleanup_does_not_remove_unrelated_healthy_monitored_systems():
+    conn = _Conn()
+    conn.monitored_systems['target-valid'] = {
+        'id': 'ms-target-valid',
+        'target_id': 'target-valid',
+        'asset_id': 'asset-1',
+        'runtime_status': 'active',
+        'status': 'active',
+        'last_error_text': None,
+    }
+    conn.monitored_systems['target-missing-asset'] = {
+        'id': 'ms-target-missing-asset',
+        'target_id': 'target-missing-asset',
+        'asset_id': 'asset-missing',
+        'runtime_status': 'error',
+        'status': 'error',
+        'last_error_text': 'linked asset missing',
+    }
+
+    result = pilot.ensure_monitored_system_for_target(conn, target_id='target-missing-asset')
+
+    assert result['status'] == 'invalid_target'
+    assert 'target-valid' in conn.monitored_systems
+    assert 'target-missing-asset' not in conn.monitored_systems
+
+
 def test_ensure_monitored_system_skips_monitoring_disabled_targets_by_default():
     conn = _Conn()
     result = pilot.ensure_monitored_system_for_target(conn, target_id='target-monitoring-disabled')
@@ -197,6 +223,18 @@ def test_reconcile_enabled_targets_is_idempotent_for_existing_rows():
     assert second['created_or_updated'] == 1
     assert len(conn.monitored_systems) == 1
     assert conn.monitored_systems['target-valid']['id'] == 'ms-target-valid'
+
+
+def test_reconcile_repairs_healthy_targets_after_broken_target_is_disabled():
+    conn = _Conn()
+    conn.targets['target-missing-asset']['enabled'] = False
+    conn.targets['target-missing-asset']['monitoring_enabled'] = False
+
+    result = pilot.reconcile_enabled_targets_monitored_systems(conn)
+
+    assert result['created_or_updated'] == 1
+    assert result['invalid_targets'] == []
+    assert 'target-valid' in conn.monitored_systems
 
 
 def test_reconcile_uses_legacy_status_values_allowed_by_constraint():

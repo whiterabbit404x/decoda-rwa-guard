@@ -40,6 +40,8 @@ class _Conn:
             )
         if 'LEFT JOIN assets a' in q and 'FROM targets t' in q:
             return _Result({'c': 0})
+        if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+            return _Result({'target_count': 2, 'asset_count': 2})
         if 'FROM evidence' in q:
             return _Result({'observed_at': self.evidence_at, 'block_number': 123})
         if 'FROM analysis_runs' in q and "analysis_type LIKE 'monitoring_%'" in q:
@@ -298,6 +300,8 @@ def test_runtime_status_offline_without_active_systems(monkeypatch):
             if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
                 rows = super().execute(query, params)._rows
                 return _Result(rows=[{**row, 'is_enabled': False, 'runtime_status': 'offline'} for row in rows])
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 0, 'asset_count': 0})
             return super().execute(query, params)
 
     monkeypatch.setattr(
@@ -388,6 +392,40 @@ def test_runtime_status_not_offline_when_workspace_has_enabled_monitored_systems
     assert payload['monitored_systems'] > 0
     assert payload['enabled_systems'] > 0
     assert payload['monitoring_status'] != 'offline'
+
+
+def test_runtime_status_not_offline_when_valid_enabled_targets_exist_without_rows(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _HealthyTargetsNoRowsConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(rows=[])
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 1, 'asset_count': 1})
+            return super().execute(query, params)
+
+    reconcile_calls: list[str | None] = []
+    monkeypatch.setattr(
+        monitoring_runner,
+        'reconcile_enabled_targets_monitored_systems',
+        lambda _c, workspace_id=None: reconcile_calls.append(workspace_id) or {'created_or_updated': 0},
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_HealthyTargetsNoRowsConn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    assert reconcile_calls == [None]
+    assert payload['monitoring_status'] != 'offline'
+    assert payload['status'] != 'Offline'
+    assert payload['monitored_systems'] >= 1
+    assert payload['protected_assets'] >= 1
 
 
 def test_runtime_status_and_monitored_system_listing_use_same_workspace_rows(monkeypatch):

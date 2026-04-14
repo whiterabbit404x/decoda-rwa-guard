@@ -31,6 +31,7 @@ from services.api.app.pilot import (
     resolve_workspace,
     resolve_workspace_context_for_request,
     ensure_monitored_system_for_target,
+    reconcile_enabled_targets_monitored_systems,
     _target_health_payload,
 )
 from services.api.app.threat_payloads import ThreatKind, normalize_threat_payload
@@ -2623,6 +2624,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     monitored_rows: list[dict[str, Any]] = []
     latest_detection_evaluation_at = None
     latest_detection_payload: dict[str, Any] | None = None
+    healthy_enabled_targets_count = 0
+    healthy_enabled_assets_count = 0
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         if request is not None:
@@ -2657,6 +2660,41 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ''',
             scoped_params,
         ).fetchone()
+        healthy_enabled_targets = connection.execute(
+            f'''
+            SELECT COUNT(*) AS target_count, COUNT(DISTINCT t.asset_id) AS asset_count
+            FROM targets t
+            JOIN assets a
+              ON a.id = t.asset_id
+             AND a.workspace_id = t.workspace_id
+             AND a.deleted_at IS NULL
+            WHERE t.deleted_at IS NULL
+              AND t.enabled = TRUE
+              AND t.monitoring_enabled = TRUE
+              AND t.asset_id IS NOT NULL
+              {target_workspace_filter}
+            ''',
+            scoped_params,
+        ).fetchone()
+        healthy_enabled_targets_count = int((healthy_enabled_targets or {}).get('target_count') or 0)
+        healthy_enabled_assets_count = int((healthy_enabled_targets or {}).get('asset_count') or 0)
+        if healthy_enabled_targets_count > 0 and not monitored_rows:
+            reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
+            if request is not None and workspace_id:
+                monitored_rows = list_workspace_monitored_system_rows(connection, workspace_id)
+            elif request is None:
+                monitored_rows = connection.execute(
+                    '''
+                    SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat,
+                           t.monitoring_interval_seconds AS monitoring_interval_seconds, ms.created_at
+                    FROM monitored_systems ms
+                    JOIN targets t
+                      ON t.id = ms.target_id
+                     AND t.deleted_at IS NULL
+                    ORDER BY ms.created_at DESC
+                    '''
+                ).fetchall()
+                monitored_rows = [dict(row) for row in monitored_rows]
         latest_evidence = connection.execute(
             f"SELECT observed_at, block_number FROM evidence e {evidence_workspace_filter} ORDER BY observed_at DESC LIMIT 1",
             scoped_params,
@@ -2703,10 +2741,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     enabled_rows = [row for row in monitored_rows if bool(row.get('is_enabled'))]
     active_rows = [row for row in enabled_rows if str(row.get('runtime_status') or '').strip().lower() == 'active']
     enabled_asset_rows = [row for row in enabled_rows if row.get('asset_id')]
-    enabled_system_count = len(enabled_rows)
+    enabled_system_count = max(len(enabled_rows), healthy_enabled_targets_count)
     active_system_count = len(active_rows)
-    system_count = len(monitored_rows)
-    protected_assets_count = len({str(row.get('asset_id') or '') for row in enabled_asset_rows})
+    system_count = max(len(monitored_rows), healthy_enabled_targets_count)
+    protected_assets_count = max(len({str(row.get('asset_id') or '') for row in enabled_asset_rows}), healthy_enabled_assets_count)
     evidence_at = _parse_ts((latest_evidence or {}).get('observed_at'))
     evidence_freshness = int((now - evidence_at).total_seconds()) if evidence_at else None
     detection_eval_freshness = int((now - latest_detection_evaluation_at).total_seconds()) if latest_detection_evaluation_at else None
@@ -2773,6 +2811,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'monitored_systems_count': system_count,
         'systems_with_recent_heartbeat': recent_heartbeat_systems,
         'invalid_enabled_targets': int((broken_targets or {}).get('c') or 0),
+        'healthy_enabled_targets': healthy_enabled_targets_count,
         'active_alerts': int((open_alerts or {}).get('c') or 0),
         'open_incidents': int((open_incidents or {}).get('c') or 0),
         'evidence_freshness_seconds': evidence_freshness,
