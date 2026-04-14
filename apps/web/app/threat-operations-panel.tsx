@@ -395,6 +395,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
   const openAlerts = alerts.length;
   const activeIncidents = incidents.length;
+  const simulatorMode = String(feed.runtimeStatus?.source_of_evidence || '').toLowerCase() === 'simulator'
+    || String(feed.runtimeStatus?.provider_mode || '').toLowerCase() === 'demo';
   const protectedAssetCount = Number(feed.runtimeStatus?.protected_assets_count ?? feed.counts.protectedAssets);
 
   const lastTelemetryAt = feed.runtimeStatus?.last_real_event_at || feed.lastUpdatedAt;
@@ -523,14 +525,16 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         ? 'Monitoring offline: no fresh telemetry available.'
         : pageState === 'degraded_partial' || pageState === 'historical_only'
           ? 'Monitoring degraded: telemetry is partial or delayed.'
-          : 'Monitoring healthy: telemetry and polling are current.',
+          : simulatorMode
+            ? 'Simulator/dev mode active: records are persisted but are not live production telemetry.'
+            : 'Monitoring healthy: telemetry and polling are current.',
       href: '/threat',
     };
 
     return [monitoringEvent, ...alertItems, ...incidentItems, ...historyItems]
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .slice(0, 12);
-  }, [alerts, feed.lastUpdatedAt, historyRuns, incidents, pageState]);
+  }, [alerts, feed.lastUpdatedAt, historyRuns, incidents, pageState, simulatorMode]);
 
   const reportingSystems = feed.counts.monitoredSystems;
   const recentHeartbeatSystems = Number(feed.runtimeStatus?.systems_with_recent_heartbeat ?? 0);
@@ -584,6 +588,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </div>
         <div className="chipRow monitoringHeaderChips">
           <span className={`statusBadge statusBadge-${monitoringTone(monitoringPresentation.status)}`}>{monitoringPresentation.statusLabel}</span>
+          {simulatorMode ? <span className="statusBadge statusBadge-attention">SIMULATOR / DEV MODE</span> : null}
           <span className="ruleChip">Operational state {pageState.replaceAll('_', ' ')}</span>
           <span className="ruleChip">Live telemetry {telemetryLabel}</span>
           <span className="ruleChip">Threat feed updated {pollLabel}</span>
@@ -682,6 +687,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 </p>
                 <p className="muted">
                   {signal.assetName} ({signal.assetType}) · {signal.monitoringStatus} · {signal.evidenceSummary}
+                  {simulatorMode ? ' · Simulator evidence' : ''}
                 </p>
                 <p className="tableMeta">
                   {formatAbsoluteTime(signal.timestamp)} · {formatRelativeTime(signal.timestamp)} · Source: {signal.source}
