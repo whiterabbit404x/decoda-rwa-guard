@@ -4376,6 +4376,29 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         (workspace_id, workspace_id),
     ).fetchall()
     existing_target_to_system_id = {str(item['target_id']): str(item['id']) for item in existing_rows if item.get('target_id') and item.get('id')}
+    logger.info(
+        'target_monitoring_reconcile_data_path workspace_id=%s step=before_repair total_targets=%s enabled_targets=%s enabled_targets_with_valid_assets=%s monitored_system_rows_before=%s',
+        workspace_id,
+        len(rows),
+        sum(1 for row in rows if bool(row.get('enabled'))),
+        len(
+            connection.execute(
+                '''
+                SELECT t.id
+                FROM targets t
+                JOIN assets a
+                  ON a.id = t.asset_id
+                 AND a.workspace_id = t.workspace_id
+                 AND a.deleted_at IS NULL
+                WHERE t.deleted_at IS NULL
+                  AND t.enabled = TRUE
+                  AND (%s::uuid IS NULL OR t.workspace_id = %s::uuid)
+                ''',
+                (workspace_id, workspace_id),
+            ).fetchall()
+        ),
+        len(existing_rows),
+    )
     enabled_valid_targets_found = 0
     disabled_or_invalid_targets_found = 0
     for row in rows:
@@ -4463,6 +4486,12 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         ''',
         (workspace_id, workspace_id),
     ).fetchall()
+    logger.info(
+        'target_monitoring_reconcile_data_path workspace_id=%s step=after_repair monitored_system_rows_after=%s repaired_monitored_system_ids=%s',
+        workspace_id,
+        len(refreshed_rows),
+        repaired_monitored_system_ids,
+    )
     refreshed_target_to_system_id = {str(item['target_id']): str(item['id']) for item in refreshed_rows if item.get('target_id') and item.get('id')}
     created_monitored_systems = max(0, len(set(refreshed_target_to_system_id.values()) - set(existing_target_to_system_id.values())))
     preserved_monitored_systems = sum(1 for target_id, system_id in existing_target_to_system_id.items() if refreshed_target_to_system_id.get(target_id) == system_id)

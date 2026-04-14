@@ -444,17 +444,23 @@ def test_repair_and_runtime_summary_with_three_healthy_targets(monkeypatch):
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'status': 'running', 'last_cycle_at': None, 'last_heartbeat_at': None})
 
+    before_snapshot = pilot.workspace_monitoring_debug_snapshot(conn, workspace_id='ws-1')
     result = pilot.reconcile_enabled_targets_monitored_systems(conn)
+    after_snapshot = pilot.workspace_monitoring_debug_snapshot(conn, workspace_id='ws-1')
     payload = monitoring_runner.monitoring_runtime_status()
 
+    assert before_snapshot['monitored_systems_count'] == 0
+    assert before_snapshot['enabled_valid_target_count'] == 3
     assert result['created_monitored_systems'] == 3
     assert result['final_workspace_monitored_system_count'] == 3
-    assert payload['monitored_systems'] > 0
-    assert payload['monitored_systems_count'] > 0
+    assert after_snapshot['monitored_systems_count'] == 3
+    assert after_snapshot['enabled_valid_target_count'] == 3
+    assert payload['monitored_systems'] == 3
+    assert payload['monitored_systems_count'] == 3
     assert payload['protected_assets'] > 0
+    assert f"{payload.get('systems_with_recent_heartbeat', 0)}/{payload.get('monitored_systems_count', 0)}" != '0/0'
     assert payload['monitoring_status'] != 'offline'
     assert payload['status'] != 'Offline'
-    assert payload['monitored_systems_count'] != 0
 
 
 def test_reconcile_does_not_claim_success_for_non_visible_rows():
