@@ -1930,6 +1930,44 @@ def monitoring_systems_reconcile(request: Request) -> Any:
     )
     try:
         reconcile_payload = with_auth_schema_json(lambda: reconcile_workspace_monitored_systems(request))
+    except HTTPException as exc:
+        if isinstance(exc.detail, dict):
+            logger.error(
+                'monitoring_reconcile_http_exception method=%s path=%s workspace_id=%s user_id=%s stage=%s code=%s',
+                request.method,
+                request.url.path,
+                workspace_hint,
+                user_hint,
+                exc.detail.get('stage'),
+                exc.detail.get('code'),
+            )
+            return JSONResponse(exc.detail, status_code=exc.status_code)
+        raise
+    except Exception as exc:
+        logger.exception(
+            'monitoring_reconcile_unexpected_error method=%s path=%s origin=%s workspace_id=%s user_id=%s stage=%s error_type=%s error_message=%s has_auth_header=%s has_workspace_header=%s has_user_header=%s',
+            request.method,
+            request.url.path,
+            request.headers.get('origin', ''),
+            workspace_hint,
+            user_hint,
+            'reconcile_workspace_monitored_systems',
+            type(exc).__name__,
+            str(exc),
+            bool((request.headers.get('authorization') or '').strip()),
+            bool((request.headers.get('x-workspace-id') or '').strip()),
+            bool((request.headers.get('x-user-id') or '').strip()),
+        )
+        payload: dict[str, Any] = {
+            'code': 'monitoring_reconcile_failed',
+            'detail': 'Unexpected backend error during monitored systems reconcile.',
+            'stage': 'reconcile_workspace_monitored_systems',
+        }
+        if not _is_production_like_runtime():
+            payload['debug_error_type'] = type(exc).__name__
+            payload['debug_error_message'] = str(exc)
+        return JSONResponse(payload, status_code=500)
+    try:
         runtime_payload: dict[str, Any] | None = None
         runtime_error: dict[str, Any] | None = None
         try:
@@ -1951,29 +1989,18 @@ def monitoring_systems_reconcile(request: Request) -> Any:
                 if runtime_error is not None:
                     diagnostics['runtime_status_after_repair_error'] = runtime_error
         return reconcile_payload
-    except HTTPException as exc:
-        if isinstance(exc.detail, dict):
-            logger.error(
-                'monitoring_reconcile_http_exception method=%s path=%s workspace_id=%s user_id=%s stage=%s code=%s',
-                request.method,
-                request.url.path,
-                workspace_hint,
-                user_hint,
-                exc.detail.get('stage'),
-                exc.detail.get('code'),
-            )
-            return JSONResponse(exc.detail, status_code=exc.status_code)
-        raise
     except Exception as exc:
         resolved_path = request.url.path
         logger.exception(
-            'monitoring_reconcile_unexpected_error method=%s path=%s origin=%s workspace_id=%s user_id=%s stage=%s has_auth_header=%s has_workspace_header=%s has_user_header=%s',
+            'monitoring_reconcile_unexpected_error method=%s path=%s origin=%s workspace_id=%s user_id=%s stage=%s error_type=%s error_message=%s has_auth_header=%s has_workspace_header=%s has_user_header=%s',
             request.method,
             resolved_path,
             request.headers.get('origin', ''),
             workspace_hint,
             user_hint,
-            'unhandled_route_exception',
+            'attach_runtime_status_after_repair',
+            type(exc).__name__,
+            str(exc),
             bool((request.headers.get('authorization') or '').strip()),
             bool((request.headers.get('x-workspace-id') or '').strip()),
             bool((request.headers.get('x-user-id') or '').strip()),
@@ -1981,7 +2008,7 @@ def monitoring_systems_reconcile(request: Request) -> Any:
         payload: dict[str, Any] = {
             'code': 'monitoring_reconcile_failed',
             'detail': 'Unexpected backend error during monitored systems reconcile.',
-            'stage': 'unhandled_route_exception',
+            'stage': 'attach_runtime_status_after_repair',
         }
         if not _is_production_like_runtime():
             payload['debug_error_type'] = type(exc).__name__

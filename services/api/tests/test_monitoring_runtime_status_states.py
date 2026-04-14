@@ -600,3 +600,57 @@ def test_runtime_status_workspace_resolution_reports_header_presence(monkeypatch
     payload = monitoring_runner.monitoring_runtime_status(SimpleNamespace(headers={}))
     assert payload['resolved_workspace_id'] == 'ws-current'
     assert payload['workspace_header_present'] is False
+
+
+def test_runtime_status_workspace_scoped_path_uses_same_rows_as_monitored_systems_listing(monkeypatch):
+    now = datetime.now(timezone.utc).isoformat()
+
+    class _ScopedRowsConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(
+                    rows=[
+                        {
+                            'id': 'sys-1',
+                            'workspace_id': 'ws-1',
+                            'asset_id': 'asset-1',
+                            'target_id': 'target-1',
+                            'chain': 'ethereum-mainnet',
+                            'is_enabled': True,
+                            'runtime_status': 'idle',
+                            'status': 'ready',
+                            'last_heartbeat': now,
+                            'monitoring_interval_seconds': 30,
+                            'created_at': now,
+                        }
+                    ]
+                )
+            if 'FROM alerts' in q or 'FROM incidents' in q:
+                return _Result({'c': 0})
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 1, 'asset_count': 1})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[{'id': 'target-1'}])
+            if 'FROM evidence e WHERE e.workspace_id = %s' in q:
+                return _Result({'observed_at': datetime.now(timezone.utc), 'block_number': 5})
+            return _Result({})
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': datetime.now(timezone.utc).isoformat(), 'last_cycle_at': datetime.now(timezone.utc).isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_ScopedRowsConn(datetime.now(timezone.utc))))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda _c, _r: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}, True),
+    )
+
+    payload = monitoring_runner.monitoring_runtime_status(SimpleNamespace(headers={'x-workspace-id': 'ws-1'}))
+    assert payload['monitored_systems'] == 1
+    assert payload['protected_assets'] == 1
+    assert payload['enabled_systems'] == 1
+    assert payload['monitoring_status'] != 'offline'
