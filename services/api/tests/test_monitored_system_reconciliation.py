@@ -120,6 +120,20 @@ class _Conn:
         if 'SELECT id FROM targets WHERE deleted_at IS NULL' in q:
             rows = [{'id': target_id} for target_id in self.targets.keys()]
             return _Result(rows=rows)
+        if 'SELECT id, enabled, monitoring_enabled, asset_id FROM targets' in q:
+            rows = [
+                {
+                    'id': target_id,
+                    'enabled': bool(target.get('enabled')),
+                    'monitoring_enabled': bool(target.get('monitoring_enabled')),
+                    'asset_id': target.get('asset_id'),
+                }
+                for target_id, target in self.targets.items()
+            ]
+            return _Result(rows=rows)
+        if 'SELECT id, target_id FROM monitored_systems' in q:
+            rows = [{'id': row['id'], 'target_id': target_id} for target_id, row in self.monitored_systems.items()]
+            return _Result(rows=rows)
         if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
             return _Result(rows=self._monitored_rows())
         if 'SELECT id FROM monitored_systems WHERE workspace_id =' in q and 'AND target_id =' in q:
@@ -212,6 +226,11 @@ def test_reconcile_enabled_targets_backfills_and_reports_invalid_and_skipped_rea
     assert result['invalid_targets'] == ['target-missing-asset']
     assert result['invalid_reasons'] == {'linked_asset_missing': 1}
     assert result['skipped_reasons'] == {'monitoring_disabled': 1, 'target_not_enabled': 1}
+    assert result['created_monitored_systems'] == 1
+    assert result['preserved_monitored_systems'] == 0
+    assert result['removed_monitored_systems'] == 0
+    assert result['enabled_valid_targets_found'] == 1
+    assert result['disabled_or_invalid_targets_found'] == 3
     assert 'target-valid' in conn.monitored_systems
 
 
@@ -221,6 +240,8 @@ def test_reconcile_enabled_targets_is_idempotent_for_existing_rows():
     second = pilot.reconcile_enabled_targets_monitored_systems(conn)
     assert first['created_or_updated'] == 1
     assert second['created_or_updated'] == 1
+    assert second['created_monitored_systems'] == 0
+    assert second['preserved_monitored_systems'] == 1
     assert len(conn.monitored_systems) == 1
     assert conn.monitored_systems['target-valid']['id'] == 'ms-target-valid'
 
@@ -278,6 +299,11 @@ def test_normalize_reconcile_result_provides_render_safe_fields():
     assert result['invalid_reasons'] == {}
     assert result['skipped_reasons'] == {}
     assert result['repaired_monitored_system_ids'] == []
+    assert result['created_monitored_systems'] == 0
+    assert result['preserved_monitored_systems'] == 0
+    assert result['removed_monitored_systems'] == 0
+    assert result['enabled_valid_targets_found'] == 0
+    assert result['disabled_or_invalid_targets_found'] == 0
 
 
 def test_runtime_status_count_reflects_backfilled_monitored_system_rows(monkeypatch):

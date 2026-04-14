@@ -4345,7 +4345,7 @@ def ensure_monitored_system_for_target(
 def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id: str | None = None) -> dict[str, Any]:
     rows = connection.execute(
         '''
-        SELECT id
+        SELECT id, enabled, monitoring_enabled, asset_id
         FROM targets
         WHERE deleted_at IS NULL
           AND (%s::uuid IS NULL OR workspace_id = %s::uuid)
@@ -4360,10 +4360,26 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
     invalid_reasons: dict[str, int] = {}
     skipped_reasons: dict[str, int] = {}
     repaired_monitored_system_ids: list[str] = []
+    existing_rows = connection.execute(
+        '''
+        SELECT id, target_id
+        FROM monitored_systems
+        WHERE (%s::uuid IS NULL OR workspace_id = %s::uuid)
+        ''',
+        (workspace_id, workspace_id),
+    ).fetchall()
+    existing_target_to_system_id = {str(item['target_id']): str(item['id']) for item in existing_rows if item.get('target_id') and item.get('id')}
+    enabled_valid_targets_found = 0
+    disabled_or_invalid_targets_found = 0
     for row in rows:
+        target_id = str(row['id'])
+        target_enabled = bool(row.get('enabled'))
+        target_monitoring_enabled = bool(row.get('monitoring_enabled'))
+        target_has_asset_id = bool(row.get('asset_id'))
         result = ensure_monitored_system_for_target(connection, target_id=str(row['id']), workspace_id=workspace_id)
         if result.get('status') == 'ok':
             eligible_targets += 1
+            enabled_valid_targets_found += 1
             verified_row = connection.execute(
                 '''
                 SELECT id
@@ -4379,10 +4395,13 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
             else:
                 skipped_reasons['post_upsert_not_visible'] = skipped_reasons.get('post_upsert_not_visible', 0) + 1
         elif result.get('status') == 'invalid_target':
+            disabled_or_invalid_targets_found += 1
             invalid_targets.append(str(result.get('target_id')))
             invalid_reason = str(result.get('reason') or 'invalid_target')
             invalid_reasons[invalid_reason] = invalid_reasons.get(invalid_reason, 0) + 1
         else:
+            if not target_enabled or not target_monitoring_enabled or not target_has_asset_id:
+                disabled_or_invalid_targets_found += 1
             skipped_reason = str(result.get('reason') or 'skipped')
             skipped_reasons[skipped_reason] = skipped_reasons.get(skipped_reason, 0) + 1
         logger.info(
@@ -4397,11 +4416,40 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
             result.get('reason'),
             result.get('monitored_system_id'),
         )
+    refreshed_rows = connection.execute(
+        '''
+        SELECT id, target_id
+        FROM monitored_systems
+        WHERE (%s::uuid IS NULL OR workspace_id = %s::uuid)
+        ''',
+        (workspace_id, workspace_id),
+    ).fetchall()
+    refreshed_target_to_system_id = {str(item['target_id']): str(item['id']) for item in refreshed_rows if item.get('target_id') and item.get('id')}
+    created_monitored_systems = max(0, len(set(refreshed_target_to_system_id.values()) - set(existing_target_to_system_id.values())))
+    preserved_monitored_systems = sum(1 for target_id, system_id in existing_target_to_system_id.items() if refreshed_target_to_system_id.get(target_id) == system_id)
+    removed_monitored_systems = max(0, len(set(existing_target_to_system_id.values()) - set(refreshed_target_to_system_id.values())))
+    logger.info(
+        'target_monitoring_reconcile_summary workspace_id=%s targets_scanned=%s enabled_valid_targets_found=%s disabled_or_invalid_targets_found=%s monitored_systems_created=%s monitored_systems_preserved=%s monitored_systems_removed=%s invalid_reasons=%s skipped_reasons=%s',
+        workspace_id,
+        len(rows),
+        enabled_valid_targets_found,
+        disabled_or_invalid_targets_found,
+        created_monitored_systems,
+        preserved_monitored_systems,
+        removed_monitored_systems,
+        invalid_reasons,
+        skipped_reasons,
+    )
     return _normalize_reconcile_result({
         'enabled_targets_scanned': eligible_targets + len(invalid_targets),
         'targets_scanned': len(rows),
         'eligible_targets': eligible_targets,
         'created_or_updated': created_or_updated,
+        'created_monitored_systems': created_monitored_systems,
+        'preserved_monitored_systems': preserved_monitored_systems,
+        'removed_monitored_systems': removed_monitored_systems,
+        'enabled_valid_targets_found': enabled_valid_targets_found,
+        'disabled_or_invalid_targets_found': disabled_or_invalid_targets_found,
         'invalid_targets': invalid_targets,
         'invalid_reasons': invalid_reasons,
         'skipped_reasons': skipped_reasons,
@@ -4416,6 +4464,11 @@ def _normalize_reconcile_result(result: dict[str, Any]) -> dict[str, Any]:
         'targets_scanned': int(result.get('targets_scanned', 0) or 0),
         'eligible_targets': int(result.get('eligible_targets', 0) or 0),
         'created_or_updated': int(result.get('created_or_updated', 0) or 0),
+        'created_monitored_systems': int(result.get('created_monitored_systems', 0) or 0),
+        'preserved_monitored_systems': int(result.get('preserved_monitored_systems', 0) or 0),
+        'removed_monitored_systems': int(result.get('removed_monitored_systems', 0) or 0),
+        'enabled_valid_targets_found': int(result.get('enabled_valid_targets_found', 0) or 0),
+        'disabled_or_invalid_targets_found': int(result.get('disabled_or_invalid_targets_found', 0) or 0),
         'invalid_targets': [str(value) for value in (result.get('invalid_targets') or []) if str(value).strip()],
         'invalid_reasons': {str(key): int(value) for key, value in dict(result.get('invalid_reasons') or {}).items()},
         'skipped_reasons': {str(key): int(value) for key, value in dict(result.get('skipped_reasons') or {}).items()},

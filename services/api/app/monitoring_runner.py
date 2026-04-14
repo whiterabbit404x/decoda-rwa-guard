@@ -2626,6 +2626,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     latest_detection_payload: dict[str, Any] | None = None
     healthy_enabled_targets_count = 0
     healthy_enabled_assets_count = 0
+    enabled_monitored_rows_count = 0
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         if request is not None:
@@ -2678,8 +2679,19 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         ).fetchone()
         healthy_enabled_targets_count = int((healthy_enabled_targets or {}).get('target_count') or 0)
         healthy_enabled_assets_count = int((healthy_enabled_targets or {}).get('asset_count') or 0)
-        if healthy_enabled_targets_count > 0 and not monitored_rows:
-            reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
+        enabled_monitored_rows_count = sum(1 for row in monitored_rows if bool(row.get('is_enabled')))
+        if healthy_enabled_targets_count > 0 and enabled_monitored_rows_count < healthy_enabled_targets_count:
+            reconcile_result = reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
+            logger.info(
+                'monitoring_runtime_status_reconcile workspace_id=%s healthy_enabled_targets=%s enabled_monitored_rows_before=%s created_or_updated=%s created_monitored_systems=%s preserved_monitored_systems=%s removed_monitored_systems=%s',
+                workspace_id,
+                healthy_enabled_targets_count,
+                enabled_monitored_rows_count,
+                reconcile_result.get('created_or_updated'),
+                reconcile_result.get('created_monitored_systems'),
+                reconcile_result.get('preserved_monitored_systems'),
+                reconcile_result.get('removed_monitored_systems'),
+            )
             if request is not None and workspace_id:
                 monitored_rows = list_workspace_monitored_system_rows(connection, workspace_id)
             elif request is None:
@@ -2762,7 +2774,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         and detection_eval_freshness <= max(900, MONITOR_POLL_INTERVAL_SECONDS * 10)
     )
     runner_alive = bool(health.get('worker_running')) or not stale_heartbeat
-    if system_count == 0 or enabled_system_count == 0:
+    has_monitorable_targets = healthy_enabled_targets_count > 0
+    has_enabled_monitoring_rows = enabled_system_count > 0
+    if not has_monitorable_targets and not has_enabled_monitoring_rows:
         monitoring_status = 'offline'
     elif not runner_alive or health.get('last_error') or health.get('degraded') or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
         monitoring_status = 'degraded'
@@ -2840,6 +2854,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'sample_target_ids': target_ids[:5],
                 'sample_target_ids_count': len(target_ids),
                 'systems_with_recent_heartbeat': recent_heartbeat_systems,
+                'has_monitorable_targets': has_monitorable_targets,
+                'has_enabled_monitoring_rows': has_enabled_monitoring_rows,
             }
         )
     return payload
