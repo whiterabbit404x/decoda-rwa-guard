@@ -5103,7 +5103,7 @@ def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 baseline_status, baseline_source, baseline_updated_at, baseline_confidence, baseline_coverage,
                 normalized_identifier, verification_status, verification_summary, verification_checked_at,
                 created_by_user_id, updated_by_user_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb, %s, %s, NOW(), %s, %s, %s, %s, %s, %s::jsonb, NOW(), %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb, %s, %s, NOW(), %s, %s, %s, %s, %s::jsonb, NOW(), %s, %s)
             ''',
             (
                 asset_id,
@@ -5912,7 +5912,7 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, event_type, title, severity, status, workflow_status, target_id, linked_alert_ids, owner_user_id, assignee_user_id, summary, resolution_note, timeline, resolved_at, created_at, updated_at
+            SELECT id, event_type, title, severity, status, workflow_status, target_id, linked_alert_ids, owner_user_id, assignee_user_id, summary, resolution_note, timeline, created_at, updated_at
             FROM incidents
             WHERE workspace_id = %s
               AND (%s::text IS NULL OR severity = %s::text)

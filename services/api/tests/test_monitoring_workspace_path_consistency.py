@@ -256,3 +256,48 @@ def test_runtime_status_keeps_list_path_counts_when_raw_workspace_query_fails(mo
     payload = response.json()
     assert payload['monitored_systems'] == 3
     assert payload['protected_assets'] == 3
+
+
+def test_runtime_status_uses_parameterized_detection_query_and_keeps_idle_systems_online(monkeypatch):
+    class _StrictPlaceholderConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if "analysis_type LIKE 'monitoring_%'" in q and params:
+                raise RuntimeError('unsafe percent placeholder pattern')
+            return super().execute(query, params)
+
+    conn = _StrictPlaceholderConn()
+    client = TestClient(api_main.app)
+    now = datetime.now(timezone.utc)
+
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda *_a, **_k: ({'id': 'user-1'}, _workspace_context(), True),
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(),
+            'last_cycle_at': now.isoformat(),
+            'degraded': False,
+            'last_error': None,
+            'source_type': 'polling',
+            'worker_running': True,
+        },
+    )
+
+    response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer token', 'x-workspace-id': 'ws-legacy'})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['monitored_systems'] > 0
+    assert payload['protected_assets'] > 0
+    assert payload['enabled_systems'] > 0
+    assert payload['monitoring_status'] != 'offline'
+    assert payload['status'] != 'Offline'
