@@ -2020,14 +2020,23 @@ def monitoring_systems_reconcile(request: Request) -> Any:
 def monitoring_workspace_debug(request: Request) -> dict[str, Any]:
     snapshot_payload = with_auth_schema_json(lambda: get_workspace_monitoring_debug(request))
     runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
+    list_route_snapshot = snapshot_payload.get('list_route_snapshot') if isinstance(snapshot_payload.get('list_route_snapshot'), dict) else {}
     return {
         **snapshot_payload,
         'status_decision_inputs': {
+            'resolved_workspace_id_runtime': runtime_payload.get('resolved_workspace_id'),
+            'resolved_workspace_id_list_route': list_route_snapshot.get('resolved_workspace_id'),
+            'list_route_monitored_systems_count': int(list_route_snapshot.get('monitored_systems_count') or 0),
+            'list_route_enabled_monitored_systems_count': int(list_route_snapshot.get('enabled_monitored_systems_count') or 0),
+            'list_route_protected_asset_count': int(list_route_snapshot.get('protected_asset_count') or 0),
             'healthy_enabled_targets': int(runtime_payload.get('healthy_enabled_targets') or 0),
             'invalid_enabled_targets': int(runtime_payload.get('invalid_enabled_targets') or 0),
             'monitored_systems_count': int(runtime_payload.get('monitored_systems_count') or runtime_payload.get('monitored_systems') or 0),
             'protected_assets_count': int(runtime_payload.get('protected_assets_count') or runtime_payload.get('protected_assets') or 0),
             'systems_with_recent_heartbeat': int(runtime_payload.get('systems_with_recent_heartbeat') or 0),
+            'runtime_enabled_systems_count': int(runtime_payload.get('enabled_systems') or 0),
+            'runtime_status': runtime_payload.get('status'),
+            'monitoring_status': runtime_payload.get('monitoring_status'),
         },
         'runtime_summary': runtime_payload,
     }
