@@ -16,6 +16,7 @@ import {
 } from './workspace-monitoring-truth';
 import {
   buildDashboardViewModel,
+  type BackendState,
   DashboardPageData,
   formatRules,
   statusTone,
@@ -30,12 +31,21 @@ type Props = {
 
 export default function DashboardPageContent({ data, gatewayReachableOverride = false, liveFeed }: Props) {
   const { threatDashboard, complianceDashboard, resilienceDashboard, apiUrl, diagnostics } = data;
-  const { backendState, summaryCards, backendBanner, featurePresentation, workspaceMonitoring } = buildDashboardViewModel(data, {
+  const { summaryCards, featurePresentation } = buildDashboardViewModel(data, {
     gatewayReachableOverride,
   });
   const monitoringTruth = liveFeed?.monitoring.truth
     ?? resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary);
   const monitoringPresentation = liveFeed?.monitoring.presentation ?? normalizeMonitoringPresentation(monitoringTruth);
+  const monitoringBadgeState = monitoringPresentation.status === 'live'
+    ? 'live'
+    : monitoringPresentation.status === 'offline'
+      ? 'offline'
+      : monitoringPresentation.status === 'limited coverage'
+        ? 'limited_coverage'
+        : monitoringPresentation.status === 'stale'
+          ? 'stale'
+          : 'degraded';
   const telemetryUnavailable =
     !monitoringTruth.last_telemetry_at
     || monitoringTruth.freshness_status === 'unavailable'
@@ -46,14 +56,34 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
     monitoringHealthyCopyAllowed(monitoringTruth)
     && monitoringPresentation.status === 'live'
     && !monitoringTruth.contradiction_flags.includes('healthy_without_reporting_systems');
+  const panelBackendState: BackendState =
+    monitoringPresentation.status === 'offline'
+      ? 'offline'
+      : monitoringPresentation.status === 'live'
+        ? 'online'
+        : 'degraded';
+  const platformStateLabel = monitoringPresentation.status === 'offline'
+    ? 'Telemetry offline'
+    : monitoringPresentation.status === 'live'
+      ? 'Live services connected'
+      : monitoringPresentation.status === 'limited coverage'
+        ? 'Coverage limited'
+        : monitoringPresentation.status === 'stale'
+          ? 'Coverage delayed'
+          : 'Coverage degraded';
   const safeMonitoringSummary = telemetryUnavailable
     ? 'Telemetry currently unavailable.'
     : showHealthySummary
       ? monitoringPresentation.summary
       : 'Monitoring state requires attention.';
-  const runtimeStatusLabel = monitoringTruth.runtime_status.toUpperCase();
-  const freshnessLabel = monitoringPresentation.freshness.toUpperCase();
-  const confidenceLabel = monitoringPresentation.confidence;
+  const freshnessLabel = telemetryUnavailable || monitoringPresentation.status === 'offline'
+    ? 'UNAVAILABLE'
+    : monitoringPresentation.freshness.toUpperCase();
+  const confidenceLabel = telemetryUnavailable || monitoringPresentation.status === 'offline'
+    ? 'telemetry unavailable'
+    : monitoringTruth.reporting_systems === 0
+      ? 'limited telemetry'
+      : monitoringPresentation.confidence;
   const lastTelemetryLabel = telemetryUnavailable || monitoringTruth.runtime_status === 'offline'
     ? 'Telemetry unavailable'
     : monitoringPresentation.telemetryTimestampLabel;
@@ -63,6 +93,17 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
   const lastPollLabel = monitoringTruth.last_poll_at
     ? monitoringPresentation.pollTimestampLabel
     : 'Poll timestamp unavailable';
+  const systemMessage = monitoringPresentation.status === 'offline'
+    ? 'Live services are temporarily unavailable. Fresh telemetry unavailable until connectivity is restored.'
+    : telemetryUnavailable
+      ? 'Telemetry is not current yet. Waiting for a fresh telemetry timestamp before showing current-status copy.'
+      : showHealthySummary
+        ? 'Telemetry and runtime checks indicate healthy monitoring coverage.'
+        : monitoringTruth.reporting_systems === 0
+          ? 'Monitoring has no reporting systems yet. Healthy/live copy is withheld until reporting systems are active.'
+          : 'Monitoring state requires attention. Review telemetry, heartbeat, and poll signals before taking closure actions.';
+  const openAlerts = riskDashboard.summary.high_alert_count + threatDashboard.summary.critical_or_high_alerts;
+  const openIncidents = resilienceDashboard.summary.incident_count;
 
   return (
     <main className="container productPage">
@@ -72,23 +113,23 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <h1>Tokenized treasury control dashboard</h1>
           <p className="lede">Monitor threats, compliance posture, and resilience readiness with persistent workspace telemetry and history-backed operations.</p>
           <div className="heroActionRow">
-            <StatusBadge state={diagnostics.experienceState} />
+            <StatusBadge state={toDashboardBadgeState(monitoringBadgeState)} />
             <span className="ruleChip">Gateway: {diagnostics.endpoints.dashboard.ok ? 'reachable' : 'needs attention'}</span>
             <span className="ruleChip">API: {apiUrl || 'Not configured'}</span>
           </div>
         </div>
         <div className="heroPanel">
-          <p><strong>Platform state:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Coverage degraded' : 'Telemetry offline'}</p>
-          <p><strong>Runtime status:</strong> {runtimeStatusLabel}</p>
+          <p><strong>Platform state:</strong> {platformStateLabel}</p>
+          <p><strong>Runtime status:</strong> {monitoringTruth.runtime_status.toUpperCase()}</p>
           <p><strong>Freshness:</strong> {freshnessLabel}</p>
           <p><strong>Confidence:</strong> {confidenceLabel}</p>
           <p><strong>Last telemetry:</strong> {lastTelemetryLabel}</p>
           <p><strong>Last heartbeat:</strong> {lastHeartbeatLabel}</p>
           <p><strong>Last poll:</strong> {lastPollLabel}</p>
           <p><strong>Reporting/configured/protected:</strong> {monitoringTruth.reporting_systems} / {monitoringTruth.configured_systems} / {monitoringTruth.protected_assets_count}</p>
-          <p><strong>Open alerts:</strong> {workspaceMonitoring.openAlerts} · <strong>Open incidents:</strong> {workspaceMonitoring.openIncidents}</p>
+          <p><strong>Open alerts:</strong> {openAlerts} · <strong>Open incidents:</strong> {openIncidents}</p>
           <p><strong>Monitoring summary:</strong> {safeMonitoringSummary}</p>
-          <p><strong>System message:</strong> {backendBanner}</p>
+          <p><strong>System message:</strong> {systemMessage}</p>
           {liveFeed ? (
             <p>
               <strong>Workspace feed:</strong> {monitoringPresentation.statusLabel} · {safeMonitoringSummary} · {lastTelemetryLabel}. {lastHeartbeatLabel}. {lastPollLabel}.
@@ -102,7 +143,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
       <SystemStatusPanel monitoring={{ truth: monitoringTruth, presentation: monitoringPresentation }} diagnostics={diagnostics} />
 
       <PilotOverviewPanel
-        backendState={backendState}
+        backendState={panelBackendState}
         threatDashboard={threatDashboard}
         resilienceDashboard={resilienceDashboard}
         diagnostics={diagnostics}
