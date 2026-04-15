@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from services.api.app.monitoring_runner import ActivityEvent, mark_receipt_removed, process_ingested_event
+from services.api.app.monitoring_runner import ActivityEvent, _persist_evidence, mark_receipt_removed, process_ingested_event
 
 
 class _Result:
@@ -90,3 +90,45 @@ def test_mark_receipt_removed_marks_row_and_reorg_event():
     assert any('UPDATE monitoring_event_receipts SET removed = TRUE' in query for query, _ in conn.calls)
     assert any('INSERT INTO monitoring_reorg_events' in query for query, _ in conn.calls)
     assert any('chain_reorg_invalidated_evidence' in str(params) for _, params in conn.calls if params)
+
+
+def test_persist_evidence_records_detection_linkage_and_evidence_fields():
+    conn = FakeConnection(existing=False)
+    now = datetime.now(timezone.utc)
+    target = {
+        'id': 'target-1',
+        'asset_id': 'asset-1',
+        'chain_network': 'ethereum-mainnet',
+        'monitored_system_id': 'sys-1',
+    }
+    event = ActivityEvent(
+        event_id='evt-3',
+        kind='transaction',
+        observed_at=now,
+        ingestion_source='evm_rpc',
+        cursor='22:0xabc:0',
+        payload={'tx_hash': '0xabc', 'block_number': 22, 'log_index': 0, 'event_type': 'transfer', 'metadata': {'provider_name': 'alchemy'}},
+    )
+    response = {'severity': 'high', 'score': 88, 'explanation': 'High-confidence anomaly from live telemetry.'}
+
+    _persist_evidence(
+        conn,
+        workspace_id='ws-1',
+        target=target,
+        event=event,
+        response=response,
+        alert_id='alert-1',
+    )
+
+    evidence_calls = [(query, params) for query, params in conn.calls if 'INSERT INTO evidence' in query]
+    assert len(evidence_calls) == 1
+    _, params = evidence_calls[0]
+    assert params[1] == 'ws-1'  # workspace_id
+    assert params[2] == 'asset-1'  # asset_id
+    assert params[3] == 'target-1'  # target_id
+    assert params[4] == 'alert-1'  # alert linkage
+    assert params[10] == 'sys-1'  # monitored_system_id
+    assert params[12] == 88  # risk_score
+    assert params[13] == 'High-confidence anomaly from live telemetry.'  # evidence summary
+    assert params[18] == 'evm_rpc'  # evidence source
+    assert params[20] == now  # timestamp / observed_at

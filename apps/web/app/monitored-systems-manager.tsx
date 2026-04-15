@@ -66,6 +66,22 @@ type ReconcileSummary = {
   repaired_monitored_system_ids: string[];
 };
 
+type WorkspaceMonitoringSummary = {
+  runtime_status: 'provisioning' | 'healthy' | 'degraded' | 'idle' | 'failed' | 'disabled' | 'offline';
+  freshness_status: 'fresh' | 'stale' | 'unavailable';
+  poll_freshness_status?: 'fresh' | 'stale' | 'unavailable';
+  confidence_status: 'high' | 'medium' | 'low' | 'unavailable';
+  last_heartbeat_at: string | null;
+  last_telemetry_at: string | null;
+  last_poll_at: string | null;
+  evidence_source: 'live' | 'simulator' | 'replay' | 'none';
+  coverage_state: {
+    configured_systems: number;
+    reporting_systems: number;
+    protected_assets: number;
+  };
+};
+
 function formatReasonCounts(label: string, reasons: Record<string, number>): string {
   const entries = Object.entries(reasons);
   if (!entries.length) {
@@ -98,6 +114,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const [isTogglingId, setIsTogglingId] = useState<string | null>(null);
   const [reconcileSummary, setReconcileSummary] = useState<ReconcileSummary | null>(null);
   const [lastRepairClickAt, setLastRepairClickAt] = useState<string | null>(null);
+  const [summary, setSummary] = useState<WorkspaceMonitoringSummary | null>(null);
 
   async function load(options?: { failureMessage?: string; rethrow?: boolean }) {
     if (isDev) {
@@ -115,6 +132,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       const payload = await response.json();
       const loadedSystems = payload.systems ?? [];
       setSystems(loadedSystems);
+      setSummary(payload.workspace_monitoring_summary ?? null);
       if (isDev) {
         console.debug('[monitored-systems] reload success', { count: loadedSystems.length });
       }
@@ -297,10 +315,23 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
     void load();
   }, []);
 
+  const telemetryLabel = summary?.last_telemetry_at ? new Date(summary.last_telemetry_at).toLocaleString() : 'Not available';
+  const pollLabel = summary?.last_poll_at ? new Date(summary.last_poll_at).toLocaleString() : 'Not available';
+  const hasLiveTelemetry = Boolean(
+    summary?.last_telemetry_at
+    && summary?.freshness_status === 'fresh'
+    && Number(summary?.coverage_state?.reporting_systems ?? 0) > 0,
+  );
+
   return (
     <section className="dataCard stack compactStack" data-monitored-systems-build={monitoredSystemsClientBuildTag}>
       <h1>Monitored Systems</h1>
       <p className="muted">Bridge assets to runtime monitoring through target-linked monitored systems.</p>
+      {summary ? (
+        <p className="tableMeta">
+          Runtime {summary.runtime_status.toUpperCase()} · Live telemetry {hasLiveTelemetry ? telemetryLabel : 'unavailable'} · Last poll {pollLabel} ({summary.poll_freshness_status || 'unavailable'}) · Reporting systems {summary.coverage_state.reporting_systems}/{summary.coverage_state.configured_systems} · Evidence source {summary.evidence_source}
+        </p>
+      ) : null}
       <div className="buttonRow">
         <button type="button" onClick={() => void runReconcile()} disabled={isReconciling}>
           {isReconciling ? 'Repairing monitored systems…' : 'Repair monitored systems'}

@@ -2973,7 +2973,6 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         monitoring_status = 'idle'
     else:
         monitoring_status = 'active'
-    telemetry_available = recent_heartbeat_systems > 0
     degraded_reason = health.get('degraded_reason')
     if monitoring_status == 'offline':
         runtime_status = 'Offline'
@@ -3011,8 +3010,6 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     degraded_signal = bool(health.get('last_error') or health.get('degraded') or degraded_reason or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0)
     if not workspace_configured:
         runtime_status_summary = 'offline'
-    elif degraded_signal and reporting_systems <= 0:
-        runtime_status_summary = 'degraded'
     elif reporting_systems <= 0:
         runtime_status_summary = 'idle'
     elif degraded_signal:
@@ -3025,6 +3022,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     summary_freshness_status = (
         'fresh' if summary_telemetry_timestamp and int((now - summary_telemetry_timestamp).total_seconds()) <= telemetry_window_seconds
         else ('stale' if summary_telemetry_timestamp else 'unavailable')
+    )
+    poll_window_seconds = max(120, MONITOR_POLL_INTERVAL_SECONDS * 3)
+    poll_freshness_status = (
+        'fresh' if last_poll_at and int((now - last_poll_at).total_seconds()) <= poll_window_seconds
+        else ('stale' if last_poll_at else 'unavailable')
     )
     summary = {
         'workspace_configured': workspace_configured,
@@ -3043,6 +3045,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'last_heartbeat_at': last_heartbeat.isoformat() if last_heartbeat else None,
         'last_telemetry_at': summary_telemetry_timestamp.isoformat() if summary_telemetry_timestamp else None,
         'last_poll_at': last_poll_at.isoformat() if last_poll_at else None,
+        'poll_freshness_status': poll_freshness_status,
         'last_detection_at': latest_detection_evaluation_at.isoformat() if latest_detection_evaluation_at else None,
         'evidence_source': evidence_source,
         'status_reason': degraded_reason or ('workspace_not_configured' if not workspace_configured else ('no_reporting_systems' if reporting_systems <= 0 else None)),
@@ -3066,7 +3069,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'enabled_systems': enabled_system_count,
         'active_systems': active_system_count,
         'last_heartbeat': last_heartbeat.isoformat() if last_heartbeat else None,
-        'telemetry_available': telemetry_available,
+        'telemetry_available': recent_heartbeat_systems > 0,
         'status': runtime_status,
         'provider_mode': health.get('source_type') or health.get('ingestion_mode') or 'polling',
         'last_successful_ingest': evidence_at.isoformat() if evidence_at else None,
@@ -3090,9 +3093,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'recent_confidence_basis': str((latest_detection_metadata or {}).get('confidence_basis') or latest_detection_payload.get('confidence_basis') or 'none') if isinstance(latest_detection_payload, dict) else 'none',
         'last_real_event_at': (latest_detection_metadata or {}).get('last_real_event_at') if isinstance(latest_detection_metadata, dict) else None,
         'freshness_status': (
-            'fresh'
-            if evidence_freshness is not None and evidence_freshness <= max(300, MONITOR_POLL_INTERVAL_SECONDS * 6)
-            else ('stale' if evidence_freshness is not None else 'unavailable')
+            summary['freshness_status']
         ),
         'confidence_status': (
             'high'
