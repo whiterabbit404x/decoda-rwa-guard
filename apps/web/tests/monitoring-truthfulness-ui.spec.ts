@@ -28,6 +28,12 @@ const LEGACY_PRESENTATION_SIGNALS = [
   'invalid_enabled_targets',
   'detection_outcome',
 ] as const;
+const EXPLICIT_LEGACY_RUNTIME_SIGNALS = [
+  'feed.lastTelemetryAt',
+  'feed.lastPollAt',
+  'liveFeed.lastTelemetryAt',
+  'liveFeed.lastPollAt',
+] as const;
 
 test.describe('monitoring truthfulness UI copy', () => {
   test('workspace banner uses only normalized presentation fields', async () => {
@@ -63,6 +69,7 @@ test.describe('monitoring truthfulness UI copy', () => {
     const workspaceBanner = source('workspace-monitoring-mode-banner.tsx');
     const monitoringOverview = source('monitoring-overview-panel.tsx');
     const dashboardPageContent = source('dashboard-page-content.tsx');
+    const workspaceOwnershipBar = source('workspace-ownership-bar.tsx');
 
     LEGACY_PRESENTATION_SIGNALS.forEach((legacySignal) => {
       expect(threatPanel).not.toContain(legacySignal);
@@ -70,6 +77,13 @@ test.describe('monitoring truthfulness UI copy', () => {
       expect(workspaceBanner).not.toContain(legacySignal);
       expect(monitoringOverview).not.toContain(legacySignal);
       expect(dashboardPageContent).not.toContain(legacySignal);
+      expect(workspaceOwnershipBar).not.toContain(legacySignal);
+    });
+
+    EXPLICIT_LEGACY_RUNTIME_SIGNALS.forEach((legacySignal) => {
+      expect(threatPanel).not.toContain(legacySignal);
+      expect(dashboardPageContent).not.toContain(legacySignal);
+      expect(workspaceOwnershipBar).not.toContain(legacySignal);
     });
   });
 
@@ -84,6 +98,30 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(dashboardPageContent).toContain('monitoringPresentation.pollTimestampLabel');
     expect(dashboardPageContent).not.toContain('liveFeed.lastTelemetryAt');
     expect(dashboardPageContent).not.toContain('liveFeed.lastPollAt');
+    expect(dashboardPageContent).not.toContain('workspace_monitoring_summary?.last_telemetry_at');
+    expect(dashboardPageContent).not.toContain('workspace_monitoring_summary?.last_poll_at');
+    expect(dashboardPageContent).not.toContain('workspace_monitoring_summary?.last_heartbeat_at');
+  });
+
+  test('dashboard feed wording does not branch on stale/unavailable/limited/live raw conditions outside truth presentation', async () => {
+    const dashboardPageContent = source('dashboard-page-content.tsx');
+    expect(dashboardPageContent).not.toContain("monitoringPresentation.status === 'stale'");
+    expect(dashboardPageContent).not.toContain("monitoringPresentation.status === 'offline'");
+    expect(dashboardPageContent).not.toContain("monitoringPresentation.status === 'limited coverage'");
+    expect(dashboardPageContent).not.toContain("monitoringPresentation.status === 'live'");
+    expect(dashboardPageContent).not.toContain("monitoringTruth.runtime_status === 'healthy'");
+    expect(dashboardPageContent).not.toContain('monitoringTruth.last_telemetry_at');
+  });
+
+  test('workspace ownership bar shows separate telemetry/heartbeat/poll labels with no poll fallback for telemetry freshness', async () => {
+    const workspaceOwnershipBar = source('workspace-ownership-bar.tsx');
+    expect(workspaceOwnershipBar).toContain('presentation.telemetryTimestampLabel');
+    expect(workspaceOwnershipBar).toContain('presentation.heartbeatTimestampLabel');
+    expect(workspaceOwnershipBar).toContain('presentation.pollTimestampLabel');
+    expect(workspaceOwnershipBar).not.toContain('presentation.telemetryTimestampLabel || presentation.pollTimestampLabel');
+    expect(workspaceOwnershipBar).not.toContain('presentation.telemetryTimestampLabel ?? presentation.pollTimestampLabel');
+    expect(workspaceOwnershipBar).not.toContain('feed.monitoring.lastPollAt');
+    expect(workspaceOwnershipBar).not.toContain('feed.monitoring.lastTelemetryAt');
   });
 
   test('threat panel keeps contradiction guardrails visible in operator copy', async () => {
