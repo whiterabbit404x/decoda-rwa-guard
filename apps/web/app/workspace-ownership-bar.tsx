@@ -2,23 +2,21 @@
 
 import { useMemo } from 'react';
 
+import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
 import { usePilotAuth } from './pilot-auth-context';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
-
-function feedLabel(offline: boolean, degraded: boolean, stale: boolean) {
-  if (offline) return 'offline';
-  if (degraded) return 'degraded';
-  if (stale) return 'stale';
-  return 'fresh';
-}
+import { hasLiveTelemetry, resolveWorkspaceMonitoringTruth } from './workspace-monitoring-truth';
 
 export default function WorkspaceOwnershipBar() {
   const { user } = usePilotAuth();
   const feed = useLiveWorkspaceFeed();
+  const truth = useMemo(() => resolveWorkspaceMonitoringTruth(feed.runtimeStatus), [feed.runtimeStatus]);
+  const presentation = useMemo(() => normalizeMonitoringPresentation(truth), [truth]);
   const role = useMemo(
     () => user?.memberships.find((membership) => membership.workspace_id === user?.current_workspace?.id)?.role ?? 'viewer',
     [user],
   );
+  const telemetryFlowing = hasLiveTelemetry(truth);
 
   return (
     <section className="dataCard" style={{ marginBottom: 12 }}>
@@ -32,9 +30,9 @@ export default function WorkspaceOwnershipBar() {
         <span className="ruleChip">Incidents affecting this workspace: {feed.counts.openIncidents}</span>
       </div>
       <p className="tableMeta">
-        Last telemetry: {feed.lastTelemetryAt ? new Date(feed.lastTelemetryAt).toLocaleString() : 'pending'} · Last poll: {feed.lastPollAt ? new Date(feed.lastPollAt).toLocaleString() : 'pending'} · coverage freshness: {feedLabel(feed.offline, feed.degraded, feed.stale)} ·
-        fetch completed: {feed.lastFetchCompletedAt ? new Date(feed.lastFetchCompletedAt).toLocaleString() : 'pending'}.
-        {feed.stale ? ' Evidence is stale for this workspace until fresh telemetry arrives.' : ' Live evidence is updating for this workspace.'}
+        Last telemetry: {presentation.telemetryTimestampLabel} · Last heartbeat: {presentation.heartbeatTimestampLabel} · Last poll: {presentation.pollTimestampLabel} · Monitoring health: {presentation.status.toLowerCase()} · Monitoring freshness: {presentation.freshness} ·
+        fetch completed: {feed.monitoring.lastFetchCompletedAt ? new Date(feed.monitoring.lastFetchCompletedAt).toLocaleString() : 'pending'}.
+        {telemetryFlowing ? ' Current telemetry is live for this workspace.' : ' Current telemetry is not yet live for this workspace.'}
       </p>
     </section>
   );
