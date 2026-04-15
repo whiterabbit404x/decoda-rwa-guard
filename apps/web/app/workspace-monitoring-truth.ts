@@ -1,5 +1,7 @@
 import type { MonitoringRuntimeStatus } from './monitoring-status-contract';
 
+type WorkspaceMonitoringSummary = NonNullable<MonitoringRuntimeStatus['workspace_monitoring_summary']>;
+
 export type WorkspaceMonitoringTruth = {
   workspace_configured: boolean;
   monitoring_mode: 'live' | 'simulator' | 'offline' | 'unavailable';
@@ -38,15 +40,14 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   contradiction_flags: [],
 };
 
-export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus | null): WorkspaceMonitoringTruth {
-  const summary = status?.workspace_monitoring_summary;
+export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMonitoringSummary | null | undefined): WorkspaceMonitoringTruth {
   if (!summary) {
     return DEFAULT_TRUTH;
   }
-  const configured_systems = Number(summary.configured_systems ?? summary.coverage_state?.configured_systems ?? status?.configured_systems ?? status?.coverage_state?.configured_systems ?? 0);
-  const reporting_systems = Number(summary.reporting_systems ?? summary.coverage_state?.reporting_systems ?? status?.reporting_systems ?? status?.coverage_state?.reporting_systems ?? 0);
+  const configured_systems = Number(summary.configured_systems ?? summary.coverage_state?.configured_systems ?? 0);
+  const reporting_systems = Number(summary.reporting_systems ?? summary.coverage_state?.reporting_systems ?? 0);
   const monitored_systems_count = Number(summary.monitored_systems_count ?? configured_systems);
-  const protected_assets_count = Number(summary.protected_assets_count ?? summary.protected_assets ?? summary.coverage_state?.protected_assets ?? status?.protected_assets ?? status?.coverage_state?.protected_assets ?? 0);
+  const protected_assets_count = Number(summary.protected_assets_count ?? summary.protected_assets ?? summary.coverage_state?.protected_assets ?? 0);
   const contradictions = [...(summary.contradiction_flags ?? [])];
 
   if (summary.runtime_status === 'offline' && summary.last_telemetry_at) {
@@ -98,6 +99,10 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
     status_reason: summary.status_reason,
     contradiction_flags: [...new Set(contradictions)],
   };
+}
+
+export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus | null): WorkspaceMonitoringTruth {
+  return resolveWorkspaceMonitoringTruthFromSummary(status?.workspace_monitoring_summary);
 }
 
 export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
