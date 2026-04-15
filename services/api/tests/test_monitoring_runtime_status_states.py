@@ -242,6 +242,8 @@ def test_runtime_status_workspace_unconfigured_false_when_coverage_exists(monkey
                 return _Result({'target_count': 1, 'asset_count': 1})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
                 return _Result(rows=[{'id': 'target-1'}])
+            if 'FROM analysis_runs' in q:
+                return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 1, 'last_real_event_at': now.isoformat(), 'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}}})
             return super().execute(query, params)
 
     monkeypatch.setattr(
@@ -864,6 +866,63 @@ def test_workspace_summary_stays_idle_until_first_reporting_telemetry(monkeypatc
     assert summary['runtime_status'] == 'idle'
     assert summary['last_telemetry_at'] is None
     assert payload['telemetry_available'] is False
+
+
+def test_contradiction_guard_flags_heartbeat_without_telemetry(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _HeartbeatOnlyConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(
+                    rows=[
+                        {
+                            'id': 'sys-1',
+                            'workspace_id': 'ws-1',
+                            'asset_id': 'asset-1',
+                            'target_id': 'target-1',
+                            'is_enabled': True,
+                            'runtime_status': 'idle',
+                            'last_heartbeat': now.isoformat(),
+                            'monitoring_interval_seconds': 30,
+                            'created_at': now.isoformat(),
+                            'last_event_at': None,
+                        }
+                    ]
+                )
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 1, 'asset_count': 1})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[{'id': 'target-1'}])
+            if 'FROM analysis_runs' in q:
+                return _Result(
+                    {
+                        'created_at': now,
+                        'response_payload': {
+                            'metadata': {
+                                'recent_real_event_count': 1,
+                                'last_real_event_at': now.isoformat(),
+                                'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
+                            }
+                        },
+                    }
+                )
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_HeartbeatOnlyConn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    summary = payload['workspace_monitoring_summary']
+    assert summary['last_heartbeat_at'] is not None
+    assert summary['last_telemetry_at'] is None
+    assert 'heartbeat_without_telemetry_timestamp' in summary['contradiction_flags']
 
 
 def test_contradiction_guard_workspace_not_configured_with_monitored_systems_flagged(monkeypatch):

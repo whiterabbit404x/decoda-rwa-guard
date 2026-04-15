@@ -243,6 +243,7 @@ function derivePageState(params: {
   runtimeStatus: string;
   monitoredSystems: number;
   invalidTargets: number;
+  hasLiveTelemetry: boolean;
 }): PageOperationalState {
   const {
     loadingSnapshot,
@@ -257,6 +258,7 @@ function derivePageState(params: {
     runtimeStatus,
     monitoredSystems,
     invalidTargets,
+    hasLiveTelemetry,
   } = params;
 
   if (!loadingSnapshot && snapshotError && reportingSystems === 0) {
@@ -289,11 +291,15 @@ function derivePageState(params: {
     return 'degraded_partial';
   }
 
-  if (liveDetections.length > 0) {
+  if (hasLiveTelemetry && liveDetections.length > 0) {
     return 'healthy_live';
   }
 
-  return 'configured_no_signals';
+  if (hasLiveTelemetry) {
+    return 'configured_no_signals';
+  }
+
+  return 'degraded_partial';
 }
 
 function PageStateBanner({ state, telemetryLabel, pollLabel, reason }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null }) {
@@ -301,7 +307,7 @@ function PageStateBanner({ state, telemetryLabel, pollLabel, reason }: { state: 
     return <p className="explanation">Live monitoring is healthy. Telemetry freshness and threat detections reflect current workspace conditions.</p>;
   }
   if (state === 'configured_no_signals') {
-    return <p className="explanation">Monitoring active. Waiting for activity. Telemetry remains current across configured systems.</p>;
+    return <p className="explanation">Monitoring healthy. No active detections right now. Live telemetry remains current across reporting systems.</p>;
   }
   if (state === 'unconfigured_workspace') {
     return <p className="explanation">No monitored systems are configured. Live threat detection will begin after at least one protected system is added.</p>;
@@ -420,16 +426,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
   const openAlerts = alerts.length;
   const activeIncidents = incidents.length;
-  const simulatorMode =
-    String(feed.runtimeStatus?.source_of_evidence ?? '').toLowerCase() === 'simulator' ||
-    String(
-      feed.runtimeStatus?.provider_mode ??
-      feed.runtimeStatus?.configured_mode ??
-      feed.runtimeStatus?.mode ??
-      ''
-    ).toLowerCase() === 'demo';
-  const protectedAssetCount = Number(feed.runtimeStatus?.protected_assets_count ?? feed.counts.protectedAssets);
   const truth = resolveWorkspaceMonitoringTruth(feed.runtimeStatus);
+  const simulatorMode = truth.monitoring_mode === 'simulator' || truth.evidence_source === 'simulator';
+  const protectedAssetCount = Number(truth.protected_assets ?? feed.counts.protectedAssets);
   const workspaceConfigured = truth.workspace_configured;
   const configuredSystems = truth.configured_systems;
   const reportingSystems = truth.reporting_systems;
@@ -541,6 +540,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     runtimeStatus,
     monitoredSystems: feed.counts.monitoredSystems,
     invalidTargets: Number(feed.runtimeStatus?.invalid_enabled_targets ?? 0),
+    hasLiveTelemetry: showLiveTelemetry,
   });
 
   const timelineItems = useMemo<TimelineItem[]>(() => {
@@ -614,7 +614,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const feedHeading = pageState === 'healthy_live'
     ? 'Live detections available'
     : pageState === 'configured_no_signals'
-      ? (reportingSystems > 0 ? 'No active detections, monitoring healthy' : 'No active detections, waiting for telemetry')
+      ? (reportingSystems > 0 ? 'No active detections, monitoring healthy' : 'No active detections, waiting for live telemetry')
       : pageState === 'historical_only'
         ? 'Historical detections only'
         : pageState === 'unconfigured_workspace'
@@ -642,7 +642,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           {monitoringMode === 'simulator' || simulatorMode ? <span className="statusBadge statusBadge-attention">SIMULATOR MODE</span> : null}
           <span className="ruleChip">Operational state {pageState.replaceAll('_', ' ')}</span>
           <span className="ruleChip">{showLiveTelemetry ? `Live telemetry ${telemetryLabel}` : 'Current telemetry unavailable'}</span>
-          <span className="ruleChip">Threat feed updated {pollLabel}</span>
+          <span className="ruleChip">Last poll {pollLabel}</span>
           <span className="ruleChip">Evidence source {String(truth.evidence_source || feed.runtimeStatus?.source_of_evidence || 'none')}</span>
           <span className="ruleChip">Protected assets {protectedAssetCount}</span>
           <span className="ruleChip">Monitored systems {configuredSystems}</span>
@@ -655,7 +655,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </div>
         <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth.status_reason} />
         <p className="tableMeta">
-          Last telemetry received: {showLiveTelemetry ? telemetryLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last successful poll: {pollLabel} · Runtime freshness {String(truth.freshness_status || 'unavailable')} · Runtime confidence {String(truth.confidence_status || 'unavailable')}
+          Last telemetry received: {showLiveTelemetry ? telemetryLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last successful poll: {pollLabel} · Last heartbeat {formatRelativeTime(truth.last_heartbeat_at)} · Runtime freshness {String(truth.freshness_status || 'unavailable')} · Runtime confidence {String(truth.confidence_status || 'unavailable')}
         </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
@@ -669,8 +669,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
         <article className="dataCard kpiCard">
           <p className="sectionEyebrow">Telemetry Freshness</p>
-          <p className="kpiValue">{telemetryLabel}</p>
-          <p className="tableMeta">Detection evaluation {detectionEvalLabel}</p>
+          <p className="kpiValue">{showLiveTelemetry ? telemetryLabel : 'Unavailable'}</p>
+          <p className="tableMeta">Detection evaluation {detectionEvalLabel}. Polling and heartbeat timestamps never count as telemetry.</p>
         </article>
         <article className="dataCard kpiCard">
           <p className="sectionEyebrow">Protected Assets</p>

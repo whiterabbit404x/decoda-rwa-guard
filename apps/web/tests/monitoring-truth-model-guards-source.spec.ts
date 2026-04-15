@@ -21,6 +21,7 @@ test('threat and monitored systems pages use shared truth guard helpers', () => 
   expect(helper).toContain('workspace_unconfigured_with_coverage');
   expect(helper).toContain('zero_coverage_with_live_telemetry');
   expect(helper).toContain('poll_without_telemetry_timestamp');
+  expect(helper).toContain('heartbeat_without_telemetry_timestamp');
   expect(helper).toContain("truth.monitoring_mode === 'live'");
   expect(helper).toContain("truth.evidence_source === 'live'");
 });
