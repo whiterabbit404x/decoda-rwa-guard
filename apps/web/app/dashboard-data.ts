@@ -4,6 +4,9 @@ import {
   getDashboardFreshnessLabel,
   normalizeDashboardPresentationState,
 } from './dashboard-status-presentation';
+import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
+import type { MonitoringRuntimeStatus } from './monitoring-status-contract';
+import { resolveWorkspaceMonitoringTruthFromSummary } from './workspace-monitoring-truth';
 
 export type DashboardCard = {
   title: string;
@@ -1051,6 +1054,7 @@ type DashboardPageAggregateResponse = {
   threat_dashboard: ThreatDashboardResponse;
   compliance_dashboard: ComplianceDashboardResponse;
   resilience_dashboard: ResilienceDashboardResponse;
+  workspace_monitoring_summary?: MonitoringRuntimeStatus['workspace_monitoring_summary'] | null;
 };
 
 const DASHBOARD_ENDPOINT_PATHS: Record<DashboardEndpointKey, string> = {
@@ -1515,6 +1519,7 @@ export type DashboardPageData = {
   threatDashboard: ThreatDashboardResponse;
   complianceDashboard: ComplianceDashboardResponse;
   resilienceDashboard: ResilienceDashboardResponse;
+  workspaceMonitoringSummary: MonitoringRuntimeStatus['workspace_monitoring_summary'] | null;
   diagnostics: DashboardDiagnostics;
 };
 
@@ -1542,12 +1547,17 @@ export type DashboardViewModel = {
     freshness: string;
     lastUpdated: string;
     lastConfirmedCheckpoint: string;
+    lastTelemetryAt: string;
+    lastHeartbeatAt: string;
+    lastPollAt: string;
     coverageLevel: string;
     recentActivitySummary: string;
     openAlerts: number;
     openIncidents: number;
     protectedAssets: number;
     monitoredTargets: number;
+    configuredSystems: number;
+    reportingSystems: number;
   };
   featurePresentation: Record<Exclude<DashboardEndpointKey, 'dashboard'>, DashboardPresentationState>;
 };
@@ -1555,6 +1565,34 @@ export type DashboardViewModel = {
 export type DashboardViewModelOptions = {
   gatewayReachableOverride?: boolean;
 };
+
+
+function mapMonitoringStatusToDashboardPresentation(status: ReturnType<typeof normalizeMonitoringPresentation>['status']): DashboardPresentationState {
+  if (status === 'live') return 'live';
+  if (status === 'stale') return 'stale';
+  if (status === 'offline') return 'offline';
+  if (status === 'limited coverage') return 'limited_coverage';
+  return 'degraded';
+}
+
+function formatMonitoringTimestamp(value: string | null, unavailableLabel: string): string {
+  return value ? new Date(value).toLocaleString() : unavailableLabel;
+}
+
+function monitoringCoverageLabel(status: ReturnType<typeof normalizeMonitoringPresentation>['status']): string {
+  if (status === 'live') return 'Verified telemetry';
+  if (status === 'limited coverage') return 'Coverage currently limited';
+  if (status === 'stale') return 'Telemetry delayed';
+  if (status === 'offline') return 'Telemetry unavailable';
+  return 'Monitoring state degraded';
+}
+
+function monitoringConfidenceLabel(confidence: ReturnType<typeof normalizeMonitoringPresentation>['confidence']): string {
+  if (confidence === 'verified telemetry') return 'Verified telemetry';
+  if (confidence === 'recent telemetry') return 'Recent telemetry';
+  if (confidence === 'limited telemetry') return 'Limited telemetry';
+  return 'Telemetry unavailable';
+}
 
 export function buildThreatDashboardRuntimeDiagnostics(
   data: Pick<DashboardPageData, 'threatDashboard' | 'diagnostics'>
@@ -1705,6 +1743,7 @@ export async function fetchDashboardPageData(
       threatDashboard: normalizeThreatDashboardPayload(aggregatePayload.threat_dashboard),
       complianceDashboard: aggregatePayload.compliance_dashboard,
       resilienceDashboard: aggregatePayload.resilience_dashboard,
+      workspaceMonitoringSummary: aggregatePayload.workspace_monitoring_summary ?? null,
       diagnostics,
     };
   }
@@ -1825,6 +1864,7 @@ export async function fetchDashboardPageData(
     threatDashboard,
     complianceDashboard,
     resilienceDashboard,
+    workspaceMonitoringSummary: null,
     diagnostics,
   };
 }
@@ -1858,36 +1898,28 @@ export function buildDashboardViewModel(
   } as const;
   const openAlerts = riskDashboard.summary.high_alert_count + threatDashboard.summary.critical_or_high_alerts;
   const openIncidents = resilienceDashboard.summary.incident_count;
-  const protectedAssets = complianceDashboard.summary.paused_asset_count
-    + complianceDashboard.summary.allowlisted_wallet_count
-    + complianceDashboard.summary.blocklisted_wallet_count
-    + complianceDashboard.summary.frozen_wallet_count;
-  const monitoredTargets = Math.max(
-    riskDashboard.summary.total_transactions,
-    threatDashboard.active_alerts.length + threatDashboard.recent_detections.length,
-    resilienceDashboard.reconciliation_result.per_ledger_balances.length
-  );
-  const checkpoints = [
-    riskDashboard.generated_at,
-    threatDashboard.generated_at,
-    complianceDashboard.generated_at,
-    resilienceDashboard.generated_at,
-  ]
-    .filter(Boolean)
-    .map((value) => new Date(value).getTime())
-    .filter((value) => Number.isFinite(value));
-  const lastCheckpointAt = checkpoints.length > 0 ? new Date(Math.max(...checkpoints)).toISOString() : null;
+  const monitoringTruth = resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary);
+  const monitoringPresentation = normalizeMonitoringPresentation(monitoringTruth);
+  const monitoringPresentationState = mapMonitoringStatusToDashboardPresentation(monitoringPresentation.status);
+  const lastTelemetryAt = formatMonitoringTimestamp(monitoringTruth.last_telemetry_at, 'Telemetry timestamp unavailable');
+  const lastHeartbeatAt = formatMonitoringTimestamp(monitoringTruth.last_heartbeat_at, 'Heartbeat timestamp unavailable');
+  const lastPollAt = formatMonitoringTimestamp(monitoringTruth.last_poll_at, 'Poll timestamp unavailable');
   const workspaceMonitoring = {
-    presentationState: diagnostics.experienceState,
-    freshness: getDashboardFreshnessLabel(diagnostics.experienceState),
-    lastUpdated: lastCheckpointAt ? new Date(lastCheckpointAt).toLocaleString() : 'Telemetry unavailable',
-    lastConfirmedCheckpoint: lastCheckpointAt ? new Date(lastCheckpointAt).toLocaleString() : 'Last confirmed checkpoint unavailable',
-    coverageLevel: diagnostics.coverageLimited ? 'Coverage currently limited' : diagnostics.experienceState === 'live' ? 'Verified telemetry' : 'Monitoring state degraded',
-    recentActivitySummary: `${openAlerts} open alerts · ${openIncidents} open incidents · ${formatSourceLabel(diagnostics.endpoints.threatDashboard.payloadState)}`,
+    presentationState: monitoringPresentationState,
+    freshness: monitoringConfidenceLabel(monitoringPresentation.confidence),
+    lastUpdated: lastTelemetryAt,
+    lastConfirmedCheckpoint: lastHeartbeatAt,
+    lastTelemetryAt,
+    lastHeartbeatAt,
+    lastPollAt,
+    coverageLevel: monitoringCoverageLabel(monitoringPresentation.status),
+    recentActivitySummary: `${openAlerts} open alerts · ${openIncidents} open incidents · ${monitoringPresentation.summary}`,
     openAlerts,
     openIncidents,
-    protectedAssets,
-    monitoredTargets,
+    protectedAssets: monitoringTruth.protected_assets_count,
+    monitoredTargets: monitoringTruth.reporting_systems,
+    configuredSystems: monitoringTruth.configured_systems,
+    reportingSystems: monitoringTruth.reporting_systems,
   };
   const summaryCards = [
     {

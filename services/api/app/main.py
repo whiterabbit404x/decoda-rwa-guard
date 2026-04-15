@@ -1578,13 +1578,15 @@ def resilience_dashboard() -> dict[str, Any]:
     summary='Aggregated dashboard page payload',
     description='Returns dashboard + risk + threat + compliance + resilience payloads in a single backend response for initial authenticated dashboard render.',
 )
-def ops_dashboard_page_data() -> dict[str, Any]:
+def ops_dashboard_page_data(request: Request) -> dict[str, Any]:
+    runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
     return {
         'dashboard': dashboard(),
         'risk_dashboard': risk_dashboard(),
         'threat_dashboard': threat_dashboard(),
         'compliance_dashboard': compliance_dashboard(),
         'resilience_dashboard': resilience_dashboard(),
+        'workspace_monitoring_summary': runtime_payload.get('workspace_monitoring_summary'),
     }
 
 
