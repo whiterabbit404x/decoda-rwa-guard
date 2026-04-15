@@ -15,6 +15,7 @@ def build_workspace_monitoring_summary(
     monitoring_mode: str,
     runtime_status: str,
     configured_systems: int,
+    monitored_systems_count: int | None,
     reporting_systems: int,
     protected_assets: int,
     last_poll_at: datetime | None,
@@ -26,6 +27,7 @@ def build_workspace_monitoring_summary(
     telemetry_window_seconds: int,
 ) -> dict[str, Any]:
     normalized_configured = max(int(configured_systems), 0)
+    normalized_monitored = max(int(monitored_systems_count if monitored_systems_count is not None else configured_systems), 0)
     normalized_reporting = max(int(reporting_systems), 0)
     normalized_assets = max(int(protected_assets), 0)
     normalized_mode = monitoring_mode if monitoring_mode in {'live', 'simulator', 'offline', 'unavailable'} else 'unavailable'
@@ -53,13 +55,24 @@ def build_workspace_monitoring_summary(
         'configured_systems': normalized_configured,
         'reporting_systems': normalized_reporting,
         'protected_assets': normalized_assets,
+        'monitored_systems_count': normalized_monitored,
+        'reporting_systems_count': normalized_reporting,
+        'protected_assets_count': normalized_assets,
         'coverage_state': {
             'configured_systems': normalized_configured,
             'reporting_systems': normalized_reporting,
             'protected_assets': normalized_assets,
         },
+        'coverage_counts': {
+            'configured_systems': normalized_configured,
+            'monitored_systems_count': normalized_monitored,
+            'reporting_systems_count': normalized_reporting,
+            'protected_assets_count': normalized_assets,
+        },
         'freshness_status': freshness_status,
         'confidence_status': confidence_status,
+        'freshness': freshness_status,
+        'confidence': confidence_status,
         'last_poll_at': _isoformat(last_poll_at),
         'last_heartbeat_at': _isoformat(last_heartbeat_at),
         'last_telemetry_at': _isoformat(telemetry_timestamp),
@@ -76,7 +89,11 @@ def build_workspace_monitoring_summary(
         summary['contradiction_flags'].append('telemetry_unavailable_with_timestamp')
     if summary['freshness_status'] == 'fresh' and summary['last_telemetry_at'] is None:
         summary['contradiction_flags'].append('telemetry_unavailable_marked_fresh')
-    if (not summary['workspace_configured']) and (summary['configured_systems'] > 0 or summary['protected_assets'] > 0):
+    if (not summary['workspace_configured']) and (
+        summary['configured_systems'] > 0
+        or summary['monitored_systems_count'] > 0
+        or summary['protected_assets'] > 0
+    ):
         summary['contradiction_flags'].append('workspace_unconfigured_with_coverage')
     if summary['configured_systems'] == 0 and summary['reporting_systems'] == 0 and summary['last_telemetry_at']:
         summary['contradiction_flags'].append('zero_coverage_with_live_telemetry')

@@ -428,7 +428,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const activeIncidents = incidents.length;
   const truth = resolveWorkspaceMonitoringTruth(feed.runtimeStatus);
   const simulatorMode = truth.monitoring_mode === 'simulator' || truth.evidence_source === 'simulator';
-  const protectedAssetCount = Number(truth.protected_assets ?? feed.counts.protectedAssets);
+  const protectedAssetCount = Number(truth.protected_assets_count ?? feed.counts.protectedAssets);
   const workspaceConfigured = truth.workspace_configured;
   const configuredSystems = truth.configured_systems;
   const reportingSystems = truth.reporting_systems;
@@ -655,7 +655,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </div>
         <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth.status_reason} />
         <p className="tableMeta">
-          Last telemetry received: {showLiveTelemetry ? telemetryLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last successful poll: {pollLabel} · Last heartbeat {formatRelativeTime(truth.last_heartbeat_at)} · Runtime freshness {String(truth.freshness_status || 'unavailable')} · Runtime confidence {String(truth.confidence_status || 'unavailable')}
+          Last telemetry: {showLiveTelemetry ? telemetryLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {pollLabel} · Last heartbeat: {formatRelativeTime(truth.last_heartbeat_at)} · Runtime freshness: {String(truth.freshness_status || 'unavailable')} · Runtime confidence: {String(truth.confidence_status || 'unavailable')}
         </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
@@ -788,7 +788,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 <li>Configured systems: {Math.max(configuredSystems, 0)}</li>
                 <li>Reporting systems: {reportingSystems}</li>
                 <li>Protected assets: {protectedAssetCount}</li>
-                <li>Telemetry freshness: {telemetryLabel}</li>
+                <li>Last telemetry: {showLiveTelemetry ? telemetryLabel : 'Not available'}</li>
+                <li>Last poll: {pollLabel}</li>
+                <li>Last heartbeat: {formatRelativeTime(truth.last_heartbeat_at)}</li>
               </ul>
               <div className="buttonRow">
                 <Link href="/monitored-systems" prefetch={false}>Open monitored systems</Link>
@@ -804,7 +806,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                     <th>Type</th>
                     <th>Status</th>
                     <th>Coverage</th>
-                    <th>Last seen</th>
+                    <th>Last telemetry</th>
+                    <th>Last poll</th>
+                    <th>Last heartbeat</th>
                     <th>Latest signal</th>
                     <th>Risk</th>
                     <th>Destination</th>
@@ -820,7 +824,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                         <td>{target.target_type || target.asset_type || 'System'}</td>
                         <td><span className={`statusBadge statusBadge-${target.health_status === 'broken' ? 'attention' : (target.monitoring_enabled ? 'healthy' : 'offline')}`}>{target.health_status === 'broken' ? 'Broken' : (target.monitoring_enabled ? 'Monitored' : 'Offline')}</span></td>
                         <td><span className={`statusBadge statusBadge-${coverageTone(coverage)}`}>{coverage}</span></td>
-                        <td>{formatRelativeTime(target.last_checked_at)}</td>
+                        <td>{showLiveTelemetry ? telemetryLabel : 'Not available'}</td>
+                        <td>{pollLabel}</td>
+                        <td>{formatRelativeTime(truth.last_heartbeat_at)}</td>
                         <td>{alerts[0]?.title || incidents[0]?.title || 'No active signals'}</td>
                         <td><span className={`statusBadge statusBadge-${risk === 'High' ? 'high' : 'low'}`}>{risk}</span></td>
                         <td><Link href="/monitored-systems" prefetch={false}>Open asset coverage view</Link></td>
@@ -854,6 +860,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                         <td>System</td>
                         <td><span className={`statusBadge statusBadge-${statusTone}`}>{statusLabel}</span></td>
                         <td><span className={`statusBadge statusBadge-${coverageTone(coverage)}`}>{coverage}</span></td>
+                        <td>{system.last_event_at ? formatRelativeTime(system.last_event_at) : 'Not available'}</td>
+                        <td>{pollLabel}</td>
                         <td>{formatRelativeTime(system.last_heartbeat)}</td>
                         <td>{system.last_error_text || system.coverage_reason || alerts[0]?.title || incidents[0]?.title || 'No active signals'}</td>
                         <td><span className={`statusBadge statusBadge-${risk === 'High' ? 'high' : 'low'}`}>{risk}</span></td>

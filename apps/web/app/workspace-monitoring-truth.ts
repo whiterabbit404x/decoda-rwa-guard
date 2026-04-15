@@ -5,8 +5,9 @@ export type WorkspaceMonitoringTruth = {
   monitoring_mode: 'live' | 'simulator' | 'offline' | 'unavailable';
   runtime_status: 'provisioning' | 'healthy' | 'degraded' | 'idle' | 'failed' | 'disabled' | 'offline';
   configured_systems: number;
+  monitored_systems_count: number;
   reporting_systems: number;
-  protected_assets: number;
+  protected_assets_count: number;
   freshness_status: 'fresh' | 'stale' | 'unavailable';
   confidence_status: 'high' | 'medium' | 'low' | 'unavailable';
   last_poll_at: string | null;
@@ -23,8 +24,9 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   monitoring_mode: 'unavailable',
   runtime_status: 'offline',
   configured_systems: 0,
+  monitored_systems_count: 0,
   reporting_systems: 0,
-  protected_assets: 0,
+  protected_assets_count: 0,
   freshness_status: 'unavailable',
   confidence_status: 'unavailable',
   last_poll_at: null,
@@ -43,7 +45,8 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
   }
   const configured_systems = Number(summary.configured_systems ?? summary.coverage_state?.configured_systems ?? status?.configured_systems ?? status?.coverage_state?.configured_systems ?? 0);
   const reporting_systems = Number(summary.reporting_systems ?? summary.coverage_state?.reporting_systems ?? status?.reporting_systems ?? status?.coverage_state?.reporting_systems ?? 0);
-  const protected_assets = Number(summary.protected_assets ?? summary.coverage_state?.protected_assets ?? status?.protected_assets ?? status?.coverage_state?.protected_assets ?? 0);
+  const monitored_systems_count = Number(summary.monitored_systems_count ?? configured_systems);
+  const protected_assets_count = Number(summary.protected_assets_count ?? summary.protected_assets ?? summary.coverage_state?.protected_assets ?? status?.protected_assets ?? status?.coverage_state?.protected_assets ?? 0);
   const contradictions = [...(summary.contradiction_flags ?? [])];
 
   if (summary.runtime_status === 'offline' && summary.last_telemetry_at) {
@@ -55,7 +58,7 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
   if (summary.freshness_status === 'unavailable' && summary.last_telemetry_at) {
     contradictions.push('telemetry_unavailable_with_timestamp');
   }
-  if (!summary.workspace_configured && (configured_systems > 0 || protected_assets > 0)) {
+  if (!summary.workspace_configured && (configured_systems > 0 || monitored_systems_count > 0 || protected_assets_count > 0)) {
     contradictions.push('workspace_unconfigured_with_coverage');
   }
   if (configured_systems === 0 && reporting_systems === 0 && summary.last_telemetry_at) {
@@ -82,8 +85,9 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
     monitoring_mode: summary.monitoring_mode,
     runtime_status: summary.runtime_status,
     configured_systems,
+    monitored_systems_count,
     reporting_systems,
-    protected_assets,
+    protected_assets_count,
     freshness_status: summary.freshness_status,
     confidence_status: summary.confidence_status,
     last_poll_at: summary.last_poll_at,
