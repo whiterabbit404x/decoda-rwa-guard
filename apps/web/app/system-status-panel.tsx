@@ -62,7 +62,7 @@ export default function SystemStatusPanel({ monitoring, diagnostics, healthDetai
           <p className="sectionEyebrow">System status</p>
           <h2>Workspace monitoring state</h2>
         </div>
-        <StatusBadge state={diagnostics ? toDashboardBadgeState(diagnostics.experienceState) : monitoringStatusToBadgeState(presentation.status)} />
+        <StatusBadge state={monitoringStatusToBadgeState(presentation.status)} />
       </div>
       <div className="kvGrid compactKvGrid">
         <p><span>Status label</span>{presentation.statusLabel}</p>

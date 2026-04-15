@@ -127,6 +127,8 @@ test.describe('dashboard truth-model rendering rules', () => {
     const panel = appSource('system-status-panel.tsx');
 
     expect(panel).toContain('presentation.statusLabel');
+    expect(panel).toContain('StatusBadge state={monitoringStatusToBadgeState(presentation.status)}');
+    expect(panel).toContain('showDiagnostics && diagnostics ? <p><span>API source</span>{diagnostics.apiUrlSource}</p> : null');
     expect(panel).toContain('presentation.telemetryTimestampLabel');
     expect(panel).toContain('presentation.heartbeatTimestampLabel');
     expect(panel).toContain('presentation.pollTimestampLabel');

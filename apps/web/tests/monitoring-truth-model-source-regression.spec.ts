@@ -34,6 +34,14 @@ test.describe('monitoring truth-model source regressions', () => {
     expect(panel).not.toContain('checkpoint_age_seconds');
   });
 
+  test('system status panel badge source is not diagnostics-first', () => {
+    const panel = appSource('system-status-panel.tsx');
+
+    expect(panel).toContain('StatusBadge state={monitoringStatusToBadgeState(presentation.status)}');
+    expect(panel).not.toContain('diagnostics ? toDashboardBadgeState(diagnostics.experienceState)');
+    expect(panel).not.toContain('diagnostics.experienceState');
+  });
+
   test('dashboard data keeps workspace monitoring wording free of diagnostics/checkpoint legacy fields', () => {
     const dashboardData = appSource('dashboard-data.ts');
 
