@@ -52,7 +52,7 @@ test.describe('monitoring status presentation adapter', () => {
     expect(idle.statusLabel).not.toBe('OFFLINE');
   });
 
-  test('treats healthy idle heartbeats as recent telemetry', async () => {
+  test('does not treat polling heartbeats alone as live telemetry', async () => {
     const idleHealthy = normalizeMonitoringPresentation({
       mode: 'LIMITED_COVERAGE',
       monitoring_status: 'idle',
@@ -63,10 +63,25 @@ test.describe('monitoring status presentation adapter', () => {
       recent_real_event_count: 0,
       recent_confidence_basis: 'provider_evidence',
       last_heartbeat: new Date().toISOString(),
+      workspace_monitoring_summary: {
+        workspace_configured: true,
+        monitoring_mode: 'live',
+        runtime_status: 'idle',
+        coverage_state: { configured_systems: 3, reporting_systems: 0, protected_assets: 3 },
+        freshness_status: 'unavailable',
+        confidence_status: 'low',
+        last_heartbeat_at: new Date().toISOString(),
+        last_telemetry_at: null,
+        last_poll_at: new Date().toISOString(),
+        last_detection_at: null,
+        evidence_source: 'none',
+        status_reason: 'no_reporting_systems',
+        contradiction_flags: [],
+      },
     } as MonitoringRuntimeStatus);
-    expect(idleHealthy.freshness).toBe('recent');
-    expect(idleHealthy.confidence).toBe('recent telemetry');
-    expect(idleHealthy.status).toBe('live');
+    expect(idleHealthy.freshness).toBe('unavailable');
+    expect(idleHealthy.confidence).toBe('limited telemetry');
+    expect(idleHealthy.status).toBe('limited coverage');
   });
 
   test('prefers successful monitoring cycle timestamp as last checkpoint label', async () => {

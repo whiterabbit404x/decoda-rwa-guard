@@ -3020,6 +3020,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     else:
         runtime_status_summary = 'healthy'
     monitoring_mode = 'simulator' if evidence_source == 'simulator' else ('offline' if not workspace_configured else 'live')
+    telemetry_countable = bool(workspace_configured and reporting_systems > 0 and evidence_source == 'live' and telemetry_timestamp is not None)
+    summary_telemetry_timestamp = telemetry_timestamp if telemetry_countable else None
+    summary_freshness_status = (
+        'fresh' if summary_telemetry_timestamp and int((now - summary_telemetry_timestamp).total_seconds()) <= telemetry_window_seconds
+        else ('stale' if summary_telemetry_timestamp else 'unavailable')
+    )
     summary = {
         'workspace_configured': workspace_configured,
         'monitoring_mode': monitoring_mode,
@@ -3029,16 +3035,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'reporting_systems': int(reporting_systems),
             'protected_assets': int(protected_assets_count),
         },
-        'freshness_status': (
-            'fresh' if telemetry_timestamp and int((now - telemetry_timestamp).total_seconds()) <= telemetry_window_seconds
-            else ('stale' if telemetry_timestamp else 'unavailable')
-        ),
+        'freshness_status': summary_freshness_status,
         'confidence_status': (
-            'high' if evidence_source == 'live' and reporting_systems > 0
+            'high' if telemetry_countable
             else ('medium' if evidence_source == 'simulator' and reporting_systems > 0 else ('low' if workspace_configured else 'unavailable'))
         ),
         'last_heartbeat_at': last_heartbeat.isoformat() if last_heartbeat else None,
-        'last_telemetry_at': telemetry_timestamp.isoformat() if telemetry_timestamp else None,
+        'last_telemetry_at': summary_telemetry_timestamp.isoformat() if summary_telemetry_timestamp else None,
         'last_poll_at': last_poll_at.isoformat() if last_poll_at else None,
         'last_detection_at': latest_detection_evaluation_at.isoformat() if latest_detection_evaluation_at else None,
         'evidence_source': evidence_source,
@@ -3051,6 +3054,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         summary['contradiction_flags'].append('healthy_without_reporting_systems')
     if summary['last_telemetry_at'] is None and summary['freshness_status'] == 'fresh':
         summary['contradiction_flags'].append('telemetry_unavailable_marked_fresh')
+    if summary['freshness_status'] == 'unavailable' and summary['last_telemetry_at']:
+        summary['contradiction_flags'].append('telemetry_unavailable_with_timestamp')
     if (not summary['workspace_configured']) and (summary['coverage_state']['configured_systems'] > 0 or summary['coverage_state']['protected_assets'] > 0):
         summary['contradiction_flags'].append('workspace_unconfigured_with_coverage')
 
