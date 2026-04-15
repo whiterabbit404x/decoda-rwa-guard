@@ -23,8 +23,8 @@ test('dashboard and shared shell expose truthful live workspace state', async ()
 test('workspace ownership bar uses truth presentation instead of legacy feed signals', async () => {
   const shell = read('app/workspace-ownership-bar.tsx');
 
-  expect(shell).toContain('resolveWorkspaceMonitoringTruth');
-  expect(shell).toContain('normalizeMonitoringPresentation');
+  expect(shell).toContain('feed.monitoring.truth');
+  expect(shell).toContain('feed.monitoring.presentation');
   expect(shell).toContain('hasLiveTelemetry');
 
   expect(shell).not.toContain('feedLabel(');

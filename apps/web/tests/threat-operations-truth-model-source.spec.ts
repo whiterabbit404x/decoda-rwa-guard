@@ -34,9 +34,10 @@ function appSource(fileName: string): string {
 
 test('threat panel renders telemetry copy from truth model timestamps only', () => {
   const threat = appSource('threat-operations-panel.tsx');
-  expect(threat).toContain('resolveWorkspaceMonitoringTruth');
-  expect(threat).toContain('lastTelemetryAt: truth.last_telemetry_at');
-  expect(threat).toContain('lastPollAt: truth.last_poll_at');
+  expect(threat).toContain('const truth = feed.monitoring.truth;');
+  expect(threat).toContain('const canonicalPresentation = feed.monitoring.presentation;');
+  expect(threat).toContain('lastTelemetryAt: feed.monitoring.lastTelemetryAt');
+  expect(threat).toContain('lastPollAt: feed.monitoring.lastPollAt');
   expect(threat).toContain('const showLiveTelemetry = monitoringPresentation.hasLiveTelemetry;');
   expect(threat).toContain("{showLiveTelemetry ? `Live telemetry ${telemetryLabel}` : 'Current telemetry unavailable'}");
   expect(threat).toContain('Guarded fallback copy active');
@@ -74,6 +75,7 @@ test('threat panel keeps telemetry and healthy monitoring copy guarded by truth 
   expect(threat).toContain("Last telemetry: {showLiveTelemetry ? telemetryLabel : 'Not available'}");
   expect(threat).toContain('runtimeStatus === \'offline\'');
   expect(threat).toContain("return 'offline_no_telemetry';");
+  expect(threat).toContain('const presentationStatus = canonicalPresentation.status;');
   expect(threat).toContain("monitoringHealthyCopyAllowed(truth) ? 'Monitoring healthy: telemetry and polling are current.' : 'Monitoring configured: waiting for reporting telemetry.'");
   expect(threat).toContain("reportingSystems > 0 ? 'No active detections, monitoring healthy' : 'No active detections, waiting for live telemetry'");
 });
