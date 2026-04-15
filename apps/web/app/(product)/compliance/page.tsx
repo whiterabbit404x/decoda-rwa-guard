@@ -1,14 +1,17 @@
 import ComplianceOperationsPanel from '../../compliance-operations-panel';
-import { buildDashboardViewModel, fetchDashboardPageData, formatRules, statusTone } from '../../dashboard-data';
+import { fetchDashboardPageData, formatRules, statusTone } from '../../dashboard-data';
+import { normalizeMonitoringPresentation } from '../../monitoring-status-presentation';
 import StatusBadge from '../../status-badge';
 import SystemStatusPanel from '../../system-status-panel';
+import { resolveWorkspaceMonitoringTruthFromSummary } from '../../workspace-monitoring-truth';
 
 export const dynamic = 'force-dynamic';
 
 export default async function CompliancePage() {
   const data = await fetchDashboardPageData(undefined, { featureFeeds: ['complianceDashboard'] });
   const { complianceDashboard } = data;
-  const { workspaceMonitoring } = buildDashboardViewModel(data);
+  const monitoringTruth = resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary);
+  const monitoringPresentation = normalizeMonitoringPresentation(monitoringTruth);
 
   return (
     <main className="productPage">
@@ -20,7 +23,7 @@ export default async function CompliancePage() {
         </div>
         <div className="heroPanel"><StatusBadge state={complianceDashboard.source === 'live' && !complianceDashboard.degraded ? 'live' : complianceDashboard.source === 'live' ? 'live_degraded' : 'limited_coverage'} /><p>{complianceDashboard.message}</p></div>
       </section>
-      <SystemStatusPanel diagnostics={data.diagnostics} workspaceMonitoring={workspaceMonitoring} />
+      <SystemStatusPanel diagnostics={data.diagnostics} truth={monitoringTruth} presentation={monitoringPresentation} />
       <section className="threeColumnSection">
         <div className="stack compactStack">
           <article className="dataCard">
