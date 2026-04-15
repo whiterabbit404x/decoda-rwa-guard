@@ -99,7 +99,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
 
       <PilotModeBanner />
       <DashboardOnboardingPanel liveApiReachable={diagnostics.endpoints.dashboard.ok} />
-      <SystemStatusPanel diagnostics={diagnostics} workspaceMonitoring={workspaceMonitoring} />
+      <SystemStatusPanel diagnostics={diagnostics} truth={monitoringTruth} presentation={monitoringPresentation} />
 
       <PilotOverviewPanel
         backendState={backendState}

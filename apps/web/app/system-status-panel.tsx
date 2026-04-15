@@ -1,7 +1,8 @@
 import {
   DashboardDiagnostics,
-  DashboardViewModel,
 } from './dashboard-data';
+import type { MonitoringPresentation } from './monitoring-status-presentation';
+import type { WorkspaceMonitoringTruth } from './workspace-monitoring-truth';
 import {
   explainDashboardPresentationState,
   getDashboardFreshnessLabel,
@@ -29,11 +30,12 @@ const FEATURE_LABELS = {
 
 type Props = {
   diagnostics: DashboardDiagnostics;
-  workspaceMonitoring: DashboardViewModel['workspaceMonitoring'];
+  truth: WorkspaceMonitoringTruth;
+  presentation: MonitoringPresentation;
   healthDetails?: HealthDetails | null;
 };
 
-export default function SystemStatusPanel({ diagnostics, workspaceMonitoring, healthDetails }: Props) {
+export default function SystemStatusPanel({ diagnostics, truth, presentation, healthDetails }: Props) {
   const gatewayReachable = diagnostics.endpoints.dashboard.ok;
   const dependencySummary = healthDetails?.dependencies
     ? Object.entries(healthDetails.dependencies)
@@ -51,12 +53,14 @@ export default function SystemStatusPanel({ diagnostics, workspaceMonitoring, he
         <StatusBadge state={toDashboardBadgeState(diagnostics.experienceState)} />
       </div>
       <div className="kvGrid compactKvGrid">
-        <p><span>Monitoring state</span>{getDashboardPresentationLabel(workspaceMonitoring.presentationState)}</p>
-        <p><span>Last updated</span>{workspaceMonitoring.lastUpdated}</p>
-        <p><span>Last confirmed checkpoint</span>{workspaceMonitoring.lastConfirmedCheckpoint}</p>
+        <p><span>Status label</span>{presentation.statusLabel}</p>
+        <p><span>Freshness / confidence</span>{presentation.freshness} / {presentation.confidence}</p>
+        <p><span>Last telemetry</span>{presentation.telemetryTimestampLabel}</p>
+        <p><span>Last heartbeat</span>{presentation.heartbeatTimestampLabel}</p>
+        <p><span>Last poll</span>{presentation.pollTimestampLabel}</p>
+        <p><span>Reporting / configured / protected</span>{truth.reporting_systems} / {truth.configured_systems} / {truth.protected_assets_count}</p>
         <p><span>Gateway reachable</span>{gatewayReachable ? 'Yes' : 'No'}</p>
         <p><span>API source</span>{diagnostics.apiUrlSource}</p>
-        <p><span>Coverage currently limited</span>{workspaceMonitoring.coverageLevel === 'Coverage currently limited' ? 'Yes' : 'No'}</p>
         <p><span>Dependency health</span>{dependencySummary}</p>
       </div>
       <div className="statusMatrix">
