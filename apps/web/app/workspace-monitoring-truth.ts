@@ -61,6 +61,14 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
   if (configured_systems === 0 && reporting_systems === 0 && summary.last_telemetry_at) {
     contradictions.push('zero_coverage_with_live_telemetry');
   }
+  if (
+    summary.last_poll_at
+    && !summary.last_telemetry_at
+    && summary.monitoring_mode === 'live'
+    && (summary.runtime_status === 'healthy' || reporting_systems > 0)
+  ) {
+    contradictions.push('poll_without_telemetry_timestamp');
+  }
   return {
     workspace_configured: Boolean(summary.workspace_configured),
     monitoring_mode: summary.monitoring_mode,
@@ -89,7 +97,8 @@ export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
     && Boolean(truth.last_telemetry_at)
     && !truth.contradiction_flags.includes('offline_with_current_telemetry')
     && !truth.contradiction_flags.includes('telemetry_unavailable_with_timestamp')
-    && !truth.contradiction_flags.includes('zero_coverage_with_live_telemetry');
+    && !truth.contradiction_flags.includes('zero_coverage_with_live_telemetry')
+    && !truth.contradiction_flags.includes('poll_without_telemetry_timestamp');
 }
 
 export function monitoringHealthyCopyAllowed(truth: WorkspaceMonitoringTruth): boolean {

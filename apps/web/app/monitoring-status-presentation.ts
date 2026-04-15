@@ -80,18 +80,15 @@ function normalizeFreshness(status: MonitoringRuntimeStatus | null, evidence: Mo
     return 'unavailable';
   }
 
-  const heartbeatIso = status?.last_heartbeat ? Date.parse(status.last_heartbeat) : Number.NaN;
-  const heartbeatAgeSeconds = Number.isFinite(heartbeatIso) ? Math.max(0, Math.round((Date.now() - heartbeatIso) / 1000)) : null;
-
-  if (evidence === 'unavailable' && !(Number(status?.systems_with_recent_heartbeat ?? 0) > 0 && heartbeatAgeSeconds !== null && heartbeatAgeSeconds <= 300)) {
+  if (evidence === 'unavailable') {
     return 'unavailable';
   }
 
   const checkpointAge = status?.checkpoint_age_seconds;
-  if (typeof checkpointAge !== 'number' && heartbeatAgeSeconds === null) {
+  if (typeof checkpointAge !== 'number') {
     return 'unavailable';
   }
-  const freshnessAge = typeof checkpointAge === 'number' ? checkpointAge : heartbeatAgeSeconds;
+  const freshnessAge = checkpointAge;
   if (freshnessAge !== null && freshnessAge <= 300) {
     return evidence === 'verified' ? 'verified' : 'recent';
   }
@@ -211,8 +208,6 @@ export function normalizeMonitoringPresentation(
       ? new Date(status.last_confirmed_checkpoint).toLocaleString()
       : status?.last_detection_evaluation_at
         ? new Date(status.last_detection_evaluation_at).toLocaleString()
-        : status?.last_heartbeat
-          ? new Date(status.last_heartbeat).toLocaleString()
-          : 'Last confirmed checkpoint unavailable',
+        : 'Last confirmed checkpoint unavailable',
   };
 }

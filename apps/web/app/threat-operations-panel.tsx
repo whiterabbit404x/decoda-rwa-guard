@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
-import { normalizeMonitoringPresentation, type MonitoringPresentationStatus } from './monitoring-status-presentation';
 import { hasLiveTelemetry, monitoringHealthyCopyAllowed, resolveWorkspaceMonitoringTruth } from './workspace-monitoring-truth';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 
@@ -196,6 +195,24 @@ function monitoringTone(status: MonitoringPresentationStatus) {
   if (status === 'live') return 'healthy';
   if (status === 'offline') return 'offline';
   return 'attention';
+}
+
+type MonitoringPresentationStatus = 'live' | 'degraded' | 'offline' | 'stale' | 'limited coverage';
+
+function truthPresentationStatus(runtimeStatus: string, freshnessStatus: string): MonitoringPresentationStatus {
+  if (runtimeStatus === 'offline' || runtimeStatus === 'failed' || runtimeStatus === 'disabled') return 'offline';
+  if (runtimeStatus === 'degraded') return 'degraded';
+  if (freshnessStatus === 'stale') return 'stale';
+  if (runtimeStatus === 'healthy') return 'live';
+  return 'limited coverage';
+}
+
+function truthPresentationSummary(status: MonitoringPresentationStatus): string {
+  if (status === 'offline') return 'Workspace monitoring offline.';
+  if (status === 'degraded') return 'Monitoring state degraded.';
+  if (status === 'stale') return 'Monitoring data delayed.';
+  if (status === 'live') return 'Monitoring state live with verified telemetry.';
+  return 'Coverage currently limited for this workspace.';
 }
 
 function stateTone(state: ThreatFeedState) {
@@ -401,12 +418,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     };
   }, [apiUrl, authHeaders, isAuthenticated, user?.current_workspace?.id]);
 
-  const monitoringPresentation = normalizeMonitoringPresentation(feed.runtimeStatus, {
-    degraded: feed.degraded || Boolean(snapshotError),
-    offline: feed.offline,
-    stale: feed.stale,
-  });
-
   const openAlerts = alerts.length;
   const activeIncidents = incidents.length;
   const simulatorMode =
@@ -425,6 +436,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const monitoringMode = truth.monitoring_mode;
   const contradictionFlags = truth.contradiction_flags;
   const runtimeStatus = String(truth.runtime_status ?? '').toLowerCase();
+  const presentationStatus = truthPresentationStatus(runtimeStatus, String(truth.freshness_status ?? 'unavailable'));
+  const monitoringPresentation = {
+    status: presentationStatus,
+    statusLabel: presentationStatus === 'limited coverage' ? 'LIMITED COVERAGE' : presentationStatus.toUpperCase(),
+    summary: truthPresentationSummary(presentationStatus),
+  };
   const lastTelemetryAt = truth.last_telemetry_at ?? null;
   const showLiveTelemetry = hasLiveTelemetry(truth);
   const lastPollAt = truth.last_poll_at ?? feed.lastUpdatedAt;
