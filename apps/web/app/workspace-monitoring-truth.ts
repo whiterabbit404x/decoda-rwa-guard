@@ -82,6 +82,8 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
 
 export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
   return truth.runtime_status !== 'offline'
+    && truth.monitoring_mode === 'live'
+    && truth.evidence_source === 'live'
     && truth.freshness_status !== 'unavailable'
     && truth.reporting_systems > 0
     && Boolean(truth.last_telemetry_at)

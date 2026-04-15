@@ -216,11 +216,12 @@ function displayIdentifier(target: TargetRow): string {
 function derivePageState(params: {
   loadingSnapshot: boolean;
   snapshotError: boolean;
-  monitoringStatus: MonitoringPresentationStatus;
   targets: TargetRow[];
   liveDetections: DetectionItem[];
   historicalDetections: DetectionItem[];
   workspaceConfigured: boolean;
+  freshnessStatus: string;
+  contradictionFlags: string[];
   reportingSystems: number;
   runtimeStatus: string;
   monitoredSystems: number;
@@ -229,11 +230,12 @@ function derivePageState(params: {
   const {
     loadingSnapshot,
     snapshotError,
-    monitoringStatus,
     targets,
     liveDetections,
     historicalDetections,
     workspaceConfigured,
+    freshnessStatus,
+    contradictionFlags,
     reportingSystems,
     runtimeStatus,
     monitoredSystems,
@@ -252,11 +254,18 @@ function derivePageState(params: {
     return 'degraded_partial';
   }
 
-  if (runtimeStatus === 'offline' || monitoringStatus === 'offline') {
+  if (runtimeStatus === 'offline') {
     return 'offline_no_telemetry';
   }
 
-  if (monitoringStatus === 'degraded' || monitoringStatus === 'stale' || monitoringStatus === 'limited coverage') {
+  if (
+    runtimeStatus === 'degraded'
+    || runtimeStatus === 'failed'
+    || runtimeStatus === 'disabled'
+    || runtimeStatus === 'provisioning'
+    || freshnessStatus === 'stale'
+    || contradictionFlags.length > 0
+  ) {
     if (liveDetections.length === 0 && historicalDetections.length > 0) {
       return 'historical_only';
     }
@@ -505,11 +514,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const pageState = derivePageState({
     loadingSnapshot,
     snapshotError: Boolean(snapshotError),
-    monitoringStatus: monitoringPresentation.status,
     targets,
     liveDetections: categorizedDetections.live,
     historicalDetections: categorizedDetections.historical,
     workspaceConfigured,
+    freshnessStatus: truth.freshness_status,
+    contradictionFlags,
     reportingSystems,
     runtimeStatus,
     monitoredSystems: feed.counts.monitoredSystems,
