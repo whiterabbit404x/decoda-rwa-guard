@@ -53,7 +53,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <p><strong>System message:</strong> {backendBanner}</p>
           {liveFeed ? (
             <p>
-              <strong>Workspace feed:</strong> {liveFeed.offline ? 'offline' : liveFeed.degraded ? 'degraded' : 'live'} · last update {workspaceMonitoring.lastUpdated} · checkpoint age {liveFeed.checkpointAgeSeconds ?? 'n/a'}s.
+              <strong>Workspace feed:</strong> {liveFeed.offline ? 'offline' : liveFeed.degraded ? 'degraded' : 'live'} · telemetry {liveFeed.lastTelemetryAt ? new Date(liveFeed.lastTelemetryAt).toLocaleString() : 'pending'} · poll {liveFeed.lastPollAt ? new Date(liveFeed.lastPollAt).toLocaleString() : 'pending'}.
               {liveFeed.stale ? ' Evidence is stale; review degraded telemetry before making policy claims.' : ''}
             </p>
           ) : null}

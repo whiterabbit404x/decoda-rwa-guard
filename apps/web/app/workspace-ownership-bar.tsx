@@ -32,8 +32,8 @@ export default function WorkspaceOwnershipBar() {
         <span className="ruleChip">Incidents affecting this workspace: {feed.counts.openIncidents}</span>
       </div>
       <p className="tableMeta">
-        Last checkpoint: {feed.checkpointAgeSeconds ?? 'n/a'}s ago · coverage freshness: {feedLabel(feed.offline, feed.degraded, feed.stale)} ·
-        last update: {feed.lastUpdatedAt ? new Date(feed.lastUpdatedAt).toLocaleString() : 'pending'}.
+        Last telemetry: {feed.lastTelemetryAt ? new Date(feed.lastTelemetryAt).toLocaleString() : 'pending'} · Last poll: {feed.lastPollAt ? new Date(feed.lastPollAt).toLocaleString() : 'pending'} · coverage freshness: {feedLabel(feed.offline, feed.degraded, feed.stale)} ·
+        fetch completed: {feed.lastFetchCompletedAt ? new Date(feed.lastFetchCompletedAt).toLocaleString() : 'pending'}.
         {feed.stale ? ' Evidence is stale for this workspace until fresh telemetry arrives.' : ' Live evidence is updating for this workspace.'}
       </p>
     </section>

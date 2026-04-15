@@ -21,9 +21,19 @@ type LiveWorkspaceFeed = {
   offline: boolean;
   stale: boolean;
   lastUpdatedAt: string | null;
-  checkpointAgeSeconds: number | null;
+  lastTelemetryAt: string | null;
+  lastPollAt: string | null;
+  lastFetchCompletedAt: string | null;
   runtimeStatus: MonitoringRuntimeStatus | null;
   counts: LiveWorkspaceCounts;
+  monitoring: {
+    freshnessStatus: 'fresh' | 'stale' | 'unavailable';
+    pollFreshnessStatus: 'fresh' | 'stale' | 'unavailable';
+    lastTelemetryAt: string | null;
+    lastHeartbeatAt: string | null;
+    lastPollAt: string | null;
+    lastFetchCompletedAt: string | null;
+  };
 };
 
 const DEFAULT_COUNTS: LiveWorkspaceCounts = {
@@ -59,7 +69,7 @@ export function resolveRuntimeStatus(
   return { nextRuntime, offline, degraded };
 }
 
-export function deriveWorkspaceHealth(runtime: RuntimeStatusResolution, ancillaryFailed: boolean): { degraded: boolean; offline: boolean } {
+export function deriveWorkspaceHealth(runtime: RuntimeStatusResolution): { degraded: boolean; offline: boolean } {
   const truthRuntime = String(runtime.nextRuntime?.workspace_monitoring_summary?.runtime_status ?? '').toLowerCase();
   if (truthRuntime === 'offline' || truthRuntime === 'failed' || truthRuntime === 'disabled') {
     return { degraded: true, offline: true };
@@ -67,9 +77,12 @@ export function deriveWorkspaceHealth(runtime: RuntimeStatusResolution, ancillar
   if (truthRuntime === 'degraded') {
     return { degraded: true, offline: false };
   }
+  if (truthRuntime === 'healthy' || truthRuntime === 'idle' || truthRuntime === 'provisioning') {
+    return { degraded: false, offline: false };
+  }
   return {
-    degraded: runtime.degraded || ancillaryFailed,
-    offline: runtime.offline,
+    degraded: true,
+    offline: true,
   };
 }
 
@@ -80,6 +93,9 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
   const [degraded, setDegraded] = useState(false);
   const [offline, setOffline] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
+  const [lastTelemetryAt, setLastTelemetryAt] = useState<string | null>(null);
+  const [lastPollAt, setLastPollAt] = useState<string | null>(null);
+  const [lastFetchCompletedAt, setLastFetchCompletedAt] = useState<string | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<MonitoringRuntimeStatus | null>(null);
   const [counts, setCounts] = useState<LiveWorkspaceCounts>(DEFAULT_COUNTS);
   const startedRef = useRef(false);
@@ -129,7 +145,6 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
         const historyPayload = await safeJson(historyRes);
         const alertsPayload = await safeJson(alertsRes);
         const incidentsPayload = await safeJson(incidentsRes);
-        const ancillaryFailed = !historyRes?.ok || !alertsRes?.ok || !incidentsRes?.ok;
         const historyCount = Number(historyPayload?.counts?.analysis_runs ?? (historyPayload.analysis_runs ?? []).length ?? 0);
         if (shouldLogLiveWorkspaceFeedDebug()) {
           console.debug('useLiveWorkspaceFeed runtime-status', {
@@ -138,7 +153,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
             monitoredSystems: nextRuntime?.monitored_systems ?? null,
             enabledSystems: nextRuntime?.enabled_systems ?? null,
             runtimeUnavailable,
-            ancillaryFailed,
+            ancillaryFailed: !historyRes?.ok || !alertsRes?.ok || !incidentsRes?.ok,
           });
         }
         setRuntimeStatus(nextRuntime);
@@ -151,13 +166,16 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
           openIncidents: (incidentsPayload.incidents ?? []).length,
           historyRecords: historyCount,
         });
-        const health = deriveWorkspaceHealth(
-          { nextRuntime, offline: runtimeOffline, degraded: runtimeDegraded },
-          ancillaryFailed,
-        );
+        const health = deriveWorkspaceHealth({ nextRuntime, offline: runtimeOffline, degraded: runtimeDegraded });
         setOffline(runtimeUnavailable ? true : health.offline);
         setDegraded(runtimeUnavailable ? true : health.degraded);
-        setLastUpdatedAt(nextRuntime?.workspace_monitoring_summary?.last_poll_at ?? nextRuntime?.last_poll_at ?? new Date().toISOString());
+        const completedAt = new Date().toISOString();
+        const nextTelemetryAt = truth?.last_telemetry_at ?? nextRuntime?.last_telemetry_at ?? null;
+        const nextPollAt = truth?.last_poll_at ?? nextRuntime?.last_poll_at ?? null;
+        setLastTelemetryAt(nextTelemetryAt);
+        setLastPollAt(nextPollAt);
+        setLastFetchCompletedAt(completedAt);
+        setLastUpdatedAt(completedAt);
       } catch {
         if (active) {
           setOffline(true);
@@ -196,9 +214,34 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
   }, [apiUrl, authHeaders, intervalMs, isAuthenticated, user?.current_workspace?.id]);
 
   const stale = useMemo(() => {
-    if (!lastUpdatedAt) return true;
-    return Date.now() - new Date(lastUpdatedAt).getTime() > intervalMs * 2;
-  }, [intervalMs, lastUpdatedAt]);
+    const truthFreshness = runtimeStatus?.workspace_monitoring_summary?.freshness_status ?? runtimeStatus?.freshness_status ?? null;
+    if (truthFreshness === 'stale') {
+      return true;
+    }
+    if (truthFreshness === 'fresh') {
+      return false;
+    }
+    if (!lastTelemetryAt) {
+      return true;
+    }
+    return Date.now() - new Date(lastTelemetryAt).getTime() > intervalMs * 2;
+  }, [intervalMs, lastTelemetryAt, runtimeStatus]);
+
+  const freshnessStatus = useMemo<'fresh' | 'stale' | 'unavailable'>(() => {
+    const value = runtimeStatus?.workspace_monitoring_summary?.freshness_status ?? runtimeStatus?.freshness_status;
+    if (value === 'fresh' || value === 'stale' || value === 'unavailable') {
+      return value;
+    }
+    return 'unavailable';
+  }, [runtimeStatus]);
+
+  const pollFreshnessStatus = useMemo<'fresh' | 'stale' | 'unavailable'>(() => {
+    const value = runtimeStatus?.workspace_monitoring_summary?.poll_freshness_status ?? runtimeStatus?.poll_freshness_status;
+    if (value === 'fresh' || value === 'stale' || value === 'unavailable') {
+      return value;
+    }
+    return 'unavailable';
+  }, [runtimeStatus]);
 
   return {
     loading,
@@ -207,8 +250,18 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
     offline,
     stale,
     lastUpdatedAt,
-    checkpointAgeSeconds: runtimeStatus?.checkpoint_age_seconds ?? null,
+    lastTelemetryAt,
+    lastPollAt,
+    lastFetchCompletedAt,
     runtimeStatus,
     counts,
+    monitoring: {
+      freshnessStatus,
+      pollFreshnessStatus,
+      lastTelemetryAt,
+      lastHeartbeatAt: runtimeStatus?.workspace_monitoring_summary?.last_heartbeat_at ?? runtimeStatus?.last_heartbeat_at ?? null,
+      lastPollAt,
+      lastFetchCompletedAt,
+    },
   };
 }
