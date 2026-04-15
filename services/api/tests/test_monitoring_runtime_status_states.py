@@ -763,3 +763,98 @@ def test_runtime_status_workspace_scoped_path_uses_same_rows_as_monitored_system
     assert payload['protected_assets'] == 1
     assert payload['enabled_systems'] == 1
     assert payload['monitoring_status'] != 'offline'
+
+
+def test_contradiction_guard_offline_runtime_clears_current_telemetry(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _OfflineTelemetryConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(rows=[])
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 0, 'asset_count': 0})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[])
+            if 'FROM evidence' in q:
+                return _Result({'observed_at': now, 'block_number': 12})
+            if 'FROM analysis_runs' in q:
+                return _Result({'created_at': now, 'response_payload': {'metadata': {'last_real_event_at': now.isoformat(), 'recent_real_event_count': 2, 'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}}})
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_OfflineTelemetryConn(now)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    summary = payload['workspace_monitoring_summary']
+    assert summary['runtime_status'] == 'offline'
+    assert summary['last_telemetry_at'] is None
+    assert summary['freshness_status'] == 'unavailable'
+    assert 'offline_with_current_telemetry' not in summary['contradiction_flags']
+
+
+def test_contradiction_guard_never_marks_healthy_without_reporting_systems(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _NoReportingConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(rows=[{'id': 'sys-1', 'workspace_id': 'ws-1', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'idle', 'last_heartbeat': now.isoformat(), 'monitoring_interval_seconds': 30, 'created_at': now.isoformat(), 'last_event_at': None}])
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 1, 'asset_count': 1})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[{'id': 'target-1'}])
+            if 'FROM evidence' in q:
+                return _Result({'observed_at': None, 'block_number': None})
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_NoReportingConn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    summary = payload['workspace_monitoring_summary']
+    assert summary['coverage_state']['configured_systems'] > 0
+    assert summary['coverage_state']['reporting_systems'] == 0
+    assert summary['runtime_status'] != 'healthy'
+    assert 'healthy_without_reporting_systems' not in summary['contradiction_flags']
+
+
+def test_contradiction_guard_workspace_not_configured_with_monitored_systems_flagged(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _UnconfiguredCoverageConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(rows=[{'id': 'sys-1', 'workspace_id': 'ws-1', 'asset_id': None, 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'idle', 'last_heartbeat': now.isoformat(), 'monitoring_interval_seconds': 30, 'created_at': now.isoformat(), 'last_event_at': None}])
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 0, 'asset_count': 0})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[])
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_UnconfiguredCoverageConn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    summary = payload['workspace_monitoring_summary']
+    assert summary['workspace_configured'] is False
+    assert summary['coverage_state']['configured_systems'] > 0
+    assert 'workspace_unconfigured_with_coverage' in summary['contradiction_flags']

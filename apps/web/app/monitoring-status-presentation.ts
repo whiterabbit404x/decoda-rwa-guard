@@ -28,6 +28,13 @@ type PresentationContext = {
 const INTERNAL_LIMITED_MARKERS = ['demo', 'hybrid', 'fallback', 'synthetic'];
 
 function normalizeEvidence(status: MonitoringRuntimeStatus | null): MonitoringPresentationEvidence {
+  const truth = status?.workspace_monitoring_summary;
+  const truthConfidence = String(truth?.confidence_status ?? '').toLowerCase();
+  if (truthConfidence === 'high') return 'verified';
+  if (truthConfidence === 'medium') return 'recent';
+  if (truthConfidence === 'low') return 'delayed';
+  if (truthConfidence === 'unavailable') return 'unavailable';
+
   const recentEvidence = String(status?.recent_evidence_state ?? '').trim().toLowerCase();
   const systemsWithRecentHeartbeat = Number(status?.systems_with_recent_heartbeat ?? 0);
   const successfulDetectionEvaluation = Boolean(status?.successful_detection_evaluation_recent);
@@ -61,6 +68,18 @@ function normalizeEvidence(status: MonitoringRuntimeStatus | null): MonitoringPr
 }
 
 function normalizeFreshness(status: MonitoringRuntimeStatus | null, evidence: MonitoringPresentationEvidence): MonitoringPresentationFreshness {
+  const truth = status?.workspace_monitoring_summary;
+  const truthFreshness = String(truth?.freshness_status ?? '').toLowerCase();
+  if (truthFreshness === 'fresh') {
+    return evidence === 'verified' ? 'verified' : 'recent';
+  }
+  if (truthFreshness === 'stale') {
+    return 'delayed';
+  }
+  if (truthFreshness === 'unavailable') {
+    return 'unavailable';
+  }
+
   const heartbeatIso = status?.last_heartbeat ? Date.parse(status.last_heartbeat) : Number.NaN;
   const heartbeatAgeSeconds = Number.isFinite(heartbeatIso) ? Math.max(0, Math.round((Date.now() - heartbeatIso) / 1000)) : null;
 
@@ -88,6 +107,21 @@ function normalizeStatus(
   evidence: MonitoringPresentationEvidence,
   freshness: MonitoringPresentationFreshness,
 ): MonitoringPresentationStatus {
+  const truth = status?.workspace_monitoring_summary;
+  const truthRuntime = String(truth?.runtime_status ?? '').toLowerCase();
+  if (truthRuntime === 'offline' || truthRuntime === 'failed' || truthRuntime === 'disabled') {
+    return 'offline';
+  }
+  if (truthRuntime === 'healthy') {
+    return 'live';
+  }
+  if (truthRuntime === 'degraded') {
+    return 'degraded';
+  }
+  if (truthRuntime === 'idle' || truthRuntime === 'provisioning') {
+    return 'limited coverage';
+  }
+
   if (context.offline || normalizeMonitoringMode(status?.mode) === 'OFFLINE') {
     return 'offline';
   }

@@ -60,6 +60,13 @@ export function resolveRuntimeStatus(
 }
 
 export function deriveWorkspaceHealth(runtime: RuntimeStatusResolution, ancillaryFailed: boolean): { degraded: boolean; offline: boolean } {
+  const truthRuntime = String(runtime.nextRuntime?.workspace_monitoring_summary?.runtime_status ?? '').toLowerCase();
+  if (truthRuntime === 'offline' || truthRuntime === 'failed' || truthRuntime === 'disabled') {
+    return { degraded: true, offline: true };
+  }
+  if (truthRuntime === 'degraded') {
+    return { degraded: true, offline: false };
+  }
   return {
     degraded: runtime.degraded || ancillaryFailed,
     offline: runtime.offline,
@@ -150,7 +157,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
         );
         setOffline(runtimeUnavailable ? true : health.offline);
         setDegraded(runtimeUnavailable ? true : health.degraded);
-        setLastUpdatedAt(nextRuntime?.last_poll_at ?? new Date().toISOString());
+        setLastUpdatedAt(nextRuntime?.workspace_monitoring_summary?.last_poll_at ?? nextRuntime?.last_poll_at ?? new Date().toISOString());
       } catch {
         if (active) {
           setOffline(true);

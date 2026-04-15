@@ -415,8 +415,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const monitoringMode = truth?.monitoring_mode ?? 'unavailable';
   const contradictionFlags = truth?.contradiction_flags ?? [];
   const runtimeStatus = String(truth?.runtime_status ?? '').toLowerCase();
-
   const lastTelemetryAt = truth?.last_telemetry_at ?? null;
+  const hasLiveTelemetry = Boolean(lastTelemetryAt && truth?.freshness_status === 'fresh' && reportingSystems > 0);
   const lastPollAt = truth?.last_poll_at ?? feed.lastUpdatedAt;
   const telemetryLabel = formatRelativeTime(lastTelemetryAt);
   const pollLabel = formatRelativeTime(lastPollAt);
@@ -547,16 +547,18 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ? `Monitoring ${runtimeStatus}: ${truth?.status_reason || 'runtime is not healthy'}.`
         : pageState === 'degraded_partial' || pageState === 'historical_only'
           ? 'Monitoring degraded: telemetry is partial or delayed.'
-          : simulatorMode
-            ? 'Simulator/dev mode active: records are persisted but are not live production telemetry.'
-            : 'Monitoring healthy: telemetry and polling are current.',
+        : simulatorMode
+          ? 'Simulator/dev mode active: records are persisted but are not live production telemetry.'
+            : reportingSystems > 0
+              ? 'Monitoring healthy: telemetry and polling are current.'
+              : 'Monitoring configured: waiting for reporting telemetry.',
       href: '/threat',
     };
 
     return [monitoringEvent, ...alertItems, ...incidentItems, ...historyItems]
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .slice(0, 12);
-  }, [alerts, historyRuns, incidents, lastPollAt, pageState, runtimeStatus, simulatorMode, truth?.status_reason]);
+  }, [alerts, historyRuns, incidents, lastPollAt, pageState, reportingSystems, runtimeStatus, simulatorMode, truth?.status_reason]);
 
   const recentHeartbeatSystems = Number(feed.runtimeStatus?.systems_with_recent_heartbeat ?? reportingSystems);
   const coverageSummary = `${Math.max(reportingSystems, 0)} / ${Math.max(configuredSystems, 0)}`;
@@ -577,14 +579,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     return { value: 28, tier: 'Low' };
   }, [alerts, incidents]);
 
-  const riskFreshness = pageState === 'healthy_live' || pageState === 'configured_no_signals'
+  const riskFreshness = pageState === 'healthy_live' || (pageState === 'configured_no_signals' && reportingSystems > 0)
     ? `last evaluated ${detectionEvalLabel} across ${Math.max(configuredSystems, 0)} monitored systems`
     : `last known score from ${detectionEvalLabel}; current telemetry unavailable`;
 
   const feedHeading = pageState === 'healthy_live'
     ? 'Live detections available'
     : pageState === 'configured_no_signals'
-      ? 'No active detections, monitoring healthy'
+      ? (reportingSystems > 0 ? 'No active detections, monitoring healthy' : 'No active detections, waiting for telemetry')
       : pageState === 'historical_only'
         ? 'Historical detections only'
         : pageState === 'unconfigured_workspace'
@@ -611,7 +613,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className={`statusBadge statusBadge-${monitoringTone(monitoringPresentation.status)}`}>{monitoringPresentation.statusLabel}</span>
           {monitoringMode === 'simulator' || simulatorMode ? <span className="statusBadge statusBadge-attention">SIMULATOR MODE</span> : null}
           <span className="ruleChip">Operational state {pageState.replaceAll('_', ' ')}</span>
-          <span className="ruleChip">{lastTelemetryAt ? `Live telemetry ${telemetryLabel}` : 'Current telemetry unavailable'}</span>
+          <span className="ruleChip">{hasLiveTelemetry ? `Live telemetry ${telemetryLabel}` : 'Current telemetry unavailable'}</span>
           <span className="ruleChip">Threat feed updated {pollLabel}</span>
           <span className="ruleChip">Evidence source {String(truth?.evidence_source || feed.runtimeStatus?.source_of_evidence || 'none')}</span>
           <span className="ruleChip">Protected assets {protectedAssetCount}</span>
@@ -625,7 +627,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </div>
         <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth?.status_reason} />
         <p className="tableMeta">
-          Last telemetry received: {lastTelemetryAt ? telemetryLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last successful poll: {pollLabel} · Runtime freshness {String(truth?.freshness_status || feed.runtimeStatus?.freshness_status || 'unavailable')} · Runtime confidence {String(truth?.confidence_status || feed.runtimeStatus?.confidence_status || 'unavailable')}
+          Last telemetry received: {hasLiveTelemetry ? telemetryLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last successful poll: {pollLabel} · Runtime freshness {String(truth?.freshness_status || 'unavailable')} · Runtime confidence {String(truth?.confidence_status || 'unavailable')}
         </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
