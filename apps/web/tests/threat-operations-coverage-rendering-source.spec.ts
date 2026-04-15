@@ -13,7 +13,9 @@ test('renders runtime summary fallback when runtime coverage exists without rows
   expect(threat).toContain('Configured systems: {Math.max(configuredSystems, 0)}');
   expect(threat).toContain('Reporting systems: {reportingSystems}');
   expect(threat).toContain('Protected assets: {protectedAssetCount}');
-  expect(threat).toContain('Telemetry freshness: {telemetryLabel}');
+  expect(threat).toContain('Last telemetry: {showLiveTelemetry ? telemetryLabel : \'Not available\'}');
+  expect(threat).toContain('Last poll: {pollLabel}');
+  expect(threat).toContain('Last heartbeat: {formatRelativeTime(truth.last_heartbeat_at)}');
 });
 
 test('renders targets table when targets are present', () => {
