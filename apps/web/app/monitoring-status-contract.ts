@@ -49,6 +49,36 @@ export type MonitoringRuntimeStatus = {
   successful_detection_evaluation?: boolean;
   successful_detection_evaluation_recent?: boolean;
   synthetic_leak_detected?: boolean;
+  workspace_monitoring_summary?: {
+    workspace_configured: boolean;
+    monitoring_mode: 'live' | 'simulator' | 'offline' | 'unavailable';
+    runtime_status: 'provisioning' | 'healthy' | 'degraded' | 'idle' | 'failed' | 'disabled' | 'offline';
+    coverage_state: {
+      configured_systems: number;
+      reporting_systems: number;
+      protected_assets: number;
+    };
+    freshness_status: 'fresh' | 'stale' | 'unavailable';
+    confidence_status: 'high' | 'medium' | 'low' | 'unavailable';
+    last_heartbeat_at: string | null;
+    last_telemetry_at: string | null;
+    last_poll_at: string | null;
+    last_detection_at: string | null;
+    evidence_source: 'live' | 'simulator' | 'replay' | 'none';
+    status_reason: string | null;
+    contradiction_flags: string[];
+  };
+  workspace_configured?: boolean;
+  monitoring_mode?: 'live' | 'simulator' | 'offline' | 'unavailable';
+  runtime_status?: 'provisioning' | 'healthy' | 'degraded' | 'idle' | 'failed' | 'disabled' | 'offline';
+  coverage_state?: { configured_systems: number; reporting_systems: number; protected_assets: number };
+  last_heartbeat_at?: string | null;
+  last_telemetry_at?: string | null;
+  last_poll_at?: string | null;
+  last_detection_at?: string | null;
+  evidence_source?: 'live' | 'simulator' | 'replay' | 'none';
+  status_reason?: string | null;
+  contradiction_flags?: string[];
 };
 
 export function runtimeStatusModeFromMonitoringStatus(value: MonitoringRuntimeStatus['monitoring_status']): MonitoringMode {

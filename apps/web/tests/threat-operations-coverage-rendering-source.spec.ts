@@ -9,9 +9,9 @@ function readThreatPanel(): string {
 test('renders runtime summary fallback when runtime coverage exists without rows', () => {
   const threat = readThreatPanel();
   expect(threat).toContain('showRuntimeCoverageFallback ? (');
-  expect(threat).toContain('Coverage detected from runtime telemetry');
-  expect(threat).toContain('Monitored systems: {Math.max(reportingSystems, 0)}');
-  expect(threat).toContain('Systems with recent heartbeat: {recentHeartbeatSystems}');
+  expect(threat).toContain('Coverage detected from runtime monitoring summary');
+  expect(threat).toContain('Configured systems: {Math.max(configuredSystems, 0)}');
+  expect(threat).toContain('Reporting systems: {reportingSystems}');
   expect(threat).toContain('Protected assets: {protectedAssetCount}');
   expect(threat).toContain('Telemetry freshness: {telemetryLabel}');
 });

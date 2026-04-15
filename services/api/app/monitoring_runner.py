@@ -2665,7 +2665,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         mode = str(health.get('operational_mode') or health.get('mode') or 'DEGRADED').upper()
         if mode == 'LIVE' and recent_real_event_count <= 0:
             mode = 'DEGRADED'
-        return {
+        payload = {
             'monitoring_status': 'offline',
             'status': 'Offline',
             'mode': mode,
@@ -2681,7 +2681,24 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'claim_validator_status': str(claim_validator.get('status') or 'FAIL'),
             'source_of_evidence': 'simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none',
             'workspace_configured': False,
+            'workspace_monitoring_summary': {
+                'workspace_configured': False,
+                'monitoring_mode': 'simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'offline',
+                'runtime_status': 'offline',
+                'coverage_state': {'configured_systems': 0, 'reporting_systems': 0, 'protected_assets': 0},
+                'freshness_status': 'unavailable',
+                'confidence_status': 'unavailable',
+                'last_heartbeat_at': None,
+                'last_telemetry_at': claim_validator.get('last_real_event_at'),
+                'last_poll_at': _json_safe_value(health).get('last_cycle_at'),
+                'last_detection_at': None,
+                'evidence_source': 'simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'none',
+                'status_reason': 'live_mode_disabled',
+                'contradiction_flags': [],
+            },
         }
+        payload.update(payload['workspace_monitoring_summary'])
+        return payload
     workspace_id: str | None = None
     user_id: str | None = None
     workspace_header_present = False
@@ -2913,7 +2930,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
     stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
     enabled_rows = [row for row in monitored_rows if monitored_system_row_enabled(row)]
-    active_rows = [row for row in enabled_rows if str(row.get('runtime_status') or '').strip().lower() == 'healthy']
+    active_rows = [row for row in enabled_rows if str(row.get('runtime_status') or '').strip().lower() in {'healthy', 'active'}]
     enabled_asset_rows = [row for row in enabled_rows if row.get('asset_id')]
     enabled_system_count = max(len(enabled_rows), healthy_enabled_targets_count)
     active_system_count = len(active_rows)
@@ -2976,6 +2993,67 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         recent_real_event_count = int(recent_real_event_count_raw or 0)
     except Exception:
         recent_real_event_count = 0
+    telemetry_window_seconds = max(300, MONITOR_POLL_INTERVAL_SECONDS * 6)
+    last_poll_at = _parse_ts(health.get('last_cycle_at') or health.get('updated_at') or health.get('last_heartbeat_at'))
+    reporting_systems = 0
+    for row in enabled_rows:
+        last_event_at = _parse_ts(row.get('last_event_at'))
+        if last_event_at is None:
+            continue
+        if int((now - last_event_at).total_seconds()) <= telemetry_window_seconds:
+            reporting_systems += 1
+    source_of_evidence = 'live' if (recent_real_event_count > 0 and not bool(health.get('degraded'))) else ('simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none')
+    evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if evidence_at else 'none'))
+    telemetry_timestamp = _parse_ts((latest_detection_metadata or {}).get('last_real_event_at'))
+    if telemetry_timestamp is None and evidence_source == 'simulator':
+        telemetry_timestamp = evidence_at
+    workspace_configured = bool(enabled_system_count > 0 and protected_assets_count > 0)
+    degraded_signal = bool(health.get('last_error') or health.get('degraded') or degraded_reason or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0)
+    if not workspace_configured:
+        runtime_status_summary = 'offline'
+    elif degraded_signal and reporting_systems <= 0:
+        runtime_status_summary = 'degraded'
+    elif reporting_systems <= 0:
+        runtime_status_summary = 'idle'
+    elif degraded_signal:
+        runtime_status_summary = 'degraded'
+    else:
+        runtime_status_summary = 'healthy'
+    monitoring_mode = 'simulator' if evidence_source == 'simulator' else ('offline' if not workspace_configured else 'live')
+    summary = {
+        'workspace_configured': workspace_configured,
+        'monitoring_mode': monitoring_mode,
+        'runtime_status': runtime_status_summary,
+        'coverage_state': {
+            'configured_systems': int(enabled_system_count),
+            'reporting_systems': int(reporting_systems),
+            'protected_assets': int(protected_assets_count),
+        },
+        'freshness_status': (
+            'fresh' if telemetry_timestamp and int((now - telemetry_timestamp).total_seconds()) <= telemetry_window_seconds
+            else ('stale' if telemetry_timestamp else 'unavailable')
+        ),
+        'confidence_status': (
+            'high' if evidence_source == 'live' and reporting_systems > 0
+            else ('medium' if evidence_source == 'simulator' and reporting_systems > 0 else ('low' if workspace_configured else 'unavailable'))
+        ),
+        'last_heartbeat_at': last_heartbeat.isoformat() if last_heartbeat else None,
+        'last_telemetry_at': telemetry_timestamp.isoformat() if telemetry_timestamp else None,
+        'last_poll_at': last_poll_at.isoformat() if last_poll_at else None,
+        'last_detection_at': latest_detection_evaluation_at.isoformat() if latest_detection_evaluation_at else None,
+        'evidence_source': evidence_source,
+        'status_reason': degraded_reason or ('workspace_not_configured' if not workspace_configured else ('no_reporting_systems' if reporting_systems <= 0 else None)),
+        'contradiction_flags': [],
+    }
+    if summary['runtime_status'] == 'offline' and summary['last_telemetry_at']:
+        summary['contradiction_flags'].append('offline_with_current_telemetry')
+    if summary['coverage_state']['reporting_systems'] == 0 and summary['runtime_status'] == 'healthy':
+        summary['contradiction_flags'].append('healthy_without_reporting_systems')
+    if summary['last_telemetry_at'] is None and summary['freshness_status'] == 'fresh':
+        summary['contradiction_flags'].append('telemetry_unavailable_marked_fresh')
+    if (not summary['workspace_configured']) and (summary['coverage_state']['configured_systems'] > 0 or summary['coverage_state']['protected_assets'] > 0):
+        summary['contradiction_flags'].append('workspace_unconfigured_with_coverage')
+
     payload = {
         'monitoring_status': monitoring_status,
         'monitored_systems': system_count,
@@ -3019,9 +3097,21 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'coverage_reason': degraded_reason or ('no_evidence' if monitoring_status == 'idle' else (None if monitoring_status == 'active' else 'monitoring_unavailable')),
         'worker_last_error': health.get('last_error'),
         'latest_telemetry_checkpoint': (latest_detection_evaluation_at or evidence_at).isoformat() if (latest_detection_evaluation_at or evidence_at) else None,
-        'source_of_evidence': 'live' if (recent_real_event_count > 0 and not bool(health.get('degraded'))) else ('simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none'),
-        'workspace_configured': bool(enabled_system_count > 0 and protected_assets_count > 0),
+        'source_of_evidence': source_of_evidence,
+        'workspace_configured': workspace_configured,
+        'last_poll_at': summary['last_poll_at'],
+        'last_telemetry_at': summary['last_telemetry_at'],
+        'last_detection_at': summary['last_detection_at'],
+        'workspace_monitoring_summary': summary,
     }
+    payload.update(summary)
+    if summary['contradiction_flags']:
+        logger.warning(
+            'monitoring_runtime_status_contradiction workspace_id=%s flags=%s summary=%s',
+            workspace_id,
+            summary['contradiction_flags'],
+            summary,
+        )
     provider_health = 'healthy' if str(payload.get('recent_evidence_state')) == 'real' and int(payload.get('recent_real_event_count') or 0) > 0 else 'degraded'
     mode = str(health.get('operational_mode') or health.get('mode') or 'DEGRADED').upper()
     if mode == 'LIVE' and int(payload.get('recent_real_event_count') or 0) <= 0:

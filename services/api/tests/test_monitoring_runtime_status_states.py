@@ -4,6 +4,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from services.api.app import monitoring_runner
 
 
@@ -46,7 +48,7 @@ class _Conn:
             return _Result(rows=[{'id': 'target-1'}, {'id': 'target-2'}])
         if 'FROM evidence' in q:
             return _Result({'observed_at': self.evidence_at, 'block_number': 123})
-        if 'FROM analysis_runs' in q and "analysis_type LIKE 'monitoring_%'" in q:
+        if 'FROM analysis_runs' in q:
             return _Result(None)
         return _Result({})
 
@@ -54,6 +56,20 @@ class _Conn:
 @contextmanager
 def _fake_pg(conn):
     yield conn
+
+
+def _enable_live_mode(monkeypatch):
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'production_claim_validator',
+        lambda: {'checks': {'evm_rpc_reachable': True}, 'sales_claims_allowed': False, 'status': 'FAIL', 'recent_truthfulness_state': 'unknown_risk'},
+    )
+
+
+@pytest.fixture(autouse=True)
+def _runtime_defaults(monkeypatch):
+    _enable_live_mode(monkeypatch)
 
 
 def test_runtime_status_idle_when_worker_healthy_without_recent_evidence(monkeypatch):
@@ -89,6 +105,10 @@ def test_runtime_status_active_with_recent_evidence(monkeypatch):
     assert payload['telemetry_available'] is True
     assert payload['monitored_systems_count'] == 3
     assert payload['protected_assets_count'] == 2
+    assert payload['workspace_monitoring_summary']['runtime_status'] in {'idle', 'healthy'}
+    assert payload['workspace_monitoring_summary']['coverage_state']['configured_systems'] == 2
+    assert payload['workspace_monitoring_summary']['freshness_status'] in {'fresh', 'stale', 'unavailable'}
+    assert payload['workspace_monitoring_summary']['contradiction_flags'] == []
 
 
 def test_runtime_status_counts_protected_assets_from_enabled_systems_not_only_active(monkeypatch):
@@ -201,6 +221,40 @@ def test_runtime_status_not_degraded_solely_for_zero_event_idle_systems(monkeypa
     payload = monitoring_runner.monitoring_runtime_status()
     assert payload['monitoring_status'] == 'idle'
     assert payload['status'] == 'Idle'
+    assert payload['workspace_monitoring_summary']['runtime_status'] in {'idle', 'degraded'}
+    assert payload['workspace_monitoring_summary']['coverage_state']['reporting_systems'] == 0
+    assert payload['workspace_monitoring_summary']['contradiction_flags'] == []
+
+
+def test_runtime_status_workspace_unconfigured_false_when_coverage_exists(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _ConfiguredConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(
+                    rows=[
+                        {'id': 'sys-1', 'workspace_id': 'ws-1', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'idle', 'last_heartbeat': now.isoformat(), 'last_event_at': None, 'monitoring_interval_seconds': 30, 'created_at': now.isoformat()},
+                    ]
+                )
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 1, 'asset_count': 1})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[{'id': 'target-1'}])
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_ConfiguredConn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    assert payload['workspace_monitoring_summary']['workspace_configured'] is True
+    assert 'workspace_unconfigured_with_coverage' not in payload['workspace_monitoring_summary']['contradiction_flags']
 
 
 def test_runtime_status_includes_recent_successful_checkpoint_without_events(monkeypatch):
@@ -215,7 +269,7 @@ def test_runtime_status_includes_recent_successful_checkpoint_without_events(mon
                         {'id': 'sys-1', 'workspace_id': 'ws-1', 'asset_id': 'asset-1', 'target_id': 'target-1', 'is_enabled': True, 'runtime_status': 'idle', 'last_heartbeat': now.isoformat(), 'monitoring_interval_seconds': 30, 'created_at': now.isoformat()},
                     ]
                 )
-            if 'FROM analysis_runs' in q and "analysis_type LIKE 'monitoring_%'" in q:
+            if 'FROM analysis_runs' in q:
                 return _Result(
                     {
                         'created_at': now - timedelta(seconds=45),
