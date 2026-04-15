@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { normalizeMonitoringMode, runtimeStatusModeFromMonitoringStatus, type MonitoringRuntimeStatus } from './monitoring-status-contract';
+import { normalizeMonitoringPresentation, type MonitoringPresentation } from './monitoring-status-presentation';
 import { usePilotAuth } from './pilot-auth-context';
+import { resolveWorkspaceMonitoringTruth, type WorkspaceMonitoringTruth } from './workspace-monitoring-truth';
 
 type LiveWorkspaceCounts = {
   protectedAssets: number;
@@ -17,16 +19,12 @@ type LiveWorkspaceCounts = {
 type LiveWorkspaceFeed = {
   loading: boolean;
   refreshing: boolean;
-  degraded: boolean;
-  offline: boolean;
-  stale: boolean;
-  lastUpdatedAt: string | null;
-  lastTelemetryAt: string | null;
-  lastPollAt: string | null;
   lastFetchCompletedAt: string | null;
   runtimeStatus: MonitoringRuntimeStatus | null;
   counts: LiveWorkspaceCounts;
   monitoring: {
+    truth: WorkspaceMonitoringTruth;
+    presentation: MonitoringPresentation;
     freshnessStatus: 'fresh' | 'stale' | 'unavailable';
     pollFreshnessStatus: 'fresh' | 'stale' | 'unavailable';
     lastTelemetryAt: string | null;
@@ -90,11 +88,6 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
   const { apiUrl, authHeaders, isAuthenticated, user } = usePilotAuth();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [degraded, setDegraded] = useState(false);
-  const [offline, setOffline] = useState(false);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
-  const [lastTelemetryAt, setLastTelemetryAt] = useState<string | null>(null);
-  const [lastPollAt, setLastPollAt] = useState<string | null>(null);
   const [lastFetchCompletedAt, setLastFetchCompletedAt] = useState<string | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<MonitoringRuntimeStatus | null>(null);
   const [counts, setCounts] = useState<LiveWorkspaceCounts>(DEFAULT_COUNTS);
@@ -167,20 +160,11 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
           historyRecords: historyCount,
         });
         const health = deriveWorkspaceHealth({ nextRuntime, offline: runtimeOffline, degraded: runtimeDegraded });
-        setOffline(runtimeUnavailable ? true : health.offline);
-        setDegraded(runtimeUnavailable ? true : health.degraded);
+        void health;
         const completedAt = new Date().toISOString();
-        const nextTelemetryAt = truth?.last_telemetry_at ?? nextRuntime?.last_telemetry_at ?? null;
-        const nextPollAt = truth?.last_poll_at ?? nextRuntime?.last_poll_at ?? null;
-        setLastTelemetryAt(nextTelemetryAt);
-        setLastPollAt(nextPollAt);
         setLastFetchCompletedAt(completedAt);
-        setLastUpdatedAt(completedAt);
       } catch {
-        if (active) {
-          setOffline(true);
-          setDegraded(true);
-        }
+        // Keep runtime-derived monitoring truth as the source of status.
       } finally {
         if (active) {
           setLoading(false);
@@ -213,30 +197,19 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
     };
   }, [apiUrl, authHeaders, intervalMs, isAuthenticated, user?.current_workspace?.id]);
 
-  const stale = useMemo(() => {
-    const truthFreshness = runtimeStatus?.workspace_monitoring_summary?.freshness_status ?? runtimeStatus?.freshness_status ?? null;
-    if (truthFreshness === 'stale') {
-      return true;
-    }
-    if (truthFreshness === 'fresh') {
-      return false;
-    }
-    if (!lastTelemetryAt) {
-      return true;
-    }
-    return Date.now() - new Date(lastTelemetryAt).getTime() > intervalMs * 2;
-  }, [intervalMs, lastTelemetryAt, runtimeStatus]);
+  const truth = useMemo(() => resolveWorkspaceMonitoringTruth(runtimeStatus), [runtimeStatus]);
+  const presentation = useMemo(() => normalizeMonitoringPresentation(truth), [truth]);
 
   const freshnessStatus = useMemo<'fresh' | 'stale' | 'unavailable'>(() => {
-    const value = runtimeStatus?.workspace_monitoring_summary?.freshness_status ?? runtimeStatus?.freshness_status;
+    const value = truth.freshness_status;
     if (value === 'fresh' || value === 'stale' || value === 'unavailable') {
       return value;
     }
     return 'unavailable';
-  }, [runtimeStatus]);
+  }, [truth]);
 
   const pollFreshnessStatus = useMemo<'fresh' | 'stale' | 'unavailable'>(() => {
-    const value = runtimeStatus?.workspace_monitoring_summary?.poll_freshness_status ?? runtimeStatus?.poll_freshness_status;
+    const value = runtimeStatus?.workspace_monitoring_summary?.poll_freshness_status ?? runtimeStatus?.poll_freshness_status ?? 'unavailable';
     if (value === 'fresh' || value === 'stale' || value === 'unavailable') {
       return value;
     }
@@ -246,21 +219,17 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
   return {
     loading,
     refreshing,
-    degraded,
-    offline,
-    stale,
-    lastUpdatedAt,
-    lastTelemetryAt,
-    lastPollAt,
     lastFetchCompletedAt,
     runtimeStatus,
     counts,
     monitoring: {
+      truth,
+      presentation,
       freshnessStatus,
       pollFreshnessStatus,
-      lastTelemetryAt,
-      lastHeartbeatAt: runtimeStatus?.workspace_monitoring_summary?.last_heartbeat_at ?? runtimeStatus?.last_heartbeat_at ?? null,
-      lastPollAt,
+      lastTelemetryAt: truth.last_telemetry_at,
+      lastHeartbeatAt: truth.last_heartbeat_at,
+      lastPollAt: truth.last_poll_at,
       lastFetchCompletedAt,
     },
   };

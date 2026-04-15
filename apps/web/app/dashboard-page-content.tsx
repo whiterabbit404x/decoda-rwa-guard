@@ -30,8 +30,9 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
   const { backendState, summaryCards, backendBanner, featurePresentation, workspaceMonitoring } = buildDashboardViewModel(data, {
     gatewayReachableOverride,
   });
-  const monitoringTruth = resolveWorkspaceMonitoringTruthFromSummary(liveFeed?.runtimeStatus?.workspace_monitoring_summary);
-  const monitoringPresentation = normalizeMonitoringPresentation(monitoringTruth);
+  const monitoringTruth = liveFeed?.monitoring.truth
+    ?? resolveWorkspaceMonitoringTruthFromSummary(liveFeed?.runtimeStatus?.workspace_monitoring_summary);
+  const monitoringPresentation = liveFeed?.monitoring.presentation ?? normalizeMonitoringPresentation(monitoringTruth);
 
   return (
     <main className="container productPage">

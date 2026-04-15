@@ -10,11 +10,12 @@ type Props = {
 
 export default function DashboardLiveHydrator({ initialData }: Props) {
   const liveFeed = useLiveWorkspaceFeed();
+  const gatewayReachableOverride = liveFeed.monitoring.presentation.status !== 'offline';
 
   return (
     <DashboardPageContent
       data={initialData}
-      gatewayReachableOverride={!liveFeed.offline}
+      gatewayReachableOverride={gatewayReachableOverride}
       liveFeed={liveFeed}
     />
   );
