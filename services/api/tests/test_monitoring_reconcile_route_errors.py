@@ -108,3 +108,45 @@ def test_monitoring_reconcile_route_flattens_http_exception_dict_detail(monkeypa
         'debug_error_message': 'upsert violated unique constraint',
     }
     assert 'monitoring_reconcile_http_exception method=POST path=/monitoring/systems/reconcile' in caplog.text
+
+
+def test_monitoring_systems_list_attaches_workspace_monitoring_summary(monkeypatch):
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        api_main,
+        'list_monitored_systems',
+        lambda _request: {'systems': [{'id': 'sys-1'}], 'workspace': {'id': 'ws-1'}},
+    )
+    monkeypatch.setattr(
+        api_main,
+        'monitoring_runtime_status',
+        lambda _request: {'workspace_monitoring_summary': {'runtime_status': 'idle', 'coverage_state': {'configured_systems': 1, 'reporting_systems': 0, 'protected_assets': 1}}},
+    )
+
+    response = client.get('/monitoring/systems')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['systems'][0]['id'] == 'sys-1'
+    assert payload['workspace_monitoring_summary']['runtime_status'] == 'idle'
+
+
+def test_monitoring_systems_list_handles_runtime_summary_attachment_failure(monkeypatch):
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        api_main,
+        'list_monitored_systems',
+        lambda _request: {'systems': [{'id': 'sys-1'}], 'workspace': {'id': 'ws-1'}},
+    )
+    monkeypatch.setattr(
+        api_main,
+        'monitoring_runtime_status',
+        lambda _request: (_ for _ in ()).throw(RuntimeError('runtime summary error')),
+    )
+
+    response = client.get('/monitoring/systems')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['systems'][0]['id'] == 'sys-1'
+    assert payload['workspace_monitoring_summary'] is None

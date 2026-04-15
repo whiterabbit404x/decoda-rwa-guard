@@ -1919,7 +1919,14 @@ def monitoring_targets_patch(target_id: str, payload: dict[str, Any], request: R
 
 @app.get('/monitoring/systems', summary='List monitored systems')
 def monitoring_systems_list(request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: list_monitored_systems(request))
+    systems_payload = with_auth_schema_json(lambda: list_monitored_systems(request))
+    try:
+        runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
+        systems_payload['workspace_monitoring_summary'] = runtime_payload.get('workspace_monitoring_summary')
+    except Exception:
+        logger.exception('monitoring_systems_list_runtime_summary_failed')
+        systems_payload['workspace_monitoring_summary'] = None
+    return systems_payload
 
 
 @app.post('/monitoring/systems/reconcile', summary='Repair monitored systems from eligible targets')

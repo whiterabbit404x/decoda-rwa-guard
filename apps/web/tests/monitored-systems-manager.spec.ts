@@ -13,6 +13,15 @@ test('monitored systems UI separates config enabled state from runtime state', (
   expect(source).toContain("{system.is_enabled ? 'Disable' : 'Enable'}");
 });
 
+test('monitored systems UI consumes workspace summary and telemetry timestamp truthfully', () => {
+  const source = readAppFile('monitored-systems-manager.tsx');
+  expect(source).toContain('setSummary(payload.workspace_monitoring_summary ?? null);');
+  expect(source).toContain("const telemetryLabel = summary?.last_telemetry_at ? new Date(summary.last_telemetry_at).toLocaleString() : 'Not available';");
+  expect(source).toContain('summary?.freshness_status === \'fresh\'');
+  expect(source).toContain('summary?.coverage_state?.reporting_systems ?? 0');
+  expect(source).toContain('Live telemetry {hasLiveTelemetry ? telemetryLabel : \'unavailable\'}');
+});
+
 test('monitored systems toggle waits for backend and re-fetches state', () => {
   const source = readAppFile('monitored-systems-manager.tsx');
   expect(source).toContain('if (!response.ok)');

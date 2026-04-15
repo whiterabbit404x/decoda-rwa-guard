@@ -63,6 +63,7 @@ export type MonitoringRuntimeStatus = {
     last_heartbeat_at: string | null;
     last_telemetry_at: string | null;
     last_poll_at: string | null;
+    poll_freshness_status?: 'fresh' | 'stale' | 'unavailable';
     last_detection_at: string | null;
     evidence_source: 'live' | 'simulator' | 'replay' | 'none';
     status_reason: string | null;
@@ -75,6 +76,7 @@ export type MonitoringRuntimeStatus = {
   last_heartbeat_at?: string | null;
   last_telemetry_at?: string | null;
   last_poll_at?: string | null;
+  poll_freshness_status?: 'fresh' | 'stale' | 'unavailable';
   last_detection_at?: string | null;
   evidence_source?: 'live' | 'simulator' | 'replay' | 'none';
   status_reason?: string | null;
