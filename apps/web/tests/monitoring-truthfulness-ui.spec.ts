@@ -16,7 +16,7 @@ test.describe('monitoring truthfulness UI copy', () => {
     const banner = source('workspace-monitoring-mode-banner.tsx');
     expect(banner).toContain('normalizeMonitoringPresentation');
     expect(banner).toContain('Fresh telemetry unavailable.');
-    expect(banner).toContain('Last confirmed checkpoint:');
+    expect(banner).toContain("timestampLine('Last telemetry'");
     expect(banner).not.toContain('recent_confidence_basis');
     expect(banner).not.toContain('recent_evidence_state');
     expect(banner).not.toContain('synthetic_leak_detected');
@@ -30,7 +30,7 @@ test.describe('monitoring truthfulness UI copy', () => {
 
     expect(panel).toContain('Workspace monitoring offline. Fresh telemetry unavailable until connectivity returns.');
     expect(panel).toContain('Coverage degraded. Incident absence does not prove safety.');
-    expect(panel).toContain('Monitoring data delayed. Await a fresh checkpoint and event updates.');
+    expect(panel).toContain('Monitoring data delayed. Await fresh telemetry and event updates.');
 
     expect(threatPanel).toContain('Threat monitoring command center');
     expect(threatPanel).toContain('Operational state');
