@@ -10,7 +10,10 @@ import SystemStatusPanel from './system-status-panel';
 import ThreatOperationsPanel from './threat-operations-panel';
 import type { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
-import { resolveWorkspaceMonitoringTruthFromSummary } from './workspace-monitoring-truth';
+import {
+  monitoringHealthyCopyAllowed,
+  resolveWorkspaceMonitoringTruthFromSummary,
+} from './workspace-monitoring-truth';
 import {
   buildDashboardViewModel,
   DashboardPageData,
@@ -31,8 +34,35 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
     gatewayReachableOverride,
   });
   const monitoringTruth = liveFeed?.monitoring.truth
-    ?? resolveWorkspaceMonitoringTruthFromSummary(liveFeed?.runtimeStatus?.workspace_monitoring_summary);
+    ?? resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary);
   const monitoringPresentation = liveFeed?.monitoring.presentation ?? normalizeMonitoringPresentation(monitoringTruth);
+  const telemetryUnavailable =
+    !monitoringTruth.last_telemetry_at
+    || monitoringTruth.freshness_status === 'unavailable'
+    || monitoringTruth.contradiction_flags.includes('telemetry_unavailable_with_timestamp')
+    || monitoringTruth.contradiction_flags.includes('poll_without_telemetry_timestamp')
+    || monitoringTruth.contradiction_flags.includes('heartbeat_without_telemetry_timestamp');
+  const showHealthySummary =
+    monitoringHealthyCopyAllowed(monitoringTruth)
+    && monitoringPresentation.status === 'live'
+    && !monitoringTruth.contradiction_flags.includes('healthy_without_reporting_systems');
+  const safeMonitoringSummary = telemetryUnavailable
+    ? 'Telemetry currently unavailable.'
+    : showHealthySummary
+      ? monitoringPresentation.summary
+      : 'Monitoring state requires attention.';
+  const runtimeStatusLabel = monitoringTruth.runtime_status.toUpperCase();
+  const freshnessLabel = monitoringPresentation.freshness.toUpperCase();
+  const confidenceLabel = monitoringPresentation.confidence;
+  const lastTelemetryLabel = telemetryUnavailable || monitoringTruth.runtime_status === 'offline'
+    ? 'Telemetry unavailable'
+    : monitoringPresentation.telemetryTimestampLabel;
+  const lastHeartbeatLabel = monitoringTruth.last_heartbeat_at
+    ? monitoringPresentation.heartbeatTimestampLabel
+    : 'Heartbeat timestamp unavailable';
+  const lastPollLabel = monitoringTruth.last_poll_at
+    ? monitoringPresentation.pollTimestampLabel
+    : 'Poll timestamp unavailable';
 
   return (
     <main className="container productPage">
@@ -49,16 +79,19 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
         </div>
         <div className="heroPanel">
           <p><strong>Platform state:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Coverage degraded' : 'Telemetry offline'}</p>
-          <p><strong>Monitoring state:</strong> {workspaceMonitoring.coverageLevel}</p>
-          <p><strong>Last updated:</strong> {workspaceMonitoring.lastUpdated}</p>
-          <p><strong>Last confirmed checkpoint:</strong> {workspaceMonitoring.lastConfirmedCheckpoint}</p>
-          <p><strong>Protected assets:</strong> {workspaceMonitoring.protectedAssets} · <strong>Monitored systems:</strong> {workspaceMonitoring.monitoredTargets}</p>
+          <p><strong>Runtime status:</strong> {runtimeStatusLabel}</p>
+          <p><strong>Freshness:</strong> {freshnessLabel}</p>
+          <p><strong>Confidence:</strong> {confidenceLabel}</p>
+          <p><strong>Last telemetry:</strong> {lastTelemetryLabel}</p>
+          <p><strong>Last heartbeat:</strong> {lastHeartbeatLabel}</p>
+          <p><strong>Last poll:</strong> {lastPollLabel}</p>
+          <p><strong>Reporting/configured/protected:</strong> {monitoringTruth.reporting_systems} / {monitoringTruth.configured_systems} / {monitoringTruth.protected_assets_count}</p>
           <p><strong>Open alerts:</strong> {workspaceMonitoring.openAlerts} · <strong>Open incidents:</strong> {workspaceMonitoring.openIncidents}</p>
-          <p><strong>Recent activity:</strong> {workspaceMonitoring.recentActivitySummary}</p>
+          <p><strong>Monitoring summary:</strong> {safeMonitoringSummary}</p>
           <p><strong>System message:</strong> {backendBanner}</p>
           {liveFeed ? (
             <p>
-              <strong>Workspace feed:</strong> {monitoringPresentation.statusLabel} · {monitoringPresentation.summary} · {monitoringPresentation.telemetryTimestampLabel}. {monitoringPresentation.heartbeatTimestampLabel}. {monitoringPresentation.pollTimestampLabel}.
+              <strong>Workspace feed:</strong> {monitoringPresentation.statusLabel} · {safeMonitoringSummary} · {lastTelemetryLabel}. {lastHeartbeatLabel}. {lastPollLabel}.
             </p>
           ) : null}
         </div>
