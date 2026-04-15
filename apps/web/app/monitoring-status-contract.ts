@@ -53,6 +53,9 @@ export type MonitoringRuntimeStatus = {
     workspace_configured: boolean;
     monitoring_mode: 'live' | 'simulator' | 'offline' | 'unavailable';
     runtime_status: 'provisioning' | 'healthy' | 'degraded' | 'idle' | 'failed' | 'disabled' | 'offline';
+    configured_systems: number;
+    reporting_systems: number;
+    protected_assets: number;
     coverage_state: {
       configured_systems: number;
       reporting_systems: number;
@@ -72,6 +75,8 @@ export type MonitoringRuntimeStatus = {
   workspace_configured?: boolean;
   monitoring_mode?: 'live' | 'simulator' | 'offline' | 'unavailable';
   runtime_status?: 'provisioning' | 'healthy' | 'degraded' | 'idle' | 'failed' | 'disabled' | 'offline';
+  configured_systems?: number;
+  reporting_systems?: number;
   coverage_state?: { configured_systems: number; reporting_systems: number; protected_assets: number };
   last_heartbeat_at?: string | null;
   last_telemetry_at?: string | null;

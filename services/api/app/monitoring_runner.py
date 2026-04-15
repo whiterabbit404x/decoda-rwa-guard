@@ -2685,11 +2685,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'workspace_configured': False,
                 'monitoring_mode': 'simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'offline',
                 'runtime_status': 'offline',
+                'configured_systems': 0,
+                'reporting_systems': 0,
+                'protected_assets': 0,
                 'coverage_state': {'configured_systems': 0, 'reporting_systems': 0, 'protected_assets': 0},
                 'freshness_status': 'unavailable',
                 'confidence_status': 'unavailable',
                 'last_heartbeat_at': None,
-                'last_telemetry_at': claim_validator.get('last_real_event_at'),
+                'last_telemetry_at': None,
                 'last_poll_at': _json_safe_value(health).get('last_cycle_at'),
                 'last_detection_at': None,
                 'evidence_source': 'simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'none',
@@ -3032,6 +3035,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'workspace_configured': workspace_configured,
         'monitoring_mode': monitoring_mode,
         'runtime_status': runtime_status_summary,
+        'configured_systems': int(enabled_system_count),
+        'reporting_systems': int(reporting_systems),
+        'protected_assets': int(protected_assets_count),
         'coverage_state': {
             'configured_systems': int(enabled_system_count),
             'reporting_systems': int(reporting_systems),
@@ -3053,14 +3059,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     }
     if summary['runtime_status'] == 'offline' and summary['last_telemetry_at']:
         summary['contradiction_flags'].append('offline_with_current_telemetry')
-    if summary['coverage_state']['reporting_systems'] == 0 and summary['runtime_status'] == 'healthy':
+    if summary['reporting_systems'] == 0 and summary['runtime_status'] == 'healthy':
         summary['contradiction_flags'].append('healthy_without_reporting_systems')
     if summary['last_telemetry_at'] is None and summary['freshness_status'] == 'fresh':
         summary['contradiction_flags'].append('telemetry_unavailable_marked_fresh')
     if summary['freshness_status'] == 'unavailable' and summary['last_telemetry_at']:
         summary['contradiction_flags'].append('telemetry_unavailable_with_timestamp')
-    if (not summary['workspace_configured']) and (summary['coverage_state']['configured_systems'] > 0 or summary['coverage_state']['protected_assets'] > 0):
+    if (not summary['workspace_configured']) and (summary['configured_systems'] > 0 or summary['protected_assets'] > 0):
         summary['contradiction_flags'].append('workspace_unconfigured_with_coverage')
+    if summary['configured_systems'] == 0 and summary['reporting_systems'] == 0 and summary['last_telemetry_at']:
+        summary['contradiction_flags'].append('zero_coverage_with_live_telemetry')
 
     payload = {
         'monitoring_status': monitoring_status,
