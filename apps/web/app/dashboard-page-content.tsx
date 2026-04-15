@@ -63,6 +63,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
   const lastPollLabel = monitoringTruth.last_poll_at
     ? monitoringPresentation.pollTimestampLabel
     : 'Poll timestamp unavailable';
+  const { openAlerts, openIncidents } = workspaceMonitoring;
 
   return (
     <main className="container productPage">
@@ -86,7 +87,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <p><strong>Last heartbeat:</strong> {lastHeartbeatLabel}</p>
           <p><strong>Last poll:</strong> {lastPollLabel}</p>
           <p><strong>Reporting/configured/protected:</strong> {monitoringTruth.reporting_systems} / {monitoringTruth.configured_systems} / {monitoringTruth.protected_assets_count}</p>
-          <p><strong>Open alerts:</strong> {workspaceMonitoring.openAlerts} · <strong>Open incidents:</strong> {workspaceMonitoring.openIncidents}</p>
+          <p><strong>Open alerts:</strong> {openAlerts} · <strong>Open incidents:</strong> {openIncidents}</p>
           <p><strong>Monitoring summary:</strong> {safeMonitoringSummary}</p>
           <p><strong>System message:</strong> {backendBanner}</p>
           {liveFeed ? (
