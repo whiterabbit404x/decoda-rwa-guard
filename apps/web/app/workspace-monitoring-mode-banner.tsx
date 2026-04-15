@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { normalizeMonitoringMode, type MonitoringRuntimeStatus } from './monitoring-status-contract';
 import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
 import { usePilotAuth } from './pilot-auth-context';
+import { resolveWorkspaceMonitoringTruth } from './workspace-monitoring-truth';
 
 export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: string | null }) {
   const { authHeaders, isAuthenticated } = usePilotAuth();
@@ -33,11 +34,8 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
     return null;
   }
 
-  const presentation = normalizeMonitoringPresentation(status, {
-    degraded: status.mode === 'DEGRADED' || Boolean(status.degraded_reason),
-    offline: status.mode === 'OFFLINE',
-    stale: status.mode === 'STALE',
-  });
+  const truth = resolveWorkspaceMonitoringTruth(status);
+  const presentation = normalizeMonitoringPresentation(truth);
 
   const tone = presentation.status === 'live' ? 'statusBannerLive' : 'statusBannerDegraded';
 
@@ -46,7 +44,9 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
       <strong>{presentation.statusLabel}</strong>
       <span>Monitoring state: {presentation.summary}</span>
       <span>Freshness: {presentation.freshness} · Confidence: {presentation.confidence}</span>
-      <span>Last confirmed checkpoint: {presentation.lastCheckpointLabel}</span>
+      <span>{presentation.telemetryTimestampLabel}</span>
+      <span>{presentation.heartbeatTimestampLabel}</span>
+      <span>{presentation.pollTimestampLabel}</span>
       {presentation.status === 'limited coverage' ? <span>Coverage currently limited.</span> : null}
       {presentation.status === 'offline' ? <span>Workspace coverage offline.</span> : null}
       {presentation.freshness === 'unavailable' ? <span>Fresh telemetry unavailable.</span> : null}

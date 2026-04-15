@@ -1,18 +1,40 @@
 import { expect, test } from '@playwright/test';
 
 import { normalizeMonitoringPresentation } from '../app/monitoring-status-presentation';
-import type { MonitoringRuntimeStatus } from '../app/monitoring-status-contract';
+import type { WorkspaceMonitoringTruth } from '../app/workspace-monitoring-truth';
+
+function makeTruth(partial: Partial<WorkspaceMonitoringTruth>): WorkspaceMonitoringTruth {
+  return {
+    workspace_configured: true,
+    monitoring_mode: 'live',
+    runtime_status: 'healthy',
+    configured_systems: 3,
+    monitored_systems_count: 3,
+    reporting_systems: 3,
+    protected_assets_count: 3,
+    freshness_status: 'fresh',
+    confidence_status: 'high',
+    last_poll_at: '2026-04-13T10:00:00Z',
+    last_heartbeat_at: '2026-04-13T10:00:00Z',
+    last_telemetry_at: '2026-04-13T10:00:00Z',
+    last_detection_at: '2026-04-13T10:00:00Z',
+    evidence_source: 'live',
+    status_reason: null,
+    contradiction_flags: [],
+    ...partial,
+  };
+}
 
 test.describe('monitoring status presentation adapter', () => {
   test('normalizes internal runtime states to enterprise-safe statuses', async () => {
     const statuses = [
-      normalizeMonitoringPresentation({ mode: 'LIVE', recent_evidence_state: 'real', recent_real_event_count: 2, checkpoint_age_seconds: 30 } as MonitoringRuntimeStatus).status,
-      normalizeMonitoringPresentation({ mode: 'DEGRADED', recent_evidence_state: 'degraded', checkpoint_age_seconds: 900 } as MonitoringRuntimeStatus).status,
-      normalizeMonitoringPresentation({ mode: 'OFFLINE', recent_evidence_state: 'missing' } as MonitoringRuntimeStatus).status,
-      normalizeMonitoringPresentation({ mode: 'STALE', recent_evidence_state: 'real', checkpoint_age_seconds: 2000 } as MonitoringRuntimeStatus).status,
-      normalizeMonitoringPresentation({ mode: 'LIMITED_COVERAGE', recent_evidence_state: 'real', synthetic_leak_detected: true } as MonitoringRuntimeStatus).status,
-      normalizeMonitoringPresentation({ mode: 'LIVE', recent_evidence_state: 'demo' } as MonitoringRuntimeStatus).status,
-      normalizeMonitoringPresentation({ mode: 'LIVE', detection_outcome: 'DEMO_ONLY' } as MonitoringRuntimeStatus).status,
+      normalizeMonitoringPresentation(makeTruth({ runtime_status: 'healthy' })).status,
+      normalizeMonitoringPresentation(makeTruth({ runtime_status: 'degraded' })).status,
+      normalizeMonitoringPresentation(makeTruth({ runtime_status: 'offline' })).status,
+      normalizeMonitoringPresentation(makeTruth({ freshness_status: 'stale' })).status,
+      normalizeMonitoringPresentation(makeTruth({ monitoring_mode: 'simulator' })).status,
+      normalizeMonitoringPresentation(makeTruth({ evidence_source: 'simulator' })).status,
+      normalizeMonitoringPresentation(makeTruth({ evidence_source: 'replay' })).status,
     ];
 
     const allowed = new Set(['live', 'degraded', 'offline', 'stale', 'limited coverage']);
@@ -21,12 +43,11 @@ test.describe('monitoring status presentation adapter', () => {
   });
 
   test('never overstates weak evidence as verified/live telemetry', async () => {
-    const weak = normalizeMonitoringPresentation({
-      mode: 'LIVE',
-      recent_evidence_state: 'missing',
-      recent_real_event_count: 0,
-      recent_confidence_basis: 'demo_scenario',
-    } as MonitoringRuntimeStatus);
+    const weak = normalizeMonitoringPresentation(makeTruth({
+      confidence_status: 'unavailable',
+      freshness_status: 'unavailable',
+      last_telemetry_at: null,
+    }));
 
     expect(weak.status).toBe('degraded');
     expect(weak.evidence).toBe('unavailable');
@@ -35,62 +56,56 @@ test.describe('monitoring status presentation adapter', () => {
   });
 
   test('exposes only enterprise-safe evidence and freshness values', async () => {
-    const value = normalizeMonitoringPresentation({ mode: 'LIVE', recent_evidence_state: 'real', recent_real_event_count: 1, checkpoint_age_seconds: 120 } as MonitoringRuntimeStatus);
+    const value = normalizeMonitoringPresentation(makeTruth({
+      confidence_status: 'medium',
+      freshness_status: 'fresh',
+    }));
     expect(['verified', 'recent', 'delayed', 'unavailable']).toContain(value.evidence);
     expect(['verified', 'recent', 'delayed', 'unavailable']).toContain(value.freshness);
     expect(['verified telemetry', 'recent telemetry', 'limited telemetry', 'telemetry unavailable']).toContain(value.confidence);
   });
 
   test('treats idle / limited coverage as non-offline', async () => {
-    const idle = normalizeMonitoringPresentation({
-      mode: 'LIMITED_COVERAGE',
-      monitoring_status: 'idle',
-      recent_evidence_state: 'missing',
-      recent_real_event_count: 0,
-    } as MonitoringRuntimeStatus);
+    const idle = normalizeMonitoringPresentation(makeTruth({
+      runtime_status: 'idle',
+      monitoring_mode: 'live',
+      confidence_status: 'unavailable',
+    }));
     expect(idle.status).not.toBe('offline');
     expect(idle.statusLabel).not.toBe('OFFLINE');
   });
 
   test('does not treat polling heartbeats alone as live telemetry', async () => {
-    const idleHealthy = normalizeMonitoringPresentation({
-      mode: 'LIMITED_COVERAGE',
-      monitoring_status: 'idle',
-      monitored_systems: 3,
-      systems_with_recent_heartbeat: 3,
-      successful_detection_evaluation_recent: true,
-      recent_evidence_state: 'missing',
-      recent_real_event_count: 0,
-      recent_confidence_basis: 'provider_evidence',
-      last_heartbeat: new Date().toISOString(),
-      workspace_monitoring_summary: {
-        workspace_configured: true,
-        monitoring_mode: 'live',
-        runtime_status: 'idle',
-        coverage_state: { configured_systems: 3, reporting_systems: 0, protected_assets: 3 },
-        freshness_status: 'unavailable',
-        confidence_status: 'low',
-        last_heartbeat_at: new Date().toISOString(),
-        last_telemetry_at: null,
-        last_poll_at: new Date().toISOString(),
-        last_detection_at: null,
-        evidence_source: 'none',
-        status_reason: 'no_reporting_systems',
-        contradiction_flags: [],
-      },
-    } as MonitoringRuntimeStatus);
+    const idleHealthy = normalizeMonitoringPresentation(makeTruth({
+      runtime_status: 'idle',
+      confidence_status: 'low',
+      freshness_status: 'unavailable',
+      evidence_source: 'none',
+      last_telemetry_at: null,
+    }));
     expect(idleHealthy.freshness).toBe('unavailable');
     expect(idleHealthy.confidence).toBe('limited telemetry');
     expect(idleHealthy.status).toBe('limited coverage');
   });
 
-  test('prefers successful monitoring cycle timestamp as last checkpoint label', async () => {
-    const value = normalizeMonitoringPresentation({
-      mode: 'LIVE',
-      recent_evidence_state: 'real',
-      recent_real_event_count: 0,
-      last_confirmed_checkpoint: '2026-04-13T10:00:00Z',
-    } as MonitoringRuntimeStatus);
-    expect(value.lastCheckpointLabel).not.toContain('unavailable');
+  test('exposes telemetry / heartbeat / poll timestamp labels', async () => {
+    const value = normalizeMonitoringPresentation(makeTruth({
+      last_telemetry_at: '2026-04-13T10:00:00Z',
+      last_heartbeat_at: null,
+      last_poll_at: '2026-04-13T09:59:00Z',
+    }));
+    expect(value.telemetryTimestampLabel).toContain('Telemetry timestamp');
+    expect(value.heartbeatTimestampLabel).toContain('unavailable');
+    expect(value.pollTimestampLabel).toContain('Poll timestamp');
+  });
+
+  test('keeps telemetry freshness wording tied to telemetry timestamp and freshness status', async () => {
+    const value = normalizeMonitoringPresentation(makeTruth({
+      freshness_status: 'unavailable',
+      last_telemetry_at: null,
+      last_heartbeat_at: '2026-04-13T10:01:00Z',
+      last_poll_at: '2026-04-13T10:02:00Z',
+    }));
+    expect(value.summary).toContain('Telemetry freshness unavailable.');
   });
 });

@@ -1,4 +1,4 @@
-import { normalizeMonitoringMode, type MonitoringRuntimeStatus } from './monitoring-status-contract';
+import type { WorkspaceMonitoringTruth } from './workspace-monitoring-truth';
 
 export type MonitoringPresentationStatus = 'live' | 'degraded' | 'offline' | 'stale' | 'limited coverage';
 export type MonitoringPresentationEvidence = 'verified' | 'recent' | 'delayed' | 'unavailable';
@@ -16,136 +16,86 @@ export type MonitoringPresentation = {
   freshness: MonitoringPresentationFreshness;
   confidence: MonitoringPresentationConfidence;
   summary: string;
-  lastCheckpointLabel: string;
+  telemetryTimestampLabel: string;
+  heartbeatTimestampLabel: string;
+  pollTimestampLabel: string;
 };
 
-type PresentationContext = {
-  degraded?: boolean;
-  offline?: boolean;
-  stale?: boolean;
-};
-
-const INTERNAL_LIMITED_MARKERS = ['demo', 'hybrid', 'fallback', 'synthetic'];
-
-function normalizeEvidence(status: MonitoringRuntimeStatus | null): MonitoringPresentationEvidence {
-  const truth = status?.workspace_monitoring_summary;
-  const truthConfidence = String(truth?.confidence_status ?? '').toLowerCase();
-  if (truthConfidence === 'high') return 'verified';
-  if (truthConfidence === 'medium') return 'recent';
-  if (truthConfidence === 'low') return 'delayed';
-  if (truthConfidence === 'unavailable') return 'unavailable';
-
-  const recentEvidence = String(status?.recent_evidence_state ?? '').trim().toLowerCase();
-  const systemsWithRecentHeartbeat = Number(status?.systems_with_recent_heartbeat ?? 0);
-  const successfulDetectionEvaluation = Boolean(status?.successful_detection_evaluation_recent);
-  const confidenceBasis = String(status?.recent_confidence_basis ?? '').toLowerCase();
-
-  if (recentEvidence === 'real') {
-    return 'verified';
-  }
-
-  if (recentEvidence === 'degraded') {
-    return 'delayed';
-  }
-
-  if (systemsWithRecentHeartbeat > 0 && (successfulDetectionEvaluation || confidenceBasis === 'provider_evidence' || confidenceBasis === 'backfill_evidence')) {
-    return 'recent';
-  }
-
-  if (recentEvidence === 'failed' || recentEvidence === 'missing' || recentEvidence === 'no_evidence') {
-    return 'unavailable';
-  }
-
-  if (recentEvidence && INTERNAL_LIMITED_MARKERS.some((marker) => recentEvidence.includes(marker))) {
-    return 'unavailable';
-  }
-
-  if ((status?.recent_real_event_count ?? 0) <= 0) {
-    return 'unavailable';
-  }
-
-  return 'recent';
+function normalizeEvidence(truth: WorkspaceMonitoringTruth): MonitoringPresentationEvidence {
+  const confidence = truth.confidence_status;
+  if (confidence === 'high') return 'verified';
+  if (confidence === 'medium') return 'recent';
+  if (confidence === 'low') return 'delayed';
+  return 'unavailable';
 }
 
-function normalizeFreshness(status: MonitoringRuntimeStatus | null, evidence: MonitoringPresentationEvidence): MonitoringPresentationFreshness {
-  const truth = status?.workspace_monitoring_summary;
-  const truthFreshness = String(truth?.freshness_status ?? '').toLowerCase();
-  if (truthFreshness === 'fresh') {
+function normalizeFreshness(truth: WorkspaceMonitoringTruth, evidence: MonitoringPresentationEvidence): MonitoringPresentationFreshness {
+  if (truth.freshness_status === 'fresh') {
     return evidence === 'verified' ? 'verified' : 'recent';
   }
-  if (truthFreshness === 'stale') {
+  if (truth.freshness_status === 'stale') {
     return 'delayed';
   }
-  if (truthFreshness === 'unavailable') {
+  if (truth.freshness_status === 'unavailable') {
     return 'unavailable';
   }
-
-  if (evidence === 'unavailable') {
-    return 'unavailable';
-  }
-
-  const checkpointAge = status?.checkpoint_age_seconds;
-  if (typeof checkpointAge !== 'number') {
-    return 'unavailable';
-  }
-  const freshnessAge = checkpointAge;
-  if (freshnessAge !== null && freshnessAge <= 300) {
-    return evidence === 'verified' ? 'verified' : 'recent';
-  }
-  if (freshnessAge !== null && freshnessAge <= 900) {
-    return 'recent';
-  }
-  return 'delayed';
+  return evidence === 'unavailable' ? 'unavailable' : 'recent';
 }
 
 function normalizeStatus(
-  status: MonitoringRuntimeStatus | null,
-  context: PresentationContext,
+  truth: WorkspaceMonitoringTruth,
   evidence: MonitoringPresentationEvidence,
   freshness: MonitoringPresentationFreshness,
 ): MonitoringPresentationStatus {
-  const truth = status?.workspace_monitoring_summary;
-  const truthRuntime = String(truth?.runtime_status ?? '').toLowerCase();
-  if (truthRuntime === 'offline' || truthRuntime === 'failed' || truthRuntime === 'disabled') {
+  if (truth.runtime_status === 'offline' || truth.runtime_status === 'failed' || truth.runtime_status === 'disabled') {
     return 'offline';
   }
-  if (truthRuntime === 'healthy') {
-    return 'live';
-  }
-  if (truthRuntime === 'degraded') {
+  if (truth.runtime_status === 'degraded') {
     return 'degraded';
   }
-  if (truthRuntime === 'idle' || truthRuntime === 'provisioning') {
+  if (truth.runtime_status === 'idle' || truth.runtime_status === 'provisioning') {
     return 'limited coverage';
   }
 
-  if (context.offline || normalizeMonitoringMode(status?.mode) === 'OFFLINE') {
+  if (truth.monitoring_mode === 'offline') {
     return 'offline';
   }
 
-  const runtimeMode = normalizeMonitoringMode(status?.mode);
-  const detectionOutcome = String(status?.detection_outcome ?? '').toLowerCase();
-
-  if (
-    (runtimeMode === 'LIMITED_COVERAGE' && !(Number(status?.invalid_enabled_targets ?? 0) === 0
-      && Number(status?.monitored_systems ?? 0) > 0
-      && Number(status?.systems_with_recent_heartbeat ?? 0) > 0
-      && Boolean(status?.successful_detection_evaluation_recent)))
-    || Boolean(status?.synthetic_leak_detected)
-    || INTERNAL_LIMITED_MARKERS.some((marker) => detectionOutcome.includes(marker))
-  ) {
+  if (truth.monitoring_mode === 'simulator' || truth.evidence_source === 'simulator' || truth.evidence_source === 'replay') {
     return 'limited coverage';
   }
 
-  if (context.stale || runtimeMode === 'STALE' || freshness === 'delayed') {
+  if (freshness === 'delayed') {
     return 'stale';
   }
 
-  if (context.degraded || runtimeMode === 'DEGRADED' || evidence === 'unavailable') {
+  if (evidence === 'unavailable' || truth.contradiction_flags.length > 0) {
     return 'degraded';
   }
 
+  if (truth.runtime_status === 'healthy') {
+    return 'live';
+  }
+
   return 'live';
+}
+
+function formatTimestamp(kind: 'telemetry' | 'heartbeat' | 'poll', value: string | null): string {
+  const label = kind === 'telemetry' ? 'Telemetry' : kind === 'heartbeat' ? 'Heartbeat' : 'Poll';
+  if (!value) {
+    return `${label} timestamp unavailable`;
+  }
+  return `${label} timestamp: ${new Date(value).toLocaleString()}`;
+}
+
+function telemetryFreshnessSummary(truth: WorkspaceMonitoringTruth): string {
+  if (!truth.last_telemetry_at || truth.freshness_status === 'unavailable') {
+    return 'Telemetry freshness unavailable.';
+  }
+  if (truth.freshness_status === 'stale') {
+    return 'Telemetry is stale.';
+  }
+  return 'Telemetry is fresh.';
 }
 
 function summarizeStatus(status: MonitoringPresentationStatus, freshness: MonitoringPresentationFreshness): string {
@@ -181,12 +131,11 @@ function confidenceFromEvidence(
 }
 
 export function normalizeMonitoringPresentation(
-  status: MonitoringRuntimeStatus | null,
-  context: PresentationContext = {},
+  truth: WorkspaceMonitoringTruth,
 ): MonitoringPresentation {
-  const evidence = normalizeEvidence(status);
-  const freshness = normalizeFreshness(status, evidence);
-  const presentationStatus = normalizeStatus(status, context, evidence, freshness);
+  const evidence = normalizeEvidence(truth);
+  const freshness = normalizeFreshness(truth, evidence);
+  const presentationStatus = normalizeStatus(truth, evidence, freshness);
   const confidence = confidenceFromEvidence(evidence, presentationStatus);
 
   return {
@@ -203,11 +152,9 @@ export function normalizeMonitoringPresentation(
     evidence,
     freshness,
     confidence,
-    summary: summarizeStatus(presentationStatus, freshness),
-    lastCheckpointLabel: status?.last_confirmed_checkpoint
-      ? new Date(status.last_confirmed_checkpoint).toLocaleString()
-      : status?.last_detection_evaluation_at
-        ? new Date(status.last_detection_evaluation_at).toLocaleString()
-        : 'Last confirmed checkpoint unavailable',
+    summary: `${summarizeStatus(presentationStatus, freshness)} ${telemetryFreshnessSummary(truth)}`,
+    telemetryTimestampLabel: formatTimestamp('telemetry', truth.last_telemetry_at),
+    heartbeatTimestampLabel: formatTimestamp('heartbeat', truth.last_heartbeat_at),
+    pollTimestampLabel: formatTimestamp('poll', truth.last_poll_at),
   };
 }
