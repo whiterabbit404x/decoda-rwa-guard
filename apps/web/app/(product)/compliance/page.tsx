@@ -23,7 +23,7 @@ export default async function CompliancePage() {
         </div>
         <div className="heroPanel"><StatusBadge state={complianceDashboard.source === 'live' && !complianceDashboard.degraded ? 'live' : complianceDashboard.source === 'live' ? 'live_degraded' : 'limited_coverage'} /><p>{complianceDashboard.message}</p></div>
       </section>
-      <SystemStatusPanel diagnostics={data.diagnostics} truth={monitoringTruth} presentation={monitoringPresentation} />
+      <SystemStatusPanel monitoring={{ truth: monitoringTruth, presentation: monitoringPresentation }} showDiagnostics={false} />
       <section className="threeColumnSection">
         <div className="stack compactStack">
           <article className="dataCard">
