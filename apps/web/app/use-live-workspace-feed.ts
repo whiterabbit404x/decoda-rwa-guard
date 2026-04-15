@@ -135,10 +135,11 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
           });
         }
         setRuntimeStatus(nextRuntime);
+        const truth = nextRuntime?.workspace_monitoring_summary;
         setCounts({
-          protectedAssets: Number(nextRuntime?.protected_assets ?? 0),
-          monitoredSystems: Number(nextRuntime?.monitored_systems ?? 0),
-          activeSystems: Number(nextRuntime?.active_systems ?? 0),
+          protectedAssets: Number(truth?.coverage_state?.protected_assets ?? nextRuntime?.protected_assets ?? 0),
+          monitoredSystems: Number(truth?.coverage_state?.configured_systems ?? nextRuntime?.monitored_systems ?? 0),
+          activeSystems: Number(truth?.coverage_state?.reporting_systems ?? nextRuntime?.active_systems ?? 0),
           openAlerts: (alertsPayload.alerts ?? []).length,
           openIncidents: (incidentsPayload.incidents ?? []).length,
           historyRecords: historyCount,
@@ -149,7 +150,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
         );
         setOffline(runtimeUnavailable ? true : health.offline);
         setDegraded(runtimeUnavailable ? true : health.degraded);
-        setLastUpdatedAt(new Date().toISOString());
+        setLastUpdatedAt(nextRuntime?.last_poll_at ?? new Date().toISOString());
       } catch {
         if (active) {
           setOffline(true);

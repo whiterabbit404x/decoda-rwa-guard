@@ -219,7 +219,9 @@ function derivePageState(params: {
   targets: TargetRow[];
   liveDetections: DetectionItem[];
   historicalDetections: DetectionItem[];
-  telemetryAvailable: boolean;
+  workspaceConfigured: boolean;
+  reportingSystems: number;
+  runtimeStatus: string;
   monitoredSystems: number;
   invalidTargets: number;
 }): PageOperationalState {
@@ -230,16 +232,18 @@ function derivePageState(params: {
     targets,
     liveDetections,
     historicalDetections,
-    telemetryAvailable,
+    workspaceConfigured,
+    reportingSystems,
+    runtimeStatus,
     monitoredSystems,
     invalidTargets,
   } = params;
 
-  if (!loadingSnapshot && snapshotError && !telemetryAvailable) {
+  if (!loadingSnapshot && snapshotError && reportingSystems === 0) {
     return 'fetch_error';
   }
 
-  if (targets.length === 0 && monitoredSystems === 0) {
+  if (!workspaceConfigured && targets.length === 0 && monitoredSystems === 0) {
     return 'unconfigured_workspace';
   }
 
@@ -247,7 +251,7 @@ function derivePageState(params: {
     return 'degraded_partial';
   }
 
-  if (monitoringStatus === 'offline' && !telemetryAvailable) {
+  if (runtimeStatus === 'offline' || monitoringStatus === 'offline') {
     return 'offline_no_telemetry';
   }
 
@@ -265,7 +269,7 @@ function derivePageState(params: {
   return 'configured_no_signals';
 }
 
-function PageStateBanner({ state, telemetryLabel, pollLabel }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string }) {
+function PageStateBanner({ state, telemetryLabel, pollLabel, reason }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null }) {
   if (state === 'healthy_live') {
     return <p className="explanation">Live monitoring is healthy. Telemetry freshness and threat detections reflect current workspace conditions.</p>;
   }
@@ -276,7 +280,7 @@ function PageStateBanner({ state, telemetryLabel, pollLabel }: { state: PageOper
     return <p className="explanation">No monitored systems are configured. Live threat detection will begin after at least one protected system is added.</p>;
   }
   if (state === 'offline_no_telemetry') {
-    return <p className="explanation">Monitoring is offline. Showing last known records only; continuous live protection is currently unavailable.</p>;
+    return <p className="explanation">Monitoring is offline. Reason: {reason || 'no active reporting systems'}. Add one monitored system and confirm telemetry flow.</p>;
   }
   if (state === 'fetch_error') {
     return (
@@ -404,13 +408,21 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       ''
     ).toLowerCase() === 'demo';
   const protectedAssetCount = Number(feed.runtimeStatus?.protected_assets_count ?? feed.counts.protectedAssets);
+  const truth = feed.runtimeStatus?.workspace_monitoring_summary;
+  const workspaceConfigured = Boolean(truth?.workspace_configured ?? feed.runtimeStatus?.workspace_configured);
+  const configuredSystems = Number(truth?.coverage_state?.configured_systems ?? feed.counts.monitoredSystems);
+  const reportingSystems = Number(truth?.coverage_state?.reporting_systems ?? 0);
+  const monitoringMode = truth?.monitoring_mode ?? 'unavailable';
+  const contradictionFlags = truth?.contradiction_flags ?? [];
+  const runtimeStatus = String(truth?.runtime_status ?? '').toLowerCase();
 
-  const lastTelemetryAt = feed.runtimeStatus?.last_real_event_at || feed.lastUpdatedAt;
+  const lastTelemetryAt = truth?.last_telemetry_at ?? null;
+  const lastPollAt = truth?.last_poll_at ?? feed.lastUpdatedAt;
   const telemetryLabel = formatRelativeTime(lastTelemetryAt);
-  const pollLabel = formatRelativeTime(feed.lastUpdatedAt);
+  const pollLabel = formatRelativeTime(lastPollAt);
   const detectionEvalLabel = feed.runtimeStatus?.checkpoint_age_seconds != null
     ? `${feed.runtimeStatus.checkpoint_age_seconds}s ago`
-    : formatRelativeTime(feed.lastUpdatedAt);
+    : formatRelativeTime(truth?.last_detection_at ?? lastPollAt);
 
   const baseDetections = useMemo<DetectionItem[]>(() => {
     const matchedAsset = targets[0];
@@ -496,7 +508,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     targets,
     liveDetections: categorizedDetections.live,
     historicalDetections: categorizedDetections.historical,
-    telemetryAvailable: Boolean(feed.lastUpdatedAt || feed.runtimeStatus?.last_real_event_at),
+    workspaceConfigured,
+    reportingSystems,
+    runtimeStatus,
     monitoredSystems: feed.counts.monitoredSystems,
     invalidTargets: Number(feed.runtimeStatus?.invalid_enabled_targets ?? 0),
   });
@@ -524,11 +538,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       href: '/history',
     }));
     const monitoringEvent = {
-      id: `monitoring-${feed.lastUpdatedAt ?? 'none'}`,
-      timestamp: feed.lastUpdatedAt || new Date().toISOString(),
+      id: `monitoring-${lastPollAt ?? 'none'}`,
+      timestamp: lastPollAt || new Date().toISOString(),
       category: 'Monitoring' as const,
       description: pageState === 'offline_no_telemetry'
         ? 'Monitoring offline: no fresh telemetry available.'
+        : runtimeStatus && runtimeStatus !== 'healthy'
+          ? `Monitoring ${runtimeStatus}: ${truth?.status_reason || 'runtime is not healthy'}.`
         : pageState === 'degraded_partial' || pageState === 'historical_only'
           ? 'Monitoring degraded: telemetry is partial or delayed.'
           : simulatorMode
@@ -540,12 +556,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     return [monitoringEvent, ...alertItems, ...incidentItems, ...historyItems]
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .slice(0, 12);
-  }, [alerts, feed.lastUpdatedAt, historyRuns, incidents, pageState, simulatorMode]);
+  }, [alerts, historyRuns, incidents, lastPollAt, pageState, runtimeStatus, simulatorMode, truth?.status_reason]);
 
-  const reportingSystems = feed.counts.monitoredSystems;
-  const recentHeartbeatSystems = Number(feed.runtimeStatus?.systems_with_recent_heartbeat ?? 0);
-  const coverageSummary = `${recentHeartbeatSystems} / ${Math.max(reportingSystems, 0)}`;
-  const hasCoverageFromRuntime = protectedAssetCount > 0 || reportingSystems > 0;
+  const recentHeartbeatSystems = Number(feed.runtimeStatus?.systems_with_recent_heartbeat ?? reportingSystems);
+  const coverageSummary = `${Math.max(reportingSystems, 0)} / ${Math.max(configuredSystems, 0)}`;
+  const hasCoverageFromRuntime = protectedAssetCount > 0 || configuredSystems > 0;
   const hasTargetCoverageRows = targets.length > 0;
   const hasMonitoredSystemCoverageRows = !hasTargetCoverageRows && monitoredSystems.length > 0;
   const showRuntimeCoverageFallback = !loadingSnapshot && !hasTargetCoverageRows && !hasMonitoredSystemCoverageRows && hasCoverageFromRuntime;
@@ -563,7 +578,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }, [alerts, incidents]);
 
   const riskFreshness = pageState === 'healthy_live' || pageState === 'configured_no_signals'
-    ? `last evaluated ${detectionEvalLabel} across ${Math.max(reportingSystems, 0)} monitored systems`
+    ? `last evaluated ${detectionEvalLabel} across ${Math.max(configuredSystems, 0)} monitored systems`
     : `last known score from ${detectionEvalLabel}; current telemetry unavailable`;
 
   const feedHeading = pageState === 'healthy_live'
@@ -594,20 +609,23 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </div>
         <div className="chipRow monitoringHeaderChips">
           <span className={`statusBadge statusBadge-${monitoringTone(monitoringPresentation.status)}`}>{monitoringPresentation.statusLabel}</span>
-          {simulatorMode ? <span className="statusBadge statusBadge-attention">SIMULATOR / DEV MODE</span> : null}
+          {monitoringMode === 'simulator' || simulatorMode ? <span className="statusBadge statusBadge-attention">SIMULATOR MODE</span> : null}
           <span className="ruleChip">Operational state {pageState.replaceAll('_', ' ')}</span>
-          <span className="ruleChip">Live telemetry {telemetryLabel}</span>
+          <span className="ruleChip">{lastTelemetryAt ? `Live telemetry ${telemetryLabel}` : 'Current telemetry unavailable'}</span>
           <span className="ruleChip">Threat feed updated {pollLabel}</span>
-          <span className="ruleChip">Evidence source {String(feed.runtimeStatus?.source_of_evidence || feed.runtimeStatus?.source_type || 'replay_or_none')}</span>
+          <span className="ruleChip">Evidence source {String(truth?.evidence_source || feed.runtimeStatus?.source_of_evidence || 'none')}</span>
           <span className="ruleChip">Protected assets {protectedAssetCount}</span>
-          <span className="ruleChip">Monitored systems {reportingSystems}</span>
+          <span className="ruleChip">Monitored systems {configuredSystems}</span>
+          <span className="ruleChip">Reporting systems {reportingSystems}</span>
+          {!workspaceConfigured ? <span className="ruleChip">Workspace not configured</span> : null}
+          {contradictionFlags.length > 0 ? <span className="statusBadge statusBadge-attention">Guarded fallback copy active</span> : null}
           {Number(feed.runtimeStatus?.invalid_enabled_targets ?? 0) > 0 ? <span className="ruleChip">Invalid targets {Number(feed.runtimeStatus?.invalid_enabled_targets ?? 0)}</span> : null}
           <span className="ruleChip">Open alerts {openAlerts}</span>
           <span className="ruleChip">Active incidents {activeIncidents}</span>
         </div>
-        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} />
+        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth?.status_reason} />
         <p className="tableMeta">
-          Last telemetry received: {telemetryLabel} · Last detection evaluation: {detectionEvalLabel} · Last successful poll: {pollLabel} · Runtime freshness {String(feed.runtimeStatus?.freshness_status || 'unavailable')} · Runtime confidence {String(feed.runtimeStatus?.confidence_status || 'unavailable')}
+          Last telemetry received: {lastTelemetryAt ? telemetryLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last successful poll: {pollLabel} · Runtime freshness {String(truth?.freshness_status || feed.runtimeStatus?.freshness_status || 'unavailable')} · Runtime confidence {String(truth?.confidence_status || feed.runtimeStatus?.confidence_status || 'unavailable')}
         </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
@@ -734,11 +752,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ) : null}
           {showRuntimeCoverageFallback ? (
             <div className="emptyStatePanel">
-              <h4>Coverage detected from runtime telemetry</h4>
+              <h4>Coverage detected from runtime monitoring summary</h4>
               <p className="muted">{runtimeCoverageStatusNote}</p>
               <ul className="tableMeta">
-                <li>Monitored systems: {Math.max(reportingSystems, 0)}</li>
-                <li>Systems with recent heartbeat: {recentHeartbeatSystems}</li>
+                <li>Configured systems: {Math.max(configuredSystems, 0)}</li>
+                <li>Reporting systems: {reportingSystems}</li>
                 <li>Protected assets: {protectedAssetCount}</li>
                 <li>Telemetry freshness: {telemetryLabel}</li>
               </ul>
