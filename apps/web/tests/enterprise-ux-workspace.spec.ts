@@ -15,7 +15,23 @@ test('dashboard and shared shell expose truthful live workspace state', async ()
   expect(shell).toContain('Monitored systems');
   expect(shell).toContain('Alerts for this workspace');
   expect(shell).toContain('Incidents affecting this workspace');
-  expect(shell).toContain('coverage freshness');
+  expect(shell).toContain('Monitoring freshness');
+  expect(shell).toContain('Last heartbeat');
+  expect(shell).toContain('Monitoring health');
+});
+
+test('workspace ownership bar uses truth presentation instead of legacy feed signals', async () => {
+  const shell = read('app/workspace-ownership-bar.tsx');
+
+  expect(shell).toContain('resolveWorkspaceMonitoringTruth');
+  expect(shell).toContain('normalizeMonitoringPresentation');
+  expect(shell).toContain('hasLiveTelemetry');
+
+  expect(shell).not.toContain('feedLabel(');
+  expect(shell).not.toContain('feed.stale ?');
+  expect(shell).not.toContain('coverage freshness');
+  expect(shell).not.toContain('feed.offline');
+  expect(shell).not.toContain('feed.degraded');
 });
 
 test('primary threat page uses always-on monitoring language and removes scenario-run flow', async () => {
