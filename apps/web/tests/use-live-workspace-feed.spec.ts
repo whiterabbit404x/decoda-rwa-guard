@@ -1,6 +1,9 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { expect, test } from '@playwright/test';
 
-import { deriveWorkspaceHealth, resolveRuntimeStatus } from '../app/use-live-workspace-feed';
+import { deriveMonitoringProjection, deriveWorkspaceHealth, resolveRuntimeStatus } from '../app/use-live-workspace-feed';
 import type { MonitoringRuntimeStatus } from '../app/monitoring-status-contract';
 
 test.describe('useLiveWorkspaceFeed runtime semantics', () => {
@@ -46,5 +49,45 @@ test.describe('useLiveWorkspaceFeed runtime semantics', () => {
     expect(explicitOffline.offline).toBe(true);
     expect(explicitError.offline).toBe(true);
     expect(unreachableRuntime.offline).toBe(true);
+  });
+
+  test('derives a single monitoring truth and presentation projection from runtime summary', async () => {
+    const projection = deriveMonitoringProjection({
+      monitoring_status: 'active',
+      mode: 'LIVE',
+      workspace_monitoring_summary: {
+        runtime_status: 'healthy',
+        monitoring_mode: 'live',
+        workspace_configured: true,
+        configured_systems: 4,
+        monitored_systems_count: 4,
+        reporting_systems: 3,
+        protected_assets_count: 6,
+        freshness_status: 'fresh',
+        confidence_status: 'high',
+        evidence_source: 'live',
+        status_reason: null,
+        contradiction_flags: [],
+        last_telemetry_at: '2026-01-01T00:00:00.000Z',
+      },
+    } as MonitoringRuntimeStatus);
+
+    expect(projection.truth.runtime_status).toBe('healthy');
+    expect(projection.presentation.status).toBe('live');
+    expect(projection.presentation.statusLabel).toBe('LIVE');
+  });
+
+  test('source-level regression: consumers avoid legacy feed offline/degraded/stale flags for monitoring display', async () => {
+    const consumers = [
+      'apps/web/app/threat-operations-panel.tsx',
+      'apps/web/app/dashboard-page-content.tsx',
+      'apps/web/app/workspace-ownership-bar.tsx',
+    ];
+    for (const relativePath of consumers) {
+      const source = fs.readFileSync(path.resolve(process.cwd(), relativePath), 'utf8');
+      expect(source.includes('feed.offline')).toBeFalsy();
+      expect(source.includes('feed.degraded')).toBeFalsy();
+      expect(source.includes('feed.stale')).toBeFalsy();
+    }
   });
 });

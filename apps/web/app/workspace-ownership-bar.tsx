@@ -2,16 +2,14 @@
 
 import { useMemo } from 'react';
 
-import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
 import { usePilotAuth } from './pilot-auth-context';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
-import { hasLiveTelemetry, resolveWorkspaceMonitoringTruth } from './workspace-monitoring-truth';
+import { hasLiveTelemetry } from './workspace-monitoring-truth';
 
 export default function WorkspaceOwnershipBar() {
   const { user } = usePilotAuth();
   const feed = useLiveWorkspaceFeed();
-  const truth = useMemo(() => resolveWorkspaceMonitoringTruth(feed.runtimeStatus), [feed.runtimeStatus]);
-  const presentation = useMemo(() => normalizeMonitoringPresentation(truth), [truth]);
+  const { truth, presentation } = feed;
   const role = useMemo(
     () => user?.memberships.find((membership) => membership.workspace_id === user?.current_workspace?.id)?.role ?? 'viewer',
     [user],
@@ -31,7 +29,7 @@ export default function WorkspaceOwnershipBar() {
       </div>
       <p className="tableMeta">
         Last telemetry: {presentation.telemetryTimestampLabel} · Last heartbeat: {presentation.heartbeatTimestampLabel} · Last poll: {presentation.pollTimestampLabel} · Monitoring health: {presentation.status.toLowerCase()} · Monitoring freshness: {presentation.freshness} ·
-        fetch completed: {feed.monitoring.lastFetchCompletedAt ? new Date(feed.monitoring.lastFetchCompletedAt).toLocaleString() : 'pending'}.
+        fetch completed: {feed.timings.lastFetchCompletedAt ? new Date(feed.timings.lastFetchCompletedAt).toLocaleString() : 'pending'}.
         {telemetryFlowing ? ' Current telemetry is live for this workspace.' : ' Current telemetry is not yet live for this workspace.'}
       </p>
     </section>
