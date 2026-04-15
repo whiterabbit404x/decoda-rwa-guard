@@ -49,8 +49,14 @@ test.describe('dashboard truth-model rendering rules', () => {
 
     expect(dashboard).toContain('const safeMonitoringSummary = telemetryUnavailable');
     expect(dashboard).toContain('monitoringHealthyCopyAllowed(monitoringTruth)');
+    expect(dashboard).toContain('const systemMessage = monitoringPresentation.status === \'offline\'');
+    expect(dashboard).toContain('const monitoringBadgeState = monitoringPresentation.status === \'live\'');
+    expect(dashboard).toContain('StatusBadge state={toDashboardBadgeState(monitoringBadgeState)}');
     expect(dashboard).not.toContain('formatSourceLabel(diagnostics.endpoints.dashboard.payloadState)');
     expect(dashboard).not.toContain('diagnostics.endpoints.dashboard.freshnessLabel');
+    expect(dashboard).not.toContain('StatusBadge state={diagnostics.experienceState}');
+    expect(dashboard).not.toContain('workspaceMonitoring.openAlerts');
+    expect(dashboard).not.toContain('backendBanner');
   });
 
   test('no verified telemetry when last_telemetry_at is absent', () => {
@@ -130,5 +136,14 @@ test.describe('dashboard truth-model rendering rules', () => {
     expect(panel).toContain('presentation.telemetryTimestampLabel');
     expect(panel).toContain('presentation.heartbeatTimestampLabel');
     expect(panel).toContain('presentation.pollTimestampLabel');
+  });
+
+  test('hero monitoring status copy does not depend on diagnostics experience state', () => {
+    const dashboard = appSource('dashboard-page-content.tsx');
+
+    expect(dashboard).toContain('const monitoringTruth = liveFeed?.monitoring.truth');
+    expect(dashboard).toContain('const monitoringPresentation = liveFeed?.monitoring.presentation');
+    expect(dashboard).toContain('const platformStateLabel = monitoringPresentation.status === \'offline\'');
+    expect(dashboard).not.toContain('diagnostics.experienceState');
   });
 });
