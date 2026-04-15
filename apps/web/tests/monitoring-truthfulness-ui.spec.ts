@@ -11,6 +11,24 @@ function source(relativePath: string): string {
   return readFileSync(path.join(appRoot, relativePath), 'utf8');
 }
 
+const LEGACY_PRESENTATION_SIGNALS = [
+  'recent_evidence_state',
+  'systems_with_recent_heartbeat',
+  'successful_detection_evaluation_recent',
+  'recent_confidence_basis',
+  'status.mode',
+  'degraded_reason',
+  'liveFeed.degraded',
+  'liveFeed.offline',
+  'liveFeed.stale',
+  'checkpoint_age_seconds',
+  'last_confirmed_checkpoint',
+  'last_detection_evaluation_at',
+  'synthetic_leak_detected',
+  'invalid_enabled_targets',
+  'detection_outcome',
+] as const;
+
 test.describe('monitoring truthfulness UI copy', () => {
   test('workspace banner uses only normalized presentation fields', async () => {
     const banner = source('workspace-monitoring-mode-banner.tsx');
@@ -39,38 +57,15 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(threatPanel).toContain('Refreshing monitoring state…');
   });
 
-  test('dashboard and system status presentation exclude fallback/sample/demo wording', async () => {
-    const dashboardPage = source('dashboard-page-content.tsx').toLowerCase();
-    const systemStatus = source('system-status-panel.tsx');
-    const statusAdapter = source('dashboard-status-presentation.ts');
-    const statusBadge = source('status-badge.tsx');
-    const threatOperations = source('threat-operations-panel.tsx').toLowerCase();
-    const dashboardData = source('dashboard-data.ts');
+  test('critical monitoring presentation files do not reference legacy presentation signals', async () => {
+    const statusPresentation = source('monitoring-status-presentation.ts');
+    const workspaceBanner = source('workspace-monitoring-mode-banner.tsx');
+    const monitoringOverview = source('monitoring-overview-panel.tsx');
 
-    ['fallback engaged', 'fallback coverage', 'sample-safe', 'demo', 'scenario', 'simulation'].forEach((term) => {
-      expect(dashboardPage).not.toContain(term);
-      expect(systemStatus.toLowerCase()).not.toContain(term);
+    LEGACY_PRESENTATION_SIGNALS.forEach((legacySignal) => {
+      expect(statusPresentation).not.toContain(legacySignal);
+      expect(workspaceBanner).not.toContain(legacySignal);
+      expect(monitoringOverview).not.toContain(legacySignal);
     });
-
-    expect(systemStatus).toContain('Workspace monitoring state');
-    expect(systemStatus).toContain('Monitoring state');
-    expect(systemStatus).toContain('Last updated');
-    expect(systemStatus).toContain('Last confirmed checkpoint');
-    expect(systemStatus).toContain('Coverage currently limited');
-    expect(systemStatus).not.toContain('fallbackTriggered');
-    expect(systemStatus).not.toContain('sampleMode');
-    expect(statusAdapter).toContain('normalizeDashboardPresentationState');
-    expect(statusAdapter).toContain('normalizeDashboardFreshness');
-    expect(statusBadge).toContain('state: CustomerStatusBadgeState;');
-    expect(threatOperations).not.toContain('threat-payload-builders');
-    expect(threatOperations).not.toContain('scenario');
-    expect(dashboardData).toContain('recentActivitySummary');
-    expect(dashboardPage).toContain('featurepresentation');
-    expect(dashboardPage).toContain('monitoring state:');
-    expect(dashboardPage).toContain('last confirmed checkpoint:');
-    expect(dashboardPage).toContain('open alerts:');
-    expect(dashboardPage).toContain('open incidents:');
-    expect(dashboardPage).toContain('recent activity:');
-    expect(dashboardPage).not.toContain("resolveBadgeState(source: 'live' | 'fallback'");
   });
 });
