@@ -9,6 +9,8 @@ import StatusBadge from './status-badge';
 import SystemStatusPanel from './system-status-panel';
 import ThreatOperationsPanel from './threat-operations-panel';
 import type { useLiveWorkspaceFeed } from './use-live-workspace-feed';
+import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
+import { resolveWorkspaceMonitoringTruthFromSummary } from './workspace-monitoring-truth';
 import {
   buildDashboardViewModel,
   DashboardPageData,
@@ -28,6 +30,8 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
   const { backendState, summaryCards, backendBanner, featurePresentation, workspaceMonitoring } = buildDashboardViewModel(data, {
     gatewayReachableOverride,
   });
+  const monitoringTruth = resolveWorkspaceMonitoringTruthFromSummary(liveFeed?.runtimeStatus?.workspace_monitoring_summary);
+  const monitoringPresentation = normalizeMonitoringPresentation(monitoringTruth);
 
   return (
     <main className="container productPage">
@@ -53,8 +57,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <p><strong>System message:</strong> {backendBanner}</p>
           {liveFeed ? (
             <p>
-              <strong>Workspace feed:</strong> {liveFeed.offline ? 'offline' : liveFeed.degraded ? 'degraded' : 'live'} · telemetry {liveFeed.lastTelemetryAt ? new Date(liveFeed.lastTelemetryAt).toLocaleString() : 'pending'} · poll {liveFeed.lastPollAt ? new Date(liveFeed.lastPollAt).toLocaleString() : 'pending'}.
-              {liveFeed.stale ? ' Evidence is stale; review degraded telemetry before making policy claims.' : ''}
+              <strong>Workspace feed:</strong> {monitoringPresentation.statusLabel} · {monitoringPresentation.summary} · {monitoringPresentation.telemetryTimestampLabel}. {monitoringPresentation.heartbeatTimestampLabel}. {monitoringPresentation.pollTimestampLabel}.
             </p>
           ) : null}
         </div>
