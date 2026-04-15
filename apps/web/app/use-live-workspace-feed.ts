@@ -25,8 +25,6 @@ type LiveWorkspaceFeed = {
   monitoring: {
     truth: WorkspaceMonitoringTruth;
     presentation: MonitoringPresentation;
-    freshnessStatus: 'fresh' | 'stale' | 'unavailable';
-    pollFreshnessStatus: 'fresh' | 'stale' | 'unavailable';
     lastTelemetryAt: string | null;
     lastHeartbeatAt: string | null;
     lastPollAt: string | null;
@@ -65,23 +63,6 @@ export function resolveRuntimeStatus(
   const offline = nextRuntime.monitoring_status === 'offline' || nextRuntime.monitoring_status === 'error';
   const degraded = nextRuntime.monitoring_status === 'degraded';
   return { nextRuntime, offline, degraded };
-}
-
-export function deriveWorkspaceHealth(runtime: RuntimeStatusResolution): { degraded: boolean; offline: boolean } {
-  const truthRuntime = String(runtime.nextRuntime?.workspace_monitoring_summary?.runtime_status ?? '').toLowerCase();
-  if (truthRuntime === 'offline' || truthRuntime === 'failed' || truthRuntime === 'disabled') {
-    return { degraded: true, offline: true };
-  }
-  if (truthRuntime === 'degraded') {
-    return { degraded: true, offline: false };
-  }
-  if (truthRuntime === 'healthy' || truthRuntime === 'idle' || truthRuntime === 'provisioning') {
-    return { degraded: false, offline: false };
-  }
-  return {
-    degraded: true,
-    offline: true,
-  };
 }
 
 export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
@@ -126,7 +107,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
           statusPayload = null;
         }
         const runtimeUnavailable = !statusRes || !statusRes.ok;
-        const { nextRuntime, offline: runtimeOffline, degraded: runtimeDegraded } = resolveRuntimeStatus(statusPayload, Boolean(statusRes?.ok));
+        const { nextRuntime } = resolveRuntimeStatus(statusPayload, Boolean(statusRes?.ok));
         const ancillaryResults = await Promise.allSettled([
           fetch(`${apiUrl}/pilot/history?limit=20`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
@@ -159,8 +140,6 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
           openIncidents: (incidentsPayload.incidents ?? []).length,
           historyRecords: historyCount,
         });
-        const health = deriveWorkspaceHealth({ nextRuntime, offline: runtimeOffline, degraded: runtimeDegraded });
-        void health;
         const completedAt = new Date().toISOString();
         setLastFetchCompletedAt(completedAt);
       } catch {
@@ -200,22 +179,6 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
   const truth = useMemo(() => resolveWorkspaceMonitoringTruth(runtimeStatus), [runtimeStatus]);
   const presentation = useMemo(() => normalizeMonitoringPresentation(truth), [truth]);
 
-  const freshnessStatus = useMemo<'fresh' | 'stale' | 'unavailable'>(() => {
-    const value = truth.freshness_status;
-    if (value === 'fresh' || value === 'stale' || value === 'unavailable') {
-      return value;
-    }
-    return 'unavailable';
-  }, [truth]);
-
-  const pollFreshnessStatus = useMemo<'fresh' | 'stale' | 'unavailable'>(() => {
-    const value = runtimeStatus?.workspace_monitoring_summary?.poll_freshness_status ?? runtimeStatus?.poll_freshness_status ?? 'unavailable';
-    if (value === 'fresh' || value === 'stale' || value === 'unavailable') {
-      return value;
-    }
-    return 'unavailable';
-  }, [runtimeStatus]);
-
   return {
     loading,
     refreshing,
@@ -225,8 +188,6 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
     monitoring: {
       truth,
       presentation,
-      freshnessStatus,
-      pollFreshnessStatus,
       lastTelemetryAt: truth.last_telemetry_at,
       lastHeartbeatAt: truth.last_heartbeat_at,
       lastPollAt: truth.last_poll_at,
