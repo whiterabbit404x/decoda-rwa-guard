@@ -859,6 +859,8 @@ def test_workspace_summary_stays_idle_until_first_reporting_telemetry(monkeypatc
     summary = payload['workspace_monitoring_summary']
     assert summary['coverage_state']['configured_systems'] == 1
     assert summary['coverage_state']['reporting_systems'] == 0
+    assert summary['configured_systems'] == 1
+    assert summary['reporting_systems'] == 0
     assert summary['runtime_status'] == 'idle'
     assert summary['last_telemetry_at'] is None
 
@@ -889,4 +891,5 @@ def test_contradiction_guard_workspace_not_configured_with_monitored_systems_fla
     summary = payload['workspace_monitoring_summary']
     assert summary['workspace_configured'] is False
     assert summary['coverage_state']['configured_systems'] > 0
+    assert summary['configured_systems'] > 0
     assert 'workspace_unconfigured_with_coverage' in summary['contradiction_flags']
