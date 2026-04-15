@@ -2997,6 +2997,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         recent_real_event_count = 0
     telemetry_window_seconds = max(300, MONITOR_POLL_INTERVAL_SECONDS * 6)
     last_poll_at = _parse_ts(health.get('last_cycle_at') or health.get('updated_at') or health.get('last_heartbeat_at'))
+    parsed_telemetry_events = [_parse_ts(row.get('last_event_at')) for row in enabled_rows]
+    last_telemetry_at = max((ts for ts in parsed_telemetry_events if ts is not None), default=None)
     reporting_systems = 0
     for row in enabled_rows:
         last_event_at = _parse_ts(row.get('last_event_at'))
@@ -3006,10 +3008,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             reporting_systems += 1
     source_of_evidence = 'live' if (recent_real_event_count > 0 and not bool(health.get('degraded'))) else ('simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none')
     evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if evidence_at else 'none'))
-    telemetry_timestamp = _parse_ts((latest_detection_metadata or {}).get('last_real_event_at'))
-    if telemetry_timestamp is None and evidence_source == 'simulator':
-        telemetry_timestamp = evidence_at
-    workspace_configured = bool(enabled_system_count > 0 and protected_assets_count > 0)
+    workspace_configured = bool(enabled_system_count > 0 or protected_assets_count > 0)
     degraded_signal = bool(health.get('last_error') or health.get('degraded') or degraded_reason or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0)
     if not workspace_configured:
         runtime_status_summary = 'offline'
@@ -3020,8 +3019,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     else:
         runtime_status_summary = 'healthy'
     monitoring_mode = 'simulator' if evidence_source == 'simulator' else ('offline' if not workspace_configured else 'live')
-    telemetry_countable = bool(workspace_configured and reporting_systems > 0 and evidence_source == 'live' and telemetry_timestamp is not None)
-    summary_telemetry_timestamp = telemetry_timestamp if telemetry_countable else None
+    telemetry_countable = bool(workspace_configured and reporting_systems > 0 and evidence_source == 'live' and last_telemetry_at is not None)
+    summary_telemetry_timestamp = last_telemetry_at if telemetry_countable else None
     summary_freshness_status = (
         'fresh' if summary_telemetry_timestamp and int((now - summary_telemetry_timestamp).total_seconds()) <= telemetry_window_seconds
         else ('stale' if summary_telemetry_timestamp else 'unavailable')
@@ -3069,7 +3068,6 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         summary['contradiction_flags'].append('workspace_unconfigured_with_coverage')
     if summary['configured_systems'] == 0 and summary['reporting_systems'] == 0 and summary['last_telemetry_at']:
         summary['contradiction_flags'].append('zero_coverage_with_live_telemetry')
-
     payload = {
         'monitoring_status': monitoring_status,
         'monitored_systems': system_count,

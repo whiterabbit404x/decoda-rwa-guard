@@ -19,6 +19,7 @@ test('monitored systems UI consumes workspace summary and telemetry timestamp tr
   expect(source).toContain('resolveWorkspaceMonitoringTruth');
   expect(source).toContain("const telemetryLabel = truth.last_telemetry_at ? new Date(truth.last_telemetry_at).toLocaleString() : 'Not available';");
   expect(source).toContain('const showLiveTelemetry = hasLiveTelemetry(truth);');
+  expect(source).toContain('Mode {truth.monitoring_mode.toUpperCase()}');
   expect(source).toContain("Live telemetry {showLiveTelemetry ? telemetryLabel : 'unavailable'}");
 });
 

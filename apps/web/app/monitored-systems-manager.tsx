@@ -313,9 +313,10 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       <p className="muted">Bridge assets to runtime monitoring through target-linked monitored systems.</p>
       {summary ? (
         <p className="tableMeta">
-          Runtime {truth.runtime_status.toUpperCase()} · Live telemetry {showLiveTelemetry ? telemetryLabel : 'unavailable'} · Last poll {pollLabel} ({summary.poll_freshness_status || 'unavailable'}) · Reporting systems {truth.reporting_systems}/{truth.configured_systems} · Evidence source {truth.evidence_source}
+          Runtime {truth.runtime_status.toUpperCase()} · Mode {truth.monitoring_mode.toUpperCase()} · Live telemetry {showLiveTelemetry ? telemetryLabel : 'unavailable'} · Last poll {pollLabel} ({summary.poll_freshness_status || 'unavailable'}) · Reporting systems {truth.reporting_systems}/{truth.configured_systems} · Evidence source {truth.evidence_source}
         </p>
       ) : null}
+      {truth.contradiction_flags.length > 0 ? <p className="statusLine">Guarded fallback copy active: {truth.contradiction_flags.join(', ')}</p> : null}
       <div className="buttonRow">
         <button type="button" onClick={() => void runReconcile()} disabled={isReconciling}>
           {isReconciling ? 'Repairing monitored systems…' : 'Repair monitored systems'}
