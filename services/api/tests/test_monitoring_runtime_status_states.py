@@ -863,6 +863,7 @@ def test_workspace_summary_stays_idle_until_first_reporting_telemetry(monkeypatc
     assert summary['reporting_systems'] == 0
     assert summary['runtime_status'] == 'idle'
     assert summary['last_telemetry_at'] is None
+    assert payload['telemetry_available'] is False
 
 
 def test_contradiction_guard_workspace_not_configured_with_monitored_systems_flagged(monkeypatch):

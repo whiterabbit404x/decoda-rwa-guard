@@ -364,8 +364,9 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
               Last heartbeat: {system.last_heartbeat ? new Date(system.last_heartbeat).toLocaleString() : 'Never'}
             </p>
             <p className="tableMeta">
-              Last event: {system.last_event_at ? new Date(system.last_event_at).toLocaleString() : 'Never'} · Coverage reason: {system.coverage_reason || 'none'}
+              Last telemetry event: {system.last_event_at ? new Date(system.last_event_at).toLocaleString() : 'No telemetry recorded yet'} · Coverage reason: {system.coverage_reason || 'none'}
             </p>
+            {!system.last_event_at && system.last_heartbeat ? <p className="tableMeta">Heartbeat is present, but telemetry is still unavailable for this system.</p> : null}
             {system.last_error_text ? <p className="tableMeta">Last error: {system.last_error_text}</p> : null}
           </div>
           <div className="buttonRow">

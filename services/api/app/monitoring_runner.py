@@ -3068,6 +3068,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         summary['contradiction_flags'].append('workspace_unconfigured_with_coverage')
     if summary['configured_systems'] == 0 and summary['reporting_systems'] == 0 and summary['last_telemetry_at']:
         summary['contradiction_flags'].append('zero_coverage_with_live_telemetry')
+    if (
+        summary['last_poll_at'] is not None
+        and summary['last_telemetry_at'] is None
+        and summary['monitoring_mode'] == 'live'
+        and (summary['runtime_status'] == 'healthy' or summary['reporting_systems'] > 0)
+    ):
+        summary['contradiction_flags'].append('poll_without_telemetry_timestamp')
     payload = {
         'monitoring_status': monitoring_status,
         'monitored_systems': system_count,
@@ -3075,7 +3082,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'enabled_systems': enabled_system_count,
         'active_systems': active_system_count,
         'last_heartbeat': last_heartbeat.isoformat() if last_heartbeat else None,
-        'telemetry_available': recent_heartbeat_systems > 0,
+        'telemetry_available': bool(telemetry_countable or recent_real_event_count > 0 or monitoring_status == 'active'),
         'status': runtime_status,
         'provider_mode': health.get('source_type') or health.get('ingestion_mode') or 'polling',
         'last_successful_ingest': evidence_at.isoformat() if evidence_at else None,
