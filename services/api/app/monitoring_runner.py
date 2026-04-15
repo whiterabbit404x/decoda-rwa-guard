@@ -16,6 +16,7 @@ from services.api.app.activity_providers import (
 )
 from services.api.app.evm_activity_provider import JsonRpcClient
 from services.api.app.monitoring_truth import ui_evidence_state, ui_truthfulness_state
+from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary
 from services.api.app.pilot import (
     _json_dumps,
     _json_safe_value,
@@ -2665,6 +2666,22 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         mode = str(health.get('operational_mode') or health.get('mode') or 'DEGRADED').upper()
         if mode == 'LIVE' and recent_real_event_count <= 0:
             mode = 'DEGRADED'
+        summary = build_workspace_monitoring_summary(
+            now=now,
+            workspace_configured=False,
+            monitoring_mode='simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'offline',
+            runtime_status='offline',
+            configured_systems=0,
+            reporting_systems=0,
+            protected_assets=0,
+            last_poll_at=_parse_ts(_json_safe_value(health).get('last_cycle_at')),
+            last_heartbeat_at=None,
+            last_telemetry_at=None,
+            last_detection_at=None,
+            evidence_source='simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'none',
+            status_reason='live_mode_disabled',
+            telemetry_window_seconds=max(300, MONITOR_POLL_INTERVAL_SECONDS * 6),
+        )
         payload = {
             'monitoring_status': 'offline',
             'status': 'Offline',
@@ -2681,24 +2698,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'claim_validator_status': str(claim_validator.get('status') or 'FAIL'),
             'source_of_evidence': 'simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none',
             'workspace_configured': False,
-            'workspace_monitoring_summary': {
-                'workspace_configured': False,
-                'monitoring_mode': 'simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'offline',
-                'runtime_status': 'offline',
-                'configured_systems': 0,
-                'reporting_systems': 0,
-                'protected_assets': 0,
-                'coverage_state': {'configured_systems': 0, 'reporting_systems': 0, 'protected_assets': 0},
-                'freshness_status': 'unavailable',
-                'confidence_status': 'unavailable',
-                'last_heartbeat_at': None,
-                'last_telemetry_at': None,
-                'last_poll_at': _json_safe_value(health).get('last_cycle_at'),
-                'last_detection_at': None,
-                'evidence_source': 'simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'none',
-                'status_reason': 'live_mode_disabled',
-                'contradiction_flags': [],
-            },
+            'workspace_monitoring_summary': summary,
         }
         payload.update(payload['workspace_monitoring_summary'])
         return payload
@@ -3020,61 +3020,28 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         runtime_status_summary = 'healthy'
     monitoring_mode = 'simulator' if evidence_source == 'simulator' else ('offline' if not workspace_configured else 'live')
     telemetry_countable = bool(workspace_configured and reporting_systems > 0 and evidence_source == 'live' and last_telemetry_at is not None)
-    summary_telemetry_timestamp = last_telemetry_at if telemetry_countable else None
-    summary_freshness_status = (
-        'fresh' if summary_telemetry_timestamp and int((now - summary_telemetry_timestamp).total_seconds()) <= telemetry_window_seconds
-        else ('stale' if summary_telemetry_timestamp else 'unavailable')
-    )
     poll_window_seconds = max(120, MONITOR_POLL_INTERVAL_SECONDS * 3)
     poll_freshness_status = (
         'fresh' if last_poll_at and int((now - last_poll_at).total_seconds()) <= poll_window_seconds
         else ('stale' if last_poll_at else 'unavailable')
     )
-    summary = {
-        'workspace_configured': workspace_configured,
-        'monitoring_mode': monitoring_mode,
-        'runtime_status': runtime_status_summary,
-        'configured_systems': int(enabled_system_count),
-        'reporting_systems': int(reporting_systems),
-        'protected_assets': int(protected_assets_count),
-        'coverage_state': {
-            'configured_systems': int(enabled_system_count),
-            'reporting_systems': int(reporting_systems),
-            'protected_assets': int(protected_assets_count),
-        },
-        'freshness_status': summary_freshness_status,
-        'confidence_status': (
-            'high' if telemetry_countable
-            else ('medium' if evidence_source == 'simulator' and reporting_systems > 0 else ('low' if workspace_configured else 'unavailable'))
-        ),
-        'last_heartbeat_at': last_heartbeat.isoformat() if last_heartbeat else None,
-        'last_telemetry_at': summary_telemetry_timestamp.isoformat() if summary_telemetry_timestamp else None,
-        'last_poll_at': last_poll_at.isoformat() if last_poll_at else None,
-        'poll_freshness_status': poll_freshness_status,
-        'last_detection_at': latest_detection_evaluation_at.isoformat() if latest_detection_evaluation_at else None,
-        'evidence_source': evidence_source,
-        'status_reason': degraded_reason or ('workspace_not_configured' if not workspace_configured else ('no_reporting_systems' if reporting_systems <= 0 else None)),
-        'contradiction_flags': [],
-    }
-    if summary['runtime_status'] == 'offline' and summary['last_telemetry_at']:
-        summary['contradiction_flags'].append('offline_with_current_telemetry')
-    if summary['reporting_systems'] == 0 and summary['runtime_status'] == 'healthy':
-        summary['contradiction_flags'].append('healthy_without_reporting_systems')
-    if summary['last_telemetry_at'] is None and summary['freshness_status'] == 'fresh':
-        summary['contradiction_flags'].append('telemetry_unavailable_marked_fresh')
-    if summary['freshness_status'] == 'unavailable' and summary['last_telemetry_at']:
-        summary['contradiction_flags'].append('telemetry_unavailable_with_timestamp')
-    if (not summary['workspace_configured']) and (summary['configured_systems'] > 0 or summary['protected_assets'] > 0):
-        summary['contradiction_flags'].append('workspace_unconfigured_with_coverage')
-    if summary['configured_systems'] == 0 and summary['reporting_systems'] == 0 and summary['last_telemetry_at']:
-        summary['contradiction_flags'].append('zero_coverage_with_live_telemetry')
-    if (
-        summary['last_poll_at'] is not None
-        and summary['last_telemetry_at'] is None
-        and summary['monitoring_mode'] == 'live'
-        and (summary['runtime_status'] == 'healthy' or summary['reporting_systems'] > 0)
-    ):
-        summary['contradiction_flags'].append('poll_without_telemetry_timestamp')
+    summary = build_workspace_monitoring_summary(
+        now=now,
+        workspace_configured=workspace_configured,
+        monitoring_mode=monitoring_mode,
+        runtime_status=runtime_status_summary,
+        configured_systems=int(enabled_system_count),
+        reporting_systems=int(reporting_systems),
+        protected_assets=int(protected_assets_count),
+        last_poll_at=last_poll_at,
+        last_heartbeat_at=last_heartbeat,
+        last_telemetry_at=last_telemetry_at,
+        last_detection_at=latest_detection_evaluation_at,
+        evidence_source=evidence_source,
+        status_reason=degraded_reason or ('workspace_not_configured' if not workspace_configured else ('no_reporting_systems' if reporting_systems <= 0 else None)),
+        telemetry_window_seconds=telemetry_window_seconds,
+    )
+    summary['poll_freshness_status'] = poll_freshness_status
     payload = {
         'monitoring_status': monitoring_status,
         'monitored_systems': system_count,

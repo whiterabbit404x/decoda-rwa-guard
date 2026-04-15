@@ -65,9 +65,17 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
     summary.last_poll_at
     && !summary.last_telemetry_at
     && summary.monitoring_mode === 'live'
-    && (summary.runtime_status === 'healthy' || reporting_systems > 0)
+    && summary.evidence_source === 'live'
   ) {
     contradictions.push('poll_without_telemetry_timestamp');
+  }
+  if (
+    summary.last_heartbeat_at
+    && !summary.last_telemetry_at
+    && summary.monitoring_mode === 'live'
+    && summary.evidence_source === 'live'
+  ) {
+    contradictions.push('heartbeat_without_telemetry_timestamp');
   }
   return {
     workspace_configured: Boolean(summary.workspace_configured),
@@ -92,13 +100,14 @@ export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
   return truth.runtime_status !== 'offline'
     && truth.monitoring_mode === 'live'
     && truth.evidence_source === 'live'
-    && truth.freshness_status !== 'unavailable'
+    && truth.freshness_status === 'fresh'
     && truth.reporting_systems > 0
     && Boolean(truth.last_telemetry_at)
     && !truth.contradiction_flags.includes('offline_with_current_telemetry')
     && !truth.contradiction_flags.includes('telemetry_unavailable_with_timestamp')
     && !truth.contradiction_flags.includes('zero_coverage_with_live_telemetry')
-    && !truth.contradiction_flags.includes('poll_without_telemetry_timestamp');
+    && !truth.contradiction_flags.includes('poll_without_telemetry_timestamp')
+    && !truth.contradiction_flags.includes('heartbeat_without_telemetry_timestamp');
 }
 
 export function monitoringHealthyCopyAllowed(truth: WorkspaceMonitoringTruth): boolean {
