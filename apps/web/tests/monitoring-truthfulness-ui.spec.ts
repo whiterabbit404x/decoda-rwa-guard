@@ -62,13 +62,28 @@ test.describe('monitoring truthfulness UI copy', () => {
     const statusPresentation = source('monitoring-status-presentation.ts');
     const workspaceBanner = source('workspace-monitoring-mode-banner.tsx');
     const monitoringOverview = source('monitoring-overview-panel.tsx');
+    const dashboardPageContent = source('dashboard-page-content.tsx');
 
     LEGACY_PRESENTATION_SIGNALS.forEach((legacySignal) => {
       expect(threatPanel).not.toContain(legacySignal);
       expect(statusPresentation).not.toContain(legacySignal);
       expect(workspaceBanner).not.toContain(legacySignal);
       expect(monitoringOverview).not.toContain(legacySignal);
+      expect(dashboardPageContent).not.toContain(legacySignal);
     });
+  });
+
+  test('dashboard workspace feed copy is derived from normalized truth presentation labels only', async () => {
+    const dashboardPageContent = source('dashboard-page-content.tsx');
+    expect(dashboardPageContent).toContain('resolveWorkspaceMonitoringTruthFromSummary');
+    expect(dashboardPageContent).toContain('normalizeMonitoringPresentation(monitoringTruth)');
+    expect(dashboardPageContent).toContain('monitoringPresentation.statusLabel');
+    expect(dashboardPageContent).toContain('monitoringPresentation.summary');
+    expect(dashboardPageContent).toContain('monitoringPresentation.telemetryTimestampLabel');
+    expect(dashboardPageContent).toContain('monitoringPresentation.heartbeatTimestampLabel');
+    expect(dashboardPageContent).toContain('monitoringPresentation.pollTimestampLabel');
+    expect(dashboardPageContent).not.toContain('liveFeed.lastTelemetryAt');
+    expect(dashboardPageContent).not.toContain('liveFeed.lastPollAt');
   });
 
   test('threat panel keeps contradiction guardrails visible in operator copy', async () => {
