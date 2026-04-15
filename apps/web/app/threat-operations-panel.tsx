@@ -3,8 +3,9 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
+import type { MonitoringPresentationStatus } from './monitoring-status-presentation';
 import { usePilotAuth } from 'app/pilot-auth-context';
-import { hasLiveTelemetry, monitoringHealthyCopyAllowed, resolveWorkspaceMonitoringTruth } from './workspace-monitoring-truth';
+import { hasLiveTelemetry, monitoringHealthyCopyAllowed } from './workspace-monitoring-truth';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 
 type Props = { apiUrl: string };
@@ -195,24 +196,6 @@ function monitoringTone(status: MonitoringPresentationStatus) {
   if (status === 'live') return 'healthy';
   if (status === 'offline') return 'offline';
   return 'attention';
-}
-
-type MonitoringPresentationStatus = 'live' | 'degraded' | 'offline' | 'stale' | 'limited coverage';
-
-function truthPresentationStatus(runtimeStatus: string, freshnessStatus: string): MonitoringPresentationStatus {
-  if (runtimeStatus === 'offline' || runtimeStatus === 'failed' || runtimeStatus === 'disabled') return 'offline';
-  if (runtimeStatus === 'degraded') return 'degraded';
-  if (freshnessStatus === 'stale') return 'stale';
-  if (runtimeStatus === 'healthy') return 'live';
-  return 'limited coverage';
-}
-
-function truthPresentationSummary(status: MonitoringPresentationStatus): string {
-  if (status === 'offline') return 'Workspace monitoring offline.';
-  if (status === 'degraded') return 'Monitoring state degraded.';
-  if (status === 'stale') return 'Monitoring data delayed.';
-  if (status === 'live') return 'Monitoring state live with verified telemetry.';
-  return 'Coverage currently limited for this workspace.';
 }
 
 function stateTone(state: ThreatFeedState) {
@@ -420,7 +403,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
   const openAlerts = alerts.length;
   const activeIncidents = incidents.length;
-  const truth = resolveWorkspaceMonitoringTruth(feed.runtimeStatus);
+  const truth = feed.monitoring.truth;
+  const canonicalPresentation = feed.monitoring.presentation;
   const simulatorMode = truth.monitoring_mode === 'simulator' || truth.evidence_source === 'simulator';
   const protectedAssetCount = Number(truth.protected_assets_count ?? feed.counts.protectedAssets);
   const workspaceConfigured = truth.workspace_configured;
@@ -429,19 +413,19 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const monitoringMode = truth.monitoring_mode;
   const contradictionFlags = truth.contradiction_flags;
   const runtimeStatus = String(truth.runtime_status ?? '').toLowerCase();
-  const presentationStatus = truthPresentationStatus(runtimeStatus, String(truth.freshness_status ?? 'unavailable'));
+  const presentationStatus = canonicalPresentation.status;
   const monitoringPresentation = {
     status: presentationStatus,
     tone: monitoringTone(presentationStatus),
-    statusLabel: presentationStatus === 'limited coverage' ? 'LIMITED COVERAGE' : presentationStatus.toUpperCase(),
-    summary: truthPresentationSummary(presentationStatus),
+    statusLabel: canonicalPresentation.statusLabel,
+    summary: canonicalPresentation.summary,
     evidenceSourceLabel: String(truth.evidence_source || 'none'),
-    lastTelemetryAt: truth.last_telemetry_at,
-    lastHeartbeatAt: truth.last_heartbeat_at,
-    lastPollAt: truth.last_poll_at,
-    telemetryLabel: formatRelativeTime(truth.last_telemetry_at),
-    heartbeatLabel: formatRelativeTime(truth.last_heartbeat_at),
-    pollLabel: formatRelativeTime(truth.last_poll_at),
+    lastTelemetryAt: feed.monitoring.lastTelemetryAt,
+    lastHeartbeatAt: feed.monitoring.lastHeartbeatAt,
+    lastPollAt: feed.monitoring.lastPollAt,
+    telemetryLabel: formatRelativeTime(feed.monitoring.lastTelemetryAt),
+    heartbeatLabel: formatRelativeTime(feed.monitoring.lastHeartbeatAt),
+    pollLabel: formatRelativeTime(feed.monitoring.lastPollAt),
     hasLiveTelemetry: hasLiveTelemetry(truth),
   };
   const showLiveTelemetry = monitoringPresentation.hasLiveTelemetry;
