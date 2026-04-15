@@ -2,15 +2,13 @@
 
 import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
+import { resolveWorkspaceMonitoringTruth } from './workspace-monitoring-truth';
 
 export default function MonitoringOverviewPanel() {
   const liveFeed = useLiveWorkspaceFeed();
   const runtime = liveFeed.runtimeStatus;
-  const presentation = normalizeMonitoringPresentation(runtime, {
-    degraded: liveFeed.degraded,
-    offline: liveFeed.offline,
-    stale: liveFeed.stale,
-  });
+  const truth = resolveWorkspaceMonitoringTruth(runtime);
+  const presentation = normalizeMonitoringPresentation(truth);
   const truthCopy = presentation.status === 'offline'
     ? 'Workspace monitoring offline. Fresh telemetry unavailable until connectivity returns.'
     : presentation.status === 'limited coverage'
