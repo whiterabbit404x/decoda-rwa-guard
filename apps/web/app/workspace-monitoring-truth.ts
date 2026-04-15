@@ -7,8 +7,11 @@ export type WorkspaceMonitoringTruth = {
   configured_systems: number;
   reporting_systems: number;
   protected_assets: number;
-  freshness_status: 'fresh' | 'stale' | 'unavailable';
-  confidence_status: 'high' | 'medium' | 'low' | 'unavailable';
+  freshness: 'fresh' | 'stale' | 'unavailable';
+  confidence: 'high' | 'medium' | 'low' | 'unavailable';
+  // Deprecated aliases
+  freshness_status?: 'fresh' | 'stale' | 'unavailable';
+  confidence_status?: 'high' | 'medium' | 'low' | 'unavailable';
   last_poll_at: string | null;
   last_heartbeat_at: string | null;
   last_telemetry_at: string | null;
@@ -25,8 +28,8 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   configured_systems: 0,
   reporting_systems: 0,
   protected_assets: 0,
-  freshness_status: 'unavailable',
-  confidence_status: 'unavailable',
+  freshness: 'unavailable',
+  confidence: 'unavailable',
   last_poll_at: null,
   last_heartbeat_at: null,
   last_telemetry_at: null,
@@ -41,9 +44,9 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
   if (!summary) {
     return DEFAULT_TRUTH;
   }
-  const configured_systems = Number(summary.configured_systems ?? summary.coverage_state?.configured_systems ?? status?.configured_systems ?? status?.coverage_state?.configured_systems ?? 0);
-  const reporting_systems = Number(summary.reporting_systems ?? summary.coverage_state?.reporting_systems ?? status?.reporting_systems ?? status?.coverage_state?.reporting_systems ?? 0);
-  const protected_assets = Number(summary.protected_assets ?? summary.coverage_state?.protected_assets ?? status?.protected_assets ?? status?.coverage_state?.protected_assets ?? 0);
+  const configured_systems = Number(summary.configured_systems ?? summary.coverage_counts?.configured_systems ?? summary.coverage_state?.configured_systems ?? status?.configured_systems ?? status?.coverage_state?.configured_systems ?? 0);
+  const reporting_systems = Number(summary.reporting_systems ?? summary.reporting_systems_count ?? summary.coverage_counts?.reporting_systems ?? summary.coverage_state?.reporting_systems ?? status?.reporting_systems ?? status?.coverage_state?.reporting_systems ?? 0);
+  const protected_assets = Number(summary.protected_assets ?? summary.protected_assets_count ?? summary.coverage_counts?.protected_assets ?? summary.coverage_state?.protected_assets ?? status?.protected_assets ?? status?.coverage_state?.protected_assets ?? 0);
   const contradictions = [...(summary.contradiction_flags ?? [])];
 
   if (summary.runtime_status === 'offline' && summary.last_telemetry_at) {
@@ -52,7 +55,9 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
   if (reporting_systems <= 0 && summary.runtime_status === 'healthy') {
     contradictions.push('healthy_without_reporting_systems');
   }
-  if (summary.freshness_status === 'unavailable' && summary.last_telemetry_at) {
+  const freshness = summary.freshness ?? summary.freshness_status ?? 'unavailable';
+  const confidence = summary.confidence ?? summary.confidence_status ?? 'unavailable';
+  if (freshness === 'unavailable' && summary.last_telemetry_at) {
     contradictions.push('telemetry_unavailable_with_timestamp');
   }
   if (!summary.workspace_configured && (configured_systems > 0 || protected_assets > 0)) {
@@ -84,8 +89,10 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
     configured_systems,
     reporting_systems,
     protected_assets,
-    freshness_status: summary.freshness_status,
-    confidence_status: summary.confidence_status,
+    freshness,
+    confidence,
+    freshness_status: freshness,
+    confidence_status: confidence,
     last_poll_at: summary.last_poll_at,
     last_heartbeat_at: summary.last_heartbeat_at,
     last_telemetry_at: summary.last_telemetry_at,
@@ -100,7 +107,7 @@ export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
   return truth.runtime_status !== 'offline'
     && truth.monitoring_mode === 'live'
     && truth.evidence_source === 'live'
-    && truth.freshness_status === 'fresh'
+    && truth.freshness === 'fresh'
     && truth.reporting_systems > 0
     && Boolean(truth.last_telemetry_at)
     && !truth.contradiction_flags.includes('offline_with_current_telemetry')

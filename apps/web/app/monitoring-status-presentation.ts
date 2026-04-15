@@ -29,7 +29,7 @@ const INTERNAL_LIMITED_MARKERS = ['demo', 'hybrid', 'fallback', 'synthetic'];
 
 function normalizeEvidence(status: MonitoringRuntimeStatus | null): MonitoringPresentationEvidence {
   const truth = status?.workspace_monitoring_summary;
-  const truthConfidence = String(truth?.confidence_status ?? '').toLowerCase();
+  const truthConfidence = String(truth?.confidence ?? truth?.confidence_status ?? '').toLowerCase();
   if (truthConfidence === 'high') return 'verified';
   if (truthConfidence === 'medium') return 'recent';
   if (truthConfidence === 'low') return 'delayed';
@@ -69,7 +69,7 @@ function normalizeEvidence(status: MonitoringRuntimeStatus | null): MonitoringPr
 
 function normalizeFreshness(status: MonitoringRuntimeStatus | null, evidence: MonitoringPresentationEvidence): MonitoringPresentationFreshness {
   const truth = status?.workspace_monitoring_summary;
-  const truthFreshness = String(truth?.freshness_status ?? '').toLowerCase();
+  const truthFreshness = String(truth?.freshness ?? truth?.freshness_status ?? '').toLowerCase();
   if (truthFreshness === 'fresh') {
     return evidence === 'verified' ? 'verified' : 'recent';
   }

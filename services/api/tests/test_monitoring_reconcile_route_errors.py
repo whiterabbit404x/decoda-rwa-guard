@@ -120,7 +120,7 @@ def test_monitoring_systems_list_attaches_workspace_monitoring_summary(monkeypat
     monkeypatch.setattr(
         api_main,
         'monitoring_runtime_status',
-        lambda _request: {'workspace_monitoring_summary': {'runtime_status': 'idle', 'coverage_state': {'configured_systems': 1, 'reporting_systems': 0, 'protected_assets': 1}}},
+        lambda _request: {'workspace_monitoring_summary': {'runtime_status': 'idle', 'coverage_counts': {'configured_systems': 1, 'reporting_systems': 0, 'protected_assets': 1}}},
     )
 
     response = client.get('/monitoring/systems')

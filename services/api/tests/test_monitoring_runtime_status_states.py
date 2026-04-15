@@ -106,8 +106,8 @@ def test_runtime_status_active_with_recent_evidence(monkeypatch):
     assert payload['monitored_systems_count'] == 3
     assert payload['protected_assets_count'] == 2
     assert payload['workspace_monitoring_summary']['runtime_status'] in {'idle', 'healthy'}
-    assert payload['workspace_monitoring_summary']['coverage_state']['configured_systems'] == 2
-    assert payload['workspace_monitoring_summary']['freshness_status'] in {'fresh', 'stale', 'unavailable'}
+    assert payload['workspace_monitoring_summary']['coverage_counts']['configured_systems'] == 2
+    assert payload['workspace_monitoring_summary']['freshness'] in {'fresh', 'stale', 'unavailable'}
     assert payload['workspace_monitoring_summary']['contradiction_flags'] == []
 
 
@@ -222,7 +222,7 @@ def test_runtime_status_not_degraded_solely_for_zero_event_idle_systems(monkeypa
     assert payload['monitoring_status'] == 'idle'
     assert payload['status'] == 'Idle'
     assert payload['workspace_monitoring_summary']['runtime_status'] in {'idle', 'degraded'}
-    assert payload['workspace_monitoring_summary']['coverage_state']['reporting_systems'] == 0
+    assert payload['workspace_monitoring_summary']['coverage_counts']['reporting_systems'] == 0
     assert payload['workspace_monitoring_summary']['contradiction_flags'] == []
 
 
@@ -797,7 +797,7 @@ def test_contradiction_guard_offline_runtime_clears_current_telemetry(monkeypatc
     summary = payload['workspace_monitoring_summary']
     assert summary['runtime_status'] == 'offline'
     assert summary['last_telemetry_at'] is None
-    assert summary['freshness_status'] == 'unavailable'
+    assert summary['freshness'] == 'unavailable'
     assert 'offline_with_current_telemetry' not in summary['contradiction_flags']
 
 
@@ -827,8 +827,8 @@ def test_contradiction_guard_never_marks_healthy_without_reporting_systems(monke
 
     payload = monitoring_runner.monitoring_runtime_status()
     summary = payload['workspace_monitoring_summary']
-    assert summary['coverage_state']['configured_systems'] > 0
-    assert summary['coverage_state']['reporting_systems'] == 0
+    assert summary['coverage_counts']['configured_systems'] > 0
+    assert summary['coverage_counts']['reporting_systems'] == 0
     assert summary['runtime_status'] != 'healthy'
     assert 'healthy_without_reporting_systems' not in summary['contradiction_flags']
 
@@ -859,8 +859,8 @@ def test_workspace_summary_stays_idle_until_first_reporting_telemetry(monkeypatc
 
     payload = monitoring_runner.monitoring_runtime_status()
     summary = payload['workspace_monitoring_summary']
-    assert summary['coverage_state']['configured_systems'] == 1
-    assert summary['coverage_state']['reporting_systems'] == 0
+    assert summary['coverage_counts']['configured_systems'] == 1
+    assert summary['coverage_counts']['reporting_systems'] == 0
     assert summary['configured_systems'] == 1
     assert summary['reporting_systems'] == 0
     assert summary['runtime_status'] == 'idle'
@@ -950,6 +950,6 @@ def test_contradiction_guard_workspace_not_configured_with_monitored_systems_fla
     payload = monitoring_runner.monitoring_runtime_status()
     summary = payload['workspace_monitoring_summary']
     assert summary['workspace_configured'] is True
-    assert summary['coverage_state']['configured_systems'] > 0
+    assert summary['coverage_counts']['configured_systems'] > 0
     assert summary['configured_systems'] > 0
     assert 'workspace_unconfigured_with_coverage' not in summary['contradiction_flags']

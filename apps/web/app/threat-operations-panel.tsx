@@ -435,7 +435,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const monitoringMode = truth.monitoring_mode;
   const contradictionFlags = truth.contradiction_flags;
   const runtimeStatus = String(truth.runtime_status ?? '').toLowerCase();
-  const presentationStatus = truthPresentationStatus(runtimeStatus, String(truth.freshness_status ?? 'unavailable'));
+  const freshnessStatus = String(truth.freshness ?? truth.freshness_status ?? 'unavailable');
+  const confidenceStatus = String(truth.confidence ?? truth.confidence_status ?? 'unavailable');
+  const presentationStatus = truthPresentationStatus(runtimeStatus, freshnessStatus);
   const monitoringPresentation = {
     status: presentationStatus,
     statusLabel: presentationStatus === 'limited coverage' ? 'LIMITED COVERAGE' : presentationStatus.toUpperCase(),
@@ -534,7 +536,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     liveDetections: categorizedDetections.live,
     historicalDetections: categorizedDetections.historical,
     workspaceConfigured,
-    freshnessStatus: truth.freshness_status,
+    freshnessStatus,
     contradictionFlags,
     reportingSystems,
     runtimeStatus,
@@ -655,7 +657,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </div>
         <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth.status_reason} />
         <p className="tableMeta">
-          Last telemetry received: {showLiveTelemetry ? telemetryLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last successful poll: {pollLabel} · Last heartbeat {formatRelativeTime(truth.last_heartbeat_at)} · Runtime freshness {String(truth.freshness_status || 'unavailable')} · Runtime confidence {String(truth.confidence_status || 'unavailable')}
+          Last telemetry received: {showLiveTelemetry ? telemetryLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last successful poll: {pollLabel} · Last heartbeat {formatRelativeTime(truth.last_heartbeat_at)} · Runtime freshness {freshnessStatus} · Runtime confidence {confidenceStatus}
         </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}

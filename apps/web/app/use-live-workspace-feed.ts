@@ -144,9 +144,9 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
         setRuntimeStatus(nextRuntime);
         const truth = nextRuntime?.workspace_monitoring_summary;
         setCounts({
-          protectedAssets: Number(truth?.protected_assets ?? truth?.coverage_state?.protected_assets ?? nextRuntime?.protected_assets ?? 0),
-          monitoredSystems: Number(truth?.configured_systems ?? truth?.coverage_state?.configured_systems ?? nextRuntime?.monitored_systems ?? 0),
-          activeSystems: Number(truth?.reporting_systems ?? truth?.coverage_state?.reporting_systems ?? nextRuntime?.active_systems ?? 0),
+          protectedAssets: Number(truth?.protected_assets ?? truth?.protected_assets_count ?? truth?.coverage_counts?.protected_assets ?? truth?.coverage_state?.protected_assets ?? nextRuntime?.protected_assets ?? 0),
+          monitoredSystems: Number(truth?.configured_systems ?? truth?.monitored_systems_count ?? truth?.coverage_counts?.configured_systems ?? truth?.coverage_state?.configured_systems ?? nextRuntime?.monitored_systems ?? 0),
+          activeSystems: Number(truth?.reporting_systems ?? truth?.reporting_systems_count ?? truth?.coverage_counts?.reporting_systems ?? truth?.coverage_state?.reporting_systems ?? nextRuntime?.active_systems ?? 0),
           openAlerts: (alertsPayload.alerts ?? []).length,
           openIncidents: (incidentsPayload.incidents ?? []).length,
           historyRecords: historyCount,

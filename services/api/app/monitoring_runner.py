@@ -2700,7 +2700,6 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'workspace_configured': False,
             'workspace_monitoring_summary': summary,
         }
-        payload.update(payload['workspace_monitoring_summary'])
         return payload
     workspace_id: str | None = None
     user_id: str | None = None
@@ -3025,7 +3024,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'fresh' if last_poll_at and int((now - last_poll_at).total_seconds()) <= poll_window_seconds
         else ('stale' if last_poll_at else 'unavailable')
     )
-    summary = build_workspace_monitoring_summary(
+    workspace_summary = build_workspace_monitoring_summary(
         now=now,
         workspace_configured=workspace_configured,
         monitoring_mode=monitoring_mode,
@@ -3041,7 +3040,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         status_reason=degraded_reason or ('workspace_not_configured' if not workspace_configured else ('no_reporting_systems' if reporting_systems <= 0 else None)),
         telemetry_window_seconds=telemetry_window_seconds,
     )
-    summary['poll_freshness_status'] = poll_freshness_status
+    summary = {**workspace_summary, 'poll_freshness_status': poll_freshness_status}
     payload = {
         'monitoring_status': monitoring_status,
         'monitored_systems': system_count,
@@ -3072,14 +3071,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'recent_real_event_count': recent_real_event_count,
         'recent_confidence_basis': str((latest_detection_metadata or {}).get('confidence_basis') or latest_detection_payload.get('confidence_basis') or 'none') if isinstance(latest_detection_payload, dict) else 'none',
         'last_real_event_at': (latest_detection_metadata or {}).get('last_real_event_at') if isinstance(latest_detection_metadata, dict) else None,
-        'freshness_status': (
-            summary['freshness_status']
-        ),
-        'confidence_status': (
-            'high'
-            if successful_detection_evaluation and recent_real_event_count > 0
-            else ('medium' if successful_detection_evaluation_recent or recent_heartbeat_systems > 0 else ('low' if has_monitorable_targets else 'unavailable'))
-        ),
+        'freshness_status': summary['freshness'],
+        'confidence_status': summary['confidence'],
         'coverage_reason': degraded_reason or ('no_evidence' if monitoring_status == 'idle' else (None if monitoring_status == 'active' else 'monitoring_unavailable')),
         'worker_last_error': health.get('last_error'),
         'latest_telemetry_checkpoint': (latest_detection_evaluation_at or evidence_at).isoformat() if (latest_detection_evaluation_at or evidence_at) else None,
@@ -3088,9 +3081,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'last_poll_at': summary['last_poll_at'],
         'last_telemetry_at': summary['last_telemetry_at'],
         'last_detection_at': summary['last_detection_at'],
+        # Deprecated top-level alias retained temporarily; use workspace_monitoring_summary.coverage_counts.
+        'coverage_state': summary['coverage_counts'],
         'workspace_monitoring_summary': summary,
     }
-    payload.update(summary)
     if summary['contradiction_flags']:
         logger.warning(
             'monitoring_runtime_status_contradiction workspace_id=%s flags=%s summary=%s',

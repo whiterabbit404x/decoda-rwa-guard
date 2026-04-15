@@ -36,16 +36,21 @@ def build_workspace_monitoring_summary(
         if workspace_configured and normalized_reporting > 0 and normalized_mode == 'live' and normalized_evidence == 'live'
         else None
     )
-    freshness_status = (
+    freshness = (
         'fresh'
         if telemetry_timestamp and int((now - telemetry_timestamp).total_seconds()) <= telemetry_window_seconds
         else ('stale' if telemetry_timestamp else 'unavailable')
     )
-    confidence_status = (
+    confidence = (
         'high'
         if telemetry_timestamp and normalized_reporting > 0
         else ('medium' if normalized_mode == 'simulator' and normalized_reporting > 0 else ('low' if workspace_configured else 'unavailable'))
     )
+    coverage_counts = {
+        'configured_systems': normalized_configured,
+        'reporting_systems': normalized_reporting,
+        'protected_assets': normalized_assets,
+    }
     summary = {
         'workspace_configured': bool(workspace_configured),
         'monitoring_mode': normalized_mode,
@@ -53,13 +58,12 @@ def build_workspace_monitoring_summary(
         'configured_systems': normalized_configured,
         'reporting_systems': normalized_reporting,
         'protected_assets': normalized_assets,
-        'coverage_state': {
-            'configured_systems': normalized_configured,
-            'reporting_systems': normalized_reporting,
-            'protected_assets': normalized_assets,
-        },
-        'freshness_status': freshness_status,
-        'confidence_status': confidence_status,
+        'reporting_systems_count': normalized_reporting,
+        'monitored_systems_count': normalized_configured,
+        'protected_assets_count': normalized_assets,
+        'coverage_counts': coverage_counts,
+        'freshness': freshness,
+        'confidence': confidence,
         'last_poll_at': _isoformat(last_poll_at),
         'last_heartbeat_at': _isoformat(last_heartbeat_at),
         'last_telemetry_at': _isoformat(telemetry_timestamp),
@@ -67,14 +71,18 @@ def build_workspace_monitoring_summary(
         'evidence_source': normalized_evidence,
         'status_reason': status_reason,
         'contradiction_flags': [],
+        # Deprecated aliases kept temporarily for backward compatibility.
+        'coverage_state': coverage_counts,
+        'freshness_status': freshness,
+        'confidence_status': confidence,
     }
     if summary['runtime_status'] == 'offline' and summary['last_telemetry_at']:
         summary['contradiction_flags'].append('offline_with_current_telemetry')
     if summary['reporting_systems'] == 0 and summary['runtime_status'] == 'healthy':
         summary['contradiction_flags'].append('healthy_without_reporting_systems')
-    if summary['freshness_status'] == 'unavailable' and summary['last_telemetry_at']:
+    if summary['freshness'] == 'unavailable' and summary['last_telemetry_at']:
         summary['contradiction_flags'].append('telemetry_unavailable_with_timestamp')
-    if summary['freshness_status'] == 'fresh' and summary['last_telemetry_at'] is None:
+    if summary['freshness'] == 'fresh' and summary['last_telemetry_at'] is None:
         summary['contradiction_flags'].append('telemetry_unavailable_marked_fresh')
     if (not summary['workspace_configured']) and (summary['configured_systems'] > 0 or summary['protected_assets'] > 0):
         summary['contradiction_flags'].append('workspace_unconfigured_with_coverage')

@@ -56,13 +56,16 @@ export type MonitoringRuntimeStatus = {
     configured_systems: number;
     reporting_systems: number;
     protected_assets: number;
-    coverage_state: {
+    reporting_systems_count: number;
+    monitored_systems_count: number;
+    protected_assets_count: number;
+    coverage_counts: {
       configured_systems: number;
       reporting_systems: number;
       protected_assets: number;
     };
-    freshness_status: 'fresh' | 'stale' | 'unavailable';
-    confidence_status: 'high' | 'medium' | 'low' | 'unavailable';
+    freshness: 'fresh' | 'stale' | 'unavailable';
+    confidence: 'high' | 'medium' | 'low' | 'unavailable';
     last_heartbeat_at: string | null;
     last_telemetry_at: string | null;
     last_poll_at: string | null;
@@ -71,6 +74,14 @@ export type MonitoringRuntimeStatus = {
     evidence_source: 'live' | 'simulator' | 'replay' | 'none';
     status_reason: string | null;
     contradiction_flags: string[];
+    // Deprecated aliases
+    coverage_state?: {
+      configured_systems: number;
+      reporting_systems: number;
+      protected_assets: number;
+    };
+    freshness_status?: 'fresh' | 'stale' | 'unavailable';
+    confidence_status?: 'high' | 'medium' | 'low' | 'unavailable';
   };
   workspace_configured?: boolean;
   monitoring_mode?: 'live' | 'simulator' | 'offline' | 'unavailable';
