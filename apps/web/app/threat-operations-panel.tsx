@@ -441,14 +441,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     statusLabel: presentationStatus === 'limited coverage' ? 'LIMITED COVERAGE' : presentationStatus.toUpperCase(),
     summary: truthPresentationSummary(presentationStatus),
   };
-  const lastTelemetryAt = truth.last_telemetry_at ?? null;
+  const lastTelemetryAt = truth.last_telemetry_at ?? feed.lastTelemetryAt;
   const showLiveTelemetry = hasLiveTelemetry(truth);
-  const lastPollAt = truth.last_poll_at ?? feed.lastUpdatedAt;
+  const lastPollAt = truth.last_poll_at ?? feed.lastPollAt;
   const telemetryLabel = formatRelativeTime(lastTelemetryAt);
   const pollLabel = formatRelativeTime(lastPollAt);
-  const detectionEvalLabel = feed.runtimeStatus?.checkpoint_age_seconds != null
-    ? `${feed.runtimeStatus.checkpoint_age_seconds}s ago`
-    : formatRelativeTime(truth.last_detection_at ?? lastPollAt);
+  const detectionEvalLabel = formatRelativeTime(truth.last_detection_at ?? lastTelemetryAt ?? lastPollAt);
 
   const baseDetections = useMemo<DetectionItem[]>(() => {
     const matchedAsset = targets[0];

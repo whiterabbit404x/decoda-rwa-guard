@@ -145,7 +145,7 @@ export default function PilotOverviewPanel({
           </p>
           <p>
             <span>Last update</span>
-            {liveFeed.lastUpdatedAt ? new Date(liveFeed.lastUpdatedAt).toLocaleTimeString() : 'pending'}
+            {liveFeed.lastFetchCompletedAt ? new Date(liveFeed.lastFetchCompletedAt).toLocaleTimeString() : 'pending'}
           </p>
         </div>
       </article>
