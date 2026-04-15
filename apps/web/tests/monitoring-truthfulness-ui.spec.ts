@@ -58,14 +58,23 @@ test.describe('monitoring truthfulness UI copy', () => {
   });
 
   test('critical monitoring presentation files do not reference legacy presentation signals', async () => {
+    const threatPanel = source('threat-operations-panel.tsx');
     const statusPresentation = source('monitoring-status-presentation.ts');
     const workspaceBanner = source('workspace-monitoring-mode-banner.tsx');
     const monitoringOverview = source('monitoring-overview-panel.tsx');
 
     LEGACY_PRESENTATION_SIGNALS.forEach((legacySignal) => {
+      expect(threatPanel).not.toContain(legacySignal);
       expect(statusPresentation).not.toContain(legacySignal);
       expect(workspaceBanner).not.toContain(legacySignal);
       expect(monitoringOverview).not.toContain(legacySignal);
     });
+  });
+
+  test('threat panel keeps contradiction guardrails visible in operator copy', async () => {
+    const threatPanel = source('threat-operations-panel.tsx');
+    expect(threatPanel).toContain('contradictionFlags.length > 0');
+    expect(threatPanel).toContain('Guarded fallback copy active');
+    expect(threatPanel).toContain('monitoringHealthyCopyAllowed(truth)');
   });
 });

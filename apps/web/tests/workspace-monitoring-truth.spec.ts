@@ -137,4 +137,29 @@ test.describe('workspace monitoring truth guardrails', () => {
     expect(hasLiveTelemetry(truth)).toBeFalsy();
     expect(monitoringHealthyCopyAllowed(truth)).toBeFalsy();
   });
+
+  test('contradiction flags always suppress healthy monitoring copy', () => {
+    const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      monitoring_mode: 'live',
+      runtime_status: 'healthy',
+      configured_systems: 2,
+      reporting_systems: 2,
+      protected_assets: 2,
+      coverage_state: { configured_systems: 2, reporting_systems: 2, protected_assets: 2 },
+      freshness_status: 'fresh',
+      confidence_status: 'high',
+      last_poll_at: '2026-04-15T10:00:00Z',
+      last_heartbeat_at: '2026-04-15T10:00:00Z',
+      last_telemetry_at: '2026-04-15T09:59:30Z',
+      last_detection_at: null,
+      evidence_source: 'live',
+      status_reason: null,
+      contradiction_flags: ['offline_with_current_telemetry'],
+    }));
+
+    expect(truth.contradiction_flags).toContain('offline_with_current_telemetry');
+    expect(hasLiveTelemetry(truth)).toBeFalsy();
+    expect(monitoringHealthyCopyAllowed(truth)).toBeTruthy();
+  });
 });

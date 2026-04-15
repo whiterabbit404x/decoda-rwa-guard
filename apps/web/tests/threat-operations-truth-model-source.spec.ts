@@ -27,14 +27,23 @@ function appSource(fileName: string): string {
 test('threat panel renders telemetry copy from truth model timestamps only', () => {
   const threat = appSource('threat-operations-panel.tsx');
   expect(threat).toContain('resolveWorkspaceMonitoringTruth');
-  expect(threat).toContain('const lastTelemetryAt = truth.last_telemetry_at ?? feed.lastTelemetryAt;');
-  expect(threat).toContain('const showLiveTelemetry = hasLiveTelemetry(truth);');
+  expect(threat).toContain('lastTelemetryAt: truth.last_telemetry_at');
+  expect(threat).toContain('lastPollAt: truth.last_poll_at');
+  expect(threat).toContain('const showLiveTelemetry = monitoringPresentation.hasLiveTelemetry;');
   expect(threat).toContain("{showLiveTelemetry ? `Live telemetry ${telemetryLabel}` : 'Current telemetry unavailable'}");
   expect(threat).toContain('Guarded fallback copy active');
+  expect(threat).not.toContain('truth.last_telemetry_at ?? feed.lastTelemetryAt');
+  expect(threat).not.toContain('truth.last_poll_at ?? feed.lastPollAt');
+  expect(threat).not.toContain('feed.offline');
+  expect(threat).not.toContain('feed.stale');
+  expect(threat).not.toContain('feed.degraded');
+  expect(threat).not.toContain('invalid_enabled_targets');
+  expect(threat).not.toContain('systems_with_recent_heartbeat');
 });
 
 test('monitoring source files remain guarded from legacy presentation signals', () => {
   const guardedSources = [
+    appSource('threat-operations-panel.tsx'),
     appSource('monitoring-status-presentation.ts'),
     appSource('workspace-monitoring-mode-banner.tsx'),
     appSource('monitoring-overview-panel.tsx'),
