@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { normalizeMonitoringPresentation, type MonitoringPresentation } from './monitoring-status-presentation';
 import { normalizeMonitoringMode, runtimeStatusModeFromMonitoringStatus, type MonitoringRuntimeStatus } from './monitoring-status-contract';
 import { usePilotAuth } from './pilot-auth-context';
+import { resolveWorkspaceMonitoringTruth, type WorkspaceMonitoringTruth } from './workspace-monitoring-truth';
 
 type LiveWorkspaceCounts = {
   protectedAssets: number;
@@ -17,21 +19,12 @@ type LiveWorkspaceCounts = {
 type LiveWorkspaceFeed = {
   loading: boolean;
   refreshing: boolean;
-  degraded: boolean;
-  offline: boolean;
-  stale: boolean;
-  lastUpdatedAt: string | null;
-  lastTelemetryAt: string | null;
-  lastPollAt: string | null;
-  lastFetchCompletedAt: string | null;
   runtimeStatus: MonitoringRuntimeStatus | null;
+  truth: WorkspaceMonitoringTruth;
+  presentation: MonitoringPresentation;
   counts: LiveWorkspaceCounts;
-  monitoring: {
-    freshnessStatus: 'fresh' | 'stale' | 'unavailable';
-    pollFreshnessStatus: 'fresh' | 'stale' | 'unavailable';
-    lastTelemetryAt: string | null;
-    lastHeartbeatAt: string | null;
-    lastPollAt: string | null;
+  timings: {
+    lastUpdatedAt: string | null;
     lastFetchCompletedAt: string | null;
   };
 };
@@ -86,15 +79,22 @@ export function deriveWorkspaceHealth(runtime: RuntimeStatusResolution): { degra
   };
 }
 
+export function deriveMonitoringProjection(runtimeStatus: MonitoringRuntimeStatus | null): {
+  truth: WorkspaceMonitoringTruth;
+  presentation: MonitoringPresentation;
+} {
+  const truth = resolveWorkspaceMonitoringTruth(runtimeStatus);
+  return {
+    truth,
+    presentation: normalizeMonitoringPresentation(truth),
+  };
+}
+
 export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
   const { apiUrl, authHeaders, isAuthenticated, user } = usePilotAuth();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [degraded, setDegraded] = useState(false);
-  const [offline, setOffline] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
-  const [lastTelemetryAt, setLastTelemetryAt] = useState<string | null>(null);
-  const [lastPollAt, setLastPollAt] = useState<string | null>(null);
   const [lastFetchCompletedAt, setLastFetchCompletedAt] = useState<string | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<MonitoringRuntimeStatus | null>(null);
   const [counts, setCounts] = useState<LiveWorkspaceCounts>(DEFAULT_COUNTS);
@@ -133,7 +133,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
           statusPayload = null;
         }
         const runtimeUnavailable = !statusRes || !statusRes.ok;
-        const { nextRuntime, offline: runtimeOffline, degraded: runtimeDegraded } = resolveRuntimeStatus(statusPayload, Boolean(statusRes?.ok));
+        const { nextRuntime } = resolveRuntimeStatus(statusPayload, Boolean(statusRes?.ok));
         const ancillaryResults = await Promise.allSettled([
           fetch(`${apiUrl}/pilot/history?limit=20`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
@@ -166,21 +166,11 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
           openIncidents: (incidentsPayload.incidents ?? []).length,
           historyRecords: historyCount,
         });
-        const health = deriveWorkspaceHealth({ nextRuntime, offline: runtimeOffline, degraded: runtimeDegraded });
-        setOffline(runtimeUnavailable ? true : health.offline);
-        setDegraded(runtimeUnavailable ? true : health.degraded);
         const completedAt = new Date().toISOString();
-        const nextTelemetryAt = truth?.last_telemetry_at ?? nextRuntime?.last_telemetry_at ?? null;
-        const nextPollAt = truth?.last_poll_at ?? nextRuntime?.last_poll_at ?? null;
-        setLastTelemetryAt(nextTelemetryAt);
-        setLastPollAt(nextPollAt);
         setLastFetchCompletedAt(completedAt);
         setLastUpdatedAt(completedAt);
       } catch {
-        if (active) {
-          setOffline(true);
-          setDegraded(true);
-        }
+        // keep prior runtime status; consumers derive monitoring truth/presentation from latest available state
       } finally {
         if (active) {
           setLoading(false);
@@ -213,54 +203,17 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
     };
   }, [apiUrl, authHeaders, intervalMs, isAuthenticated, user?.current_workspace?.id]);
 
-  const stale = useMemo(() => {
-    const truthFreshness = runtimeStatus?.workspace_monitoring_summary?.freshness_status ?? runtimeStatus?.freshness_status ?? null;
-    if (truthFreshness === 'stale') {
-      return true;
-    }
-    if (truthFreshness === 'fresh') {
-      return false;
-    }
-    if (!lastTelemetryAt) {
-      return true;
-    }
-    return Date.now() - new Date(lastTelemetryAt).getTime() > intervalMs * 2;
-  }, [intervalMs, lastTelemetryAt, runtimeStatus]);
-
-  const freshnessStatus = useMemo<'fresh' | 'stale' | 'unavailable'>(() => {
-    const value = runtimeStatus?.workspace_monitoring_summary?.freshness_status ?? runtimeStatus?.freshness_status;
-    if (value === 'fresh' || value === 'stale' || value === 'unavailable') {
-      return value;
-    }
-    return 'unavailable';
-  }, [runtimeStatus]);
-
-  const pollFreshnessStatus = useMemo<'fresh' | 'stale' | 'unavailable'>(() => {
-    const value = runtimeStatus?.workspace_monitoring_summary?.poll_freshness_status ?? runtimeStatus?.poll_freshness_status;
-    if (value === 'fresh' || value === 'stale' || value === 'unavailable') {
-      return value;
-    }
-    return 'unavailable';
-  }, [runtimeStatus]);
+  const { truth, presentation } = useMemo(() => deriveMonitoringProjection(runtimeStatus), [runtimeStatus]);
 
   return {
     loading,
     refreshing,
-    degraded,
-    offline,
-    stale,
-    lastUpdatedAt,
-    lastTelemetryAt,
-    lastPollAt,
-    lastFetchCompletedAt,
     runtimeStatus,
+    truth,
+    presentation,
     counts,
-    monitoring: {
-      freshnessStatus,
-      pollFreshnessStatus,
-      lastTelemetryAt,
-      lastHeartbeatAt: runtimeStatus?.workspace_monitoring_summary?.last_heartbeat_at ?? runtimeStatus?.last_heartbeat_at ?? null,
-      lastPollAt,
+    timings: {
+      lastUpdatedAt,
       lastFetchCompletedAt,
     },
   };
