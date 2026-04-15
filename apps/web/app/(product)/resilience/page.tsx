@@ -23,7 +23,7 @@ export default async function ResiliencePage() {
         </div>
         <div className="heroPanel"><StatusBadge state={resilienceDashboard.source === 'live' && !resilienceDashboard.degraded ? 'live' : resilienceDashboard.source === 'live' ? 'live_degraded' : 'limited_coverage'} /><p>{resilienceDashboard.message}</p></div>
       </section>
-      <SystemStatusPanel diagnostics={data.diagnostics} truth={monitoringTruth} presentation={monitoringPresentation} />
+      <SystemStatusPanel monitoring={{ truth: monitoringTruth, presentation: monitoringPresentation }} showDiagnostics={false} />
       <section className="threeColumnSection">
         <div className="stack compactStack">
           {resilienceDashboard.latest_incidents.map((incident) => (
