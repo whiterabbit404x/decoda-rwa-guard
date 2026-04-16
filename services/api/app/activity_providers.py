@@ -13,6 +13,7 @@ from services.api.app.monitoring_mode import (
     MonitoringModeError,
     resolve_monitoring_mode,
 )
+from services.api.app.monitorable_target_types import is_monitorable_target_type, normalize_target_type
 from services.api.app.monitoring_truth import api_mode
 
 logger = logging.getLogger(__name__)
@@ -155,10 +156,10 @@ def fetch_target_activity(target: dict[str, Any], since_ts: datetime | None) -> 
 
 
 def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | None) -> ActivityProviderResult:
-    target_type = str(target.get('target_type') or '').lower()
+    target_type = normalize_target_type(target.get('target_type'))
     runtime = monitoring_ingestion_runtime()
     mode = runtime['mode']
-    can_use_live = (not runtime['degraded']) and target_type in {'wallet', 'contract'}
+    can_use_live = (not runtime['degraded']) and is_monitorable_target_type(target_type)
     if mode in {'live', 'hybrid'} and can_use_live:
         try:
             live_events = fetch_evm_activity(target, since_ts)

@@ -16,6 +16,10 @@ from services.api.app.activity_providers import (
 )
 from services.api.app.evm_activity_provider import JsonRpcClient
 from services.api.app.monitoring_truth import ui_evidence_state, ui_truthfulness_state
+from services.api.app.monitorable_target_types import (
+    is_monitorable_target_type,
+    monitorable_target_types_sql_clause,
+)
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary
 from services.api.app.pilot import (
     _json_dumps,
@@ -1824,7 +1828,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         if isinstance(coverage_record, dict) and coverage_record:
             last_protected_asset_coverage_record = coverage_record
 
-    if not events and provider_result.mode in {'live', 'hybrid'} and str(target.get('target_type') or '').lower() in {'wallet', 'contract'}:
+    if not events and provider_result.mode in {'live', 'hybrid'} and is_monitorable_target_type(target.get('target_type')):
         if provider_result.status == 'failed':
             source_status = 'failed'
             degraded_reason = provider_result.degraded_reason or 'provider_failed'
@@ -2248,7 +2252,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         )
                         monitored_systems_updated += 1
                 alerts_generated += int(result['alerts_generated'])
-                live_targets_checked += 1 if str(target.get('target_type') or '').lower() in {'wallet','contract'} else 0
+                live_targets_checked += 1 if is_monitorable_target_type(target.get('target_type')) else 0
                 events_ingested += int(result.get('events_ingested', 0))
                 incidents_created += int(result.get('incidents_created', 0))
                 runs.append(result)
@@ -2713,14 +2717,14 @@ def production_claim_validator() -> dict[str, Any]:
         with pg_connection() as connection:
             ensure_pilot_schema(connection)
             target_row = connection.execute(
-                '''
+                f'''
                 SELECT COUNT(*) AS total
                 FROM targets
                 WHERE deleted_at IS NULL
                   AND monitoring_enabled = TRUE
                   AND enabled = TRUE
                   AND is_active = TRUE
-                  AND target_type IN ('wallet', 'contract')
+                  AND {monitorable_target_types_sql_clause('target_type')}
                 '''
             ).fetchone()
             checks['real_target_exists'] = int((target_row or {}).get('total') or 0) > 0
@@ -2746,7 +2750,7 @@ def production_claim_validator() -> dict[str, Any]:
                         and str(meta.get('ingestion_source') or '').lower() not in {'demo', 'synthetic', 'fallback'}
                     )
             evidence_rollup = connection.execute(
-                '''
+                f'''
                 SELECT
                     COALESCE(SUM(CASE WHEN recent_evidence_state = 'real' THEN 1 ELSE 0 END), 0) AS real_evidence_targets,
                     COALESCE(SUM(CASE WHEN recent_evidence_state IN ('degraded', 'no_evidence', 'failed', 'missing') THEN 1 ELSE 0 END), 0) AS degraded_or_missing_targets,
@@ -2758,7 +2762,7 @@ def production_claim_validator() -> dict[str, Any]:
                   AND monitoring_enabled = TRUE
                   AND enabled = TRUE
                   AND is_active = TRUE
-                  AND target_type IN ('wallet', 'contract')
+                  AND {monitorable_target_types_sql_clause('target_type')}
                 '''
             ).fetchone()
             evidence_stats = _json_safe_value(dict(evidence_rollup or {}))
@@ -2920,7 +2924,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         rows = connection.execute(
             '''
             SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
-                   COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at
+                   COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
             FROM monitored_systems ms
             LEFT JOIN targets t
               ON t.id = ms.target_id
@@ -2939,7 +2943,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         rows = connection.execute(
             '''
             SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
-                   COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at
+                   COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
             FROM monitored_systems ms
             LEFT JOIN targets t
               ON t.id = ms.target_id
@@ -3034,6 +3038,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             WHERE t.deleted_at IS NULL
               AND t.enabled = TRUE
               AND t.asset_id IS NOT NULL
+              AND {monitorable_target_types_sql_clause('t.target_type')}
               {target_workspace_filter}
             ''',
             scoped_params,
@@ -3051,6 +3056,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             WHERE t.deleted_at IS NULL
               AND t.enabled = TRUE
               AND t.asset_id IS NOT NULL
+              AND {monitorable_target_types_sql_clause('t.target_type')}
               {target_workspace_filter}
             ''',
             scoped_params,
@@ -3061,8 +3067,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             for row in healthy_enabled_target_rows
             if row.get('id') and row.get('asset_id')
         }
-        enabled_monitored_rows_count = sum(1 for row in monitored_rows if monitored_system_row_enabled(row))
-        enabled_monitored_target_ids = {str(row.get('target_id')) for row in monitored_rows if monitored_system_row_enabled(row) and row.get('target_id')}
+        enabled_monitored_rows_count = sum(
+            1
+            for row in monitored_rows
+            if monitored_system_row_enabled(row) and is_monitorable_target_type(row.get('target_type'))
+        )
+        enabled_monitored_target_ids = {
+            str(row.get('target_id'))
+            for row in monitored_rows
+            if monitored_system_row_enabled(row) and is_monitorable_target_type(row.get('target_type')) and row.get('target_id')
+        }
         missing_healthy_target_ids = healthy_enabled_target_ids - enabled_monitored_target_ids
         logger.info(
             'monitoring_runtime_status_data_path workspace_id=%s targets_enabled_valid=%s target_ids_enabled_valid=%s monitored_rows_before=%s monitored_row_ids_before=%s enabled_monitored_rows_before=%s',
@@ -3131,7 +3145,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     last_heartbeat = last_system_heartbeat or worker_heartbeat
     heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
     stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
-    enabled_rows = [row for row in monitored_rows if monitored_system_row_enabled(row)]
+    enabled_rows = [row for row in monitored_rows if monitored_system_row_enabled(row) and is_monitorable_target_type(row.get('target_type'))]
     active_rows = [row for row in enabled_rows if str(row.get('runtime_status') or '').strip().lower() in {'healthy', 'active'}]
     enabled_asset_rows = [row for row in enabled_rows if row.get('asset_id')]
     enabled_system_count = max(len(enabled_rows), healthy_enabled_targets_count)

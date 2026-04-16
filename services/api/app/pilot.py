@@ -24,6 +24,11 @@ from urllib.request import Request as UrlRequest, urlopen
 
 import importlib
 from fastapi import HTTPException, Request, status
+from services.api.app.monitorable_target_types import (
+    is_monitorable_target_type,
+    monitorable_target_types_sql_clause,
+    normalize_target_type,
+)
 from services.api.app.secret_crypto import encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
 from services.api.app.export_storage import load_export_storage
 
@@ -4708,7 +4713,7 @@ def ensure_monitored_system_for_target(
     )
     target = connection.execute(
         '''
-        SELECT t.id, t.workspace_id, t.asset_id, t.chain_network, t.enabled, t.monitoring_enabled,
+        SELECT t.id, t.workspace_id, t.asset_id, t.chain_network, t.target_type, t.enabled, t.monitoring_enabled,
                a.id AS resolved_asset_id,
                aa.id AS any_asset_id,
                aa.workspace_id AS any_asset_workspace_id
@@ -4734,6 +4739,7 @@ def ensure_monitored_system_for_target(
     target_workspace_id = str(target['workspace_id'])
     enabled = bool(target.get('enabled'))
     monitoring_enabled = bool(target.get('monitoring_enabled'))
+    target_type = normalize_target_type(target.get('target_type'))
     asset_id = str(target.get('asset_id') or '') or None
     resolved_asset_id = str(target.get('resolved_asset_id') or '') or None
     any_asset_id = str(target.get('any_asset_id') or '') or None
@@ -4757,6 +4763,45 @@ def ensure_monitored_system_for_target(
             'reason': 'monitoring_disabled',
             'workspace_id': target_workspace_id,
             'target_id': target_id,
+            'enabled': enabled,
+            'monitoring_enabled': monitoring_enabled,
+            'asset_id': asset_id,
+            'resolved_asset_id': resolved_asset_id,
+        }
+        logger.info('target_monitoring_bridge result=%s', result)
+        return result
+
+    if not is_monitorable_target_type(target_type):
+        connection.execute(
+            '''
+            UPDATE targets
+            SET last_run_status = 'unsupported_target_type',
+                watcher_degraded_reason = %s,
+                updated_at = NOW()
+            WHERE id = %s::uuid
+            ''',
+            ('unsupported_target_type_for_live_coverage', target_id),
+        )
+        connection.execute(
+            '''
+            UPDATE monitored_systems
+            SET is_enabled = FALSE,
+                runtime_status = 'disabled',
+                status = 'paused',
+                freshness_status = 'unavailable',
+                confidence_status = 'unavailable',
+                coverage_reason = %s
+            WHERE target_id = %s::uuid
+              AND workspace_id = %s::uuid
+            ''',
+            ('unsupported_target_type_for_live_coverage', target_id, target_workspace_id),
+        )
+        result = {
+            'status': 'unsupported_target_type',
+            'reason': 'unsupported_target_type_for_live_coverage',
+            'workspace_id': target_workspace_id,
+            'target_id': target_id,
+            'target_type': target_type,
             'enabled': enabled,
             'monitoring_enabled': monitoring_enabled,
             'asset_id': asset_id,
@@ -4855,7 +4900,7 @@ def ensure_monitored_system_for_target(
 def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id: str | None = None) -> dict[str, Any]:
     rows = connection.execute(
         '''
-        SELECT id, enabled, monitoring_enabled, asset_id
+        SELECT id, target_type, enabled, monitoring_enabled, asset_id
         FROM targets
         WHERE deleted_at IS NULL
           AND (%s::uuid IS NULL OR workspace_id = %s::uuid)
@@ -4870,6 +4915,25 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
     invalid_reasons: dict[str, int] = {}
     skipped_reasons: dict[str, int] = {}
     repaired_monitored_system_ids: list[str] = []
+    unsupported_repairs = connection.execute(
+        f'''
+        UPDATE monitored_systems ms
+        SET is_enabled = FALSE,
+            runtime_status = 'disabled',
+            status = 'paused',
+            freshness_status = 'unavailable',
+            confidence_status = 'unavailable',
+            coverage_reason = %s
+        FROM targets t
+        WHERE t.id = ms.target_id
+          AND t.deleted_at IS NULL
+          AND ({monitorable_target_types_sql_clause('t.target_type')}) = FALSE
+          AND (%s::uuid IS NULL OR ms.workspace_id = %s::uuid)
+        RETURNING ms.id
+        ''',
+        ('unsupported_target_type_for_live_coverage', workspace_id, workspace_id),
+    ).fetchall()
+    repaired_unsupported_count = len(unsupported_repairs)
     existing_rows = connection.execute(
         '''
         SELECT id, target_id
@@ -4917,6 +4981,7 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         target_id = str(row['id'])
         target_enabled = bool(row.get('enabled'))
         target_monitoring_enabled = bool(row.get('monitoring_enabled'))
+        target_type = normalize_target_type(row.get('target_type'))
         target_has_asset_id = bool(row.get('asset_id'))
         if not target_enabled:
             disabled_or_invalid_targets_found += 1
@@ -4933,6 +4998,30 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
                 'target_not_enabled',
                 None,
             )
+            continue
+        if not is_monitorable_target_type(target_type):
+            disabled_or_invalid_targets_found += 1
+            logger.info(
+                'target_monitoring_reconcile target_id=%s workspace_id=%s enabled=%s monitoring_enabled=%s target_type=%s asset_id=%s resolved_asset_id=%s status=%s reason=%s monitored_system_id=%s',
+                target_id,
+                workspace_id,
+                target_enabled,
+                target_monitoring_enabled,
+                target_type,
+                row.get('asset_id'),
+                None,
+                'unsupported_target_type',
+                'unsupported_target_type_for_live_coverage',
+                None,
+            )
+            result = ensure_monitored_system_for_target(
+                connection,
+                target_id=str(row['id']),
+                workspace_id=workspace_id,
+                require_enabled=False,
+            )
+            skipped_reason = str(result.get('reason') or 'unsupported_target_type_for_live_coverage')
+            skipped_reasons[skipped_reason] = skipped_reasons.get(skipped_reason, 0) + 1
             continue
         if target_enabled and target_has_asset_id and not target_monitoring_enabled:
             connection.execute(
@@ -5045,6 +5134,7 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         'invalid_reasons': invalid_reasons,
         'skipped_reasons': skipped_reasons,
         'repaired_monitored_system_ids': repaired_monitored_system_ids,
+        'repaired_unsupported_monitored_systems': repaired_unsupported_count,
         'workspace_id': workspace_id,
     })
 
@@ -5065,6 +5155,7 @@ def _normalize_reconcile_result(result: dict[str, Any]) -> dict[str, Any]:
         'invalid_reasons': {str(key): int(value) for key, value in dict(result.get('invalid_reasons') or {}).items()},
         'skipped_reasons': {str(key): int(value) for key, value in dict(result.get('skipped_reasons') or {}).items()},
         'repaired_monitored_system_ids': [str(value) for value in (result.get('repaired_monitored_system_ids') or []) if str(value).strip()],
+        'repaired_unsupported_monitored_systems': int(result.get('repaired_unsupported_monitored_systems', 0) or 0),
         'workspace_id': result.get('workspace_id'),
     }
 
