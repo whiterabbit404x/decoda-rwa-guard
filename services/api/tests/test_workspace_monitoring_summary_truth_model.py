@@ -23,6 +23,7 @@ def test_summary_includes_unified_truth_model_fields() -> None:
         last_poll_at=now,
         last_heartbeat_at=now,
         last_telemetry_at=now - timedelta(seconds=30),
+        telemetry_kind='target_event',
         last_detection_at=now,
         evidence_source='live',
         status_reason=None,
@@ -42,6 +43,7 @@ def test_summary_includes_unified_truth_model_fields() -> None:
     assert summary['last_poll_at'] is not None
     assert summary['last_heartbeat_at'] is not None
     assert summary['last_telemetry_at'] is not None
+    assert summary['telemetry_kind'] == 'target_event'
     assert summary['evidence_source'] == 'live'
     assert summary['status_reason'] is None
     assert summary['configuration_reason'] is None
@@ -68,6 +70,7 @@ def test_heartbeat_recent_without_telemetry_sets_unavailable_freshness() -> None
         last_poll_at=None,
         last_heartbeat_at=now,
         last_telemetry_at=None,
+        telemetry_kind=None,
         last_detection_at=None,
         evidence_source='live',
         status_reason='no_reporting_systems',
@@ -97,6 +100,7 @@ def test_poll_recent_without_telemetry_sets_unavailable_freshness() -> None:
         last_poll_at=now,
         last_heartbeat_at=None,
         last_telemetry_at=None,
+        telemetry_kind=None,
         last_detection_at=None,
         evidence_source='live',
         status_reason='no_reporting_systems',
@@ -126,6 +130,7 @@ def test_telemetry_recent_with_reporting_is_fresh_and_high_confidence() -> None:
         last_poll_at=now,
         last_heartbeat_at=now,
         last_telemetry_at=now - timedelta(seconds=40),
+        telemetry_kind='target_event',
         last_detection_at=now - timedelta(seconds=20),
         evidence_source='live',
         status_reason=None,
@@ -155,6 +160,7 @@ def test_workspace_unconfigured_cannot_report_monitored_or_protected_counts() ->
         last_poll_at=now,
         last_heartbeat_at=None,
         last_telemetry_at=None,
+        telemetry_kind=None,
         last_detection_at=None,
         evidence_source='none',
         status_reason='workspace_not_configured',
@@ -182,6 +188,7 @@ def test_healthy_status_without_reporting_is_flagged() -> None:
         last_poll_at=now,
         last_heartbeat_at=now,
         last_telemetry_at=None,
+        telemetry_kind=None,
         last_detection_at=None,
         evidence_source='live',
         status_reason='no_reporting_systems',
@@ -209,6 +216,7 @@ def test_workspace_configured_with_missing_required_link_counts_is_flagged() -> 
         last_poll_at=now,
         last_heartbeat_at=now,
         last_telemetry_at=now,
+        telemetry_kind='target_event',
         last_detection_at=now,
         evidence_source='live',
         status_reason=None,
@@ -237,6 +245,7 @@ def test_simulator_telemetry_timestamp_is_preserved_from_persisted_event() -> No
         last_poll_at=now,
         last_heartbeat_at=now,
         last_telemetry_at=simulator_event_at,
+        telemetry_kind='target_event',
         last_detection_at=None,
         evidence_source='simulator',
         status_reason=None,
@@ -248,5 +257,6 @@ def test_simulator_telemetry_timestamp_is_preserved_from_persisted_event() -> No
         telemetry_window_seconds=300,
     )
     assert summary['last_telemetry_at'] == simulator_event_at.isoformat()
+    assert summary['telemetry_kind'] == 'target_event'
     assert summary['freshness_status'] == 'fresh'
     assert summary['confidence_status'] == 'medium'

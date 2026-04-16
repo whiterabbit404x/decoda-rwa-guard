@@ -15,6 +15,7 @@ export type WorkspaceMonitoringTruth = {
   last_poll_at: string | null;
   last_heartbeat_at: string | null;
   last_telemetry_at: string | null;
+  telemetry_kind: 'coverage' | 'target_event' | null;
   last_detection_at: string | null;
   evidence_source: 'live' | 'simulator' | 'replay' | 'none';
   status_reason: string | null;
@@ -39,6 +40,7 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   last_poll_at: null,
   last_heartbeat_at: null,
   last_telemetry_at: null,
+  telemetry_kind: null,
   last_detection_at: null,
   evidence_source: 'none',
   status_reason: 'summary_unavailable',
@@ -119,6 +121,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     last_poll_at: summary.last_poll_at,
     last_heartbeat_at: summary.last_heartbeat_at,
     last_telemetry_at: summary.last_telemetry_at,
+    telemetry_kind: summary.telemetry_kind ?? null,
     last_detection_at: summary.last_detection_at,
     evidence_source: summary.evidence_source,
     status_reason: summary.status_reason,

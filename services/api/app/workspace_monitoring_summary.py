@@ -21,6 +21,7 @@ def build_workspace_monitoring_summary(
     last_poll_at: datetime | None,
     last_heartbeat_at: datetime | None,
     last_telemetry_at: datetime | None,
+    telemetry_kind: str | None,
     last_detection_at: datetime | None,
     evidence_source: str,
     status_reason: str | None,
@@ -42,9 +43,10 @@ def build_workspace_monitoring_summary(
     normalized_mode = monitoring_mode if monitoring_mode in {'live', 'simulator', 'offline', 'unavailable'} else 'unavailable'
     normalized_runtime = runtime_status if runtime_status in {'provisioning', 'healthy', 'degraded', 'idle', 'failed', 'disabled', 'offline'} else 'offline'
     normalized_evidence = evidence_source if evidence_source in {'live', 'simulator', 'replay', 'none'} else 'none'
+    normalized_telemetry_kind = telemetry_kind if telemetry_kind in {'coverage', 'target_event'} else None
     telemetry_timestamp = (
         last_telemetry_at
-        if workspace_configured and normalized_reporting > 0 and normalized_evidence in {'live', 'simulator'}
+        if workspace_configured and normalized_reporting > 0 and normalized_evidence in {'live', 'simulator'} and normalized_telemetry_kind in {'coverage', 'target_event'}
         else None
     )
     freshness_status = (
@@ -85,6 +87,7 @@ def build_workspace_monitoring_summary(
         'last_poll_at': _isoformat(last_poll_at),
         'last_heartbeat_at': _isoformat(last_heartbeat_at),
         'last_telemetry_at': _isoformat(telemetry_timestamp),
+        'telemetry_kind': normalized_telemetry_kind if telemetry_timestamp else None,
         'last_detection_at': _isoformat(last_detection_at),
         'evidence_source': normalized_evidence,
         'status_reason': status_reason,

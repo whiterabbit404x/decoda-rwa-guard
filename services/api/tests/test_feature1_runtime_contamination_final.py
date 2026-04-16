@@ -26,7 +26,7 @@ def test_monitoring_demo_scenario_is_ignored_in_live(monkeypatch):
 
     assert result.mode == 'live'
     assert result.synthetic is False
-    assert result.status == 'no_evidence'
+    assert result.status == 'live'
 
 
 def test_monitoring_demo_scenario_is_ignored_in_hybrid(monkeypatch):
@@ -39,7 +39,7 @@ def test_monitoring_demo_scenario_is_ignored_in_hybrid(monkeypatch):
 
     assert result.mode == 'hybrid'
     assert result.synthetic is False
-    assert result.status == 'no_evidence'
+    assert result.status == 'live'
 
 
 def test_demo_mode_blocked_without_explicit_gate(monkeypatch):

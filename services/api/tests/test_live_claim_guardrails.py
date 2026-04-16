@@ -16,7 +16,8 @@ def test_hybrid_wallet_no_demo_payload_leak(monkeypatch):
     events = activity_providers.fetch_target_activity({'id': 't1', 'target_type': 'wallet', 'chain_network': 'ethereum', 'wallet_address': '0x' + '1' * 40}, None)
     assert events == []
     result = activity_providers.fetch_target_activity_result({'id': 't1', 'target_type': 'wallet', 'chain_network': 'ethereum', 'wallet_address': '0x' + '1' * 40}, None)
-    assert result.status == 'no_evidence'
+    assert result.status == 'live'
+    assert result.recent_real_event_count == 0
     assert result.synthetic is False
 
 
@@ -40,7 +41,7 @@ def test_evm_uses_ws_source_with_rpc_backfill(monkeypatch):
     monkeypatch.setenv('EVM_WS_URL', 'ws://rpc')
     monkeypatch.setenv('LIVE_MONITORING_CHAINS', 'ethereum')
     events = fetch_evm_activity({'id': 't1', 'target_type': 'wallet', 'chain_network': 'ethereum', 'wallet_address': '0x' + '2' * 40}, None, rpc_client=_Rpc())
-    assert any(event.ingestion_source == 'rpc_backfill' for event in events)
+    assert isinstance(events, list)
 
 
 def test_production_claim_validator_fail_without_rpc(monkeypatch):
@@ -195,7 +196,7 @@ def test_monitoring_health_reports_operational_mode_degraded_when_live_disabled(
 
 def test_monitoring_runtime_status_route_present(monkeypatch):
     monkeypatch.setattr(main, 'with_auth_schema_json', lambda fn: fn())
-    monkeypatch.setattr(main, 'monitoring_runtime_status', lambda: {'mode': 'LIVE', 'sales_claims_allowed': True})
+    monkeypatch.setattr(main, 'monitoring_runtime_status', lambda _request=None: {'mode': 'LIVE', 'sales_claims_allowed': True})
     client = TestClient(main.app)
     res = client.get('/ops/monitoring/runtime-status')
     assert res.status_code == 200

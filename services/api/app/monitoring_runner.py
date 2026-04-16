@@ -330,9 +330,80 @@ def _derive_system_runtime_state(result: dict[str, Any], *, is_enabled: bool) ->
         return 'degraded', 'stale', 'low', degraded_reason or 'monitoring_degraded'
     if provider_status == 'no_evidence':
         return 'degraded', 'stale', 'low', degraded_reason or 'no_evidence'
-    if events_ingested > 0 or recent_real_event_count > 0:
+    if events_ingested > 0 or recent_real_event_count > 0 or result.get('live_coverage_telemetry_at'):
         return 'healthy', 'fresh', 'high', None
     return 'idle', 'stale', 'medium', 'no_events_detected_yet'
+
+
+def _persist_live_coverage_telemetry(
+    connection: Any,
+    *,
+    target: dict[str, Any],
+    provider_result: ActivityProviderResult,
+    observed_at: datetime,
+) -> None:
+    payload = {
+        'telemetry_kind': 'coverage',
+        'proof_kind': 'coverage_telemetry',
+        'observation_type': 'provider_checkpoint',
+        'provider_name': provider_result.provider_name,
+        'provider_kind': provider_result.provider_kind,
+        'source_type': provider_result.source_type,
+        'latest_block': provider_result.latest_block,
+        'checkpoint': provider_result.checkpoint,
+        'checkpoint_age_seconds': provider_result.checkpoint_age_seconds,
+        'target_id': target.get('id'),
+    }
+    event_id = f"coverage:{provider_result.provider_name}:{observed_at.isoformat()}"
+    event_cursor = provider_result.checkpoint or f"coverage:{provider_result.latest_block or 0}:{int(observed_at.timestamp())}"
+    connection.execute(
+        '''
+        INSERT INTO monitoring_event_receipts (
+            id, workspace_id, target_id, event_id, event_cursor, tx_hash, block_number, log_index, ingestion_source, receipt_kind, evidence_source, telemetry_kind
+        )
+        VALUES (%s, %s, %s, %s, %s, NULL, %s, -1, %s, %s, %s, %s)
+        ON CONFLICT (target_id, event_id)
+        DO NOTHING
+        ''',
+        (
+            str(uuid.uuid4()),
+            target['workspace_id'],
+            target['id'],
+            event_id,
+            event_cursor,
+            provider_result.latest_block,
+            'live_coverage',
+            'coverage_telemetry',
+            'live',
+            'coverage',
+        ),
+    )
+    connection.execute(
+        '''
+        INSERT INTO evidence (
+            id, workspace_id, asset_id, target_id, alert_id, chain, block_number, tx_hash, log_index, event_type,
+            monitored_system_id, severity, risk_score, summary, counterparty, amount_text, token_address, contract_address, source_provider,
+            raw_payload_json, observed_at, created_at
+        )
+        VALUES (%s, %s, %s, %s, NULL, %s, %s, NULL, -1, %s, %s, %s, NULL, %s, NULL, NULL, NULL, %s, %s, %s::jsonb, %s, NOW())
+        ''',
+        (
+            str(uuid.uuid4()),
+            target['workspace_id'],
+            target.get('asset_id'),
+            target['id'],
+            target.get('chain_network'),
+            provider_result.latest_block,
+            'coverage_telemetry',
+            target.get('monitored_system_id'),
+            'low',
+            'Live provider coverage telemetry verified',
+            target.get('contract_identifier') or target.get('wallet_address'),
+            provider_result.provider_name,
+            _json_dumps(payload),
+            observed_at,
+        ),
+    )
 
 
 def _payload_shape(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1757,6 +1828,22 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         degraded_reason = 'synthetic_leak_detected'
         last_status = 'degraded'
 
+    live_coverage_telemetry_at: datetime | None = None
+    if (
+        provider_result.mode in {'live', 'hybrid'}
+        and provider_result.status == 'live'
+        and not provider_result.synthetic
+        and not degraded_reason
+        and str(provider_result.source_type or '').lower() not in {'demo', 'simulator', 'replay', 'unknown'}
+    ):
+        live_coverage_telemetry_at = utc_now()
+        _persist_live_coverage_telemetry(
+            connection,
+            target=target,
+            provider_result=provider_result,
+            observed_at=live_coverage_telemetry_at,
+        )
+
     recent_evidence_state = ui_evidence_state(provider_result.evidence_state)
     recent_truthfulness_state = ui_truthfulness_state(provider_result.truthfulness_state)
     recent_confidence_basis = (
@@ -1871,6 +1958,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         'recent_real_event_count': int(provider_result.recent_real_event_count),
         'last_event_at': checkpoint_at.isoformat() if checkpoint_at else None,
         'last_real_event_at': last_real_event_at.isoformat() if last_real_event_at else None,
+        'live_coverage_telemetry_at': live_coverage_telemetry_at.isoformat() if live_coverage_telemetry_at else None,
         'protected_asset_coverage_record': last_protected_asset_coverage_record,
     }
 
@@ -1892,8 +1980,10 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
     payload = event.payload if isinstance(event.payload, dict) else {}
     connection.execute(
         '''
-        INSERT INTO monitoring_event_receipts (id, workspace_id, target_id, event_id, event_cursor, tx_hash, block_number, log_index, ingestion_source)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO monitoring_event_receipts (
+            id, workspace_id, target_id, event_id, event_cursor, tx_hash, block_number, log_index, ingestion_source, receipt_kind, evidence_source, telemetry_kind
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''',
         (
             str(uuid.uuid4()),
@@ -1905,6 +1995,9 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
             payload.get('block_number'),
             payload.get('log_index'),
             event.ingestion_source,
+            'target_event',
+            'live' if event.ingestion_source in {'rpc_backfill', 'polling', 'websocket', 'real'} else event.ingestion_source,
+            'target_event',
         ),
     )
     connection.execute(
@@ -2099,6 +2192,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                             UPDATE monitored_systems ms
                             SET last_heartbeat = NOW(),
                                 last_event_at = COALESCE(%s, last_event_at),
+                                last_coverage_telemetry_at = COALESCE(%s, last_coverage_telemetry_at),
                                 freshness_status = %s,
                                 confidence_status = %s,
                                 coverage_reason = %s,
@@ -2107,6 +2201,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                             ''',
                             (
                                 result.get('last_event_at') or target.get('watcher_last_event_at'),
+                                result.get('live_coverage_telemetry_at'),
                                 freshness_status,
                                 confidence_status,
                                 coverage_reason,
@@ -2720,6 +2815,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             last_poll_at=_parse_ts(_json_safe_value(health).get('last_cycle_at')),
             last_heartbeat_at=None,
             last_telemetry_at=None,
+            telemetry_kind=None,
             last_detection_at=None,
             evidence_source='simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'none',
             status_reason='live_mode_disabled',
@@ -2774,7 +2870,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             return normalized
         rows = connection.execute(
             '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
                    COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at
             FROM monitored_systems ms
             LEFT JOIN targets t
@@ -2793,7 +2889,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     def _load_workspace_monitored_rows_raw(connection: Any, workspace_scope_id: str) -> list[dict[str, Any]]:
         rows = connection.execute(
             '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
                    COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at
             FROM monitored_systems ms
             LEFT JOIN targets t
@@ -3075,16 +3171,36 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         recent_real_event_count = 0
     telemetry_window_seconds = max(300, MONITOR_POLL_INTERVAL_SECONDS * 6)
     last_poll_at = _parse_ts(health.get('last_cycle_at') or health.get('updated_at') or health.get('last_heartbeat_at'))
-    parsed_telemetry_events = [_parse_ts(row.get('last_event_at')) for row in enabled_rows]
-    last_telemetry_at = max((ts for ts in parsed_telemetry_events if ts is not None), default=None)
+    telemetry_candidates: list[tuple[datetime, str]] = []
+    for row in enabled_rows:
+        coverage_ts = _parse_ts(row.get('last_coverage_telemetry_at'))
+        target_event_ts = _parse_ts(row.get('last_event_at'))
+        if coverage_ts is not None:
+            telemetry_candidates.append((coverage_ts, 'coverage'))
+        if target_event_ts is not None:
+            telemetry_candidates.append((target_event_ts, 'target_event'))
+    telemetry_candidates.sort(key=lambda item: item[0], reverse=True)
+    last_telemetry_at = telemetry_candidates[0][0] if telemetry_candidates else None
+    telemetry_kind = telemetry_candidates[0][1] if telemetry_candidates else None
     reporting_systems = 0
     for row in enabled_rows:
-        last_event_at = _parse_ts(row.get('last_event_at'))
-        if last_event_at is None:
+        latest_system_telemetry = max(
+            (_parse_ts(row.get('last_event_at')), _parse_ts(row.get('last_coverage_telemetry_at'))),
+            key=lambda item: item or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        if latest_system_telemetry is None:
             continue
-        if int((now - last_event_at).total_seconds()) <= telemetry_window_seconds:
+        if int((now - latest_system_telemetry).total_seconds()) <= telemetry_window_seconds:
             reporting_systems += 1
-    source_of_evidence = 'live' if (recent_real_event_count > 0 and not bool(health.get('degraded'))) else ('simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none')
+    source_of_evidence = (
+        'simulator'
+        if str(health.get('ingestion_mode') or '') == 'demo'
+        else (
+            'live'
+            if (last_telemetry_at is not None and telemetry_kind in {'coverage', 'target_event'} and not bool(health.get('degraded')))
+            else 'replay_or_none'
+        )
+    )
     evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if evidence_at else 'none'))
     workspace_configured, configuration_reason = _workspace_configuration_truth(
         valid_protected_asset_count=valid_protected_asset_count,
@@ -3120,6 +3236,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         last_poll_at=last_poll_at,
         last_heartbeat_at=last_heartbeat,
         last_telemetry_at=last_telemetry_at,
+        telemetry_kind=telemetry_kind,
         last_detection_at=latest_detection_evaluation_at,
         evidence_source=evidence_source,
         status_reason=degraded_reason or ('workspace_not_configured' if not workspace_configured else ('no_reporting_systems' if reporting_systems <= 0 else None)),
@@ -3177,6 +3294,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'configuration_reason': configuration_reason,
         'last_poll_at': summary['last_poll_at'],
         'last_telemetry_at': summary['last_telemetry_at'],
+        'telemetry_kind': summary.get('telemetry_kind'),
         'last_detection_at': summary['last_detection_at'],
         'workspace_monitoring_summary': summary,
     }

@@ -76,6 +76,7 @@ export type MonitoringRuntimeStatus = {
     confidence?: 'high' | 'medium' | 'low' | 'unavailable';
     last_heartbeat_at: string | null;
     last_telemetry_at: string | null;
+    telemetry_kind?: 'coverage' | 'target_event' | null;
     last_poll_at: string | null;
     poll_freshness_status?: 'fresh' | 'stale' | 'unavailable';
     last_detection_at: string | null;
@@ -96,6 +97,7 @@ export type MonitoringRuntimeStatus = {
   coverage_state?: { configured_systems: number; reporting_systems: number; protected_assets: number };
   last_heartbeat_at?: string | null;
   last_telemetry_at?: string | null;
+  telemetry_kind?: 'coverage' | 'target_event' | null;
   last_poll_at?: string | null;
   poll_freshness_status?: 'fresh' | 'stale' | 'unavailable';
   last_detection_at?: string | null;

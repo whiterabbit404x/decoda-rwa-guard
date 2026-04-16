@@ -17,6 +17,7 @@ function makeTruth(partial: Partial<WorkspaceMonitoringTruth>): WorkspaceMonitor
     last_poll_at: '2026-04-13T10:00:00Z',
     last_heartbeat_at: '2026-04-13T10:00:00Z',
     last_telemetry_at: '2026-04-13T10:00:00Z',
+    telemetry_kind: 'target_event',
     last_detection_at: '2026-04-13T10:00:00Z',
     evidence_source: 'live',
     status_reason: null,
@@ -107,5 +108,16 @@ test.describe('monitoring status presentation adapter', () => {
       last_poll_at: '2026-04-13T10:02:00Z',
     }));
     expect(value.summary).toContain('Telemetry freshness unavailable.');
+  });
+
+  test('treats fresh coverage telemetry as live even without detections', async () => {
+    const value = normalizeMonitoringPresentation(makeTruth({
+      telemetry_kind: 'coverage',
+      last_detection_at: null,
+      confidence_status: 'medium',
+    }));
+    expect(value.status).toBe('live');
+    expect(value.summary).toContain('Live telemetry verified.');
+    expect(value.summary).toContain('No recent detections.');
   });
 });
