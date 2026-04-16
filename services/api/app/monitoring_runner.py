@@ -1747,6 +1747,19 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         target['monitoring_checkpoint_cursor'] = f"{checkpoint_block}:checkpoint:-1"
     provider_result: ActivityProviderResult = fetch_target_activity_result(target, checkpoint)
     events = provider_result.events
+    provider_observation_outcome = (
+        'success'
+        if provider_result.status in {'live', 'no_evidence', 'degraded'}
+        else 'failure'
+    )
+    logger.info(
+        'provider_observation workspace_id=%s target_id=%s result=%s source_type=%s status_reason=%s',
+        target.get('workspace_id'),
+        target.get('id'),
+        provider_observation_outcome,
+        provider_result.source_type or 'unknown',
+        provider_result.degraded_reason,
+    )
     evaluation_id = str(uuid.uuid4())
     connection.execute(
         '''
@@ -1829,6 +1842,8 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         last_status = 'degraded'
 
     live_coverage_telemetry_at: datetime | None = None
+    coverage_persisted = False
+    coverage_skip_reason: str | None = None
     if (
         provider_result.mode in {'live', 'hybrid'}
         and provider_result.status == 'live'
@@ -1843,6 +1858,28 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             provider_result=provider_result,
             observed_at=live_coverage_telemetry_at,
         )
+        coverage_persisted = True
+    else:
+        if provider_result.mode not in {'live', 'hybrid'}:
+            coverage_skip_reason = f"mode_{provider_result.mode or 'unknown'}"
+        elif provider_result.status != 'live':
+            coverage_skip_reason = f"status_{provider_result.status or 'unknown'}"
+        elif provider_result.synthetic:
+            coverage_skip_reason = 'synthetic_result'
+        elif degraded_reason:
+            coverage_skip_reason = degraded_reason
+        elif str(provider_result.source_type or '').lower() in {'demo', 'simulator', 'replay', 'unknown'}:
+            coverage_skip_reason = f"source_type_{str(provider_result.source_type or 'unknown').lower()}"
+        else:
+            coverage_skip_reason = 'telemetry_not_eligible'
+    logger.info(
+        'coverage_telemetry_write workspace_id=%s target_id=%s coverage_persisted=%s coverage_timestamp=%s status_reason=%s',
+        target.get('workspace_id'),
+        target.get('id'),
+        coverage_persisted,
+        live_coverage_telemetry_at.isoformat() if live_coverage_telemetry_at else None,
+        None if coverage_persisted else coverage_skip_reason,
+    )
 
     recent_evidence_state = ui_evidence_state(provider_result.evidence_state)
     recent_truthfulness_state = ui_truthfulness_state(provider_result.truthfulness_state)
@@ -3193,6 +3230,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             continue
         if int((now - latest_system_coverage_telemetry).total_seconds()) <= telemetry_window_seconds:
             reporting_systems += 1
+    logger.info(
+        'monitoring_reporting_systems workspace_id=%s reporting_systems=%s status_reason=%s',
+        workspace_id,
+        reporting_systems,
+        f'fresh_coverage_window_{telemetry_window_seconds}s',
+    )
     coverage_fresh = bool(
         last_coverage_telemetry_at is not None
         and int((now - last_coverage_telemetry_at).total_seconds()) <= telemetry_window_seconds
@@ -3280,6 +3323,23 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         telemetry_window_seconds=telemetry_window_seconds,
     )
     summary['poll_freshness_status'] = poll_freshness_status
+    final_status_reason = degraded_reason or (
+        'workspace_not_configured'
+        if not workspace_configured
+        else ('no_reporting_systems' if reporting_systems <= 0 else None)
+    )
+    if (
+        poll_freshness_status == 'fresh'
+        and not stale_heartbeat
+        and (runtime_status_summary in {'idle', 'degraded'} or summary.get('confidence_status') == 'limited')
+    ):
+        logger.info(
+            'monitoring_runtime_downgrade workspace_id=%s runtime_status_summary=%s reporting_systems=%s status_reason=%s',
+            workspace_id,
+            runtime_status_summary if runtime_status_summary in {'idle', 'degraded'} else 'limited',
+            reporting_systems,
+            final_status_reason or ','.join(downgrade_reason_tokens) or 'unknown',
+        )
     payload = {
         'monitoring_status': monitoring_status,
         'monitored_systems': system_count,
