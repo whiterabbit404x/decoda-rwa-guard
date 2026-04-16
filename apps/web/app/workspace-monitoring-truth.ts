@@ -4,7 +4,7 @@ type WorkspaceMonitoringSummary = NonNullable<MonitoringRuntimeStatus['workspace
 
 export type WorkspaceMonitoringTruth = {
   workspace_configured: boolean;
-  monitoring_mode: 'live' | 'simulator' | 'offline' | 'unavailable';
+  monitoring_mode: 'live' | 'hybrid' | 'simulator' | 'offline' | 'unavailable';
   runtime_status: 'provisioning' | 'healthy' | 'degraded' | 'idle' | 'failed' | 'disabled' | 'offline';
   configured_systems: number;
   monitored_systems_count: number;
@@ -145,7 +145,7 @@ export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
   const lastCoverageTelemetryAt = truth.last_coverage_telemetry_at ?? (truth.telemetry_kind === 'coverage' ? truth.last_telemetry_at : null);
   return truth.runtime_status !== 'offline'
     && truth.workspace_configured
-    && truth.monitoring_mode === 'live'
+    && (truth.monitoring_mode === 'live' || truth.monitoring_mode === 'hybrid')
     && truth.evidence_source === 'live'
     && truth.freshness_status === 'fresh'
     && truth.reporting_systems > 0

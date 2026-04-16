@@ -51,7 +51,7 @@ export type MonitoringRuntimeStatus = {
   synthetic_leak_detected?: boolean;
   workspace_monitoring_summary?: {
     workspace_configured: boolean;
-    monitoring_mode: 'live' | 'simulator' | 'offline' | 'unavailable';
+    monitoring_mode: 'live' | 'hybrid' | 'simulator' | 'offline' | 'unavailable';
     runtime_status: 'provisioning' | 'healthy' | 'degraded' | 'idle' | 'failed' | 'disabled' | 'offline';
     configured_systems: number;
     reporting_systems: number;
@@ -91,7 +91,7 @@ export type MonitoringRuntimeStatus = {
     contradiction_flags: string[];
   };
   workspace_configured?: boolean;
-  monitoring_mode?: 'live' | 'simulator' | 'offline' | 'unavailable';
+  monitoring_mode?: 'live' | 'hybrid' | 'simulator' | 'offline' | 'unavailable';
   runtime_status?: 'provisioning' | 'healthy' | 'degraded' | 'idle' | 'failed' | 'disabled' | 'offline';
   configured_systems?: number;
   reporting_systems?: number;

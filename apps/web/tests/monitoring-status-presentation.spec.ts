@@ -123,4 +123,18 @@ test.describe('monitoring status presentation adapter', () => {
     expect(value.summary).toContain('Live telemetry verified.');
     expect(value.summary).toContain('No recent detections.');
   });
+
+  test('keeps live status when coverage is fresh and detections are historical only', async () => {
+    const value = normalizeMonitoringPresentation(makeTruth({
+      telemetry_kind: 'coverage',
+      last_coverage_telemetry_at: '2026-04-13T10:00:00Z',
+      last_telemetry_at: '2026-04-13T10:00:00Z',
+      last_detection_at: '2026-04-13T09:00:00Z',
+      confidence_status: 'high',
+      freshness_status: 'fresh',
+      runtime_status: 'healthy',
+    }));
+    expect(value.status).toBe('live');
+    expect(value.summary).toContain('Historical detections only.');
+  });
 });

@@ -1771,6 +1771,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
 
     alerts_generated = 0
     incidents_created = 0
+    monitored_systems_updated = 0
     run_ids: list[str] = []
     last_status = 'no_real_data' if provider_result.status == 'no_evidence' else str(provider_result.status or 'no_real_data')
     last_run_id: str | None = None
@@ -2245,6 +2246,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                                 monitored_system_id,
                             ),
                         )
+                        monitored_systems_updated += 1
                 alerts_generated += int(result['alerts_generated'])
                 live_targets_checked += 1 if str(target.get('target_type') or '').lower() in {'wallet','contract'} else 0
                 events_ingested += int(result.get('events_ingested', 0))
@@ -2266,6 +2268,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         "UPDATE monitored_systems SET runtime_status = 'failed', status = 'error', freshness_status = 'unavailable', confidence_status = 'low', coverage_reason = 'monitoring_worker_error', last_error_text = %s, last_heartbeat = NOW() WHERE id = %s::uuid",
                         (error_message, monitored_system_id),
                     )
+                    monitored_systems_updated += 1
         connection.execute(
             '''
             UPDATE monitoring_worker_state
@@ -2301,6 +2304,14 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             ),
         )
         connection.commit()
+    logger.info(
+        'monitoring_cycle_updates worker=%s checked=%s monitored_systems_updated=%s alerts_generated=%s incidents_created=%s',
+        worker_name,
+        checked,
+        monitored_systems_updated,
+        alerts_generated,
+        incidents_created,
+    )
     WORKER_STATE.update(
         {
             'worker_name': worker_name,
@@ -3240,7 +3251,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         last_coverage_telemetry_at is not None
         and int((now - last_coverage_telemetry_at).total_seconds()) <= telemetry_window_seconds
     )
-    provider_reachable = bool((claim_validator.get('checks') or {}).get('evm_rpc_reachable'))
+    provider_reachable = bool(
+        (claim_validator.get('checks') or {}).get('provider_reachable_or_backfilling')
+        or str(health.get('source_type') or '').strip().lower() in {'polling', 'websocket', 'rpc_backfill'}
+    )
     provider_degraded_or_unreachable = bool(
         health.get('last_error')
         or health.get('degraded')
@@ -3252,6 +3266,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     evidence_source_live = bool(
         str(health.get('ingestion_mode') or '').strip().lower() not in {'demo', 'simulator', 'replay'}
         and not provider_degraded_or_unreachable
+        and coverage_fresh
+        and reporting_systems > 0
     )
     source_of_evidence = (
         'simulator'
@@ -3282,21 +3298,33 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         persisted_enabled_config_count=persisted_enabled_config_count,
         valid_target_system_link_count=valid_target_system_link_count,
     )
+    monitoring_mode_raw = str(health.get('mode') or '').strip().lower()
     degraded_signal = provider_degraded_or_unreachable
     if not workspace_configured:
         runtime_status_summary = 'offline'
-    elif reporting_systems <= 0:
+    elif evidence_source != 'live':
+        runtime_status_summary = 'idle'
+    elif reporting_systems <= 0 or not coverage_fresh:
         runtime_status_summary = 'idle'
     elif degraded_signal:
         runtime_status_summary = 'degraded'
     else:
         runtime_status_summary = 'healthy'
-    monitoring_mode = 'simulator' if evidence_source == 'simulator' else ('offline' if not workspace_configured else 'live')
+    monitoring_mode = (
+        'simulator'
+        if evidence_source == 'simulator'
+        else ('offline' if not workspace_configured else ('hybrid' if monitoring_mode_raw == 'hybrid' else 'live'))
+    )
     telemetry_countable = bool(workspace_configured and reporting_systems > 0 and evidence_source == 'live' and last_telemetry_at is not None)
     poll_window_seconds = max(120, MONITOR_POLL_INTERVAL_SECONDS * 3)
     poll_freshness_status = (
         'fresh' if last_poll_at and int((now - last_poll_at).total_seconds()) <= poll_window_seconds
         else ('stale' if last_poll_at else 'unavailable')
+    )
+    runtime_status_reason = degraded_reason or (
+        'workspace_not_configured'
+        if not workspace_configured
+        else ('no_fresh_live_coverage_telemetry' if reporting_systems <= 0 or not coverage_fresh else None)
     )
     summary = build_workspace_monitoring_summary(
         now=now,
@@ -3314,7 +3342,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         telemetry_kind=telemetry_kind,
         last_detection_at=latest_detection_evaluation_at,
         evidence_source=evidence_source,
-        status_reason=degraded_reason or ('workspace_not_configured' if not workspace_configured else ('no_reporting_systems' if reporting_systems <= 0 else None)),
+        status_reason=runtime_status_reason,
         configuration_reason=configuration_reason,
         valid_protected_asset_count=valid_protected_asset_count,
         linked_monitored_system_count=linked_monitored_system_count,
@@ -3323,20 +3351,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         telemetry_window_seconds=telemetry_window_seconds,
     )
     summary['poll_freshness_status'] = poll_freshness_status
-    final_status_reason = degraded_reason or (
-        'workspace_not_configured'
-        if not workspace_configured
-        else ('no_reporting_systems' if reporting_systems <= 0 else None)
-    )
+    final_status_reason = runtime_status_reason
     if (
         poll_freshness_status == 'fresh'
         and not stale_heartbeat
-        and (runtime_status_summary in {'idle', 'degraded'} or summary.get('confidence_status') == 'limited')
+        and runtime_status_summary in {'idle', 'degraded'}
     ):
         logger.info(
             'monitoring_runtime_downgrade workspace_id=%s runtime_status_summary=%s reporting_systems=%s status_reason=%s',
             workspace_id,
-            runtime_status_summary if runtime_status_summary in {'idle', 'degraded'} else 'limited',
+            runtime_status_summary,
             reporting_systems,
             final_status_reason or ','.join(downgrade_reason_tokens) or 'unknown',
         )

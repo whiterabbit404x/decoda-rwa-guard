@@ -150,7 +150,7 @@ def test_fresh_live_coverage_telemetry_sets_high_confidence() -> None:
     assert summary['contradiction_flags'] == []
 
 
-def test_live_poll_and_heartbeat_without_coverage_sets_limited_confidence() -> None:
+def test_live_poll_and_heartbeat_without_coverage_keeps_confidence_unavailable() -> None:
     now = _now()
     summary = build_workspace_monitoring_summary(
         now=now,
@@ -177,7 +177,7 @@ def test_live_poll_and_heartbeat_without_coverage_sets_limited_confidence() -> N
         telemetry_window_seconds=300,
     )
     assert summary['freshness_status'] == 'unavailable'
-    assert summary['confidence_status'] == 'limited'
+    assert summary['confidence_status'] == 'unavailable'
     assert summary['last_detection_at'] is not None
 
 
@@ -298,4 +298,4 @@ def test_simulator_telemetry_timestamp_is_preserved_from_persisted_event() -> No
     assert summary['last_telemetry_at'] == simulator_event_at.isoformat()
     assert summary['telemetry_kind'] == 'target_event'
     assert summary['freshness_status'] == 'fresh'
-    assert summary['confidence_status'] == 'limited'
+    assert summary['confidence_status'] == 'unavailable'
