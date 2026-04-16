@@ -66,10 +66,14 @@ def build_workspace_monitoring_summary(
     )
     summary = {
         'workspace_configured': bool(workspace_configured),
-        'monitoring_mode': normalized_mode,
-        'runtime_status': normalized_runtime,
         'configured_systems': normalized_configured,
         'reporting_systems': normalized_reporting,
+        'valid_protected_assets': normalized_valid_assets,
+        'linked_monitored_systems': normalized_linked_systems,
+        'enabled_configs': normalized_persisted_enabled_config,
+        'valid_link_count': normalized_valid_links,
+        'monitoring_mode': normalized_mode,
+        'runtime_status': normalized_runtime,
         'protected_assets': normalized_assets,
         'monitored_systems_count': normalized_monitored,
         'reporting_systems_count': normalized_reporting,
