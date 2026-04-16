@@ -15,4 +15,4 @@ def is_monitorable_target_type(value: Any) -> bool:
 
 def monitorable_target_types_sql_clause(column: str = 'target_type') -> str:
     allowed = ', '.join(f"'{target_type}'" for target_type in MONITORABLE_TARGET_TYPES)
-    return f"LOWER(COALESCE({column}, '')) IN ({allowed})"
+    return f"LOWER(BTRIM(COALESCE({column}, ''))) IN ({allowed})"
