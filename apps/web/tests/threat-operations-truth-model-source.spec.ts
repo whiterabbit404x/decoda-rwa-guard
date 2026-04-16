@@ -75,7 +75,11 @@ test('threat panel keeps telemetry and healthy monitoring copy guarded by truth 
   expect(threat).toContain("Last telemetry: {showLiveTelemetry ? telemetryLabel : 'Not available'}");
   expect(threat).toContain('runtimeStatus === \'offline\'');
   expect(threat).toContain("return 'offline_no_telemetry';");
+  expect(threat).toContain('if (!workspaceConfigured) {');
+  expect(threat).toContain("return 'unconfigured_workspace';");
+  expect(threat).toContain('const hasCoverageFromRuntime = workspaceConfigured && (protectedAssetCount > 0 || configuredSystems > 0);');
   expect(threat).toContain('const presentationStatus = canonicalPresentation.status;');
-  expect(threat).toContain("monitoringHealthyCopyAllowed(truth) ? 'Monitoring healthy: telemetry and polling are current.' : 'Monitoring configured: waiting for reporting telemetry.'");
+  expect(threat).toContain("workspaceConfigured && reportingSystems > 0");
+  expect(threat).toContain('configurationReasonMessage(truth.configuration_reason)');
   expect(threat).toContain("reportingSystems > 0 ? 'No active detections, monitoring healthy' : 'No active detections, waiting for live telemetry'");
 });

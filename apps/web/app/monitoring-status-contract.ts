@@ -81,6 +81,11 @@ export type MonitoringRuntimeStatus = {
     last_detection_at: string | null;
     evidence_source: 'live' | 'simulator' | 'replay' | 'none';
     status_reason: string | null;
+    configuration_reason?: string | null;
+    valid_protected_asset_count?: number;
+    linked_monitored_system_count?: number;
+    persisted_enabled_config_count?: number;
+    valid_target_system_link_count?: number;
     contradiction_flags: string[];
   };
   workspace_configured?: boolean;

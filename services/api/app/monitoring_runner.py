@@ -93,6 +93,28 @@ def _compute_mttd_seconds(*, observed_at: datetime, detected_at: datetime) -> in
     return max(0, int((detected_at - observed_at).total_seconds()))
 
 
+def _workspace_configuration_truth(
+    *,
+    valid_protected_asset_count: int,
+    linked_monitored_system_count: int,
+    persisted_enabled_config_count: int,
+    valid_target_system_link_count: int,
+) -> tuple[bool, str | None]:
+    normalized_valid_assets = max(int(valid_protected_asset_count), 0)
+    normalized_linked_systems = max(int(linked_monitored_system_count), 0)
+    normalized_persisted_configs = max(int(persisted_enabled_config_count), 0)
+    normalized_valid_links = max(int(valid_target_system_link_count), 0)
+    if normalized_valid_assets <= 0:
+        return False, 'no_valid_protected_assets'
+    if normalized_linked_systems <= 0:
+        return False, 'no_linked_monitored_systems'
+    if normalized_persisted_configs <= 0:
+        return False, 'no_persisted_enabled_monitoring_config'
+    if normalized_valid_links <= 0:
+        return False, 'target_system_linkage_invalid'
+    return True, None
+
+
 def _record_detection_metric(
     connection: Any,
     *,
@@ -2681,6 +2703,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             last_detection_at=None,
             evidence_source='simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'none',
             status_reason='live_mode_disabled',
+            configuration_reason='no_persisted_enabled_monitoring_config',
+            valid_protected_asset_count=0,
+            linked_monitored_system_count=0,
+            persisted_enabled_config_count=0,
+            valid_target_system_link_count=0,
             telemetry_window_seconds=max(300, MONITOR_POLL_INTERVAL_SECONDS * 6),
         )
         payload = {
@@ -2714,6 +2741,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     healthy_enabled_assets_count = 0
     enabled_monitored_rows_count = 0
     healthy_enabled_target_ids: set[str] = set()
+    healthy_enabled_target_asset_map: dict[str, str] = {}
 
     def _load_runtime_monitored_rows(connection: Any, workspace_scope_id: str | None) -> list[dict[str, Any]]:
         if workspace_scope_id:
@@ -2849,7 +2877,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         healthy_enabled_assets_count = int((healthy_enabled_targets or {}).get('asset_count') or 0)
         healthy_enabled_target_rows = connection.execute(
             f'''
-            SELECT t.id
+            SELECT t.id, t.asset_id
             FROM targets t
             JOIN assets a
               ON a.id = t.asset_id
@@ -2863,6 +2891,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             scoped_params,
         ).fetchall()
         healthy_enabled_target_ids = {str(row.get('id')) for row in healthy_enabled_target_rows if row.get('id')}
+        healthy_enabled_target_asset_map = {
+            str(row.get('id')): str(row.get('asset_id'))
+            for row in healthy_enabled_target_rows
+            if row.get('id') and row.get('asset_id')
+        }
         enabled_monitored_rows_count = sum(1 for row in monitored_rows if monitored_system_row_enabled(row))
         enabled_monitored_target_ids = {str(row.get('target_id')) for row in monitored_rows if monitored_system_row_enabled(row) and row.get('target_id')}
         missing_healthy_target_ids = healthy_enabled_target_ids - enabled_monitored_target_ids
@@ -2940,6 +2973,30 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     active_system_count = len(active_rows)
     system_count = max(len(monitored_rows), healthy_enabled_targets_count)
     protected_assets_count = max(len({str(row.get('asset_id') or '') for row in enabled_asset_rows}), healthy_enabled_assets_count)
+    linked_monitored_system_count = sum(
+        1
+        for row in enabled_rows
+        if str(row.get('target_id') or '') in healthy_enabled_target_ids
+    )
+    def _row_has_valid_target_asset_link(row: dict[str, Any]) -> bool:
+        target_id = str(row.get('target_id') or '')
+        asset_id = str(row.get('asset_id') or '')
+        if target_id not in healthy_enabled_target_ids:
+            return False
+        expected_asset_id = healthy_enabled_target_asset_map.get(target_id)
+        if expected_asset_id:
+            return bool(asset_id and asset_id == expected_asset_id)
+        return bool(asset_id)
+
+    valid_target_system_link_count = sum(1 for row in enabled_rows if _row_has_valid_target_asset_link(row))
+    valid_protected_asset_count = len(
+        {
+            str(row.get('asset_id') or '')
+            for row in enabled_rows
+            if _row_has_valid_target_asset_link(row) and row.get('asset_id')
+        }
+    )
+    persisted_enabled_config_count = healthy_enabled_targets_count
     logger.info(
         'monitoring_runtime_status_counts workspace_id=%s enabled_monitored_systems=%s protected_assets=%s runtime_rows=%s list_route_rows=%s enabled_monitored_systems_list_route=%s protected_assets_list_route=%s',
         workspace_id,
@@ -3009,7 +3066,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             reporting_systems += 1
     source_of_evidence = 'live' if (recent_real_event_count > 0 and not bool(health.get('degraded'))) else ('simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none')
     evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if evidence_at else 'none'))
-    workspace_configured = bool(enabled_system_count > 0 or protected_assets_count > 0)
+    workspace_configured, configuration_reason = _workspace_configuration_truth(
+        valid_protected_asset_count=valid_protected_asset_count,
+        linked_monitored_system_count=linked_monitored_system_count,
+        persisted_enabled_config_count=persisted_enabled_config_count,
+        valid_target_system_link_count=valid_target_system_link_count,
+    )
     degraded_signal = bool(health.get('last_error') or health.get('degraded') or degraded_reason or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0)
     if not workspace_configured:
         runtime_status_summary = 'offline'
@@ -3041,6 +3103,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         last_detection_at=latest_detection_evaluation_at,
         evidence_source=evidence_source,
         status_reason=degraded_reason or ('workspace_not_configured' if not workspace_configured else ('no_reporting_systems' if reporting_systems <= 0 else None)),
+        configuration_reason=configuration_reason,
+        valid_protected_asset_count=valid_protected_asset_count,
+        linked_monitored_system_count=linked_monitored_system_count,
+        persisted_enabled_config_count=persisted_enabled_config_count,
+        valid_target_system_link_count=valid_target_system_link_count,
         telemetry_window_seconds=telemetry_window_seconds,
     )
     summary['poll_freshness_status'] = poll_freshness_status
@@ -3087,6 +3154,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'latest_telemetry_checkpoint': (latest_detection_evaluation_at or evidence_at).isoformat() if (latest_detection_evaluation_at or evidence_at) else None,
         'source_of_evidence': source_of_evidence,
         'workspace_configured': workspace_configured,
+        'configuration_reason': configuration_reason,
         'last_poll_at': summary['last_poll_at'],
         'last_telemetry_at': summary['last_telemetry_at'],
         'last_detection_at': summary['last_detection_at'],

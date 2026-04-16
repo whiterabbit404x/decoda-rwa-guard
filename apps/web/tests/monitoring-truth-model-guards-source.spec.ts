@@ -11,7 +11,6 @@ test('threat and monitored systems pages use shared truth guard helpers', () => 
   const systems = readApp('monitored-systems-manager.tsx');
   const helper = readApp('workspace-monitoring-truth.ts');
 
-  expect(threat).toContain('resolveWorkspaceMonitoringTruth');
   expect(threat).toContain('hasLiveTelemetry(truth)');
   expect(systems).toContain('resolveWorkspaceMonitoringTruth');
   expect(systems).toContain('hasLiveTelemetry(truth)');
@@ -22,6 +21,8 @@ test('threat and monitored systems pages use shared truth guard helpers', () => 
   expect(helper).toContain('zero_coverage_with_live_telemetry');
   expect(helper).toContain('poll_without_telemetry_timestamp');
   expect(helper).toContain('heartbeat_without_telemetry_timestamp');
+  expect(helper).toContain('workspace_configured_missing_required_links');
   expect(helper).toContain("truth.monitoring_mode === 'live'");
   expect(helper).toContain("truth.evidence_source === 'live'");
+  expect(helper).toContain('truth.workspace_configured');
 });

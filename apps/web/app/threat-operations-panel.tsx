@@ -134,6 +134,21 @@ type TimelineItem = {
 const TELEMETRY_STALE_MS = 20 * 60 * 1000;
 const DETECTION_LIVE_MS = 15 * 60 * 1000;
 
+function configurationReasonMessage(reason: string | null | undefined): string {
+  switch (reason) {
+    case 'no_valid_protected_assets':
+      return 'No valid protected assets are linked to enabled monitoring yet.';
+    case 'no_linked_monitored_systems':
+      return 'No linked monitored systems exist for enabled workspace targets.';
+    case 'no_persisted_enabled_monitoring_config':
+      return 'No persisted enabled monitoring configuration exists yet.';
+    case 'target_system_linkage_invalid':
+      return 'Target/system linkage is invalid and must be repaired.';
+    default:
+      return 'Configuration is partial. Complete persisted asset, system, and linkage setup.';
+  }
+}
+
 function formatRelativeTime(value?: string | null): string {
   if (!value) return 'Not available';
   const diffMs = Date.now() - new Date(value).getTime();
@@ -246,7 +261,7 @@ function derivePageState(params: {
     return 'fetch_error';
   }
 
-  if (!workspaceConfigured && targets.length === 0 && monitoredSystems === 0) {
+  if (!workspaceConfigured) {
     return 'unconfigured_workspace';
   }
 
@@ -279,7 +294,7 @@ function derivePageState(params: {
   return 'degraded_partial';
 }
 
-function PageStateBanner({ state, telemetryLabel, pollLabel, reason }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null }) {
+function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null }) {
   if (state === 'healthy_live') {
     return <p className="explanation">Live monitoring is healthy. Telemetry freshness and threat detections reflect current workspace conditions.</p>;
   }
@@ -287,7 +302,7 @@ function PageStateBanner({ state, telemetryLabel, pollLabel, reason }: { state: 
     return <p className="explanation">Monitoring healthy. No active detections right now. Live telemetry remains current across reporting systems.</p>;
   }
   if (state === 'unconfigured_workspace') {
-    return <p className="explanation">No monitored systems are configured. Live threat detection will begin after at least one protected system is added.</p>;
+    return <p className="explanation">Workspace is not configured: {configurationReasonMessage(configurationReason)} Live threat detection starts only after persisted linkage is valid.</p>;
   }
   if (state === 'offline_no_telemetry') {
     return <p className="explanation">Monitoring is offline. Reason: {reason || 'no active reporting systems'}. Add one monitored system and confirm telemetry flow.</p>;
@@ -559,9 +574,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ? 'Monitoring degraded: telemetry is partial or delayed.'
         : simulatorMode
           ? 'Simulator/dev mode active: records are persisted but are not live production telemetry.'
-            : reportingSystems > 0
+            : workspaceConfigured && reportingSystems > 0
               ? (monitoringHealthyCopyAllowed(truth) ? 'Monitoring healthy: telemetry and polling are current.' : 'Monitoring configured: waiting for reporting telemetry.')
-              : 'Monitoring configured: waiting for reporting telemetry.',
+              : (workspaceConfigured ? 'Monitoring configured: waiting for reporting telemetry.' : `Workspace not configured: ${configurationReasonMessage(truth.configuration_reason)}`),
       href: '/threat',
     };
 
@@ -571,12 +586,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }, [alerts, historyRuns, incidents, monitoringPresentation.lastPollAt, pageState, reportingSystems, runtimeStatus, simulatorMode, truth.status_reason, truth.runtime_status]);
 
   const coverageSummary = `${Math.max(reportingSystems, 0)} / ${Math.max(configuredSystems, 0)}`;
-  const hasCoverageFromRuntime = protectedAssetCount > 0 || configuredSystems > 0;
+  const hasCoverageFromRuntime = workspaceConfigured && (protectedAssetCount > 0 || configuredSystems > 0);
   const hasTargetCoverageRows = targets.length > 0;
   const hasMonitoredSystemCoverageRows = !hasTargetCoverageRows && monitoredSystems.length > 0;
   const showRuntimeCoverageFallback = !loadingSnapshot && !hasTargetCoverageRows && !hasMonitoredSystemCoverageRows && hasCoverageFromRuntime;
   const showCoverageEmptyState = !loadingSnapshot && !hasTargetCoverageRows && !hasMonitoredSystemCoverageRows && !hasCoverageFromRuntime;
-  const runtimeCoverageStatusNote = monitoringPresentation.status === 'offline'
+  const runtimeCoverageStatusNote = !workspaceConfigured
+    ? `Workspace not configured: ${configurationReasonMessage(truth.configuration_reason)}`
+    : monitoringPresentation.status === 'offline'
     ? 'Runtime reports coverage, but telemetry is currently offline.'
     : monitoringPresentation.status === 'degraded' || monitoringPresentation.status === 'stale' || monitoringPresentation.status === 'limited coverage'
       ? 'Runtime reports partial or stale telemetry. Detailed protected system rows are still syncing.'
@@ -633,7 +650,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Open alerts {openAlerts}</span>
           <span className="ruleChip">Active incidents {activeIncidents}</span>
         </div>
-        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth.status_reason} />
+        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth.status_reason} configurationReason={truth.configuration_reason} />
         <p className="tableMeta">
           Last telemetry: {showLiveTelemetry ? telemetryLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {pollLabel} · Last heartbeat: {monitoringPresentation.heartbeatLabel} · Runtime freshness: {String(truth.freshness_status || 'unavailable')} · Runtime confidence: {String(truth.confidence_status || 'unavailable')}
         </p>
@@ -701,7 +718,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               {pageState === 'configured_no_signals'
                 ? 'Monitoring is healthy and no active detections are currently open.'
                 : pageState === 'unconfigured_workspace'
-                  ? 'Add at least one protected system to enable live telemetry and detections.'
+                  ? `Workspace not configured: ${configurationReasonMessage(truth.configuration_reason)}`
                   : 'No historical detections are available for display at this time.'}
             </p>
             <div className="buttonRow">

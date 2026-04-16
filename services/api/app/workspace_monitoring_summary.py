@@ -24,12 +24,21 @@ def build_workspace_monitoring_summary(
     last_detection_at: datetime | None,
     evidence_source: str,
     status_reason: str | None,
+    configuration_reason: str | None,
+    valid_protected_asset_count: int,
+    linked_monitored_system_count: int,
+    persisted_enabled_config_count: int,
+    valid_target_system_link_count: int,
     telemetry_window_seconds: int,
 ) -> dict[str, Any]:
     normalized_configured = max(int(configured_systems), 0)
     normalized_monitored = max(int(monitored_systems_count if monitored_systems_count is not None else configured_systems), 0)
     normalized_reporting = max(int(reporting_systems), 0)
     normalized_assets = max(int(protected_assets), 0)
+    normalized_valid_assets = max(int(valid_protected_asset_count), 0)
+    normalized_linked_systems = max(int(linked_monitored_system_count), 0)
+    normalized_persisted_enabled_config = max(int(persisted_enabled_config_count), 0)
+    normalized_valid_links = max(int(valid_target_system_link_count), 0)
     normalized_mode = monitoring_mode if monitoring_mode in {'live', 'simulator', 'offline', 'unavailable'} else 'unavailable'
     normalized_runtime = runtime_status if runtime_status in {'provisioning', 'healthy', 'degraded', 'idle', 'failed', 'disabled', 'offline'} else 'offline'
     normalized_evidence = evidence_source if evidence_source in {'live', 'simulator', 'replay', 'none'} else 'none'
@@ -79,6 +88,11 @@ def build_workspace_monitoring_summary(
         'last_detection_at': _isoformat(last_detection_at),
         'evidence_source': normalized_evidence,
         'status_reason': status_reason,
+        'configuration_reason': configuration_reason,
+        'valid_protected_asset_count': normalized_valid_assets,
+        'linked_monitored_system_count': normalized_linked_systems,
+        'persisted_enabled_config_count': normalized_persisted_enabled_config,
+        'valid_target_system_link_count': normalized_valid_links,
         'contradiction_flags': [],
     }
     if summary['runtime_status'] == 'offline' and summary['last_telemetry_at']:
@@ -111,4 +125,11 @@ def build_workspace_monitoring_summary(
         and summary['evidence_source'] == 'live'
     ):
         summary['contradiction_flags'].append('heartbeat_without_telemetry_timestamp')
+    if summary['workspace_configured'] and (
+        summary['valid_protected_asset_count'] <= 0
+        or summary['linked_monitored_system_count'] <= 0
+        or summary['persisted_enabled_config_count'] <= 0
+        or summary['valid_target_system_link_count'] <= 0
+    ):
+        summary['contradiction_flags'].append('workspace_configured_missing_required_links')
     return summary
