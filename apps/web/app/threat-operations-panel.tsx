@@ -98,8 +98,7 @@ type PageOperationalState =
   | 'degraded_partial'
   | 'offline_no_telemetry'
   | 'unconfigured_workspace'
-  | 'fetch_error'
-  | 'historical_only';
+  | 'fetch_error';
 
 type DetectionItem = {
   id: string;
@@ -233,7 +232,6 @@ function derivePageState(params: {
   snapshotError: boolean;
   targets: TargetRow[];
   liveDetections: DetectionItem[];
-  historicalDetections: DetectionItem[];
   workspaceConfigured: boolean;
   freshnessStatus: string;
   contradictionFlags: string[];
@@ -247,7 +245,6 @@ function derivePageState(params: {
     snapshotError,
     targets,
     liveDetections,
-    historicalDetections,
     workspaceConfigured,
     freshnessStatus,
     contradictionFlags,
@@ -277,9 +274,6 @@ function derivePageState(params: {
     || freshnessStatus === 'stale'
     || contradictionFlags.length > 0
   ) {
-    if (liveDetections.length === 0 && historicalDetections.length > 0) {
-      return 'historical_only';
-    }
     return 'degraded_partial';
   }
 
@@ -320,9 +314,6 @@ function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurati
         </div>
       </div>
     );
-  }
-  if (state === 'historical_only') {
-    return <p className="explanation">Current monitoring is degraded. The feed is limited to last recorded detections until telemetry recovers.</p>;
   }
   return <p className="explanation">Monitoring is partially degraded. Threat outcomes may be delayed or incomplete.</p>;
 }
@@ -530,7 +521,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     snapshotError: Boolean(snapshotError),
     targets,
     liveDetections: categorizedDetections.live,
-    historicalDetections: categorizedDetections.historical,
     workspaceConfigured,
     freshnessStatus: truth.freshness_status,
     contradictionFlags,
@@ -570,7 +560,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         ? 'Monitoring offline: no fresh telemetry available.'
         : runtimeStatus && runtimeStatus !== 'healthy'
           ? `Monitoring ${runtimeStatus}: ${truth.status_reason || 'runtime is not healthy'}.`
-        : pageState === 'degraded_partial' || pageState === 'historical_only'
+        : pageState === 'degraded_partial'
           ? 'Monitoring degraded: telemetry is partial or delayed.'
         : simulatorMode
           ? 'Simulator/dev mode active: records are persisted but are not live production telemetry.'
@@ -612,10 +602,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const feedHeading = pageState === 'healthy_live'
     ? 'Live detections available'
     : pageState === 'configured_no_signals'
-      ? (reportingSystems > 0 ? 'No active detections, monitoring healthy' : 'No active detections, waiting for live telemetry')
-      : pageState === 'historical_only'
-        ? 'Historical detections only'
-        : pageState === 'unconfigured_workspace'
+      ? (categorizedDetections.historical.length > 0
+          ? 'Historical detections only'
+          : (reportingSystems > 0 ? 'No active detections, monitoring healthy' : 'No active detections, waiting for live telemetry'))
+      : pageState === 'unconfigured_workspace'
           ? 'Workspace not configured'
           : 'Monitoring unavailable or partial';
 

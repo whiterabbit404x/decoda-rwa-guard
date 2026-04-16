@@ -74,8 +74,8 @@ test.describe('workspace monitoring truth guardrails', () => {
       coverage_state: { configured_systems: 2, reporting_systems: 1, protected_assets: 2 },
       freshness_status: 'fresh',
       confidence_status: 'high',
-      last_poll_at: '2026-04-15T10:00:00Z',
-      last_heartbeat_at: '2026-04-15T10:00:00Z',
+      last_poll_at: null,
+      last_heartbeat_at: null,
       last_telemetry_at: '2026-04-15T09:59:30Z',
       last_detection_at: null,
       evidence_source: 'live',
@@ -190,5 +190,33 @@ test.describe('workspace monitoring truth guardrails', () => {
 
     expect(truth.contradiction_flags).toContain('workspace_configured_missing_required_links');
     expect(hasLiveTelemetry(truth)).toBeFalsy();
+  });
+
+  test('fresh live coverage telemetry supports live runtime proof even when target-event telemetry is absent', () => {
+    const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      monitoring_mode: 'live',
+      runtime_status: 'healthy',
+      configured_systems: 2,
+      reporting_systems: 2,
+      protected_assets: 2,
+      coverage_state: { configured_systems: 2, reporting_systems: 2, protected_assets: 2 },
+      freshness_status: 'fresh',
+      confidence_status: 'high',
+      last_poll_at: null,
+      last_heartbeat_at: null,
+      last_telemetry_at: null,
+      last_coverage_telemetry_at: '2026-04-15T09:59:30Z',
+      last_detection_at: null,
+      evidence_source: 'live',
+      status_reason: null,
+      valid_protected_asset_count: 1,
+      linked_monitored_system_count: 1,
+      persisted_enabled_config_count: 1,
+      valid_target_system_link_count: 1,
+      contradiction_flags: [],
+    }));
+
+    expect(hasLiveTelemetry(truth)).toBeTruthy();
   });
 });

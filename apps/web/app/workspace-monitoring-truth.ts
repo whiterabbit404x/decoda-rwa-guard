@@ -15,6 +15,7 @@ export type WorkspaceMonitoringTruth = {
   last_poll_at: string | null;
   last_heartbeat_at: string | null;
   last_telemetry_at: string | null;
+  last_coverage_telemetry_at: string | null;
   telemetry_kind: 'coverage' | 'target_event' | null;
   last_detection_at: string | null;
   evidence_source: 'live' | 'simulator' | 'replay' | 'none';
@@ -40,6 +41,7 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   last_poll_at: null,
   last_heartbeat_at: null,
   last_telemetry_at: null,
+  last_coverage_telemetry_at: null,
   telemetry_kind: null,
   last_detection_at: null,
   evidence_source: 'none',
@@ -121,6 +123,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     last_poll_at: summary.last_poll_at,
     last_heartbeat_at: summary.last_heartbeat_at,
     last_telemetry_at: summary.last_telemetry_at,
+    last_coverage_telemetry_at: summary.last_coverage_telemetry_at ?? null,
     telemetry_kind: summary.telemetry_kind ?? null,
     last_detection_at: summary.last_detection_at,
     evidence_source: summary.evidence_source,
@@ -139,13 +142,14 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
 }
 
 export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
+  const lastCoverageTelemetryAt = truth.last_coverage_telemetry_at ?? (truth.telemetry_kind === 'coverage' ? truth.last_telemetry_at : null);
   return truth.runtime_status !== 'offline'
     && truth.workspace_configured
     && truth.monitoring_mode === 'live'
     && truth.evidence_source === 'live'
     && truth.freshness_status === 'fresh'
     && truth.reporting_systems > 0
-    && Boolean(truth.last_telemetry_at)
+    && Boolean(lastCoverageTelemetryAt)
     && !truth.contradiction_flags.includes('offline_with_current_telemetry')
     && !truth.contradiction_flags.includes('telemetry_unavailable_with_timestamp')
     && !truth.contradiction_flags.includes('zero_coverage_with_live_telemetry')
