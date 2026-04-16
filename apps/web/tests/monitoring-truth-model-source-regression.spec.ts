@@ -15,6 +15,9 @@ test.describe('monitoring truth-model source regressions', () => {
     expect(dashboard).toContain('normalizeMonitoringPresentation(monitoringTruth)');
     expect(dashboard).not.toContain('workspaceMonitoring.lastConfirmedCheckpoint');
     expect(dashboard).not.toContain('workspaceMonitoring.lastUpdated');
+    expect(dashboard).not.toContain('const { backendState, summaryCards, backendBanner, featurePresentation, workspaceMonitoring } = buildDashboardViewModel');
+    expect(dashboard).not.toContain('backendBanner');
+    expect(dashboard).not.toContain('const { openAlerts, openIncidents } = workspaceMonitoring');
     expect(dashboard).not.toContain('diagnostics.endpoints.dashboard.freshnessLabel');
     expect(dashboard).not.toContain('diagnostics.endpoints.dashboard.presentationState');
   });
@@ -64,7 +67,10 @@ test.describe('monitoring truth-model source regressions', () => {
     expect(dashboardData).toContain('const monitoringTruth = resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary);');
     expect(dashboardData).toContain('const monitoringPresentation = normalizeMonitoringPresentation(monitoringTruth);');
     expect(dashboardData).toContain('const resolvedBackendState = resolveLegacyBackendStateFromMonitoringStatus(monitoringPresentation.status);');
-    expect(dashboardData).toContain('resolveLegacyBackendBannerFromMonitoringStatus(monitoringPresentation.status, monitoringPresentation.summary);');
+    expect(dashboardData).toContain('const backendBanner = monitoringPresentation.summary;');
+    expect(dashboardData).toContain('recentActivitySummary: monitoringPresentation.summary');
+    expect(dashboardData).toContain('coverageLevel: monitoringPresentation.statusLabel');
+    expect(dashboardData).toContain('lastTelemetryAt: monitoringPresentation.telemetryTimestampLabel');
 
     expect(dashboardData).not.toContain('workspaceMonitoring.lastConfirmedCheckpoint');
     expect(dashboardData).not.toContain('workspaceMonitoring.lastUpdated');
@@ -73,6 +79,17 @@ test.describe('monitoring truth-model source regressions', () => {
     expect(dashboardData).not.toContain('workspaceMonitoring.diagnosticsSummary');
     expect(dashboardData).not.toContain('diagnostics.experienceState ===');
     expect(dashboardData).not.toContain('diagnostics.experienceState ?');
+  });
+
+  test('dashboard page-data API route derives compatibility live/status fields from monitoring truth instead of diagnostics.experienceState', () => {
+    const routeSource = appSource('api/dashboard-page-data/route.ts');
+
+    expect(routeSource).toContain('resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary)');
+    expect(routeSource).toContain('const monitoringPresentation = normalizeMonitoringPresentation(monitoringTruth);');
+    expect(routeSource).toContain('live: monitoringPresentation.status === \'live\'');
+    expect(routeSource).toContain('experienceState: monitoringPresentation.status');
+    expect(routeSource).not.toContain('data.diagnostics.experienceState === \'live\'');
+    expect(routeSource).not.toContain('experienceState: data.diagnostics.experienceState');
   });
 
   test('compliance and resilience pages wire SystemStatusPanel from truth-model inputs', () => {
