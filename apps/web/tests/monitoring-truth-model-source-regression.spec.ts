@@ -58,4 +58,25 @@ test.describe('monitoring truth-model source regressions', () => {
     expect(dashboardData).not.toContain('diagnostics.experienceState ===');
     expect(dashboardData).not.toContain('diagnostics.experienceState ?');
   });
+
+  test('compliance and resilience pages wire SystemStatusPanel from truth-model inputs', () => {
+    const compliancePage = appSource('(product)/compliance/page.tsx');
+    const resiliencePage = appSource('(product)/resilience/page.tsx');
+
+    [compliancePage, resiliencePage].forEach((pageSource) => {
+      expect(pageSource).toContain('const monitoringTruth = resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary);');
+      expect(pageSource).toContain('const monitoringPresentation = normalizeMonitoringPresentation(monitoringTruth);');
+      expect(pageSource).toContain('SystemStatusPanel monitoring={{ truth: monitoringTruth, presentation: monitoringPresentation }}');
+    });
+  });
+
+  test('compliance and resilience pages do not use dashboard view model for monitoring status wiring', () => {
+    const compliancePage = appSource('(product)/compliance/page.tsx');
+    const resiliencePage = appSource('(product)/resilience/page.tsx');
+
+    [compliancePage, resiliencePage].forEach((pageSource) => {
+      expect(pageSource).not.toContain('buildDashboardViewModel');
+      expect(pageSource).not.toContain('workspaceMonitoring:');
+    });
+  });
 });
