@@ -74,6 +74,27 @@ def test_production_defaults_do_not_allow_wildcard_or_localhost_without_env(monk
     assert api_main.ALLOWED_ORIGINS == ['https://rwa.decodasecurity.com']
 
 
+def test_production_forces_primary_app_origin_when_custom_allowlist_misses_it(monkeypatch):
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('CORS_ALLOWED_ORIGINS', 'https://staging.rwa.decodasecurity.com')
+
+    api_main = load_api_main_module()
+
+    assert api_main.ALLOWED_ORIGINS == [
+        'https://staging.rwa.decodasecurity.com',
+        'https://rwa.decodasecurity.com',
+    ]
+
+
+def test_production_defaults_cors_credentials_to_true(monkeypatch):
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.delenv('CORS_ALLOW_CREDENTIALS', raising=False)
+
+    api_main = load_api_main_module()
+
+    assert api_main.CORS_ALLOW_CREDENTIALS is True
+
+
 def test_preflight_and_actual_response_include_cors_headers_for_allowed_origin(monkeypatch):
     monkeypatch.setenv('APP_ENV', 'production')
     monkeypatch.setenv('CORS_ALLOWED_ORIGINS', 'https://rwa.decodasecurity.com,http://localhost:3000')

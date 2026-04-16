@@ -428,11 +428,20 @@ def resolve_allowed_origins() -> list[str]:
             normalized_origins.append(normalized)
     if not normalized_origins and _is_production_like_runtime():
         logger.warning('No CORS origins configured for production-like runtime. Set CORS_ALLOWED_ORIGINS or ALLOWED_ORIGINS.')
+    if _is_production_like_runtime():
+        for required_origin in DEFAULT_PRODUCTION_CORS_ORIGINS:
+            if required_origin not in normalized_origins:
+                normalized_origins.append(required_origin)
+                logger.warning(
+                    'Appending required production CORS origin=%s to keep authenticated product monitoring endpoints accessible.',
+                    required_origin,
+                )
     return normalized_origins
 
 
 def resolve_cors_allow_credentials() -> bool:
-    return os.getenv('CORS_ALLOW_CREDENTIALS', 'false').strip().lower() in {'1', 'true', 'yes', 'on'}
+    default_value = 'true' if _is_production_like_runtime() else 'false'
+    return os.getenv('CORS_ALLOW_CREDENTIALS', default_value).strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 ALLOWED_ORIGINS = resolve_allowed_origins()
