@@ -1537,10 +1537,12 @@ export type ThreatDashboardRuntimeDiagnostics = {
 };
 
 export type DashboardViewModel = {
+  /** @deprecated Non-monitoring compatibility only. Prefer `workspaceMonitoring.presentationState`. */
   backendState: BackendState;
   cards: DashboardCard[];
   services: ServiceStatus[];
   summaryCards: Array<{ label: string; value: string; meta: string }>;
+  /** @deprecated Non-monitoring compatibility only. Prefer monitoring truth-model labels. */
   backendBanner: string;
   workspaceMonitoring: {
     presentationState: DashboardPresentationState;
@@ -1594,6 +1596,29 @@ function monitoringConfidenceLabel(confidence: ReturnType<typeof normalizeMonito
   return 'Telemetry unavailable';
 }
 
+function resolveLegacyBackendStateFromMonitoringStatus(
+  status: ReturnType<typeof normalizeMonitoringPresentation>['status']
+): BackendState {
+  if (status === 'live') return 'online';
+  if (status === 'offline') return 'offline';
+  return 'degraded';
+}
+
+function resolveLegacyBackendBannerFromMonitoringStatus(
+  status: ReturnType<typeof normalizeMonitoringPresentation>['status'],
+  summary: string
+): string {
+  if (status === 'live') {
+    return 'Monitoring telemetry is live and reporting from active systems.';
+  }
+
+  if (status === 'offline') {
+    return 'Monitoring telemetry is currently unavailable. Fresh monitoring updates will resume once reporting recovers.';
+  }
+
+  return `Monitoring telemetry is degraded: ${summary}`;
+}
+
 export function buildThreatDashboardRuntimeDiagnostics(
   data: Pick<DashboardPageData, 'threatDashboard' | 'diagnostics'>
 ): ThreatDashboardRuntimeDiagnostics {
@@ -1632,27 +1657,6 @@ export function formatSourceLabel(payloadState: DashboardPayloadState) {
 
   return 'Telemetry unavailable';
 }
-
-function formatDegradedBannerMessage(messages: string[]) {
-  const normalized = messages
-    .map((message) =>
-      message
-        .replace(/^Backend unavailable\.\s*/i, '')
-        .replace(/Rendering explicit fallback/gi, 'Using limited coverage')
-        .replace(/fallback-safe/gi, 'limited coverage')
-        .replace(/demoable/gi, 'available').replace(/sample/gi, 'limited')
-        .trim()
-    )
-    .filter(Boolean);
-
-  if (normalized.length === 0) {
-    return 'One or more live dashboard feeds are temporarily degraded.';
-  }
-
-  return sanitizeCustomerFacingCopy(`One or more live dashboard feeds are temporarily degraded. ${normalized.join(' ')}`);
-}
-
-
 
 function resolveEndpointPayloadState(
   payload: { source: 'live' | 'fallback'; degraded: boolean } | null,
@@ -1874,16 +1878,9 @@ export function buildDashboardViewModel(
   options: DashboardViewModelOptions = {}
 ): DashboardViewModel {
   const { dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard, diagnostics } = data;
-  const resolvedBackendState =
-    diagnostics.experienceState === 'live'
-      ? 'online'
-      : diagnostics.experienceState === 'live_degraded'
-        ? 'degraded'
-        : diagnostics.experienceState === 'limited_coverage'
-          ? 'degraded'
-        : diagnostics.experienceState === 'degraded'
-          ? 'degraded'
-        : resolveBackendState(dashboard, riskDashboard, threatDashboard, complianceDashboard, resilienceDashboard);
+  const monitoringTruth = resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary);
+  const monitoringPresentation = normalizeMonitoringPresentation(monitoringTruth);
+  const resolvedBackendState = resolveLegacyBackendStateFromMonitoringStatus(monitoringPresentation.status);
   const backendState =
     options.gatewayReachableOverride && resolvedBackendState === 'offline'
       ? 'degraded'
@@ -1898,8 +1895,6 @@ export function buildDashboardViewModel(
   } as const;
   const openAlerts = riskDashboard.summary.high_alert_count + threatDashboard.summary.critical_or_high_alerts;
   const openIncidents = resilienceDashboard.summary.incident_count;
-  const monitoringTruth = resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary);
-  const monitoringPresentation = normalizeMonitoringPresentation(monitoringTruth);
   const monitoringPresentationState = mapMonitoringStatusToDashboardPresentation(monitoringPresentation.status);
   const lastTelemetryAt = formatMonitoringTimestamp(monitoringTruth.last_telemetry_at, 'Telemetry timestamp unavailable');
   const lastHeartbeatAt = formatMonitoringTimestamp(monitoringTruth.last_heartbeat_at, 'Heartbeat timestamp unavailable');
@@ -1954,20 +1949,9 @@ export function buildDashboardViewModel(
     }
   ];
   const backendBanner =
-    backendState === 'online'
-      ? 'Live services are connected and the dashboard is updating from the active Railway-backed platform.'
-      : backendState === 'degraded'
-        ? formatDegradedBannerMessage(
-            diagnostics.degradedReasons.length > 0
-              ? diagnostics.degradedReasons
-              : [
-                  riskDashboard.message,
-                  threatDashboard.message,
-                  complianceDashboard.message,
-                  resilienceDashboard.message,
-                ]
-          )
-        : 'Live services are temporarily unavailable. Fresh telemetry unavailable until connectivity is restored.';
+    options.gatewayReachableOverride && resolvedBackendState === 'offline'
+      ? resolveLegacyBackendBannerFromMonitoringStatus('degraded', monitoringPresentation.summary)
+      : resolveLegacyBackendBannerFromMonitoringStatus(monitoringPresentation.status, monitoringPresentation.summary);
 
   return {
     backendState,
