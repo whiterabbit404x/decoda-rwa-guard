@@ -43,6 +43,27 @@ function buildPageData(summary: NonNullable<DashboardPageData['workspaceMonitori
   };
 }
 
+function resolveSafeMonitoringSummary(summary: NonNullable<DashboardPageData['workspaceMonitoringSummary']>): string {
+  const truth = resolveWorkspaceMonitoringTruthFromSummary(summary);
+  const presentation = normalizeMonitoringPresentation(truth);
+  const telemetryUnavailable =
+    !truth.last_telemetry_at
+    || truth.freshness_status === 'unavailable'
+    || truth.contradiction_flags.includes('telemetry_unavailable_with_timestamp')
+    || truth.contradiction_flags.includes('poll_without_telemetry_timestamp')
+    || truth.contradiction_flags.includes('heartbeat_without_telemetry_timestamp');
+  const showHealthySummary =
+    monitoringHealthyCopyAllowed(truth)
+    && presentation.status === 'live'
+    && !truth.contradiction_flags.includes('healthy_without_reporting_systems');
+
+  return telemetryUnavailable
+    ? 'Telemetry currently unavailable.'
+    : showHealthySummary
+      ? presentation.summary
+      : 'Monitoring state requires attention.';
+}
+
 test.describe('dashboard truth-model rendering rules', () => {
   test('dashboard monitoring copy is truth-derived instead of diagnostics-derived strings', () => {
     const dashboard = appSource('dashboard-page-content.tsx');
@@ -54,7 +75,7 @@ test.describe('dashboard truth-model rendering rules', () => {
   });
 
   test('no verified telemetry when last_telemetry_at is absent', () => {
-    const truth = resolveWorkspaceMonitoringTruthFromSummary({
+    const summary = {
       workspace_configured: true,
       monitoring_mode: 'live',
       runtime_status: 'healthy',
@@ -71,14 +92,21 @@ test.describe('dashboard truth-model rendering rules', () => {
       evidence_source: 'live',
       status_reason: 'telemetry_missing',
       contradiction_flags: [],
-    });
+    } satisfies NonNullable<DashboardPageData['workspaceMonitoringSummary']>;
+
+    const truth = resolveWorkspaceMonitoringTruthFromSummary(summary);
 
     const presentation = normalizeMonitoringPresentation(truth);
+    const safeSummary = resolveSafeMonitoringSummary(summary);
+
+    expect(safeSummary).toBe('Telemetry currently unavailable.');
+    expect(presentation.summary.toLowerCase()).not.toContain('live');
+    expect(presentation.summary.toLowerCase()).not.toContain('verified telemetry');
     expect(presentation.confidence).not.toBe('verified telemetry');
   });
 
   test('no monitoring healthy copy when reporting_systems is zero', () => {
-    const truth = resolveWorkspaceMonitoringTruthFromSummary({
+    const summary = {
       workspace_configured: true,
       monitoring_mode: 'live',
       runtime_status: 'healthy',
@@ -95,32 +123,55 @@ test.describe('dashboard truth-model rendering rules', () => {
       evidence_source: 'live',
       status_reason: null,
       contradiction_flags: [],
-    });
+    } satisfies NonNullable<DashboardPageData['workspaceMonitoringSummary']>;
+
+    const truth = resolveWorkspaceMonitoringTruthFromSummary(summary);
+    const presentation = normalizeMonitoringPresentation(truth);
+    const safeSummary = resolveSafeMonitoringSummary(summary);
 
     expect(monitoringHealthyCopyAllowed(truth)).toBeFalsy();
+    expect(presentation.status).toBe('degraded');
+    expect(presentation.statusLabel).toBe('DEGRADED');
+    expect(safeSummary).toBe('Monitoring state requires attention.');
 
-    const data = buildPageData({
-      workspace_configured: true,
-      monitoring_mode: 'live',
-      runtime_status: 'healthy',
-      configured_systems: 4,
-      reporting_systems: 0,
-      protected_assets: 8,
-      coverage_state: { configured_systems: 4, reporting_systems: 0, protected_assets: 8 },
-      freshness_status: 'fresh',
-      confidence_status: 'high',
-      last_heartbeat_at: '2026-04-15T08:00:00Z',
-      last_telemetry_at: '2026-04-15T08:01:00Z',
-      last_poll_at: '2026-04-15T08:05:00Z',
-      last_detection_at: null,
-      evidence_source: 'live',
-      status_reason: null,
-      contradiction_flags: [],
-    });
+    const data = buildPageData(summary);
 
     const viewModel = buildDashboardViewModel(data);
     expect(viewModel.workspaceMonitoring.reportingSystems).toBe(0);
     expect(viewModel.workspaceMonitoring.freshness).not.toContain('Verified telemetry');
+  });
+
+  test('contradictions force guarded fallback copy for unhealthy live-semantics inputs', () => {
+    const summary = {
+      workspace_configured: true,
+      monitoring_mode: 'live',
+      runtime_status: 'healthy',
+      configured_systems: 4,
+      reporting_systems: 0,
+      protected_assets: 8,
+      coverage_state: { configured_systems: 4, reporting_systems: 0, protected_assets: 8 },
+      freshness_status: 'fresh',
+      confidence_status: 'high',
+      last_heartbeat_at: '2026-04-15T08:00:00Z',
+      last_telemetry_at: null,
+      last_poll_at: '2026-04-15T08:05:00Z',
+      last_detection_at: null,
+      evidence_source: 'live',
+      status_reason: 'telemetry_missing',
+      contradiction_flags: [],
+    } satisfies NonNullable<DashboardPageData['workspaceMonitoringSummary']>;
+
+    const truth = resolveWorkspaceMonitoringTruthFromSummary(summary);
+    const presentation = normalizeMonitoringPresentation(truth);
+    const safeSummary = resolveSafeMonitoringSummary(summary);
+
+    expect(truth.contradiction_flags).toContain('healthy_without_reporting_systems');
+    expect(truth.contradiction_flags).toContain('poll_without_telemetry_timestamp');
+    expect(presentation.status).toBe('degraded');
+    expect(safeSummary).toBe('Telemetry currently unavailable.');
+    expect(safeSummary.toLowerCase()).not.toContain('live');
+    expect(safeSummary.toLowerCase()).not.toContain('verified telemetry');
+    expect(safeSummary.toLowerCase()).not.toContain('current telemetry');
   });
 
   test('system status panel source keeps truth-derived labels and separate telemetry/heartbeat/poll display', () => {
