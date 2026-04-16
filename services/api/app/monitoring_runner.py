@@ -3663,6 +3663,34 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     return payload
 
 
+def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str, Any]:
+    runtime_payload = monitoring_runtime_status(request)
+    summary = runtime_payload.get('workspace_monitoring_summary')
+    if not isinstance(summary, dict):
+        summary = runtime_payload
+    return {
+        'workspace_id': runtime_payload.get('workspace_id'),
+        'workspace_slug': runtime_payload.get('workspace_slug'),
+        'workspace_configured': summary.get('workspace_configured'),
+        'configuration_reason': summary.get('configuration_reason'),
+        'status_reason': summary.get('status_reason'),
+        'valid_protected_assets': summary.get('valid_protected_assets'),
+        'linked_monitored_systems': summary.get('linked_monitored_systems'),
+        'enabled_configs': summary.get('enabled_configs'),
+        'valid_link_count': summary.get('valid_link_count'),
+        'configured_systems': summary.get('configured_systems'),
+        'reporting_systems': summary.get('reporting_systems'),
+        'last_poll_at': summary.get('last_poll_at'),
+        'last_heartbeat_at': summary.get('last_heartbeat_at'),
+        'last_coverage_telemetry_at': summary.get('last_coverage_telemetry_at'),
+        'last_telemetry_at': summary.get('last_telemetry_at'),
+        'telemetry_kind': summary.get('telemetry_kind'),
+        'evidence_source': summary.get('evidence_source'),
+        'confidence_status': summary.get('confidence_status'),
+        'runtime_status_summary': summary.get('runtime_status'),
+    }
+
+
 def list_monitoring_evidence(request: Request, *, limit: int = 50) -> dict[str, Any]:
     with pg_connection() as connection:
         ensure_pilot_schema(connection)

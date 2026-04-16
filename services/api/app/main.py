@@ -163,6 +163,7 @@ from services.api.app.monitoring_runner import (
     list_monitoring_heartbeats,
     list_monitoring_worker_errors,
     list_monitoring_targets,
+    monitoring_runtime_debug_payload,
     monitoring_runtime_status,
     patch_monitoring_target,
     production_claim_validator,
@@ -1747,6 +1748,11 @@ def ops_production_claim_validator() -> dict[str, Any]:
 @app.get('/ops/monitoring/runtime-status', summary='Monitoring runtime status for admin/settings surfaces')
 def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: monitoring_runtime_status(request))
+
+
+@app.get('/ops/monitoring/runtime-debug', summary='Canonical monitoring runtime debug payload')
+def ops_monitoring_runtime_debug(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: monitoring_runtime_debug_payload(request))
 
 
 @app.get('/ops/monitoring/evidence', summary='Latest monitoring evidence stream')
