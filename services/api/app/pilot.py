@@ -2181,6 +2181,8 @@ def _demo_monitoring_bootstrap_allowed() -> bool:
 def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: str) -> dict[str, Any]:
     if not _demo_monitoring_bootstrap_allowed():
         return {'bootstrapped': False, 'reason': 'production_runtime'}
+    proof_severity = 'high'
+    proof_risk_score = 0.92
     asset_row = connection.execute(
         '''
         SELECT id
@@ -2265,7 +2267,7 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
                 %s, %s, 'Demo Seed Wallet Monitor', 'wallet', 'ethereum-mainnet', NULL, '0x00000000000000000000000000000000000000aa',
                 'wallet', 'Seeded monitoring target for simulator telemetry proof.', 'medium', TRUE,
                 %s::uuid, 1, %s::jsonb,
-                TRUE, 'poll', 60, 'medium', TRUE, FALSE, %s::jsonb,
+                TRUE, 'poll', 60, 'high', TRUE, TRUE, %s::jsonb,
                 %s, TRUE, %s, %s
             )
             ''',
@@ -2273,7 +2275,7 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
                 target_id,
                 workspace_id,
                 asset_id,
-                _json_dumps({'asset_label': 'Demo Seed Wallet', 'bootstrap_source': 'seed_demo_workspace'}),
+                _json_dumps({'asset_label': 'Demo Seed Wallet', 'bootstrap_source': 'seed_demo_workspace', 'proof_mode': True}),
                 _json_dumps(['email']),
                 workspace_id,
                 user_id,
@@ -2289,6 +2291,9 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
                 monitoring_enabled = TRUE,
                 is_active = TRUE,
                 asset_id = %s::uuid,
+                severity_threshold = 'high',
+                auto_create_alerts = TRUE,
+                auto_create_incidents = TRUE,
                 updated_at = NOW()
             WHERE id = %s::uuid
             ''',
@@ -2341,7 +2346,7 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
             user_id,
             'monitoring.seed_demo_detection',
             'Demo Seed Monitoring Alert',
-            'medium',
+            proof_severity,
             'open',
             'simulator',
             'Seeded simulator detection alert linked to persisted demo telemetry evidence.',
@@ -2393,7 +2398,7 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
             target_id,
             'incident.monitoring_seed_alert',
             'Demo Seed Monitoring Incident',
-            'medium',
+            proof_severity,
             'open',
             'open',
             'Seeded incident created from deterministic demo monitoring alert.',
@@ -2521,9 +2526,9 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
             log_index,
             'simulator_seed_event',
             monitored_system_id,
-            'low',
-            0.1,
-            'Seeded simulator telemetry event proving persisted monitoring evidence.',
+            proof_severity,
+            proof_risk_score,
+            'Seeded simulator telemetry event with deterministic proof-mode high risk for alert and incident creation.',
             '0x00000000000000000000000000000000000000ff',
             '100.00',
             '0x0000000000000000000000000000000000000001',
@@ -2535,6 +2540,7 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
                         'evidence_origin': 'simulator',
                         'bootstrap_source': 'seed_demo_workspace',
                         'production_claim_eligible': False,
+                        'proof_mode': True,
                     },
                     'tx_hash': tx_hash,
                     'event_id': f'demo-seed-{target_id}',
