@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
+from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 
 from services.api.app import main as api_main
@@ -87,8 +88,14 @@ class _Conn:
             return _Result({'c': 0})
         if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
             return _Result({'target_count': 3, 'asset_count': 3})
-        if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
-            return _Result(rows=[{'id': 'target-1'}, {'id': 'target-2'}, {'id': 'target-3'}])
+        if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q and 'LEFT JOIN assets a' not in q:
+            return _Result(
+                rows=[
+                    {'id': 'target-1', 'asset_id': 'asset-1'},
+                    {'id': 'target-2', 'asset_id': 'asset-2'},
+                    {'id': 'target-3', 'asset_id': 'asset-3'},
+                ]
+            )
         if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
             return _Result(rows=[dict(row) for row in self._runtime_rows])
         if q.startswith('SELECT id, workspace_id, asset_id, enabled, monitoring_enabled, deleted_at FROM targets'):
@@ -109,6 +116,13 @@ class _Conn:
             )
         if q.startswith('SELECT id, workspace_id, target_id, asset_id, is_enabled, runtime_status, status FROM monitored_systems'):
             return _Result(rows=[{k: row[k] for k in ('id', 'workspace_id', 'target_id', 'asset_id', 'is_enabled', 'runtime_status', 'status')} for row in self._runtime_rows])
+        if q.startswith('SELECT ms.id, ms.target_id, ms.asset_id FROM monitored_systems ms JOIN targets t'):
+            return _Result(
+                rows=[
+                    {'id': row['id'], 'target_id': row['target_id'], 'asset_id': row['asset_id']}
+                    for row in self._runtime_rows
+                ]
+            )
         return _Result({})
 
     def commit(self):
@@ -173,6 +187,7 @@ def test_monitoring_list_runtime_debug_and_reconcile_stay_consistent(monkeypatch
             'worker_running': True,
         },
     )
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
 
     headers = {'authorization': 'Bearer token', 'x-workspace-id': 'ws-legacy'}
     listed = client.get('/monitoring/systems', headers=headers)
@@ -216,6 +231,30 @@ def test_monitored_system_row_enabled_treats_idle_null_enabled_rows_as_configure
     assert pilot.monitored_system_row_enabled({'is_enabled': 0}) is False
 
 
+def test_runtime_debug_endpoint_returns_json_when_workspace_context_missing(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        monitoring_runner,
+        'monitoring_runtime_status',
+        lambda _request=None: (_ for _ in ()).throw(
+            HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Select or create a workspace before using live mode.',
+            )
+        ),
+    )
+
+    response = client.get('/ops/monitoring/runtime-debug', headers={'authorization': 'Bearer token'})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['workspace_configured'] is False
+    assert payload['configuration_reason'] == 'workspace_not_resolved'
+    assert payload['status_reason'] == 'runtime_debug_context_error:select_or_create_a_workspace_before_using_live_mode.'
+    assert payload['runtime_status_summary'] == 'offline'
+    assert payload['configuration_diagnostics']['reason_codes'] == ['workspace_not_resolved']
+
+
 def test_runtime_status_keeps_list_path_counts_when_raw_workspace_query_fails(monkeypatch):
     class _RawQueryFailConn(_Conn):
         def execute(self, query, params=None):
@@ -250,6 +289,7 @@ def test_runtime_status_keeps_list_path_counts_when_raw_workspace_query_fails(mo
             'worker_running': True,
         },
     )
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
 
     response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer token', 'x-workspace-id': 'ws-legacy'})
     assert response.status_code == 200
@@ -292,6 +332,7 @@ def test_runtime_status_uses_parameterized_detection_query_and_keeps_idle_system
             'worker_running': True,
         },
     )
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
 
     response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer token', 'x-workspace-id': 'ws-legacy'})
     assert response.status_code == 200

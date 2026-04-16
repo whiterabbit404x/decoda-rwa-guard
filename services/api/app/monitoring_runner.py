@@ -3701,7 +3701,44 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
 
 
 def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str, Any]:
-    runtime_payload = monitoring_runtime_status(request)
+    try:
+        runtime_payload = monitoring_runtime_status(request)
+    except HTTPException as exc:
+        if exc.status_code in {status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN}:
+            detail = str(exc.detail or '').strip() or 'workspace_or_auth_context_unavailable'
+            safe_reason = detail.replace(' ', '_').lower()
+            configuration_reason = 'workspace_not_resolved' if exc.status_code == status.HTTP_400_BAD_REQUEST else 'auth_context_unavailable'
+            return {
+                'workspace_id': None,
+                'workspace_slug': None,
+                'workspace_configured': False,
+                'configuration_reason': configuration_reason,
+                'status_reason': f'runtime_debug_context_error:{safe_reason}',
+                'valid_protected_assets': 0,
+                'linked_monitored_systems': 0,
+                'enabled_configs': 0,
+                'valid_link_count': 0,
+                'configured_systems': 0,
+                'reporting_systems': 0,
+                'last_poll_at': None,
+                'last_heartbeat_at': None,
+                'last_coverage_telemetry_at': None,
+                'last_telemetry_at': None,
+                'telemetry_kind': None,
+                'evidence_source': 'none',
+                'confidence_status': 'unavailable',
+                'runtime_status_summary': 'offline',
+                'configuration_diagnostics': {
+                    'valid_protected_assets': 0,
+                    'linked_monitored_systems': 0,
+                    'enabled_configs': 0,
+                    'valid_link_count': 0,
+                    'workspace_configured': False,
+                    'configuration_reason': configuration_reason,
+                    'reason_codes': [configuration_reason],
+                },
+            }
+        raise
     summary = runtime_payload.get('workspace_monitoring_summary')
     if not isinstance(summary, dict):
         summary = runtime_payload
