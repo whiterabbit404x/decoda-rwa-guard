@@ -34,6 +34,52 @@ def test_validate_runtime_configuration_requires_resend_key_in_production(monkey
     assert payload['checks']['email_resend_api_key']['ok'] is False
 
 
+def test_validate_runtime_configuration_requires_live_mode_enabled_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    from services.api.app import pilot
+
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'false')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://example')
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'secret')
+    monkeypatch.setenv('SECRET_ENCRYPTION_KEY', 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=')
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('EMAIL_FROM', 'ops@decoda.app')
+    monkeypatch.setenv('EMAIL_RESEND_API_KEY', 're_123')
+    monkeypatch.setenv('REDIS_URL', 'redis://localhost:6379/0')
+    monkeypatch.setenv('BILLING_ENABLED', 'false')
+
+    payload = pilot.validate_runtime_configuration()
+    expected_error = (
+        'LIVE_MODE_ENABLED must be true in production. Disabling live mode in production forces monitoring runtime '
+        'into offline/unconfigured fallback behavior.'
+    )
+
+    assert expected_error in payload['errors']
+    assert payload['checks']['live_mode_enabled']['ok'] is False
+    assert payload['checks']['database_url']['ok'] is True
+
+
+def test_validate_runtime_configuration_accepts_live_mode_enabled_with_database_url_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    from services.api.app import pilot
+
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://example')
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'secret')
+    monkeypatch.setenv('SECRET_ENCRYPTION_KEY', 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=')
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('EMAIL_FROM', 'ops@decoda.app')
+    monkeypatch.setenv('EMAIL_RESEND_API_KEY', 're_123')
+    monkeypatch.setenv('REDIS_URL', 'redis://localhost:6379/0')
+    monkeypatch.setenv('BILLING_ENABLED', 'false')
+
+    payload = pilot.validate_runtime_configuration()
+
+    assert payload['checks']['live_mode_enabled']['ok'] is True
+    assert payload['checks']['database_url']['ok'] is True
+    assert all('LIVE_MODE_ENABLED must be true in production.' not in error for error in payload['errors'])
+
+
 def test_health_diagnostics_exposes_machine_readable_checks(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv('APP_ENV', 'production')
     monkeypatch.setenv('APP_MODE', 'production')
@@ -52,9 +98,34 @@ def test_health_diagnostics_exposes_machine_readable_checks(api_main, monkeypatc
     assert response.status_code == 200
     payload = response.json()
     assert payload['status'] == 'not_ready'
+    assert payload['production_live_mode_drift'] is False
     assert payload['checks']['database_url']['ok'] is False
     assert payload['checks']['email_provider_not_console']['ok'] is False
     assert payload['checks']['redis_url']['ok'] is False
+
+
+def test_health_diagnostics_flags_production_live_mode_drift(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('APP_MODE', 'production')
+    monkeypatch.setenv('MONITORING_INGESTION_MODE', 'demo')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'false')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://example')
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'secret')
+    monkeypatch.setenv('SECRET_ENCRYPTION_KEY', 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=')
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('EMAIL_FROM', 'ops@decoda.app')
+    monkeypatch.setenv('EMAIL_RESEND_API_KEY', 're_123')
+    monkeypatch.setenv('REDIS_URL', 'redis://localhost:6379/0')
+
+    client = TestClient(api_main.app)
+    response = client.get('/health/diagnostics')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['status'] == 'not_ready'
+    assert payload['production_live_mode_drift'] is True
+    assert payload['checks']['live_mode_enabled']['ok'] is False
+    assert 'offline/unconfigured fallback behavior' in payload['checks']['live_mode_enabled']['detail']
 
 
 def test_health_readiness_reports_healthy_when_production_requirements_are_met(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,7 +150,9 @@ def test_health_readiness_reports_healthy_when_production_requirements_are_met(a
     response = client.get('/health/readiness')
 
     assert response.status_code == 200
-    assert response.json()['status'] == 'healthy'
+    payload = response.json()
+    assert payload['status'] == 'healthy'
+    assert payload['production_live_mode_drift'] is False
 
 
 def test_health_readiness_stays_healthy_when_billing_provider_none(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
