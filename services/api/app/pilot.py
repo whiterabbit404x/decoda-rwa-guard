@@ -2173,6 +2173,216 @@ def get_team_seats(request: Request) -> dict[str, Any]:
         return {'used': int((count or {}).get('count') or 0), 'limit': int(entitlements.get('max_members') or 0), 'plan_key': entitlements.get('plan_key')}
 
 
+def _demo_monitoring_bootstrap_allowed() -> bool:
+    app_env = str(os.getenv('APP_ENV') or os.getenv('ENV') or os.getenv('APP_MODE') or '').strip().lower()
+    return app_env not in {'prod', 'production'}
+
+
+def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: str) -> dict[str, Any]:
+    if not _demo_monitoring_bootstrap_allowed():
+        return {'bootstrapped': False, 'reason': 'production_runtime'}
+    asset_row = connection.execute(
+        '''
+        SELECT id
+        FROM assets
+        WHERE workspace_id = %s
+          AND deleted_at IS NULL
+          AND normalized_identifier = %s
+        ORDER BY created_at ASC
+        LIMIT 1
+        ''',
+        (workspace_id, 'demo-seed-wallet-monitor'),
+    ).fetchone()
+    if asset_row is None:
+        asset_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO assets (
+                id, workspace_id, name, description, asset_type, chain_network, identifier, asset_class, risk_tier, owner_team, notes, enabled,
+                issuer_name, asset_symbol, asset_identifier, token_contract_address, custody_wallets, treasury_ops_wallets, oracle_sources, venue_labels,
+                expected_counterparties, expected_flow_patterns, expected_approval_patterns, expected_liquidity_baseline,
+                expected_oracle_freshness_seconds, expected_oracle_update_cadence_seconds, policy_tags, jurisdiction_tags,
+                baseline_status, baseline_source, baseline_updated_at, baseline_confidence, baseline_coverage,
+                normalized_identifier, verification_status, verification_summary, verification_checked_at,
+                created_by_user_id, updated_by_user_id
+            ) VALUES (
+                %s, %s, 'Demo Seed Protected Asset', 'Seeded simulator-backed protected asset for non-production monitoring proof.',
+                'wallet', 'ethereum-mainnet', %s, 'rwa', 'medium', 'security', 'Created by seed bootstrap.',
+                TRUE, 'Decoda Demo', 'DSA', 'demo-seed-asset', '0x0000000000000000000000000000000000000001',
+                %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb,
+                %s, %s, %s::jsonb, %s::jsonb, 'established', 'workspace_contract', NOW(), %s, %s,
+                %s, 'verified', %s::jsonb, NOW(), %s, %s
+            )
+            ''',
+            (
+                asset_id,
+                workspace_id,
+                'demo-seed-wallet-monitor',
+                _json_dumps(['0x0000000000000000000000000000000000000001']),
+                _json_dumps(['0x0000000000000000000000000000000000000002']),
+                _json_dumps(['chainlink']),
+                _json_dumps(['demo-dex']),
+                _json_dumps(['0x00000000000000000000000000000000000000aa']),
+                _json_dumps([{'source_class': 'treasury', 'destination_class': 'venue'}]),
+                _json_dumps({'approval_contracts': ['0x00000000000000000000000000000000000000bb']}),
+                _json_dumps({'expected_daily_volume_usd': 100000}),
+                300,
+                300,
+                _json_dumps(['demo']),
+                _json_dumps(['us']),
+                0.9,
+                0.9,
+                'demo-seed-wallet-monitor',
+                _json_dumps({'source': 'demo_seed'}),
+                user_id,
+                user_id,
+            ),
+        )
+    else:
+        asset_id = str(asset_row['id'])
+    target_row = connection.execute(
+        '''
+        SELECT id
+        FROM targets
+        WHERE workspace_id = %s
+          AND deleted_at IS NULL
+          AND name = 'Demo Seed Wallet Monitor'
+        ORDER BY created_at ASC
+        LIMIT 1
+        ''',
+        (workspace_id,),
+    ).fetchone()
+    if target_row is None:
+        target_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO targets (
+                id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
+                asset_id, chain_id, target_metadata,
+                monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents, notification_channels,
+                monitored_by_workspace_id, is_active, created_by_user_id, updated_by_user_id
+            ) VALUES (
+                %s, %s, 'Demo Seed Wallet Monitor', 'wallet', 'ethereum-mainnet', NULL, '0x00000000000000000000000000000000000000aa',
+                'wallet', 'Seeded monitoring target for simulator telemetry proof.', 'medium', TRUE,
+                %s::uuid, 1, %s::jsonb,
+                TRUE, 'poll', 60, 'medium', TRUE, FALSE, %s::jsonb,
+                %s, TRUE, %s, %s
+            )
+            ''',
+            (
+                target_id,
+                workspace_id,
+                asset_id,
+                _json_dumps({'asset_label': 'Demo Seed Wallet', 'bootstrap_source': 'seed_demo_workspace'}),
+                _json_dumps(['email']),
+                workspace_id,
+                user_id,
+                user_id,
+            ),
+        )
+    else:
+        target_id = str(target_row['id'])
+        connection.execute(
+            '''
+            UPDATE targets
+            SET enabled = TRUE,
+                monitoring_enabled = TRUE,
+                is_active = TRUE,
+                asset_id = %s::uuid,
+                updated_at = NOW()
+            WHERE id = %s::uuid
+            ''',
+            (asset_id, target_id),
+        )
+    monitor_bridge = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id)
+    monitored_system_id = str(monitor_bridge.get('monitored_system_id') or '')
+    if monitor_bridge.get('status') != 'ok' or not monitored_system_id:
+        return {'bootstrapped': False, 'reason': monitor_bridge.get('reason') or monitor_bridge.get('status') or 'bridge_failed'}
+    observed_at = utc_now()
+    tx_hash = f'0x{hashlib.sha256(f"{workspace_id}:{target_id}:seed-demo".encode("utf-8")).hexdigest()[:64]}'
+    log_index = 0
+    evidence_id = str(uuid.uuid4())
+    evidence_row = connection.execute(
+        '''
+        INSERT INTO evidence (
+            id, workspace_id, asset_id, target_id, alert_id, chain, block_number, tx_hash, log_index, event_type,
+            monitored_system_id, severity, risk_score, summary, counterparty, amount_text, token_address, contract_address, source_provider,
+            raw_payload_json, observed_at, created_at
+        )
+        VALUES (
+            %s, %s, %s::uuid, %s::uuid, NULL, %s, %s, %s, %s, %s,
+            %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s::jsonb, %s, NOW()
+        )
+        ON CONFLICT (target_id, tx_hash, log_index, event_type)
+        DO UPDATE SET
+            monitored_system_id = EXCLUDED.monitored_system_id,
+            source_provider = EXCLUDED.source_provider,
+            summary = EXCLUDED.summary,
+            raw_payload_json = EXCLUDED.raw_payload_json,
+            observed_at = EXCLUDED.observed_at
+        RETURNING id, observed_at
+        ''',
+        (
+            evidence_id,
+            workspace_id,
+            asset_id,
+            target_id,
+            'ethereum-mainnet',
+            1,
+            tx_hash,
+            log_index,
+            'simulator_seed_event',
+            monitored_system_id,
+            'low',
+            0.1,
+            'Seeded simulator telemetry event proving persisted monitoring evidence.',
+            '0x00000000000000000000000000000000000000ff',
+            '100.00',
+            '0x0000000000000000000000000000000000000001',
+            '0x0000000000000000000000000000000000000001',
+            'simulator',
+            _json_dumps(
+                {
+                    'metadata': {
+                        'evidence_origin': 'simulator',
+                        'bootstrap_source': 'seed_demo_workspace',
+                        'production_claim_eligible': False,
+                    },
+                    'tx_hash': tx_hash,
+                    'event_id': f'demo-seed-{target_id}',
+                }
+            ),
+            observed_at,
+        ),
+    ).fetchone()
+    last_event_at = (evidence_row or {}).get('observed_at') or observed_at
+    connection.execute(
+        '''
+        UPDATE monitored_systems
+        SET last_event_at = %s,
+            runtime_status = CASE WHEN runtime_status IN ('failed', 'disabled') THEN runtime_status ELSE 'healthy' END,
+            status = CASE WHEN runtime_status = 'failed' THEN 'error' WHEN runtime_status = 'disabled' THEN 'paused' ELSE 'active' END,
+            freshness_status = 'fresh',
+            confidence_status = 'medium',
+            coverage_reason = NULL,
+            last_error_text = NULL,
+            last_heartbeat = NOW()
+        WHERE id = %s::uuid
+        ''',
+        (last_event_at, monitored_system_id),
+    )
+    return {
+        'bootstrapped': True,
+        'workspace_id': workspace_id,
+        'asset_id': asset_id,
+        'target_id': target_id,
+        'monitored_system_id': monitored_system_id,
+        'evidence_source': 'simulator',
+        'telemetry_event_observed_at': last_event_at.isoformat() if isinstance(last_event_at, datetime) else str(last_event_at),
+    }
+
+
 def seed_demo_workspace(email: str, password: str, workspace_name: str, full_name: str = 'Pilot Demo User') -> dict[str, Any]:
     require_live_mode()
     normalized_email = _normalize_email(email)
@@ -2257,6 +2467,7 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
             ''',
             (password_hash, normalized_full_name, workspace_id, user_id),
         )
+        monitoring_bootstrap = _seed_demo_monitoring_proof(connection, workspace_id=workspace_id, user_id=user_id)
         connection.commit()
         user = build_user_response(connection, user_id)
         return {
@@ -2267,6 +2478,7 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
             'workspace_created': workspace_created,
             'membership_created': membership_created,
             'user_created': created_user,
+            'monitoring_bootstrap': monitoring_bootstrap,
         }
 
 

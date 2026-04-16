@@ -220,3 +220,33 @@ def test_workspace_configured_with_missing_required_link_counts_is_flagged() -> 
         telemetry_window_seconds=300,
     )
     assert 'workspace_configured_missing_required_links' in summary['contradiction_flags']
+
+
+def test_simulator_telemetry_timestamp_is_preserved_from_persisted_event() -> None:
+    now = _now()
+    simulator_event_at = now - timedelta(seconds=45)
+    summary = build_workspace_monitoring_summary(
+        now=now,
+        workspace_configured=True,
+        monitoring_mode='simulator',
+        runtime_status='healthy',
+        configured_systems=1,
+        monitored_systems_count=1,
+        reporting_systems=1,
+        protected_assets=1,
+        last_poll_at=now,
+        last_heartbeat_at=now,
+        last_telemetry_at=simulator_event_at,
+        last_detection_at=None,
+        evidence_source='simulator',
+        status_reason=None,
+        configuration_reason=None,
+        valid_protected_asset_count=1,
+        linked_monitored_system_count=1,
+        persisted_enabled_config_count=1,
+        valid_target_system_link_count=1,
+        telemetry_window_seconds=300,
+    )
+    assert summary['last_telemetry_at'] == simulator_event_at.isoformat()
+    assert summary['freshness_status'] == 'fresh'
+    assert summary['confidence_status'] == 'medium'

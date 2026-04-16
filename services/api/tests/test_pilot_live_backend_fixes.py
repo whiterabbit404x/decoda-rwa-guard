@@ -407,6 +407,11 @@ def test_seed_demo_workspace_creates_demo_user_workspace_and_membership(pilot_mo
     monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
     monkeypatch.setattr(pilot_module, 'build_user_response', lambda connection, user_id: {'id': user_id, 'email': 'demo@decoda.app'})
+    monkeypatch.setattr(
+        pilot_module,
+        'ensure_monitored_system_for_target',
+        lambda *_args, **_kwargs: {'status': 'ok', 'monitored_system_id': 'sys-1'},
+    )
 
     payload = pilot_module.seed_demo_workspace('demo@decoda.app', 'PilotDemoPass123!', 'Decoda Demo Workspace', 'Decoda Demo User')
 
@@ -414,9 +419,14 @@ def test_seed_demo_workspace_creates_demo_user_workspace_and_membership(pilot_mo
     assert payload['user_created'] is True
     assert payload['workspace_created'] is True
     assert payload['membership_created'] is True
+    assert payload['monitoring_bootstrap']['bootstrapped'] is True
+    assert payload['monitoring_bootstrap']['evidence_source'] == 'simulator'
     assert any('INSERT INTO users' in statement and 'email_verified_at' in statement for statement, _ in executed)
     assert any('INSERT INTO workspaces' in statement for statement, _ in executed)
     assert any('INSERT INTO workspace_members' in statement for statement, _ in executed)
+    assert any('INSERT INTO assets' in statement for statement, _ in executed)
+    assert any('INSERT INTO targets' in statement for statement, _ in executed)
+    assert any('INSERT INTO evidence' in statement for statement, _ in executed)
 
 
 def test_seed_demo_workspace_backfills_existing_demo_login(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -446,12 +456,18 @@ def test_seed_demo_workspace_backfills_existing_demo_login(pilot_module, monkeyp
     monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
     monkeypatch.setattr(pilot_module, 'build_user_response', lambda connection, user_id: {'id': user_id, 'email': 'demo@decoda.app'})
+    monkeypatch.setattr(
+        pilot_module,
+        'ensure_monitored_system_for_target',
+        lambda *_args, **_kwargs: {'status': 'ok', 'monitored_system_id': 'sys-1'},
+    )
 
     payload = pilot_module.seed_demo_workspace('demo@decoda.app', 'PilotDemoPass123!', 'Decoda Demo Workspace', 'Decoda Demo User')
 
     assert payload['email'] == 'demo@decoda.app'
     assert payload['password'] == 'PilotDemoPass123!'
     assert payload['workspace_created'] is True
+    assert payload['monitoring_bootstrap']['bootstrapped'] is True
     assert any('INSERT INTO workspaces' in statement for statement, _ in executed)
     assert any('INSERT INTO workspace_members' in statement for statement, _ in executed)
     assert any(
@@ -487,6 +503,11 @@ def test_seed_demo_workspace_marks_seeded_demo_user_as_verified_for_signin(pilot
     monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg_connection)
     monkeypatch.setattr(pilot_module, 'build_user_response', lambda connection, user_id: {'id': user_id, 'email': 'demo@decoda.app'})
+    monkeypatch.setattr(
+        pilot_module,
+        'ensure_monitored_system_for_target',
+        lambda *_args, **_kwargs: {'status': 'ok', 'monitored_system_id': 'sys-1'},
+    )
 
     pilot_module.seed_demo_workspace('demo@decoda.app', 'PilotDemoPass123!', 'Decoda Demo Workspace', 'Decoda Demo User')
 
