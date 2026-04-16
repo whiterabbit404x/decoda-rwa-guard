@@ -3072,6 +3072,15 @@ def _workspace_runtime_debug_assertions(connection: Any, *, workspace_id: str) -
         and enabled_configs > 0
         and valid_link_count > 0
     )
+    reason_codes: list[str] = []
+    if valid_protected_assets <= 0:
+        reason_codes.append('no_valid_protected_assets')
+    if linked_monitored_systems <= 0:
+        reason_codes.append('no_linked_monitored_systems')
+    if enabled_configs <= 0:
+        reason_codes.append('no_persisted_enabled_monitoring_config')
+    if valid_link_count <= 0:
+        reason_codes.append('target_system_linkage_invalid')
     return {
         'workspace_id': workspace_id,
         'valid_protected_assets': valid_protected_assets,
@@ -3079,6 +3088,17 @@ def _workspace_runtime_debug_assertions(connection: Any, *, workspace_id: str) -
         'enabled_configs': enabled_configs,
         'valid_link_count': valid_link_count,
         'workspace_configured': workspace_configured,
+        'configuration_reason': reason_codes[0] if reason_codes else None,
+        'reason_codes': reason_codes,
+        'configuration_diagnostics': {
+            'valid_protected_assets': valid_protected_assets,
+            'linked_monitored_systems': linked_monitored_systems,
+            'enabled_configs': enabled_configs,
+            'valid_link_count': valid_link_count,
+            'workspace_configured': workspace_configured,
+            'configuration_reason': reason_codes[0] if reason_codes else None,
+            'reason_codes': reason_codes,
+        },
     }
 
 

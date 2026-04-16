@@ -2051,8 +2051,13 @@ def monitoring_workspace_debug(request: Request) -> dict[str, Any]:
     snapshot_payload = with_auth_schema_json(lambda: get_workspace_monitoring_debug(request))
     runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
     list_route_snapshot = snapshot_payload.get('list_route_snapshot') if isinstance(snapshot_payload.get('list_route_snapshot'), dict) else {}
+    configuration_diagnostics = runtime_payload.get('configuration_diagnostics')
+    if not isinstance(configuration_diagnostics, dict):
+        runtime_summary = runtime_payload.get('workspace_monitoring_summary') if isinstance(runtime_payload.get('workspace_monitoring_summary'), dict) else {}
+        configuration_diagnostics = runtime_summary.get('configuration_diagnostics') if isinstance(runtime_summary.get('configuration_diagnostics'), dict) else {}
     return {
         **snapshot_payload,
+        'configuration_diagnostics': configuration_diagnostics,
         'status_decision_inputs': {
             'resolved_workspace_id_runtime': runtime_payload.get('resolved_workspace_id'),
             'resolved_workspace_id_list_route': list_route_snapshot.get('resolved_workspace_id'),

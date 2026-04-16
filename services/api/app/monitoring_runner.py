@@ -104,19 +104,44 @@ def _workspace_configuration_truth(
     persisted_enabled_config_count: int,
     valid_target_system_link_count: int,
 ) -> tuple[bool, str | None]:
+    diagnostics = _workspace_configuration_diagnostics(
+        valid_protected_asset_count=valid_protected_asset_count,
+        linked_monitored_system_count=linked_monitored_system_count,
+        persisted_enabled_config_count=persisted_enabled_config_count,
+        valid_target_system_link_count=valid_target_system_link_count,
+    )
+    return bool(diagnostics.get('workspace_configured')), diagnostics.get('configuration_reason')
+
+
+def _workspace_configuration_diagnostics(
+    *,
+    valid_protected_asset_count: int,
+    linked_monitored_system_count: int,
+    persisted_enabled_config_count: int,
+    valid_target_system_link_count: int,
+) -> dict[str, Any]:
     normalized_valid_assets = max(int(valid_protected_asset_count), 0)
     normalized_linked_systems = max(int(linked_monitored_system_count), 0)
     normalized_persisted_configs = max(int(persisted_enabled_config_count), 0)
     normalized_valid_links = max(int(valid_target_system_link_count), 0)
+    reason_codes: list[str] = []
     if normalized_valid_assets <= 0:
-        return False, 'no_valid_protected_assets'
+        reason_codes.append('no_valid_protected_assets')
     if normalized_linked_systems <= 0:
-        return False, 'no_linked_monitored_systems'
+        reason_codes.append('no_linked_monitored_systems')
     if normalized_persisted_configs <= 0:
-        return False, 'no_persisted_enabled_monitoring_config'
+        reason_codes.append('no_persisted_enabled_monitoring_config')
     if normalized_valid_links <= 0:
-        return False, 'target_system_linkage_invalid'
-    return True, None
+        reason_codes.append('target_system_linkage_invalid')
+    return {
+        'valid_protected_assets': normalized_valid_assets,
+        'linked_monitored_systems': normalized_linked_systems,
+        'enabled_configs': normalized_persisted_configs,
+        'valid_link_count': normalized_valid_links,
+        'workspace_configured': len(reason_codes) == 0,
+        'configuration_reason': reason_codes[0] if reason_codes else None,
+        'reason_codes': reason_codes,
+    }
 
 
 def _record_detection_metric(
@@ -3408,12 +3433,22 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             workspace_id,
             ','.join(downgrade_reason_tokens),
         )
-    workspace_configured, configuration_reason = _workspace_configuration_truth(
+    configuration_diagnostics = _workspace_configuration_diagnostics(
         valid_protected_asset_count=valid_protected_asset_count,
         linked_monitored_system_count=linked_monitored_system_count,
         persisted_enabled_config_count=persisted_enabled_config_count,
         valid_target_system_link_count=valid_target_system_link_count,
     )
+    workspace_configured = bool(configuration_diagnostics.get('workspace_configured'))
+    configuration_reason = configuration_diagnostics.get('configuration_reason')
+    if not workspace_configured:
+        logger.warning(
+            'monitoring_workspace_configuration_diagnostics workspace_id=%s workspace_slug=%s reason_codes=%s diagnostics=%s',
+            workspace_id,
+            workspace_slug,
+            ','.join(configuration_diagnostics.get('reason_codes') or ['workspace_not_configured']),
+            configuration_diagnostics,
+        )
     monitoring_mode_raw = str(health.get('mode') or '').strip().lower()
     degraded_signal = provider_degraded_or_unreachable
     if not workspace_configured:
@@ -3478,6 +3513,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     )
     summary['poll_freshness_status'] = poll_freshness_status
     summary['source_of_evidence'] = source_of_evidence
+    summary['configuration_diagnostics'] = dict(configuration_diagnostics)
     if workspace_configured and runtime_status_summary == 'idle' and runtime_status_reason:
         logger.info(
             'monitoring_runtime_limited_coverage workspace_id=%s chosen_evidence_source=%s status_reason=%s reporting_systems=%s coverage_fresh=%s',
@@ -3563,6 +3599,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'linked_monitored_systems': summary['linked_monitored_systems'],
         'enabled_configs': summary['enabled_configs'],
         'valid_link_count': summary['valid_link_count'],
+        'configuration_diagnostics': summary['configuration_diagnostics'],
         'last_poll_at': summary['last_poll_at'],
         'last_telemetry_at': summary['last_telemetry_at'],
         'last_coverage_telemetry_at': summary['last_coverage_telemetry_at'],
@@ -3668,6 +3705,14 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
     summary = runtime_payload.get('workspace_monitoring_summary')
     if not isinstance(summary, dict):
         summary = runtime_payload
+    configuration_diagnostics = summary.get('configuration_diagnostics')
+    if not isinstance(configuration_diagnostics, dict):
+        configuration_diagnostics = _workspace_configuration_diagnostics(
+            valid_protected_asset_count=int(summary.get('valid_protected_assets') or 0),
+            linked_monitored_system_count=int(summary.get('linked_monitored_systems') or 0),
+            persisted_enabled_config_count=int(summary.get('enabled_configs') or 0),
+            valid_target_system_link_count=int(summary.get('valid_link_count') or 0),
+        )
     return {
         'workspace_id': runtime_payload.get('workspace_id'),
         'workspace_slug': runtime_payload.get('workspace_slug'),
@@ -3688,6 +3733,7 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
         'evidence_source': summary.get('evidence_source'),
         'confidence_status': summary.get('confidence_status'),
         'runtime_status_summary': summary.get('runtime_status'),
+        'configuration_diagnostics': configuration_diagnostics,
     }
 
 
