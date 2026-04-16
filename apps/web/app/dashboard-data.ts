@@ -1577,46 +1577,12 @@ function mapMonitoringStatusToDashboardPresentation(status: ReturnType<typeof no
   return 'degraded';
 }
 
-function formatMonitoringTimestamp(value: string | null, unavailableLabel: string): string {
-  return value ? new Date(value).toLocaleString() : unavailableLabel;
-}
-
-function monitoringCoverageLabel(status: ReturnType<typeof normalizeMonitoringPresentation>['status']): string {
-  if (status === 'live') return 'Verified telemetry';
-  if (status === 'limited coverage') return 'Coverage currently limited';
-  if (status === 'stale') return 'Telemetry delayed';
-  if (status === 'offline') return 'Telemetry unavailable';
-  return 'Monitoring state degraded';
-}
-
-function monitoringConfidenceLabel(confidence: ReturnType<typeof normalizeMonitoringPresentation>['confidence']): string {
-  if (confidence === 'verified telemetry') return 'Verified telemetry';
-  if (confidence === 'recent telemetry') return 'Recent telemetry';
-  if (confidence === 'limited telemetry') return 'Limited telemetry';
-  return 'Telemetry unavailable';
-}
-
 function resolveLegacyBackendStateFromMonitoringStatus(
   status: ReturnType<typeof normalizeMonitoringPresentation>['status']
 ): BackendState {
   if (status === 'live') return 'online';
   if (status === 'offline') return 'offline';
   return 'degraded';
-}
-
-function resolveLegacyBackendBannerFromMonitoringStatus(
-  status: ReturnType<typeof normalizeMonitoringPresentation>['status'],
-  summary: string
-): string {
-  if (status === 'live') {
-    return 'Monitoring telemetry is live and reporting from active systems.';
-  }
-
-  if (status === 'offline') {
-    return 'Monitoring telemetry is currently unavailable. Fresh monitoring updates will resume once reporting recovers.';
-  }
-
-  return `Monitoring telemetry is degraded: ${summary}`;
 }
 
 export function buildThreatDashboardRuntimeDiagnostics(
@@ -1896,19 +1862,16 @@ export function buildDashboardViewModel(
   const openAlerts = riskDashboard.summary.high_alert_count + threatDashboard.summary.critical_or_high_alerts;
   const openIncidents = resilienceDashboard.summary.incident_count;
   const monitoringPresentationState = mapMonitoringStatusToDashboardPresentation(monitoringPresentation.status);
-  const lastTelemetryAt = formatMonitoringTimestamp(monitoringTruth.last_telemetry_at, 'Telemetry timestamp unavailable');
-  const lastHeartbeatAt = formatMonitoringTimestamp(monitoringTruth.last_heartbeat_at, 'Heartbeat timestamp unavailable');
-  const lastPollAt = formatMonitoringTimestamp(monitoringTruth.last_poll_at, 'Poll timestamp unavailable');
   const workspaceMonitoring = {
     presentationState: monitoringPresentationState,
-    freshness: monitoringConfidenceLabel(monitoringPresentation.confidence),
-    lastUpdated: lastTelemetryAt,
-    lastConfirmedCheckpoint: lastHeartbeatAt,
-    lastTelemetryAt,
-    lastHeartbeatAt,
-    lastPollAt,
-    coverageLevel: monitoringCoverageLabel(monitoringPresentation.status),
-    recentActivitySummary: `${openAlerts} open alerts · ${openIncidents} open incidents · ${monitoringPresentation.summary}`,
+    freshness: monitoringPresentation.freshness,
+    lastUpdated: monitoringPresentation.telemetryTimestampLabel,
+    lastConfirmedCheckpoint: monitoringPresentation.heartbeatTimestampLabel,
+    lastTelemetryAt: monitoringPresentation.telemetryTimestampLabel,
+    lastHeartbeatAt: monitoringPresentation.heartbeatTimestampLabel,
+    lastPollAt: monitoringPresentation.pollTimestampLabel,
+    coverageLevel: monitoringPresentation.statusLabel,
+    recentActivitySummary: monitoringPresentation.summary,
     openAlerts,
     openIncidents,
     protectedAssets: monitoringTruth.protected_assets_count,
@@ -1948,10 +1911,7 @@ export function buildDashboardViewModel(
       meta: `${resilienceDashboard.summary.incident_count} incidents tracked · ${formatSourceLabel(diagnostics.endpoints.resilienceDashboard.payloadState)}`
     }
   ];
-  const backendBanner =
-    options.gatewayReachableOverride && resolvedBackendState === 'offline'
-      ? resolveLegacyBackendBannerFromMonitoringStatus('degraded', monitoringPresentation.summary)
-      : resolveLegacyBackendBannerFromMonitoringStatus(monitoringPresentation.status, monitoringPresentation.summary);
+  const backendBanner = monitoringPresentation.summary;
 
   return {
     backendState,

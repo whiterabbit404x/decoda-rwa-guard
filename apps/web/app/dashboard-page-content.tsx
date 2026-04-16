@@ -39,13 +39,23 @@ type Props = {
 };
 
 export default function DashboardPageContent({ data, gatewayReachableOverride = false, liveFeed }: Props) {
-  const { threatDashboard, complianceDashboard, resilienceDashboard, apiUrl, diagnostics } = data;
-  const { backendState, summaryCards, backendBanner, featurePresentation, workspaceMonitoring } = buildDashboardViewModel(data, {
+  const { threatDashboard, complianceDashboard, resilienceDashboard, riskDashboard, apiUrl, diagnostics } = data;
+  const { summaryCards, featurePresentation } = buildDashboardViewModel(data, {
     gatewayReachableOverride,
   });
   const monitoringTruth = liveFeed?.monitoring.truth
     ?? resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary);
   const monitoringPresentation = liveFeed?.monitoring.presentation ?? normalizeMonitoringPresentation(monitoringTruth);
+  const resolvedBackendState =
+    monitoringPresentation.status === 'live'
+      ? 'online'
+      : monitoringPresentation.status === 'offline'
+        ? 'offline'
+        : 'degraded';
+  const backendState =
+    gatewayReachableOverride && resolvedBackendState === 'offline'
+      ? 'degraded'
+      : resolvedBackendState;
   const telemetryUnavailable =
     !monitoringTruth.last_telemetry_at
     || monitoringTruth.freshness_status === 'unavailable'
@@ -73,7 +83,9 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
   const lastPollLabel = monitoringTruth.last_poll_at
     ? monitoringPresentation.pollTimestampLabel
     : 'Poll timestamp unavailable';
-  const { openAlerts, openIncidents } = workspaceMonitoring;
+  const openAlerts = riskDashboard.summary.high_alert_count + threatDashboard.summary.critical_or_high_alerts;
+  const openIncidents = resilienceDashboard.summary.incident_count;
+  const systemMessage = safeMonitoringSummary;
 
   return (
     <main className="container productPage">
@@ -99,7 +111,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <p><strong>Reporting/configured/protected:</strong> {monitoringTruth.reporting_systems} / {monitoringTruth.configured_systems} / {monitoringTruth.protected_assets_count}</p>
           <p><strong>Open alerts:</strong> {openAlerts} · <strong>Open incidents:</strong> {openIncidents}</p>
           <p><strong>Monitoring summary:</strong> {safeMonitoringSummary}</p>
-          <p><strong>System message:</strong> {backendBanner}</p>
+          <p><strong>System message:</strong> {systemMessage}</p>
           {liveFeed ? (
             <p>
               <strong>Workspace feed:</strong> {monitoringPresentation.statusLabel} · {safeMonitoringSummary} · {lastTelemetryLabel}. {lastHeartbeatLabel}. {lastPollLabel}.
