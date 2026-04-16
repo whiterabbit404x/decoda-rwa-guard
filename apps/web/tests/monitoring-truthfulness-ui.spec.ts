@@ -63,6 +63,17 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(threatPanel).toContain('Refreshing monitoring state…');
   });
 
+  test('overview panel uses canonical telemetry proof timestamp and separates detection copy', async () => {
+    const panel = source('monitoring-overview-panel.tsx');
+
+    expect(panel).toContain('const telemetryProofTimestamp = truth.last_coverage_telemetry_at ?? truth.last_telemetry_at;');
+    expect(panel).toContain('&& Boolean(telemetryProofTimestamp)');
+    expect(panel).toContain('const telemetryDetail = telemetryProofTimestamp');
+    expect(panel).toContain("return 'No recent detections.';");
+    expect(panel).toContain("formatTelemetryTimestamp(telemetryProofTimestamp)");
+    expect(panel).not.toContain('const telemetryDetail = truth.last_telemetry_at');
+  });
+
   test('critical monitoring presentation files do not reference legacy presentation signals', async () => {
     const threatPanel = source('threat-operations-panel.tsx');
     const statusPresentation = source('monitoring-status-presentation.ts');
