@@ -5203,7 +5203,7 @@ def resolve_workspace_context_for_request(connection: psycopg.Connection, reques
 def list_workspace_monitored_system_rows(connection: psycopg.Connection, workspace_id: str) -> list[dict[str, Any]]:
     rows = connection.execute(
         '''
-        SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_error_text, ms.coverage_reason,
+        SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.last_error_text, ms.coverage_reason,
                ms.freshness_status, ms.confidence_status, ms.created_at,
                COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, a.name AS asset_name, t.name AS target_name
         FROM monitored_systems ms
