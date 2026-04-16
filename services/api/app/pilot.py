@@ -6401,18 +6401,64 @@ def list_alert_evidence(alert_id: str, request: Request) -> dict[str, Any]:
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found.')
         payload = row['payload'] if isinstance(row['payload'], dict) else {}
+        evidence_rows = connection.execute(
+            '''
+            WITH latest AS (
+                SELECT MAX(observed_at) AS observed_at
+                FROM evidence
+                WHERE workspace_id = %s AND alert_id = %s
+            )
+            SELECT id, alert_id, observed_at, target_id, monitored_system_id, asset_id, event_type, severity, risk_score, summary, source_provider
+            FROM evidence
+            WHERE workspace_id = %s
+              AND alert_id = %s
+              AND observed_at = (SELECT observed_at FROM latest)
+            ORDER BY created_at DESC, id DESC
+            ''',
+            (workspace_context['workspace_id'], alert_id, workspace_context['workspace_id'], alert_id),
+        ).fetchall()
+        latest_evidence = dict(evidence_rows[0]) if evidence_rows else {}
+        source_provider = str(latest_evidence.get('source_provider') or '').strip().lower()
+        source_label = 'simulator' if source_provider.startswith('simulator') else 'live'
         target = connection.execute('SELECT id, name FROM targets WHERE id = %s', (row['target_id'],)).fetchone() if row.get('target_id') else None
         return {
             'alert_id': alert_id,
             'evidence': {
                 'tx_hash': payload.get('tx_hash'),
                 'block_number': payload.get('block_number'),
+                'observed_at': latest_evidence.get('observed_at'),
+                'event_type': latest_evidence.get('event_type'),
+                'severity': latest_evidence.get('severity'),
+                'risk_score': latest_evidence.get('risk_score'),
+                'summary': latest_evidence.get('summary'),
+                'source_provider': latest_evidence.get('source_provider'),
+                'source_label': source_label if latest_evidence else None,
+                'alert_id': str(latest_evidence.get('alert_id') or alert_id),
                 'target_id': str(row.get('target_id') or ''),
+                'monitored_system_id': str(latest_evidence.get('monitored_system_id') or ''),
+                'asset_id': str(latest_evidence.get('asset_id') or ''),
                 'target_name': str(target['name']) if target is not None else '',
                 'matched_patterns': row.get('matched_patterns') or [],
                 'reasons': row.get('reasons') or [],
                 'raw_payload_excerpt': payload,
             },
+            'linked_evidence': [
+                {
+                    'id': str(item.get('id') or ''),
+                    'alert_id': str(item.get('alert_id') or alert_id),
+                    'observed_at': item.get('observed_at'),
+                    'target_id': str(item.get('target_id') or ''),
+                    'monitored_system_id': str(item.get('monitored_system_id') or ''),
+                    'asset_id': str(item.get('asset_id') or ''),
+                    'event_type': item.get('event_type'),
+                    'severity': item.get('severity'),
+                    'risk_score': item.get('risk_score'),
+                    'summary': item.get('summary'),
+                    'source_provider': item.get('source_provider'),
+                    'source_label': 'simulator' if str(item.get('source_provider') or '').strip().lower().startswith('simulator') else 'live',
+                }
+                for item in evidence_rows
+            ],
         }
 
 
