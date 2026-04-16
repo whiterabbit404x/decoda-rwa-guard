@@ -436,6 +436,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   };
   const showLiveTelemetry = monitoringPresentation.hasLiveTelemetry;
   const telemetryLabel = monitoringPresentation.telemetryLabel;
+  const coverageTelemetryAt = truth.last_coverage_telemetry_at ?? monitoringPresentation.lastTelemetryAt;
+  const hasTelemetryTimestamp = Boolean(coverageTelemetryAt);
+  const telemetryDisplayLabel = formatRelativeTime(coverageTelemetryAt);
   const pollLabel = monitoringPresentation.pollLabel;
   const detectionEvalLabel = formatRelativeTime(truth.last_detection_at ?? monitoringPresentation.lastTelemetryAt ?? monitoringPresentation.lastPollAt);
 
@@ -642,7 +645,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </div>
         <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth.status_reason} configurationReason={truth.configuration_reason} />
         <p className="tableMeta">
-          Last telemetry: {showLiveTelemetry ? telemetryLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {pollLabel} · Last heartbeat: {monitoringPresentation.heartbeatLabel} · Runtime freshness: {String(truth.freshness_status || 'unavailable')} · Runtime confidence: {String(truth.confidence_status || 'unavailable')}
+          Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {pollLabel} · Last heartbeat: {monitoringPresentation.heartbeatLabel} · Runtime freshness: {String(truth.freshness_status || 'unavailable')} · Runtime confidence: {String(truth.confidence_status || 'unavailable')}
         </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
@@ -656,7 +659,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
         <article className="dataCard kpiCard">
           <p className="sectionEyebrow">Telemetry Freshness</p>
-          <p className="kpiValue">{showLiveTelemetry ? telemetryLabel : 'Unavailable'}</p>
+          <p className="kpiValue">{hasTelemetryTimestamp ? telemetryDisplayLabel : 'Unavailable'}</p>
           <p className="tableMeta">Detection evaluation {detectionEvalLabel}. Polling and heartbeat timestamps never count as telemetry.</p>
         </article>
         <article className="dataCard kpiCard">
@@ -775,7 +778,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 <li>Configured systems: {Math.max(configuredSystems, 0)}</li>
                 <li>Reporting systems: {reportingSystems}</li>
                 <li>Protected assets: {protectedAssetCount}</li>
-                <li>Last telemetry: {showLiveTelemetry ? telemetryLabel : 'Not available'}</li>
+                <li>Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'}</li>
                 <li>Last poll: {pollLabel}</li>
                 <li>Last heartbeat: {monitoringPresentation.heartbeatLabel}</li>
               </ul>
@@ -811,7 +814,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                         <td>{target.target_type || target.asset_type || 'System'}</td>
                         <td><span className={`statusBadge statusBadge-${target.health_status === 'broken' ? 'attention' : (target.monitoring_enabled ? 'healthy' : 'offline')}`}>{target.health_status === 'broken' ? 'Broken' : (target.monitoring_enabled ? 'Monitored' : 'Offline')}</span></td>
                         <td><span className={`statusBadge statusBadge-${coverageTone(coverage)}`}>{coverage}</span></td>
-                        <td>{showLiveTelemetry ? telemetryLabel : 'Not available'}</td>
+                        <td>{hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'}</td>
                         <td>{pollLabel}</td>
                         <td>{monitoringPresentation.heartbeatLabel}</td>
                         <td>{alerts[0]?.title || incidents[0]?.title || 'No active signals'}</td>
