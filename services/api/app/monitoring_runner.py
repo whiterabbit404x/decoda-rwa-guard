@@ -3701,6 +3701,59 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
 
 
 def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str, Any]:
+    def _base_debug_payload(*, workspace_id: Any = None, workspace_slug: Any = None) -> dict[str, Any]:
+        return {
+            'workspace_id': workspace_id,
+            'workspace_slug': workspace_slug,
+            'workspace_configured': False,
+            'configuration_reason': 'unavailable',
+            'status_reason': 'runtime_debug_unavailable',
+            'valid_protected_assets': 0,
+            'linked_monitored_systems': 0,
+            'enabled_configs': 0,
+            'valid_link_count': 0,
+            'configured_systems': 0,
+            'reporting_systems': 0,
+            'last_poll_at': None,
+            'last_heartbeat_at': None,
+            'last_coverage_telemetry_at': None,
+            'last_telemetry_at': None,
+            'telemetry_kind': None,
+            'evidence_source': 'none',
+            'confidence_status': 'unavailable',
+            'runtime_status_summary': 'offline',
+            'configuration_diagnostics': {
+                'valid_protected_assets': 0,
+                'linked_monitored_systems': 0,
+                'enabled_configs': 0,
+                'valid_link_count': 0,
+                'workspace_configured': False,
+                'configuration_reason': 'unavailable',
+                'reason_codes': ['unavailable'],
+            },
+        }
+
+    def _structured_runtime_error_payload(*, configuration_reason: str, status_reason: str, exc: Exception | None = None) -> dict[str, Any]:
+        payload = _base_debug_payload()
+        payload['configuration_reason'] = configuration_reason
+        payload['status_reason'] = status_reason
+        payload['configuration_diagnostics'] = {
+            'valid_protected_assets': 0,
+            'linked_monitored_systems': 0,
+            'enabled_configs': 0,
+            'valid_link_count': 0,
+            'workspace_configured': False,
+            'configuration_reason': configuration_reason,
+            'reason_codes': [configuration_reason],
+        }
+        if exc is not None:
+            payload['error'] = {
+                'code': 'runtime_debug_payload_error',
+                'type': type(exc).__name__,
+                'message': str(exc),
+            }
+        return payload
+
     try:
         runtime_payload = monitoring_runtime_status(request)
     except HTTPException as exc:
@@ -3708,40 +3761,27 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
             detail = str(exc.detail or '').strip() or 'workspace_or_auth_context_unavailable'
             safe_reason = detail.replace(' ', '_').lower()
             configuration_reason = 'workspace_not_resolved' if exc.status_code == status.HTTP_400_BAD_REQUEST else 'auth_context_unavailable'
-            return {
-                'workspace_id': None,
-                'workspace_slug': None,
-                'workspace_configured': False,
-                'configuration_reason': configuration_reason,
-                'status_reason': f'runtime_debug_context_error:{safe_reason}',
-                'valid_protected_assets': 0,
-                'linked_monitored_systems': 0,
-                'enabled_configs': 0,
-                'valid_link_count': 0,
-                'configured_systems': 0,
-                'reporting_systems': 0,
-                'last_poll_at': None,
-                'last_heartbeat_at': None,
-                'last_coverage_telemetry_at': None,
-                'last_telemetry_at': None,
-                'telemetry_kind': None,
-                'evidence_source': 'none',
-                'confidence_status': 'unavailable',
-                'runtime_status_summary': 'offline',
-                'configuration_diagnostics': {
-                    'valid_protected_assets': 0,
-                    'linked_monitored_systems': 0,
-                    'enabled_configs': 0,
-                    'valid_link_count': 0,
-                    'workspace_configured': False,
-                    'configuration_reason': configuration_reason,
-                    'reason_codes': [configuration_reason],
-                },
-            }
+            return _structured_runtime_error_payload(
+                configuration_reason=configuration_reason,
+                status_reason=f'runtime_debug_context_error:{safe_reason}',
+            )
         raise
+    except Exception as exc:
+        logger.exception('monitoring_runtime_debug_payload_failed')
+        return _structured_runtime_error_payload(
+            configuration_reason='runtime_status_exception',
+            status_reason=f'runtime_debug_status_exception:{type(exc).__name__}',
+            exc=exc,
+        )
+
     summary = runtime_payload.get('workspace_monitoring_summary')
     if not isinstance(summary, dict):
         summary = runtime_payload
+
+    workspace_id = runtime_payload.get('workspace_id')
+    workspace_slug = runtime_payload.get('workspace_slug')
+    payload = _base_debug_payload(workspace_id=workspace_id, workspace_slug=workspace_slug)
+
     configuration_diagnostics = summary.get('configuration_diagnostics')
     if not isinstance(configuration_diagnostics, dict):
         configuration_diagnostics = _workspace_configuration_diagnostics(
@@ -3750,28 +3790,31 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
             persisted_enabled_config_count=int(summary.get('enabled_configs') or 0),
             valid_target_system_link_count=int(summary.get('valid_link_count') or 0),
         )
-    return {
-        'workspace_id': runtime_payload.get('workspace_id'),
-        'workspace_slug': runtime_payload.get('workspace_slug'),
-        'workspace_configured': summary.get('workspace_configured'),
-        'configuration_reason': summary.get('configuration_reason'),
-        'status_reason': summary.get('status_reason'),
-        'valid_protected_assets': summary.get('valid_protected_assets'),
-        'linked_monitored_systems': summary.get('linked_monitored_systems'),
-        'enabled_configs': summary.get('enabled_configs'),
-        'valid_link_count': summary.get('valid_link_count'),
-        'configured_systems': summary.get('configured_systems'),
-        'reporting_systems': summary.get('reporting_systems'),
-        'last_poll_at': summary.get('last_poll_at'),
-        'last_heartbeat_at': summary.get('last_heartbeat_at'),
-        'last_coverage_telemetry_at': summary.get('last_coverage_telemetry_at'),
-        'last_telemetry_at': summary.get('last_telemetry_at'),
-        'telemetry_kind': summary.get('telemetry_kind'),
-        'evidence_source': summary.get('evidence_source'),
-        'confidence_status': summary.get('confidence_status'),
-        'runtime_status_summary': summary.get('runtime_status'),
-        'configuration_diagnostics': configuration_diagnostics,
-    }
+
+    payload.update(
+        {
+            'workspace_configured': bool(summary.get('workspace_configured')),
+            'configuration_reason': summary.get('configuration_reason') or configuration_diagnostics.get('configuration_reason') or 'unavailable',
+            'status_reason': summary.get('status_reason') or 'runtime_debug_unavailable',
+            'valid_protected_assets': int(summary.get('valid_protected_assets') or 0),
+            'linked_monitored_systems': int(summary.get('linked_monitored_systems') or 0),
+            'enabled_configs': int(summary.get('enabled_configs') or 0),
+            'valid_link_count': int(summary.get('valid_link_count') or 0),
+            'configured_systems': int(summary.get('configured_systems') or 0),
+            'reporting_systems': int(summary.get('reporting_systems') or 0),
+            'last_poll_at': summary.get('last_poll_at'),
+            'last_heartbeat_at': summary.get('last_heartbeat_at'),
+            'last_coverage_telemetry_at': summary.get('last_coverage_telemetry_at'),
+            'last_telemetry_at': summary.get('last_telemetry_at'),
+            'telemetry_kind': summary.get('telemetry_kind'),
+            'evidence_source': summary.get('evidence_source') or 'none',
+            'confidence_status': summary.get('confidence_status') or 'unavailable',
+            'runtime_status_summary': summary.get('runtime_status') or summary.get('runtime_status_summary') or 'offline',
+            'configuration_diagnostics': configuration_diagnostics,
+        }
+    )
+    return payload
+
 
 
 def list_monitoring_evidence(request: Request, *, limit: int = 50) -> dict[str, Any]:
