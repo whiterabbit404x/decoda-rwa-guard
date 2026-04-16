@@ -44,7 +44,7 @@ def build_workspace_monitoring_summary(
     normalized_evidence = evidence_source if evidence_source in {'live', 'simulator', 'replay', 'none'} else 'none'
     telemetry_timestamp = (
         last_telemetry_at
-        if workspace_configured and normalized_reporting > 0 and normalized_mode == 'live' and normalized_evidence == 'live'
+        if workspace_configured and normalized_reporting > 0 and normalized_evidence in {'live', 'simulator'}
         else None
     )
     freshness_status = (
@@ -54,7 +54,7 @@ def build_workspace_monitoring_summary(
     )
     confidence_status = (
         'high'
-        if telemetry_timestamp and normalized_reporting > 0
+        if telemetry_timestamp and normalized_reporting > 0 and normalized_evidence == 'live'
         else ('medium' if normalized_mode == 'simulator' and normalized_reporting > 0 else ('low' if workspace_configured else 'unavailable'))
     )
     summary = {

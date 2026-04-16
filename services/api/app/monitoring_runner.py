@@ -1852,7 +1852,27 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, incidents_created)
     WORKER_STATE['metrics']['live_events_ingested'] += len(events)
-    return {'target_id': str(target['id']), 'monitoring_run_id': monitoring_run_id, 'runs': run_ids, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'events_ingested': len(events), 'status': last_status, 'latest_processed_block': latest_processed_block, 'source_status': source_status, 'degraded_reason': degraded_reason, 'provider_status': provider_result.status, 'provider_source_type': provider_result.source_type, 'synthetic': provider_result.synthetic, 'recent_evidence_state': recent_evidence_state, 'recent_truthfulness_state': recent_truthfulness_state, 'recent_real_event_count': int(provider_result.recent_real_event_count), 'last_real_event_at': last_real_event_at.isoformat() if last_real_event_at else None, 'protected_asset_coverage_record': last_protected_asset_coverage_record}
+    return {
+        'target_id': str(target['id']),
+        'monitoring_run_id': monitoring_run_id,
+        'runs': run_ids,
+        'alerts_generated': alerts_generated,
+        'incidents_created': incidents_created,
+        'events_ingested': len(events),
+        'status': last_status,
+        'latest_processed_block': latest_processed_block,
+        'source_status': source_status,
+        'degraded_reason': degraded_reason,
+        'provider_status': provider_result.status,
+        'provider_source_type': provider_result.source_type,
+        'synthetic': provider_result.synthetic,
+        'recent_evidence_state': recent_evidence_state,
+        'recent_truthfulness_state': recent_truthfulness_state,
+        'recent_real_event_count': int(provider_result.recent_real_event_count),
+        'last_event_at': checkpoint_at.isoformat() if checkpoint_at else None,
+        'last_real_event_at': last_real_event_at.isoformat() if last_real_event_at else None,
+        'protected_asset_coverage_record': last_protected_asset_coverage_record,
+    }
 
 
 def process_ingested_event(connection: Any, *, target: dict[str, Any], event: ActivityEvent, ingestion_mode: str = 'live') -> dict[str, Any]:
@@ -2086,7 +2106,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                             WHERE ms.id = %s::uuid
                             ''',
                             (
-                                result.get('last_real_event_at') or target.get('last_real_event_at'),
+                                result.get('last_event_at') or target.get('watcher_last_event_at'),
                                 freshness_status,
                                 confidence_status,
                                 coverage_reason,
