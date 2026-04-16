@@ -23,6 +23,7 @@ def test_summary_includes_unified_truth_model_fields() -> None:
         last_poll_at=now,
         last_heartbeat_at=now,
         last_telemetry_at=now - timedelta(seconds=30),
+        last_coverage_telemetry_at=now - timedelta(seconds=30),
         telemetry_kind='target_event',
         last_detection_at=now,
         evidence_source='live',
@@ -70,6 +71,7 @@ def test_heartbeat_recent_without_telemetry_sets_unavailable_freshness() -> None
         last_poll_at=None,
         last_heartbeat_at=now,
         last_telemetry_at=None,
+        last_coverage_telemetry_at=None,
         telemetry_kind=None,
         last_detection_at=None,
         evidence_source='live',
@@ -100,6 +102,7 @@ def test_poll_recent_without_telemetry_sets_unavailable_freshness() -> None:
         last_poll_at=now,
         last_heartbeat_at=None,
         last_telemetry_at=None,
+        last_coverage_telemetry_at=None,
         telemetry_kind=None,
         last_detection_at=None,
         evidence_source='live',
@@ -116,7 +119,7 @@ def test_poll_recent_without_telemetry_sets_unavailable_freshness() -> None:
     assert 'poll_without_telemetry_timestamp' in summary['contradiction_flags']
 
 
-def test_telemetry_recent_with_reporting_is_fresh_and_high_confidence() -> None:
+def test_fresh_live_coverage_telemetry_sets_high_confidence() -> None:
     now = _now()
     summary = build_workspace_monitoring_summary(
         now=now,
@@ -130,7 +133,8 @@ def test_telemetry_recent_with_reporting_is_fresh_and_high_confidence() -> None:
         last_poll_at=now,
         last_heartbeat_at=now,
         last_telemetry_at=now - timedelta(seconds=40),
-        telemetry_kind='target_event',
+        last_coverage_telemetry_at=now - timedelta(seconds=40),
+        telemetry_kind='coverage',
         last_detection_at=now - timedelta(seconds=20),
         evidence_source='live',
         status_reason=None,
@@ -144,6 +148,37 @@ def test_telemetry_recent_with_reporting_is_fresh_and_high_confidence() -> None:
     assert summary['freshness_status'] == 'fresh'
     assert summary['confidence_status'] == 'high'
     assert summary['contradiction_flags'] == []
+
+
+def test_live_poll_and_heartbeat_without_coverage_sets_limited_confidence() -> None:
+    now = _now()
+    summary = build_workspace_monitoring_summary(
+        now=now,
+        workspace_configured=True,
+        monitoring_mode='live',
+        runtime_status='idle',
+        configured_systems=2,
+        monitored_systems_count=2,
+        reporting_systems=0,
+        protected_assets=2,
+        last_poll_at=now,
+        last_heartbeat_at=now,
+        last_telemetry_at=None,
+        last_coverage_telemetry_at=None,
+        telemetry_kind=None,
+        last_detection_at=now - timedelta(seconds=30),
+        evidence_source='live',
+        status_reason='no_reporting_systems',
+        configuration_reason=None,
+        valid_protected_asset_count=2,
+        linked_monitored_system_count=2,
+        persisted_enabled_config_count=2,
+        valid_target_system_link_count=2,
+        telemetry_window_seconds=300,
+    )
+    assert summary['freshness_status'] == 'unavailable'
+    assert summary['confidence_status'] == 'limited'
+    assert summary['last_detection_at'] is not None
 
 
 def test_workspace_unconfigured_cannot_report_monitored_or_protected_counts() -> None:
@@ -160,6 +195,7 @@ def test_workspace_unconfigured_cannot_report_monitored_or_protected_counts() ->
         last_poll_at=now,
         last_heartbeat_at=None,
         last_telemetry_at=None,
+        last_coverage_telemetry_at=None,
         telemetry_kind=None,
         last_detection_at=None,
         evidence_source='none',
@@ -188,6 +224,7 @@ def test_healthy_status_without_reporting_is_flagged() -> None:
         last_poll_at=now,
         last_heartbeat_at=now,
         last_telemetry_at=None,
+        last_coverage_telemetry_at=None,
         telemetry_kind=None,
         last_detection_at=None,
         evidence_source='live',
@@ -216,6 +253,7 @@ def test_workspace_configured_with_missing_required_link_counts_is_flagged() -> 
         last_poll_at=now,
         last_heartbeat_at=now,
         last_telemetry_at=now,
+        last_coverage_telemetry_at=now,
         telemetry_kind='target_event',
         last_detection_at=now,
         evidence_source='live',
@@ -245,6 +283,7 @@ def test_simulator_telemetry_timestamp_is_preserved_from_persisted_event() -> No
         last_poll_at=now,
         last_heartbeat_at=now,
         last_telemetry_at=simulator_event_at,
+        last_coverage_telemetry_at=None,
         telemetry_kind='target_event',
         last_detection_at=None,
         evidence_source='simulator',
@@ -259,4 +298,4 @@ def test_simulator_telemetry_timestamp_is_preserved_from_persisted_event() -> No
     assert summary['last_telemetry_at'] == simulator_event_at.isoformat()
     assert summary['telemetry_kind'] == 'target_event'
     assert summary['freshness_status'] == 'fresh'
-    assert summary['confidence_status'] == 'medium'
+    assert summary['confidence_status'] == 'limited'
