@@ -421,6 +421,18 @@ def test_seed_demo_workspace_creates_demo_user_workspace_and_membership(pilot_mo
     assert payload['membership_created'] is True
     assert payload['monitoring_bootstrap']['bootstrapped'] is True
     assert payload['monitoring_bootstrap']['evidence_source'] == 'simulator'
+    target_insert = next(params for statement, params in executed if 'INSERT INTO targets' in statement)
+    assert target_insert is not None
+    assert target_insert[3] is not None
+    assert '"proof_mode":true' in target_insert[3].lower()
+    assert target_insert[4] is not None
+    alert_insert = next(params for statement, params in executed if 'INSERT INTO alerts' in statement)
+    assert alert_insert[5] == 'high'
+    incident_insert = next(params for statement, params in executed if 'INSERT INTO incidents' in statement)
+    assert incident_insert[6] == 'high'
+    evidence_insert = next(params for statement, params in executed if 'INSERT INTO evidence' in statement)
+    assert evidence_insert[11] == 'high'
+    assert float(evidence_insert[12]) > 0.8
     assert any('INSERT INTO users' in statement and 'email_verified_at' in statement for statement, _ in executed)
     assert any('INSERT INTO workspaces' in statement for statement, _ in executed)
     assert any('INSERT INTO workspace_members' in statement for statement, _ in executed)
