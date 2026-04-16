@@ -13,9 +13,17 @@ test('renders runtime summary fallback when runtime coverage exists without rows
   expect(threat).toContain('Configured systems: {Math.max(configuredSystems, 0)}');
   expect(threat).toContain('Reporting systems: {reportingSystems}');
   expect(threat).toContain('Protected assets: {protectedAssetCount}');
-  expect(threat).toContain('Last telemetry: {showLiveTelemetry ? telemetryLabel : \'Not available\'}');
+  expect(threat).toContain('Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : \'Not available\'}');
   expect(threat).toContain('Last poll: {pollLabel}');
-  expect(threat).toContain('Last heartbeat: {formatRelativeTime(truth.last_heartbeat_at)}');
+  expect(threat).toContain('Last heartbeat: {monitoringPresentation.heartbeatLabel}');
+});
+
+test('decouples telemetry timestamp display from strict live telemetry badge logic', () => {
+  const threat = readThreatPanel();
+  expect(threat).toContain('const coverageTelemetryAt = truth.last_coverage_telemetry_at ?? monitoringPresentation.lastTelemetryAt;');
+  expect(threat).toContain('const hasTelemetryTimestamp = Boolean(coverageTelemetryAt);');
+  expect(threat).toContain('const telemetryDisplayLabel = formatRelativeTime(coverageTelemetryAt);');
+  expect(threat).toContain('{showLiveTelemetry ? `Live telemetry ${telemetryLabel}` : \'Current telemetry unavailable\'}');
 });
 
 test('renders targets table when targets are present', () => {

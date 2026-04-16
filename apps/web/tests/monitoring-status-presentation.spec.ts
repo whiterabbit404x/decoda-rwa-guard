@@ -124,6 +124,29 @@ test.describe('monitoring status presentation adapter', () => {
     expect(value.summary).toContain('No recent detections.');
   });
 
+  test('uses coverage telemetry timestamp label even when target-event telemetry is absent', async () => {
+    const value = normalizeMonitoringPresentation(makeTruth({
+      runtime_status: 'degraded',
+      freshness_status: 'stale',
+      telemetry_kind: 'target_event',
+      last_telemetry_at: null,
+      last_coverage_telemetry_at: '2026-04-13T10:00:00Z',
+      last_detection_at: null,
+    }));
+    expect(value.telemetryTimestampLabel).toContain('Telemetry timestamp:');
+    expect(value.telemetryTimestampLabel).not.toContain('unavailable');
+  });
+
+  test('keeps telemetry timestamp unavailable when no coverage telemetry exists', async () => {
+    const value = normalizeMonitoringPresentation(makeTruth({
+      telemetry_kind: 'target_event',
+      last_telemetry_at: null,
+      last_coverage_telemetry_at: null,
+      last_detection_at: null,
+    }));
+    expect(value.telemetryTimestampLabel).toContain('unavailable');
+  });
+
   test('keeps live status when coverage is fresh and detections are historical only', async () => {
     const value = normalizeMonitoringPresentation(makeTruth({
       telemetry_kind: 'coverage',
