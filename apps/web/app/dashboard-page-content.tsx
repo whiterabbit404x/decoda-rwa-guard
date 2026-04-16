@@ -9,7 +9,8 @@ import StatusBadge from './status-badge';
 import SystemStatusPanel from './system-status-panel';
 import ThreatOperationsPanel from './threat-operations-panel';
 import type { useLiveWorkspaceFeed } from './use-live-workspace-feed';
-import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
+import { normalizeMonitoringPresentation, type MonitoringPresentationStatus } from './monitoring-status-presentation';
+import type { CustomerStatusBadgeState } from './customer-status-badge';
 import {
   monitoringHealthyCopyAllowed,
   resolveWorkspaceMonitoringTruthFromSummary,
@@ -21,6 +22,15 @@ import {
   statusTone,
 } from './dashboard-data';
 import { toDashboardBadgeState } from './dashboard-status-presentation';
+
+function mapMonitoringStatusToBadgeState(status: MonitoringPresentationStatus): CustomerStatusBadgeState {
+  switch (status) {
+    case 'limited coverage':
+      return 'limited_coverage';
+    default:
+      return status;
+  }
+}
 
 type Props = {
   data: DashboardPageData;
@@ -73,7 +83,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <h1>Tokenized treasury control dashboard</h1>
           <p className="lede">Monitor threats, compliance posture, and resilience readiness with persistent workspace telemetry and history-backed operations.</p>
           <div className="heroActionRow">
-            <StatusBadge state={diagnostics.experienceState} />
+            <StatusBadge state={mapMonitoringStatusToBadgeState(monitoringPresentation.status)} />
             <span className="ruleChip">Gateway: {diagnostics.endpoints.dashboard.ok ? 'reachable' : 'needs attention'}</span>
             <span className="ruleChip">API: {apiUrl || 'Not configured'}</span>
           </div>
