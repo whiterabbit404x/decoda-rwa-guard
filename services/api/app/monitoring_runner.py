@@ -2922,6 +2922,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     enabled_monitored_rows_count = 0
     healthy_enabled_target_ids: set[str] = set()
     healthy_enabled_target_asset_map: dict[str, str] = {}
+    telemetry_window_seconds = max(300, MONITOR_POLL_INTERVAL_SECONDS * 6)
+    live_coverage_receipts_by_system: dict[str, datetime] = {}
+    live_coverage_receipts_workspace_latest: datetime | None = None
+    live_coverage_receipts_persisted_count = 0
 
     def _load_runtime_monitored_rows(connection: Any, workspace_scope_id: str | None) -> list[dict[str, Any]]:
         if workspace_scope_id:
@@ -3141,6 +3145,52 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         ).fetchone()
         latest_detection_evaluation_at = _parse_ts((latest_detection_eval or {}).get('created_at'))
         latest_detection_payload = _json_safe_value((latest_detection_eval or {}).get('response_payload') or {}) if latest_detection_eval else None
+        synthetic_ingestion_sources = ('demo', 'simulator', 'replay', 'synthetic', 'fallback')
+        live_coverage_receipts_query = f'''
+            SELECT
+                e.processed_at,
+                e.target_id,
+                ms.id AS monitored_system_id
+            FROM monitoring_event_receipts e
+            LEFT JOIN monitored_systems ms
+              ON ms.workspace_id = e.workspace_id
+             AND ms.target_id = e.target_id
+             AND ms.is_enabled = TRUE
+            LEFT JOIN targets t
+              ON t.id = e.target_id
+             AND t.workspace_id = e.workspace_id
+            WHERE e.evidence_source = 'live'
+              AND e.telemetry_kind = 'coverage'
+              AND COALESCE(LOWER(e.ingestion_source), '') NOT IN %s
+              AND t.deleted_at IS NULL
+              AND t.enabled = TRUE
+              AND {monitorable_target_types_sql_clause('t.target_type')}
+              {'AND e.workspace_id = %s' if workspace_id else ''}
+            ORDER BY e.processed_at DESC
+        '''
+        live_coverage_receipts_params: list[Any] = [synthetic_ingestion_sources]
+        if workspace_id:
+            live_coverage_receipts_params.append(workspace_id)
+        live_coverage_receipt_rows = connection.execute(
+            live_coverage_receipts_query,
+            tuple(live_coverage_receipts_params),
+        ).fetchall()
+        live_coverage_receipts_persisted_count = len(live_coverage_receipt_rows)
+        for receipt in live_coverage_receipt_rows:
+            processed_at = _parse_ts((receipt or {}).get('processed_at'))
+            if processed_at is None:
+                continue
+            live_coverage_receipts_workspace_latest = (
+                processed_at
+                if live_coverage_receipts_workspace_latest is None
+                else max(live_coverage_receipts_workspace_latest, processed_at)
+            )
+            monitored_system_id = str((receipt or {}).get('monitored_system_id') or '').strip()
+            if not monitored_system_id:
+                continue
+            previous = live_coverage_receipts_by_system.get(monitored_system_id)
+            if previous is None or processed_at > previous:
+                live_coverage_receipts_by_system[monitored_system_id] = processed_at
         if request is None:
             monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
     parsed_heartbeats = [_parse_ts(row.get('last_heartbeat')) for row in monitored_rows]
@@ -3251,12 +3301,26 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         recent_real_event_count = int(recent_real_event_count_raw or 0)
     except Exception:
         recent_real_event_count = 0
-    telemetry_window_seconds = max(300, MONITOR_POLL_INTERVAL_SECONDS * 6)
     last_poll_at = _parse_ts(health.get('last_cycle_at') or health.get('updated_at') or health.get('last_heartbeat_at'))
     telemetry_candidates: list[tuple[datetime, str]] = []
     coverage_telemetry_candidates: list[datetime] = []
+    receipts_reporting_systems = 0
+    for receipt_ts in live_coverage_receipts_by_system.values():
+        if int((now - receipt_ts).total_seconds()) <= telemetry_window_seconds:
+            receipts_reporting_systems += 1
+    logger.info(
+        'monitoring_runtime_coverage_receipts workspace_id=%s coverage_telemetry_persisted_count=%s receipts_reporting_systems=%s',
+        workspace_id,
+        live_coverage_receipts_persisted_count,
+        receipts_reporting_systems,
+    )
     for row in enabled_rows:
-        coverage_ts = _parse_ts(row.get('last_coverage_telemetry_at'))
+        system_id = str(row.get('id') or '').strip()
+        coverage_primary_ts = _parse_ts(row.get('last_coverage_telemetry_at'))
+        coverage_receipt_ts = live_coverage_receipts_by_system.get(system_id)
+        coverage_ts = coverage_primary_ts
+        if coverage_receipt_ts is not None and (coverage_ts is None or coverage_receipt_ts > coverage_ts):
+            coverage_ts = coverage_receipt_ts
         target_event_ts = _parse_ts(row.get('last_event_at'))
         if coverage_ts is not None:
             coverage_telemetry_candidates.append(coverage_ts)
@@ -3264,12 +3328,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         if target_event_ts is not None:
             telemetry_candidates.append((target_event_ts, 'target_event'))
     telemetry_candidates.sort(key=lambda item: item[0], reverse=True)
-    last_coverage_telemetry_at = max(coverage_telemetry_candidates) if coverage_telemetry_candidates else None
+    last_coverage_telemetry_at = max(coverage_telemetry_candidates) if coverage_telemetry_candidates else live_coverage_receipts_workspace_latest
     last_telemetry_at = telemetry_candidates[0][0] if telemetry_candidates else None
     telemetry_kind = telemetry_candidates[0][1] if telemetry_candidates else None
     reporting_systems = 0
     for row in enabled_rows:
+        system_id = str(row.get('id') or '').strip()
         latest_system_coverage_telemetry = _parse_ts(row.get('last_coverage_telemetry_at'))
+        receipt_coverage_telemetry = live_coverage_receipts_by_system.get(system_id)
+        if receipt_coverage_telemetry is not None and (
+            latest_system_coverage_telemetry is None or receipt_coverage_telemetry > latest_system_coverage_telemetry
+        ):
+            latest_system_coverage_telemetry = receipt_coverage_telemetry
         if latest_system_coverage_telemetry is None:
             continue
         if int((now - latest_system_coverage_telemetry).total_seconds()) <= telemetry_window_seconds:
@@ -3310,6 +3380,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     if source_of_evidence == 'live':
         telemetry_kind = 'coverage'
     evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if evidence_at else 'none'))
+    logger.info(
+        'monitoring_runtime_evidence_selection workspace_id=%s chosen_evidence_source=%s source_of_evidence=%s reporting_systems=%s receipts_reporting_systems=%s',
+        workspace_id,
+        evidence_source,
+        source_of_evidence,
+        reporting_systems,
+        receipts_reporting_systems,
+    )
     downgrade_reason_tokens: list[str] = []
     if not coverage_fresh:
         downgrade_reason_tokens.append('no_fresh_coverage_telemetry')
@@ -3389,6 +3467,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     )
     summary['poll_freshness_status'] = poll_freshness_status
     summary['source_of_evidence'] = source_of_evidence
+    if workspace_configured and runtime_status_summary == 'idle' and runtime_status_reason:
+        logger.info(
+            'monitoring_runtime_limited_coverage workspace_id=%s chosen_evidence_source=%s status_reason=%s reporting_systems=%s coverage_fresh=%s',
+            workspace_id,
+            evidence_source,
+            runtime_status_reason,
+            reporting_systems,
+            coverage_fresh,
+        )
     final_status_reason = runtime_status_reason
     logger.info(
         'monitoring_runtime_truth workspace_id=%s reporting_systems=%s configured_systems=%s evidence_source=%s last_coverage_telemetry_at=%s status_reason=%s',
