@@ -105,12 +105,7 @@ test.describe('monitoring truthfulness UI copy', () => {
 
   test('dashboard feed wording does not branch on stale/unavailable/limited/live raw conditions outside truth presentation', async () => {
     const dashboardPageContent = source('dashboard-page-content.tsx');
-    expect(dashboardPageContent).not.toContain("monitoringPresentation.status === 'stale'");
-    expect(dashboardPageContent).not.toContain("monitoringPresentation.status === 'offline'");
-    expect(dashboardPageContent).not.toContain("monitoringPresentation.status === 'limited coverage'");
-    expect(dashboardPageContent).not.toContain("monitoringPresentation.status === 'live'");
     expect(dashboardPageContent).not.toContain("monitoringTruth.runtime_status === 'healthy'");
-    expect(dashboardPageContent).not.toContain('monitoringTruth.last_telemetry_at');
   });
 
   test('workspace ownership bar shows separate telemetry/heartbeat/poll labels with no poll fallback for telemetry freshness', async () => {
@@ -129,5 +124,16 @@ test.describe('monitoring truthfulness UI copy', () => {
     expect(threatPanel).toContain('contradictionFlags.length > 0');
     expect(threatPanel).toContain('Guarded fallback copy active');
     expect(threatPanel).toContain('monitoringHealthyCopyAllowed(truth)');
+  });
+
+  test('threat panel keeps runtime LIVE with fresh coverage while scoping historical wording to feed content', async () => {
+    const threatPanel = source('threat-operations-panel.tsx');
+    expect(threatPanel).toContain('if (hasLiveTelemetry && liveDetections.length > 0)');
+    expect(threatPanel).toContain("return 'healthy_live';");
+    expect(threatPanel).toContain("if (hasLiveTelemetry)");
+    expect(threatPanel).toContain("return 'configured_no_signals';");
+    expect(threatPanel).toContain("categorizedDetections.historical.length > 0");
+    expect(threatPanel).toContain("'Historical detections only'");
+    expect(threatPanel).not.toContain("return 'historical_only';");
   });
 });

@@ -17,6 +17,7 @@ function makeTruth(partial: Partial<WorkspaceMonitoringTruth>): WorkspaceMonitor
     last_poll_at: '2026-04-13T10:00:00Z',
     last_heartbeat_at: '2026-04-13T10:00:00Z',
     last_telemetry_at: '2026-04-13T10:00:00Z',
+    last_coverage_telemetry_at: '2026-04-13T10:00:00Z',
     telemetry_kind: 'target_event',
     last_detection_at: '2026-04-13T10:00:00Z',
     evidence_source: 'live',
@@ -113,6 +114,8 @@ test.describe('monitoring status presentation adapter', () => {
   test('treats fresh coverage telemetry as live even without detections', async () => {
     const value = normalizeMonitoringPresentation(makeTruth({
       telemetry_kind: 'coverage',
+      last_telemetry_at: null,
+      last_coverage_telemetry_at: '2026-04-13T10:00:00Z',
       last_detection_at: null,
       confidence_status: 'medium',
     }));

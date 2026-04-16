@@ -21,6 +21,7 @@ def build_workspace_monitoring_summary(
     last_poll_at: datetime | None,
     last_heartbeat_at: datetime | None,
     last_telemetry_at: datetime | None,
+    last_coverage_telemetry_at: datetime | None,
     telemetry_kind: str | None,
     last_detection_at: datetime | None,
     evidence_source: str,
@@ -47,6 +48,11 @@ def build_workspace_monitoring_summary(
     telemetry_timestamp = (
         last_telemetry_at
         if workspace_configured and normalized_reporting > 0 and normalized_evidence in {'live', 'simulator'} and normalized_telemetry_kind in {'coverage', 'target_event'}
+        else None
+    )
+    coverage_telemetry_timestamp = (
+        last_coverage_telemetry_at
+        if workspace_configured and normalized_reporting > 0 and normalized_evidence in {'live', 'simulator'}
         else None
     )
     freshness_status = (
@@ -87,6 +93,7 @@ def build_workspace_monitoring_summary(
         'last_poll_at': _isoformat(last_poll_at),
         'last_heartbeat_at': _isoformat(last_heartbeat_at),
         'last_telemetry_at': _isoformat(telemetry_timestamp),
+        'last_coverage_telemetry_at': _isoformat(coverage_telemetry_timestamp),
         'telemetry_kind': normalized_telemetry_kind if telemetry_timestamp else None,
         'last_detection_at': _isoformat(last_detection_at),
         'evidence_source': normalized_evidence,

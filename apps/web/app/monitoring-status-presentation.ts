@@ -88,14 +88,26 @@ function formatTimestamp(kind: 'telemetry' | 'heartbeat' | 'poll', value: string
   return `${label} timestamp: ${new Date(value).toLocaleString()}`;
 }
 
+function coverageTelemetryTimestamp(truth: WorkspaceMonitoringTruth): string | null {
+  if (truth.last_coverage_telemetry_at) {
+    return truth.last_coverage_telemetry_at;
+  }
+  if (truth.telemetry_kind === 'coverage') {
+    return truth.last_telemetry_at;
+  }
+  return null;
+}
+
 function telemetryFreshnessSummary(truth: WorkspaceMonitoringTruth): string {
-  if (!truth.last_telemetry_at || truth.freshness_status === 'unavailable') {
+  const coverageTelemetryAt = coverageTelemetryTimestamp(truth);
+  const proofTimestamp = coverageTelemetryAt ?? truth.last_telemetry_at;
+  if (!proofTimestamp || truth.freshness_status === 'unavailable') {
     return 'Telemetry freshness unavailable.';
   }
   if (truth.freshness_status === 'stale') {
     return 'Telemetry is stale.';
   }
-  return truth.telemetry_kind === 'coverage'
+  return coverageTelemetryAt
     ? 'Live telemetry verified.'
     : 'Live target-event telemetry verified.';
 }
@@ -117,13 +129,14 @@ function summarizeStatus(status: MonitoringPresentationStatus, freshness: Monito
 }
 
 function detectionSummary(truth: WorkspaceMonitoringTruth): string {
-  if (!truth.last_telemetry_at) {
+  const coverageTelemetryAt = coverageTelemetryTimestamp(truth);
+  if (!truth.last_telemetry_at && !coverageTelemetryAt) {
     return '';
   }
   if (truth.last_detection_at) {
     return ' Recent detections available.';
   }
-  if (truth.telemetry_kind === 'coverage') {
+  if (coverageTelemetryAt) {
     return ' No recent detections.';
   }
   return ' No recent target events.';
