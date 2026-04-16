@@ -30,6 +30,8 @@ class _SchemaStrictConn:
                 'runtime_status': 'active',
                 'status': 'active',
                 'last_heartbeat': None,
+                'last_event_at': None,
+                'last_coverage_telemetry_at': '2026-04-15T23:59:00+00:00',
                 'last_error_text': None,
                 'created_at': '2026-04-10T00:00:00+00:00',
                 'monitoring_interval_seconds': 45,
@@ -102,6 +104,7 @@ def test_list_workspace_monitored_system_rows_uses_target_interval_alias():
     assert len(rows) == 1
     assert rows[0]['id'] == 'ms-1'
     assert rows[0]['monitoring_interval_seconds'] == 45
+    assert rows[0]['last_coverage_telemetry_at'] == '2026-04-15T23:59:00+00:00'
 
 
 def test_list_workspace_monitored_system_rows_does_not_filter_deleted_targets():

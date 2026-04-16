@@ -880,6 +880,84 @@ def test_runtime_status_workspace_scoped_path_uses_same_rows_as_monitored_system
     assert payload['monitoring_status'] != 'offline'
 
 
+def test_runtime_status_workspace_scoped_path_preserves_coverage_telemetry_field(monkeypatch):
+    now = datetime.now(timezone.utc)
+    coverage_at = now - timedelta(seconds=20)
+    coverage_iso = coverage_at.isoformat()
+
+    class _CoverageScopedConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(
+                    rows=[
+                        {
+                            'id': 'sys-coverage',
+                            'workspace_id': 'ws-1',
+                            'asset_id': 'asset-1',
+                            'target_id': 'target-1',
+                            'chain': 'ethereum-mainnet',
+                            'is_enabled': True,
+                            'runtime_status': 'healthy',
+                            'status': 'ready',
+                            'last_heartbeat': now.isoformat(),
+                            'last_event_at': None,
+                            'last_coverage_telemetry_at': coverage_iso,
+                            'monitoring_interval_seconds': 30,
+                            'created_at': now.isoformat(),
+                        }
+                    ]
+                )
+            if 'FROM alerts' in q or 'FROM incidents' in q:
+                return _Result({'c': 0})
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 1, 'asset_count': 1})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
+            if 'FROM analysis_runs' in q:
+                return _Result(
+                    {
+                        'created_at': now,
+                        'response_payload': {'metadata': {'recent_real_event_count': 0, 'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}},
+                    }
+                )
+            return _Result({})
+
+    conn = _CoverageScopedConn(None)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(),
+            'last_cycle_at': now.isoformat(),
+            'degraded': False,
+            'last_error': None,
+            'source_type': 'polling',
+            'worker_running': True,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda _c, _r: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}, True),
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'list_workspace_monitored_system_rows',
+        lambda _c, _w: conn.execute('SELECT ... FROM monitored_systems ms ORDER BY ms.created_at DESC').fetchall(),
+    )
+
+    payload = monitoring_runner.monitoring_runtime_status(SimpleNamespace(headers={'x-workspace-id': 'ws-1'}))
+    summary = payload['workspace_monitoring_summary']
+    assert summary['reporting_systems'] > 0
+    assert summary['runtime_status'] == 'healthy'
+    assert summary['monitoring_mode'] == 'live'
+    assert summary['telemetry_kind'] == 'coverage'
+    assert summary['evidence_source'] == 'live'
+
+
 def test_contradiction_guard_offline_runtime_clears_current_telemetry(monkeypatch):
     now = datetime.now(timezone.utc)
 
