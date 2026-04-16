@@ -259,7 +259,7 @@ def test_runtime_status_workspace_unconfigured_false_when_coverage_exists(monkey
     assert 'workspace_unconfigured_with_coverage' not in payload['workspace_monitoring_summary']['contradiction_flags']
 
 
-def test_runtime_status_promotes_to_reporting_system_with_simulator_telemetry(monkeypatch):
+def test_runtime_status_promotes_to_reporting_system_with_simulator_coverage(monkeypatch):
     now = datetime.now(timezone.utc)
 
     class _SimulatorTelemetryConn(_Conn):
@@ -276,7 +276,8 @@ def test_runtime_status_promotes_to_reporting_system_with_simulator_telemetry(mo
                             'is_enabled': True,
                             'runtime_status': 'healthy',
                             'last_heartbeat': now.isoformat(),
-                            'last_event_at': (now - timedelta(seconds=20)).isoformat(),
+                            'last_event_at': None,
+                            'last_coverage_telemetry_at': (now - timedelta(seconds=20)).isoformat(),
                             'monitoring_interval_seconds': 30,
                             'created_at': now.isoformat(),
                         },
@@ -314,6 +315,7 @@ def test_runtime_status_promotes_to_reporting_system_with_simulator_telemetry(mo
     assert summary['reporting_systems'] >= 1
     assert summary['runtime_status'] == 'healthy'
     assert summary['evidence_source'] == 'simulator'
+    assert summary['telemetry_kind'] == 'coverage'
     assert summary['last_telemetry_at'] is not None
 
 

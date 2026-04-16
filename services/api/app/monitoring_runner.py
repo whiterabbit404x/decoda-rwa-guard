@@ -3172,43 +3172,73 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     telemetry_window_seconds = max(300, MONITOR_POLL_INTERVAL_SECONDS * 6)
     last_poll_at = _parse_ts(health.get('last_cycle_at') or health.get('updated_at') or health.get('last_heartbeat_at'))
     telemetry_candidates: list[tuple[datetime, str]] = []
+    coverage_telemetry_candidates: list[datetime] = []
     for row in enabled_rows:
         coverage_ts = _parse_ts(row.get('last_coverage_telemetry_at'))
         target_event_ts = _parse_ts(row.get('last_event_at'))
         if coverage_ts is not None:
+            coverage_telemetry_candidates.append(coverage_ts)
             telemetry_candidates.append((coverage_ts, 'coverage'))
         if target_event_ts is not None:
             telemetry_candidates.append((target_event_ts, 'target_event'))
     telemetry_candidates.sort(key=lambda item: item[0], reverse=True)
+    last_coverage_telemetry_at = max(coverage_telemetry_candidates) if coverage_telemetry_candidates else None
     last_telemetry_at = telemetry_candidates[0][0] if telemetry_candidates else None
     telemetry_kind = telemetry_candidates[0][1] if telemetry_candidates else None
     reporting_systems = 0
     for row in enabled_rows:
-        latest_system_telemetry = max(
-            (_parse_ts(row.get('last_event_at')), _parse_ts(row.get('last_coverage_telemetry_at'))),
-            key=lambda item: item or datetime.min.replace(tzinfo=timezone.utc),
-        )
-        if latest_system_telemetry is None:
+        latest_system_coverage_telemetry = _parse_ts(row.get('last_coverage_telemetry_at'))
+        if latest_system_coverage_telemetry is None:
             continue
-        if int((now - latest_system_telemetry).total_seconds()) <= telemetry_window_seconds:
+        if int((now - latest_system_coverage_telemetry).total_seconds()) <= telemetry_window_seconds:
             reporting_systems += 1
+    coverage_fresh = bool(
+        last_coverage_telemetry_at is not None
+        and int((now - last_coverage_telemetry_at).total_seconds()) <= telemetry_window_seconds
+    )
+    provider_reachable = bool((claim_validator.get('checks') or {}).get('evm_rpc_reachable'))
+    provider_degraded_or_unreachable = bool(
+        health.get('last_error')
+        or health.get('degraded')
+        or degraded_reason
+        or stale_heartbeat
+        or int((broken_targets or {}).get('c') or 0) > 0
+        or not provider_reachable
+    )
+    evidence_source_live = bool(
+        str(health.get('ingestion_mode') or '').strip().lower() not in {'demo', 'simulator', 'replay'}
+        and not provider_degraded_or_unreachable
+    )
     source_of_evidence = (
         'simulator'
-        if str(health.get('ingestion_mode') or '') == 'demo'
-        else (
-            'live'
-            if (last_telemetry_at is not None and telemetry_kind in {'coverage', 'target_event'} and not bool(health.get('degraded')))
-            else 'replay_or_none'
-        )
+        if str(health.get('ingestion_mode') or '').strip().lower() in {'demo', 'simulator'}
+        else ('live' if evidence_source_live and coverage_fresh else 'replay_or_none')
     )
+    if source_of_evidence == 'live':
+        telemetry_kind = 'coverage'
     evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if evidence_at else 'none'))
+    downgrade_reason_tokens: list[str] = []
+    if not coverage_fresh:
+        downgrade_reason_tokens.append('no_fresh_coverage_telemetry')
+    if not evidence_source_live:
+        downgrade_reason_tokens.append('evidence_source_not_live')
+    if reporting_systems <= 0:
+        downgrade_reason_tokens.append('no_reporting_systems_from_coverage')
+    if provider_degraded_or_unreachable:
+        downgrade_reason_tokens.append('provider_degraded_or_unreachable')
+    if downgrade_reason_tokens:
+        logger.info(
+            'monitoring_runtime_live_downgrade workspace_id=%s reasons=%s',
+            workspace_id,
+            ','.join(downgrade_reason_tokens),
+        )
     workspace_configured, configuration_reason = _workspace_configuration_truth(
         valid_protected_asset_count=valid_protected_asset_count,
         linked_monitored_system_count=linked_monitored_system_count,
         persisted_enabled_config_count=persisted_enabled_config_count,
         valid_target_system_link_count=valid_target_system_link_count,
     )
-    degraded_signal = bool(health.get('last_error') or health.get('degraded') or degraded_reason or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0)
+    degraded_signal = provider_degraded_or_unreachable
     if not workspace_configured:
         runtime_status_summary = 'offline'
     elif reporting_systems <= 0:
