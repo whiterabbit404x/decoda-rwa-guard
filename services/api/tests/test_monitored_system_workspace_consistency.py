@@ -12,9 +12,33 @@ from services.api.app import pilot
 class _Conn:
     def __init__(self):
         self.commits = 0
+        self.eligible_targets = [{'id': 't-1', 'asset_id': 'a-1', 'target_type': 'wallet'}]
+        self.broken_links: list[dict[str, str]] = []
+        self.mismatched_links: list[dict[str, str]] = []
+        self.valid_link_rows = [{'id': 'ms-1', 'target_id': 't-1', 'asset_id': 'a-1'}]
 
     def commit(self):
         self.commits += 1
+
+    def execute(self, query, _params=None):
+        normalized = ' '.join(str(query).split())
+        if 'SELECT t.id, t.asset_id, t.target_type FROM targets t JOIN assets a' in normalized:
+            return _Rows(self.eligible_targets)
+        if 'SELECT t.id, t.asset_id FROM targets t LEFT JOIN assets a' in normalized and 'a.id IS NULL' in normalized:
+            return _Rows(self.broken_links)
+        if 'SELECT ms.id, ms.target_id, ms.asset_id AS monitored_asset_id, t.asset_id AS target_asset_id' in normalized:
+            return _Rows(self.mismatched_links)
+        if 'SELECT ms.id, ms.target_id, ms.asset_id FROM monitored_systems ms JOIN targets t' in normalized and 'ms.asset_id = t.asset_id' in normalized:
+            return _Rows(self.valid_link_rows)
+        return _Rows([])
+
+
+class _Rows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
 
 
 @contextmanager
@@ -192,3 +216,40 @@ def test_get_monitored_systems_remains_queryable_after_reconcile(monkeypatch):
     assert conn.commits == 1
     assert reconcile_payload['systems'][0]['id'] == 'ms-9'
     assert listed_payload['systems'][0]['id'] == 'ms-9'
+
+
+def test_reconcile_workspace_requires_eligible_targets(monkeypatch):
+    conn = _Conn()
+    conn.eligible_targets = []
+    request = _Request('ws-2')
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-2'}, {'workspace_id': 'ws-2', 'workspace': {'id': 'ws-2'}}))
+
+    with pytest.raises(HTTPException) as exc:
+        pilot.reconcile_workspace_monitored_systems(request)
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail['stage'] == 'verify_eligible_targets'
+
+
+def test_reconcile_workspace_validates_runtime_debug_assertions(monkeypatch):
+    conn = _Conn()
+    conn.valid_link_rows = []
+    request = _Request('ws-3')
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-3'}, {'workspace_id': 'ws-3', 'workspace': {'id': 'ws-3'}}))
+    monkeypatch.setattr(pilot, 'reconcile_enabled_targets_monitored_systems', lambda *_a, **_k: {'targets_scanned': 1, 'created_or_updated': 1})
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+    monkeypatch.setattr(pilot, 'list_workspace_monitored_system_rows', lambda *_a, **_k: [])
+
+    with pytest.raises(HTTPException) as exc:
+        pilot.reconcile_workspace_monitored_systems(request)
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail['stage'] == 'runtime_debug_assertions'

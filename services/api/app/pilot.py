@@ -2821,6 +2821,19 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         workspace_id = workspace_context['workspace_id']
         user_id = str(user.get('id') or '')
         logger.info('monitoring_reconcile step=workspace_resolved workspace_id=%s', workspace_id)
+        stage = 'verify_eligible_targets'
+        logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
+        try:
+            eligible_targets = _load_workspace_reconcile_eligible_targets(connection, workspace_id=workspace_id)
+            if len(eligible_targets) <= 0:
+                raise ValueError('No enabled, linked wallet/contract targets found for workspace.')
+            broken_asset_links = _load_workspace_reconcile_broken_asset_links(connection, workspace_id=workspace_id)
+            if broken_asset_links:
+                raise ValueError(f'Found enabled target rows with missing/invalid asset links: {len(broken_asset_links)}')
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
         stage = 'debug_snapshot_before'
         logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
         try:
@@ -2843,10 +2856,37 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
             workspace_id,
             result.get('created_or_updated', 0),
         )
+        stage = 'validate_monitored_asset_links'
+        logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
+        try:
+            mismatched_enabled_links = _load_workspace_enabled_monitored_asset_mismatches(connection, workspace_id=workspace_id)
+            if mismatched_enabled_links:
+                raise ValueError(f'Enabled monitored_systems rows with target/asset mismatch: {len(mismatched_enabled_links)}')
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
+        stage = 'runtime_debug_assertions'
+        logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
+        try:
+            runtime_debug_assertions = _workspace_runtime_debug_assertions(connection, workspace_id=workspace_id)
+            if (
+                int(runtime_debug_assertions.get('valid_protected_assets', 0) or 0) <= 0
+                or int(runtime_debug_assertions.get('linked_monitored_systems', 0) or 0) <= 0
+                or int(runtime_debug_assertions.get('enabled_configs', 0) or 0) <= 0
+                or int(runtime_debug_assertions.get('valid_link_count', 0) or 0) <= 0
+                or not bool(runtime_debug_assertions.get('workspace_configured'))
+            ):
+                raise ValueError(f'Runtime debug assertions failed: {runtime_debug_assertions}')
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
 
         stage = 'audit_log'
         logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
         try:
+            repaired_target_ids = sorted({str(item.get('id')) for item in eligible_targets if item.get('id')})
             log_audit(
                 connection,
                 action='monitoring.reconcile',
@@ -2860,6 +2900,9 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                     'created_or_updated': result.get('created_or_updated', 0),
                     'invalid_reasons': result.get('invalid_reasons', {}),
                     'skipped_reasons': result.get('skipped_reasons', {}),
+                    'repaired_target_ids': repaired_target_ids,
+                    'repaired_monitored_system_ids': result.get('repaired_monitored_system_ids', []),
+                    'runtime_debug_assertions': runtime_debug_assertions,
                     'debug_before': pre_repair_snapshot,
                 },
             )
@@ -2912,10 +2955,131 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                 'targets_scanned': result.get('targets_scanned', 0),
                 'created_or_updated': result.get('created_or_updated', 0),
                 'repaired_monitored_system_ids': result.get('repaired_monitored_system_ids', []),
+                'repaired_target_ids': repaired_target_ids,
+                'runtime_debug_assertions': runtime_debug_assertions,
                 'debug_before': pre_repair_snapshot,
                 'debug_after': post_repair_snapshot,
             }
         return response
+
+
+def _load_workspace_reconcile_eligible_targets(connection: Any, *, workspace_id: str) -> list[dict[str, Any]]:
+    return [
+        dict(row)
+        for row in connection.execute(
+            '''
+            SELECT t.id, t.asset_id, t.target_type
+            FROM targets t
+            JOIN assets a
+              ON a.id = t.asset_id
+             AND a.workspace_id = t.workspace_id
+             AND a.deleted_at IS NULL
+            WHERE t.workspace_id = %s::uuid
+              AND t.deleted_at IS NULL
+              AND t.enabled = TRUE
+              AND t.asset_id IS NOT NULL
+              AND t.target_type IN ('wallet', 'contract')
+            ORDER BY t.created_at ASC
+            ''',
+            (workspace_id,),
+        ).fetchall()
+    ]
+
+
+def _load_workspace_reconcile_broken_asset_links(connection: Any, *, workspace_id: str) -> list[dict[str, Any]]:
+    return [
+        dict(row)
+        for row in connection.execute(
+            '''
+            SELECT t.id, t.asset_id
+            FROM targets t
+            LEFT JOIN assets a
+              ON a.id = t.asset_id
+             AND a.workspace_id = t.workspace_id
+             AND a.deleted_at IS NULL
+            WHERE t.workspace_id = %s::uuid
+              AND t.deleted_at IS NULL
+              AND t.enabled = TRUE
+              AND t.asset_id IS NOT NULL
+              AND t.target_type IN ('wallet', 'contract')
+              AND a.id IS NULL
+            ORDER BY t.created_at ASC
+            ''',
+            (workspace_id,),
+        ).fetchall()
+    ]
+
+
+def _load_workspace_enabled_monitored_asset_mismatches(connection: Any, *, workspace_id: str) -> list[dict[str, Any]]:
+    return [
+        dict(row)
+        for row in connection.execute(
+            '''
+            SELECT ms.id, ms.target_id, ms.asset_id AS monitored_asset_id, t.asset_id AS target_asset_id
+            FROM monitored_systems ms
+            JOIN targets t
+              ON t.id = ms.target_id
+             AND t.workspace_id = ms.workspace_id
+             AND t.deleted_at IS NULL
+             AND t.enabled = TRUE
+             AND t.target_type IN ('wallet', 'contract')
+            JOIN assets a
+              ON a.id = t.asset_id
+             AND a.workspace_id = t.workspace_id
+             AND a.deleted_at IS NULL
+            WHERE ms.workspace_id = %s::uuid
+              AND COALESCE(ms.is_enabled, TRUE) = TRUE
+              AND (ms.asset_id IS NULL OR ms.asset_id <> t.asset_id)
+            ORDER BY ms.created_at ASC
+            ''',
+            (workspace_id,),
+        ).fetchall()
+    ]
+
+
+def _workspace_runtime_debug_assertions(connection: Any, *, workspace_id: str) -> dict[str, Any]:
+    enabled_target_rows = _load_workspace_reconcile_eligible_targets(connection, workspace_id=workspace_id)
+    enabled_target_ids = {str(row.get('id')) for row in enabled_target_rows if row.get('id')}
+    enabled_target_asset_ids = {str(row.get('asset_id')) for row in enabled_target_rows if row.get('asset_id')}
+    valid_link_rows = connection.execute(
+        '''
+        SELECT ms.id, ms.target_id, ms.asset_id
+        FROM monitored_systems ms
+        JOIN targets t
+          ON t.id = ms.target_id
+         AND t.workspace_id = ms.workspace_id
+         AND t.deleted_at IS NULL
+         AND t.enabled = TRUE
+         AND t.target_type IN ('wallet', 'contract')
+        JOIN assets a
+          ON a.id = t.asset_id
+         AND a.workspace_id = t.workspace_id
+         AND a.deleted_at IS NULL
+        WHERE ms.workspace_id = %s::uuid
+          AND COALESCE(ms.is_enabled, TRUE) = TRUE
+          AND ms.asset_id = t.asset_id
+        ''',
+        (workspace_id,),
+    ).fetchall()
+    linked_monitored_target_ids = {str(row.get('target_id')) for row in valid_link_rows if row.get('target_id')}
+    valid_link_count = len(valid_link_rows)
+    linked_monitored_systems = len(linked_monitored_target_ids)
+    valid_protected_assets = len(enabled_target_asset_ids)
+    enabled_configs = len(enabled_target_ids)
+    workspace_configured = (
+        valid_protected_assets > 0
+        and linked_monitored_systems > 0
+        and enabled_configs > 0
+        and valid_link_count > 0
+    )
+    return {
+        'workspace_id': workspace_id,
+        'valid_protected_assets': valid_protected_assets,
+        'linked_monitored_systems': linked_monitored_systems,
+        'enabled_configs': enabled_configs,
+        'valid_link_count': valid_link_count,
+        'workspace_configured': workspace_configured,
+    }
 
 
 def _reconcile_error(
