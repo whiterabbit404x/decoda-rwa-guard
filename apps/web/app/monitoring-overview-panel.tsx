@@ -45,6 +45,9 @@ export default function MonitoringOverviewPanel() {
           : showLiveWithVerifiedTelemetry
             ? 'Monitoring is live with verified telemetry for this workspace.'
             : 'Monitoring is active. Await verified telemetry before making final safety claims.';
+  const telemetryDetail = truth.last_telemetry_at
+    ? (truth.telemetry_kind === 'coverage' ? 'Live telemetry verified. No recent target events.' : 'Target-event telemetry verified.')
+    : 'Live telemetry not yet verified.';
 
   return (
     <section className="summaryGrid">
@@ -67,6 +70,7 @@ export default function MonitoringOverviewPanel() {
         <p className="metricLabel">Monitoring state</p>
         <p className="metricValue">{runtime ? presentation.statusLabel : 'PENDING'}</p>
         <p className="metricMeta">{truthCopy}</p>
+        <p className="metricMeta">{telemetryDetail}</p>
       </article>
       <article className="metricCard">
         <p className="metricLabel">Coverage freshness</p>

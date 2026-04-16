@@ -186,6 +186,7 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
                 detection_outcome='ANALYSIS_FAILED',
             )
         has_evidence = bool(live_events)
+        coverage_evidence_present = True
         latest_block = None
         checkpoint = None
         if has_evidence:
@@ -226,6 +227,29 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
                 error_code=None,
                 source_type='websocket' if bool((os.getenv('EVM_WS_URL') or '').strip()) else 'rpc_polling',
                 reason_code=None,
+                claim_safe=False,
+                detection_outcome='NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
+            )
+        if coverage_evidence_present:
+            return ActivityProviderResult(
+                mode=mode,
+                status='live',
+                evidence_state='REAL_EVIDENCE',
+                truthfulness_state='NOT_CLAIM_SAFE',
+                synthetic=False,
+                provider_name='evm_activity_provider',
+                provider_kind='rpc',
+                evidence_present=True,
+                recent_real_event_count=0,
+                last_real_event_at=None,
+                events=[],
+                latest_block=latest_block,
+                checkpoint=f'coverage:{latest_block}',
+                checkpoint_age_seconds=0,
+                degraded_reason=None,
+                error_code=None,
+                source_type='websocket' if bool((os.getenv('EVM_WS_URL') or '').strip()) else 'rpc_polling',
+                reason_code='PROVIDER_COVERAGE_VERIFIED',
                 claim_safe=False,
                 detection_outcome='NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
             )

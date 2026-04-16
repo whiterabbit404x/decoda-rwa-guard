@@ -16,14 +16,15 @@ def _wallet_target() -> dict[str, str]:
     }
 
 
-def test_live_mode_returns_no_evidence_not_live(monkeypatch):
+def test_live_mode_coverage_proof_without_target_events(monkeypatch):
     monkeypatch.setenv('MONITORING_INGESTION_MODE', 'live')
     monkeypatch.setenv('LIVE_MONITORING_ENABLED', 'true')
     monkeypatch.setenv('EVM_RPC_URL', 'http://rpc')
     monkeypatch.setattr(activity_providers, 'fetch_evm_activity', lambda *_args, **_kwargs: [])
     result = activity_providers.fetch_target_activity_result(_wallet_target(), None)
-    assert result.status == 'no_evidence'
-    assert result.evidence_present is False
+    assert result.status == 'live'
+    assert result.evidence_present is True
+    assert result.recent_real_event_count == 0
     assert result.synthetic is False
     assert result.claim_safe is False
 

@@ -95,7 +95,9 @@ function telemetryFreshnessSummary(truth: WorkspaceMonitoringTruth): string {
   if (truth.freshness_status === 'stale') {
     return 'Telemetry is stale.';
   }
-  return 'Telemetry is fresh.';
+  return truth.telemetry_kind === 'coverage'
+    ? 'Live telemetry verified.'
+    : 'Live target-event telemetry verified.';
 }
 
 function summarizeStatus(status: MonitoringPresentationStatus, freshness: MonitoringPresentationFreshness): string {
@@ -112,6 +114,19 @@ function summarizeStatus(status: MonitoringPresentationStatus, freshness: Monito
     return 'Monitoring data delayed.';
   }
   return 'Monitoring state live with verified telemetry.';
+}
+
+function detectionSummary(truth: WorkspaceMonitoringTruth): string {
+  if (!truth.last_telemetry_at) {
+    return '';
+  }
+  if (truth.last_detection_at) {
+    return ' Recent detections available.';
+  }
+  if (truth.telemetry_kind === 'coverage') {
+    return ' No recent detections.';
+  }
+  return ' No recent target events.';
 }
 
 function confidenceFromEvidence(
@@ -152,7 +167,7 @@ export function normalizeMonitoringPresentation(
     evidence,
     freshness,
     confidence,
-    summary: `${summarizeStatus(presentationStatus, freshness)} ${telemetryFreshnessSummary(truth)}`,
+    summary: `${summarizeStatus(presentationStatus, freshness)} ${telemetryFreshnessSummary(truth)}${detectionSummary(truth)}`,
     telemetryTimestampLabel: formatTimestamp('telemetry', truth.last_telemetry_at),
     heartbeatTimestampLabel: formatTimestamp('heartbeat', truth.last_heartbeat_at),
     pollTimestampLabel: formatTimestamp('poll', truth.last_poll_at),
