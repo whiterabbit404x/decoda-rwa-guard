@@ -323,6 +323,8 @@ def _safe_error_message(exc: Exception) -> str:
 def _derive_system_runtime_state(result: dict[str, Any], *, is_enabled: bool) -> tuple[str, str, str, str | None]:
     if not is_enabled:
         return 'disabled', 'unavailable', 'unavailable', 'monitoring_disabled'
+    target_type = result.get('target_type')
+    unsupported_target_type = not is_monitorable_target_type(target_type)
     provider_status = str(result.get('provider_status') or '').lower()
     events_ingested = int(result.get('events_ingested', 0) or 0)
     recent_real_event_count = int(result.get('recent_real_event_count', 0) or 0)
@@ -331,8 +333,12 @@ def _derive_system_runtime_state(result: dict[str, Any], *, is_enabled: bool) ->
     if provider_status == 'failed':
         return 'failed', 'unavailable', 'low', degraded_reason or 'provider_failed'
     if provider_status == 'degraded' or source_status == 'degraded':
+        if unsupported_target_type:
+            return 'degraded', 'stale', 'low', 'unsupported_target_type_for_live_coverage'
         return 'degraded', 'stale', 'low', degraded_reason or 'monitoring_degraded'
     if provider_status == 'no_evidence':
+        if unsupported_target_type:
+            return 'degraded', 'stale', 'low', 'unsupported_target_type_for_live_coverage'
         return 'degraded', 'stale', 'low', degraded_reason or 'no_evidence'
     if events_ingested > 0 or recent_real_event_count > 0 or result.get('live_coverage_telemetry_at'):
         return 'healthy', 'fresh', 'high', None
@@ -1983,6 +1989,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     WORKER_STATE['metrics']['live_events_ingested'] += len(events)
     return {
         'target_id': str(target['id']),
+        'target_type': str(target.get('target_type') or ''),
         'monitoring_run_id': monitoring_run_id,
         'runs': run_ids,
         'alerts_generated': alerts_generated,
@@ -3146,6 +3153,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
     stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
     enabled_rows = [row for row in monitored_rows if monitored_system_row_enabled(row) and is_monitorable_target_type(row.get('target_type'))]
+    unsupported_enabled_rows = [
+        row for row in monitored_rows
+        if monitored_system_row_enabled(row) and not is_monitorable_target_type(row.get('target_type'))
+    ]
     active_rows = [row for row in enabled_rows if str(row.get('runtime_status') or '').strip().lower() in {'healthy', 'active'}]
     enabled_asset_rows = [row for row in enabled_rows if row.get('asset_id')]
     enabled_system_count = max(len(enabled_rows), healthy_enabled_targets_count)
@@ -3336,9 +3347,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         else ('stale' if last_poll_at else 'unavailable')
     )
     runtime_status_reason = degraded_reason or (
+        'unsupported_target_type_for_live_coverage'
+        if unsupported_enabled_rows and reporting_systems <= 0
+        else (
         'workspace_not_configured'
         if not workspace_configured
         else ('no_fresh_live_coverage_telemetry' if reporting_systems <= 0 or not coverage_fresh else None)
+        )
     )
     summary = build_workspace_monitoring_summary(
         now=now,
@@ -3412,7 +3427,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             summary['freshness_status']
         ),
         'confidence_status': summary['confidence_status'],
-        'coverage_reason': degraded_reason or ('no_evidence' if monitoring_status == 'idle' else (None if monitoring_status == 'active' else 'monitoring_unavailable')),
+        'coverage_reason': (
+            degraded_reason
+            or (
+                'unsupported_target_type_for_live_coverage'
+                if runtime_status_reason == 'unsupported_target_type_for_live_coverage'
+                else ('no_evidence' if monitoring_status == 'idle' else (None if monitoring_status == 'active' else 'monitoring_unavailable'))
+            )
+        ),
         'worker_last_error': health.get('last_error'),
         'latest_telemetry_checkpoint': (latest_detection_evaluation_at or evidence_at).isoformat() if (latest_detection_evaluation_at or evidence_at) else None,
         'source_of_evidence': source_of_evidence,
@@ -3462,6 +3484,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'healthy_enabled_targets': healthy_enabled_targets_count,
             'monitored_system_rows': len(monitored_rows),
             'enabled_monitored_rows': len(enabled_rows),
+            'unsupported_enabled_rows': len(unsupported_enabled_rows),
             'protected_assets': protected_assets_count,
             'invalid_enabled_targets': int((broken_targets or {}).get('c') or 0),
             'runner_alive': runner_alive,

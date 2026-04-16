@@ -1313,3 +1313,77 @@ def test_runtime_status_live_coverage_with_historical_detections_stays_live(monk
     assert summary['reporting_systems'] > 0
     assert summary['telemetry_kind'] == 'coverage'
     assert summary['confidence_status'] == 'high'
+
+
+def test_derive_system_runtime_state_marks_unsupported_target_type_explicitly():
+    runtime_status, freshness_status, confidence_status, coverage_reason = monitoring_runner._derive_system_runtime_state(
+        {
+            'target_type': 'oracle_feed',
+            'provider_status': 'no_evidence',
+            'source_status': 'no_evidence',
+            'events_ingested': 0,
+            'recent_real_event_count': 0,
+            'degraded_reason': None,
+        },
+        is_enabled=True,
+    )
+    assert runtime_status == 'degraded'
+    assert freshness_status == 'stale'
+    assert confidence_status == 'low'
+    assert coverage_reason == 'unsupported_target_type_for_live_coverage'
+
+
+def test_runtime_status_summary_prefers_unsupported_target_type_reason(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _UnsupportedTypeConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(
+                    rows=[
+                        {
+                            'id': 'sys-1',
+                            'workspace_id': 'ws-1',
+                            'asset_id': 'asset-1',
+                            'target_id': 'target-1',
+                            'target_type': 'oracle_feed',
+                            'is_enabled': True,
+                            'runtime_status': 'degraded',
+                            'status': 'active',
+                            'last_heartbeat': now.isoformat(),
+                            'last_event_at': None,
+                            'last_coverage_telemetry_at': None,
+                            'coverage_reason': 'unsupported_target_type_for_live_coverage',
+                            'monitoring_interval_seconds': 30,
+                            'created_at': now.isoformat(),
+                        }
+                    ]
+                )
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 0, 'asset_count': 0})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[])
+            if 'FROM evidence' in q:
+                return _Result({'observed_at': None, 'block_number': None})
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(),
+            'last_cycle_at': now.isoformat(),
+            'degraded': False,
+            'last_error': None,
+            'source_type': 'polling',
+            'worker_running': True,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_UnsupportedTypeConn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    summary = payload['workspace_monitoring_summary']
+    assert summary['status_reason'] == 'unsupported_target_type_for_live_coverage'
+    assert payload['coverage_reason'] == 'unsupported_target_type_for_live_coverage'
