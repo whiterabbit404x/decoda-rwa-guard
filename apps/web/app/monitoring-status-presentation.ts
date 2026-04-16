@@ -193,7 +193,7 @@ export function normalizeMonitoringPresentation(
     freshness,
     confidence,
     summary: `${summarizeStatus(presentationStatus, freshness)} ${telemetryFreshnessSummary(truth)}${detectionSummary(truth)}`,
-    telemetryTimestampLabel: formatTimestamp('telemetry', truth.last_telemetry_at),
+    telemetryTimestampLabel: formatTimestamp('telemetry', coverageTelemetryTimestamp(truth) ?? truth.last_telemetry_at),
     heartbeatTimestampLabel: formatTimestamp('heartbeat', truth.last_heartbeat_at),
     pollTimestampLabel: formatTimestamp('poll', truth.last_poll_at),
   };

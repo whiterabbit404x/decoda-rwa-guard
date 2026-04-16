@@ -85,17 +85,19 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   }
   if (
     summary.last_poll_at
-    && !summary.last_telemetry_at
+    && !effectiveTelemetryTimestamp
     && summary.monitoring_mode === 'live'
     && summary.evidence_source === 'live'
+    && !hasCoverageTelemetryTimestamp
   ) {
     contradictions.push('poll_without_telemetry_timestamp');
   }
   if (
     summary.last_heartbeat_at
-    && !summary.last_telemetry_at
+    && !effectiveTelemetryTimestamp
     && summary.monitoring_mode === 'live'
     && summary.evidence_source === 'live'
+    && !hasCoverageTelemetryTimestamp
   ) {
     contradictions.push('heartbeat_without_telemetry_timestamp');
   }
@@ -161,3 +163,6 @@ export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
 export function monitoringHealthyCopyAllowed(truth: WorkspaceMonitoringTruth): boolean {
   return truth.runtime_status === 'healthy' && truth.reporting_systems > 0;
 }
+  const hasCoverageTelemetryTimestamp = Boolean(summary.last_coverage_telemetry_at)
+    || (summary.telemetry_kind === 'coverage' && Boolean(summary.last_telemetry_at));
+  const effectiveTelemetryTimestamp = summary.last_telemetry_at ?? (summary.telemetry_kind === 'coverage' ? summary.last_coverage_telemetry_at : null);
