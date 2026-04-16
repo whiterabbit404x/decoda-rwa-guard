@@ -619,6 +619,117 @@ def test_demo_seed_status_requires_workspace_and_membership_for_present_state(pi
     assert status_payload['workspace_present'] is False
     assert status_payload['membership_present'] is True
 
+
+def test_seed_monitoring_proof_persists_deterministic_alert_incident_evidence_chain(
+    pilot_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executed: list[tuple[str, object]] = []
+    fixed_observed_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    workspace_id = 'workspace-seeded-1'
+    user_id = 'user-seeded-1'
+    monitored_system_id = 'system-seeded-1'
+    uuid_values = iter(
+        (
+            '00000000-0000-4000-8000-0000000000a1',  # asset_id
+            '00000000-0000-4000-8000-0000000000b2',  # target_id
+            '00000000-0000-4000-8000-0000000000c3',  # evidence_id
+        )
+    )
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            executed.append((normalized, params))
+            if 'SELECT id FROM assets' in normalized:
+                return _Result([])
+            if 'SELECT id FROM targets' in normalized:
+                return _Result([])
+            if 'INSERT INTO evidence (' in normalized:
+                return _Result([{'id': params[0], 'observed_at': fixed_observed_at}])
+            return _Result()
+
+    monkeypatch.setattr(pilot_module, '_demo_monitoring_bootstrap_allowed', lambda: True)
+    monkeypatch.setattr(
+        pilot_module,
+        'ensure_monitored_system_for_target',
+        lambda *_args, **_kwargs: {'status': 'ok', 'monitored_system_id': monitored_system_id},
+    )
+    monkeypatch.setattr(pilot_module, 'utc_now', lambda: fixed_observed_at)
+    monkeypatch.setattr(pilot_module.uuid, 'uuid4', lambda: next(uuid_values))
+
+    payload = pilot_module._seed_demo_monitoring_proof(
+        _Connection(),
+        workspace_id=workspace_id,
+        user_id=user_id,
+    )
+
+    alert_sql = [params for statement, params in executed if 'INSERT INTO alerts (' in statement]
+    incident_sql = [params for statement, params in executed if 'INSERT INTO incidents (' in statement]
+    evidence_sql = [params for statement, params in executed if 'INSERT INTO evidence (' in statement]
+    alert_event_sql = [params for statement, params in executed if 'INSERT INTO alert_events' in statement]
+    incident_timeline_sql = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
+    audit_sql = [params for statement, params in executed if 'INSERT INTO audit_logs' in statement]
+
+    assert len(alert_sql) == 1
+    assert len(incident_sql) == 1
+    assert len(evidence_sql) == 1
+    assert len(alert_event_sql) == 1
+    assert len(incident_timeline_sql) == 1
+    assert len(audit_sql) == 2
+
+    alert_insert = alert_sql[0]
+    incident_insert = incident_sql[0]
+    evidence_insert = evidence_sql[0]
+    alert_id = alert_insert[0]
+    incident_id = incident_insert[0]
+    target_id = alert_insert[10]
+    asset_id = evidence_insert[2]
+
+    # 1) Evidence persisted with required metadata and linkage.
+    assert evidence_insert[20] == fixed_observed_at
+    assert evidence_insert[3] == target_id
+    assert evidence_insert[10] == monitored_system_id
+    assert evidence_insert[2] == asset_id
+    assert evidence_insert[9] == 'simulator_seed_event'
+    assert evidence_insert[11] == 'high'
+    assert float(evidence_insert[12]) == pytest.approx(0.92)
+    assert 'deterministic proof-mode high risk' in evidence_insert[13]
+    assert evidence_insert[18] == 'simulator'
+    assert evidence_insert[4] == alert_id
+
+    # 2) Seeded proof creates one persisted alert.
+    assert alert_insert[1] == workspace_id
+    assert alert_insert[7] == 'simulator'
+    assert alert_insert[12] == 'simulator'
+    assert alert_insert[10] == target_id
+
+    # 3) Same proof creates one persisted incident linked to that alert.
+    assert incident_insert[1] == workspace_id
+    assert incident_insert[3] == target_id
+    assert alert_id in str(incident_insert[10])
+
+    # 4) Persisted history proves alert -> incident actions.
+    assert incident_id in str(alert_event_sql[0][5])
+    assert alert_id in str(incident_timeline_sql[0][6])
+    assert any('alert.seeded_from_simulator' == params[3] for params in audit_sql)
+    assert any('incident.seeded_from_alert' == params[3] for params in audit_sql)
+
+    # 5) Truthfulness guard: simulator/recommendation-style actions, no live containment action labels.
+    assert all(params[7] == 'simulator' for params in alert_sql)
+    assert all(params[12] == 'simulator' for params in alert_sql)
+    assert all('contain' not in str(params).lower() for params in alert_event_sql + incident_timeline_sql + audit_sql)
+
+    # 6) Deterministic end-to-end bootstrap chain asserted for one workspace.
+    assert payload['bootstrapped'] is True
+    assert payload['workspace_id'] == workspace_id
+    assert payload['target_id'] == target_id
+    assert payload['asset_id'] == asset_id
+    assert payload['alert_id'] == alert_id
+    assert payload['incident_id'] == incident_id
+    assert payload['monitored_system_id'] == monitored_system_id
+    assert payload['evidence_source'] == 'simulator'
+    assert payload['telemetry_event_observed_at'] == fixed_observed_at.isoformat()
+
 def test_run_startup_migrations_if_enabled_respects_env_flag(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv('RUN_MIGRATIONS_ON_STARTUP', 'true')
     monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
