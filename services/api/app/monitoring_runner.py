@@ -2113,7 +2113,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                    ms.workspace_id,
                    ms.target_id,
                    ms.asset_id,
-                   ms.is_enabled AS monitored_system_enabled,
+                   COALESCE(ms.is_enabled, TRUE) AS monitored_system_enabled,
                    ms.runtime_status AS monitored_system_runtime_status,
                    ms.last_heartbeat AS monitored_system_last_heartbeat,
                    t.last_checked_at,
@@ -2134,7 +2134,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             FROM targets t
             WHERE t.id = ms.target_id
               AND t.deleted_at IS NULL
-              AND ms.is_enabled = TRUE
+              AND COALESCE(ms.is_enabled, TRUE) = TRUE
               AND t.monitoring_enabled = TRUE
               AND t.enabled = TRUE
               AND t.is_active = TRUE
@@ -2941,7 +2941,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             return normalized
         rows = connection.execute(
             '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, COALESCE(ms.is_enabled, TRUE) AS is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
                    COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
             FROM monitored_systems ms
             LEFT JOIN targets t
@@ -2960,7 +2960,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     def _load_workspace_monitored_rows_raw(connection: Any, workspace_scope_id: str) -> list[dict[str, Any]]:
         rows = connection.execute(
             '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, COALESCE(ms.is_enabled, TRUE) AS is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
                    COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
             FROM monitored_systems ms
             LEFT JOIN targets t
@@ -3160,7 +3160,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             LEFT JOIN monitored_systems ms
               ON ms.workspace_id = e.workspace_id
              AND ms.target_id = e.target_id
-             AND ms.is_enabled = TRUE
+             AND COALESCE(ms.is_enabled, TRUE) = TRUE
             LEFT JOIN targets t
               ON t.id = e.target_id
              AND t.workspace_id = e.workspace_id
