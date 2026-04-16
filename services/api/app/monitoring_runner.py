@@ -2891,6 +2891,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             telemetry_window_seconds=max(300, MONITOR_POLL_INTERVAL_SECONDS * 6),
         )
         payload = {
+            'workspace_id': None,
+            'workspace_slug': None,
             'monitoring_status': 'offline',
             'status': 'Offline',
             'mode': mode,
@@ -2911,6 +2913,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         payload.update(payload['workspace_monitoring_summary'])
         return payload
     workspace_id: str | None = None
+    workspace_slug: str | None = None
     user_id: str | None = None
     workspace_header_present = False
     monitored_rows: list[dict[str, Any]] = []
@@ -2981,6 +2984,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             user, workspace_context, workspace_header_present = resolve_workspace_context_for_request(connection, request)
             user_id = str(user.get('id') or '')
             workspace_id = str(workspace_context['workspace_id'])
+            workspace_slug = str((workspace_context.get('workspace') or {}).get('slug') or '') or None
             monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
             try:
                 raw_workspace_rows = _load_workspace_monitored_rows_raw(connection, workspace_id)
@@ -3001,8 +3005,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 logger.exception('monitoring_runtime_status_list_rows_load_failed workspace_id=%s', workspace_id)
                 listed_monitored_rows = []
             logger.info(
-                'monitoring_runtime_status_workspace_resolution workspace_id=%s workspace_header_present=%s user_id=%s',
+                'monitoring_runtime_status_workspace_resolution workspace_id=%s workspace_slug=%s workspace_header_present=%s user_id=%s',
                 workspace_id,
+                workspace_slug,
                 workspace_header_present,
                 user_id,
             )
@@ -3412,6 +3417,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     monitoring_mode_raw = str(health.get('mode') or '').strip().lower()
     degraded_signal = provider_degraded_or_unreachable
     if not workspace_configured:
+        logger.info(
+            'monitoring_runtime_status_branch workspace_id=%s workspace_slug=%s branch=offline_unconfigured configuration_reason=%s',
+            workspace_id,
+            workspace_slug,
+            configuration_reason,
+        )
         runtime_status_summary = 'offline'
     elif evidence_source != 'live':
         runtime_status_summary = 'idle'
@@ -3499,6 +3510,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             final_status_reason or ','.join(downgrade_reason_tokens) or 'unknown',
         )
     payload = {
+        'workspace_id': workspace_id,
+        'workspace_slug': workspace_slug,
         'monitoring_status': monitoring_status,
         'monitored_systems': system_count,
         'protected_assets': protected_assets_count,
@@ -3559,12 +3572,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     }
     payload.update(summary)
     logger.info(
-        'monitoring_workspace_summary_assembly workspace_id=%s valid_asset_count=%s linked_system_count=%s enabled_config_count=%s valid_link_count=%s configuration_reason=%s status_reason=%s',
+        'monitoring_workspace_summary_assembly workspace_id=%s workspace_slug=%s valid_asset_count=%s linked_system_count=%s enabled_config_count=%s valid_link_count=%s configured_systems=%s reporting_systems=%s configuration_reason=%s status_reason=%s',
         workspace_id,
+        workspace_slug,
         valid_protected_asset_count,
         linked_monitored_system_count,
         persisted_enabled_config_count,
         valid_target_system_link_count,
+        enabled_system_count,
+        reporting_systems,
         configuration_reason,
         runtime_status_reason,
     )
