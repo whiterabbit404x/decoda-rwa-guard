@@ -290,6 +290,12 @@ def validate_runtime_configuration() -> dict[str, Any]:
         _record_check('monitoring_live_rpc_config', False, required=False, detail=f'monitoring ingestion runtime check failed: {exc}', severity='warning')
 
     if is_production_like:
+        _record_check(
+            'live_mode_enabled',
+            env_flag('LIVE_MODE_ENABLED'),
+            required=True,
+            detail='LIVE_MODE_ENABLED must be true in production. Disabling live mode in production forces monitoring runtime into offline/unconfigured fallback behavior.',
+        )
         _record_check('database_url', bool(database_url()), required=True, detail='DATABASE_URL must be configured when LIVE_MODE_ENABLED=true in production.')
         _record_check('auth_token_secret', auth_token_secret_configured(), required=True, detail='AUTH_TOKEN_SECRET must be configured in production.')
         try:

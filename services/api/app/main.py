@@ -1356,6 +1356,11 @@ def health_readiness() -> dict[str, Any]:
     validation = validate_runtime_configuration()
     errors = validation.get('errors', [])
     warnings = validation.get('warnings', [])
+    checks = validation.get('checks', {})
+    app_env = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
+    is_production_like = app_env in {'production', 'prod'}
+    live_mode_check = checks.get('live_mode_enabled', {})
+    production_live_mode_drift = bool(is_production_like and not live_mode_check.get('ok', True))
 
     if errors:
         status_value = 'not_ready'
@@ -1368,9 +1373,11 @@ def health_readiness() -> dict[str, Any]:
         'status': status_value,
         'service': SERVICE_NAME,
         'app_mode': os.getenv('APP_MODE', 'local'),
+        'app_env': app_env,
+        'production_live_mode_drift': production_live_mode_drift,
         'errors': errors,
         'warnings': warnings,
-        'checks': validation.get('checks', {}),
+        'checks': checks,
         'billing': billing_runtime_status(),
         'checked_at': datetime.now(timezone.utc).isoformat(),
     }
@@ -1383,6 +1390,8 @@ def health_diagnostics() -> dict[str, Any]:
         'status': readiness['status'],
         'service': readiness['service'],
         'app_mode': readiness['app_mode'],
+        'app_env': readiness['app_env'],
+        'production_live_mode_drift': readiness['production_live_mode_drift'],
         'checked_at': readiness['checked_at'],
         'checks': readiness['checks'],
         'billing': readiness['billing'],
