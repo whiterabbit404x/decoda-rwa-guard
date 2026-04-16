@@ -47,11 +47,15 @@ test.describe('monitoring truth-model source regressions', () => {
 
     expect(dashboardData).toContain('const monitoringTruth = resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary);');
     expect(dashboardData).toContain('const monitoringPresentation = normalizeMonitoringPresentation(monitoringTruth);');
+    expect(dashboardData).toContain('const resolvedBackendState = resolveLegacyBackendStateFromMonitoringStatus(monitoringPresentation.status);');
+    expect(dashboardData).toContain('resolveLegacyBackendBannerFromMonitoringStatus(monitoringPresentation.status, monitoringPresentation.summary);');
 
     expect(dashboardData).not.toContain('workspaceMonitoring.lastConfirmedCheckpoint');
     expect(dashboardData).not.toContain('workspaceMonitoring.lastUpdated');
     expect(dashboardData).not.toContain('workspaceMonitoring.checkpointAgeSeconds');
     expect(dashboardData).not.toContain('workspaceMonitoring.statusFromDiagnostics');
     expect(dashboardData).not.toContain('workspaceMonitoring.diagnosticsSummary');
+    expect(dashboardData).not.toContain('diagnostics.experienceState ===');
+    expect(dashboardData).not.toContain('diagnostics.experienceState ?');
   });
 });
