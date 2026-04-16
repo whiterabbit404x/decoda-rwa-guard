@@ -41,40 +41,28 @@ def build_workspace_monitoring_summary(
     normalized_linked_systems = max(int(linked_monitored_system_count), 0)
     normalized_persisted_enabled_config = max(int(persisted_enabled_config_count), 0)
     normalized_valid_links = max(int(valid_target_system_link_count), 0)
-    normalized_mode = monitoring_mode if monitoring_mode in {'live', 'simulator', 'offline', 'unavailable'} else 'unavailable'
+    normalized_mode = monitoring_mode if monitoring_mode in {'live', 'hybrid', 'simulator', 'offline', 'unavailable'} else 'unavailable'
     normalized_runtime = runtime_status if runtime_status in {'provisioning', 'healthy', 'degraded', 'idle', 'failed', 'disabled', 'offline'} else 'offline'
     normalized_evidence = evidence_source if evidence_source in {'live', 'simulator', 'replay', 'none'} else 'none'
     normalized_telemetry_kind = telemetry_kind if telemetry_kind in {'coverage', 'target_event'} else None
-    telemetry_timestamp = (
-        last_telemetry_at
-        if workspace_configured and normalized_reporting > 0 and normalized_evidence in {'live', 'simulator'} and normalized_telemetry_kind in {'coverage', 'target_event'}
-        else None
-    )
-    coverage_telemetry_timestamp = (
-        last_coverage_telemetry_at
-        if workspace_configured and normalized_reporting > 0 and normalized_evidence in {'live', 'simulator'}
-        else None
-    )
+    telemetry_timestamp = last_telemetry_at if normalized_telemetry_kind in {'coverage', 'target_event'} else None
+    coverage_telemetry_timestamp = last_coverage_telemetry_at
     freshness_status = (
         'fresh'
         if telemetry_timestamp and int((now - telemetry_timestamp).total_seconds()) <= telemetry_window_seconds
         else ('stale' if telemetry_timestamp else 'unavailable')
     )
     has_live_coverage_proof = bool(
-        telemetry_timestamp
+        coverage_telemetry_timestamp
+        and workspace_configured
         and normalized_reporting > 0
         and normalized_evidence == 'live'
-        and normalized_telemetry_kind == 'coverage'
-        and int((now - telemetry_timestamp).total_seconds()) <= telemetry_window_seconds
+        and int((now - coverage_telemetry_timestamp).total_seconds()) <= telemetry_window_seconds
     )
     confidence_status = (
         'high'
         if has_live_coverage_proof
-        else (
-            'limited'
-            if workspace_configured and normalized_mode in {'live', 'simulator'}
-            else 'unavailable'
-        )
+        else 'unavailable'
     )
     summary = {
         'workspace_configured': bool(workspace_configured),

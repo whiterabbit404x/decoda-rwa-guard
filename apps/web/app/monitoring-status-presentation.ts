@@ -47,6 +47,11 @@ function normalizeStatus(
   evidence: MonitoringPresentationEvidence,
   freshness: MonitoringPresentationFreshness,
 ): MonitoringPresentationStatus {
+  const hasCoverageTelemetry = Boolean(coverageTelemetryTimestamp(truth));
+  const hasFreshLiveCoverage = hasCoverageTelemetry
+    && truth.freshness_status === 'fresh'
+    && truth.evidence_source === 'live'
+    && truth.reporting_systems > 0;
   if (truth.runtime_status === 'offline' || truth.runtime_status === 'failed' || truth.runtime_status === 'disabled') {
     return 'offline';
   }
@@ -73,11 +78,11 @@ function normalizeStatus(
     return 'degraded';
   }
 
-  if (truth.runtime_status === 'healthy') {
+  if (truth.runtime_status === 'healthy' && hasFreshLiveCoverage) {
     return 'live';
   }
 
-  return 'live';
+  return hasFreshLiveCoverage ? 'live' : 'limited coverage';
 }
 
 function formatTimestamp(kind: 'telemetry' | 'heartbeat' | 'poll', value: string | null): string {
@@ -132,6 +137,13 @@ function detectionSummary(truth: WorkspaceMonitoringTruth): string {
   const coverageTelemetryAt = coverageTelemetryTimestamp(truth);
   if (!truth.last_telemetry_at && !coverageTelemetryAt) {
     return '';
+  }
+  if (truth.last_detection_at && coverageTelemetryAt) {
+    const detectionAtMs = new Date(truth.last_detection_at).getTime();
+    const coverageAtMs = new Date(coverageTelemetryAt).getTime();
+    if (Number.isFinite(detectionAtMs) && Number.isFinite(coverageAtMs) && detectionAtMs < coverageAtMs) {
+      return ' Historical detections only.';
+    }
   }
   if (truth.last_detection_at) {
     return ' Recent detections available.';
