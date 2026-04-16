@@ -3152,22 +3152,25 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     last_heartbeat = last_system_heartbeat or worker_heartbeat
     heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
     stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
-    enabled_rows = [row for row in monitored_rows if monitored_system_row_enabled(row) and is_monitorable_target_type(row.get('target_type'))]
+    def _row_tracks_valid_monitorable_target(row: dict[str, Any]) -> bool:
+        target_id = str(row.get('target_id') or '')
+        if target_id and target_id in healthy_enabled_target_ids:
+            return True
+        return is_monitorable_target_type(row.get('target_type'))
+
+    enabled_rows_all = [row for row in monitored_rows if monitored_system_row_enabled(row)]
+    enabled_rows = [row for row in enabled_rows_all if _row_tracks_valid_monitorable_target(row)]
     unsupported_enabled_rows = [
         row for row in monitored_rows
-        if monitored_system_row_enabled(row) and not is_monitorable_target_type(row.get('target_type'))
+        if monitored_system_row_enabled(row) and (not _row_tracks_valid_monitorable_target(row))
     ]
-    active_rows = [row for row in enabled_rows if str(row.get('runtime_status') or '').strip().lower() in {'healthy', 'active'}]
-    enabled_asset_rows = [row for row in enabled_rows if row.get('asset_id')]
-    enabled_system_count = max(len(enabled_rows), healthy_enabled_targets_count)
+    active_rows = [row for row in enabled_rows_all if str(row.get('runtime_status') or '').strip().lower() in {'healthy', 'active'}]
+    enabled_asset_rows = [row for row in enabled_rows_all if row.get('asset_id')]
+    enabled_system_count = max(len(enabled_rows_all), healthy_enabled_targets_count)
     active_system_count = len(active_rows)
     system_count = max(len(monitored_rows), healthy_enabled_targets_count)
     protected_assets_count = max(len({str(row.get('asset_id') or '') for row in enabled_asset_rows}), healthy_enabled_assets_count)
-    linked_monitored_system_count = sum(
-        1
-        for row in enabled_rows
-        if str(row.get('target_id') or '') in healthy_enabled_target_ids
-    )
+    linked_monitored_system_count = sum(1 for row in monitored_rows if monitored_system_row_enabled(row) and str(row.get('target_id') or '') in healthy_enabled_target_ids)
     def _row_has_valid_target_asset_link(row: dict[str, Any]) -> bool:
         target_id = str(row.get('target_id') or '')
         asset_id = str(row.get('asset_id') or '')
@@ -3178,11 +3181,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             return bool(asset_id and asset_id == expected_asset_id)
         return bool(asset_id)
 
-    valid_target_system_link_count = sum(1 for row in enabled_rows if _row_has_valid_target_asset_link(row))
+    valid_target_system_link_count = sum(1 for row in monitored_rows if monitored_system_row_enabled(row) and _row_has_valid_target_asset_link(row))
     valid_protected_asset_count = len(
         {
             str(row.get('asset_id') or '')
-            for row in enabled_rows
+            for row in monitored_rows
+            if monitored_system_row_enabled(row)
             if _row_has_valid_target_asset_link(row) and row.get('asset_id')
         }
     )
@@ -3350,9 +3354,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'unsupported_target_type_for_live_coverage'
         if unsupported_enabled_rows and reporting_systems <= 0
         else (
-        'workspace_not_configured'
-        if not workspace_configured
-        else ('no_fresh_live_coverage_telemetry' if reporting_systems <= 0 or not coverage_fresh else None)
+            (f'workspace_configuration_invalid:{configuration_reason}' if configuration_reason else 'workspace_not_configured')
+            if not workspace_configured
+            else ('no_fresh_live_coverage_telemetry' if reporting_systems <= 0 or not coverage_fresh else None)
         )
     )
     summary = build_workspace_monitoring_summary(
@@ -3380,6 +3384,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         telemetry_window_seconds=telemetry_window_seconds,
     )
     summary['poll_freshness_status'] = poll_freshness_status
+    summary['source_of_evidence'] = source_of_evidence
     final_status_reason = runtime_status_reason
     if (
         poll_freshness_status == 'fresh'
@@ -3440,6 +3445,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'source_of_evidence': source_of_evidence,
         'workspace_configured': workspace_configured,
         'configuration_reason': configuration_reason,
+        'status_reason': runtime_status_reason,
+        'valid_protected_assets': summary['valid_protected_assets'],
+        'linked_monitored_systems': summary['linked_monitored_systems'],
+        'enabled_configs': summary['enabled_configs'],
+        'valid_link_count': summary['valid_link_count'],
         'last_poll_at': summary['last_poll_at'],
         'last_telemetry_at': summary['last_telemetry_at'],
         'last_coverage_telemetry_at': summary['last_coverage_telemetry_at'],
@@ -3448,6 +3458,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'workspace_monitoring_summary': summary,
     }
     payload.update(summary)
+    logger.info(
+        'monitoring_workspace_summary_assembly workspace_id=%s valid_asset_count=%s linked_system_count=%s enabled_config_count=%s valid_link_count=%s configuration_reason=%s status_reason=%s',
+        workspace_id,
+        valid_protected_asset_count,
+        linked_monitored_system_count,
+        persisted_enabled_config_count,
+        valid_target_system_link_count,
+        configuration_reason,
+        runtime_status_reason,
+    )
     if summary['contradiction_flags']:
         logger.warning(
             'monitoring_runtime_status_contradiction workspace_id=%s flags=%s summary=%s',
