@@ -60,10 +60,21 @@ def build_workspace_monitoring_summary(
         if telemetry_timestamp and int((now - telemetry_timestamp).total_seconds()) <= telemetry_window_seconds
         else ('stale' if telemetry_timestamp else 'unavailable')
     )
+    has_live_coverage_proof = bool(
+        telemetry_timestamp
+        and normalized_reporting > 0
+        and normalized_evidence == 'live'
+        and normalized_telemetry_kind == 'coverage'
+        and int((now - telemetry_timestamp).total_seconds()) <= telemetry_window_seconds
+    )
     confidence_status = (
         'high'
-        if telemetry_timestamp and normalized_reporting > 0 and normalized_evidence == 'live'
-        else ('medium' if normalized_mode == 'simulator' and normalized_reporting > 0 else ('low' if workspace_configured else 'unavailable'))
+        if has_live_coverage_proof
+        else (
+            'limited'
+            if workspace_configured and normalized_mode in {'live', 'simulator'}
+            else 'unavailable'
+        )
     )
     summary = {
         'workspace_configured': bool(workspace_configured),

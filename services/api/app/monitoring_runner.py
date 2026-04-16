@@ -3313,11 +3313,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         'freshness_status': (
             summary['freshness_status']
         ),
-        'confidence_status': (
-            'high'
-            if successful_detection_evaluation and recent_real_event_count > 0
-            else ('medium' if successful_detection_evaluation_recent or recent_heartbeat_systems > 0 else ('low' if has_monitorable_targets else 'unavailable'))
-        ),
+        'confidence_status': summary['confidence_status'],
         'coverage_reason': degraded_reason or ('no_evidence' if monitoring_status == 'idle' else (None if monitoring_status == 'active' else 'monitoring_unavailable')),
         'worker_last_error': health.get('last_error'),
         'latest_telemetry_checkpoint': (latest_detection_evaluation_at or evidence_at).isoformat() if (latest_detection_evaluation_at or evidence_at) else None,
