@@ -28,11 +28,12 @@ export default function MonitoringOverviewPanel() {
   const runtime = liveFeed.runtimeStatus;
   const truth = resolveWorkspaceMonitoringTruthFromSummary(runtime?.workspace_monitoring_summary);
   const presentation = normalizeMonitoringPresentation(truth);
+  const telemetryProofTimestamp = truth.last_coverage_telemetry_at ?? truth.last_telemetry_at;
   const hasInvalidatingLiveTelemetryContradiction = truth.contradiction_flags.some((flag) => LIVE_TELEMETRY_INVALIDATING_FLAGS.has(flag));
   const showLiveWithVerifiedTelemetry = runtimeStatusAllowsLive(truth.runtime_status)
     && truth.freshness_status === 'fresh'
     && truth.reporting_systems > 0
-    && Boolean(truth.last_telemetry_at)
+    && Boolean(telemetryProofTimestamp)
     && !hasInvalidatingLiveTelemetryContradiction;
   const truthCopy = presentation.status === 'offline'
     ? 'Workspace monitoring offline. Fresh telemetry unavailable until connectivity returns.'
@@ -45,9 +46,26 @@ export default function MonitoringOverviewPanel() {
           : showLiveWithVerifiedTelemetry
             ? 'Monitoring is live with verified telemetry for this workspace.'
             : 'Monitoring is active. Await verified telemetry before making final safety claims.';
-  const telemetryDetail = truth.last_telemetry_at
-    ? (truth.telemetry_kind === 'coverage' ? 'Live telemetry verified. No recent target events.' : 'Target-event telemetry verified.')
+  const telemetryDetail = telemetryProofTimestamp
+    ? 'Live telemetry verified.'
     : 'Live telemetry not yet verified.';
+  const detectionDetail = (() => {
+    if (!telemetryProofTimestamp) {
+      return 'Detection evidence unavailable.';
+    }
+    if (!truth.last_coverage_telemetry_at) {
+      return truth.last_detection_at ? 'Recent detections available.' : 'No recent target events.';
+    }
+    if (!truth.last_detection_at) {
+      return 'No recent detections.';
+    }
+    const detectionAtMs = new Date(truth.last_detection_at).getTime();
+    const coverageAtMs = new Date(truth.last_coverage_telemetry_at).getTime();
+    if (Number.isFinite(detectionAtMs) && Number.isFinite(coverageAtMs) && detectionAtMs < coverageAtMs) {
+      return 'No recent detections.';
+    }
+    return 'Recent detections available.';
+  })();
 
   return (
     <section className="summaryGrid">
@@ -71,13 +89,14 @@ export default function MonitoringOverviewPanel() {
         <p className="metricValue">{runtime ? presentation.statusLabel : 'PENDING'}</p>
         <p className="metricMeta">{truthCopy}</p>
         <p className="metricMeta">{telemetryDetail}</p>
+        <p className="metricMeta">{detectionDetail}</p>
       </article>
       <article className="metricCard">
         <p className="metricLabel">Coverage freshness</p>
         <p className="metricValue">{truth.freshness_status === 'unavailable' ? 'Unavailable' : truth.freshness_status.toUpperCase()}</p>
-        <p className="metricMeta">Last telemetry {formatTelemetryTimestamp(truth.last_telemetry_at)}.</p>
+        <p className="metricMeta">Last telemetry {formatTelemetryTimestamp(telemetryProofTimestamp)}.</p>
         <p className="metricMeta">
-          Last telemetry: {formatTelemetryTimestamp(truth.last_telemetry_at)} · Last heartbeat: {formatTelemetryTimestamp(truth.last_heartbeat_at)} · Last poll: {formatTelemetryTimestamp(truth.last_poll_at)}
+          Last telemetry: {formatTelemetryTimestamp(telemetryProofTimestamp)} · Last heartbeat: {formatTelemetryTimestamp(truth.last_heartbeat_at)} · Last poll: {formatTelemetryTimestamp(truth.last_poll_at)}
         </p>
       </article>
     </section>
