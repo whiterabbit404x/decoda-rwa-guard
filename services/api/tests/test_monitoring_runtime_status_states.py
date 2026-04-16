@@ -259,6 +259,61 @@ def test_runtime_status_workspace_unconfigured_false_when_coverage_exists(monkey
     assert 'workspace_unconfigured_with_coverage' not in payload['workspace_monitoring_summary']['contradiction_flags']
 
 
+def test_workspace_configuration_truth_asset_only_is_not_configured() -> None:
+    configured, reason = monitoring_runner._workspace_configuration_truth(
+        valid_protected_asset_count=1,
+        linked_monitored_system_count=0,
+        persisted_enabled_config_count=0,
+        valid_target_system_link_count=0,
+    )
+    assert configured is False
+    assert reason == 'no_linked_monitored_systems'
+
+
+def test_workspace_configuration_truth_monitored_system_only_is_not_configured() -> None:
+    configured, reason = monitoring_runner._workspace_configuration_truth(
+        valid_protected_asset_count=0,
+        linked_monitored_system_count=1,
+        persisted_enabled_config_count=0,
+        valid_target_system_link_count=0,
+    )
+    assert configured is False
+    assert reason == 'no_valid_protected_assets'
+
+
+def test_workspace_configuration_truth_without_persisted_enabled_config_is_not_configured() -> None:
+    configured, reason = monitoring_runner._workspace_configuration_truth(
+        valid_protected_asset_count=1,
+        linked_monitored_system_count=1,
+        persisted_enabled_config_count=0,
+        valid_target_system_link_count=1,
+    )
+    assert configured is False
+    assert reason == 'no_persisted_enabled_monitoring_config'
+
+
+def test_workspace_configuration_truth_invalid_target_system_linkage_is_not_configured() -> None:
+    configured, reason = monitoring_runner._workspace_configuration_truth(
+        valid_protected_asset_count=1,
+        linked_monitored_system_count=1,
+        persisted_enabled_config_count=1,
+        valid_target_system_link_count=0,
+    )
+    assert configured is False
+    assert reason == 'target_system_linkage_invalid'
+
+
+def test_workspace_configuration_truth_with_all_required_links_is_configured() -> None:
+    configured, reason = monitoring_runner._workspace_configuration_truth(
+        valid_protected_asset_count=2,
+        linked_monitored_system_count=2,
+        persisted_enabled_config_count=2,
+        valid_target_system_link_count=2,
+    )
+    assert configured is True
+    assert reason is None
+
+
 def test_runtime_status_includes_recent_successful_checkpoint_without_events(monkeypatch):
     now = datetime.now(timezone.utc)
 
@@ -949,7 +1004,8 @@ def test_contradiction_guard_workspace_not_configured_with_monitored_systems_fla
 
     payload = monitoring_runner.monitoring_runtime_status()
     summary = payload['workspace_monitoring_summary']
-    assert summary['workspace_configured'] is True
+    assert summary['workspace_configured'] is False
     assert summary['coverage_state']['configured_systems'] > 0
     assert summary['configured_systems'] > 0
-    assert 'workspace_unconfigured_with_coverage' not in summary['contradiction_flags']
+    assert summary['configuration_reason'] == 'no_valid_protected_assets'
+    assert 'workspace_unconfigured_with_coverage' in summary['contradiction_flags']

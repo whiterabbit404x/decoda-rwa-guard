@@ -162,4 +162,33 @@ test.describe('workspace monitoring truth guardrails', () => {
     expect(hasLiveTelemetry(truth)).toBeFalsy();
     expect(monitoringHealthyCopyAllowed(truth)).toBeTruthy();
   });
+
+  test('configured flag with missing required linkage counts is contradicted', () => {
+    const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      monitoring_mode: 'live',
+      runtime_status: 'healthy',
+      configured_systems: 2,
+      reporting_systems: 2,
+      protected_assets: 2,
+      coverage_state: { configured_systems: 2, reporting_systems: 2, protected_assets: 2 },
+      freshness_status: 'fresh',
+      confidence_status: 'high',
+      last_poll_at: '2026-04-15T10:00:00Z',
+      last_heartbeat_at: '2026-04-15T10:00:00Z',
+      last_telemetry_at: '2026-04-15T09:59:30Z',
+      last_detection_at: null,
+      evidence_source: 'live',
+      status_reason: null,
+      configuration_reason: null,
+      valid_protected_asset_count: 1,
+      linked_monitored_system_count: 1,
+      persisted_enabled_config_count: 0,
+      valid_target_system_link_count: 1,
+      contradiction_flags: [],
+    }));
+
+    expect(truth.contradiction_flags).toContain('workspace_configured_missing_required_links');
+    expect(hasLiveTelemetry(truth)).toBeFalsy();
+  });
 });

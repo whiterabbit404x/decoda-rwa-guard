@@ -26,6 +26,11 @@ def test_summary_includes_unified_truth_model_fields() -> None:
         last_detection_at=now,
         evidence_source='live',
         status_reason=None,
+        configuration_reason=None,
+        valid_protected_asset_count=5,
+        linked_monitored_system_count=3,
+        persisted_enabled_config_count=3,
+        valid_target_system_link_count=3,
         telemetry_window_seconds=300,
     )
     assert summary['workspace_configured'] is True
@@ -39,9 +44,14 @@ def test_summary_includes_unified_truth_model_fields() -> None:
     assert summary['last_telemetry_at'] is not None
     assert summary['evidence_source'] == 'live'
     assert summary['status_reason'] is None
+    assert summary['configuration_reason'] is None
     assert summary['protected_assets_count'] == 5
     assert summary['reporting_systems_count'] == 2
     assert summary['monitored_systems_count'] == 4
+    assert summary['valid_protected_asset_count'] == 5
+    assert summary['linked_monitored_system_count'] == 3
+    assert summary['persisted_enabled_config_count'] == 3
+    assert summary['valid_target_system_link_count'] == 3
 
 
 def test_heartbeat_recent_without_telemetry_sets_unavailable_freshness() -> None:
@@ -61,6 +71,11 @@ def test_heartbeat_recent_without_telemetry_sets_unavailable_freshness() -> None
         last_detection_at=None,
         evidence_source='live',
         status_reason='no_reporting_systems',
+        configuration_reason=None,
+        valid_protected_asset_count=2,
+        linked_monitored_system_count=2,
+        persisted_enabled_config_count=2,
+        valid_target_system_link_count=2,
         telemetry_window_seconds=300,
     )
     assert summary['freshness_status'] == 'unavailable'
@@ -85,6 +100,11 @@ def test_poll_recent_without_telemetry_sets_unavailable_freshness() -> None:
         last_detection_at=None,
         evidence_source='live',
         status_reason='no_reporting_systems',
+        configuration_reason=None,
+        valid_protected_asset_count=2,
+        linked_monitored_system_count=2,
+        persisted_enabled_config_count=2,
+        valid_target_system_link_count=2,
         telemetry_window_seconds=300,
     )
     assert summary['freshness_status'] == 'unavailable'
@@ -109,6 +129,11 @@ def test_telemetry_recent_with_reporting_is_fresh_and_high_confidence() -> None:
         last_detection_at=now - timedelta(seconds=20),
         evidence_source='live',
         status_reason=None,
+        configuration_reason=None,
+        valid_protected_asset_count=2,
+        linked_monitored_system_count=3,
+        persisted_enabled_config_count=3,
+        valid_target_system_link_count=3,
         telemetry_window_seconds=300,
     )
     assert summary['freshness_status'] == 'fresh'
@@ -133,6 +158,11 @@ def test_workspace_unconfigured_cannot_report_monitored_or_protected_counts() ->
         last_detection_at=None,
         evidence_source='none',
         status_reason='workspace_not_configured',
+        configuration_reason='target_system_linkage_invalid',
+        valid_protected_asset_count=0,
+        linked_monitored_system_count=0,
+        persisted_enabled_config_count=1,
+        valid_target_system_link_count=0,
         telemetry_window_seconds=300,
     )
     assert 'workspace_unconfigured_with_coverage' in summary['contradiction_flags']
@@ -155,7 +185,38 @@ def test_healthy_status_without_reporting_is_flagged() -> None:
         last_detection_at=None,
         evidence_source='live',
         status_reason='no_reporting_systems',
+        configuration_reason=None,
+        valid_protected_asset_count=3,
+        linked_monitored_system_count=3,
+        persisted_enabled_config_count=3,
+        valid_target_system_link_count=3,
         telemetry_window_seconds=300,
     )
     assert 'healthy_without_reporting_systems' in summary['contradiction_flags']
 
+
+def test_workspace_configured_with_missing_required_link_counts_is_flagged() -> None:
+    now = _now()
+    summary = build_workspace_monitoring_summary(
+        now=now,
+        workspace_configured=True,
+        monitoring_mode='live',
+        runtime_status='healthy',
+        configured_systems=1,
+        monitored_systems_count=1,
+        reporting_systems=1,
+        protected_assets=1,
+        last_poll_at=now,
+        last_heartbeat_at=now,
+        last_telemetry_at=now,
+        last_detection_at=now,
+        evidence_source='live',
+        status_reason=None,
+        configuration_reason=None,
+        valid_protected_asset_count=1,
+        linked_monitored_system_count=1,
+        persisted_enabled_config_count=0,
+        valid_target_system_link_count=1,
+        telemetry_window_seconds=300,
+    )
+    assert 'workspace_configured_missing_required_links' in summary['contradiction_flags']

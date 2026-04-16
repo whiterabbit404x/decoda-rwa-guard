@@ -18,6 +18,11 @@ export type WorkspaceMonitoringTruth = {
   last_detection_at: string | null;
   evidence_source: 'live' | 'simulator' | 'replay' | 'none';
   status_reason: string | null;
+  configuration_reason: string | null;
+  valid_protected_asset_count: number;
+  linked_monitored_system_count: number;
+  persisted_enabled_config_count: number;
+  valid_target_system_link_count: number;
   contradiction_flags: string[];
 };
 
@@ -37,6 +42,11 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   last_detection_at: null,
   evidence_source: 'none',
   status_reason: 'summary_unavailable',
+  configuration_reason: 'summary_unavailable',
+  valid_protected_asset_count: 0,
+  linked_monitored_system_count: 0,
+  persisted_enabled_config_count: 0,
+  valid_target_system_link_count: 0,
   contradiction_flags: [],
 };
 
@@ -48,6 +58,10 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   const reporting_systems = Number(summary.reporting_systems ?? summary.coverage_state?.reporting_systems ?? 0);
   const monitored_systems_count = Number(summary.monitored_systems_count ?? configured_systems);
   const protected_assets_count = Number(summary.protected_assets_count ?? summary.protected_assets ?? summary.coverage_state?.protected_assets ?? 0);
+  const valid_protected_asset_count = Number(summary.valid_protected_asset_count ?? 0);
+  const linked_monitored_system_count = Number(summary.linked_monitored_system_count ?? 0);
+  const persisted_enabled_config_count = Number(summary.persisted_enabled_config_count ?? 0);
+  const valid_target_system_link_count = Number(summary.valid_target_system_link_count ?? 0);
   const contradictions = [...(summary.contradiction_flags ?? [])];
 
   if (summary.runtime_status === 'offline' && summary.last_telemetry_at) {
@@ -81,6 +95,17 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   ) {
     contradictions.push('heartbeat_without_telemetry_timestamp');
   }
+  if (
+    summary.workspace_configured
+    && (
+      valid_protected_asset_count <= 0
+      || linked_monitored_system_count <= 0
+      || persisted_enabled_config_count <= 0
+      || valid_target_system_link_count <= 0
+    )
+  ) {
+    contradictions.push('workspace_configured_missing_required_links');
+  }
   return {
     workspace_configured: Boolean(summary.workspace_configured),
     monitoring_mode: summary.monitoring_mode,
@@ -97,6 +122,11 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     last_detection_at: summary.last_detection_at,
     evidence_source: summary.evidence_source,
     status_reason: summary.status_reason,
+    configuration_reason: summary.configuration_reason ?? null,
+    valid_protected_asset_count,
+    linked_monitored_system_count,
+    persisted_enabled_config_count,
+    valid_target_system_link_count,
     contradiction_flags: [...new Set(contradictions)],
   };
 }
@@ -107,6 +137,7 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
 
 export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
   return truth.runtime_status !== 'offline'
+    && truth.workspace_configured
     && truth.monitoring_mode === 'live'
     && truth.evidence_source === 'live'
     && truth.freshness_status === 'fresh'
@@ -115,6 +146,7 @@ export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
     && !truth.contradiction_flags.includes('offline_with_current_telemetry')
     && !truth.contradiction_flags.includes('telemetry_unavailable_with_timestamp')
     && !truth.contradiction_flags.includes('zero_coverage_with_live_telemetry')
+    && !truth.contradiction_flags.includes('workspace_configured_missing_required_links')
     && !truth.contradiction_flags.includes('poll_without_telemetry_timestamp')
     && !truth.contradiction_flags.includes('heartbeat_without_telemetry_timestamp');
 }
