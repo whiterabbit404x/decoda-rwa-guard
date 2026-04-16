@@ -1843,6 +1843,10 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             source_status = 'no_evidence'
             degraded_reason = provider_result.degraded_reason or 'no_live_events_observed'
             last_status = 'no_real_data'
+        elif provider_result.status == 'live':
+            source_status = 'active'
+            degraded_reason = None
+            last_status = 'no_real_data'
         else:
             source_status = 'degraded'
             degraded_reason = provider_result.degraded_reason or 'monitoring_degraded'
@@ -1897,7 +1901,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     recent_confidence_basis = (
         'demo_scenario'
         if provider_result.synthetic
-        else ('provider_evidence' if bool(events) else 'none')
+        else ('provider_evidence' if bool(events) else ('provider_coverage' if coverage_persisted else 'none'))
     )
     last_real_event_at = provider_result.last_real_event_at
     last_no_evidence_at = utc_now() if provider_result.status == 'no_evidence' else None
@@ -3386,6 +3390,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     summary['poll_freshness_status'] = poll_freshness_status
     summary['source_of_evidence'] = source_of_evidence
     final_status_reason = runtime_status_reason
+    logger.info(
+        'monitoring_runtime_truth workspace_id=%s reporting_systems=%s configured_systems=%s evidence_source=%s last_coverage_telemetry_at=%s status_reason=%s',
+        workspace_id,
+        reporting_systems,
+        enabled_system_count,
+        evidence_source,
+        summary.get('last_coverage_telemetry_at'),
+        runtime_status_reason or 'none',
+    )
     if (
         poll_freshness_status == 'fresh'
         and not stale_heartbeat
