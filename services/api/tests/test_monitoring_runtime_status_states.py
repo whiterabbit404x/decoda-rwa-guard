@@ -1698,3 +1698,56 @@ def test_runtime_status_includes_workspace_identity_fields(monkeypatch):
     payload = monitoring_runner.monitoring_runtime_status(request)
     assert payload['workspace_id'] == 'ws-prod'
     assert payload['workspace_slug'] == 'prod-ops'
+
+
+def test_runtime_debug_reports_configuration_reason_codes_in_production_when_workspace_unconfigured(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _NoBootstrapWorkspaceConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(rows=[])
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 0, 'asset_count': 0})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[])
+            return super().execute(query, params)
+
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_NoBootstrapWorkspaceConn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_debug_payload()
+    diagnostics = payload['configuration_diagnostics']
+    assert payload['workspace_configured'] is False
+    assert diagnostics['workspace_configured'] is False
+    assert diagnostics['reason_codes'] == [
+        'no_valid_protected_assets',
+        'no_linked_monitored_systems',
+        'no_persisted_enabled_monitoring_config',
+        'target_system_linkage_invalid',
+    ]
+
+
+def test_runtime_debug_reports_workspace_configured_true_after_workspace_repaired(monkeypatch):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_Conn(now - timedelta(seconds=20))))
+
+    payload = monitoring_runner.monitoring_runtime_debug_payload()
+    diagnostics = payload['configuration_diagnostics']
+    assert payload['workspace_configured'] is True
+    assert diagnostics['workspace_configured'] is True
+    assert diagnostics['reason_codes'] == []

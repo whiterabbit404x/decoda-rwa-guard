@@ -311,6 +311,7 @@ def test_ops_runtime_debug_returns_canonical_runtime_summary_fields_with_healthy
         'workspace_slug',
         'workspace_configured',
         'configuration_reason',
+        'configuration_diagnostics',
         'status_reason',
         'valid_protected_assets',
         'linked_monitored_systems',
@@ -368,3 +369,47 @@ def test_ops_runtime_debug_returns_canonical_runtime_summary_fields_with_healthy
     assert payload['evidence_source'] == 'live'
     assert payload['confidence_status'] == 'high'
     assert payload['runtime_status_summary'] == 'healthy'
+    assert payload['configuration_diagnostics']['workspace_configured'] is True
+    assert payload['configuration_diagnostics']['reason_codes'] == []
+
+
+def test_monitoring_workspace_debug_surfaces_configuration_diagnostics(monkeypatch):
+    client = TestClient(api_main.app)
+
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        api_main,
+        'get_workspace_monitoring_debug',
+        lambda _request=None: {
+            'workspace': {'id': 'ws-1'},
+            'list_route_snapshot': {
+                'resolved_workspace_id': 'ws-1',
+                'monitored_systems_count': 0,
+                'enabled_monitored_systems_count': 0,
+                'protected_asset_count': 0,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        api_main,
+        'monitoring_runtime_status',
+        lambda _request=None: {
+            'status': 'Offline',
+            'monitoring_status': 'offline',
+            'configuration_diagnostics': {
+                'valid_protected_assets': 0,
+                'linked_monitored_systems': 0,
+                'enabled_configs': 0,
+                'valid_link_count': 0,
+                'workspace_configured': False,
+                'configuration_reason': 'no_valid_protected_assets',
+                'reason_codes': ['no_valid_protected_assets'],
+            },
+        },
+    )
+
+    response = client.get('/monitoring/workspace-debug', headers={'authorization': 'Bearer token', 'x-workspace-id': 'ws-1'})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['configuration_diagnostics']['workspace_configured'] is False
+    assert payload['configuration_diagnostics']['reason_codes'] == ['no_valid_protected_assets']
