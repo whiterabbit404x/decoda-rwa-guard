@@ -42,6 +42,22 @@ test.describe('monitoring truth-model source regressions', () => {
     expect(panel).not.toContain('diagnostics.experienceState');
   });
 
+
+  test('dashboard hero badge uses monitoring presentation mapping as truth source', () => {
+    const dashboard = appSource('dashboard-page-content.tsx');
+    const heroActionRowStart = dashboard.indexOf('<div className="heroActionRow">');
+    const heroActionRowEnd = dashboard.indexOf('</div>', heroActionRowStart);
+    expect(heroActionRowStart).toBeGreaterThan(-1);
+    expect(heroActionRowEnd).toBeGreaterThan(heroActionRowStart);
+
+    const heroActionRow = dashboard.slice(heroActionRowStart, heroActionRowEnd);
+
+    expect(dashboard).not.toContain('StatusBadge state={diagnostics.experienceState}');
+    expect(heroActionRow).not.toContain('diagnostics.experienceState');
+    expect(dashboard).toContain('monitoringPresentation');
+    expect(heroActionRow).toContain('StatusBadge state={mapMonitoringStatusToBadgeState(monitoringPresentation.status)}');
+  });
+
   test('dashboard data keeps workspace monitoring wording free of diagnostics/checkpoint legacy fields', () => {
     const dashboardData = appSource('dashboard-data.ts');
 
