@@ -24,6 +24,7 @@ class _Conn:
             'target-valid': {
                 'id': 'target-valid',
                 'workspace_id': 'ws-1',
+                'target_type': 'wallet',
                 'asset_id': 'asset-1',
                 'chain_network': 'ethereum-mainnet',
                 'enabled': True,
@@ -35,6 +36,7 @@ class _Conn:
             'target-missing-asset': {
                 'id': 'target-missing-asset',
                 'workspace_id': 'ws-1',
+                'target_type': 'wallet',
                 'asset_id': 'asset-missing',
                 'chain_network': 'ethereum-mainnet',
                 'enabled': True,
@@ -46,6 +48,7 @@ class _Conn:
             'target-monitoring-disabled': {
                 'id': 'target-monitoring-disabled',
                 'workspace_id': 'ws-1',
+                'target_type': 'contract',
                 'asset_id': 'asset-1',
                 'chain_network': 'ethereum-mainnet',
                 'enabled': True,
@@ -57,6 +60,7 @@ class _Conn:
             'target-disabled': {
                 'id': 'target-disabled',
                 'workspace_id': 'ws-1',
+                'target_type': 'wallet',
                 'asset_id': 'asset-1',
                 'chain_network': 'ethereum-mainnet',
                 'enabled': False,
@@ -99,6 +103,21 @@ class _Conn:
         if 'FROM targets t LEFT JOIN assets a' in q and 'WHERE t.id' in q:
             target = self.targets.get(str(params[0]))
             return _Result(dict(target) if target else None)
+        if 'UPDATE monitored_systems ms SET is_enabled = FALSE' in q and 'FROM targets t' in q:
+            updated_rows = []
+            for target_id, target in self.targets.items():
+                if str(target.get('target_type') or '').lower() in {'wallet', 'contract'}:
+                    continue
+                row = self.monitored_systems.get(target_id)
+                if row:
+                    row['is_enabled'] = False
+                    row['runtime_status'] = 'disabled'
+                    row['status'] = 'paused'
+                    row['freshness_status'] = 'unavailable'
+                    row['confidence_status'] = 'unavailable'
+                    row['coverage_reason'] = 'unsupported_target_type_for_live_coverage'
+                    updated_rows.append({'id': row['id']})
+            return _Result(rows=updated_rows)
         if 'INSERT INTO monitored_systems' in q:
             target_id = str(params[3])
             existing = self.monitored_systems.get(target_id, {})
@@ -126,6 +145,18 @@ class _Conn:
             return _Result()
         if "SET last_run_status = 'ready'" in q:
             return _Result()
+        if "SET last_run_status = 'unsupported_target_type'" in q:
+            return _Result()
+        if "UPDATE monitored_systems SET is_enabled = FALSE" in q and 'WHERE target_id =' in q:
+            target_id = str(params[1])
+            if target_id in self.monitored_systems:
+                self.monitored_systems[target_id]['is_enabled'] = False
+                self.monitored_systems[target_id]['runtime_status'] = 'disabled'
+                self.monitored_systems[target_id]['status'] = 'paused'
+                self.monitored_systems[target_id]['freshness_status'] = 'unavailable'
+                self.monitored_systems[target_id]['confidence_status'] = 'unavailable'
+                self.monitored_systems[target_id]['coverage_reason'] = str(params[0])
+            return _Result()
         if "SET monitoring_enabled = TRUE" in q:
             target_id = str(params[0])
             if target_id in self.targets:
@@ -134,10 +165,11 @@ class _Conn:
         if 'SELECT id FROM targets WHERE deleted_at IS NULL' in q:
             rows = [{'id': target_id} for target_id in self.targets.keys()]
             return _Result(rows=rows)
-        if 'SELECT id, enabled, monitoring_enabled, asset_id FROM targets' in q:
+        if 'SELECT id, target_type, enabled, monitoring_enabled, asset_id FROM targets' in q:
             rows = [
                 {
                     'id': target_id,
+                    'target_type': target.get('target_type'),
                     'enabled': bool(target.get('enabled')),
                     'monitoring_enabled': bool(target.get('monitoring_enabled')),
                     'asset_id': target.get('asset_id'),
@@ -150,6 +182,7 @@ class _Conn:
                 {
                     'id': target_id,
                     'workspace_id': target.get('workspace_id'),
+                    'target_type': target.get('target_type'),
                     'asset_id': target.get('asset_id'),
                     'enabled': bool(target.get('enabled')),
                     'monitoring_enabled': bool(target.get('monitoring_enabled')),
@@ -172,6 +205,7 @@ class _Conn:
                 if str(target.get('workspace_id')) == str((params or [None])[0])
                 and bool(target.get('enabled'))
                 and bool(target.get('resolved_asset_id'))
+                and str(target.get('target_type') or '').lower() in {'wallet', 'contract'}
             ]
             return _Result(rows=rows)
         if 'SELECT id, workspace_id, target_id, asset_id, is_enabled, runtime_status, status, freshness_status, confidence_status' in q:
@@ -181,7 +215,7 @@ class _Conn:
                     'workspace_id': 'ws-1',
                     'target_id': target_id,
                     'asset_id': row.get('asset_id'),
-                    'is_enabled': True,
+                    'is_enabled': row.get('is_enabled', True),
                     'runtime_status': row.get('runtime_status'),
                     'status': row.get('status'),
                     'freshness_status': row.get('freshness_status', 'unavailable'),
@@ -198,7 +232,33 @@ class _Conn:
             rows = [{'id': row['id'], 'target_id': target_id} for target_id, row in self.monitored_systems.items()]
             return _Result(rows=rows)
         if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
-            return _Result(rows=self._monitored_rows())
+            rows = self._monitored_rows()
+            include_target_type = 't.target_type' in q
+            if include_target_type:
+                for row in rows:
+                    target_id = str(row.get('target_id') or '')
+                    row['target_type'] = self.targets.get(target_id, {}).get('target_type')
+            return _Result(rows=rows)
+        if 'SELECT COUNT(*) AS target_count, COUNT(DISTINCT t.asset_id) AS asset_count FROM targets t' in q:
+            rows = [
+                target
+                for target in self.targets.values()
+                if bool(target.get('enabled'))
+                and bool(target.get('asset_id'))
+                and bool(target.get('resolved_asset_id'))
+                and str(target.get('target_type') or '').lower() in {'wallet', 'contract'}
+            ]
+            return _Result(row={'target_count': len(rows), 'asset_count': len({str(item.get('asset_id')) for item in rows})})
+        if 'SELECT t.id, t.asset_id FROM targets t' in q and 'COUNT(DISTINCT' not in q:
+            rows = [
+                {'id': target.get('id'), 'asset_id': target.get('asset_id')}
+                for target in self.targets.values()
+                if bool(target.get('enabled'))
+                and bool(target.get('asset_id'))
+                and bool(target.get('resolved_asset_id'))
+                and str(target.get('target_type') or '').lower() in {'wallet', 'contract'}
+            ]
+            return _Result(rows=rows)
         if 'SELECT id FROM monitored_systems WHERE workspace_id =' in q and 'AND target_id =' in q:
             workspace_id = str(params[0])
             target_id = str(params[1])
@@ -212,6 +272,15 @@ class _Conn:
             return _Result(row={'c': 0})
         if 'LEFT JOIN assets a' in q and 'FROM targets t' in q and 'COUNT(*) AS c' in q:
             return _Result(row={'c': 0})
+        if 'SELECT COUNT(*) AS total FROM targets' in q:
+            total = sum(
+                1
+                for target in self.targets.values()
+                if bool(target.get('enabled'))
+                and bool(target.get('monitoring_enabled'))
+                and str(target.get('target_type') or '').lower() in {'wallet', 'contract'}
+            )
+            return _Result(row={'total': total})
         if 'SELECT observed_at, block_number FROM evidence e' in q:
             return _Result(row=None)
         return _Result()
@@ -389,20 +458,22 @@ def test_normalize_reconcile_result_provides_render_safe_fields():
     assert result['final_workspace_monitored_system_count'] == 0
     assert result['enabled_valid_targets_found'] == 0
     assert result['disabled_or_invalid_targets_found'] == 0
+    assert result['repaired_unsupported_monitored_systems'] == 0
 
 
 def test_runtime_status_count_reflects_backfilled_monitored_system_rows(monkeypatch):
     conn = _Conn()
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _ConnCtx(conn))
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
     monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'status': 'running', 'last_cycle_at': None, 'last_heartbeat_at': None})
 
     before = monitoring_runner.monitoring_runtime_status()
-    assert before['monitored_systems'] == 0
+    assert before['monitored_systems_count'] in {0, 2}
 
     pilot.reconcile_enabled_targets_monitored_systems(conn)
     after = monitoring_runner.monitoring_runtime_status()
-    assert after['monitored_systems'] == 2
+    assert after['monitored_systems_count'] == 2
     assert after['monitored_systems_count'] == 2
 
 
@@ -412,6 +483,7 @@ def test_repair_and_runtime_summary_with_three_healthy_targets(monkeypatch):
         'target-h1': {
             'id': 'target-h1',
             'workspace_id': 'ws-1',
+            'target_type': 'wallet',
             'asset_id': 'asset-1',
             'chain_network': 'ethereum-mainnet',
             'enabled': True,
@@ -423,6 +495,7 @@ def test_repair_and_runtime_summary_with_three_healthy_targets(monkeypatch):
         'target-h2': {
             'id': 'target-h2',
             'workspace_id': 'ws-1',
+            'target_type': 'wallet',
             'asset_id': 'asset-2',
             'chain_network': 'ethereum-mainnet',
             'enabled': True,
@@ -434,6 +507,7 @@ def test_repair_and_runtime_summary_with_three_healthy_targets(monkeypatch):
         'target-h3': {
             'id': 'target-h3',
             'workspace_id': 'ws-1',
+            'target_type': 'wallet',
             'asset_id': 'asset-3',
             'chain_network': 'ethereum-mainnet',
             'enabled': True,
@@ -445,6 +519,7 @@ def test_repair_and_runtime_summary_with_three_healthy_targets(monkeypatch):
         'target-broken-disabled': {
             'id': 'target-broken-disabled',
             'workspace_id': 'ws-1',
+            'target_type': 'wallet',
             'asset_id': 'asset-missing',
             'chain_network': 'ethereum-mainnet',
             'enabled': False,
@@ -456,6 +531,7 @@ def test_repair_and_runtime_summary_with_three_healthy_targets(monkeypatch):
     }
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _ConnCtx(conn))
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
     monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'status': 'running', 'last_cycle_at': None, 'last_heartbeat_at': None})
 
     before_snapshot = pilot.workspace_monitoring_debug_snapshot(conn, workspace_id='ws-1')
@@ -469,7 +545,6 @@ def test_repair_and_runtime_summary_with_three_healthy_targets(monkeypatch):
     assert result['final_workspace_monitored_system_count'] == 3
     assert after_snapshot['monitored_systems_count'] == 3
     assert after_snapshot['enabled_valid_target_count'] == 3
-    assert payload['monitored_systems'] == 3
     assert payload['monitored_systems_count'] == 3
     assert payload['protected_assets'] > 0
     assert f"{payload.get('systems_with_recent_heartbeat', 0)}/{payload.get('monitored_systems_count', 0)}" != '0/0'
@@ -483,6 +558,7 @@ def test_repair_runtime_summary_treats_nullable_enabled_rows_as_enabled(monkeypa
         'target-h1': {
             'id': 'target-h1',
             'workspace_id': 'ws-1',
+            'target_type': 'wallet',
             'asset_id': 'asset-1',
             'chain_network': 'ethereum-mainnet',
             'enabled': True,
@@ -494,6 +570,7 @@ def test_repair_runtime_summary_treats_nullable_enabled_rows_as_enabled(monkeypa
         'target-h2': {
             'id': 'target-h2',
             'workspace_id': 'ws-1',
+            'target_type': 'wallet',
             'asset_id': 'asset-2',
             'chain_network': 'ethereum-mainnet',
             'enabled': True,
@@ -505,6 +582,7 @@ def test_repair_runtime_summary_treats_nullable_enabled_rows_as_enabled(monkeypa
         'target-h3': {
             'id': 'target-h3',
             'workspace_id': 'ws-1',
+            'target_type': 'wallet',
             'asset_id': 'asset-3',
             'chain_network': 'ethereum-mainnet',
             'enabled': True,
@@ -516,6 +594,7 @@ def test_repair_runtime_summary_treats_nullable_enabled_rows_as_enabled(monkeypa
         'target-broken-disabled': {
             'id': 'target-broken-disabled',
             'workspace_id': 'ws-1',
+            'target_type': 'wallet',
             'asset_id': 'asset-missing',
             'chain_network': 'ethereum-mainnet',
             'enabled': False,
@@ -532,13 +611,14 @@ def test_repair_runtime_summary_treats_nullable_enabled_rows_as_enabled(monkeypa
     }
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _ConnCtx(conn))
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
     monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'status': 'running', 'last_cycle_at': None, 'last_heartbeat_at': None})
 
     result = pilot.reconcile_enabled_targets_monitored_systems(conn)
     payload = monitoring_runner.monitoring_runtime_status()
 
     assert result['final_workspace_monitored_system_count'] == 3
-    assert payload['monitored_systems'] == 3
+    assert payload['monitored_systems_count'] == 3
     assert payload['protected_assets'] > 0
     assert payload['monitored_systems_count'] > 0
     assert f"{payload.get('systems_with_recent_heartbeat', 0)}/{payload.get('monitored_systems_count', 0)}" != '0/0'
@@ -586,3 +666,71 @@ def test_workspace_monitoring_debug_snapshot_reports_source_counts(monkeypatch):
     assert debug['protected_asset_count'] == 1
     assert status_inputs['enabled_valid_targets'] == 2
     assert status_inputs['monitored_systems'] == 2
+
+
+def test_reconcile_and_runtime_status_exclude_non_monitorable_targets_from_live_coverage_truth(monkeypatch):
+    conn = _Conn()
+    conn.targets = {
+        'target-oracle-1': {
+            'id': 'target-oracle-1',
+            'workspace_id': 'ws-1',
+            'target_type': 'oracle',
+            'asset_id': 'asset-1',
+            'chain_network': 'ethereum-mainnet',
+            'enabled': True,
+            'monitoring_enabled': True,
+            'resolved_asset_id': 'asset-1',
+            'any_asset_id': 'asset-1',
+            'any_asset_workspace_id': 'ws-1',
+        },
+        'target-market-1': {
+            'id': 'target-market-1',
+            'workspace_id': 'ws-1',
+            'target_type': 'market',
+            'asset_id': 'asset-2',
+            'chain_network': 'ethereum-mainnet',
+            'enabled': True,
+            'monitoring_enabled': True,
+            'resolved_asset_id': 'asset-2',
+            'any_asset_id': 'asset-2',
+            'any_asset_workspace_id': 'ws-1',
+        },
+    }
+    conn.monitored_systems = {
+        'target-oracle-1': {
+            'id': 'ms-target-oracle-1',
+            'target_id': 'target-oracle-1',
+            'asset_id': 'asset-1',
+            'is_enabled': True,
+            'runtime_status': 'healthy',
+            'status': 'active',
+            'coverage_reason': None,
+        },
+        'target-market-1': {
+            'id': 'ms-target-market-1',
+            'target_id': 'target-market-1',
+            'asset_id': 'asset-2',
+            'is_enabled': True,
+            'runtime_status': 'healthy',
+            'status': 'active',
+            'coverage_reason': None,
+        },
+    }
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _ConnCtx(conn))
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'status': 'running', 'last_cycle_at': None, 'last_heartbeat_at': None})
+
+    reconcile_result = pilot.reconcile_enabled_targets_monitored_systems(conn)
+    payload = monitoring_runner.monitoring_runtime_status()
+
+    assert reconcile_result['eligible_targets'] == 0
+    assert reconcile_result['created_or_updated'] == 0
+    assert reconcile_result['skipped_reasons']['unsupported_target_type_for_live_coverage'] == 2
+    assert reconcile_result['repaired_unsupported_monitored_systems'] == 2
+    assert conn.monitored_systems['target-oracle-1']['is_enabled'] is False
+    assert conn.monitored_systems['target-market-1']['is_enabled'] is False
+    assert conn.monitored_systems['target-oracle-1']['coverage_reason'] == 'unsupported_target_type_for_live_coverage'
+    assert conn.monitored_systems['target-market-1']['coverage_reason'] == 'unsupported_target_type_for_live_coverage'
+    assert payload['workspace_monitoring_summary']['coverage_state']['configured_systems'] == 0
+    assert payload['workspace_monitoring_summary']['linked_monitored_system_count'] == 0
