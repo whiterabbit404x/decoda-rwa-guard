@@ -301,3 +301,70 @@ def test_runtime_status_uses_parameterized_detection_query_and_keeps_idle_system
     assert payload['enabled_systems'] > 0
     assert payload['monitoring_status'] != 'offline'
     assert payload['status'] != 'Offline'
+
+
+def test_ops_runtime_debug_returns_canonical_runtime_summary_fields_with_healthy_live_semantics(monkeypatch):
+    client = TestClient(api_main.app)
+    now = datetime.now(timezone.utc).isoformat()
+    expected_keys = {
+        'workspace_id',
+        'workspace_slug',
+        'workspace_configured',
+        'configuration_reason',
+        'status_reason',
+        'valid_protected_assets',
+        'linked_monitored_systems',
+        'enabled_configs',
+        'valid_link_count',
+        'configured_systems',
+        'reporting_systems',
+        'last_poll_at',
+        'last_heartbeat_at',
+        'last_coverage_telemetry_at',
+        'last_telemetry_at',
+        'telemetry_kind',
+        'evidence_source',
+        'confidence_status',
+        'runtime_status_summary',
+    }
+
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        monitoring_runner,
+        'monitoring_runtime_status',
+        lambda _request=None: {
+            'workspace_id': 'ws-healthy',
+            'workspace_slug': 'healthy-workspace',
+            'workspace_monitoring_summary': {
+                'workspace_configured': True,
+                'configuration_reason': None,
+                'status_reason': None,
+                'valid_protected_assets': 2,
+                'linked_monitored_systems': 2,
+                'enabled_configs': 2,
+                'valid_link_count': 2,
+                'configured_systems': 2,
+                'reporting_systems': 2,
+                'last_poll_at': now,
+                'last_heartbeat_at': now,
+                'last_coverage_telemetry_at': now,
+                'last_telemetry_at': now,
+                'telemetry_kind': 'coverage',
+                'evidence_source': 'live',
+                'confidence_status': 'high',
+                'runtime_status': 'healthy',
+            },
+        },
+    )
+
+    response = client.get('/ops/monitoring/runtime-debug', headers={'authorization': 'Bearer token', 'x-workspace-id': 'ws-healthy'})
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert set(payload.keys()) == expected_keys
+    assert payload['workspace_id'] == 'ws-healthy'
+    assert payload['workspace_slug'] == 'healthy-workspace'
+    assert payload['workspace_configured'] is True
+    assert payload['evidence_source'] == 'live'
+    assert payload['confidence_status'] == 'high'
+    assert payload['runtime_status_summary'] == 'healthy'
