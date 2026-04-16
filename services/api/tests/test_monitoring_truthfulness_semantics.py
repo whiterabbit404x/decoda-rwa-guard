@@ -214,3 +214,64 @@ def test_process_monitoring_target_preserves_failed_state(monkeypatch):
     result = monitoring_runner.process_monitoring_target(_Conn(), target, triggered_by_user_id='user-1')
     assert result['status'] == 'insufficient_real_evidence'
     assert result['source_status'] == 'failed'
+
+
+def test_process_monitoring_target_persists_live_coverage_when_no_target_events(monkeypatch):
+    class _Conn:
+        def execute(self, query, params=None):
+            normalized = ' '.join(str(query).split())
+            if 'SELECT id, name FROM workspaces' in normalized:
+                return _Result({'id': 'workspace-1', 'name': 'Workspace'})
+            return _Result(None)
+
+    target = {
+        'id': 'target-1',
+        'workspace_id': 'workspace-1',
+        'name': 'Treasury Wallet',
+        'target_type': 'wallet',
+        'chain_network': 'ethereum',
+        'monitoring_checkpoint_at': None,
+        'last_checked_at': None,
+        'monitoring_checkpoint_cursor': None,
+        'watcher_last_observed_block': None,
+        'updated_by_user_id': 'user-1',
+        'created_by_user_id': 'user-1',
+    }
+    monkeypatch.setattr(
+        monitoring_runner,
+        'fetch_target_activity_result',
+        lambda *_args, **_kwargs: ActivityProviderResult(
+            mode='live',
+            status='live',
+            evidence_state='REAL_EVIDENCE',
+            truthfulness_state='NOT_CLAIM_SAFE',
+            synthetic=False,
+            provider_name='evm_activity_provider',
+            provider_kind='rpc',
+            evidence_present=True,
+            recent_real_event_count=0,
+            last_real_event_at=None,
+            events=[],
+            latest_block=123,
+            checkpoint='coverage:123',
+            checkpoint_age_seconds=0,
+            degraded_reason=None,
+            error_code=None,
+            source_type='rpc_polling',
+            reason_code='PROVIDER_COVERAGE_VERIFIED',
+            claim_safe=False,
+            detection_outcome='NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
+        ),
+    )
+    persisted: dict[str, object] = {}
+    monkeypatch.setattr(
+        monitoring_runner,
+        '_persist_live_coverage_telemetry',
+        lambda *_args, **kwargs: persisted.update({'target_id': kwargs['target'].get('id'), 'provider': kwargs['provider_result'].provider_name}),
+    )
+    result = monitoring_runner.process_monitoring_target(_Conn(), target, triggered_by_user_id='user-1')
+    assert result['status'] == 'no_real_data'
+    assert result['source_status'] == 'active'
+    assert result['degraded_reason'] is None
+    assert result['live_coverage_telemetry_at'] is not None
+    assert persisted == {'target_id': 'target-1', 'provider': 'evm_activity_provider'}
