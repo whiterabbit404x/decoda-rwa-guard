@@ -2301,6 +2301,191 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
     observed_at = utc_now()
     tx_hash = f'0x{hashlib.sha256(f"{workspace_id}:{target_id}:seed-demo".encode("utf-8")).hexdigest()[:64]}'
     log_index = 0
+    dedupe_signature = hashlib.sha256(f'{workspace_id}:{target_id}:demo-seed-monitoring-alert'.encode('utf-8')).hexdigest()
+    alert_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-alert:{workspace_id}:{target_id}:{dedupe_signature}'))
+    incident_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-incident:{workspace_id}:{target_id}:{alert_id}'))
+    alert_event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-alert-event:{workspace_id}:{alert_id}'))
+    timeline_event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-incident-timeline:{workspace_id}:{incident_id}'))
+    alert_audit_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-audit-alert:{workspace_id}:{alert_id}'))
+    incident_audit_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-audit-incident:{workspace_id}:{incident_id}'))
+    connection.execute(
+        '''
+        INSERT INTO alerts (
+            id, workspace_id, user_id, analysis_run_id, alert_type, title, severity, status, source_service, summary, payload, created_at,
+            target_id, module_key, source, dedupe_signature, occurrence_count, first_seen_at, last_seen_at, updated_at
+        )
+        VALUES (
+            %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW(),
+            %s::uuid, %s, %s, %s, 1, %s, %s, NOW()
+        )
+        ON CONFLICT (id)
+        DO UPDATE SET
+            target_id = EXCLUDED.target_id,
+            module_key = EXCLUDED.module_key,
+            source = EXCLUDED.source,
+            dedupe_signature = EXCLUDED.dedupe_signature,
+            severity = EXCLUDED.severity,
+            status = EXCLUDED.status,
+            source_service = EXCLUDED.source_service,
+            title = EXCLUDED.title,
+            summary = EXCLUDED.summary,
+            payload = EXCLUDED.payload,
+            first_seen_at = LEAST(alerts.first_seen_at, EXCLUDED.first_seen_at),
+            last_seen_at = GREATEST(alerts.last_seen_at, EXCLUDED.last_seen_at),
+            occurrence_count = GREATEST(alerts.occurrence_count, 1),
+            updated_at = NOW()
+        ''',
+        (
+            alert_id,
+            workspace_id,
+            user_id,
+            'monitoring.seed_demo_detection',
+            'Demo Seed Monitoring Alert',
+            'medium',
+            'open',
+            'simulator',
+            'Seeded simulator detection alert linked to persisted demo telemetry evidence.',
+            _json_dumps(
+                {
+                    'source': 'seed_demo_workspace',
+                    'target_id': target_id,
+                    'asset_id': asset_id,
+                    'tx_hash': tx_hash,
+                    'bootstrap_source': 'seed_demo_workspace',
+                }
+            ),
+            target_id,
+            'monitoring',
+            'simulator',
+            dedupe_signature,
+            observed_at,
+            observed_at,
+        ),
+    )
+    connection.execute(
+        '''
+        INSERT INTO incidents (
+            id, workspace_id, user_id, analysis_run_id, target_id, event_type, title, severity, status, workflow_status, summary,
+            linked_alert_ids, timeline, payload, created_at, updated_at
+        )
+        VALUES (
+            %s, %s, %s, NULL, %s::uuid, %s, %s, %s, %s, %s, %s,
+            %s::jsonb, %s::jsonb, %s::jsonb, NOW(), NOW()
+        )
+        ON CONFLICT (id)
+        DO UPDATE SET
+            target_id = EXCLUDED.target_id,
+            event_type = EXCLUDED.event_type,
+            title = EXCLUDED.title,
+            severity = EXCLUDED.severity,
+            status = EXCLUDED.status,
+            workflow_status = EXCLUDED.workflow_status,
+            summary = EXCLUDED.summary,
+            linked_alert_ids = EXCLUDED.linked_alert_ids,
+            timeline = EXCLUDED.timeline,
+            payload = EXCLUDED.payload,
+            updated_at = NOW()
+        ''',
+        (
+            incident_id,
+            workspace_id,
+            user_id,
+            target_id,
+            'incident.monitoring_seed_alert',
+            'Demo Seed Monitoring Incident',
+            'medium',
+            'open',
+            'open',
+            'Seeded incident created from deterministic demo monitoring alert.',
+            _json_dumps([alert_id]),
+            _json_dumps([{'event': 'incident.created_from_alert', 'at': observed_at.isoformat(), 'alert_id': alert_id}]),
+            _json_dumps({'source': 'seed_demo_workspace', 'alert_id': alert_id, 'target_id': target_id}),
+        ),
+    )
+    connection.execute(
+        '''
+        INSERT INTO alert_events (id, workspace_id, alert_id, actor_user_id, event_type, details, created_at)
+        VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s::jsonb, %s)
+        ON CONFLICT (id)
+        DO UPDATE SET
+            event_type = EXCLUDED.event_type,
+            details = EXCLUDED.details,
+            created_at = EXCLUDED.created_at
+        ''',
+        (
+            alert_event_id,
+            workspace_id,
+            alert_id,
+            user_id,
+            'alert.created_from_simulator_detection',
+            _json_dumps({'incident_id': incident_id, 'dedupe_signature': dedupe_signature}),
+            observed_at,
+        ),
+    )
+    connection.execute(
+        '''
+        INSERT INTO incident_timeline (id, workspace_id, incident_id, event_type, message, actor_user_id, metadata, created_at)
+        VALUES (%s, %s, %s::uuid, %s, %s, %s::uuid, %s::jsonb, %s)
+        ON CONFLICT (id)
+        DO UPDATE SET
+            event_type = EXCLUDED.event_type,
+            message = EXCLUDED.message,
+            metadata = EXCLUDED.metadata,
+            created_at = EXCLUDED.created_at
+        ''',
+        (
+            timeline_event_id,
+            workspace_id,
+            incident_id,
+            'incident.created_from_alert',
+            'Incident opened from seeded simulator detection alert.',
+            user_id,
+            _json_dumps({'alert_id': alert_id, 'dedupe_signature': dedupe_signature}),
+            observed_at,
+        ),
+    )
+    connection.execute(
+        '''
+        INSERT INTO audit_logs (id, workspace_id, user_id, action, entity_type, entity_id, ip_address, metadata, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, NULL, %s::jsonb, %s)
+        ON CONFLICT (id)
+        DO UPDATE SET
+            action = EXCLUDED.action,
+            metadata = EXCLUDED.metadata,
+            created_at = EXCLUDED.created_at
+        ''',
+        (
+            alert_audit_id,
+            workspace_id,
+            user_id,
+            'alert.seeded_from_simulator',
+            'alert',
+            alert_id,
+            _json_dumps({'target_id': target_id, 'incident_id': incident_id, 'dedupe_signature': dedupe_signature}),
+            observed_at,
+        ),
+    )
+    connection.execute(
+        '''
+        INSERT INTO audit_logs (id, workspace_id, user_id, action, entity_type, entity_id, ip_address, metadata, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, NULL, %s::jsonb, %s)
+        ON CONFLICT (id)
+        DO UPDATE SET
+            action = EXCLUDED.action,
+            metadata = EXCLUDED.metadata,
+            created_at = EXCLUDED.created_at
+        ''',
+        (
+            incident_audit_id,
+            workspace_id,
+            user_id,
+            'incident.seeded_from_alert',
+            'incident',
+            incident_id,
+            _json_dumps({'target_id': target_id, 'alert_id': alert_id, 'dedupe_signature': dedupe_signature}),
+            observed_at,
+        ),
+    )
     evidence_id = str(uuid.uuid4())
     evidence_row = connection.execute(
         '''
@@ -2310,12 +2495,13 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
             raw_payload_json, observed_at, created_at
         )
         VALUES (
-            %s, %s, %s::uuid, %s::uuid, NULL, %s, %s, %s, %s, %s,
+            %s, %s, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s,
             %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s,
             %s::jsonb, %s, NOW()
         )
         ON CONFLICT (target_id, tx_hash, log_index, event_type)
         DO UPDATE SET
+            alert_id = EXCLUDED.alert_id,
             monitored_system_id = EXCLUDED.monitored_system_id,
             source_provider = EXCLUDED.source_provider,
             summary = EXCLUDED.summary,
@@ -2328,6 +2514,7 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
             workspace_id,
             asset_id,
             target_id,
+            alert_id,
             'ethereum-mainnet',
             1,
             tx_hash,
@@ -2378,6 +2565,8 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
         'asset_id': asset_id,
         'target_id': target_id,
         'monitored_system_id': monitored_system_id,
+        'alert_id': alert_id,
+        'incident_id': incident_id,
         'evidence_source': 'simulator',
         'telemetry_event_observed_at': last_event_at.isoformat() if isinstance(last_event_at, datetime) else str(last_event_at),
     }
