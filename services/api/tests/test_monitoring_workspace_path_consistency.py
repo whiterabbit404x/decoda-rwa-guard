@@ -255,6 +255,29 @@ def test_runtime_debug_endpoint_returns_json_when_workspace_context_missing(monk
     assert payload['configuration_diagnostics']['reason_codes'] == ['workspace_not_resolved']
 
 
+
+
+def test_runtime_debug_endpoint_returns_structured_error_when_runtime_status_crashes(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        monitoring_runner,
+        'monitoring_runtime_status',
+        lambda _request=None: (_ for _ in ()).throw(RuntimeError('UndefinedColumn: column ms.last_coverage_telemetry_at does not exist')),
+    )
+
+    response = client.get('/ops/monitoring/runtime-debug', headers={'authorization': 'Bearer token', 'x-workspace-id': 'ws-healthy'})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['workspace_configured'] is False
+    assert payload['configuration_reason'] == 'runtime_status_exception'
+    assert payload['status_reason'] == 'runtime_debug_status_exception:RuntimeError'
+    assert payload['runtime_status_summary'] == 'offline'
+    assert payload['error']['type'] == 'RuntimeError'
+    assert payload['error']['message'] == 'UndefinedColumn: column ms.last_coverage_telemetry_at does not exist'
+    assert payload['configuration_diagnostics']['reason_codes'] == ['runtime_status_exception']
+
+
 def test_runtime_status_keeps_list_path_counts_when_raw_workspace_query_fails(monkeypatch):
     class _RawQueryFailConn(_Conn):
         def execute(self, query, params=None):
