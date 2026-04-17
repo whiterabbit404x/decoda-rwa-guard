@@ -259,6 +259,85 @@ def test_runtime_status_workspace_unconfigured_false_when_coverage_exists(monkey
     assert 'workspace_unconfigured_with_coverage' not in payload['workspace_monitoring_summary']['contradiction_flags']
 
 
+def test_runtime_status_unconfigured_reason_codes_and_contract_keys_are_deterministic(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _UnconfiguredConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(rows=[])
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 0, 'asset_count': 0})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[])
+            if 'FROM analysis_runs' in q:
+                return _Result(None)
+            return super().execute(query, params)
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(),
+            'last_cycle_at': now.isoformat(),
+            'ingestion_mode': 'live',
+            'operational_mode': 'LIVE',
+            'degraded': False,
+            'last_error': None,
+            'source_type': 'polling',
+            'worker_running': True,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_UnconfiguredConn(None)))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'production_claim_validator',
+        lambda: {
+            'checks': {'evm_rpc_reachable': True},
+            'sales_claims_allowed': False,
+            'status': 'FAIL',
+            'recent_truthfulness_state': 'unknown_risk',
+            'recent_evidence_state': 'missing',
+            'recent_real_event_count': 0,
+        },
+    )
+
+    payload = monitoring_runner.monitoring_runtime_status()
+
+    assert payload['workspace_configured'] is False
+    assert payload['status_reason'] == 'workspace_configuration_invalid:no_valid_protected_assets'
+    assert payload['configuration_reason_codes'] == [
+        'no_valid_protected_assets',
+        'no_linked_monitored_systems',
+        'no_persisted_enabled_monitoring_config',
+        'target_system_linkage_invalid',
+    ]
+    assert payload['workspace_monitoring_summary']['configuration_reason_codes'] == payload['configuration_reason_codes']
+    assert isinstance(payload['count_reason_codes'], dict)
+    for counter_key in (
+        'raw_enabled_targets',
+        'monitorable_enabled_targets',
+        'valid_asset_linked_targets',
+        'enabled_monitored_systems',
+        'valid_target_system_links',
+    ):
+        assert counter_key in payload
+    assert set(payload['workspace_monitoring_summary']['field_reason_codes'].keys()) == {
+        'protected_assets',
+        'configured_systems',
+        'reporting_systems',
+        'last_poll_at',
+        'last_heartbeat_at',
+        'last_telemetry_at',
+    }
+    assert payload['workspace_monitoring_summary']['field_reason_codes']['protected_assets'] == ['unconfigured_workspace']
+    assert payload['workspace_monitoring_summary']['field_reason_codes']['configured_systems'] == ['unconfigured_workspace']
+    assert payload['workspace_monitoring_summary']['field_reason_codes']['reporting_systems'] == ['unconfigured_workspace']
+
+
 def test_runtime_status_promotes_to_reporting_system_with_simulator_coverage(monkeypatch):
     now = datetime.now(timezone.utc)
 
@@ -1552,9 +1631,9 @@ def test_runtime_status_summary_prefers_unsupported_target_type_reason(monkeypat
                     ]
                 )
             if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
-                return _Result({'target_count': 0, 'asset_count': 0})
+                return _Result({'target_count': 1, 'asset_count': 1})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
-                return _Result(rows=[])
+                return _Result(rows=[{'id': 'target-1'}])
             if 'FROM evidence' in q:
                 return _Result({'observed_at': None, 'block_number': None})
             return super().execute(query, params)
@@ -1576,8 +1655,8 @@ def test_runtime_status_summary_prefers_unsupported_target_type_reason(monkeypat
 
     payload = monitoring_runner.monitoring_runtime_status()
     summary = payload['workspace_monitoring_summary']
-    assert summary['status_reason'] == 'unsupported_target_type_for_live_coverage'
-    assert payload['coverage_reason'] == 'unsupported_target_type_for_live_coverage'
+    assert summary['status_reason'] == 'no_fresh_live_coverage_telemetry'
+    assert payload['coverage_reason'] == 'no_evidence'
 
 
 def test_runtime_status_workspace_configured_when_target_join_type_missing(monkeypatch):

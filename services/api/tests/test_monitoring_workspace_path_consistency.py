@@ -9,6 +9,23 @@ from fastapi.testclient import TestClient
 from services.api.app import main as api_main
 from services.api.app import monitoring_runner, pilot
 
+_PREREQUISITE_COUNTER_KEYS = {
+    'raw_enabled_targets',
+    'monitorable_enabled_targets',
+    'valid_asset_linked_targets',
+    'enabled_monitored_systems',
+    'valid_target_system_links',
+}
+
+_SUMMARY_FIELD_REASON_KEYS = {
+    'protected_assets',
+    'configured_systems',
+    'reporting_systems',
+    'last_poll_at',
+    'last_heartbeat_at',
+    'last_telemetry_at',
+}
+
 
 class _Result:
     def __init__(self, row=None, rows=None):
@@ -192,6 +209,7 @@ def test_monitoring_list_runtime_debug_and_reconcile_stay_consistent(monkeypatch
     headers = {'authorization': 'Bearer token', 'x-workspace-id': 'ws-legacy'}
     listed = client.get('/monitoring/systems', headers=headers)
     runtime = client.get('/ops/monitoring/runtime-status', headers=headers)
+    ops_debug = client.get('/ops/monitoring/runtime-debug', headers=headers)
     debug = client.get('/monitoring/workspace-debug', headers=headers)
     repair = client.post('/monitoring/systems/reconcile', headers=headers)
 
@@ -206,6 +224,31 @@ def test_monitoring_list_runtime_debug_and_reconcile_stay_consistent(monkeypatch
     assert runtime_payload['status'] != 'Offline'
     assert str(runtime_payload['systems_with_recent_heartbeat']) != '0'
     assert runtime_payload['enabled_systems'] == 3
+    assert isinstance(runtime_payload['count_reason_codes'], dict)
+    assert set(runtime_payload['workspace_monitoring_summary']['field_reason_codes'].keys()) == _SUMMARY_FIELD_REASON_KEYS
+    for counter_key in _PREREQUISITE_COUNTER_KEYS:
+        assert counter_key in runtime_payload
+
+    assert ops_debug.status_code == 200
+    ops_debug_payload = ops_debug.json()
+    for contract_key in (
+        'workspace_id',
+        'workspace_slug',
+        'workspace_configured',
+        'configuration_reason',
+        'configuration_reason_codes',
+        'configuration_diagnostics',
+        'status_reason',
+        'count_reason_codes',
+        'field_reason_codes',
+        'workspace_monitoring_summary',
+        'runtime_status_summary',
+        'evidence_source',
+        'confidence_status',
+    ):
+        assert contract_key in ops_debug_payload
+    assert isinstance(ops_debug_payload['count_reason_codes'], dict)
+    assert set(ops_debug_payload['workspace_monitoring_summary']['field_reason_codes'].keys()) == _SUMMARY_FIELD_REASON_KEYS
 
     assert debug.status_code == 200
     debug_payload = debug.json()
@@ -251,7 +294,12 @@ def test_runtime_debug_endpoint_returns_json_when_workspace_context_missing(monk
     assert payload['workspace_configured'] is False
     assert payload['configuration_reason'] == 'workspace_not_resolved'
     assert payload['status_reason'] == 'runtime_debug_context_error:select_or_create_a_workspace_before_using_live_mode.'
+    assert payload['configuration_reason_codes'] == ['workspace_not_resolved']
     assert payload['runtime_status_summary'] == 'offline'
+    assert set(payload['count_reason_codes'].keys()) == _PREREQUISITE_COUNTER_KEYS
+    assert payload['field_reason_codes'] == {}
+    assert set(payload['workspace_monitoring_summary']['count_reason_codes'].keys()) == _PREREQUISITE_COUNTER_KEYS
+    assert payload['workspace_monitoring_summary']['field_reason_codes'] == {}
     assert payload['configuration_diagnostics']['reason_codes'] == ['workspace_not_resolved']
 
 
@@ -273,6 +321,11 @@ def test_runtime_debug_endpoint_returns_structured_error_when_runtime_status_cra
     assert payload['configuration_reason'] == 'runtime_status_exception'
     assert payload['status_reason'] == 'runtime_debug_status_exception:RuntimeError'
     assert payload['runtime_status_summary'] == 'offline'
+    assert payload['configuration_reason_codes'] == ['runtime_status_exception']
+    assert set(payload['count_reason_codes'].keys()) == _PREREQUISITE_COUNTER_KEYS
+    assert payload['field_reason_codes'] == {}
+    assert set(payload['workspace_monitoring_summary']['count_reason_codes'].keys()) == _PREREQUISITE_COUNTER_KEYS
+    assert payload['workspace_monitoring_summary']['field_reason_codes'] == {}
     assert payload['error']['type'] == 'RuntimeError'
     assert payload['error']['message'] == 'UndefinedColumn: column ms.last_coverage_telemetry_at does not exist'
     assert payload['configuration_diagnostics']['reason_codes'] == ['runtime_status_exception']
@@ -428,13 +481,7 @@ def test_ops_runtime_debug_returns_canonical_runtime_summary_fields_with_healthy
 
     assert expected_keys.issubset(set(payload.keys()))
     assert {'configuration_reason_codes', 'field_reason_codes'}.issubset(set(payload.keys()))
-    assert {
-        'raw_enabled_targets',
-        'monitorable_enabled_targets',
-        'valid_asset_linked_targets',
-        'enabled_monitored_systems',
-        'valid_target_system_links',
-    }.issubset(set(payload.keys()))
+    assert _PREREQUISITE_COUNTER_KEYS.issubset(set(payload.keys()))
     assert payload['workspace_id'] == 'ws-healthy'
     assert payload['workspace_slug'] == 'healthy-workspace'
     assert payload['workspace_configured'] is True
@@ -443,6 +490,7 @@ def test_ops_runtime_debug_returns_canonical_runtime_summary_fields_with_healthy
     assert payload['runtime_status_summary'] == 'healthy'
     assert payload['configuration_reason_codes'] == []
     assert payload['field_reason_codes'] == {}
+    assert isinstance(payload['count_reason_codes'], dict)
     assert payload['configuration_diagnostics']['workspace_configured'] is True
     assert payload['configuration_diagnostics']['reason_codes'] == []
 
