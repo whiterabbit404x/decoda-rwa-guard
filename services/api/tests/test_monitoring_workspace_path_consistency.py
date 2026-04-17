@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
+import psycopg
 
 from services.api.app import main as api_main
 from services.api.app import monitoring_runner, pilot
@@ -613,6 +614,57 @@ def test_runtime_status_uses_parameterized_detection_query_and_keeps_idle_system
     assert payload['enabled_systems'] > 0
     assert payload['monitoring_status'] != 'offline'
     assert payload['status'] != 'Offline'
+
+
+def test_runtime_status_query_failure_still_returns_workspace_identity(monkeypatch):
+    class _QueryFailureConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM alerts' in q:
+                raise psycopg.OperationalError('database temporarily unavailable')
+            return super().execute(query, params)
+
+    conn = _QueryFailureConn()
+    client = TestClient(api_main.app)
+    now = datetime.now(timezone.utc)
+    captured_requests = []
+
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_monitoring_runtime_schema_capabilities', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+
+    def _resolve_context(_conn, request):
+        captured_requests.append(request)
+        return {'id': 'user-1'}, _workspace_context(), True
+
+    monkeypatch.setattr(monitoring_runner, 'resolve_workspace_context_for_request', _resolve_context)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(),
+            'last_cycle_at': now.isoformat(),
+            'degraded': False,
+            'last_error': None,
+            'source_type': 'polling',
+            'worker_running': True,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+
+    response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer token', 'x-workspace-id': 'ws-legacy'})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['workspace_id'] == 'ws-legacy'
+    assert payload['workspace_slug'] == 'legacy'
+    assert payload['status_reason'] == 'runtime_status_degraded:database_error'
+    assert payload['error']['code'] == 'runtime_status_db_error'
+    assert captured_requests
+    assert getattr(captured_requests[0].state, 'workspace_id', None) == 'ws-legacy'
+    assert getattr(captured_requests[0].state, 'workspace_slug', None) == 'legacy'
 
 
 def test_ops_runtime_debug_returns_canonical_runtime_summary_fields_with_healthy_live_semantics(monkeypatch):

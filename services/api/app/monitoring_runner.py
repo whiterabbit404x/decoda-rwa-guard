@@ -3145,7 +3145,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         status_reason: str,
         hint: str,
     ) -> dict[str, Any]:
-        payload = _base_runtime_failure_payload(workspace_id=workspace_id, workspace_slug=workspace_slug)
+        effective_workspace_id = workspace_id or resolved_workspace_id
+        effective_workspace_slug = workspace_slug or resolved_workspace_slug
+        if effective_workspace_id is None and effective_workspace_slug is None:
+            request_workspace_id, request_workspace_slug = _workspace_context_from_request(request)
+            effective_workspace_id = request_workspace_id or effective_workspace_id
+            effective_workspace_slug = request_workspace_slug or effective_workspace_slug
+        payload = _base_runtime_failure_payload(
+            workspace_id=effective_workspace_id,
+            workspace_slug=effective_workspace_slug,
+        )
         payload['status_reason'] = status_reason
         payload['configuration_reason'] = 'runtime_status_unavailable'
         payload['configuration_reason_codes'] = ['runtime_status_unavailable']
