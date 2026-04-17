@@ -215,7 +215,11 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
     configuration_reason_codes: truth.configuration_reason_codes.length > 0
       ? truth.configuration_reason_codes
       : asReasonCodes((status as Record<string, unknown> | null)?.configuration_reason_codes, ['summary_unavailable']),
-    status_reason: truth.status_reason ?? asTrimmedString((status as Record<string, unknown> | null)?.status_reason),
+    status_reason: truth.status_reason
+      ?? asTrimmedString((status as Record<string, unknown> | null)?.status_reason)
+      ?? asTrimmedString((status as Record<string, unknown> | null)?.degraded_reason),
+    configuration_reason: truth.configuration_reason
+      ?? asTrimmedString((status as Record<string, unknown> | null)?.configuration_reason),
   };
 }
 
