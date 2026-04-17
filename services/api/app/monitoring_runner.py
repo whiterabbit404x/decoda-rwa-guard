@@ -2906,6 +2906,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'linked_monitored_systems': 0,
             'enabled_configs': 0,
             'valid_link_count': 0,
+            'raw_enabled_targets': 0,
+            'monitorable_enabled_targets': 0,
+            'valid_asset_linked_targets': 0,
+            'enabled_monitored_systems': 0,
+            'valid_target_system_links': 0,
+            'count_reason_codes': {
+                'raw_enabled_targets': 'runtime_status_unavailable',
+                'monitorable_enabled_targets': 'runtime_status_unavailable',
+                'valid_asset_linked_targets': 'runtime_status_unavailable',
+                'enabled_monitored_systems': 'runtime_status_unavailable',
+                'valid_target_system_links': 'runtime_status_unavailable',
+            },
             'configured_systems': 0,
             'reporting_systems': 0,
             'last_poll_at': None,
@@ -2926,6 +2938,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'linked_monitored_systems': 0,
                 'enabled_configs': 0,
                 'valid_link_count': 0,
+                'raw_enabled_targets': 0,
+                'monitorable_enabled_targets': 0,
+                'valid_asset_linked_targets': 0,
+                'enabled_monitored_systems': 0,
+                'valid_target_system_links': 0,
+                'count_reason_codes': {
+                    'raw_enabled_targets': 'runtime_status_unavailable',
+                    'monitorable_enabled_targets': 'runtime_status_unavailable',
+                    'valid_asset_linked_targets': 'runtime_status_unavailable',
+                    'enabled_monitored_systems': 'runtime_status_unavailable',
+                    'valid_target_system_links': 'runtime_status_unavailable',
+                },
                 'configured_systems': 0,
                 'reporting_systems': 0,
                 'last_poll_at': None,
@@ -3033,6 +3057,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'claim_validator_status': str(claim_validator.get('status') or 'FAIL'),
                 'source_of_evidence': 'simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none',
                 'workspace_configured': False,
+                'raw_enabled_targets': 0,
+                'monitorable_enabled_targets': 0,
+                'valid_asset_linked_targets': 0,
+                'enabled_monitored_systems': 0,
+                'valid_target_system_links': 0,
+                'count_reason_codes': {
+                    'raw_enabled_targets': 'live_mode_disabled',
+                    'monitorable_enabled_targets': 'live_mode_disabled',
+                    'valid_asset_linked_targets': 'live_mode_disabled',
+                    'enabled_monitored_systems': 'live_mode_disabled',
+                    'valid_target_system_links': 'live_mode_disabled',
+                },
                 'configuration_reason': summary.get('configuration_reason'),
                 'configuration_reason_codes': list(summary.get('configuration_reason_codes') or []),
                 'workspace_monitoring_summary': summary,
@@ -3174,6 +3210,17 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 ''',
                 scoped_params,
             ).fetchone()
+            raw_enabled_targets_row = connection.execute(
+                f'''
+                SELECT COUNT(*) AS c
+                FROM targets t
+                WHERE t.deleted_at IS NULL
+                  AND t.enabled = TRUE
+                  {target_workspace_filter}
+                ''',
+                scoped_params,
+            ).fetchone()
+            raw_enabled_targets = int((raw_enabled_targets_row or {}).get('c') or 0)
             healthy_enabled_targets = connection.execute(
                 f'''
                 SELECT COUNT(*) AS target_count, COUNT(DISTINCT t.asset_id) AS asset_count
@@ -3376,7 +3423,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 if _row_has_valid_target_asset_link(row) and row.get('asset_id')
             }
         )
-        persisted_enabled_config_count = healthy_enabled_targets_count
+        monitorable_enabled_targets = healthy_enabled_targets_count
+        valid_asset_linked_targets = healthy_enabled_targets_count
+        enabled_monitored_systems = sum(1 for row in monitored_rows if monitored_system_row_enabled(row))
+        valid_target_system_links = valid_target_system_link_count
+        persisted_enabled_config_count = monitorable_enabled_targets
         logger.info(
             'monitoring_runtime_status_counts workspace_id=%s enabled_monitored_systems=%s protected_assets=%s runtime_rows=%s list_route_rows=%s enabled_monitored_systems_list_route=%s protected_assets_list_route=%s',
             workspace_id,
@@ -3673,6 +3724,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'systems_with_recent_heartbeat': recent_heartbeat_systems,
             'invalid_enabled_targets': int((broken_targets or {}).get('c') or 0),
             'healthy_enabled_targets': healthy_enabled_targets_count,
+            'raw_enabled_targets': raw_enabled_targets,
+            'monitorable_enabled_targets': monitorable_enabled_targets,
+            'valid_asset_linked_targets': valid_asset_linked_targets,
+            'enabled_monitored_systems': enabled_monitored_systems,
+            'valid_target_system_links': valid_target_system_links,
             'active_alerts': int((open_alerts or {}).get('c') or 0),
             'open_incidents': int((open_incidents or {}).get('c') or 0),
             'evidence_freshness_seconds': evidence_freshness,
@@ -3862,6 +3918,18 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
             'linked_monitored_systems': 0,
             'enabled_configs': 0,
             'valid_link_count': 0,
+            'raw_enabled_targets': 0,
+            'monitorable_enabled_targets': 0,
+            'valid_asset_linked_targets': 0,
+            'enabled_monitored_systems': 0,
+            'valid_target_system_links': 0,
+            'count_reason_codes': {
+                'raw_enabled_targets': 'runtime_debug_unavailable',
+                'monitorable_enabled_targets': 'runtime_debug_unavailable',
+                'valid_asset_linked_targets': 'runtime_debug_unavailable',
+                'enabled_monitored_systems': 'runtime_debug_unavailable',
+                'valid_target_system_links': 'runtime_debug_unavailable',
+            },
             'configured_systems': 0,
             'reporting_systems': 0,
             'last_poll_at': None,
@@ -3893,6 +3961,18 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
             'linked_monitored_systems': 0,
             'enabled_configs': 0,
             'valid_link_count': 0,
+            'raw_enabled_targets': 0,
+            'monitorable_enabled_targets': 0,
+            'valid_asset_linked_targets': 0,
+            'enabled_monitored_systems': 0,
+            'valid_target_system_links': 0,
+            'count_reason_codes': {
+                'raw_enabled_targets': configuration_reason,
+                'monitorable_enabled_targets': configuration_reason,
+                'valid_asset_linked_targets': configuration_reason,
+                'enabled_monitored_systems': configuration_reason,
+                'valid_target_system_links': configuration_reason,
+            },
             'workspace_configured': False,
             'configuration_reason': configuration_reason,
             'reason_codes': [configuration_reason],
@@ -3965,6 +4045,12 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
             'linked_monitored_systems': int(summary.get('linked_monitored_systems') or 0),
             'enabled_configs': int(summary.get('enabled_configs') or 0),
             'valid_link_count': int(summary.get('valid_link_count') or 0),
+            'raw_enabled_targets': int(runtime_payload.get('raw_enabled_targets') or 0),
+            'monitorable_enabled_targets': int(runtime_payload.get('monitorable_enabled_targets') or 0),
+            'valid_asset_linked_targets': int(runtime_payload.get('valid_asset_linked_targets') or 0),
+            'enabled_monitored_systems': int(runtime_payload.get('enabled_monitored_systems') or 0),
+            'valid_target_system_links': int(runtime_payload.get('valid_target_system_links') or 0),
+            'count_reason_codes': runtime_payload.get('count_reason_codes') or {},
             'configured_systems': int(summary.get('configured_systems') or 0),
             'reporting_systems': int(summary.get('reporting_systems') or 0),
             'last_poll_at': summary.get('last_poll_at'),
