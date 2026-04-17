@@ -3515,7 +3515,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ).fetchone()
             latest_detection_evaluation_at = _parse_ts((latest_detection_eval or {}).get('created_at'))
             latest_detection_payload = _json_safe_value((latest_detection_eval or {}).get('response_payload') or {}) if latest_detection_eval else None
-            synthetic_ingestion_sources = ('demo', 'simulator', 'replay', 'synthetic', 'fallback')
+            synthetic_ingestion_sources = ['demo', 'simulator', 'replay', 'synthetic', 'fallback']
             live_coverage_receipts_query = f'''
                 SELECT
                     e.processed_at,
@@ -3531,7 +3531,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                  AND t.workspace_id = e.workspace_id
                 WHERE e.evidence_source = 'live'
                   AND e.telemetry_kind = 'coverage'
-                  AND COALESCE(LOWER(e.ingestion_source), '') <> ALL(%s)
+                  AND NOT (COALESCE(LOWER(e.ingestion_source), '') = ANY(%s::text[]))
                   AND t.deleted_at IS NULL
                   AND t.enabled = TRUE
                   AND {monitorable_target_types_sql_clause('t.target_type')}
