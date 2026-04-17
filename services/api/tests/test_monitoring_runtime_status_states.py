@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException, status
+from psycopg.errors import SyntaxError as PsycopgSyntaxError
 
 from services.api.app import monitoring_runner
 
@@ -1807,7 +1808,7 @@ def test_runtime_status_includes_workspace_identity_fields(monkeypatch):
                 return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
             return super().execute(query, params)
 
-    request = SimpleNamespace(headers={'x-workspace-id': 'ws-prod'})
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-prod'}, state=SimpleNamespace())
     monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True})
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
     monkeypatch.setattr(
@@ -1824,6 +1825,78 @@ def test_runtime_status_includes_workspace_identity_fields(monkeypatch):
     payload = monitoring_runner.monitoring_runtime_status(request)
     assert payload['workspace_id'] == 'ws-prod'
     assert payload['workspace_slug'] == 'prod-ops'
+
+
+def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure_reason_codes(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _SyntaxErrorConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if "COALESCE(LOWER(e.ingestion_source), '') <> ALL(%s)" in q:
+                raise PsycopgSyntaxError('syntax error at or near "$1"')
+            return super().execute(query, params)
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-prod'}, state=SimpleNamespace())
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda _connection, _request: (
+            {'id': 'user-1'},
+            {'workspace_id': 'ws-prod', 'workspace': {'id': 'ws-prod', 'slug': 'prod-ops'}},
+            True,
+        ),
+    )
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_SyntaxErrorConn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_status(request)
+    assert payload['workspace_id'] == 'ws-prod'
+    assert payload['workspace_slug'] == 'prod-ops'
+    assert payload['configuration_reason'] == 'runtime_status_unavailable'
+    assert payload['status_reason'] == 'runtime_status_degraded:database_error'
+    assert payload['error']['code'] == 'runtime_status_db_error'
+    assert payload['error']['type'] == 'SyntaxError'
+    assert payload['field_reason_codes']['protected_assets'] == ['query_failure']
+    assert payload['configuration_diagnostics']['reason_codes'] == ['runtime_status_unavailable']
+
+
+def test_runtime_status_workspace_unconfigured_path_uses_configuration_diagnostics(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _UnconfiguredConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(rows=[])
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 0, 'asset_count': 0})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[])
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_UnconfiguredConn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    assert payload['workspace_configured'] is False
+    assert payload['configuration_reason'] == 'no_valid_protected_assets'
+    assert payload['configuration_diagnostics']['reason_codes'] == [
+        'no_valid_protected_assets',
+        'no_linked_monitored_systems',
+        'no_persisted_enabled_monitoring_config',
+        'target_system_linkage_invalid',
+    ]
 
 
 def test_runtime_debug_reports_configuration_reason_codes_in_production_when_workspace_unconfigured(monkeypatch):

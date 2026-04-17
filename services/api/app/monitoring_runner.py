@@ -2987,6 +2987,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         except Exception:
             workspace_id_value = None
             workspace_slug_value = None
+        if workspace_id_value is None:
+            try:
+                workspace_id_value = req.headers.get('x-workspace-id')
+            except Exception:
+                workspace_id_value = None
+        if workspace_slug_value is None:
+            try:
+                workspace_slug_value = req.headers.get('x-workspace-slug')
+            except Exception:
+                workspace_slug_value = None
         workspace_id_str = str(workspace_id_value).strip() if workspace_id_value is not None else ''
         workspace_slug_str = str(workspace_slug_value).strip() if workspace_slug_value is not None else ''
         return (workspace_id_str or None, workspace_slug_str or None)
@@ -3064,7 +3074,25 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'evidence_source': 'none',
                 'confidence_status': 'degraded',
                 'runtime_status_summary': 'offline',
+                'configuration_diagnostics': {
+                    'valid_protected_assets': 0,
+                    'linked_monitored_systems': 0,
+                    'enabled_configs': 0,
+                    'valid_link_count': 0,
+                    'workspace_configured': False,
+                    'configuration_reason': 'runtime_status_unavailable',
+                    'reason_codes': ['runtime_status_unavailable'],
+                },
                 'field_reason_codes': field_reason_codes,
+            },
+            'configuration_diagnostics': {
+                'valid_protected_assets': 0,
+                'linked_monitored_systems': 0,
+                'enabled_configs': 0,
+                'valid_link_count': 0,
+                'workspace_configured': False,
+                'configuration_reason': 'runtime_status_unavailable',
+                'reason_codes': ['runtime_status_unavailable'],
             },
             'field_reason_codes': field_reason_codes,
         }
@@ -3100,9 +3128,19 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'runtime_status_summary': 'offline',
                 'evidence_source': payload['evidence_source'],
                 'confidence_status': payload['confidence_status'],
+                'configuration_diagnostics': {
+                    'valid_protected_assets': 0,
+                    'linked_monitored_systems': 0,
+                    'enabled_configs': 0,
+                    'valid_link_count': 0,
+                    'workspace_configured': False,
+                    'configuration_reason': payload['configuration_reason'],
+                    'reason_codes': list(payload['configuration_reason_codes']),
+                },
             }
         )
         payload['workspace_monitoring_summary'] = summary
+        payload['configuration_diagnostics'] = dict(summary.get('configuration_diagnostics') or {})
         payload.update(summary)
         return payload
 
@@ -3294,6 +3332,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 user_id = str(user.get('id') or '')
                 workspace_id = str(workspace_context['workspace_id'])
                 workspace_slug = str((workspace_context.get('workspace') or {}).get('slug') or '') or None
+                try:
+                    request.state.workspace_id = workspace_id
+                    request.state.workspace_slug = workspace_slug
+                except Exception:
+                    pass
                 monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
                 try:
                     raw_workspace_rows = _load_workspace_monitored_rows_raw(connection, workspace_id)
@@ -3488,7 +3531,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                  AND t.workspace_id = e.workspace_id
                 WHERE e.evidence_source = 'live'
                   AND e.telemetry_kind = 'coverage'
-                  AND COALESCE(LOWER(e.ingestion_source), '') NOT IN %s
+                  AND COALESCE(LOWER(e.ingestion_source), '') <> ALL(%s)
                   AND t.deleted_at IS NULL
                   AND t.enabled = TRUE
                   AND {monitorable_target_types_sql_clause('t.target_type')}
