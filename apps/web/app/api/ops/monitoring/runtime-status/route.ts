@@ -30,11 +30,11 @@ export async function GET(request: Request) {
   const headers = new Headers();
   headers.set('Accept', 'application/json');
   const authorization = request.headers.get('authorization');
-  if (authorization) {
+  if (authorization !== null) {
     headers.set('Authorization', authorization);
   }
   const workspaceId = request.headers.get('x-workspace-id');
-  if (workspaceId) {
+  if (workspaceId !== null) {
     headers.set('X-Workspace-Id', workspaceId);
   }
 
