@@ -338,6 +338,17 @@ def run_validation(mode: str) -> int:
             remediation=['Resolve startup/readiness diagnostics failures before launch gate.'],
         )
     )
+    checks.append(
+        run_command(
+            'api_runtime_readiness',
+            'runtime_status_live_gate',
+            ['python', 'services/api/scripts/check_monitoring_runtime_live_gate.py'],
+            remediation=[
+                'Confirm /ops/monitoring/runtime-status returns live workspace identity, fresh telemetry, and non-zero configured/reporting coverage counts.',
+                'Resolve any runtime_status_degraded/runtime_status_unavailable states before demo or launch approval.',
+            ],
+        )
+    )
 
     checks.append(
         run_command(
