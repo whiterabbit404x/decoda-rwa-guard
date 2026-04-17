@@ -102,6 +102,53 @@ type PageOperationalState =
   | 'unconfigured_workspace'
   | 'fetch_error';
 
+const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
+  'no_valid_protected_assets',
+  'no_linked_monitored_systems',
+  'no_persisted_enabled_monitoring_config',
+  'target_system_linkage_invalid',
+]);
+
+function hasRuntimeQueryFailureMarker(params: {
+  statusReason?: string | null;
+  configurationReason?: string | null;
+  configurationReasonCodes?: string[];
+  runtimeErrorCode?: string | null;
+  runtimeDegradedReason?: string | null;
+  runtimeMonitoringStatus?: string | null;
+}): boolean {
+  const {
+    statusReason,
+    configurationReason,
+    configurationReasonCodes = [],
+    runtimeErrorCode,
+    runtimeDegradedReason,
+    runtimeMonitoringStatus,
+  } = params;
+  const statusReasonValue = String(statusReason ?? '').toLowerCase();
+  const configurationReasonValue = String(configurationReason ?? '').toLowerCase();
+  const errorCodeValue = String(runtimeErrorCode ?? '').toLowerCase();
+  const degradedReasonValue = String(runtimeDegradedReason ?? '').toLowerCase();
+  const monitoringStatusValue = String(runtimeMonitoringStatus ?? '').toLowerCase();
+  const reasonCodes = configurationReasonCodes.map((code) => String(code ?? '').toLowerCase()).filter(Boolean);
+  const queryFailureCodePresent = reasonCodes.some((code) => (
+    code.includes('query_failure')
+    || code.includes('query_failed')
+    || code.includes('query_error')
+    || code.includes('database_error')
+    || code.includes('db_error')
+    || code.includes('runtime_status_unavailable')
+  ));
+
+  return statusReasonValue.startsWith('runtime_status_degraded:database_error')
+    || (configurationReasonValue === 'runtime_status_unavailable' && queryFailureCodePresent)
+    || errorCodeValue.includes('database_error')
+    || errorCodeValue.includes('query_failure')
+    || degradedReasonValue.includes('database_error')
+    || degradedReasonValue.includes('query_failure')
+    || (monitoringStatusValue === 'error' && configurationReasonValue === 'runtime_status_unavailable');
+}
+
 type DetectionItem = {
   id: string;
   timestamp: string;
@@ -246,6 +293,12 @@ function derivePageState(params: {
   runtimeStatus: string;
   monitoredSystems: number;
   hasLiveTelemetry: boolean;
+  statusReason?: string | null;
+  configurationReason?: string | null;
+  configurationReasonCodes?: string[];
+  runtimeErrorCode?: string | null;
+  runtimeDegradedReason?: string | null;
+  runtimeMonitoringStatus?: string | null;
 }): PageOperationalState {
   const {
     loadingSnapshot,
@@ -259,15 +312,35 @@ function derivePageState(params: {
     runtimeStatus,
     monitoredSystems,
     hasLiveTelemetry,
+    statusReason,
+    configurationReason,
+    configurationReasonCodes = [],
+    runtimeErrorCode,
+    runtimeDegradedReason,
+    runtimeMonitoringStatus,
   } = params;
+  const runtimeQueryFailure = hasRuntimeQueryFailureMarker({
+    statusReason,
+    configurationReason,
+    configurationReasonCodes,
+    runtimeErrorCode,
+    runtimeDegradedReason,
+    runtimeMonitoringStatus,
+  });
+  const structuralUnconfiguredReason = STRUCTURAL_CONFIGURATION_REASON_CODES.has(String(configurationReason ?? '').toLowerCase());
+
+  if (runtimeQueryFailure) {
+    return 'fetch_error';
+  }
 
   if (!loadingSnapshot && snapshotError && reportingSystems === 0) {
     return 'fetch_error';
   }
 
-  if (!workspaceConfigured) {
+  if (!workspaceConfigured && structuralUnconfiguredReason && !runtimeQueryFailure) {
     return 'unconfigured_workspace';
   }
+  if (!workspaceConfigured) return 'fetch_error';
 
   if (runtimeStatus === 'offline') {
     return 'offline_no_telemetry';
@@ -311,13 +384,14 @@ function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurati
   if (state === 'fetch_error') {
     return (
       <div className="emptyStatePanel">
-        <h4>Monitoring data unavailable</h4>
-        <p className="muted">The workspace is configured, but the latest telemetry could not be retrieved.</p>
+        <h4>Telemetry retrieval degraded</h4>
+        <p className="muted">Backend telemetry/runtime retrieval failed, so monitoring data is temporarily unavailable.</p>
+        {reason ? <p className="tableMeta">Backend reason: {reason}</p> : null}
         <p className="tableMeta">Last telemetry: {telemetryLabel} · Last successful poll: {pollLabel}</p>
         <div className="buttonRow">
           <Link href="/threat" prefetch={false}>Retry</Link>
-          <Link href="/integrations" prefetch={false}>Inspect integration status</Link>
-          <Link href="/monitored-systems" prefetch={false}>Manage monitored systems</Link>
+          <Link href="/integrations" prefetch={false}>Inspect backend integration status</Link>
+          <Link href="/history" prefetch={false}>Review recent runtime history</Link>
         </div>
       </div>
     );
@@ -540,6 +614,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     runtimeStatus,
     monitoredSystems: feed.counts.monitoredSystems,
     hasLiveTelemetry: showLiveTelemetry,
+    statusReason: truth.status_reason,
+    configurationReason: truth.configuration_reason,
+    configurationReasonCodes: truth.configuration_reason_codes,
+    runtimeErrorCode: feed.runtimeStatus?.error_code ?? null,
+    runtimeDegradedReason: feed.runtimeStatus?.degraded_reason ?? null,
+    runtimeMonitoringStatus: feed.runtimeStatus?.monitoring_status ?? null,
   });
 
   const timelineItems = useMemo<TimelineItem[]>(() => {
