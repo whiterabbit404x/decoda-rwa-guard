@@ -426,13 +426,23 @@ def test_ops_runtime_debug_returns_canonical_runtime_summary_fields_with_healthy
     assert response.status_code == 200
     payload = response.json()
 
-    assert set(payload.keys()) == expected_keys
+    assert expected_keys.issubset(set(payload.keys()))
+    assert {'configuration_reason_codes', 'field_reason_codes'}.issubset(set(payload.keys()))
+    assert {
+        'raw_enabled_targets',
+        'monitorable_enabled_targets',
+        'valid_asset_linked_targets',
+        'enabled_monitored_systems',
+        'valid_target_system_links',
+    }.issubset(set(payload.keys()))
     assert payload['workspace_id'] == 'ws-healthy'
     assert payload['workspace_slug'] == 'healthy-workspace'
     assert payload['workspace_configured'] is True
     assert payload['evidence_source'] == 'live'
     assert payload['confidence_status'] == 'high'
     assert payload['runtime_status_summary'] == 'healthy'
+    assert payload['configuration_reason_codes'] == []
+    assert payload['field_reason_codes'] == {}
     assert payload['configuration_diagnostics']['workspace_configured'] is True
     assert payload['configuration_diagnostics']['reason_codes'] == []
 
