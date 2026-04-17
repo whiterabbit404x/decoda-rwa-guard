@@ -230,6 +230,7 @@ export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
     && (truth.monitoring_mode === 'live' || truth.monitoring_mode === 'hybrid')
     && truth.evidence_source === 'live'
     && truth.freshness_status === 'fresh'
+    && truth.confidence_status !== 'unavailable'
     && truth.reporting_systems > 0
     && Boolean(lastCoverageTelemetryAt)
     && !truth.contradiction_flags.includes('offline_with_current_telemetry')

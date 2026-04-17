@@ -219,4 +219,28 @@ test.describe('workspace monitoring truth guardrails', () => {
 
     expect(hasLiveTelemetry(truth)).toBeTruthy();
   });
+
+  test('healthy runtime payload with unavailable confidence never yields live telemetry proof', () => {
+    const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      monitoring_mode: 'live',
+      runtime_status: 'healthy',
+      configured_systems: 2,
+      reporting_systems: 2,
+      protected_assets: 2,
+      coverage_state: { configured_systems: 2, reporting_systems: 2, protected_assets: 2 },
+      freshness_status: 'fresh',
+      confidence_status: 'unavailable',
+      last_poll_at: null,
+      last_heartbeat_at: null,
+      last_telemetry_at: null,
+      last_coverage_telemetry_at: '2026-04-15T09:59:30Z',
+      last_detection_at: null,
+      evidence_source: 'live',
+      status_reason: 'monitoring_confidence_unavailable',
+      contradiction_flags: [],
+    }));
+
+    expect(hasLiveTelemetry(truth)).toBeFalsy();
+  });
 });

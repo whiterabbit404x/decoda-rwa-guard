@@ -3969,13 +3969,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         summary['source_of_evidence'] = source_of_evidence
         summary['configuration_reason_codes'] = list(configuration_reason_codes)
         summary['configuration_diagnostics'] = dict(configuration_diagnostics)
+        summary_freshness_status = str(summary.get('freshness_status') or '').strip().lower()
+        summary_confidence_status = str(summary.get('confidence_status') or '').strip().lower()
         strict_live_healthy_proof = bool(
             workspace_configured
             and evidence_source == 'live'
             and reporting_systems > 0
+            and last_coverage_telemetry_at is not None
             and coverage_fresh
-            and summary.get('freshness_status') == 'fresh'
-            and str(summary.get('confidence_status') or '').lower() not in {'stale', 'low', 'unavailable'}
+            and summary_freshness_status not in {'', 'unavailable'}
+            and summary_confidence_status not in {'', 'unavailable'}
         )
         if runtime_status_summary == 'healthy' and not strict_live_healthy_proof:
             runtime_status_summary = 'idle'

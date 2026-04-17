@@ -6,7 +6,7 @@ import {
   hasRuntimeQueryFailureMarker,
   pageStatePrimaryCopy,
 } from '../app/threat-operations-panel';
-import { resolveWorkspaceMonitoringTruth } from '../app/workspace-monitoring-truth';
+import { hasLiveTelemetry, resolveWorkspaceMonitoringTruth } from '../app/workspace-monitoring-truth';
 import type { MonitoringRuntimeStatus } from '../app/monitoring-status-contract';
 
 test.describe('threat runtime guards', () => {
@@ -309,5 +309,59 @@ test.describe('threat runtime guards', () => {
 
     expect(state).toBe('fetch_error');
     expect(pageStatePrimaryCopy(state, truth.configuration_reason).toLowerCase()).not.toContain('workspace is not configured');
+  });
+
+  test('healthy runtime labels do not open healthy page state when confidence is unavailable', async () => {
+    const payload: MonitoringRuntimeStatus = {
+      monitoring_status: 'active',
+      status_reason: null,
+      configuration_reason: null,
+      configuration_reason_codes: [],
+      workspace_monitoring_summary: {
+        workspace_configured: true,
+        monitoring_mode: 'live',
+        runtime_status: 'healthy',
+        configured_systems: 2,
+        reporting_systems: 2,
+        protected_assets: 2,
+        coverage_state: { configured_systems: 2, reporting_systems: 2, protected_assets: 2 },
+        freshness_status: 'fresh',
+        confidence_status: 'unavailable',
+        last_heartbeat_at: '2026-04-15T10:00:00Z',
+        last_telemetry_at: null,
+        last_coverage_telemetry_at: '2026-04-15T09:59:30Z',
+        last_poll_at: '2026-04-15T10:00:00Z',
+        last_detection_at: null,
+        evidence_source: 'live',
+        status_reason: null,
+        contradiction_flags: [],
+      },
+    };
+    const truth = resolveWorkspaceMonitoringTruth(payload);
+    const state = derivePageState({
+      loadingSnapshot: false,
+      snapshotError: false,
+      targets: [],
+      liveDetections: [],
+      workspaceConfigured: truth.workspace_configured,
+      freshnessStatus: truth.freshness_status,
+      contradictionFlags: truth.contradiction_flags,
+      reportingSystems: truth.reporting_systems,
+      runtimeStatus: truth.runtime_status,
+      monitoredSystems: truth.monitored_systems_count,
+      hasLiveTelemetry: hasLiveTelemetry(truth),
+      statusReason: truth.status_reason,
+      configurationReason: truth.configuration_reason,
+      configurationReasonCodes: truth.configuration_reason_codes,
+      runtimeErrorCode: payload.error?.code,
+      runtimeDegradedReason: payload.degraded_reason,
+      runtimeMonitoringStatus: payload.monitoring_status,
+      summaryStatusReason: payload.workspace_monitoring_summary?.status_reason,
+      summaryConfigurationReason: payload.workspace_monitoring_summary?.configuration_reason,
+      summaryConfigurationReasonCodes: payload.workspace_monitoring_summary?.configuration_reason_codes ?? [],
+    });
+
+    expect(hasLiveTelemetry(truth)).toBeFalsy();
+    expect(state).toBe('degraded_partial');
   });
 });
