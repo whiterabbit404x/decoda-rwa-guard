@@ -2158,6 +2158,12 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
         return {'status': 'duplicate_suppressed', 'event_id': event.event_id}
     processed = _process_single_event(connection, target=target, workspace=workspace, user_id=user_id, monitoring_run_id=monitoring_run_id, event=event, monitoring_path='worker')
     payload = event.payload if isinstance(event.payload, dict) else {}
+    ingestion_source = str(event.ingestion_source or '').strip().lower()
+    is_live_ingestion = (
+        str(ingestion_mode or 'live').strip().lower() in {'live', 'hybrid'}
+        and ingestion_source in {'rpc_backfill', 'polling', 'websocket', 'real', 'evm_rpc'}
+    )
+    live_coverage_telemetry_at = event.observed_at if is_live_ingestion else None
     connection.execute(
         '''
         INSERT INTO monitoring_event_receipts (
@@ -2176,8 +2182,31 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
             payload.get('log_index'),
             event.ingestion_source,
             'target_event',
-            'live' if event.ingestion_source in {'rpc_backfill', 'polling', 'websocket', 'real'} else event.ingestion_source,
-            'target_event',
+            'live' if is_live_ingestion else event.ingestion_source,
+            'coverage' if is_live_ingestion else 'target_event',
+        ),
+    )
+    connection.execute(
+        '''
+        UPDATE monitored_systems
+        SET last_event_at = COALESCE(%s, last_event_at),
+            last_coverage_telemetry_at = COALESCE(%s, last_coverage_telemetry_at),
+            last_heartbeat = NOW(),
+            freshness_status = CASE WHEN %s IS NOT NULL THEN 'fresh' ELSE freshness_status END,
+            confidence_status = CASE WHEN %s IS NOT NULL THEN 'high' ELSE confidence_status END,
+            coverage_reason = CASE WHEN %s IS NOT NULL THEN NULL ELSE coverage_reason END
+        WHERE workspace_id = %s
+          AND target_id = %s
+          AND COALESCE(is_enabled, TRUE) = TRUE
+        ''',
+        (
+            event.observed_at,
+            live_coverage_telemetry_at,
+            live_coverage_telemetry_at,
+            live_coverage_telemetry_at,
+            live_coverage_telemetry_at,
+            target['workspace_id'],
+            target['id'],
         ),
     )
     connection.execute(
@@ -3596,7 +3625,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 SELECT
                     e.processed_at,
                     e.target_id,
-                    ms.id AS monitored_system_id
+                    ms.id AS monitored_system_id,
+                    e.telemetry_kind,
+                    e.receipt_kind
                 FROM monitoring_event_receipts e
                 LEFT JOIN monitored_systems ms
                   ON ms.workspace_id = e.workspace_id
@@ -3606,8 +3637,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                   ON t.id = e.target_id
                  AND t.workspace_id = e.workspace_id
                 WHERE e.evidence_source = 'live'
-                  AND e.telemetry_kind = 'coverage'
+                  AND (
+                    e.telemetry_kind = 'coverage'
+                    OR (e.telemetry_kind = 'target_event' AND e.receipt_kind = 'target_event')
+                  )
+                  AND e.processed_at IS NOT NULL
                   AND COALESCE(LOWER(e.ingestion_source), '') NOT IN ({synthetic_ingestion_sources_sql})
+                  AND ms.id IS NOT NULL
                   AND t.deleted_at IS NULL
                   AND t.enabled = TRUE
                   AND {monitorable_target_types_sql_clause('t.target_type')}
