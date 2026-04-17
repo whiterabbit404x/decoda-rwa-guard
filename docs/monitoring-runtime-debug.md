@@ -44,10 +44,13 @@ python services/api/scripts/check_monitoring_runtime_live_gate.py
 
 This gate fails when runtime telemetry is not production-truthful, including:
 - `workspace_id` or `workspace_slug` is null.
+- `evidence_source != "live"`.
 - `status_reason` starts with `runtime_status_degraded:`.
+- `status_reason` indicates runtime unavailable.
 - `configuration_reason` is `runtime_status_unavailable`.
 - The payload claims live/hybrid behavior while `freshness_status` is `unavailable`.
-- Coverage/linkage counts are zero while runtime claims live telemetry.
+- `reporting_systems == 0` while workspace monitoring is configured.
+- `last_coverage_telemetry_at` is null or outside the staleness window.
 - Reason-code markers indicate database query/runtime drift (`query_failure` / `schema_drift`).
 
 Expected pass criteria:
@@ -64,3 +67,10 @@ Expected production-live proof:
 - `reporting_systems > 0`
 - `confidence_status: "high"`
 - `contradiction_flags: []`
+
+Optional evidence capture for runbook artifacts:
+
+```bash
+RUNTIME_STATUS_GATE_EVIDENCE_PATH=services/api/artifacts/live_evidence/latest/runbook/runtime_status_pre_release_gate.json \
+python services/api/scripts/check_monitoring_runtime_live_gate.py
+```

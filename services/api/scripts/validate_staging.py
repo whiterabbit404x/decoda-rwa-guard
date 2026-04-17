@@ -343,6 +343,12 @@ def run_validation(mode: str) -> int:
             'api_runtime_readiness',
             'runtime_status_live_gate',
             ['python', 'services/api/scripts/check_monitoring_runtime_live_gate.py'],
+            env={
+                **env,
+                'RUNTIME_STATUS_GATE_EVIDENCE_PATH': str(
+                    REPO_ROOT / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest' / 'runbook' / 'runtime_status_pre_release_gate.json'
+                ),
+            },
             remediation=[
                 'Confirm /ops/monitoring/runtime-status returns live workspace identity, fresh telemetry, and non-zero configured/reporting coverage counts.',
                 'Resolve any runtime_status_degraded/runtime_status_unavailable states before demo or launch approval.',

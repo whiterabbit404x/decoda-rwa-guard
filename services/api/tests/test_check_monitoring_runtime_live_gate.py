@@ -119,3 +119,33 @@ def test_runtime_live_gate_fails_on_required_degraded_and_unavailable_conditions
     assert 'freshness_status=unavailable while runtime claims live/hybrid mode' in failures
     assert 'query_failure markers' in failures
     assert 'schema_drift markers' in failures
+
+
+def test_runtime_live_gate_fails_when_evidence_source_is_not_live(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    payload = _healthy_payload()
+    payload['evidence_source'] = 'simulator'
+    payload['workspace_monitoring_summary']['evidence_source'] = 'simulator'  # type: ignore[index]
+    monkeypatch.setattr(check_monitoring_runtime_live_gate, 'urlopen', lambda *_a, **_k: _FakeResponse(payload))
+
+    code = check_monitoring_runtime_live_gate.main()
+    assert code == 2
+
+    out = capsys.readouterr().out
+    body = json.loads(out)
+    assert body['ok'] is False
+    assert any('evidence_source must be live' in failure for failure in body['failures'])
+
+
+def test_runtime_live_gate_fails_when_coverage_telemetry_is_stale(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    payload = _healthy_payload()
+    payload['last_coverage_telemetry_at'] = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+    payload['workspace_monitoring_summary']['last_coverage_telemetry_at'] = payload['last_coverage_telemetry_at']  # type: ignore[index]
+    monkeypatch.setattr(check_monitoring_runtime_live_gate, 'urlopen', lambda *_a, **_k: _FakeResponse(payload))
+
+    code = check_monitoring_runtime_live_gate.main()
+    assert code == 2
+
+    out = capsys.readouterr().out
+    body = json.loads(out)
+    assert body['ok'] is False
+    assert any('last_coverage_telemetry_at is stale' in failure for failure in body['failures'])
