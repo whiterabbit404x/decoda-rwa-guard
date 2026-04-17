@@ -3540,7 +3540,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ).fetchone()
             latest_detection_evaluation_at = _parse_ts((latest_detection_eval or {}).get('created_at'))
             latest_detection_payload = _json_safe_value((latest_detection_eval or {}).get('response_payload') or {}) if latest_detection_eval else None
-            synthetic_ingestion_sources = ['demo', 'simulator', 'replay', 'synthetic', 'fallback']
+            synthetic_ingestion_sources = ('demo', 'simulator', 'replay', 'synthetic', 'fallback')
+            synthetic_ingestion_sources_sql = ', '.join(
+                f"'{source}'" for source in synthetic_ingestion_sources
+            )
             live_coverage_receipts_query = f'''
                 SELECT
                     e.processed_at,
@@ -3556,14 +3559,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                  AND t.workspace_id = e.workspace_id
                 WHERE e.evidence_source = 'live'
                   AND e.telemetry_kind = 'coverage'
-                  AND NOT (COALESCE(LOWER(e.ingestion_source), '') = ANY(%s::text[]))
+                  AND COALESCE(LOWER(e.ingestion_source), '') NOT IN ({synthetic_ingestion_sources_sql})
                   AND t.deleted_at IS NULL
                   AND t.enabled = TRUE
                   AND {monitorable_target_types_sql_clause('t.target_type')}
                   {'AND e.workspace_id = %s' if workspace_id else ''}
                 ORDER BY e.processed_at DESC
             '''
-            live_coverage_receipts_params: list[Any] = [synthetic_ingestion_sources]
+            live_coverage_receipts_params: list[Any] = []
             if workspace_id:
                 live_coverage_receipts_params.append(workspace_id)
             _mark_query_checkpoint('select_live_coverage_receipts')

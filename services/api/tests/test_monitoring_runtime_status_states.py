@@ -1517,8 +1517,7 @@ def test_runtime_status_replay_or_demo_receipts_do_not_count_as_live_coverage(mo
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
             if 'FROM monitoring_event_receipts e' in q and "e.evidence_source = 'live'" in q and "e.telemetry_kind = 'coverage'" in q:
-                synthetic_sources = (params or [()])[0]
-                if 'NOT IN %s' in q and 'demo' in synthetic_sources and 'replay' in synthetic_sources:
+                if "NOT IN ('demo', 'simulator', 'replay', 'synthetic', 'fallback')" in q:
                     return _Result(rows=[])
                 return _Result(
                     rows=[{
@@ -1830,13 +1829,81 @@ def test_runtime_status_includes_workspace_identity_fields(monkeypatch):
     assert payload['workspace_slug'] == 'prod-ops'
 
 
+def test_runtime_status_workspace_scoped_success_keeps_identity_and_reports_live_healthy_coverage(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _WorkspaceScopedHealthyConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(
+                    rows=[
+                        {
+                            'id': 'sys-1',
+                            'workspace_id': 'ws-prod',
+                            'asset_id': 'asset-1',
+                            'target_id': 'target-1',
+                            'is_enabled': True,
+                            'runtime_status': 'healthy',
+                            'last_heartbeat': now.isoformat(),
+                            'last_coverage_telemetry_at': now.isoformat(),
+                            'monitoring_interval_seconds': 30,
+                            'created_at': now.isoformat(),
+                        }
+                    ]
+                )
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 1, 'asset_count': 1})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
+            if 'FROM monitoring_event_receipts e' in q and "e.telemetry_kind = 'coverage'" in q:
+                return _Result(rows=[{'processed_at': now, 'target_id': 'target-1', 'monitored_system_id': 'sys-1'}])
+            if 'FROM analysis_runs' in q:
+                return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 2, 'evidence_state': 'real'}}})
+            return super().execute(query, params)
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-prod'}, state=SimpleNamespace())
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(),
+            'last_cycle_at': now.isoformat(),
+            'degraded': False,
+            'last_error': None,
+            'source_type': 'polling',
+            'ingestion_mode': 'live',
+            'worker_running': True,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda _connection, _request: (
+            {'id': 'user-1'},
+            {'workspace_id': 'ws-prod', 'workspace': {'id': 'ws-prod', 'slug': 'prod-ops'}},
+            True,
+        ),
+    )
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_WorkspaceScopedHealthyConn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_status(request)
+    summary = payload['workspace_monitoring_summary']
+    assert payload['workspace_id'] == 'ws-prod'
+    assert payload['workspace_slug'] == 'prod-ops'
+    assert summary['runtime_status'] == 'healthy'
+    assert summary['configured_systems'] >= 1
+    assert summary['reporting_systems'] >= 1
+
+
 def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure_reason_codes(monkeypatch):
     now = datetime.now(timezone.utc)
 
     class _SyntaxErrorConn(_Conn):
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
-            if "COALESCE(LOWER(e.ingestion_source), '') = ANY(%s::text[])" in q:
+            if 'FROM monitoring_event_receipts e' in q and "e.telemetry_kind = 'coverage'" in q:
                 raise PsycopgSyntaxError('syntax error at or near "$1"')
             return super().execute(query, params)
 
@@ -1866,6 +1933,7 @@ def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure
     assert payload['configuration_reason'] == 'runtime_status_unavailable'
     assert payload['status_reason'] == 'runtime_status_degraded:database_error'
     assert payload['error']['code'] == 'runtime_status_db_error'
+    assert payload['error']['stage'] == 'query'
     assert payload['error']['type'] == 'SyntaxError'
     assert payload['error']['stage_detail'] == 'select_live_coverage_receipts'
     assert payload['configuration_reason'] != 'workspace_not_configured'
