@@ -2900,6 +2900,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'workspace_slug': workspace_slug,
             'workspace_configured': False,
             'configuration_reason': 'runtime_status_unavailable',
+            'configuration_reason_codes': ['runtime_status_unavailable'],
             'status_reason': 'runtime_status_error',
             'valid_protected_assets': 0,
             'linked_monitored_systems': 0,
@@ -2919,6 +2920,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'workspace_monitoring_summary': {
                 'workspace_configured': False,
                 'configuration_reason': 'runtime_status_unavailable',
+                'configuration_reason_codes': ['runtime_status_unavailable'],
                 'status_reason': 'runtime_status_error',
                 'valid_protected_assets': 0,
                 'linked_monitored_systems': 0,
@@ -2950,6 +2952,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         payload = _base_runtime_failure_payload(workspace_id=workspace_id, workspace_slug=workspace_slug)
         payload['status_reason'] = status_reason
         payload['configuration_reason'] = 'runtime_status_unavailable'
+        payload['configuration_reason_codes'] = ['runtime_status_unavailable']
         payload['error'] = {
             'code': error_code,
             'type': error_type,
@@ -2962,6 +2965,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             {
                 'status_reason': status_reason,
                 'configuration_reason': payload['configuration_reason'],
+                'configuration_reason_codes': list(payload['configuration_reason_codes']),
                 'runtime_status_summary': 'offline',
                 'evidence_source': payload['evidence_source'],
                 'confidence_status': payload['confidence_status'],
@@ -3007,6 +3011,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 valid_target_system_link_count=0,
                 telemetry_window_seconds=max(300, MONITOR_POLL_INTERVAL_SECONDS * 6),
             )
+            summary_reason_codes = list((summary.get('configuration_diagnostics') or {}).get('reason_codes') or [])
+            if not summary_reason_codes and summary.get('configuration_reason'):
+                summary_reason_codes = [str(summary.get('configuration_reason'))]
+            summary['configuration_reason_codes'] = summary_reason_codes
             payload = {
                 'workspace_id': None,
                 'workspace_slug': None,
@@ -3025,6 +3033,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'claim_validator_status': str(claim_validator.get('status') or 'FAIL'),
                 'source_of_evidence': 'simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none',
                 'workspace_configured': False,
+                'configuration_reason': summary.get('configuration_reason'),
+                'configuration_reason_codes': list(summary.get('configuration_reason_codes') or []),
                 'workspace_monitoring_summary': summary,
             }
             payload.update(payload['workspace_monitoring_summary'])
@@ -3533,6 +3543,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         )
         workspace_configured = bool(configuration_diagnostics.get('workspace_configured'))
         configuration_reason = configuration_diagnostics.get('configuration_reason')
+        configuration_reason_codes = list(configuration_diagnostics.get('reason_codes') or [])
         if not workspace_configured:
             logger.warning(
                 'monitoring_workspace_configuration_diagnostics workspace_id=%s workspace_slug=%s reason_codes=%s diagnostics=%s',
@@ -3605,6 +3616,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         )
         summary['poll_freshness_status'] = poll_freshness_status
         summary['source_of_evidence'] = source_of_evidence
+        summary['configuration_reason_codes'] = list(configuration_reason_codes)
         summary['configuration_diagnostics'] = dict(configuration_diagnostics)
         if workspace_configured and runtime_status_summary == 'idle' and runtime_status_reason:
             logger.info(
@@ -3686,6 +3698,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'source_of_evidence': source_of_evidence,
             'workspace_configured': workspace_configured,
             'configuration_reason': configuration_reason,
+            'configuration_reason_codes': list(configuration_reason_codes),
             'status_reason': runtime_status_reason,
             'valid_protected_assets': summary['valid_protected_assets'],
             'linked_monitored_systems': summary['linked_monitored_systems'],
@@ -3843,6 +3856,7 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
             'workspace_slug': workspace_slug,
             'workspace_configured': False,
             'configuration_reason': 'unavailable',
+            'configuration_reason_codes': ['unavailable'],
             'status_reason': 'runtime_debug_unavailable',
             'valid_protected_assets': 0,
             'linked_monitored_systems': 0,
@@ -3872,6 +3886,7 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
     def _structured_runtime_error_payload(*, configuration_reason: str, status_reason: str, exc: Exception | None = None) -> dict[str, Any]:
         payload = _base_debug_payload()
         payload['configuration_reason'] = configuration_reason
+        payload['configuration_reason_codes'] = [configuration_reason]
         payload['status_reason'] = status_reason
         payload['configuration_diagnostics'] = {
             'valid_protected_assets': 0,
@@ -3944,6 +3959,7 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
         {
             'workspace_configured': bool(summary.get('workspace_configured')),
             'configuration_reason': summary.get('configuration_reason') or configuration_diagnostics.get('configuration_reason') or 'unavailable',
+            'configuration_reason_codes': list(summary.get('configuration_reason_codes') or configuration_diagnostics.get('reason_codes') or ['unavailable']),
             'status_reason': summary.get('status_reason') or 'runtime_debug_unavailable',
             'valid_protected_assets': int(summary.get('valid_protected_assets') or 0),
             'linked_monitored_systems': int(summary.get('linked_monitored_systems') or 0),
