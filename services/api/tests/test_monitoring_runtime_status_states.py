@@ -1375,6 +1375,8 @@ def test_runtime_status_live_uses_fresh_coverage_receipts_fallback(monkeypatch):
     assert summary['evidence_source'] == 'live'
     assert summary['reporting_systems'] > 0
     assert summary['telemetry_kind'] == 'coverage'
+    assert payload['status'] != 'Offline'
+    assert summary['runtime_status'] not in {'offline', 'idle'}
 
 
 def test_runtime_status_live_counts_target_event_receipts_for_coverage_compat(monkeypatch):
@@ -1802,6 +1804,13 @@ def test_runtime_status_returns_explicit_configuration_and_evidence_fields(monke
     assert summary['valid_link_count'] == 1
     assert summary['source_of_evidence'] in {'live', 'replay_or_none', 'simulator'}
     assert payload['status_reason'] == summary['status_reason']
+    assert isinstance(payload['stale_heartbeat'], bool)
+    assert isinstance(payload['provider_degraded_flag'], bool)
+    assert payload['coverage_receipts_workspace_count'] >= 0
+    assert payload['coverage_receipts_last_at'] is None
+    assert payload['stale_heartbeat'] == summary['stale_heartbeat']
+    assert payload['provider_degraded_flag'] == summary['provider_degraded_flag']
+    assert payload['coverage_receipts_workspace_count'] == summary['coverage_receipts_workspace_count']
 
 
 def test_runtime_status_not_offline_when_configured_but_no_fresh_coverage(monkeypatch):
@@ -2001,6 +2010,9 @@ def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure
     assert payload['error']['stage'] == 'query'
     assert payload['error']['type'] == 'SyntaxError'
     assert payload['error']['stage_detail'] == 'select_live_coverage_receipts'
+    assert 'runtime_status_degraded' in payload['error']['reason_tokens']
+    assert 'database_error' in payload['error']['reason_tokens']
+    assert 'checkpoint_select_live_coverage_receipts' in payload['error']['reason_tokens']
     assert payload['configuration_reason'] != 'workspace_not_configured'
     assert payload['field_reason_codes']['protected_assets'] == ['query_failure']
     assert payload['field_reason_codes']['configured_systems'] == ['query_failure']
@@ -2011,6 +2023,10 @@ def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure
     assert payload['configuration_diagnostics']['reason_codes'] == ['runtime_status_unavailable']
     assert payload['workspace_monitoring_summary']['field_reason_codes']['protected_assets'] == ['query_failure']
     assert payload['workspace_monitoring_summary']['configuration_reason_codes'] == ['runtime_status_unavailable']
+    assert payload['stale_heartbeat'] is True
+    assert payload['provider_degraded_flag'] is True
+    assert payload['coverage_receipts_workspace_count'] == 0
+    assert payload['coverage_receipts_last_at'] is None
 
 
 def test_runtime_status_query_failure_uses_pre_resolved_workspace_identity_from_request_state(monkeypatch):
