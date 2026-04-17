@@ -74,6 +74,12 @@ def test_process_ingested_event_persists_receipt(monkeypatch):
     result = process_ingested_event(conn, target=target, event=event)
     assert result['status'] == 'processed'
     assert any('INSERT INTO monitoring_event_receipts' in query for query, _ in conn.calls)
+    receipt_inserts = [(query, params) for query, params in conn.calls if 'INSERT INTO monitoring_event_receipts' in query]
+    assert len(receipt_inserts) == 1
+    _, receipt_params = receipt_inserts[0]
+    assert receipt_params[10] == 'live'
+    assert receipt_params[11] == 'coverage'
+    assert any('UPDATE monitored_systems' in query for query, _ in conn.calls)
     assert any('UPDATE targets' in query for query, _ in conn.calls)
 
 
