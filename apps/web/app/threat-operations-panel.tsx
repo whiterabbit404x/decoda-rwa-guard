@@ -113,24 +113,43 @@ export function hasRuntimeQueryFailureMarker(params: {
   statusReason?: string | null;
   configurationReason?: string | null;
   configurationReasonCodes?: string[];
+  fieldReasonCodes?: Record<string, string[] | undefined> | null;
   runtimeErrorCode?: string | null;
   runtimeDegradedReason?: string | null;
   runtimeMonitoringStatus?: string | null;
+  summaryStatusReason?: string | null;
+  summaryConfigurationReason?: string | null;
+  summaryConfigurationReasonCodes?: string[];
 }): boolean {
   const {
     statusReason,
     configurationReason,
     configurationReasonCodes = [],
+    fieldReasonCodes,
     runtimeErrorCode,
     runtimeDegradedReason,
     runtimeMonitoringStatus,
+    summaryStatusReason,
+    summaryConfigurationReason,
+    summaryConfigurationReasonCodes = [],
   } = params;
-  const statusReasonValue = String(statusReason ?? '').toLowerCase();
-  const configurationReasonValue = String(configurationReason ?? '').toLowerCase();
+  const statusReasonValues = [statusReason, summaryStatusReason]
+    .map((reason) => String(reason ?? '').toLowerCase())
+    .filter(Boolean);
+  const configurationReasonValues = [configurationReason, summaryConfigurationReason]
+    .map((reason) => String(reason ?? '').toLowerCase())
+    .filter(Boolean);
   const errorCodeValue = String(runtimeErrorCode ?? '').toLowerCase();
   const degradedReasonValue = String(runtimeDegradedReason ?? '').toLowerCase();
   const monitoringStatusValue = String(runtimeMonitoringStatus ?? '').toLowerCase();
-  const reasonCodes = configurationReasonCodes.map((code) => String(code ?? '').toLowerCase()).filter(Boolean);
+  const summaryAndTopLevelReasonCodes = [...configurationReasonCodes, ...summaryConfigurationReasonCodes]
+    .map((code) => String(code ?? '').toLowerCase())
+    .filter(Boolean);
+  const normalizedFieldReasonCodes = Object.values(fieldReasonCodes ?? {})
+    .flatMap((codes) => (Array.isArray(codes) ? codes : []))
+    .map((code) => String(code ?? '').toLowerCase())
+    .filter(Boolean);
+  const reasonCodes = [...summaryAndTopLevelReasonCodes, ...normalizedFieldReasonCodes];
   const queryFailureCodePresent = reasonCodes.some((code) => (
     code.includes('query_failure')
     || code.includes('query_failed')
@@ -140,13 +159,13 @@ export function hasRuntimeQueryFailureMarker(params: {
     || code.includes('runtime_status_unavailable')
   ));
 
-  return statusReasonValue.startsWith('runtime_status_degraded:database_error')
-    || (configurationReasonValue === 'runtime_status_unavailable' && queryFailureCodePresent)
+  return statusReasonValues.some((value) => value.startsWith('runtime_status_degraded:database_error'))
+    || (configurationReasonValues.includes('runtime_status_unavailable') && queryFailureCodePresent)
     || errorCodeValue.includes('database_error')
     || errorCodeValue.includes('query_failure')
     || degradedReasonValue.includes('database_error')
     || degradedReasonValue.includes('query_failure')
-    || (monitoringStatusValue === 'error' && configurationReasonValue === 'runtime_status_unavailable');
+    || (monitoringStatusValue === 'error' && configurationReasonValues.includes('runtime_status_unavailable'));
 }
 
 type DetectionItem = {
@@ -299,6 +318,10 @@ export function derivePageState(params: {
   runtimeErrorCode?: string | null;
   runtimeDegradedReason?: string | null;
   runtimeMonitoringStatus?: string | null;
+  fieldReasonCodes?: Record<string, string[] | undefined> | null;
+  summaryStatusReason?: string | null;
+  summaryConfigurationReason?: string | null;
+  summaryConfigurationReasonCodes?: string[];
 }): PageOperationalState {
   const {
     loadingSnapshot,
@@ -318,14 +341,22 @@ export function derivePageState(params: {
     runtimeErrorCode,
     runtimeDegradedReason,
     runtimeMonitoringStatus,
+    fieldReasonCodes,
+    summaryStatusReason,
+    summaryConfigurationReason,
+    summaryConfigurationReasonCodes = [],
   } = params;
   const runtimeQueryFailure = hasRuntimeQueryFailureMarker({
     statusReason,
     configurationReason,
     configurationReasonCodes,
+    fieldReasonCodes,
     runtimeErrorCode,
     runtimeDegradedReason,
     runtimeMonitoringStatus,
+    summaryStatusReason,
+    summaryConfigurationReason,
+    summaryConfigurationReasonCodes,
   });
   const structuralUnconfiguredReason = STRUCTURAL_CONFIGURATION_REASON_CODES.has(String(configurationReason ?? '').toLowerCase());
 
@@ -639,6 +670,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     runtimeErrorCode: feed.runtimeStatus?.error_code ?? null,
     runtimeDegradedReason: feed.runtimeStatus?.degraded_reason ?? null,
     runtimeMonitoringStatus: feed.runtimeStatus?.monitoring_status ?? null,
+    fieldReasonCodes: feed.runtimeStatus?.field_reason_codes ?? null,
+    summaryStatusReason: feed.runtimeStatus?.workspace_monitoring_summary?.status_reason ?? null,
+    summaryConfigurationReason: feed.runtimeStatus?.workspace_monitoring_summary?.configuration_reason ?? null,
+    summaryConfigurationReasonCodes: feed.runtimeStatus?.workspace_monitoring_summary?.configuration_reason_codes ?? [],
   });
 
   const timelineItems = useMemo<TimelineItem[]>(() => {

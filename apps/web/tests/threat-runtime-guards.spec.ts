@@ -102,6 +102,10 @@ test.describe('threat runtime guards', () => {
       runtimeErrorCode: payload.error?.code,
       runtimeDegradedReason: payload.degraded_reason,
       runtimeMonitoringStatus: payload.monitoring_status,
+      fieldReasonCodes: payload.field_reason_codes,
+      summaryStatusReason: payload.workspace_monitoring_summary?.status_reason,
+      summaryConfigurationReason: payload.workspace_monitoring_summary?.configuration_reason,
+      summaryConfigurationReasonCodes: payload.workspace_monitoring_summary?.configuration_reason_codes ?? [],
     });
     const state = derivePageState({
       loadingSnapshot: false,
@@ -178,9 +182,132 @@ test.describe('threat runtime guards', () => {
       runtimeErrorCode: payload.error?.code,
       runtimeDegradedReason: payload.degraded_reason,
       runtimeMonitoringStatus: payload.monitoring_status,
+      fieldReasonCodes: payload.field_reason_codes,
+      summaryStatusReason: payload.workspace_monitoring_summary?.status_reason,
+      summaryConfigurationReason: payload.workspace_monitoring_summary?.configuration_reason,
+      summaryConfigurationReasonCodes: payload.workspace_monitoring_summary?.configuration_reason_codes ?? [],
     });
 
     expect(state).toBe('unconfigured_workspace');
     expect(pageStatePrimaryCopy(state, payload.configuration_reason)).toContain('Workspace is not configured');
+  });
+
+  test('treats missing workspace identifiers with query-failure payload as fetch error', async () => {
+    const payload: MonitoringRuntimeStatus = {
+      workspace_slug: null,
+      monitoring_status: 'error',
+      configuration_reason: 'runtime_status_unavailable',
+      configuration_reason_codes: ['runtime_status_unavailable'],
+      field_reason_codes: {
+        workspace_id: ['query_failure'],
+        workspace_slug: ['query_failure'],
+      },
+      workspace_monitoring_summary: {
+        workspace_configured: false,
+        monitoring_mode: 'unavailable',
+        runtime_status: 'failed',
+        configured_systems: 0,
+        reporting_systems: 0,
+        protected_assets: 0,
+        coverage_state: { configured_systems: 0, reporting_systems: 0, protected_assets: 0 },
+        freshness_status: 'unavailable',
+        confidence_status: 'unavailable',
+        last_heartbeat_at: null,
+        last_telemetry_at: null,
+        last_poll_at: null,
+        last_detection_at: null,
+        evidence_source: 'none',
+        status_reason: null,
+        configuration_reason: 'runtime_status_unavailable',
+        configuration_reason_codes: ['runtime_status_unavailable', 'workspace_slug_query_failure'],
+        contradiction_flags: [],
+      },
+    } as MonitoringRuntimeStatus;
+
+    const truth = resolveWorkspaceMonitoringTruth(payload);
+    const state = derivePageState({
+      loadingSnapshot: false,
+      snapshotError: false,
+      targets: [],
+      liveDetections: [],
+      workspaceConfigured: truth.workspace_configured,
+      freshnessStatus: truth.freshness_status,
+      contradictionFlags: truth.contradiction_flags,
+      reportingSystems: truth.reporting_systems,
+      runtimeStatus: truth.runtime_status,
+      monitoredSystems: truth.monitored_systems_count,
+      hasLiveTelemetry: false,
+      statusReason: truth.status_reason,
+      configurationReason: truth.configuration_reason,
+      configurationReasonCodes: truth.configuration_reason_codes,
+      runtimeErrorCode: payload.error?.code,
+      runtimeDegradedReason: payload.degraded_reason,
+      runtimeMonitoringStatus: payload.monitoring_status,
+      fieldReasonCodes: payload.field_reason_codes,
+      summaryStatusReason: payload.workspace_monitoring_summary?.status_reason,
+      summaryConfigurationReason: payload.workspace_monitoring_summary?.configuration_reason,
+      summaryConfigurationReasonCodes: payload.workspace_monitoring_summary?.configuration_reason_codes ?? [],
+    });
+
+    expect(state).toBe('fetch_error');
+    expect(pageStatePrimaryCopy(state, truth.configuration_reason)).toContain('Backend telemetry/runtime retrieval failed');
+  });
+
+  test('preserves summary-level degraded reason codes and avoids config-blame copy', async () => {
+    const payload: MonitoringRuntimeStatus = {
+      monitoring_status: 'error',
+      configuration_reason: 'runtime_status_unavailable',
+      configuration_reason_codes: ['runtime_status_unavailable'],
+      workspace_monitoring_summary: {
+        workspace_configured: false,
+        monitoring_mode: 'unavailable',
+        runtime_status: 'failed',
+        configured_systems: 0,
+        reporting_systems: 0,
+        protected_assets: 0,
+        coverage_state: { configured_systems: 0, reporting_systems: 0, protected_assets: 0 },
+        freshness_status: 'unavailable',
+        confidence_status: 'unavailable',
+        last_heartbeat_at: null,
+        last_telemetry_at: null,
+        last_poll_at: null,
+        last_detection_at: null,
+        evidence_source: 'none',
+        status_reason: null,
+        configuration_reason: 'runtime_status_unavailable',
+        configuration_reason_codes: ['runtime_status_unavailable', 'configured_systems_query_failure'],
+        contradiction_flags: [],
+      },
+    } as MonitoringRuntimeStatus;
+
+    const truth = resolveWorkspaceMonitoringTruth(payload);
+    expect(truth.configuration_reason_codes).toEqual([
+      'runtime_status_unavailable',
+      'configured_systems_query_failure',
+    ]);
+
+    const state = derivePageState({
+      loadingSnapshot: false,
+      snapshotError: false,
+      targets: [],
+      liveDetections: [],
+      workspaceConfigured: truth.workspace_configured,
+      freshnessStatus: truth.freshness_status,
+      contradictionFlags: truth.contradiction_flags,
+      reportingSystems: truth.reporting_systems,
+      runtimeStatus: truth.runtime_status,
+      monitoredSystems: truth.monitored_systems_count,
+      hasLiveTelemetry: false,
+      statusReason: truth.status_reason,
+      configurationReason: truth.configuration_reason,
+      configurationReasonCodes: truth.configuration_reason_codes,
+      runtimeMonitoringStatus: payload.monitoring_status,
+      summaryStatusReason: payload.workspace_monitoring_summary?.status_reason,
+      summaryConfigurationReason: payload.workspace_monitoring_summary?.configuration_reason,
+      summaryConfigurationReasonCodes: payload.workspace_monitoring_summary?.configuration_reason_codes ?? [],
+    });
+
+    expect(state).toBe('fetch_error');
+    expect(pageStatePrimaryCopy(state, truth.configuration_reason).toLowerCase()).not.toContain('workspace is not configured');
   });
 });

@@ -92,6 +92,7 @@ export type MonitoringRuntimeStatus = {
     evidence_source: 'live' | 'simulator' | 'replay' | 'none';
     status_reason: string | null;
     configuration_reason?: string | null;
+    configuration_reason_codes?: string[];
     valid_protected_asset_count?: number;
     linked_monitored_system_count?: number;
     persisted_enabled_config_count?: number;
