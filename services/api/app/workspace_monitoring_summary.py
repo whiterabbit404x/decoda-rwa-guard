@@ -12,6 +12,10 @@ def build_workspace_monitoring_summary(
     *,
     now: datetime,
     workspace_configured: bool,
+    configuration_reason_codes: list[str] | None,
+    query_failure_detected: bool,
+    schema_drift_detected: bool,
+    missing_telemetry_only: bool,
     monitoring_mode: str,
     runtime_status: str,
     configured_systems: int,
@@ -107,7 +111,51 @@ def build_workspace_monitoring_summary(
         'persisted_enabled_config_count': normalized_persisted_enabled_config,
         'valid_target_system_link_count': normalized_valid_links,
         'contradiction_flags': [],
+        'field_reason_codes': {
+            'protected_assets': [],
+            'configured_systems': [],
+            'reporting_systems': [],
+            'last_poll_at': [],
+            'last_heartbeat_at': [],
+            'last_telemetry_at': [],
+        },
     }
+    field_reason_codes = summary['field_reason_codes']
+
+    def _append_field_reason_code(field_name: str, code: str) -> None:
+        if code not in field_reason_codes[field_name]:
+            field_reason_codes[field_name].append(code)
+
+    configuration_codes = [str(code) for code in (configuration_reason_codes or []) if str(code).strip()]
+    if configuration_codes and not summary['workspace_configured']:
+        for field_name in ('protected_assets', 'configured_systems', 'reporting_systems'):
+            if int(summary.get(field_name) or 0) <= 0:
+                _append_field_reason_code(field_name, 'unconfigured_workspace')
+        for field_name in ('last_poll_at', 'last_heartbeat_at', 'last_telemetry_at'):
+            if summary.get(field_name) is None:
+                _append_field_reason_code(field_name, 'unconfigured_workspace')
+
+    if query_failure_detected:
+        for field_name in ('protected_assets', 'configured_systems', 'reporting_systems'):
+            if int(summary.get(field_name) or 0) <= 0:
+                _append_field_reason_code(field_name, 'query_failure')
+        for field_name in ('last_poll_at', 'last_heartbeat_at', 'last_telemetry_at'):
+            if summary.get(field_name) is None:
+                _append_field_reason_code(field_name, 'query_failure')
+
+    if schema_drift_detected:
+        for field_name in ('protected_assets', 'configured_systems', 'reporting_systems'):
+            if int(summary.get(field_name) or 0) <= 0:
+                _append_field_reason_code(field_name, 'schema_drift')
+        for field_name in ('last_poll_at', 'last_heartbeat_at', 'last_telemetry_at'):
+            if summary.get(field_name) is None:
+                _append_field_reason_code(field_name, 'schema_drift')
+
+    if missing_telemetry_only and summary['workspace_configured']:
+        for field_name in ('last_poll_at', 'last_heartbeat_at', 'last_telemetry_at'):
+            if summary.get(field_name) is None:
+                _append_field_reason_code(field_name, 'missing_telemetry_only')
+
     if summary['runtime_status'] == 'offline' and summary['last_telemetry_at']:
         summary['contradiction_flags'].append('offline_with_current_telemetry')
     if summary['reporting_systems'] == 0 and summary['runtime_status'] == 'healthy':

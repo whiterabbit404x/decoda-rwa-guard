@@ -2895,6 +2895,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         return (workspace_id_str or None, workspace_slug_str or None)
 
     def _base_runtime_failure_payload(*, workspace_id: str | None = None, workspace_slug: str | None = None) -> dict[str, Any]:
+        field_reason_codes = {
+            'protected_assets': ['query_failure'],
+            'configured_systems': ['query_failure'],
+            'reporting_systems': ['query_failure'],
+            'last_poll_at': ['query_failure'],
+            'last_heartbeat_at': ['query_failure'],
+            'last_telemetry_at': ['query_failure'],
+        }
         return {
             'workspace_id': workspace_id,
             'workspace_slug': workspace_slug,
@@ -2959,7 +2967,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'evidence_source': 'none',
                 'confidence_status': 'degraded',
                 'runtime_status_summary': 'offline',
+                'field_reason_codes': field_reason_codes,
             },
+            'field_reason_codes': field_reason_codes,
         }
 
     def _runtime_failure_payload(
@@ -3014,6 +3024,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             summary = build_workspace_monitoring_summary(
                 now=now,
                 workspace_configured=False,
+                configuration_reason_codes=['no_persisted_enabled_monitoring_config'],
+                query_failure_detected=False,
+                schema_drift_detected=False,
+                missing_telemetry_only=False,
                 monitoring_mode='simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'offline',
                 runtime_status='offline',
                 configured_systems=0,
@@ -3092,6 +3106,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         live_coverage_receipts_by_system: dict[str, datetime] = {}
         live_coverage_receipts_workspace_latest: datetime | None = None
         live_coverage_receipts_persisted_count = 0
+        query_failure_detected = False
+        schema_drift_detected = False
     
         def _load_runtime_monitored_rows(connection: Any, workspace_scope_id: str | None) -> list[dict[str, Any]]:
             if workspace_scope_id:
@@ -3152,6 +3168,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 try:
                     raw_workspace_rows = _load_workspace_monitored_rows_raw(connection, workspace_id)
                 except Exception:
+                    query_failure_detected = True
                     logger.exception('monitoring_runtime_status_raw_rows_load_failed workspace_id=%s', workspace_id)
                     raw_workspace_rows = []
                 if len(monitored_rows) == 0 and len(raw_workspace_rows) > 0:
@@ -3165,6 +3182,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 try:
                     listed_monitored_rows = list_workspace_monitored_system_rows(connection, workspace_id)
                 except Exception:
+                    query_failure_detected = True
                     logger.exception('monitoring_runtime_status_list_rows_load_failed workspace_id=%s', workspace_id)
                     listed_monitored_rows = []
                 logger.info(
@@ -3372,6 +3390,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     live_coverage_receipts_by_system[monitored_system_id] = processed_at
             if request is None:
                 monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
+        expected_monitored_row_fields = {
+            'id',
+            'asset_id',
+            'target_id',
+            'last_heartbeat',
+            'last_event_at',
+            'last_coverage_telemetry_at',
+        }
+        if any(not expected_monitored_row_fields.issubset(set(row.keys())) for row in monitored_rows):
+            schema_drift_detected = True
         parsed_heartbeats = [_parse_ts(row.get('last_heartbeat')) for row in monitored_rows]
         recent_heartbeat_systems = 0
         for row, parsed_heartbeat in zip(monitored_rows, parsed_heartbeats):
@@ -3645,9 +3673,24 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 if unsupported_enabled_rows and reporting_systems <= 0
                 else ('no_fresh_live_coverage_telemetry' if reporting_systems <= 0 or not coverage_fresh else None)
             )
+        missing_telemetry_only = bool(
+            workspace_configured
+            and enabled_system_count > 0
+            and protected_assets_count > 0
+            and reporting_systems > 0
+            and last_poll_at is None
+            and last_heartbeat is None
+            and last_telemetry_at is None
+            and not query_failure_detected
+            and not schema_drift_detected
+        )
         summary = build_workspace_monitoring_summary(
             now=now,
             workspace_configured=workspace_configured,
+            configuration_reason_codes=list(configuration_reason_codes),
+            query_failure_detected=query_failure_detected,
+            schema_drift_detected=schema_drift_detected,
+            missing_telemetry_only=missing_telemetry_only,
             monitoring_mode=monitoring_mode,
             runtime_status=runtime_status_summary,
             configured_systems=int(enabled_system_count),
@@ -3771,6 +3814,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'telemetry_kind': summary.get('telemetry_kind'),
             'last_detection_at': summary['last_detection_at'],
             'workspace_monitoring_summary': summary,
+            'field_reason_codes': summary.get('field_reason_codes') or {},
         }
         payload.update(summary)
         logger.info(
