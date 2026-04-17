@@ -67,7 +67,9 @@ def _normalize_monitoring_runtime_contract(payload: dict[str, Any]) -> dict[str,
     summary_payload = normalized.get('workspace_monitoring_summary')
     summary = dict(summary_payload) if isinstance(summary_payload, dict) else {}
 
-    configuration_reason = normalized.get('configuration_reason', summary.get('configuration_reason'))
+    configuration_reason = normalized.get('configuration_reason')
+    if not configuration_reason:
+        configuration_reason = summary.get('configuration_reason')
     normalized['configuration_reason'] = configuration_reason
 
     configuration_reason_codes = normalized.get('configuration_reason_codes')
