@@ -150,3 +150,48 @@ def test_monitoring_systems_list_handles_runtime_summary_attachment_failure(monk
     payload = response.json()
     assert payload['systems'][0]['id'] == 'sys-1'
     assert payload['workspace_monitoring_summary'] is None
+
+
+def test_monitoring_systems_list_returns_degraded_payload_when_list_raises(monkeypatch):
+    call_count = {'value': 0}
+
+    def _with_auth_passthrough_then_fail(handler):
+        call_count['value'] += 1
+        if call_count['value'] == 1:
+            raise RuntimeError('upstream gateway failure')
+        return handler()
+
+    monkeypatch.setattr(
+        api_main,
+        'with_auth_schema_json',
+        _with_auth_passthrough_then_fail,
+    )
+    monkeypatch.setattr(
+        api_main,
+        'monitoring_runtime_status',
+        lambda _request: {'workspace_monitoring_summary': {'runtime_status': 'offline'}},
+    )
+
+    response = client.get('/monitoring/systems')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['systems'] == []
+    assert payload['error']['code'] == 'monitoring_systems_route_failed'
+    assert payload['workspace_monitoring_summary']['runtime_status'] == 'offline'
+
+
+def test_ops_monitoring_runtime_status_returns_degraded_payload_when_route_raises(monkeypatch):
+    monkeypatch.setattr(
+        api_main,
+        'with_auth_schema_json',
+        lambda handler: (_ for _ in ()).throw(RuntimeError('runtime route crashed')),
+    )
+
+    response = client.get('/ops/monitoring/runtime-status')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['monitoring_status'] == 'offline'
+    assert payload['error']['code'] == 'runtime_status_route_failed'
+    assert payload['workspace_monitoring_summary']['runtime_status'] == 'offline'

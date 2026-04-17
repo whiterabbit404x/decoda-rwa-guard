@@ -9,6 +9,8 @@ import { hasLiveTelemetry, monitoringHealthyCopyAllowed } from './workspace-moni
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 
 type Props = { apiUrl: string };
+const RUNTIME_STATUS_PROXY_PATH = '/api/ops/monitoring/runtime-status';
+const MONITORING_SYSTEMS_PROXY_PATH = '/api/monitoring/systems';
 
 type TargetRow = {
   id: string;
@@ -166,6 +168,11 @@ function formatAbsoluteTime(value?: string | null): string {
   if (!value) return 'Not available';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? 'Not available' : date.toLocaleString();
+}
+
+export function formatOperationalStateLabel(value: unknown): string {
+  const normalized = String(value ?? '').trim();
+  return normalized ? normalized.replaceAll('_', ' ') : 'unknown';
 }
 
 function severityClass(severity?: string) {
@@ -339,32 +346,34 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         return;
       }
       try {
-        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, historyResponse, evidenceResponse] = await Promise.all([
+        const [targetsResult, systemsResult, alertsResult, incidentsResult, historyResult, evidenceResult] = await Promise.allSettled([
           fetch(`${apiUrl}/monitoring/targets`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/monitoring/systems`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(MONITORING_SYSTEMS_PROXY_PATH, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/incidents?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/pilot/history?limit=12`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         if (!active) return;
-        if (!targetsResponse.ok || !systemsResponse.ok || !alertsResponse.ok || !incidentsResponse.ok || !historyResponse.ok || !evidenceResponse.ok) {
-          throw new Error('refresh_failed');
-        }
-        const targetsPayload = await targetsResponse.json();
-        const systemsPayload = await systemsResponse.json();
-        const alertsPayload = await alertsResponse.json();
-        const incidentsPayload = await incidentsResponse.json();
-        const historyPayload = await historyResponse.json();
-        const evidencePayload = await evidenceResponse.json();
+        const responses = [targetsResult, systemsResult, alertsResult, incidentsResult, historyResult, evidenceResult].map((result) => (
+          result.status === 'fulfilled' && result.value.ok ? result.value : null
+        ));
+        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, historyResponse, evidenceResponse] = responses;
+        const targetsPayload = targetsResponse ? await targetsResponse.json().catch(() => ({})) : {};
+        const systemsPayload = systemsResponse ? await systemsResponse.json().catch(() => ({})) : {};
+        const alertsPayload = alertsResponse ? await alertsResponse.json().catch(() => ({})) : {};
+        const incidentsPayload = incidentsResponse ? await incidentsResponse.json().catch(() => ({})) : {};
+        const historyPayload = historyResponse ? await historyResponse.json().catch(() => ({})) : {};
+        const evidencePayload = evidenceResponse ? await evidenceResponse.json().catch(() => ({})) : {};
 
-        setTargets((targetsPayload.targets ?? []) as TargetRow[]);
-        setMonitoredSystems((systemsPayload.systems ?? []) as MonitoredSystemRow[]);
-        setAlerts((alertsPayload.alerts ?? []) as AlertRow[]);
-        setIncidents((incidentsPayload.incidents ?? []) as IncidentRow[]);
-        setHistoryRuns((historyPayload.analysis_runs ?? []) as HistoryRun[]);
-        setEvidence((evidencePayload.evidence ?? []) as EvidenceRow[]);
-        setSnapshotError(null);
+        setTargets((targetsPayload?.targets ?? []) as TargetRow[]);
+        setMonitoredSystems((systemsPayload?.systems ?? []) as MonitoredSystemRow[]);
+        setAlerts((alertsPayload?.alerts ?? []) as AlertRow[]);
+        setIncidents((incidentsPayload?.incidents ?? []) as IncidentRow[]);
+        setHistoryRuns((historyPayload?.analysis_runs ?? []) as HistoryRun[]);
+        setEvidence((evidencePayload?.evidence ?? []) as EvidenceRow[]);
+        const failedRequests = [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, historyResponse, evidenceResponse].filter((item) => !item).length;
+        setSnapshotError(failedRequests > 0 ? `Monitoring snapshot partially unavailable (${failedRequests} endpoint${failedRequests === 1 ? '' : 's'} failed).` : null);
       } catch {
         if (active) {
           setSnapshotError('Monitoring snapshot refresh failed');
@@ -631,7 +640,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         <div className="chipRow monitoringHeaderChips">
           <span className={`statusBadge statusBadge-${monitoringPresentation.tone}`}>{monitoringPresentation.statusLabel}</span>
           {monitoringMode === 'simulator' || simulatorMode ? <span className="statusBadge statusBadge-attention">SIMULATOR MODE</span> : null}
-          <span className="ruleChip">Operational state {pageState.replaceAll('_', ' ')}</span>
+          <span className="ruleChip">Operational state {formatOperationalStateLabel(pageState)}</span>
           <span className="ruleChip">{showLiveTelemetry ? `Live telemetry ${telemetryLabel}` : 'Current telemetry unavailable'}</span>
           <span className="ruleChip">Last poll {pollLabel}</span>
           <span className="ruleChip">Evidence source {monitoringPresentation.evidenceSourceLabel}</span>

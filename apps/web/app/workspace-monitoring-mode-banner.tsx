@@ -5,9 +5,14 @@ import { useEffect, useState } from 'react';
 import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
 import { usePilotAuth } from './pilot-auth-context';
 import { hasLiveTelemetry, resolveWorkspaceMonitoringTruth, type WorkspaceMonitoringTruth } from './workspace-monitoring-truth';
+const RUNTIME_STATUS_PROXY_PATH = '/api/ops/monitoring/runtime-status';
 
-function formatTruthValue(value: string): string {
-  return value.replaceAll('_', ' ');
+function formatTruthValue(value: unknown): string {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) {
+    return 'unavailable';
+  }
+  return normalized.replaceAll('_', ' ');
 }
 
 function timestampLine(label: string, value: string | null): string {
@@ -45,12 +50,17 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
       return;
     }
     const load = async () => {
-      const response = await fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' });
-      if (!response.ok) {
-        return;
+      try {
+        const response = await fetch(RUNTIME_STATUS_PROXY_PATH, { headers: authHeaders(), cache: 'no-store' });
+        if (!response.ok) {
+          setTruth(resolveWorkspaceMonitoringTruth(null));
+          return;
+        }
+        const payload = await response.json();
+        setTruth(resolveWorkspaceMonitoringTruth(payload));
+      } catch {
+        setTruth(resolveWorkspaceMonitoringTruth(null));
       }
-      const payload = await response.json();
-      setTruth(resolveWorkspaceMonitoringTruth(payload));
     };
     void load();
   }, [apiUrl, authHeaders, isAuthenticated]);

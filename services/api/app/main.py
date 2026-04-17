@@ -1756,7 +1756,41 @@ def ops_production_claim_validator() -> dict[str, Any]:
 
 @app.get('/ops/monitoring/runtime-status', summary='Monitoring runtime status for admin/settings surfaces')
 def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: monitoring_runtime_status(request))
+    try:
+        return with_auth_schema_json(lambda: monitoring_runtime_status(request))
+    except Exception as exc:
+        logger.exception('ops_monitoring_runtime_status_route_failed')
+        return {
+            'monitoring_status': 'offline',
+            'status': 'Offline',
+            'workspace_configured': False,
+            'status_reason': 'runtime_status_route_error',
+            'error': {
+                'code': 'runtime_status_route_failed',
+                'type': type(exc).__name__,
+                'message': 'Monitoring runtime endpoint degraded due to unexpected route error.',
+            },
+            'workspace_monitoring_summary': {
+                'workspace_configured': False,
+                'monitoring_mode': 'unavailable',
+                'runtime_status': 'offline',
+                'configured_systems': 0,
+                'reporting_systems': 0,
+                'protected_assets': 0,
+                'coverage_state': {'configured_systems': 0, 'reporting_systems': 0, 'protected_assets': 0},
+                'freshness_status': 'unavailable',
+                'confidence_status': 'unavailable',
+                'last_heartbeat_at': None,
+                'last_telemetry_at': None,
+                'last_poll_at': None,
+                'last_detection_at': None,
+                'evidence_source': 'none',
+                'status_reason': 'runtime_status_route_error',
+                'configuration_reason': 'runtime_status_route_error',
+                'configuration_reason_codes': ['runtime_status_route_error'],
+                'contradiction_flags': [],
+            },
+        }
 
 
 @app.get('/ops/monitoring/runtime-debug', summary='Canonical monitoring runtime debug payload')
@@ -1945,7 +1979,19 @@ def monitoring_targets_patch(target_id: str, payload: dict[str, Any], request: R
 
 @app.get('/monitoring/systems', summary='List monitored systems')
 def monitoring_systems_list(request: Request) -> dict[str, Any]:
-    systems_payload = with_auth_schema_json(lambda: list_monitored_systems(request))
+    try:
+        systems_payload = with_auth_schema_json(lambda: list_monitored_systems(request))
+    except Exception as exc:
+        logger.exception('monitoring_systems_list_failed')
+        systems_payload = {
+            'systems': [],
+            'workspace': None,
+            'error': {
+                'code': 'monitoring_systems_route_failed',
+                'type': type(exc).__name__,
+                'message': 'Monitored systems temporarily unavailable.',
+            },
+        }
     try:
         runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
         systems_payload['workspace_monitoring_summary'] = runtime_payload.get('workspace_monitoring_summary')
