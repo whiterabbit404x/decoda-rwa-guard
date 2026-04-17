@@ -40,6 +40,7 @@ const DEFAULT_COUNTS: LiveWorkspaceCounts = {
   openIncidents: 0,
   historyRecords: 0,
 };
+const RUNTIME_STATUS_PROXY_PATH = '/api/ops/monitoring/runtime-status';
 
 export function shouldLogLiveWorkspaceFeedDebug(): boolean {
   return process.env.NODE_ENV === 'development';
@@ -100,7 +101,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
         let statusRes: Response | null = null;
         let statusPayload: MonitoringRuntimeStatus | null = null;
         try {
-          statusRes = await fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' });
+          statusRes = await fetch(RUNTIME_STATUS_PROXY_PATH, { headers: authHeaders(), cache: 'no-store' });
           statusPayload = statusRes.ok ? await statusRes.json() as MonitoringRuntimeStatus : null;
         } catch {
           statusRes = null;

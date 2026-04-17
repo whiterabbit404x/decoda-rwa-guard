@@ -21,7 +21,7 @@ test('threat UI uses monitored systems runtime counts without legacy runtime fal
   expect(threat).not.toContain('feed.offline');
   expect(threat).not.toContain('feed.stale');
   expect(threat).not.toContain('feed.degraded');
-  expect(threat).toContain('fetch(`${apiUrl}/monitoring/systems`');
+  expect(threat).toContain("fetch(MONITORING_SYSTEMS_PROXY_PATH");
   expect(threat).toContain('const hasTargetCoverageRows = targets.length > 0;');
   expect(threat).toContain('const hasMonitoredSystemCoverageRows = !hasTargetCoverageRows && monitoredSystems.length > 0;');
   expect(threat).toContain('const showRuntimeCoverageFallback = !loadingSnapshot && !hasTargetCoverageRows && !hasMonitoredSystemCoverageRows && hasCoverageFromRuntime;');

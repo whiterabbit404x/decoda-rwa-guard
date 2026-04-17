@@ -5565,19 +5565,41 @@ def resolve_workspace_context_for_request(connection: psycopg.Connection, reques
 
 
 def list_workspace_monitored_system_rows(connection: psycopg.Connection, workspace_id: str) -> list[dict[str, Any]]:
-    rows = connection.execute(
-        '''
-        SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.last_error_text, ms.coverage_reason,
-               ms.freshness_status, ms.confidence_status, ms.created_at,
-               COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, a.name AS asset_name, t.name AS target_name
-        FROM monitored_systems ms
-        LEFT JOIN assets a ON a.id = ms.asset_id AND a.workspace_id = ms.workspace_id AND a.deleted_at IS NULL
-        LEFT JOIN targets t ON t.id = ms.target_id AND t.workspace_id = ms.workspace_id
-        WHERE ms.workspace_id = %s
-        ORDER BY ms.created_at DESC
-        ''',
-        (workspace_id,),
-    ).fetchall()
+    try:
+        rows = connection.execute(
+            '''
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.last_error_text, ms.coverage_reason,
+                   ms.freshness_status, ms.confidence_status, ms.created_at,
+                   COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, a.name AS asset_name, t.name AS target_name
+            FROM monitored_systems ms
+            LEFT JOIN assets a ON a.id = ms.asset_id AND a.workspace_id = ms.workspace_id AND a.deleted_at IS NULL
+            LEFT JOIN targets t ON t.id = ms.target_id AND t.workspace_id = ms.workspace_id
+            WHERE ms.workspace_id = %s
+            ORDER BY ms.created_at DESC
+            ''',
+            (workspace_id,),
+        ).fetchall()
+    except Exception as exc:
+        if 'last_coverage_telemetry_at' not in str(exc):
+            raise
+        logger.warning(
+            'list_workspace_monitored_system_rows_legacy_schema_fallback workspace_id=%s error_type=%s',
+            workspace_id,
+            type(exc).__name__,
+        )
+        rows = connection.execute(
+            '''
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, NULL::timestamptz AS last_coverage_telemetry_at, ms.last_error_text, ms.coverage_reason,
+                   ms.freshness_status, ms.confidence_status, ms.created_at,
+                   COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, a.name AS asset_name, t.name AS target_name
+            FROM monitored_systems ms
+            LEFT JOIN assets a ON a.id = ms.asset_id AND a.workspace_id = ms.workspace_id AND a.deleted_at IS NULL
+            LEFT JOIN targets t ON t.id = ms.target_id AND t.workspace_id = ms.workspace_id
+            WHERE ms.workspace_id = %s
+            ORDER BY ms.created_at DESC
+            ''',
+            (workspace_id,),
+        ).fetchall()
     return [dict(row) for row in rows]
 
 
