@@ -91,3 +91,20 @@ def test_health_reflects_watcher_degraded_reason(monkeypatch):
     payload = monitoring_runner.get_monitoring_health()
     assert payload['degraded'] is True
     assert payload['degraded_reason'] == 'ws_rpc_down'
+
+
+def test_runtime_summary_healthy_path_requires_live_coverage_proof_guards():
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+    assert "and evidence_source == 'live'" in source
+    assert 'and reporting_systems > 0' in source
+    assert 'and coverage_fresh' in source
+    assert "and summary.get('freshness_status') == 'fresh'" in source
+    assert "confidence_status') or '').lower() not in {'stale', 'low', 'unavailable'}" in source
+
+
+def test_worker_and_checkpoint_updates_are_workspace_scoped():
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+    assert 'WHERE id = %s AND workspace_id = %s' in source
+    assert 'WHERE id = %s::uuid\n                              AND workspace_id = %s::uuid' in source
+    assert 'WHERE ms.id = %s::uuid\n                              AND ms.workspace_id = %s::uuid' in source
+    assert 'WHERE workspace_id = %s AND target_id = %s AND event_id = %s' in source

@@ -2061,6 +2061,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             monitoring_claimed_at = NULL,
             updated_at = NOW()
         WHERE id = %s
+          AND workspace_id = %s
         ''',
         (
             last_status,
@@ -2085,6 +2086,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             int(provider_result.recent_real_event_count),
             recent_confidence_basis,
             target['id'],
+            target['workspace_id'],
         ),
     )
     connection.execute(
@@ -2148,9 +2150,9 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
     monitoring_run_id = str(uuid.uuid4())
     receipt = connection.execute(
         '''
-        SELECT id FROM monitoring_event_receipts WHERE target_id = %s AND event_id = %s
+        SELECT id FROM monitoring_event_receipts WHERE workspace_id = %s AND target_id = %s AND event_id = %s
         ''',
-        (target['id'], event.event_id),
+        (target['workspace_id'], target['id'], event.event_id),
     ).fetchone()
     if receipt is not None:
         return {'status': 'duplicate_suppressed', 'event_id': event.event_id}
@@ -2188,8 +2190,9 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
             last_run_id = %s,
             updated_at = NOW()
         WHERE id = %s
+          AND workspace_id = %s
         ''',
-        (event.observed_at, event.cursor, processed['analysis_run_id'], target['id']),
+        (event.observed_at, event.cursor, processed['analysis_run_id'], target['id'], target['workspace_id']),
     )
     return {'status': 'processed', 'event_id': event.event_id, 'analysis_run_id': processed['analysis_run_id'], 'alert_id': processed.get('alert_id')}
 
@@ -2344,7 +2347,10 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             target['monitored_system_id'] = due_system_ids.get(str(target['id']))
             try:
                 with connection.transaction():
-                    connection.execute('UPDATE targets SET monitoring_claimed_by = %s, monitoring_claimed_at = NOW() WHERE id = %s', (worker_name, target['id']))
+                    connection.execute(
+                        'UPDATE targets SET monitoring_claimed_by = %s, monitoring_claimed_at = NOW() WHERE id = %s AND workspace_id = %s',
+                        (worker_name, target['id'], target['workspace_id']),
+                    )
                     result = process_monitoring_target(connection, target)
                     monitored_system_id = due_system_ids.get(str(target['id']))
                     if monitored_system_id:
@@ -2362,8 +2368,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                                 runtime_status = %s,
                                 status = %s
                             WHERE id = %s::uuid
+                              AND workspace_id = %s::uuid
                             ''',
-                            status_params,
+                            (*status_params, str(target['workspace_id'])),
                         )
                         connection.execute(
                             '''
@@ -2376,6 +2383,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                                 coverage_reason = %s,
                                 last_error_text = NULL
                             WHERE ms.id = %s::uuid
+                              AND ms.workspace_id = %s::uuid
                             ''',
                             (
                                 result.get('last_event_at') or target.get('watcher_last_event_at'),
@@ -2384,6 +2392,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                                 confidence_status,
                                 coverage_reason,
                                 monitored_system_id,
+                                str(target['workspace_id']),
                             ),
                         )
                         monitored_systems_updated += 1
@@ -2397,16 +2406,16 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 error_message = str(exc)
                 logger.exception('monitoring target failed target=%s name=%s', target.get('id'), target.get('name'))
                 connection.execute(
-                    'UPDATE targets SET last_checked_at = NOW(), last_run_status = %s, monitoring_claimed_by = NULL, monitoring_claimed_at = NULL WHERE id = %s',
-                    ('error', target['id']),
+                    'UPDATE targets SET last_checked_at = NOW(), last_run_status = %s, monitoring_claimed_by = NULL, monitoring_claimed_at = NULL WHERE id = %s AND workspace_id = %s',
+                    ('error', target['id'], target['workspace_id']),
                 )
                 monitored_system_id = due_system_ids.get(str(target['id']))
                 if monitored_system_id:
                     # Keep explicit status transition text stable for regression checks:
                     # 'error', status = 'error'
                     connection.execute(
-                        "UPDATE monitored_systems SET runtime_status = 'failed', status = 'error', freshness_status = 'unavailable', confidence_status = 'low', coverage_reason = 'monitoring_worker_error', last_error_text = %s, last_heartbeat = NOW() WHERE id = %s::uuid",
-                        (error_message, monitored_system_id),
+                        "UPDATE monitored_systems SET runtime_status = 'failed', status = 'error', freshness_status = 'unavailable', confidence_status = 'low', coverage_reason = 'monitoring_worker_error', last_error_text = %s, last_heartbeat = NOW() WHERE id = %s::uuid AND workspace_id = %s::uuid",
+                        (error_message, monitored_system_id, str(target['workspace_id'])),
                     )
                     monitored_systems_updated += 1
         connection.execute(
@@ -3949,6 +3958,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         summary['source_of_evidence'] = source_of_evidence
         summary['configuration_reason_codes'] = list(configuration_reason_codes)
         summary['configuration_diagnostics'] = dict(configuration_diagnostics)
+        strict_live_healthy_proof = bool(
+            workspace_configured
+            and evidence_source == 'live'
+            and reporting_systems > 0
+            and coverage_fresh
+            and summary.get('freshness_status') == 'fresh'
+            and str(summary.get('confidence_status') or '').lower() not in {'stale', 'low', 'unavailable'}
+        )
+        if runtime_status_summary == 'healthy' and not strict_live_healthy_proof:
+            runtime_status_summary = 'idle'
+            summary['runtime_status'] = 'idle'
+            if runtime_status_reason is None:
+                runtime_status_reason = 'no_fresh_live_coverage_telemetry'
+                summary['status_reason'] = runtime_status_reason
         if workspace_configured and runtime_status_summary == 'idle' and runtime_status_reason:
             logger.info(
                 'monitoring_runtime_limited_coverage workspace_id=%s chosen_evidence_source=%s status_reason=%s reporting_systems=%s coverage_fresh=%s',
