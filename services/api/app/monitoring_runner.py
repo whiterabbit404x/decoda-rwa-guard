@@ -2222,9 +2222,74 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
             event.ingestion_source,
             'target_event',
             'live' if is_live_ingestion else event.ingestion_source,
-            'coverage' if is_live_ingestion else 'target_event',
+            'target_event',
         ),
     )
+    if is_live_ingestion:
+        metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+        provider_name = str(metadata.get('provider_name') or event.ingestion_source or 'evm_activity_provider')
+        coverage_event_id = f"coverage:{event.event_id}"
+        connection.execute(
+            '''
+            INSERT INTO monitoring_event_receipts (
+                id, workspace_id, target_id, event_id, event_cursor, tx_hash, block_number, log_index, ingestion_source, receipt_kind, evidence_source, telemetry_kind
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (target_id, event_id)
+            DO NOTHING
+            ''',
+            (
+                str(uuid.uuid4()),
+                target['workspace_id'],
+                target['id'],
+                coverage_event_id,
+                f"coverage:{event.cursor}",
+                payload.get('tx_hash'),
+                payload.get('block_number'),
+                payload.get('log_index'),
+                event.ingestion_source,
+                'coverage_telemetry',
+                'live',
+                'coverage',
+            ),
+        )
+        coverage_payload = {
+            'telemetry_kind': 'coverage',
+            'proof_kind': 'target_event',
+            'observation_type': 'target_event',
+            'provider_name': provider_name,
+            'source_type': event.ingestion_source,
+            'target_id': target.get('id'),
+            'event_id': event.event_id,
+        }
+        connection.execute(
+            '''
+            INSERT INTO evidence (
+                id, workspace_id, asset_id, target_id, alert_id, chain, block_number, tx_hash, log_index, event_type,
+                monitored_system_id, severity, risk_score, summary, counterparty, amount_text, token_address, contract_address, source_provider,
+                raw_payload_json, observed_at, created_at
+            )
+            VALUES (%s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s, NULL, %s, NULL, NULL, NULL, %s, %s, %s::jsonb, %s, NOW())
+            ''',
+            (
+                str(uuid.uuid4()),
+                target['workspace_id'],
+                target.get('asset_id'),
+                target['id'],
+                target.get('chain_network'),
+                payload.get('block_number'),
+                payload.get('tx_hash'),
+                payload.get('log_index'),
+                'coverage_telemetry',
+                target.get('monitored_system_id'),
+                'low',
+                'Live target-event telemetry verified',
+                target.get('contract_identifier') or target.get('wallet_address'),
+                provider_name,
+                _json_dumps(coverage_payload),
+                event.observed_at,
+            ),
+        )
     connection.execute(
         '''
         UPDATE monitored_systems
