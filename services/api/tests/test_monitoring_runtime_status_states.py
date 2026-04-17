@@ -1089,6 +1089,9 @@ def test_runtime_status_workspace_scoped_path_preserves_coverage_telemetry_field
     assert summary['monitoring_mode'] == 'live'
     assert summary['telemetry_kind'] == 'coverage'
     assert summary['evidence_source'] == 'live'
+    assert summary['last_coverage_telemetry_at'] is not None
+    assert summary['freshness_status'] == 'fresh'
+    assert summary['confidence_status'] == 'high'
 
 
 def test_contradiction_guard_offline_runtime_clears_current_telemetry(monkeypatch):
