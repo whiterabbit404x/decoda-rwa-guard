@@ -38,6 +38,7 @@ from services.api.app.pilot import (
     resolve_workspace,
     resolve_workspace_context_for_request,
     ensure_monitored_system_for_target,
+    ensure_monitoring_runtime_schema_capabilities,
     reconcile_enabled_targets_monitored_systems,
     _target_health_payload,
 )
@@ -3105,6 +3106,38 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         payload.update(summary)
         return payload
 
+    def _runtime_schema_failure_payload(
+        *,
+        workspace_id: str | None,
+        workspace_slug: str | None,
+        missing_column: str,
+        error_details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = _runtime_failure_payload(
+            workspace_id=workspace_id,
+            workspace_slug=workspace_slug,
+            error_code='runtime_schema_incomplete',
+            error_type='RuntimeSchemaIncomplete',
+            error_message='Monitoring runtime schema is missing required columns.',
+            error_stage='schema',
+            status_reason=f'runtime_schema_column_missing:{missing_column}',
+            hint='run_migrations_0036_to_0039',
+        )
+        payload['configuration_reason'] = 'runtime_schema_incomplete'
+        payload['configuration_reason_codes'] = ['runtime_schema_incomplete']
+        payload['status_reason'] = f'runtime_schema_column_missing:{missing_column}'
+        details = dict(error_details or {})
+        details.setdefault('code', 'runtime_schema_incomplete')
+        details.setdefault('missing_column', missing_column)
+        payload['error'] = details
+        summary = dict(payload.get('workspace_monitoring_summary') or {})
+        summary['configuration_reason'] = payload['configuration_reason']
+        summary['configuration_reason_codes'] = list(payload['configuration_reason_codes'])
+        summary['status_reason'] = payload['status_reason']
+        payload['workspace_monitoring_summary'] = summary
+        payload.update(summary)
+        return payload
+
     def _monitoring_runtime_status_impl() -> dict[str, Any]:
         health = get_monitoring_health()
         now = utc_now()
@@ -3255,6 +3288,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     
         with pg_connection() as connection:
             ensure_pilot_schema(connection)
+            ensure_monitoring_runtime_schema_capabilities(connection)
             if request is not None:
                 user, workspace_context, workspace_header_present = resolve_workspace_context_for_request(connection, request)
                 user_id = str(user.get('id') or '')
@@ -4006,7 +4040,30 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
 
     try:
         return _monitoring_runtime_status_impl()
-    except HTTPException:
+    except HTTPException as exc:
+        detail_payload = exc.detail if isinstance(exc.detail, dict) else {}
+        if (
+            exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+            and detail_payload.get('code') == 'runtime_schema_incomplete'
+        ):
+            workspace_id, workspace_slug = _workspace_context_from_request(request)
+            missing_columns = detail_payload.get('missing_columns') if isinstance(detail_payload.get('missing_columns'), list) else []
+            missing_column = str(missing_columns[0] if missing_columns else 'unknown')
+            logger.warning(
+                'monitoring_runtime_status_schema_incomplete workspace_id=%s workspace_slug=%s missing_columns=%s migration_hints=%s',
+                workspace_id,
+                workspace_slug,
+                missing_columns,
+                detail_payload.get('migration_hints'),
+            )
+            return _normalize_monitoring_runtime_contract(
+                _runtime_schema_failure_payload(
+                    workspace_id=workspace_id,
+                    workspace_slug=workspace_slug,
+                    missing_column=missing_column,
+                    error_details=detail_payload,
+                )
+            )
         raise
     except psycopg.Error as exc:
         workspace_id, workspace_slug = _workspace_context_from_request(request)
