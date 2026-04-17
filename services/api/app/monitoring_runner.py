@@ -61,6 +61,12 @@ PREREQUISITE_COUNTER_KEYS: tuple[str, ...] = (
     'valid_target_system_links',
 )
 
+NON_LIVE_PROVIDER_SOURCE_TYPES: set[str] = {'demo', 'simulator', 'replay', 'unknown'}
+
+
+def _provider_source_is_live(source_type: Any) -> bool:
+    return str(source_type or '').strip().lower() not in NON_LIVE_PROVIDER_SOURCE_TYPES
+
 
 def _normalize_monitoring_runtime_contract(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload or {})
@@ -1882,6 +1888,8 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         target['monitoring_checkpoint_cursor'] = f"{checkpoint_block}:checkpoint:-1"
     provider_result: ActivityProviderResult = fetch_target_activity_result(target, checkpoint)
     events = provider_result.events
+    source_type = str(provider_result.source_type or '').strip().lower()
+    live_source_eligible = _provider_source_is_live(source_type)
     provider_observation_outcome = (
         'success'
         if provider_result.status in {'live', 'no_evidence', 'degraded'}
@@ -1894,6 +1902,16 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         provider_observation_outcome,
         provider_result.source_type or 'unknown',
         provider_result.degraded_reason,
+    )
+    logger.info(
+        'provider_fetch_checkpoint workspace_id=%s target_id=%s mode=%s status=%s source_type=%s live_source_eligible=%s event_count=%s',
+        target.get('workspace_id'),
+        target.get('id'),
+        provider_result.mode,
+        provider_result.status,
+        source_type or 'unknown',
+        live_source_eligible,
+        len(events),
     )
     evaluation_id = str(uuid.uuid4())
     connection.execute(
@@ -1976,6 +1994,11 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             source_status = 'degraded'
             degraded_reason = provider_result.degraded_reason or 'monitoring_degraded'
             last_status = 'insufficient_real_evidence'
+    if provider_result.mode in {'live', 'hybrid'} and not live_source_eligible:
+        source_status = 'degraded'
+        degraded_reason = degraded_reason or f'provider_source_not_live:{source_type or "unknown"}'
+        if last_status not in {'anomaly_escalated_to_incident', 'real_event_anomaly_detected'}:
+            last_status = 'insufficient_real_evidence'
     if events and provider_result.synthetic and provider_result.mode in {'live', 'hybrid'}:
         source_status = 'degraded'
         degraded_reason = 'synthetic_leak_detected'
@@ -1989,9 +2012,17 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         and provider_result.status == 'live'
         and not provider_result.synthetic
         and not degraded_reason
-        and str(provider_result.source_type or '').lower() not in {'demo', 'simulator', 'replay', 'unknown'}
+        and live_source_eligible
     ):
         live_coverage_telemetry_at = utc_now()
+        logger.info(
+            'coverage_timestamp_update_checkpoint workspace_id=%s target_id=%s action=persist timestamp=%s provider_status=%s source_type=%s',
+            target.get('workspace_id'),
+            target.get('id'),
+            live_coverage_telemetry_at.isoformat(),
+            provider_result.status,
+            source_type or 'unknown',
+        )
         _persist_live_coverage_telemetry(
             connection,
             target=target,
@@ -2008,8 +2039,8 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             coverage_skip_reason = 'synthetic_result'
         elif degraded_reason:
             coverage_skip_reason = degraded_reason
-        elif str(provider_result.source_type or '').lower() in {'demo', 'simulator', 'replay', 'unknown'}:
-            coverage_skip_reason = f"source_type_{str(provider_result.source_type or 'unknown').lower()}"
+        elif not live_source_eligible:
+            coverage_skip_reason = f"source_type_{source_type or 'unknown'}"
         else:
             coverage_skip_reason = 'telemetry_not_eligible'
     logger.info(
@@ -2019,6 +2050,14 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         coverage_persisted,
         live_coverage_telemetry_at.isoformat() if live_coverage_telemetry_at else None,
         None if coverage_persisted else coverage_skip_reason,
+    )
+    logger.info(
+        'receipt_persist_checkpoint workspace_id=%s target_id=%s receipts_written=%s checkpoint_cursor=%s latest_processed_block=%s',
+        target.get('workspace_id'),
+        target.get('id'),
+        len(events) + (1 if coverage_persisted else 0),
+        checkpoint_cursor,
+        latest_processed_block,
     )
 
     recent_evidence_state = ui_evidence_state(provider_result.evidence_state)
@@ -2812,11 +2851,16 @@ def get_monitoring_health() -> dict[str, Any]:
         ).fetchone()
         stats = _json_safe_value(dict(checkpoint_stats or {}))
         latest_checkpoint_at = _parse_ts(stats.get('latest_checkpoint_at'))
+        heartbeat_at = _parse_ts(normalized.get('last_heartbeat_at') or normalized.get('last_cycle_at'))
+        heartbeat_age_seconds = int((utc_now() - heartbeat_at).total_seconds()) if heartbeat_at else None
+        heartbeat_stale = heartbeat_age_seconds is None or heartbeat_age_seconds > WORKER_HEARTBEAT_TTL_SECONDS
         normalized['source_type'] = runtime.get('source')
         normalized['latest_processed_block'] = stats.get('latest_processed_block')
         normalized['checkpoint_lag_blocks'] = stats.get('max_checkpoint_lag_blocks')
         normalized['checkpoint_age_seconds'] = int((utc_now() - latest_checkpoint_at).total_seconds()) if latest_checkpoint_at else None
         normalized['event_count_last_15m'] = int((last_15m_events or {}).get('event_count') or 0)
+        normalized['heartbeat_age_seconds'] = heartbeat_age_seconds
+        normalized['heartbeat_stale'] = heartbeat_stale
         if watcher_state is not None:
             watcher = _json_safe_value(dict(watcher_state))
             normalized['watcher_state'] = watcher
@@ -2830,6 +2874,11 @@ def get_monitoring_health() -> dict[str, Any]:
         else:
             normalized['degraded_reason'] = runtime.get('reason') if runtime.get('degraded') else ('target_source_degraded' if int(stats.get('degraded_targets') or 0) > 0 else None)
         normalized['mode'] = runtime.get('mode')
+        normalized['ingestion_live_confirmed'] = bool(
+            runtime.get('mode') in {'live', 'hybrid'}
+            and not bool(normalized.get('degraded'))
+            and _provider_source_is_live(normalized.get('source_type') or runtime.get('source'))
+        )
         normalized['operational_mode'] = monitoring_operational_mode(
             runtime,
             degraded=bool(normalized.get('degraded')) or bool(normalized.get('degraded_reason')),
