@@ -112,6 +112,9 @@ def test_runtime_status_active_with_recent_evidence(monkeypatch):
     assert payload['workspace_monitoring_summary']['coverage_state']['configured_systems'] == 2
     assert payload['workspace_monitoring_summary']['freshness_status'] in {'fresh', 'stale', 'unavailable'}
     assert payload['workspace_monitoring_summary']['contradiction_flags'] == []
+    assert payload['workspace_monitoring_summary']['last_heartbeat_at'] is not None
+    assert payload['workspace_monitoring_summary']['field_reason_codes'].get('configured_systems') != ['query_failure']
+    assert payload['workspace_monitoring_summary']['field_reason_codes'].get('protected_assets') != ['query_failure']
 
 
 def test_runtime_status_counts_protected_assets_from_enabled_systems_not_only_active(monkeypatch):
@@ -1869,6 +1872,8 @@ def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure
     assert payload['field_reason_codes']['last_heartbeat_at'] == ['query_failure']
     assert payload['field_reason_codes']['last_telemetry_at'] == ['query_failure']
     assert payload['configuration_diagnostics']['reason_codes'] == ['runtime_status_unavailable']
+    assert payload['workspace_monitoring_summary']['field_reason_codes']['protected_assets'] == ['query_failure']
+    assert payload['workspace_monitoring_summary']['configuration_reason_codes'] == ['runtime_status_unavailable']
 
 
 def test_runtime_status_workspace_unconfigured_path_uses_configuration_diagnostics(monkeypatch):
@@ -1902,6 +1907,9 @@ def test_runtime_status_workspace_unconfigured_path_uses_configuration_diagnosti
         'no_persisted_enabled_monitoring_config',
         'target_system_linkage_invalid',
     ]
+    assert payload['workspace_monitoring_summary']['field_reason_codes']['protected_assets'] == ['unconfigured_workspace']
+    assert payload['workspace_monitoring_summary']['field_reason_codes']['configured_systems'] == ['unconfigured_workspace']
+    assert payload['workspace_monitoring_summary']['field_reason_codes']['reporting_systems'] == ['unconfigured_workspace']
 
 
 def test_runtime_debug_reports_configuration_reason_codes_in_production_when_workspace_unconfigured(monkeypatch):

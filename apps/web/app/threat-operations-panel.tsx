@@ -94,7 +94,7 @@ type EvidenceRow = {
 };
 
 type ThreatFeedState = 'Live' | 'Historical' | 'Test' | 'Stale' | 'Investigating' | 'Resolved';
-type PageOperationalState =
+export type PageOperationalState =
   | 'healthy_live'
   | 'configured_no_signals'
   | 'degraded_partial'
@@ -109,7 +109,7 @@ const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
   'target_system_linkage_invalid',
 ]);
 
-function hasRuntimeQueryFailureMarker(params: {
+export function hasRuntimeQueryFailureMarker(params: {
   statusReason?: string | null;
   configurationReason?: string | null;
   configurationReasonCodes?: string[];
@@ -281,7 +281,7 @@ function displayIdentifier(target: TargetRow): string {
   return target.contract_identifier || 'Identifier unavailable';
 }
 
-function derivePageState(params: {
+export function derivePageState(params: {
   loadingSnapshot: boolean;
   snapshotError: boolean;
   targets: TargetRow[];
@@ -368,24 +368,43 @@ function derivePageState(params: {
   return 'degraded_partial';
 }
 
-function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null }) {
+export function pageStatePrimaryCopy(state: PageOperationalState, configurationReason?: string | null): string {
   if (state === 'healthy_live') {
-    return <p className="explanation">Live monitoring is healthy. Telemetry freshness and threat detections reflect current workspace conditions.</p>;
+    return 'Live monitoring is healthy. Telemetry freshness and threat detections reflect current workspace conditions.';
   }
   if (state === 'configured_no_signals') {
-    return <p className="explanation">Monitoring healthy. No active detections right now. Live telemetry remains current across reporting systems.</p>;
+    return 'Monitoring healthy. No active detections right now. Live telemetry remains current across reporting systems.';
   }
   if (state === 'unconfigured_workspace') {
-    return <p className="explanation">Workspace is not configured: {configurationReasonMessage(configurationReason)} Live threat detection starts only after persisted linkage is valid.</p>;
+    return `Workspace is not configured: ${configurationReasonMessage(configurationReason)} Live threat detection starts only after persisted linkage is valid.`;
   }
   if (state === 'offline_no_telemetry') {
-    return <p className="explanation">Monitoring is offline. Reason: {reason || 'no active reporting systems'}. Add one monitored system and confirm telemetry flow.</p>;
+    return 'Monitoring is offline.';
+  }
+  if (state === 'fetch_error') {
+    return 'Backend telemetry/runtime retrieval failed, so monitoring data is temporarily unavailable.';
+  }
+  return 'Monitoring is partially degraded. Threat outcomes may be delayed or incomplete.';
+}
+
+function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null }) {
+  if (state === 'healthy_live') {
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason)}</p>;
+  }
+  if (state === 'configured_no_signals') {
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason)}</p>;
+  }
+  if (state === 'unconfigured_workspace') {
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason)}</p>;
+  }
+  if (state === 'offline_no_telemetry') {
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason)} Reason: {reason || 'no active reporting systems'}. Add one monitored system and confirm telemetry flow.</p>;
   }
   if (state === 'fetch_error') {
     return (
       <div className="emptyStatePanel">
         <h4>Telemetry retrieval degraded</h4>
-        <p className="muted">Backend telemetry/runtime retrieval failed, so monitoring data is temporarily unavailable.</p>
+        <p className="muted">{pageStatePrimaryCopy(state, configurationReason)}</p>
         {reason ? <p className="tableMeta">Backend reason: {reason}</p> : null}
         <p className="tableMeta">Last telemetry: {telemetryLabel} · Last successful poll: {pollLabel}</p>
         <div className="buttonRow">
