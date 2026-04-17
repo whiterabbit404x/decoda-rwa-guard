@@ -49,7 +49,11 @@ def build_workspace_monitoring_summary(
     normalized_runtime = runtime_status if runtime_status in {'provisioning', 'healthy', 'degraded', 'idle', 'failed', 'disabled', 'offline'} else 'offline'
     normalized_evidence = evidence_source if evidence_source in {'live', 'simulator', 'replay', 'none'} else 'none'
     normalized_telemetry_kind = telemetry_kind if telemetry_kind in {'coverage', 'target_event'} else None
-    telemetry_timestamp = last_telemetry_at if normalized_telemetry_kind in {'coverage', 'target_event'} else None
+    telemetry_timestamp = None
+    if normalized_telemetry_kind in {'coverage', 'target_event'}:
+        telemetry_timestamp = last_telemetry_at
+        if telemetry_timestamp is None and normalized_telemetry_kind == 'coverage':
+            telemetry_timestamp = last_coverage_telemetry_at
     coverage_telemetry_timestamp = last_coverage_telemetry_at
     freshness_status = (
         'fresh'

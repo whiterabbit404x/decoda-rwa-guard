@@ -166,6 +166,43 @@ def test_fresh_live_coverage_telemetry_sets_high_confidence() -> None:
     assert summary['contradiction_flags'] == []
 
 
+def test_coverage_telemetry_keeps_freshness_live_without_target_event_timestamp() -> None:
+    now = _now()
+    summary = build_workspace_monitoring_summary(
+        now=now,
+        workspace_configured=True,
+        monitoring_mode='live',
+        runtime_status='healthy',
+        configured_systems=2,
+        monitored_systems_count=2,
+        reporting_systems=2,
+        protected_assets=2,
+        last_poll_at=None,
+        last_heartbeat_at=None,
+        last_telemetry_at=None,
+        last_coverage_telemetry_at=now - timedelta(seconds=45),
+        telemetry_kind='coverage',
+        last_detection_at=None,
+        evidence_source='live',
+        status_reason=None,
+        configuration_reason=None,
+        valid_protected_asset_count=2,
+        linked_monitored_system_count=2,
+        persisted_enabled_config_count=2,
+        valid_target_system_link_count=2,
+        telemetry_window_seconds=300,
+        configuration_reason_codes=None,
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
+    )
+    assert summary['last_telemetry_at'] == summary['last_coverage_telemetry_at']
+    assert summary['freshness_status'] == 'fresh'
+    assert summary['confidence_status'] == 'high'
+    assert 'poll_without_telemetry_timestamp' not in summary['contradiction_flags']
+    assert 'heartbeat_without_telemetry_timestamp' not in summary['contradiction_flags']
+
+
 def test_live_poll_and_heartbeat_without_coverage_keeps_confidence_unavailable() -> None:
     now = _now()
     summary = build_workspace_monitoring_summary(
