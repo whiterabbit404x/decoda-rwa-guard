@@ -1861,10 +1861,14 @@ def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure
     payload = monitoring_runner.monitoring_runtime_status(request)
     assert payload['workspace_id'] == 'ws-prod'
     assert payload['workspace_slug'] == 'prod-ops'
+    assert request.state.workspace_id == 'ws-prod'
+    assert request.state.workspace_slug == 'prod-ops'
     assert payload['configuration_reason'] == 'runtime_status_unavailable'
     assert payload['status_reason'] == 'runtime_status_degraded:database_error'
     assert payload['error']['code'] == 'runtime_status_db_error'
     assert payload['error']['type'] == 'SyntaxError'
+    assert payload['error']['stage_detail'] == 'select_live_coverage_receipts'
+    assert payload['configuration_reason'] != 'workspace_not_configured'
     assert payload['field_reason_codes']['protected_assets'] == ['query_failure']
     assert payload['field_reason_codes']['configured_systems'] == ['query_failure']
     assert payload['field_reason_codes']['reporting_systems'] == ['query_failure']

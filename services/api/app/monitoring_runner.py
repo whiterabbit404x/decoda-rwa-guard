@@ -2980,6 +2980,8 @@ def production_claim_validator() -> dict[str, Any]:
 
 
 def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
+    last_query_checkpoint = 'not_started'
+
     def _workspace_context_from_request(req: Request | None) -> tuple[str | None, str | None]:
         if req is None:
             return None, None
@@ -3107,6 +3109,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         error_type: str,
         error_message: str,
         error_stage: str,
+        error_stage_detail: str | None = None,
         status_reason: str,
         hint: str,
     ) -> dict[str, Any]:
@@ -3119,6 +3122,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'type': error_type,
             'message': error_message,
             'stage': error_stage,
+            'stage_detail': error_stage_detail,
             'hint': hint,
         }
         summary = dict(payload['workspace_monitoring_summary'])
@@ -3179,6 +3183,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         return payload
 
     def _monitoring_runtime_status_impl() -> dict[str, Any]:
+        nonlocal last_query_checkpoint
+
+        def _mark_query_checkpoint(label: str) -> None:
+            nonlocal last_query_checkpoint
+            last_query_checkpoint = label
+
         health = get_monitoring_health()
         now = utc_now()
         claim_validator = production_claim_validator()
@@ -3327,9 +3337,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             return normalized
     
         with pg_connection() as connection:
-            ensure_pilot_schema(connection)
-            ensure_monitoring_runtime_schema_capabilities(connection)
             if request is not None:
+                _mark_query_checkpoint('workspace_context_resolution')
                 user, workspace_context, workspace_header_present = resolve_workspace_context_for_request(connection, request)
                 user_id = str(user.get('id') or '')
                 workspace_id = str(workspace_context['workspace_id'])
@@ -3339,8 +3348,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     request.state.workspace_slug = workspace_slug
                 except Exception:
                     pass
+            ensure_pilot_schema(connection)
+            ensure_monitoring_runtime_schema_capabilities(connection)
+            if request is not None:
+                _mark_query_checkpoint('load_runtime_monitored_rows')
                 monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
                 try:
+                    _mark_query_checkpoint('load_workspace_monitored_rows_raw')
                     raw_workspace_rows = _load_workspace_monitored_rows_raw(connection, workspace_id)
                 except Exception:
                     query_failure_detected = True
@@ -3355,6 +3369,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                         [str((row or {}).get('id') or '') for row in raw_workspace_rows if (row or {}).get('id')],
                     )
                 try:
+                    _mark_query_checkpoint('list_workspace_monitored_system_rows')
                     listed_monitored_rows = list_workspace_monitored_system_rows(connection, workspace_id)
                 except Exception:
                     query_failure_detected = True
@@ -3380,14 +3395,17 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             target_workspace_filter = 'AND t.workspace_id = %s' if workspace_id else ''
             evidence_workspace_filter = 'WHERE e.workspace_id = %s' if workspace_id else ''
             scoped_params: tuple[Any, ...] = (workspace_id,) if workspace_id else ()
+            _mark_query_checkpoint('count_open_alerts')
             open_alerts = connection.execute(
                 f"SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating') {'AND workspace_id = %s' if workspace_id else ''}",
                 scoped_params,
             ).fetchone()
+            _mark_query_checkpoint('count_open_incidents')
             open_incidents = connection.execute(
                 f"SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged') {'AND workspace_id = %s' if workspace_id else ''}",
                 scoped_params,
             ).fetchone()
+            _mark_query_checkpoint('count_broken_targets')
             broken_targets = connection.execute(
                 f'''
                 SELECT COUNT(*) AS c
@@ -3403,6 +3421,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 ''',
                 scoped_params,
             ).fetchone()
+            _mark_query_checkpoint('count_raw_enabled_targets')
             raw_enabled_targets_row = connection.execute(
                 f'''
                 SELECT COUNT(*) AS c
@@ -3414,6 +3433,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 scoped_params,
             ).fetchone()
             raw_enabled_targets = int((raw_enabled_targets_row or {}).get('c') or 0)
+            _mark_query_checkpoint('count_healthy_enabled_targets')
             healthy_enabled_targets = connection.execute(
                 f'''
                 SELECT COUNT(*) AS target_count, COUNT(DISTINCT t.asset_id) AS asset_count
@@ -3432,6 +3452,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ).fetchone()
             healthy_enabled_targets_count = int((healthy_enabled_targets or {}).get('target_count') or 0)
             healthy_enabled_assets_count = int((healthy_enabled_targets or {}).get('asset_count') or 0)
+            _mark_query_checkpoint('list_healthy_enabled_target_rows')
             healthy_enabled_target_rows = connection.execute(
                 f'''
                 SELECT t.id, t.asset_id
@@ -3494,6 +3515,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     len(monitored_rows),
                     [str(row.get('id') or '') for row in monitored_rows if row.get('id')],
                 )
+            _mark_query_checkpoint('select_latest_evidence')
             latest_evidence = connection.execute(
                 f"SELECT observed_at, block_number FROM evidence e {evidence_workspace_filter} ORDER BY observed_at DESC LIMIT 1",
                 scoped_params,
@@ -3511,6 +3533,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 ORDER BY created_at DESC
                 LIMIT 1
             '''
+            _mark_query_checkpoint('select_latest_detection_eval')
             latest_detection_eval = connection.execute(
                 latest_detection_eval_query,
                 tuple(latest_detection_eval_params),
@@ -3543,6 +3566,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             live_coverage_receipts_params: list[Any] = [synthetic_ingestion_sources]
             if workspace_id:
                 live_coverage_receipts_params.append(workspace_id)
+            _mark_query_checkpoint('select_live_coverage_receipts')
             live_coverage_receipt_rows = connection.execute(
                 live_coverage_receipts_query,
                 tuple(live_coverage_receipts_params),
@@ -3564,6 +3588,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 if previous is None or processed_at > previous:
                     live_coverage_receipts_by_system[monitored_system_id] = processed_at
             if request is None:
+                _mark_query_checkpoint('load_runtime_monitored_rows_unscoped')
                 monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
         expected_monitored_row_fields = {
             'id',
@@ -4112,7 +4137,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         raise
     except psycopg.Error as exc:
         workspace_id, workspace_slug = _workspace_context_from_request(request)
-        logger.exception('monitoring_runtime_status_db_error workspace_id=%s workspace_slug=%s', workspace_id, workspace_slug)
+        logger.exception(
+            'monitoring_runtime_status_db_error workspace_id=%s workspace_slug=%s checkpoint=%s',
+            workspace_id,
+            workspace_slug,
+            last_query_checkpoint,
+        )
         return _normalize_monitoring_runtime_contract(_runtime_failure_payload(
             workspace_id=workspace_id,
             workspace_slug=workspace_slug,
@@ -4120,6 +4150,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             error_type=type(exc).__name__,
             error_message='Monitoring runtime data unavailable due to database connectivity or query failure.',
             error_stage='query',
+            error_stage_detail=last_query_checkpoint,
             status_reason='runtime_status_degraded:database_error',
             hint='retry_request_or_check_database_health',
         ))
