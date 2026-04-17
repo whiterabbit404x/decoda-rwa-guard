@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from fastapi import HTTPException, Request, status
+import psycopg
 
 from services.api.app.activity_providers import (
     ActivityEvent,
@@ -2880,824 +2881,959 @@ def production_claim_validator() -> dict[str, Any]:
 
 
 def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
-    health = get_monitoring_health()
-    now = utc_now()
-    claim_validator = production_claim_validator()
-    if not live_mode_enabled():
-        recent_evidence_state = str(claim_validator.get('recent_evidence_state') or 'missing')
-        recent_truthfulness_state = str(claim_validator.get('recent_truthfulness_state') or 'unknown_risk')
-        recent_real_event_count = int(claim_validator.get('recent_real_event_count') or 0)
-        provider_health = 'healthy' if recent_evidence_state == 'real' and recent_real_event_count > 0 else 'degraded'
-        mode = str(health.get('operational_mode') or health.get('mode') or 'DEGRADED').upper()
-        if mode == 'LIVE' and recent_real_event_count <= 0:
-            mode = 'DEGRADED'
-        summary = build_workspace_monitoring_summary(
-            now=now,
-            workspace_configured=False,
-            monitoring_mode='simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'offline',
-            runtime_status='offline',
-            configured_systems=0,
-            monitored_systems_count=0,
-            reporting_systems=0,
-            protected_assets=0,
-            last_poll_at=_parse_ts(_json_safe_value(health).get('last_cycle_at')),
-            last_heartbeat_at=None,
-            last_telemetry_at=None,
-            last_coverage_telemetry_at=None,
-            telemetry_kind=None,
-            last_detection_at=None,
-            evidence_source='simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'none',
-            status_reason='live_mode_disabled',
-            configuration_reason='no_persisted_enabled_monitoring_config',
-            valid_protected_asset_count=0,
-            linked_monitored_system_count=0,
-            persisted_enabled_config_count=0,
-            valid_target_system_link_count=0,
-            telemetry_window_seconds=max(300, MONITOR_POLL_INTERVAL_SECONDS * 6),
-        )
-        payload = {
-            'workspace_id': None,
-            'workspace_slug': None,
+    def _workspace_context_from_request(req: Request | None) -> tuple[str | None, str | None]:
+        if req is None:
+            return None, None
+        try:
+            workspace_id_value = getattr(req.state, 'workspace_id', None)
+            workspace_slug_value = getattr(req.state, 'workspace_slug', None)
+        except Exception:
+            workspace_id_value = None
+            workspace_slug_value = None
+        workspace_id_str = str(workspace_id_value).strip() if workspace_id_value is not None else ''
+        workspace_slug_str = str(workspace_slug_value).strip() if workspace_slug_value is not None else ''
+        return (workspace_id_str or None, workspace_slug_str or None)
+
+    def _base_runtime_failure_payload(*, workspace_id: str | None = None, workspace_slug: str | None = None) -> dict[str, Any]:
+        return {
+            'workspace_id': workspace_id,
+            'workspace_slug': workspace_slug,
+            'workspace_configured': False,
+            'configuration_reason': 'runtime_status_unavailable',
+            'status_reason': 'runtime_status_error',
+            'valid_protected_assets': 0,
+            'linked_monitored_systems': 0,
+            'enabled_configs': 0,
+            'valid_link_count': 0,
+            'configured_systems': 0,
+            'reporting_systems': 0,
+            'last_poll_at': None,
+            'last_heartbeat_at': None,
+            'last_coverage_telemetry_at': None,
+            'last_telemetry_at': None,
+            'evidence_source': 'none',
+            'confidence_status': 'degraded',
+            'runtime_status_summary': 'offline',
             'monitoring_status': 'offline',
             'status': 'Offline',
-            'mode': mode,
-            'provider_health': provider_health,
-            'provider_reachable': bool((claim_validator.get('checks') or {}).get('evm_rpc_reachable')),
-            'recent_evidence_state': recent_evidence_state,
-            'evidence_state': recent_evidence_state,
-            'truthfulness_state': recent_truthfulness_state,
-            'claim_safe': bool(claim_validator.get('sales_claims_allowed')),
-            'recent_real_event_count': recent_real_event_count,
-            'last_real_event_at': claim_validator.get('last_real_event_at'),
-            'sales_claims_allowed': bool(claim_validator.get('sales_claims_allowed')),
-            'claim_validator_status': str(claim_validator.get('status') or 'FAIL'),
-            'source_of_evidence': 'simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none',
-            'workspace_configured': False,
-            'workspace_monitoring_summary': summary,
+            'workspace_monitoring_summary': {
+                'workspace_configured': False,
+                'configuration_reason': 'runtime_status_unavailable',
+                'status_reason': 'runtime_status_error',
+                'valid_protected_assets': 0,
+                'linked_monitored_systems': 0,
+                'enabled_configs': 0,
+                'valid_link_count': 0,
+                'configured_systems': 0,
+                'reporting_systems': 0,
+                'last_poll_at': None,
+                'last_heartbeat_at': None,
+                'last_coverage_telemetry_at': None,
+                'last_telemetry_at': None,
+                'evidence_source': 'none',
+                'confidence_status': 'degraded',
+                'runtime_status_summary': 'offline',
+            },
         }
-        payload.update(payload['workspace_monitoring_summary'])
-        return payload
-    workspace_id: str | None = None
-    workspace_slug: str | None = None
-    user_id: str | None = None
-    workspace_header_present = False
-    monitored_rows: list[dict[str, Any]] = []
-    listed_monitored_rows: list[dict[str, Any]] = []
-    latest_detection_evaluation_at = None
-    latest_detection_payload: dict[str, Any] | None = None
-    healthy_enabled_targets_count = 0
-    healthy_enabled_assets_count = 0
-    enabled_monitored_rows_count = 0
-    healthy_enabled_target_ids: set[str] = set()
-    healthy_enabled_target_asset_map: dict[str, str] = {}
-    telemetry_window_seconds = max(300, MONITOR_POLL_INTERVAL_SECONDS * 6)
-    live_coverage_receipts_by_system: dict[str, datetime] = {}
-    live_coverage_receipts_workspace_latest: datetime | None = None
-    live_coverage_receipts_persisted_count = 0
 
-    def _load_runtime_monitored_rows(connection: Any, workspace_scope_id: str | None) -> list[dict[str, Any]]:
-        if workspace_scope_id:
-            rows = list_workspace_monitored_system_rows(connection, workspace_scope_id)
+    def _runtime_failure_payload(
+        *,
+        workspace_id: str | None,
+        workspace_slug: str | None,
+        error_code: str,
+        error_type: str,
+        error_message: str,
+        error_stage: str,
+        status_reason: str,
+        hint: str,
+    ) -> dict[str, Any]:
+        payload = _base_runtime_failure_payload(workspace_id=workspace_id, workspace_slug=workspace_slug)
+        payload['status_reason'] = status_reason
+        payload['configuration_reason'] = 'runtime_status_unavailable'
+        payload['error'] = {
+            'code': error_code,
+            'type': error_type,
+            'message': error_message,
+            'stage': error_stage,
+            'hint': hint,
+        }
+        summary = dict(payload['workspace_monitoring_summary'])
+        summary.update(
+            {
+                'status_reason': status_reason,
+                'configuration_reason': payload['configuration_reason'],
+                'runtime_status_summary': 'offline',
+                'evidence_source': payload['evidence_source'],
+                'confidence_status': payload['confidence_status'],
+            }
+        )
+        payload['workspace_monitoring_summary'] = summary
+        payload.update(summary)
+        return payload
+
+    def _monitoring_runtime_status_impl() -> dict[str, Any]:
+        health = get_monitoring_health()
+        now = utc_now()
+        claim_validator = production_claim_validator()
+        if not live_mode_enabled():
+            recent_evidence_state = str(claim_validator.get('recent_evidence_state') or 'missing')
+            recent_truthfulness_state = str(claim_validator.get('recent_truthfulness_state') or 'unknown_risk')
+            recent_real_event_count = int(claim_validator.get('recent_real_event_count') or 0)
+            provider_health = 'healthy' if recent_evidence_state == 'real' and recent_real_event_count > 0 else 'degraded'
+            mode = str(health.get('operational_mode') or health.get('mode') or 'DEGRADED').upper()
+            if mode == 'LIVE' and recent_real_event_count <= 0:
+                mode = 'DEGRADED'
+            summary = build_workspace_monitoring_summary(
+                now=now,
+                workspace_configured=False,
+                monitoring_mode='simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'offline',
+                runtime_status='offline',
+                configured_systems=0,
+                monitored_systems_count=0,
+                reporting_systems=0,
+                protected_assets=0,
+                last_poll_at=_parse_ts(_json_safe_value(health).get('last_cycle_at')),
+                last_heartbeat_at=None,
+                last_telemetry_at=None,
+                last_coverage_telemetry_at=None,
+                telemetry_kind=None,
+                last_detection_at=None,
+                evidence_source='simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'none',
+                status_reason='live_mode_disabled',
+                configuration_reason='no_persisted_enabled_monitoring_config',
+                valid_protected_asset_count=0,
+                linked_monitored_system_count=0,
+                persisted_enabled_config_count=0,
+                valid_target_system_link_count=0,
+                telemetry_window_seconds=max(300, MONITOR_POLL_INTERVAL_SECONDS * 6),
+            )
+            payload = {
+                'workspace_id': None,
+                'workspace_slug': None,
+                'monitoring_status': 'offline',
+                'status': 'Offline',
+                'mode': mode,
+                'provider_health': provider_health,
+                'provider_reachable': bool((claim_validator.get('checks') or {}).get('evm_rpc_reachable')),
+                'recent_evidence_state': recent_evidence_state,
+                'evidence_state': recent_evidence_state,
+                'truthfulness_state': recent_truthfulness_state,
+                'claim_safe': bool(claim_validator.get('sales_claims_allowed')),
+                'recent_real_event_count': recent_real_event_count,
+                'last_real_event_at': claim_validator.get('last_real_event_at'),
+                'sales_claims_allowed': bool(claim_validator.get('sales_claims_allowed')),
+                'claim_validator_status': str(claim_validator.get('status') or 'FAIL'),
+                'source_of_evidence': 'simulator' if str(health.get('ingestion_mode') or '') == 'demo' else 'replay_or_none',
+                'workspace_configured': False,
+                'workspace_monitoring_summary': summary,
+            }
+            payload.update(payload['workspace_monitoring_summary'])
+            return payload
+        workspace_id: str | None = None
+        workspace_slug: str | None = None
+        user_id: str | None = None
+        workspace_header_present = False
+        monitored_rows: list[dict[str, Any]] = []
+        listed_monitored_rows: list[dict[str, Any]] = []
+        latest_detection_evaluation_at = None
+        latest_detection_payload: dict[str, Any] | None = None
+        healthy_enabled_targets_count = 0
+        healthy_enabled_assets_count = 0
+        enabled_monitored_rows_count = 0
+        healthy_enabled_target_ids: set[str] = set()
+        healthy_enabled_target_asset_map: dict[str, str] = {}
+        telemetry_window_seconds = max(300, MONITOR_POLL_INTERVAL_SECONDS * 6)
+        live_coverage_receipts_by_system: dict[str, datetime] = {}
+        live_coverage_receipts_workspace_latest: datetime | None = None
+        live_coverage_receipts_persisted_count = 0
+    
+        def _load_runtime_monitored_rows(connection: Any, workspace_scope_id: str | None) -> list[dict[str, Any]]:
+            if workspace_scope_id:
+                rows = list_workspace_monitored_system_rows(connection, workspace_scope_id)
+                normalized: list[dict[str, Any]] = []
+                for row in rows:
+                    item = dict(row)
+                    item['is_enabled'] = monitored_system_row_enabled(item)
+                    normalized.append(item)
+                return normalized
+            rows = connection.execute(
+                '''
+                SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, COALESCE(ms.is_enabled, TRUE) AS is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
+                       COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
+                FROM monitored_systems ms
+                LEFT JOIN targets t
+                  ON t.id = ms.target_id
+                 AND t.workspace_id = ms.workspace_id
+                ORDER BY ms.created_at DESC
+                '''
+            ).fetchall()
             normalized: list[dict[str, Any]] = []
             for row in rows:
                 item = dict(row)
                 item['is_enabled'] = monitored_system_row_enabled(item)
                 normalized.append(item)
             return normalized
-        rows = connection.execute(
-            '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, COALESCE(ms.is_enabled, TRUE) AS is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
-                   COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
-            FROM monitored_systems ms
-            LEFT JOIN targets t
-              ON t.id = ms.target_id
-             AND t.workspace_id = ms.workspace_id
-            ORDER BY ms.created_at DESC
-            '''
-        ).fetchall()
-        normalized: list[dict[str, Any]] = []
-        for row in rows:
-            item = dict(row)
-            item['is_enabled'] = monitored_system_row_enabled(item)
-            normalized.append(item)
-        return normalized
-
-    def _load_workspace_monitored_rows_raw(connection: Any, workspace_scope_id: str) -> list[dict[str, Any]]:
-        rows = connection.execute(
-            '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, COALESCE(ms.is_enabled, TRUE) AS is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
-                   COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
-            FROM monitored_systems ms
-            LEFT JOIN targets t
-              ON t.id = ms.target_id
-             AND t.workspace_id = ms.workspace_id
-            WHERE ms.workspace_id = %s
-            ORDER BY ms.created_at DESC
-            ''',
-            (workspace_scope_id,),
-        ).fetchall()
-        normalized: list[dict[str, Any]] = []
-        for row in rows:
-            item = dict(row)
-            item['is_enabled'] = monitored_system_row_enabled(item)
-            normalized.append(item)
-        return normalized
-
-    with pg_connection() as connection:
-        ensure_pilot_schema(connection)
-        if request is not None:
-            user, workspace_context, workspace_header_present = resolve_workspace_context_for_request(connection, request)
-            user_id = str(user.get('id') or '')
-            workspace_id = str(workspace_context['workspace_id'])
-            workspace_slug = str((workspace_context.get('workspace') or {}).get('slug') or '') or None
-            monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
-            try:
-                raw_workspace_rows = _load_workspace_monitored_rows_raw(connection, workspace_id)
-            except Exception:
-                logger.exception('monitoring_runtime_status_raw_rows_load_failed workspace_id=%s', workspace_id)
-                raw_workspace_rows = []
-            if len(monitored_rows) == 0 and len(raw_workspace_rows) > 0:
-                monitored_rows = raw_workspace_rows
-                logger.warning(
-                    'monitoring_runtime_status_workspace_rows_recovered_from_raw workspace_id=%s raw_rows=%s raw_row_ids=%s',
+    
+        def _load_workspace_monitored_rows_raw(connection: Any, workspace_scope_id: str) -> list[dict[str, Any]]:
+            rows = connection.execute(
+                '''
+                SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, COALESCE(ms.is_enabled, TRUE) AS is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
+                       COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
+                FROM monitored_systems ms
+                LEFT JOIN targets t
+                  ON t.id = ms.target_id
+                 AND t.workspace_id = ms.workspace_id
+                WHERE ms.workspace_id = %s
+                ORDER BY ms.created_at DESC
+                ''',
+                (workspace_scope_id,),
+            ).fetchall()
+            normalized: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                item['is_enabled'] = monitored_system_row_enabled(item)
+                normalized.append(item)
+            return normalized
+    
+        with pg_connection() as connection:
+            ensure_pilot_schema(connection)
+            if request is not None:
+                user, workspace_context, workspace_header_present = resolve_workspace_context_for_request(connection, request)
+                user_id = str(user.get('id') or '')
+                workspace_id = str(workspace_context['workspace_id'])
+                workspace_slug = str((workspace_context.get('workspace') or {}).get('slug') or '') or None
+                monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
+                try:
+                    raw_workspace_rows = _load_workspace_monitored_rows_raw(connection, workspace_id)
+                except Exception:
+                    logger.exception('monitoring_runtime_status_raw_rows_load_failed workspace_id=%s', workspace_id)
+                    raw_workspace_rows = []
+                if len(monitored_rows) == 0 and len(raw_workspace_rows) > 0:
+                    monitored_rows = raw_workspace_rows
+                    logger.warning(
+                        'monitoring_runtime_status_workspace_rows_recovered_from_raw workspace_id=%s raw_rows=%s raw_row_ids=%s',
+                        workspace_id,
+                        len(raw_workspace_rows),
+                        [str((row or {}).get('id') or '') for row in raw_workspace_rows if (row or {}).get('id')],
+                    )
+                try:
+                    listed_monitored_rows = list_workspace_monitored_system_rows(connection, workspace_id)
+                except Exception:
+                    logger.exception('monitoring_runtime_status_list_rows_load_failed workspace_id=%s', workspace_id)
+                    listed_monitored_rows = []
+                logger.info(
+                    'monitoring_runtime_status_workspace_resolution workspace_id=%s workspace_slug=%s workspace_header_present=%s user_id=%s',
                     workspace_id,
-                    len(raw_workspace_rows),
-                    [str((row or {}).get('id') or '') for row in raw_workspace_rows if (row or {}).get('id')],
+                    workspace_slug,
+                    workspace_header_present,
+                    user_id,
                 )
-            try:
-                listed_monitored_rows = list_workspace_monitored_system_rows(connection, workspace_id)
-            except Exception:
-                logger.exception('monitoring_runtime_status_list_rows_load_failed workspace_id=%s', workspace_id)
-                listed_monitored_rows = []
-            logger.info(
-                'monitoring_runtime_status_workspace_resolution workspace_id=%s workspace_slug=%s workspace_header_present=%s user_id=%s',
-                workspace_id,
-                workspace_slug,
-                workspace_header_present,
-                user_id,
+                logger.info(
+                    'monitoring_runtime_status_workspace_rows workspace_id=%s list_route_rows=%s list_route_row_ids=%s list_route_rows_detail=%s runtime_rows=%s runtime_row_ids=%s runtime_rows_detail=%s',
+                    workspace_id,
+                    len(listed_monitored_rows),
+                    [str((row or {}).get('id') or '') for row in listed_monitored_rows if (row or {}).get('id')],
+                    listed_monitored_rows,
+                    len(monitored_rows),
+                    [str((row or {}).get('id') or '') for row in monitored_rows if (row or {}).get('id')],
+                    monitored_rows,
+                )
+            target_workspace_filter = 'AND t.workspace_id = %s' if workspace_id else ''
+            evidence_workspace_filter = 'WHERE e.workspace_id = %s' if workspace_id else ''
+            scoped_params: tuple[Any, ...] = (workspace_id,) if workspace_id else ()
+            open_alerts = connection.execute(
+                f"SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating') {'AND workspace_id = %s' if workspace_id else ''}",
+                scoped_params,
+            ).fetchone()
+            open_incidents = connection.execute(
+                f"SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged') {'AND workspace_id = %s' if workspace_id else ''}",
+                scoped_params,
+            ).fetchone()
+            broken_targets = connection.execute(
+                f'''
+                SELECT COUNT(*) AS c
+                FROM targets t
+                LEFT JOIN assets a
+                  ON a.id = t.asset_id
+                 AND a.workspace_id = t.workspace_id
+                 AND a.deleted_at IS NULL
+                WHERE t.deleted_at IS NULL
+                  AND t.enabled = TRUE
+                  AND (t.asset_id IS NULL OR a.id IS NULL)
+                  {target_workspace_filter}
+                ''',
+                scoped_params,
+            ).fetchone()
+            healthy_enabled_targets = connection.execute(
+                f'''
+                SELECT COUNT(*) AS target_count, COUNT(DISTINCT t.asset_id) AS asset_count
+                FROM targets t
+                JOIN assets a
+                  ON a.id = t.asset_id
+                 AND a.workspace_id = t.workspace_id
+                 AND a.deleted_at IS NULL
+                WHERE t.deleted_at IS NULL
+                  AND t.enabled = TRUE
+                  AND t.asset_id IS NOT NULL
+                  AND {monitorable_target_types_sql_clause('t.target_type')}
+                  {target_workspace_filter}
+                ''',
+                scoped_params,
+            ).fetchone()
+            healthy_enabled_targets_count = int((healthy_enabled_targets or {}).get('target_count') or 0)
+            healthy_enabled_assets_count = int((healthy_enabled_targets or {}).get('asset_count') or 0)
+            healthy_enabled_target_rows = connection.execute(
+                f'''
+                SELECT t.id, t.asset_id
+                FROM targets t
+                JOIN assets a
+                  ON a.id = t.asset_id
+                 AND a.workspace_id = t.workspace_id
+                 AND a.deleted_at IS NULL
+                WHERE t.deleted_at IS NULL
+                  AND t.enabled = TRUE
+                  AND t.asset_id IS NOT NULL
+                  AND {monitorable_target_types_sql_clause('t.target_type')}
+                  {target_workspace_filter}
+                ''',
+                scoped_params,
+            ).fetchall()
+            healthy_enabled_target_ids = {str(row.get('id')) for row in healthy_enabled_target_rows if row.get('id')}
+            healthy_enabled_target_asset_map = {
+                str(row.get('id')): str(row.get('asset_id'))
+                for row in healthy_enabled_target_rows
+                if row.get('id') and row.get('asset_id')
+            }
+            enabled_monitored_rows_count = sum(
+                1
+                for row in monitored_rows
+                if monitored_system_row_enabled(row) and is_monitorable_target_type(row.get('target_type'))
             )
+            enabled_monitored_target_ids = {
+                str(row.get('target_id'))
+                for row in monitored_rows
+                if monitored_system_row_enabled(row) and is_monitorable_target_type(row.get('target_type')) and row.get('target_id')
+            }
+            missing_healthy_target_ids = healthy_enabled_target_ids - enabled_monitored_target_ids
             logger.info(
-                'monitoring_runtime_status_workspace_rows workspace_id=%s list_route_rows=%s list_route_row_ids=%s list_route_rows_detail=%s runtime_rows=%s runtime_row_ids=%s runtime_rows_detail=%s',
-                workspace_id,
-                len(listed_monitored_rows),
-                [str((row or {}).get('id') or '') for row in listed_monitored_rows if (row or {}).get('id')],
-                listed_monitored_rows,
-                len(monitored_rows),
-                [str((row or {}).get('id') or '') for row in monitored_rows if (row or {}).get('id')],
-                monitored_rows,
-            )
-        target_workspace_filter = 'AND t.workspace_id = %s' if workspace_id else ''
-        evidence_workspace_filter = 'WHERE e.workspace_id = %s' if workspace_id else ''
-        scoped_params: tuple[Any, ...] = (workspace_id,) if workspace_id else ()
-        open_alerts = connection.execute(
-            f"SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating') {'AND workspace_id = %s' if workspace_id else ''}",
-            scoped_params,
-        ).fetchone()
-        open_incidents = connection.execute(
-            f"SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged') {'AND workspace_id = %s' if workspace_id else ''}",
-            scoped_params,
-        ).fetchone()
-        broken_targets = connection.execute(
-            f'''
-            SELECT COUNT(*) AS c
-            FROM targets t
-            LEFT JOIN assets a
-              ON a.id = t.asset_id
-             AND a.workspace_id = t.workspace_id
-             AND a.deleted_at IS NULL
-            WHERE t.deleted_at IS NULL
-              AND t.enabled = TRUE
-              AND (t.asset_id IS NULL OR a.id IS NULL)
-              {target_workspace_filter}
-            ''',
-            scoped_params,
-        ).fetchone()
-        healthy_enabled_targets = connection.execute(
-            f'''
-            SELECT COUNT(*) AS target_count, COUNT(DISTINCT t.asset_id) AS asset_count
-            FROM targets t
-            JOIN assets a
-              ON a.id = t.asset_id
-             AND a.workspace_id = t.workspace_id
-             AND a.deleted_at IS NULL
-            WHERE t.deleted_at IS NULL
-              AND t.enabled = TRUE
-              AND t.asset_id IS NOT NULL
-              AND {monitorable_target_types_sql_clause('t.target_type')}
-              {target_workspace_filter}
-            ''',
-            scoped_params,
-        ).fetchone()
-        healthy_enabled_targets_count = int((healthy_enabled_targets or {}).get('target_count') or 0)
-        healthy_enabled_assets_count = int((healthy_enabled_targets or {}).get('asset_count') or 0)
-        healthy_enabled_target_rows = connection.execute(
-            f'''
-            SELECT t.id, t.asset_id
-            FROM targets t
-            JOIN assets a
-              ON a.id = t.asset_id
-             AND a.workspace_id = t.workspace_id
-             AND a.deleted_at IS NULL
-            WHERE t.deleted_at IS NULL
-              AND t.enabled = TRUE
-              AND t.asset_id IS NOT NULL
-              AND {monitorable_target_types_sql_clause('t.target_type')}
-              {target_workspace_filter}
-            ''',
-            scoped_params,
-        ).fetchall()
-        healthy_enabled_target_ids = {str(row.get('id')) for row in healthy_enabled_target_rows if row.get('id')}
-        healthy_enabled_target_asset_map = {
-            str(row.get('id')): str(row.get('asset_id'))
-            for row in healthy_enabled_target_rows
-            if row.get('id') and row.get('asset_id')
-        }
-        enabled_monitored_rows_count = sum(
-            1
-            for row in monitored_rows
-            if monitored_system_row_enabled(row) and is_monitorable_target_type(row.get('target_type'))
-        )
-        enabled_monitored_target_ids = {
-            str(row.get('target_id'))
-            for row in monitored_rows
-            if monitored_system_row_enabled(row) and is_monitorable_target_type(row.get('target_type')) and row.get('target_id')
-        }
-        missing_healthy_target_ids = healthy_enabled_target_ids - enabled_monitored_target_ids
-        logger.info(
-            'monitoring_runtime_status_data_path workspace_id=%s targets_enabled_valid=%s target_ids_enabled_valid=%s monitored_rows_before=%s monitored_row_ids_before=%s enabled_monitored_rows_before=%s',
-            workspace_id,
-            healthy_enabled_targets_count,
-            sorted(healthy_enabled_target_ids),
-            len(monitored_rows),
-            [str(row.get('id') or '') for row in monitored_rows if row.get('id')],
-            enabled_monitored_rows_count,
-        )
-        if healthy_enabled_targets_count > 0 and (enabled_monitored_rows_count < healthy_enabled_targets_count or bool(missing_healthy_target_ids)):
-            reconcile_result = reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
-            logger.info(
-                'monitoring_runtime_status_reconcile workspace_id=%s healthy_enabled_targets=%s enabled_monitored_rows_before=%s missing_healthy_target_ids=%s created_or_updated=%s created_monitored_systems=%s preserved_monitored_systems=%s removed_monitored_systems=%s',
+                'monitoring_runtime_status_data_path workspace_id=%s targets_enabled_valid=%s target_ids_enabled_valid=%s monitored_rows_before=%s monitored_row_ids_before=%s enabled_monitored_rows_before=%s',
                 workspace_id,
                 healthy_enabled_targets_count,
-                enabled_monitored_rows_count,
-                len(missing_healthy_target_ids),
-                reconcile_result.get('created_or_updated'),
-                reconcile_result.get('created_monitored_systems'),
-                reconcile_result.get('preserved_monitored_systems'),
-                reconcile_result.get('removed_monitored_systems'),
-            )
-            monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
-            logger.info(
-                'monitoring_runtime_status_data_path workspace_id=%s monitored_rows_after=%s monitored_row_ids_after=%s',
-                workspace_id,
+                sorted(healthy_enabled_target_ids),
                 len(monitored_rows),
                 [str(row.get('id') or '') for row in monitored_rows if row.get('id')],
+                enabled_monitored_rows_count,
             )
-        latest_evidence = connection.execute(
-            f"SELECT observed_at, block_number FROM evidence e {evidence_workspace_filter} ORDER BY observed_at DESC LIMIT 1",
-            scoped_params,
-        ).fetchone()
-        latest_detection_eval_query = '''
-            SELECT created_at, response_payload
-            FROM analysis_runs
-            WHERE analysis_type LIKE %s
-        '''
-        latest_detection_eval_params: list[Any] = ['monitoring_%']
-        if workspace_id:
-            latest_detection_eval_query += ' AND workspace_id = %s'
-            latest_detection_eval_params.append(workspace_id)
-        latest_detection_eval_query += '''
-            ORDER BY created_at DESC
-            LIMIT 1
-        '''
-        latest_detection_eval = connection.execute(
-            latest_detection_eval_query,
-            tuple(latest_detection_eval_params),
-        ).fetchone()
-        latest_detection_evaluation_at = _parse_ts((latest_detection_eval or {}).get('created_at'))
-        latest_detection_payload = _json_safe_value((latest_detection_eval or {}).get('response_payload') or {}) if latest_detection_eval else None
-        synthetic_ingestion_sources = ('demo', 'simulator', 'replay', 'synthetic', 'fallback')
-        live_coverage_receipts_query = f'''
-            SELECT
-                e.processed_at,
-                e.target_id,
-                ms.id AS monitored_system_id
-            FROM monitoring_event_receipts e
-            LEFT JOIN monitored_systems ms
-              ON ms.workspace_id = e.workspace_id
-             AND ms.target_id = e.target_id
-             AND COALESCE(ms.is_enabled, TRUE) = TRUE
-            LEFT JOIN targets t
-              ON t.id = e.target_id
-             AND t.workspace_id = e.workspace_id
-            WHERE e.evidence_source = 'live'
-              AND e.telemetry_kind = 'coverage'
-              AND COALESCE(LOWER(e.ingestion_source), '') NOT IN %s
-              AND t.deleted_at IS NULL
-              AND t.enabled = TRUE
-              AND {monitorable_target_types_sql_clause('t.target_type')}
-              {'AND e.workspace_id = %s' if workspace_id else ''}
-            ORDER BY e.processed_at DESC
-        '''
-        live_coverage_receipts_params: list[Any] = [synthetic_ingestion_sources]
-        if workspace_id:
-            live_coverage_receipts_params.append(workspace_id)
-        live_coverage_receipt_rows = connection.execute(
-            live_coverage_receipts_query,
-            tuple(live_coverage_receipts_params),
-        ).fetchall()
-        live_coverage_receipts_persisted_count = len(live_coverage_receipt_rows)
-        for receipt in live_coverage_receipt_rows:
-            processed_at = _parse_ts((receipt or {}).get('processed_at'))
-            if processed_at is None:
+            if healthy_enabled_targets_count > 0 and (enabled_monitored_rows_count < healthy_enabled_targets_count or bool(missing_healthy_target_ids)):
+                reconcile_result = reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
+                logger.info(
+                    'monitoring_runtime_status_reconcile workspace_id=%s healthy_enabled_targets=%s enabled_monitored_rows_before=%s missing_healthy_target_ids=%s created_or_updated=%s created_monitored_systems=%s preserved_monitored_systems=%s removed_monitored_systems=%s',
+                    workspace_id,
+                    healthy_enabled_targets_count,
+                    enabled_monitored_rows_count,
+                    len(missing_healthy_target_ids),
+                    reconcile_result.get('created_or_updated'),
+                    reconcile_result.get('created_monitored_systems'),
+                    reconcile_result.get('preserved_monitored_systems'),
+                    reconcile_result.get('removed_monitored_systems'),
+                )
+                monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
+                logger.info(
+                    'monitoring_runtime_status_data_path workspace_id=%s monitored_rows_after=%s monitored_row_ids_after=%s',
+                    workspace_id,
+                    len(monitored_rows),
+                    [str(row.get('id') or '') for row in monitored_rows if row.get('id')],
+                )
+            latest_evidence = connection.execute(
+                f"SELECT observed_at, block_number FROM evidence e {evidence_workspace_filter} ORDER BY observed_at DESC LIMIT 1",
+                scoped_params,
+            ).fetchone()
+            latest_detection_eval_query = '''
+                SELECT created_at, response_payload
+                FROM analysis_runs
+                WHERE analysis_type LIKE %s
+            '''
+            latest_detection_eval_params: list[Any] = ['monitoring_%']
+            if workspace_id:
+                latest_detection_eval_query += ' AND workspace_id = %s'
+                latest_detection_eval_params.append(workspace_id)
+            latest_detection_eval_query += '''
+                ORDER BY created_at DESC
+                LIMIT 1
+            '''
+            latest_detection_eval = connection.execute(
+                latest_detection_eval_query,
+                tuple(latest_detection_eval_params),
+            ).fetchone()
+            latest_detection_evaluation_at = _parse_ts((latest_detection_eval or {}).get('created_at'))
+            latest_detection_payload = _json_safe_value((latest_detection_eval or {}).get('response_payload') or {}) if latest_detection_eval else None
+            synthetic_ingestion_sources = ('demo', 'simulator', 'replay', 'synthetic', 'fallback')
+            live_coverage_receipts_query = f'''
+                SELECT
+                    e.processed_at,
+                    e.target_id,
+                    ms.id AS monitored_system_id
+                FROM monitoring_event_receipts e
+                LEFT JOIN monitored_systems ms
+                  ON ms.workspace_id = e.workspace_id
+                 AND ms.target_id = e.target_id
+                 AND COALESCE(ms.is_enabled, TRUE) = TRUE
+                LEFT JOIN targets t
+                  ON t.id = e.target_id
+                 AND t.workspace_id = e.workspace_id
+                WHERE e.evidence_source = 'live'
+                  AND e.telemetry_kind = 'coverage'
+                  AND COALESCE(LOWER(e.ingestion_source), '') NOT IN %s
+                  AND t.deleted_at IS NULL
+                  AND t.enabled = TRUE
+                  AND {monitorable_target_types_sql_clause('t.target_type')}
+                  {'AND e.workspace_id = %s' if workspace_id else ''}
+                ORDER BY e.processed_at DESC
+            '''
+            live_coverage_receipts_params: list[Any] = [synthetic_ingestion_sources]
+            if workspace_id:
+                live_coverage_receipts_params.append(workspace_id)
+            live_coverage_receipt_rows = connection.execute(
+                live_coverage_receipts_query,
+                tuple(live_coverage_receipts_params),
+            ).fetchall()
+            live_coverage_receipts_persisted_count = len(live_coverage_receipt_rows)
+            for receipt in live_coverage_receipt_rows:
+                processed_at = _parse_ts((receipt or {}).get('processed_at'))
+                if processed_at is None:
+                    continue
+                live_coverage_receipts_workspace_latest = (
+                    processed_at
+                    if live_coverage_receipts_workspace_latest is None
+                    else max(live_coverage_receipts_workspace_latest, processed_at)
+                )
+                monitored_system_id = str((receipt or {}).get('monitored_system_id') or '').strip()
+                if not monitored_system_id:
+                    continue
+                previous = live_coverage_receipts_by_system.get(monitored_system_id)
+                if previous is None or processed_at > previous:
+                    live_coverage_receipts_by_system[monitored_system_id] = processed_at
+            if request is None:
+                monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
+        parsed_heartbeats = [_parse_ts(row.get('last_heartbeat')) for row in monitored_rows]
+        recent_heartbeat_systems = 0
+        for row, parsed_heartbeat in zip(monitored_rows, parsed_heartbeats):
+            if not monitored_system_row_enabled(row) or parsed_heartbeat is None:
                 continue
-            live_coverage_receipts_workspace_latest = (
-                processed_at
-                if live_coverage_receipts_workspace_latest is None
-                else max(live_coverage_receipts_workspace_latest, processed_at)
-            )
-            monitored_system_id = str((receipt or {}).get('monitored_system_id') or '').strip()
-            if not monitored_system_id:
-                continue
-            previous = live_coverage_receipts_by_system.get(monitored_system_id)
-            if previous is None or processed_at > previous:
-                live_coverage_receipts_by_system[monitored_system_id] = processed_at
-        if request is None:
-            monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
-    parsed_heartbeats = [_parse_ts(row.get('last_heartbeat')) for row in monitored_rows]
-    recent_heartbeat_systems = 0
-    for row, parsed_heartbeat in zip(monitored_rows, parsed_heartbeats):
-        if not monitored_system_row_enabled(row) or parsed_heartbeat is None:
-            continue
-        heartbeat_window = max(int(row.get('monitoring_interval_seconds') or 30), 30) * 2
-        if int((now - parsed_heartbeat).total_seconds()) <= heartbeat_window:
-            recent_heartbeat_systems += 1
-    last_system_heartbeat = max((ts for ts in parsed_heartbeats if ts is not None), default=None)
-    worker_heartbeat = _parse_ts(health.get('last_heartbeat_at') or health.get('last_cycle_at'))
-    last_heartbeat = last_system_heartbeat or worker_heartbeat
-    heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
-    stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
-    def _row_tracks_valid_monitorable_target(row: dict[str, Any]) -> bool:
-        target_id = str(row.get('target_id') or '')
-        if target_id and target_id in healthy_enabled_target_ids:
-            return True
-        return is_monitorable_target_type(row.get('target_type'))
-
-    enabled_rows_all = [row for row in monitored_rows if monitored_system_row_enabled(row)]
-    enabled_rows = [row for row in enabled_rows_all if _row_tracks_valid_monitorable_target(row)]
-    unsupported_enabled_rows = [
-        row for row in monitored_rows
-        if monitored_system_row_enabled(row) and (not _row_tracks_valid_monitorable_target(row))
-    ]
-    active_rows = [row for row in enabled_rows_all if str(row.get('runtime_status') or '').strip().lower() in {'healthy', 'active'}]
-    enabled_asset_rows = [row for row in enabled_rows_all if row.get('asset_id')]
-    enabled_system_count = max(len(enabled_rows_all), healthy_enabled_targets_count)
-    active_system_count = len(active_rows)
-    system_count = max(len(monitored_rows), healthy_enabled_targets_count)
-    protected_assets_count = max(len({str(row.get('asset_id') or '') for row in enabled_asset_rows}), healthy_enabled_assets_count)
-    linked_monitored_system_count = sum(1 for row in monitored_rows if monitored_system_row_enabled(row) and str(row.get('target_id') or '') in healthy_enabled_target_ids)
-    def _row_has_valid_target_asset_link(row: dict[str, Any]) -> bool:
-        target_id = str(row.get('target_id') or '')
-        asset_id = str(row.get('asset_id') or '')
-        if target_id not in healthy_enabled_target_ids:
-            return False
-        expected_asset_id = healthy_enabled_target_asset_map.get(target_id)
-        if expected_asset_id:
-            return bool(asset_id and asset_id == expected_asset_id)
-        return bool(asset_id)
-
-    valid_target_system_link_count = sum(1 for row in monitored_rows if monitored_system_row_enabled(row) and _row_has_valid_target_asset_link(row))
-    valid_protected_asset_count = len(
-        {
-            str(row.get('asset_id') or '')
-            for row in monitored_rows
-            if monitored_system_row_enabled(row)
-            if _row_has_valid_target_asset_link(row) and row.get('asset_id')
-        }
-    )
-    persisted_enabled_config_count = healthy_enabled_targets_count
-    logger.info(
-        'monitoring_runtime_status_counts workspace_id=%s enabled_monitored_systems=%s protected_assets=%s runtime_rows=%s list_route_rows=%s enabled_monitored_systems_list_route=%s protected_assets_list_route=%s',
-        workspace_id,
-        len(enabled_rows),
-        protected_assets_count,
-        len(monitored_rows),
-        len(listed_monitored_rows),
-        sum(1 for row in listed_monitored_rows if monitored_system_row_enabled(row)),
-        len({str((row or {}).get('asset_id') or '') for row in listed_monitored_rows if monitored_system_row_enabled(row) and (row or {}).get('asset_id')}),
-    )
-    evidence_at = _parse_ts((latest_evidence or {}).get('observed_at'))
-    evidence_freshness = int((now - evidence_at).total_seconds()) if evidence_at else None
-    detection_eval_freshness = int((now - latest_detection_evaluation_at).total_seconds()) if latest_detection_evaluation_at else None
-    successful_detection_outcomes = {'DETECTION_CONFIRMED', 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}
-    latest_detection_metadata = latest_detection_payload.get('metadata') if isinstance(latest_detection_payload, dict) and isinstance(latest_detection_payload.get('metadata'), dict) else {}
-    latest_detection_outcome = str(
-        (latest_detection_metadata or {}).get('detection_outcome')
-        or ((latest_detection_payload or {}).get('detection_outcome') if isinstance(latest_detection_payload, dict) else '')
-        or ''
-    ).upper()
-    successful_detection_evaluation = bool(latest_detection_outcome in successful_detection_outcomes)
-    successful_detection_evaluation_recent = bool(
-        successful_detection_evaluation
-        and detection_eval_freshness is not None
-        and detection_eval_freshness <= max(900, MONITOR_POLL_INTERVAL_SECONDS * 10)
-    )
-    runner_alive = bool(health.get('worker_running')) or not stale_heartbeat
-    has_monitorable_targets = healthy_enabled_targets_count > 0
-    has_any_monitored_rows = len(monitored_rows) > 0
-    if healthy_enabled_targets_count == 0 and len(monitored_rows) == 0:
-        monitoring_status = 'offline'
-    elif not runner_alive or health.get('last_error') or health.get('degraded') or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
-        monitoring_status = 'degraded'
-    elif evidence_freshness is None or evidence_freshness > max(900, MONITOR_POLL_INTERVAL_SECONDS * 10):
-        monitoring_status = 'idle'
-    else:
-        monitoring_status = 'active'
-    degraded_reason = health.get('degraded_reason')
-    if monitoring_status == 'offline':
-        runtime_status = 'Offline'
-    elif health.get('last_error'):
-        runtime_status = 'Error'
-    elif health.get('degraded') or degraded_reason or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
-        runtime_status = 'Degraded'
-        degraded_reason = degraded_reason or ('invalid_enabled_targets' if int((broken_targets or {}).get('c') or 0) > 0 else ('stale_heartbeat' if stale_heartbeat else None))
-    elif evidence_freshness is None or evidence_freshness > max(900, MONITOR_POLL_INTERVAL_SECONDS * 10):
-        runtime_status = 'Idle'
-    else:
-        runtime_status = 'Active'
-    recent_real_event_count_raw = (latest_detection_metadata or {}).get('recent_real_event_count')
-    if recent_real_event_count_raw is None and isinstance(latest_detection_payload, dict):
-        recent_real_event_count_raw = (latest_detection_payload or {}).get('recent_real_event_count')
-    try:
-        recent_real_event_count = int(recent_real_event_count_raw or 0)
-    except Exception:
-        recent_real_event_count = 0
-    last_poll_at = _parse_ts(health.get('last_cycle_at') or health.get('updated_at') or health.get('last_heartbeat_at'))
-    telemetry_candidates: list[tuple[datetime, str]] = []
-    coverage_telemetry_candidates: list[datetime] = []
-    receipts_reporting_systems = 0
-    for receipt_ts in live_coverage_receipts_by_system.values():
-        if int((now - receipt_ts).total_seconds()) <= telemetry_window_seconds:
-            receipts_reporting_systems += 1
-    logger.info(
-        'monitoring_runtime_coverage_receipts workspace_id=%s coverage_telemetry_persisted_count=%s receipts_reporting_systems=%s',
-        workspace_id,
-        live_coverage_receipts_persisted_count,
-        receipts_reporting_systems,
-    )
-    for row in enabled_rows:
-        system_id = str(row.get('id') or '').strip()
-        coverage_primary_ts = _parse_ts(row.get('last_coverage_telemetry_at'))
-        coverage_receipt_ts = live_coverage_receipts_by_system.get(system_id)
-        coverage_ts = coverage_primary_ts
-        if coverage_receipt_ts is not None and (coverage_ts is None or coverage_receipt_ts > coverage_ts):
-            coverage_ts = coverage_receipt_ts
-        target_event_ts = _parse_ts(row.get('last_event_at'))
-        if coverage_ts is not None:
-            coverage_telemetry_candidates.append(coverage_ts)
-            telemetry_candidates.append((coverage_ts, 'coverage'))
-        if target_event_ts is not None:
-            telemetry_candidates.append((target_event_ts, 'target_event'))
-    telemetry_candidates.sort(key=lambda item: item[0], reverse=True)
-    last_coverage_telemetry_at = max(coverage_telemetry_candidates) if coverage_telemetry_candidates else live_coverage_receipts_workspace_latest
-    last_telemetry_at = telemetry_candidates[0][0] if telemetry_candidates else None
-    telemetry_kind = telemetry_candidates[0][1] if telemetry_candidates else None
-    reporting_systems = 0
-    for row in enabled_rows:
-        system_id = str(row.get('id') or '').strip()
-        latest_system_coverage_telemetry = _parse_ts(row.get('last_coverage_telemetry_at'))
-        receipt_coverage_telemetry = live_coverage_receipts_by_system.get(system_id)
-        if receipt_coverage_telemetry is not None and (
-            latest_system_coverage_telemetry is None or receipt_coverage_telemetry > latest_system_coverage_telemetry
-        ):
-            latest_system_coverage_telemetry = receipt_coverage_telemetry
-        if latest_system_coverage_telemetry is None:
-            continue
-        if int((now - latest_system_coverage_telemetry).total_seconds()) <= telemetry_window_seconds:
-            reporting_systems += 1
-    logger.info(
-        'monitoring_reporting_systems workspace_id=%s reporting_systems=%s status_reason=%s',
-        workspace_id,
-        reporting_systems,
-        f'fresh_coverage_window_{telemetry_window_seconds}s',
-    )
-    coverage_fresh = bool(
-        last_coverage_telemetry_at is not None
-        and int((now - last_coverage_telemetry_at).total_seconds()) <= telemetry_window_seconds
-    )
-    provider_reachable = bool(
-        (claim_validator.get('checks') or {}).get('provider_reachable_or_backfilling')
-        or str(health.get('source_type') or '').strip().lower() in {'polling', 'websocket', 'rpc_backfill'}
-    )
-    provider_degraded_or_unreachable = bool(
-        health.get('last_error')
-        or health.get('degraded')
-        or degraded_reason
-        or stale_heartbeat
-        or int((broken_targets or {}).get('c') or 0) > 0
-        or not provider_reachable
-    )
-    evidence_source_live = bool(
-        str(health.get('ingestion_mode') or '').strip().lower() not in {'demo', 'simulator', 'replay'}
-        and not provider_degraded_or_unreachable
-        and coverage_fresh
-        and reporting_systems > 0
-    )
-    source_of_evidence = (
-        'simulator'
-        if str(health.get('ingestion_mode') or '').strip().lower() in {'demo', 'simulator'}
-        else ('live' if evidence_source_live and coverage_fresh else 'replay_or_none')
-    )
-    if source_of_evidence == 'live':
-        telemetry_kind = 'coverage'
-    evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if evidence_at else 'none'))
-    logger.info(
-        'monitoring_runtime_evidence_selection workspace_id=%s chosen_evidence_source=%s source_of_evidence=%s reporting_systems=%s receipts_reporting_systems=%s',
-        workspace_id,
-        evidence_source,
-        source_of_evidence,
-        reporting_systems,
-        receipts_reporting_systems,
-    )
-    downgrade_reason_tokens: list[str] = []
-    if not coverage_fresh:
-        downgrade_reason_tokens.append('no_fresh_coverage_telemetry')
-    if not evidence_source_live:
-        downgrade_reason_tokens.append('evidence_source_not_live')
-    if reporting_systems <= 0:
-        downgrade_reason_tokens.append('no_reporting_systems_from_coverage')
-    if provider_degraded_or_unreachable:
-        downgrade_reason_tokens.append('provider_degraded_or_unreachable')
-    if downgrade_reason_tokens:
-        logger.info(
-            'monitoring_runtime_live_downgrade workspace_id=%s reasons=%s',
-            workspace_id,
-            ','.join(downgrade_reason_tokens),
-        )
-    configuration_diagnostics = _workspace_configuration_diagnostics(
-        valid_protected_asset_count=valid_protected_asset_count,
-        linked_monitored_system_count=linked_monitored_system_count,
-        persisted_enabled_config_count=persisted_enabled_config_count,
-        valid_target_system_link_count=valid_target_system_link_count,
-    )
-    workspace_configured = bool(configuration_diagnostics.get('workspace_configured'))
-    configuration_reason = configuration_diagnostics.get('configuration_reason')
-    if not workspace_configured:
-        logger.warning(
-            'monitoring_workspace_configuration_diagnostics workspace_id=%s workspace_slug=%s reason_codes=%s diagnostics=%s',
-            workspace_id,
-            workspace_slug,
-            ','.join(configuration_diagnostics.get('reason_codes') or ['workspace_not_configured']),
-            configuration_diagnostics,
-        )
-    monitoring_mode_raw = str(health.get('mode') or '').strip().lower()
-    degraded_signal = provider_degraded_or_unreachable
-    if not workspace_configured:
-        logger.info(
-            'monitoring_runtime_status_branch workspace_id=%s workspace_slug=%s branch=offline_unconfigured configuration_reason=%s',
-            workspace_id,
-            workspace_slug,
-            configuration_reason,
-        )
-        runtime_status_summary = 'offline'
-    elif evidence_source != 'live':
-        runtime_status_summary = 'idle'
-    elif reporting_systems <= 0 or not coverage_fresh:
-        runtime_status_summary = 'idle'
-    elif degraded_signal:
-        runtime_status_summary = 'degraded'
-    else:
-        runtime_status_summary = 'healthy'
-    monitoring_mode = (
-        'simulator'
-        if evidence_source == 'simulator'
-        else ('offline' if not workspace_configured else ('hybrid' if monitoring_mode_raw == 'hybrid' else 'live'))
-    )
-    telemetry_countable = bool(workspace_configured and reporting_systems > 0 and evidence_source == 'live' and last_telemetry_at is not None)
-    poll_window_seconds = max(120, MONITOR_POLL_INTERVAL_SECONDS * 3)
-    poll_freshness_status = (
-        'fresh' if last_poll_at and int((now - last_poll_at).total_seconds()) <= poll_window_seconds
-        else ('stale' if last_poll_at else 'unavailable')
-    )
-    runtime_status_reason = degraded_reason or (
-        'unsupported_target_type_for_live_coverage'
-        if unsupported_enabled_rows and reporting_systems <= 0
-        else (
-            (f'workspace_configuration_invalid:{configuration_reason}' if configuration_reason else 'workspace_not_configured')
-            if not workspace_configured
-            else ('no_fresh_live_coverage_telemetry' if reporting_systems <= 0 or not coverage_fresh else None)
-        )
-    )
-    summary = build_workspace_monitoring_summary(
-        now=now,
-        workspace_configured=workspace_configured,
-        monitoring_mode=monitoring_mode,
-        runtime_status=runtime_status_summary,
-        configured_systems=int(enabled_system_count),
-        monitored_systems_count=int(system_count),
-        reporting_systems=int(reporting_systems),
-        protected_assets=int(protected_assets_count),
-        last_poll_at=last_poll_at,
-        last_heartbeat_at=last_heartbeat,
-        last_telemetry_at=last_telemetry_at,
-        last_coverage_telemetry_at=last_coverage_telemetry_at,
-        telemetry_kind=telemetry_kind,
-        last_detection_at=latest_detection_evaluation_at,
-        evidence_source=evidence_source,
-        status_reason=runtime_status_reason,
-        configuration_reason=configuration_reason,
-        valid_protected_asset_count=valid_protected_asset_count,
-        linked_monitored_system_count=linked_monitored_system_count,
-        persisted_enabled_config_count=persisted_enabled_config_count,
-        valid_target_system_link_count=valid_target_system_link_count,
-        telemetry_window_seconds=telemetry_window_seconds,
-    )
-    summary['poll_freshness_status'] = poll_freshness_status
-    summary['source_of_evidence'] = source_of_evidence
-    summary['configuration_diagnostics'] = dict(configuration_diagnostics)
-    if workspace_configured and runtime_status_summary == 'idle' and runtime_status_reason:
-        logger.info(
-            'monitoring_runtime_limited_coverage workspace_id=%s chosen_evidence_source=%s status_reason=%s reporting_systems=%s coverage_fresh=%s',
-            workspace_id,
-            evidence_source,
-            runtime_status_reason,
-            reporting_systems,
-            coverage_fresh,
-        )
-    final_status_reason = runtime_status_reason
-    logger.info(
-        'monitoring_runtime_truth workspace_id=%s reporting_systems=%s configured_systems=%s evidence_source=%s last_coverage_telemetry_at=%s status_reason=%s',
-        workspace_id,
-        reporting_systems,
-        enabled_system_count,
-        evidence_source,
-        summary.get('last_coverage_telemetry_at'),
-        runtime_status_reason or 'none',
-    )
-    if (
-        poll_freshness_status == 'fresh'
-        and not stale_heartbeat
-        and runtime_status_summary in {'idle', 'degraded'}
-    ):
-        logger.info(
-            'monitoring_runtime_downgrade workspace_id=%s runtime_status_summary=%s reporting_systems=%s status_reason=%s',
-            workspace_id,
-            runtime_status_summary,
-            reporting_systems,
-            final_status_reason or ','.join(downgrade_reason_tokens) or 'unknown',
-        )
-    payload = {
-        'workspace_id': workspace_id,
-        'workspace_slug': workspace_slug,
-        'monitoring_status': monitoring_status,
-        'monitored_systems': system_count,
-        'protected_assets': protected_assets_count,
-        'enabled_systems': enabled_system_count,
-        'active_systems': active_system_count,
-        'last_heartbeat': last_heartbeat.isoformat() if last_heartbeat else None,
-        'telemetry_available': bool(telemetry_countable or recent_real_event_count > 0 or monitoring_status == 'active'),
-        'status': runtime_status,
-        'provider_mode': health.get('source_type') or health.get('ingestion_mode') or 'polling',
-        'last_successful_ingest': evidence_at.isoformat() if evidence_at else None,
-        'last_detection_evaluation_at': latest_detection_evaluation_at.isoformat() if latest_detection_evaluation_at else None,
-        'last_confirmed_checkpoint': latest_detection_evaluation_at.isoformat() if successful_detection_evaluation else None,
-        'successful_detection_evaluation': successful_detection_evaluation,
-        'successful_detection_evaluation_recent': successful_detection_evaluation_recent,
-        'last_processed_block': (latest_evidence or {}).get('block_number') or health.get('latest_processed_block'),
-        'targets_monitored': enabled_system_count,
-        'protected_assets_count': protected_assets_count,
-        'monitored_systems_count': system_count,
-        'systems_with_recent_heartbeat': recent_heartbeat_systems,
-        'invalid_enabled_targets': int((broken_targets or {}).get('c') or 0),
-        'healthy_enabled_targets': healthy_enabled_targets_count,
-        'active_alerts': int((open_alerts or {}).get('c') or 0),
-        'open_incidents': int((open_incidents or {}).get('c') or 0),
-        'evidence_freshness_seconds': evidence_freshness,
-        'degraded_reason': degraded_reason,
-        'recent_evidence_state': str((latest_detection_metadata or {}).get('evidence_state') or latest_detection_payload.get('evidence_state') or 'missing') if isinstance(latest_detection_payload, dict) else 'missing',
-        'recent_real_event_count': recent_real_event_count,
-        'recent_confidence_basis': str((latest_detection_metadata or {}).get('confidence_basis') or latest_detection_payload.get('confidence_basis') or 'none') if isinstance(latest_detection_payload, dict) else 'none',
-        'last_real_event_at': (latest_detection_metadata or {}).get('last_real_event_at') if isinstance(latest_detection_metadata, dict) else None,
-        'freshness_status': (
-            summary['freshness_status']
-        ),
-        'confidence_status': summary['confidence_status'],
-        'coverage_reason': (
-            degraded_reason
-            or (
-                'unsupported_target_type_for_live_coverage'
-                if runtime_status_reason == 'unsupported_target_type_for_live_coverage'
-                else ('no_evidence' if monitoring_status == 'idle' else (None if monitoring_status == 'active' else 'monitoring_unavailable'))
-            )
-        ),
-        'worker_last_error': health.get('last_error'),
-        'latest_telemetry_checkpoint': (latest_detection_evaluation_at or evidence_at).isoformat() if (latest_detection_evaluation_at or evidence_at) else None,
-        'source_of_evidence': source_of_evidence,
-        'workspace_configured': workspace_configured,
-        'configuration_reason': configuration_reason,
-        'status_reason': runtime_status_reason,
-        'valid_protected_assets': summary['valid_protected_assets'],
-        'linked_monitored_systems': summary['linked_monitored_systems'],
-        'enabled_configs': summary['enabled_configs'],
-        'valid_link_count': summary['valid_link_count'],
-        'configuration_diagnostics': summary['configuration_diagnostics'],
-        'last_poll_at': summary['last_poll_at'],
-        'last_telemetry_at': summary['last_telemetry_at'],
-        'last_coverage_telemetry_at': summary['last_coverage_telemetry_at'],
-        'telemetry_kind': summary.get('telemetry_kind'),
-        'last_detection_at': summary['last_detection_at'],
-        'workspace_monitoring_summary': summary,
-    }
-    payload.update(summary)
-    logger.info(
-        'monitoring_workspace_summary_assembly workspace_id=%s workspace_slug=%s valid_asset_count=%s linked_system_count=%s enabled_config_count=%s valid_link_count=%s configured_systems=%s reporting_systems=%s configuration_reason=%s status_reason=%s',
-        workspace_id,
-        workspace_slug,
-        valid_protected_asset_count,
-        linked_monitored_system_count,
-        persisted_enabled_config_count,
-        valid_target_system_link_count,
-        enabled_system_count,
-        reporting_systems,
-        configuration_reason,
-        runtime_status_reason,
-    )
-    if summary['contradiction_flags']:
-        logger.warning(
-            'monitoring_runtime_status_contradiction workspace_id=%s flags=%s summary=%s',
-            workspace_id,
-            summary['contradiction_flags'],
-            summary,
-        )
-    provider_health = 'healthy' if str(payload.get('recent_evidence_state')) == 'real' and int(payload.get('recent_real_event_count') or 0) > 0 else 'degraded'
-    mode = str(health.get('operational_mode') or health.get('mode') or 'DEGRADED').upper()
-    if mode == 'LIVE' and int(payload.get('recent_real_event_count') or 0) <= 0:
-        mode = 'DEGRADED'
-    payload.update(
-        {
-            'mode': mode,
-            'provider_health': provider_health,
-            'provider_reachable': bool((claim_validator.get('checks') or {}).get('evm_rpc_reachable')),
-            'evidence_state': str(payload.get('recent_evidence_state') or 'missing'),
-            'truthfulness_state': str(claim_validator.get('recent_truthfulness_state') or payload.get('recent_truthfulness_state') or 'unknown_risk'),
-            'claim_safe': bool(claim_validator.get('sales_claims_allowed')),
-            'sales_claims_allowed': bool(claim_validator.get('sales_claims_allowed')),
-            'claim_validator_status': str(claim_validator.get('status') or 'FAIL'),
-        }
-    )
-    logger.info(
-        'monitoring_runtime_status_summary workspace_id=%s healthy_enabled_targets=%s monitored_rows=%s enabled_rows=%s protected_assets=%s monitoring_status=%s systems_with_recent_heartbeat=%s status_inputs=%s',
-        workspace_id,
-        healthy_enabled_targets_count,
-        len(monitored_rows),
-        enabled_system_count,
-        protected_assets_count,
-        monitoring_status,
-        recent_heartbeat_systems,
-        {
-            'healthy_enabled_targets': healthy_enabled_targets_count,
-            'monitored_system_rows': len(monitored_rows),
-            'enabled_monitored_rows': len(enabled_rows),
-            'unsupported_enabled_rows': len(unsupported_enabled_rows),
-            'protected_assets': protected_assets_count,
-            'invalid_enabled_targets': int((broken_targets or {}).get('c') or 0),
-            'runner_alive': runner_alive,
-            'stale_heartbeat': stale_heartbeat,
-            'workspace_id': workspace_id,
-        },
-    )
-    logger.info(
-        'monitoring_runtime_status_decision workspace_id=%s healthy_enabled_targets=%s monitored_system_rows=%s protected_assets=%s systems_with_recent_heartbeat=%s decision=%s',
-        workspace_id,
-        healthy_enabled_targets_count,
-        len(monitored_rows),
-        protected_assets_count,
-        recent_heartbeat_systems,
-        monitoring_status,
-    )
-    if _runtime_status_debug_enabled():
-        monitored_system_ids = [str(row.get('id') or '') for row in monitored_rows if row.get('id')]
-        enabled_monitored_system_ids = [str(row.get('id') or '') for row in enabled_rows if row.get('id')]
-        target_ids = [str(row.get('target_id') or '') for row in monitored_rows if row.get('target_id')]
-        payload.update(
+            heartbeat_window = max(int(row.get('monitoring_interval_seconds') or 30), 30) * 2
+            if int((now - parsed_heartbeat).total_seconds()) <= heartbeat_window:
+                recent_heartbeat_systems += 1
+        last_system_heartbeat = max((ts for ts in parsed_heartbeats if ts is not None), default=None)
+        worker_heartbeat = _parse_ts(health.get('last_heartbeat_at') or health.get('last_cycle_at'))
+        last_heartbeat = last_system_heartbeat or worker_heartbeat
+        heartbeat_age = int((now - last_heartbeat).total_seconds()) if last_heartbeat else None
+        stale_heartbeat = heartbeat_age is None or heartbeat_age > max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3)
+        def _row_tracks_valid_monitorable_target(row: dict[str, Any]) -> bool:
+            target_id = str(row.get('target_id') or '')
+            if target_id and target_id in healthy_enabled_target_ids:
+                return True
+            return is_monitorable_target_type(row.get('target_type'))
+    
+        enabled_rows_all = [row for row in monitored_rows if monitored_system_row_enabled(row)]
+        enabled_rows = [row for row in enabled_rows_all if _row_tracks_valid_monitorable_target(row)]
+        unsupported_enabled_rows = [
+            row for row in monitored_rows
+            if monitored_system_row_enabled(row) and (not _row_tracks_valid_monitorable_target(row))
+        ]
+        active_rows = [row for row in enabled_rows_all if str(row.get('runtime_status') or '').strip().lower() in {'healthy', 'active'}]
+        enabled_asset_rows = [row for row in enabled_rows_all if row.get('asset_id')]
+        enabled_system_count = max(len(enabled_rows_all), healthy_enabled_targets_count)
+        active_system_count = len(active_rows)
+        system_count = max(len(monitored_rows), healthy_enabled_targets_count)
+        protected_assets_count = max(len({str(row.get('asset_id') or '') for row in enabled_asset_rows}), healthy_enabled_assets_count)
+        linked_monitored_system_count = sum(1 for row in monitored_rows if monitored_system_row_enabled(row) and str(row.get('target_id') or '') in healthy_enabled_target_ids)
+        def _row_has_valid_target_asset_link(row: dict[str, Any]) -> bool:
+            target_id = str(row.get('target_id') or '')
+            asset_id = str(row.get('asset_id') or '')
+            if target_id not in healthy_enabled_target_ids:
+                return False
+            expected_asset_id = healthy_enabled_target_asset_map.get(target_id)
+            if expected_asset_id:
+                return bool(asset_id and asset_id == expected_asset_id)
+            return bool(asset_id)
+    
+        valid_target_system_link_count = sum(1 for row in monitored_rows if monitored_system_row_enabled(row) and _row_has_valid_target_asset_link(row))
+        valid_protected_asset_count = len(
             {
-                'workspace_id': workspace_id,
-                'resolved_workspace_id': workspace_id,
-                'request_user_resolved': bool(user_id),
-                'request_user_id': user_id,
-                'workspace_header_present': workspace_header_present,
-                'counted_monitored_systems': system_count,
-                'counted_enabled_systems': enabled_system_count,
-                'counted_active_systems': active_system_count,
-                'counted_monitored_system_ids': monitored_system_ids,
-                'counted_enabled_monitored_system_ids': enabled_monitored_system_ids,
-                'sample_target_ids': target_ids[:5],
-                'sample_target_ids_count': len(target_ids),
-                'systems_with_recent_heartbeat': recent_heartbeat_systems,
-                'has_monitorable_targets': has_monitorable_targets,
-                'has_monitored_system_rows': has_any_monitored_rows,
+                str(row.get('asset_id') or '')
+                for row in monitored_rows
+                if monitored_system_row_enabled(row)
+                if _row_has_valid_target_asset_link(row) and row.get('asset_id')
             }
         )
-    return payload
+        persisted_enabled_config_count = healthy_enabled_targets_count
+        logger.info(
+            'monitoring_runtime_status_counts workspace_id=%s enabled_monitored_systems=%s protected_assets=%s runtime_rows=%s list_route_rows=%s enabled_monitored_systems_list_route=%s protected_assets_list_route=%s',
+            workspace_id,
+            len(enabled_rows),
+            protected_assets_count,
+            len(monitored_rows),
+            len(listed_monitored_rows),
+            sum(1 for row in listed_monitored_rows if monitored_system_row_enabled(row)),
+            len({str((row or {}).get('asset_id') or '') for row in listed_monitored_rows if monitored_system_row_enabled(row) and (row or {}).get('asset_id')}),
+        )
+        evidence_at = _parse_ts((latest_evidence or {}).get('observed_at'))
+        evidence_freshness = int((now - evidence_at).total_seconds()) if evidence_at else None
+        detection_eval_freshness = int((now - latest_detection_evaluation_at).total_seconds()) if latest_detection_evaluation_at else None
+        successful_detection_outcomes = {'DETECTION_CONFIRMED', 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}
+        latest_detection_metadata = latest_detection_payload.get('metadata') if isinstance(latest_detection_payload, dict) and isinstance(latest_detection_payload.get('metadata'), dict) else {}
+        latest_detection_outcome = str(
+            (latest_detection_metadata or {}).get('detection_outcome')
+            or ((latest_detection_payload or {}).get('detection_outcome') if isinstance(latest_detection_payload, dict) else '')
+            or ''
+        ).upper()
+        successful_detection_evaluation = bool(latest_detection_outcome in successful_detection_outcomes)
+        successful_detection_evaluation_recent = bool(
+            successful_detection_evaluation
+            and detection_eval_freshness is not None
+            and detection_eval_freshness <= max(900, MONITOR_POLL_INTERVAL_SECONDS * 10)
+        )
+        runner_alive = bool(health.get('worker_running')) or not stale_heartbeat
+        has_monitorable_targets = healthy_enabled_targets_count > 0
+        has_any_monitored_rows = len(monitored_rows) > 0
+        if healthy_enabled_targets_count == 0 and len(monitored_rows) == 0:
+            monitoring_status = 'offline'
+        elif not runner_alive or health.get('last_error') or health.get('degraded') or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
+            monitoring_status = 'degraded'
+        elif evidence_freshness is None or evidence_freshness > max(900, MONITOR_POLL_INTERVAL_SECONDS * 10):
+            monitoring_status = 'idle'
+        else:
+            monitoring_status = 'active'
+        degraded_reason = health.get('degraded_reason')
+        if monitoring_status == 'offline':
+            runtime_status = 'Offline'
+        elif health.get('last_error'):
+            runtime_status = 'Error'
+        elif health.get('degraded') or degraded_reason or stale_heartbeat or int((broken_targets or {}).get('c') or 0) > 0:
+            runtime_status = 'Degraded'
+            degraded_reason = degraded_reason or ('invalid_enabled_targets' if int((broken_targets or {}).get('c') or 0) > 0 else ('stale_heartbeat' if stale_heartbeat else None))
+        elif evidence_freshness is None or evidence_freshness > max(900, MONITOR_POLL_INTERVAL_SECONDS * 10):
+            runtime_status = 'Idle'
+        else:
+            runtime_status = 'Active'
+        recent_real_event_count_raw = (latest_detection_metadata or {}).get('recent_real_event_count')
+        if recent_real_event_count_raw is None and isinstance(latest_detection_payload, dict):
+            recent_real_event_count_raw = (latest_detection_payload or {}).get('recent_real_event_count')
+        try:
+            recent_real_event_count = int(recent_real_event_count_raw or 0)
+        except Exception:
+            recent_real_event_count = 0
+        last_poll_at = _parse_ts(health.get('last_cycle_at') or health.get('updated_at') or health.get('last_heartbeat_at'))
+        telemetry_candidates: list[tuple[datetime, str]] = []
+        coverage_telemetry_candidates: list[datetime] = []
+        receipts_reporting_systems = 0
+        for receipt_ts in live_coverage_receipts_by_system.values():
+            if int((now - receipt_ts).total_seconds()) <= telemetry_window_seconds:
+                receipts_reporting_systems += 1
+        logger.info(
+            'monitoring_runtime_coverage_receipts workspace_id=%s coverage_telemetry_persisted_count=%s receipts_reporting_systems=%s',
+            workspace_id,
+            live_coverage_receipts_persisted_count,
+            receipts_reporting_systems,
+        )
+        for row in enabled_rows:
+            system_id = str(row.get('id') or '').strip()
+            coverage_primary_ts = _parse_ts(row.get('last_coverage_telemetry_at'))
+            coverage_receipt_ts = live_coverage_receipts_by_system.get(system_id)
+            coverage_ts = coverage_primary_ts
+            if coverage_receipt_ts is not None and (coverage_ts is None or coverage_receipt_ts > coverage_ts):
+                coverage_ts = coverage_receipt_ts
+            target_event_ts = _parse_ts(row.get('last_event_at'))
+            if coverage_ts is not None:
+                coverage_telemetry_candidates.append(coverage_ts)
+                telemetry_candidates.append((coverage_ts, 'coverage'))
+            if target_event_ts is not None:
+                telemetry_candidates.append((target_event_ts, 'target_event'))
+        telemetry_candidates.sort(key=lambda item: item[0], reverse=True)
+        last_coverage_telemetry_at = max(coverage_telemetry_candidates) if coverage_telemetry_candidates else live_coverage_receipts_workspace_latest
+        last_telemetry_at = telemetry_candidates[0][0] if telemetry_candidates else None
+        telemetry_kind = telemetry_candidates[0][1] if telemetry_candidates else None
+        reporting_systems = 0
+        for row in enabled_rows:
+            system_id = str(row.get('id') or '').strip()
+            latest_system_coverage_telemetry = _parse_ts(row.get('last_coverage_telemetry_at'))
+            receipt_coverage_telemetry = live_coverage_receipts_by_system.get(system_id)
+            if receipt_coverage_telemetry is not None and (
+                latest_system_coverage_telemetry is None or receipt_coverage_telemetry > latest_system_coverage_telemetry
+            ):
+                latest_system_coverage_telemetry = receipt_coverage_telemetry
+            if latest_system_coverage_telemetry is None:
+                continue
+            if int((now - latest_system_coverage_telemetry).total_seconds()) <= telemetry_window_seconds:
+                reporting_systems += 1
+        logger.info(
+            'monitoring_reporting_systems workspace_id=%s reporting_systems=%s status_reason=%s',
+            workspace_id,
+            reporting_systems,
+            f'fresh_coverage_window_{telemetry_window_seconds}s',
+        )
+        coverage_fresh = bool(
+            last_coverage_telemetry_at is not None
+            and int((now - last_coverage_telemetry_at).total_seconds()) <= telemetry_window_seconds
+        )
+        provider_reachable = bool(
+            (claim_validator.get('checks') or {}).get('provider_reachable_or_backfilling')
+            or str(health.get('source_type') or '').strip().lower() in {'polling', 'websocket', 'rpc_backfill'}
+        )
+        provider_degraded_or_unreachable = bool(
+            health.get('last_error')
+            or health.get('degraded')
+            or degraded_reason
+            or stale_heartbeat
+            or int((broken_targets or {}).get('c') or 0) > 0
+            or not provider_reachable
+        )
+        evidence_source_live = bool(
+            str(health.get('ingestion_mode') or '').strip().lower() not in {'demo', 'simulator', 'replay'}
+            and not provider_degraded_or_unreachable
+            and coverage_fresh
+            and reporting_systems > 0
+        )
+        source_of_evidence = (
+            'simulator'
+            if str(health.get('ingestion_mode') or '').strip().lower() in {'demo', 'simulator'}
+            else ('live' if evidence_source_live and coverage_fresh else 'replay_or_none')
+        )
+        if source_of_evidence == 'live':
+            telemetry_kind = 'coverage'
+        evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if evidence_at else 'none'))
+        logger.info(
+            'monitoring_runtime_evidence_selection workspace_id=%s chosen_evidence_source=%s source_of_evidence=%s reporting_systems=%s receipts_reporting_systems=%s',
+            workspace_id,
+            evidence_source,
+            source_of_evidence,
+            reporting_systems,
+            receipts_reporting_systems,
+        )
+        downgrade_reason_tokens: list[str] = []
+        if not coverage_fresh:
+            downgrade_reason_tokens.append('no_fresh_coverage_telemetry')
+        if not evidence_source_live:
+            downgrade_reason_tokens.append('evidence_source_not_live')
+        if reporting_systems <= 0:
+            downgrade_reason_tokens.append('no_reporting_systems_from_coverage')
+        if provider_degraded_or_unreachable:
+            downgrade_reason_tokens.append('provider_degraded_or_unreachable')
+        if downgrade_reason_tokens:
+            logger.info(
+                'monitoring_runtime_live_downgrade workspace_id=%s reasons=%s',
+                workspace_id,
+                ','.join(downgrade_reason_tokens),
+            )
+        configuration_diagnostics = _workspace_configuration_diagnostics(
+            valid_protected_asset_count=valid_protected_asset_count,
+            linked_monitored_system_count=linked_monitored_system_count,
+            persisted_enabled_config_count=persisted_enabled_config_count,
+            valid_target_system_link_count=valid_target_system_link_count,
+        )
+        workspace_configured = bool(configuration_diagnostics.get('workspace_configured'))
+        configuration_reason = configuration_diagnostics.get('configuration_reason')
+        if not workspace_configured:
+            logger.warning(
+                'monitoring_workspace_configuration_diagnostics workspace_id=%s workspace_slug=%s reason_codes=%s diagnostics=%s',
+                workspace_id,
+                workspace_slug,
+                ','.join(configuration_diagnostics.get('reason_codes') or ['workspace_not_configured']),
+                configuration_diagnostics,
+            )
+        monitoring_mode_raw = str(health.get('mode') or '').strip().lower()
+        degraded_signal = provider_degraded_or_unreachable
+        if not workspace_configured:
+            logger.info(
+                'monitoring_runtime_status_branch workspace_id=%s workspace_slug=%s branch=offline_unconfigured configuration_reason=%s',
+                workspace_id,
+                workspace_slug,
+                configuration_reason,
+            )
+            runtime_status_summary = 'offline'
+        elif evidence_source != 'live':
+            runtime_status_summary = 'idle'
+        elif reporting_systems <= 0 or not coverage_fresh:
+            runtime_status_summary = 'idle'
+        elif degraded_signal:
+            runtime_status_summary = 'degraded'
+        else:
+            runtime_status_summary = 'healthy'
+        monitoring_mode = (
+            'simulator'
+            if evidence_source == 'simulator'
+            else ('offline' if not workspace_configured else ('hybrid' if monitoring_mode_raw == 'hybrid' else 'live'))
+        )
+        telemetry_countable = bool(workspace_configured and reporting_systems > 0 and evidence_source == 'live' and last_telemetry_at is not None)
+        poll_window_seconds = max(120, MONITOR_POLL_INTERVAL_SECONDS * 3)
+        poll_freshness_status = (
+            'fresh' if last_poll_at and int((now - last_poll_at).total_seconds()) <= poll_window_seconds
+            else ('stale' if last_poll_at else 'unavailable')
+        )
+        runtime_status_reason = degraded_reason or (
+            'unsupported_target_type_for_live_coverage'
+            if unsupported_enabled_rows and reporting_systems <= 0
+            else (
+                (f'workspace_configuration_invalid:{configuration_reason}' if configuration_reason else 'workspace_not_configured')
+                if not workspace_configured
+                else ('no_fresh_live_coverage_telemetry' if reporting_systems <= 0 or not coverage_fresh else None)
+            )
+        )
+        summary = build_workspace_monitoring_summary(
+            now=now,
+            workspace_configured=workspace_configured,
+            monitoring_mode=monitoring_mode,
+            runtime_status=runtime_status_summary,
+            configured_systems=int(enabled_system_count),
+            monitored_systems_count=int(system_count),
+            reporting_systems=int(reporting_systems),
+            protected_assets=int(protected_assets_count),
+            last_poll_at=last_poll_at,
+            last_heartbeat_at=last_heartbeat,
+            last_telemetry_at=last_telemetry_at,
+            last_coverage_telemetry_at=last_coverage_telemetry_at,
+            telemetry_kind=telemetry_kind,
+            last_detection_at=latest_detection_evaluation_at,
+            evidence_source=evidence_source,
+            status_reason=runtime_status_reason,
+            configuration_reason=configuration_reason,
+            valid_protected_asset_count=valid_protected_asset_count,
+            linked_monitored_system_count=linked_monitored_system_count,
+            persisted_enabled_config_count=persisted_enabled_config_count,
+            valid_target_system_link_count=valid_target_system_link_count,
+            telemetry_window_seconds=telemetry_window_seconds,
+        )
+        summary['poll_freshness_status'] = poll_freshness_status
+        summary['source_of_evidence'] = source_of_evidence
+        summary['configuration_diagnostics'] = dict(configuration_diagnostics)
+        if workspace_configured and runtime_status_summary == 'idle' and runtime_status_reason:
+            logger.info(
+                'monitoring_runtime_limited_coverage workspace_id=%s chosen_evidence_source=%s status_reason=%s reporting_systems=%s coverage_fresh=%s',
+                workspace_id,
+                evidence_source,
+                runtime_status_reason,
+                reporting_systems,
+                coverage_fresh,
+            )
+        final_status_reason = runtime_status_reason
+        logger.info(
+            'monitoring_runtime_truth workspace_id=%s reporting_systems=%s configured_systems=%s evidence_source=%s last_coverage_telemetry_at=%s status_reason=%s',
+            workspace_id,
+            reporting_systems,
+            enabled_system_count,
+            evidence_source,
+            summary.get('last_coverage_telemetry_at'),
+            runtime_status_reason or 'none',
+        )
+        if (
+            poll_freshness_status == 'fresh'
+            and not stale_heartbeat
+            and runtime_status_summary in {'idle', 'degraded'}
+        ):
+            logger.info(
+                'monitoring_runtime_downgrade workspace_id=%s runtime_status_summary=%s reporting_systems=%s status_reason=%s',
+                workspace_id,
+                runtime_status_summary,
+                reporting_systems,
+                final_status_reason or ','.join(downgrade_reason_tokens) or 'unknown',
+            )
+        payload = {
+            'workspace_id': workspace_id,
+            'workspace_slug': workspace_slug,
+            'monitoring_status': monitoring_status,
+            'monitored_systems': system_count,
+            'protected_assets': protected_assets_count,
+            'enabled_systems': enabled_system_count,
+            'active_systems': active_system_count,
+            'last_heartbeat': last_heartbeat.isoformat() if last_heartbeat else None,
+            'telemetry_available': bool(telemetry_countable or recent_real_event_count > 0 or monitoring_status == 'active'),
+            'status': runtime_status,
+            'provider_mode': health.get('source_type') or health.get('ingestion_mode') or 'polling',
+            'last_successful_ingest': evidence_at.isoformat() if evidence_at else None,
+            'last_detection_evaluation_at': latest_detection_evaluation_at.isoformat() if latest_detection_evaluation_at else None,
+            'last_confirmed_checkpoint': latest_detection_evaluation_at.isoformat() if successful_detection_evaluation else None,
+            'successful_detection_evaluation': successful_detection_evaluation,
+            'successful_detection_evaluation_recent': successful_detection_evaluation_recent,
+            'last_processed_block': (latest_evidence or {}).get('block_number') or health.get('latest_processed_block'),
+            'targets_monitored': enabled_system_count,
+            'protected_assets_count': protected_assets_count,
+            'monitored_systems_count': system_count,
+            'systems_with_recent_heartbeat': recent_heartbeat_systems,
+            'invalid_enabled_targets': int((broken_targets or {}).get('c') or 0),
+            'healthy_enabled_targets': healthy_enabled_targets_count,
+            'active_alerts': int((open_alerts or {}).get('c') or 0),
+            'open_incidents': int((open_incidents or {}).get('c') or 0),
+            'evidence_freshness_seconds': evidence_freshness,
+            'degraded_reason': degraded_reason,
+            'recent_evidence_state': str((latest_detection_metadata or {}).get('evidence_state') or latest_detection_payload.get('evidence_state') or 'missing') if isinstance(latest_detection_payload, dict) else 'missing',
+            'recent_real_event_count': recent_real_event_count,
+            'recent_confidence_basis': str((latest_detection_metadata or {}).get('confidence_basis') or latest_detection_payload.get('confidence_basis') or 'none') if isinstance(latest_detection_payload, dict) else 'none',
+            'last_real_event_at': (latest_detection_metadata or {}).get('last_real_event_at') if isinstance(latest_detection_metadata, dict) else None,
+            'freshness_status': (
+                summary['freshness_status']
+            ),
+            'confidence_status': summary['confidence_status'],
+            'coverage_reason': (
+                degraded_reason
+                or (
+                    'unsupported_target_type_for_live_coverage'
+                    if runtime_status_reason == 'unsupported_target_type_for_live_coverage'
+                    else ('no_evidence' if monitoring_status == 'idle' else (None if monitoring_status == 'active' else 'monitoring_unavailable'))
+                )
+            ),
+            'worker_last_error': health.get('last_error'),
+            'latest_telemetry_checkpoint': (latest_detection_evaluation_at or evidence_at).isoformat() if (latest_detection_evaluation_at or evidence_at) else None,
+            'source_of_evidence': source_of_evidence,
+            'workspace_configured': workspace_configured,
+            'configuration_reason': configuration_reason,
+            'status_reason': runtime_status_reason,
+            'valid_protected_assets': summary['valid_protected_assets'],
+            'linked_monitored_systems': summary['linked_monitored_systems'],
+            'enabled_configs': summary['enabled_configs'],
+            'valid_link_count': summary['valid_link_count'],
+            'configuration_diagnostics': summary['configuration_diagnostics'],
+            'last_poll_at': summary['last_poll_at'],
+            'last_telemetry_at': summary['last_telemetry_at'],
+            'last_coverage_telemetry_at': summary['last_coverage_telemetry_at'],
+            'telemetry_kind': summary.get('telemetry_kind'),
+            'last_detection_at': summary['last_detection_at'],
+            'workspace_monitoring_summary': summary,
+        }
+        payload.update(summary)
+        logger.info(
+            'monitoring_workspace_summary_assembly workspace_id=%s workspace_slug=%s valid_asset_count=%s linked_system_count=%s enabled_config_count=%s valid_link_count=%s configured_systems=%s reporting_systems=%s configuration_reason=%s status_reason=%s',
+            workspace_id,
+            workspace_slug,
+            valid_protected_asset_count,
+            linked_monitored_system_count,
+            persisted_enabled_config_count,
+            valid_target_system_link_count,
+            enabled_system_count,
+            reporting_systems,
+            configuration_reason,
+            runtime_status_reason,
+        )
+        if summary['contradiction_flags']:
+            logger.warning(
+                'monitoring_runtime_status_contradiction workspace_id=%s flags=%s summary=%s',
+                workspace_id,
+                summary['contradiction_flags'],
+                summary,
+            )
+        provider_health = 'healthy' if str(payload.get('recent_evidence_state')) == 'real' and int(payload.get('recent_real_event_count') or 0) > 0 else 'degraded'
+        mode = str(health.get('operational_mode') or health.get('mode') or 'DEGRADED').upper()
+        if mode == 'LIVE' and int(payload.get('recent_real_event_count') or 0) <= 0:
+            mode = 'DEGRADED'
+        payload.update(
+            {
+                'mode': mode,
+                'provider_health': provider_health,
+                'provider_reachable': bool((claim_validator.get('checks') or {}).get('evm_rpc_reachable')),
+                'evidence_state': str(payload.get('recent_evidence_state') or 'missing'),
+                'truthfulness_state': str(claim_validator.get('recent_truthfulness_state') or payload.get('recent_truthfulness_state') or 'unknown_risk'),
+                'claim_safe': bool(claim_validator.get('sales_claims_allowed')),
+                'sales_claims_allowed': bool(claim_validator.get('sales_claims_allowed')),
+                'claim_validator_status': str(claim_validator.get('status') or 'FAIL'),
+            }
+        )
+        logger.info(
+            'monitoring_runtime_status_summary workspace_id=%s healthy_enabled_targets=%s monitored_rows=%s enabled_rows=%s protected_assets=%s monitoring_status=%s systems_with_recent_heartbeat=%s status_inputs=%s',
+            workspace_id,
+            healthy_enabled_targets_count,
+            len(monitored_rows),
+            enabled_system_count,
+            protected_assets_count,
+            monitoring_status,
+            recent_heartbeat_systems,
+            {
+                'healthy_enabled_targets': healthy_enabled_targets_count,
+                'monitored_system_rows': len(monitored_rows),
+                'enabled_monitored_rows': len(enabled_rows),
+                'unsupported_enabled_rows': len(unsupported_enabled_rows),
+                'protected_assets': protected_assets_count,
+                'invalid_enabled_targets': int((broken_targets or {}).get('c') or 0),
+                'runner_alive': runner_alive,
+                'stale_heartbeat': stale_heartbeat,
+                'workspace_id': workspace_id,
+            },
+        )
+        logger.info(
+            'monitoring_runtime_status_decision workspace_id=%s healthy_enabled_targets=%s monitored_system_rows=%s protected_assets=%s systems_with_recent_heartbeat=%s decision=%s',
+            workspace_id,
+            healthy_enabled_targets_count,
+            len(monitored_rows),
+            protected_assets_count,
+            recent_heartbeat_systems,
+            monitoring_status,
+        )
+        if _runtime_status_debug_enabled():
+            monitored_system_ids = [str(row.get('id') or '') for row in monitored_rows if row.get('id')]
+            enabled_monitored_system_ids = [str(row.get('id') or '') for row in enabled_rows if row.get('id')]
+            target_ids = [str(row.get('target_id') or '') for row in monitored_rows if row.get('target_id')]
+            payload.update(
+                {
+                    'workspace_id': workspace_id,
+                    'resolved_workspace_id': workspace_id,
+                    'request_user_resolved': bool(user_id),
+                    'request_user_id': user_id,
+                    'workspace_header_present': workspace_header_present,
+                    'counted_monitored_systems': system_count,
+                    'counted_enabled_systems': enabled_system_count,
+                    'counted_active_systems': active_system_count,
+                    'counted_monitored_system_ids': monitored_system_ids,
+                    'counted_enabled_monitored_system_ids': enabled_monitored_system_ids,
+                    'sample_target_ids': target_ids[:5],
+                    'sample_target_ids_count': len(target_ids),
+                    'systems_with_recent_heartbeat': recent_heartbeat_systems,
+                    'has_monitorable_targets': has_monitorable_targets,
+                    'has_monitored_system_rows': has_any_monitored_rows,
+                }
+            )
+        return payload
+
+    try:
+        return _monitoring_runtime_status_impl()
+    except HTTPException:
+        raise
+    except psycopg.Error as exc:
+        workspace_id, workspace_slug = _workspace_context_from_request(request)
+        logger.exception('monitoring_runtime_status_db_error workspace_id=%s workspace_slug=%s', workspace_id, workspace_slug)
+        return _runtime_failure_payload(
+            workspace_id=workspace_id,
+            workspace_slug=workspace_slug,
+            error_code='runtime_status_db_error',
+            error_type=type(exc).__name__,
+            error_message='Monitoring runtime data unavailable due to database connectivity or query failure.',
+            error_stage='query',
+            status_reason='runtime_status_degraded:database_error',
+            hint='retry_request_or_check_database_health',
+        )
+    except RuntimeError as exc:
+        workspace_id, workspace_slug = _workspace_context_from_request(request)
+        logger.exception('monitoring_runtime_status_runtime_error workspace_id=%s workspace_slug=%s', workspace_id, workspace_slug)
+        return _runtime_failure_payload(
+            workspace_id=workspace_id,
+            workspace_slug=workspace_slug,
+            error_code='runtime_status_runtime_error',
+            error_type=type(exc).__name__,
+            error_message='Monitoring runtime status could not be aggregated from current telemetry context.',
+            error_stage='aggregation',
+            status_reason='runtime_status_degraded:runtime_error',
+            hint='retry_request_or_check_monitoring_worker_runtime',
+        )
+    except Exception as exc:
+        workspace_id, workspace_slug = _workspace_context_from_request(request)
+        logger.exception('monitoring_runtime_status_unhandled_error workspace_id=%s workspace_slug=%s', workspace_id, workspace_slug)
+        return _runtime_failure_payload(
+            workspace_id=workspace_id,
+            workspace_slug=workspace_slug,
+            error_code='runtime_status_unhandled_error',
+            error_type=type(exc).__name__,
+            error_message='Monitoring runtime status unavailable due to an unexpected internal error.',
+            error_stage='context',
+            status_reason='runtime_status_degraded:internal_error',
+            hint='retry_request_or_contact_support_with_timestamp',
+        )
 
 
 def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str, Any]:
@@ -3757,6 +3893,19 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
     try:
         runtime_payload = monitoring_runtime_status(request)
     except HTTPException as exc:
+        if exc.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR:
+            detail_payload = exc.detail if isinstance(exc.detail, dict) else {}
+            fallback_payload = _base_debug_payload(
+                workspace_id=detail_payload.get('workspace_id') if isinstance(detail_payload, dict) else None,
+                workspace_slug=detail_payload.get('workspace_slug') if isinstance(detail_payload, dict) else None,
+            )
+            if isinstance(detail_payload, dict):
+                fallback_payload.update(detail_payload)
+            fallback_payload['runtime_status_summary'] = 'offline'
+            fallback_payload['status_reason'] = str(
+                fallback_payload.get('status_reason') or 'runtime_debug_status_exception:http_500_fallback'
+            )
+            return fallback_payload
         if exc.status_code in {status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN}:
             detail = str(exc.detail or '').strip() or 'workspace_or_auth_context_unavailable'
             safe_reason = detail.replace(' ', '_').lower()
