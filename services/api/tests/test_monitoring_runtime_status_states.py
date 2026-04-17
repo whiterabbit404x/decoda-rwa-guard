@@ -375,6 +375,51 @@ def test_workspace_configuration_truth_with_all_required_links_is_configured() -
     assert reason is None
 
 
+def test_runtime_status_unconfigured_uses_primary_configuration_reason_for_status_reason(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _UnconfiguredAndDegradedConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(rows=[])
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 0, 'asset_count': 0})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[])
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(),
+            'last_cycle_at': now.isoformat(),
+            'degraded': True,
+            'degraded_reason': 'stale_heartbeat',
+            'last_error': None,
+            'source_type': 'polling',
+            'worker_running': True,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_UnconfiguredAndDegradedConn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    summary = payload['workspace_monitoring_summary']
+
+    assert summary['workspace_configured'] is False
+    assert summary['configuration_reason'] == 'no_valid_protected_assets'
+    assert summary['configuration_reason_codes'] == [
+        'no_valid_protected_assets',
+        'no_linked_monitored_systems',
+        'no_persisted_enabled_monitoring_config',
+        'target_system_linkage_invalid',
+    ]
+    assert summary['status_reason'] == 'workspace_configuration_invalid:no_valid_protected_assets'
+    assert payload['status_reason'] == 'workspace_configuration_invalid:no_valid_protected_assets'
+
+
 def test_runtime_status_includes_recent_successful_checkpoint_without_events(monkeypatch):
     now = datetime.now(timezone.utc)
 

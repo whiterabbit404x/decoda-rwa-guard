@@ -3594,6 +3594,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         )
         workspace_configured = bool(configuration_diagnostics.get('workspace_configured'))
         configuration_reason = configuration_diagnostics.get('configuration_reason')
+        primary_reason = configuration_reason
         configuration_reason_codes = list(configuration_diagnostics.get('reason_codes') or [])
         if not workspace_configured:
             logger.warning(
@@ -3632,15 +3633,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'fresh' if last_poll_at and int((now - last_poll_at).total_seconds()) <= poll_window_seconds
             else ('stale' if last_poll_at else 'unavailable')
         )
-        runtime_status_reason = degraded_reason or (
-            'unsupported_target_type_for_live_coverage'
-            if unsupported_enabled_rows and reporting_systems <= 0
-            else (
-                (f'workspace_configuration_invalid:{configuration_reason}' if configuration_reason else 'workspace_not_configured')
-                if not workspace_configured
+        if not workspace_configured:
+            runtime_status_reason = (
+                f'workspace_configuration_invalid:{primary_reason}'
+                if primary_reason
+                else 'workspace_not_configured'
+            )
+        else:
+            runtime_status_reason = degraded_reason or (
+                'unsupported_target_type_for_live_coverage'
+                if unsupported_enabled_rows and reporting_systems <= 0
                 else ('no_fresh_live_coverage_telemetry' if reporting_systems <= 0 or not coverage_fresh else None)
             )
-        )
         summary = build_workspace_monitoring_summary(
             now=now,
             workspace_configured=workspace_configured,
