@@ -1,6 +1,14 @@
 export type MonitoringMode = 'LIVE' | 'DEGRADED' | 'OFFLINE' | 'STALE' | 'LIMITED_COVERAGE';
 
 export type MonitoringRuntimeStatus = {
+  error?: {
+    code?: string;
+    type?: string;
+    message?: string;
+    stage?: string;
+    hint?: string;
+  };
+  field_reason_codes?: Record<string, string[]>;
   monitoring_status?: 'active' | 'idle' | 'degraded' | 'offline' | 'error';
   monitored_systems?: number;
   enabled_systems?: number;
