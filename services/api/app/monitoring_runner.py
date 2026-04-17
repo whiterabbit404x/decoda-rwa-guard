@@ -52,6 +52,102 @@ MONITOR_POLL_INTERVAL_SECONDS = int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '
 
 logger = logging.getLogger(__name__)
 
+PREREQUISITE_COUNTER_KEYS: tuple[str, ...] = (
+    'raw_enabled_targets',
+    'monitorable_enabled_targets',
+    'valid_asset_linked_targets',
+    'enabled_monitored_systems',
+    'valid_target_system_links',
+)
+
+
+def _normalize_monitoring_runtime_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    summary_payload = normalized.get('workspace_monitoring_summary')
+    summary = dict(summary_payload) if isinstance(summary_payload, dict) else {}
+
+    configuration_reason = normalized.get('configuration_reason', summary.get('configuration_reason'))
+    normalized['configuration_reason'] = configuration_reason
+
+    configuration_reason_codes = normalized.get('configuration_reason_codes')
+    if not isinstance(configuration_reason_codes, list):
+        configuration_reason_codes = summary.get('configuration_reason_codes')
+    if not isinstance(configuration_reason_codes, list):
+        configuration_diagnostics = summary.get('configuration_diagnostics')
+        if isinstance(configuration_diagnostics, dict):
+            configuration_reason_codes = configuration_diagnostics.get('reason_codes')
+    if not isinstance(configuration_reason_codes, list):
+        configuration_reason_codes = [str(configuration_reason)] if configuration_reason else []
+    configuration_reason_codes = [str(code) for code in configuration_reason_codes if str(code).strip()]
+
+    count_reason_codes = normalized.get('count_reason_codes')
+    if not isinstance(count_reason_codes, dict):
+        count_reason_codes = summary.get('count_reason_codes')
+    if not isinstance(count_reason_codes, dict):
+        count_reason_codes = {}
+    count_reason_codes = dict(count_reason_codes)
+
+    for key in PREREQUISITE_COUNTER_KEYS:
+        value = normalized.get(key, summary.get(key, 0))
+        try:
+            normalized_value = int(value or 0)
+        except Exception:
+            normalized_value = 0
+        normalized[key] = normalized_value
+        summary[key] = normalized_value
+        if key not in count_reason_codes and isinstance(summary.get('count_reason_codes'), dict):
+            inherited_reason = summary['count_reason_codes'].get(key)
+            if inherited_reason:
+                count_reason_codes[key] = inherited_reason
+
+    field_reason_codes = normalized.get('field_reason_codes')
+    if not isinstance(field_reason_codes, dict):
+        field_reason_codes = summary.get('field_reason_codes')
+    if not isinstance(field_reason_codes, dict):
+        field_reason_codes = {}
+    field_reason_codes = dict(field_reason_codes)
+
+    passthrough_summary_keys = (
+        'workspace_configured',
+        'status_reason',
+        'valid_protected_assets',
+        'linked_monitored_systems',
+        'enabled_configs',
+        'valid_link_count',
+        'configured_systems',
+        'reporting_systems',
+        'last_poll_at',
+        'last_heartbeat_at',
+        'last_coverage_telemetry_at',
+        'last_telemetry_at',
+        'telemetry_kind',
+        'evidence_source',
+        'confidence_status',
+        'runtime_status_summary',
+        'configuration_diagnostics',
+    )
+    for key in passthrough_summary_keys:
+        if key not in normalized and key in summary:
+            normalized[key] = summary.get(key)
+    if 'runtime_status_summary' not in normalized:
+        normalized['runtime_status_summary'] = summary.get('runtime_status') or 'offline'
+    if not isinstance(normalized.get('configuration_diagnostics'), dict):
+        normalized['configuration_diagnostics'] = _workspace_configuration_diagnostics(
+            valid_protected_asset_count=int(normalized.get('valid_protected_assets') or 0),
+            linked_monitored_system_count=int(normalized.get('linked_monitored_systems') or 0),
+            persisted_enabled_config_count=int(normalized.get('enabled_configs') or 0),
+            valid_target_system_link_count=int(normalized.get('valid_link_count') or 0),
+        )
+
+    normalized['count_reason_codes'] = count_reason_codes
+    normalized['configuration_reason_codes'] = configuration_reason_codes
+    normalized['field_reason_codes'] = field_reason_codes
+    summary['count_reason_codes'] = dict(count_reason_codes)
+    summary['configuration_reason_codes'] = list(configuration_reason_codes)
+    summary['field_reason_codes'] = dict(field_reason_codes)
+    normalized['workspace_monitoring_summary'] = summary
+    return normalized
+
 
 WORKER_STATE: dict[str, Any] = {
     'worker_name': os.getenv('MONITORING_WORKER_NAME', 'monitoring-worker'),
@@ -3088,7 +3184,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'workspace_monitoring_summary': summary,
             }
             payload.update(payload['workspace_monitoring_summary'])
-            return payload
+            return _normalize_monitoring_runtime_contract(payload)
         workspace_id: str | None = None
         workspace_slug: str | None = None
         user_id: str | None = None
@@ -3906,7 +4002,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     'has_monitored_system_rows': has_any_monitored_rows,
                 }
             )
-        return payload
+        return _normalize_monitoring_runtime_contract(payload)
 
     try:
         return _monitoring_runtime_status_impl()
@@ -3915,7 +4011,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     except psycopg.Error as exc:
         workspace_id, workspace_slug = _workspace_context_from_request(request)
         logger.exception('monitoring_runtime_status_db_error workspace_id=%s workspace_slug=%s', workspace_id, workspace_slug)
-        return _runtime_failure_payload(
+        return _normalize_monitoring_runtime_contract(_runtime_failure_payload(
             workspace_id=workspace_id,
             workspace_slug=workspace_slug,
             error_code='runtime_status_db_error',
@@ -3924,11 +4020,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             error_stage='query',
             status_reason='runtime_status_degraded:database_error',
             hint='retry_request_or_check_database_health',
-        )
+        ))
     except RuntimeError as exc:
         workspace_id, workspace_slug = _workspace_context_from_request(request)
         logger.exception('monitoring_runtime_status_runtime_error workspace_id=%s workspace_slug=%s', workspace_id, workspace_slug)
-        return _runtime_failure_payload(
+        return _normalize_monitoring_runtime_contract(_runtime_failure_payload(
             workspace_id=workspace_id,
             workspace_slug=workspace_slug,
             error_code='runtime_status_runtime_error',
@@ -3937,11 +4033,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             error_stage='aggregation',
             status_reason='runtime_status_degraded:runtime_error',
             hint='retry_request_or_check_monitoring_worker_runtime',
-        )
+        ))
     except Exception as exc:
         workspace_id, workspace_slug = _workspace_context_from_request(request)
         logger.exception('monitoring_runtime_status_unhandled_error workspace_id=%s workspace_slug=%s', workspace_id, workspace_slug)
-        return _runtime_failure_payload(
+        return _normalize_monitoring_runtime_contract(_runtime_failure_payload(
             workspace_id=workspace_id,
             workspace_slug=workspace_slug,
             error_code='runtime_status_unhandled_error',
@@ -3950,7 +4046,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             error_stage='context',
             status_reason='runtime_status_degraded:internal_error',
             hint='retry_request_or_contact_support_with_timestamp',
-        )
+        ))
 
 
 def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str, Any]:
@@ -3978,6 +4074,7 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
                 'enabled_monitored_systems': 'runtime_debug_unavailable',
                 'valid_target_system_links': 'runtime_debug_unavailable',
             },
+            'field_reason_codes': {},
             'configured_systems': 0,
             'reporting_systems': 0,
             'last_poll_at': None,
@@ -3997,6 +4094,7 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
                 'configuration_reason': 'unavailable',
                 'reason_codes': ['unavailable'],
             },
+            'workspace_monitoring_summary': {},
         }
 
     def _structured_runtime_error_payload(*, configuration_reason: str, status_reason: str, exc: Exception | None = None) -> dict[str, Any]:
@@ -4025,6 +4123,7 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
             'configuration_reason': configuration_reason,
             'reason_codes': [configuration_reason],
         }
+        payload['field_reason_codes'] = {}
         if exc is not None:
             payload['error'] = {
                 'code': 'runtime_debug_payload_error',
@@ -4048,71 +4147,26 @@ def monitoring_runtime_debug_payload(request: Request | None = None) -> dict[str
             fallback_payload['status_reason'] = str(
                 fallback_payload.get('status_reason') or 'runtime_debug_status_exception:http_500_fallback'
             )
-            return fallback_payload
+            fallback_payload.setdefault('field_reason_codes', {})
+            return _normalize_monitoring_runtime_contract(fallback_payload)
         if exc.status_code in {status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN}:
             detail = str(exc.detail or '').strip() or 'workspace_or_auth_context_unavailable'
             safe_reason = detail.replace(' ', '_').lower()
             configuration_reason = 'workspace_not_resolved' if exc.status_code == status.HTTP_400_BAD_REQUEST else 'auth_context_unavailable'
-            return _structured_runtime_error_payload(
+            return _normalize_monitoring_runtime_contract(_structured_runtime_error_payload(
                 configuration_reason=configuration_reason,
                 status_reason=f'runtime_debug_context_error:{safe_reason}',
-            )
+            ))
         raise
     except Exception as exc:
         logger.exception('monitoring_runtime_debug_payload_failed')
-        return _structured_runtime_error_payload(
+        return _normalize_monitoring_runtime_contract(_structured_runtime_error_payload(
             configuration_reason='runtime_status_exception',
             status_reason=f'runtime_debug_status_exception:{type(exc).__name__}',
             exc=exc,
-        )
+        ))
 
-    summary = runtime_payload.get('workspace_monitoring_summary')
-    if not isinstance(summary, dict):
-        summary = runtime_payload
-
-    workspace_id = runtime_payload.get('workspace_id')
-    workspace_slug = runtime_payload.get('workspace_slug')
-    payload = _base_debug_payload(workspace_id=workspace_id, workspace_slug=workspace_slug)
-
-    configuration_diagnostics = summary.get('configuration_diagnostics')
-    if not isinstance(configuration_diagnostics, dict):
-        configuration_diagnostics = _workspace_configuration_diagnostics(
-            valid_protected_asset_count=int(summary.get('valid_protected_assets') or 0),
-            linked_monitored_system_count=int(summary.get('linked_monitored_systems') or 0),
-            persisted_enabled_config_count=int(summary.get('enabled_configs') or 0),
-            valid_target_system_link_count=int(summary.get('valid_link_count') or 0),
-        )
-
-    payload.update(
-        {
-            'workspace_configured': bool(summary.get('workspace_configured')),
-            'configuration_reason': summary.get('configuration_reason') or configuration_diagnostics.get('configuration_reason') or 'unavailable',
-            'configuration_reason_codes': list(summary.get('configuration_reason_codes') or configuration_diagnostics.get('reason_codes') or ['unavailable']),
-            'status_reason': summary.get('status_reason') or 'runtime_debug_unavailable',
-            'valid_protected_assets': int(summary.get('valid_protected_assets') or 0),
-            'linked_monitored_systems': int(summary.get('linked_monitored_systems') or 0),
-            'enabled_configs': int(summary.get('enabled_configs') or 0),
-            'valid_link_count': int(summary.get('valid_link_count') or 0),
-            'raw_enabled_targets': int(runtime_payload.get('raw_enabled_targets') or 0),
-            'monitorable_enabled_targets': int(runtime_payload.get('monitorable_enabled_targets') or 0),
-            'valid_asset_linked_targets': int(runtime_payload.get('valid_asset_linked_targets') or 0),
-            'enabled_monitored_systems': int(runtime_payload.get('enabled_monitored_systems') or 0),
-            'valid_target_system_links': int(runtime_payload.get('valid_target_system_links') or 0),
-            'count_reason_codes': runtime_payload.get('count_reason_codes') or {},
-            'configured_systems': int(summary.get('configured_systems') or 0),
-            'reporting_systems': int(summary.get('reporting_systems') or 0),
-            'last_poll_at': summary.get('last_poll_at'),
-            'last_heartbeat_at': summary.get('last_heartbeat_at'),
-            'last_coverage_telemetry_at': summary.get('last_coverage_telemetry_at'),
-            'last_telemetry_at': summary.get('last_telemetry_at'),
-            'telemetry_kind': summary.get('telemetry_kind'),
-            'evidence_source': summary.get('evidence_source') or 'none',
-            'confidence_status': summary.get('confidence_status') or 'unavailable',
-            'runtime_status_summary': summary.get('runtime_status') or summary.get('runtime_status_summary') or 'offline',
-            'configuration_diagnostics': configuration_diagnostics,
-        }
-    )
-    return payload
+    return _normalize_monitoring_runtime_contract(runtime_payload)
 
 
 
