@@ -90,7 +90,8 @@ def write_summary(artifact_dir: Path, steps: list[ProofStep]) -> None:
         [
             '',
             '## Remediation hints',
-            '- If `03_validate_no_billing_launch` fails, run `make validate-no-billing-launch` directly for per-check remediation.',
+            '- If `04_validate_no_billing_launch` fails, run `make validate-no-billing-launch` directly for per-check remediation.',
+            '- Review runtime gate evidence at `runbook-evidence/runtime_status_pre_release_gate.json` before stakeholder demos/releases.',
             '- If browser runtime checks fail, run `make install-web-test-runtime` on a network-enabled runner.',
             '- Keep billing disabled for this launch tier by exporting `BILLING_PROVIDER=none`.',
         ]
@@ -106,6 +107,9 @@ def main() -> int:
 
     env = os.environ.copy()
     env['BILLING_PROVIDER'] = env.get('BILLING_PROVIDER', NO_BILLING_PROVIDER)
+    runbook_evidence_dir = artifact_dir / 'runbook-evidence'
+    runtime_gate_env = env.copy()
+    runtime_gate_env['RUNTIME_STATUS_GATE_EVIDENCE_PATH'] = str(runbook_evidence_dir / 'runtime_status_pre_release_gate.json')
     steps: list[ProofStep] = [
         run_step(
             name='00_assert_no_billing_mode',
@@ -124,15 +128,21 @@ def main() -> int:
         ),
         run_step(name='01_npm_ci', command=['npm', 'ci'], artifact_dir=artifact_dir),
         run_step(name='02_build_web', command=['npm', 'run', 'build:web'], artifact_dir=artifact_dir),
-        run_step(name='03_validate_no_billing_launch', command=['make', 'validate-no-billing-launch'], artifact_dir=artifact_dir, env=env),
-        run_step(name='04_validate_production', command=['make', 'validate-production'], artifact_dir=artifact_dir, env=env, required=False),
+        run_step(
+            name='03_runtime_status_pre_release_gate',
+            command=['python', 'services/api/scripts/check_monitoring_runtime_live_gate.py'],
+            artifact_dir=artifact_dir,
+            env=runtime_gate_env,
+        ),
+        run_step(name='04_validate_no_billing_launch', command=['make', 'validate-no-billing-launch'], artifact_dir=artifact_dir, env=env),
+        run_step(name='05_validate_production', command=['make', 'validate-production'], artifact_dir=artifact_dir, env=env, required=False),
     ]
 
     missing_staging = [name for name in REQUIRED_STAGING_ENV if not os.getenv(name, '').strip()]
     if missing_staging:
         steps.append(
             ProofStep(
-                name='05_optional_staging_evidence',
+                name='06_optional_staging_evidence',
                 command=['python', 'scripts/staging/run_evidence_flow.py'],
                 required=False,
                 status='skip',
@@ -146,7 +156,7 @@ def main() -> int:
         evidence_env['STAGING_EVIDENCE_OUTPUT_DIR'] = str((artifact_dir / 'staging-evidence').relative_to(REPO_ROOT))
         steps.append(
             run_step(
-                name='05_optional_staging_evidence',
+                name='06_optional_staging_evidence',
                 command=['python', 'scripts/staging/run_evidence_flow.py'],
                 artifact_dir=artifact_dir,
                 required=False,

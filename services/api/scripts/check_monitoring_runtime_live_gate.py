@@ -42,12 +42,28 @@ def _read_runtime_payload(api_url: str, headers: dict[str, str]) -> tuple[int, d
     return status, payload if isinstance(payload, dict) else {}
 
 
+def _status_reason_indicates_unavailable(reason: str) -> bool:
+    normalized = reason.strip().lower()
+    if not normalized:
+        return False
+    return any(
+        token in normalized
+        for token in (
+            'runtime_status_unavailable',
+            'runtime unavailable',
+            'runtime_unavailable',
+        )
+    )
+
+
 def main() -> int:
     api_url = (os.getenv('API_URL') or 'http://localhost:8000').strip().rstrip('/')
     token = os.getenv('PILOT_AUTH_TOKEN', '').strip()
     workspace_id = (os.getenv('RUNTIME_STATUS_WORKSPACE_ID') or os.getenv('WORKSPACE_ID') or '').strip()
     now = datetime.now(timezone.utc)
     max_clock_skew_seconds = 60
+    max_coverage_staleness_seconds = max(60, int(os.getenv('RUNTIME_STATUS_MAX_COVERAGE_STALENESS_SECONDS', '900')))
+    evidence_output_path = (os.getenv('RUNTIME_STATUS_GATE_EVIDENCE_PATH') or '').strip()
 
     headers = {'Content-Type': 'application/json'}
     if token:
@@ -87,6 +103,7 @@ def main() -> int:
     last_coverage_telemetry_at = _parse_iso(payload.get('last_coverage_telemetry_at') or summary.get('last_coverage_telemetry_at'))
 
     is_live_claim = monitoring_mode in {'live', 'hybrid'} or evidence_source == 'live' or runtime_status in {'healthy', 'degraded', 'idle'}
+    workspace_configured = any(value > 0 for value in (configured_systems, valid_protected_assets, linked_monitored_systems, enabled_configs, valid_link_count))
 
     field_reason_codes = payload.get('field_reason_codes') if isinstance(payload.get('field_reason_codes'), dict) else summary.get('field_reason_codes')
     count_reason_codes = payload.get('count_reason_codes') if isinstance(payload.get('count_reason_codes'), dict) else summary.get('count_reason_codes')
@@ -101,16 +118,22 @@ def main() -> int:
 
     if status_reason.startswith('runtime_status_degraded:'):
         failures.append(f'status_reason indicates degraded runtime: {status_reason}.')
+    if _status_reason_indicates_unavailable(status_reason):
+        failures.append(f'status_reason indicates runtime unavailable: {status_reason}.')
 
     if configuration_reason == 'runtime_status_unavailable':
         failures.append('configuration_reason=runtime_status_unavailable indicates telemetry is unavailable.')
 
+    if evidence_source != 'live':
+        failures.append(f'evidence_source must be live for pre-demo/pre-release gate (got {evidence_source or "<missing>"}).')
+
     if is_live_claim and freshness_status == 'unavailable':
         failures.append('freshness_status=unavailable while runtime claims live/hybrid mode.')
 
-    if is_live_claim and configured_systems > 0:
+    if workspace_configured:
         if reporting_systems <= 0:
-            failures.append('configured_systems>0 but reporting_systems is zero.')
+            failures.append('workspace is configured but reporting_systems is zero.')
+    if is_live_claim and configured_systems > 0:
         if valid_protected_assets <= 0:
             failures.append('configured_systems>0 but valid_protected_assets is zero.')
         if linked_monitored_systems <= 0:
@@ -131,6 +154,15 @@ def main() -> int:
                 or (last_coverage_telemetry_at - now).total_seconds() > max_clock_skew_seconds
             ):
                 failures.append('telemetry timestamps cannot be in the future.')
+    if not last_coverage_telemetry_at:
+        failures.append('last_coverage_telemetry_at must be non-null for pre-demo/pre-release gate.')
+    else:
+        coverage_age_seconds = int((now - last_coverage_telemetry_at).total_seconds())
+        if coverage_age_seconds > max_coverage_staleness_seconds:
+            failures.append(
+                'last_coverage_telemetry_at is stale '
+                f'({coverage_age_seconds}s old > {max_coverage_staleness_seconds}s window).'
+            )
 
     if _contains_reason_code(field_reason_codes, 'query_failure') or _contains_reason_code(count_reason_codes, 'query_failure'):
         failures.append('runtime payload includes query_failure markers in reason codes.')
@@ -158,8 +190,14 @@ def main() -> int:
         'last_coverage_telemetry_at': last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None,
         'status_reason': status_reason or None,
         'configuration_reason': configuration_reason or None,
+        'max_coverage_staleness_seconds': max_coverage_staleness_seconds,
         'failures': failures,
     }
+    if evidence_output_path:
+        output_path = Path(evidence_output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        result['evidence_output_path'] = str(output_path)
+        output_path.write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(result, indent=2))
     return 0 if ok else 2
 
