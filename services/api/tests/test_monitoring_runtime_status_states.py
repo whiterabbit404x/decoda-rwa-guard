@@ -1898,6 +1898,10 @@ def test_runtime_status_workspace_scoped_success_keeps_identity_and_reports_live
     assert summary['runtime_status'] == 'healthy'
     assert summary['configured_systems'] >= 1
     assert summary['reporting_systems'] >= 1
+    assert summary['evidence_source'] == 'live'
+    assert summary['telemetry_kind'] in {'coverage', 'event'}
+    assert summary['last_coverage_telemetry_at'] is not None
+    assert summary['last_telemetry_at'] is not None
 
 
 def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure_reason_codes(monkeypatch):
@@ -1935,6 +1939,11 @@ def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure
     assert request.state.workspace_slug == 'prod-ops'
     assert payload['configuration_reason'] == 'runtime_status_unavailable'
     assert payload['status_reason'] == 'runtime_status_degraded:database_error'
+    assert payload['monitoring_status'] == 'offline'
+    assert payload['status'] == 'Offline'
+    assert payload['workspace_monitoring_summary']['runtime_status_summary'] == 'offline'
+    assert payload['workspace_monitoring_summary']['evidence_source'] == 'none'
+    assert payload['workspace_monitoring_summary']['reporting_systems'] == 0
     assert payload['error']['code'] == 'runtime_status_db_error'
     assert payload['error']['stage'] == 'query'
     assert payload['error']['type'] == 'SyntaxError'

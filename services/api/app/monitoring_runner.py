@@ -3605,14 +3605,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                   {'AND e.workspace_id = %s' if workspace_id else ''}
                 ORDER BY e.processed_at DESC
             '''
-            live_coverage_receipts_params: list[Any] = []
-            if workspace_id:
-                live_coverage_receipts_params.append(workspace_id)
             _mark_query_checkpoint('select_live_coverage_receipts')
-            live_coverage_receipt_rows = connection.execute(
-                live_coverage_receipts_query,
-                tuple(live_coverage_receipts_params),
-            ).fetchall()
+            if workspace_id:
+                live_coverage_receipt_rows = connection.execute(
+                    live_coverage_receipts_query,
+                    (workspace_id,),
+                ).fetchall()
+            else:
+                live_coverage_receipt_rows = connection.execute(
+                    live_coverage_receipts_query,
+                ).fetchall()
             live_coverage_receipts_persisted_count = len(live_coverage_receipt_rows)
             for receipt in live_coverage_receipt_rows:
                 processed_at = _parse_ts((receipt or {}).get('processed_at'))
