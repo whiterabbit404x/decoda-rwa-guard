@@ -201,14 +201,15 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }
-    if (user?.current_workspace?.id) {
-      headers['X-Workspace-Id'] = user.current_workspace.id;
+    const workspaceId = user?.current_workspace?.id || user?.current_workspace_id || null;
+    if (workspaceId) {
+      headers['X-Workspace-Id'] = workspaceId;
     }
     if (csrfToken) {
       headers['X-CSRF-Token'] = csrfToken;
     }
     return headers;
-  }, [accessToken, csrfToken, user?.current_workspace?.id]);
+  }, [accessToken, csrfToken, user?.current_workspace?.id, user?.current_workspace_id]);
 
   const refreshUser = useCallback(async () => {
     if (typeof window === 'undefined') {

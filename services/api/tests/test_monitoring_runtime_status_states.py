@@ -1948,6 +1948,33 @@ def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure
     assert payload['workspace_monitoring_summary']['configuration_reason_codes'] == ['runtime_status_unavailable']
 
 
+def test_runtime_status_query_failure_uses_pre_resolved_workspace_identity_from_request_state(monkeypatch):
+    now = datetime.now(timezone.utc)
+    request = SimpleNamespace(headers={}, state=SimpleNamespace(workspace_id='ws-prod', workspace_slug='prod-ops'))
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda _connection, _request: (_ for _ in ()).throw(PsycopgSyntaxError('syntax error at or near "$1"')),
+    )
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_Conn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_status(request)
+    assert payload['workspace_id'] == 'ws-prod'
+    assert payload['workspace_slug'] == 'prod-ops'
+    assert payload['error']['code'] == 'runtime_status_db_error'
+    assert payload['error']['stage'] == 'query'
+    assert payload['error']['stage_detail'] == 'workspace_context_resolution'
+    assert payload['configuration_reason'] == 'runtime_status_unavailable'
+    assert payload['workspace_monitoring_summary']['configuration_reason_codes'] == ['runtime_status_unavailable']
+
+
 def test_runtime_status_workspace_unconfigured_path_uses_configuration_diagnostics(monkeypatch):
     now = datetime.now(timezone.utc)
 

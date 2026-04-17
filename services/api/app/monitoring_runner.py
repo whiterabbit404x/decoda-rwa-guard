@@ -2981,10 +2981,28 @@ def production_claim_validator() -> dict[str, Any]:
 
 def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     last_query_checkpoint = 'not_started'
+    resolved_workspace_id: str | None = None
+    resolved_workspace_slug: str | None = None
+
+    def _persist_workspace_context(
+        req: Request | None,
+        *,
+        workspace_id: str | None,
+        workspace_slug: str | None,
+    ) -> None:
+        if req is None:
+            return
+        try:
+            req.state.workspace_id = workspace_id
+            req.state.workspace_slug = workspace_slug
+        except Exception:
+            return
 
     def _workspace_context_from_request(req: Request | None) -> tuple[str | None, str | None]:
+        nonlocal resolved_workspace_id
+        nonlocal resolved_workspace_slug
         if req is None:
-            return None, None
+            return resolved_workspace_id, resolved_workspace_slug
         try:
             workspace_id_value = getattr(req.state, 'workspace_id', None)
             workspace_slug_value = getattr(req.state, 'workspace_slug', None)
@@ -3003,7 +3021,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 workspace_slug_value = None
         workspace_id_str = str(workspace_id_value).strip() if workspace_id_value is not None else ''
         workspace_slug_str = str(workspace_slug_value).strip() if workspace_slug_value is not None else ''
-        return (workspace_id_str or None, workspace_slug_str or None)
+        workspace_id = workspace_id_str or resolved_workspace_id
+        workspace_slug = workspace_slug_str or resolved_workspace_slug
+        resolved_workspace_id = workspace_id
+        resolved_workspace_slug = workspace_slug
+        _persist_workspace_context(req, workspace_id=workspace_id, workspace_slug=workspace_slug)
+        return workspace_id, workspace_slug
 
     def _base_runtime_failure_payload(*, workspace_id: str | None = None, workspace_slug: str | None = None) -> dict[str, Any]:
         field_reason_codes = {
@@ -3184,6 +3207,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
 
     def _monitoring_runtime_status_impl() -> dict[str, Any]:
         nonlocal last_query_checkpoint
+        nonlocal resolved_workspace_id
+        nonlocal resolved_workspace_slug
 
         def _mark_query_checkpoint(label: str) -> None:
             nonlocal last_query_checkpoint
@@ -3338,16 +3363,21 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     
         with pg_connection() as connection:
             if request is not None:
+                header_workspace_id, header_workspace_slug = _workspace_context_from_request(request)
+                if header_workspace_id is not None or header_workspace_slug is not None:
+                    _persist_workspace_context(
+                        request,
+                        workspace_id=header_workspace_id,
+                        workspace_slug=header_workspace_slug,
+                    )
                 _mark_query_checkpoint('workspace_context_resolution')
                 user, workspace_context, workspace_header_present = resolve_workspace_context_for_request(connection, request)
                 user_id = str(user.get('id') or '')
                 workspace_id = str(workspace_context['workspace_id'])
                 workspace_slug = str((workspace_context.get('workspace') or {}).get('slug') or '') or None
-                try:
-                    request.state.workspace_id = workspace_id
-                    request.state.workspace_slug = workspace_slug
-                except Exception:
-                    pass
+                resolved_workspace_id = workspace_id
+                resolved_workspace_slug = workspace_slug
+                _persist_workspace_context(request, workspace_id=workspace_id, workspace_slug=workspace_slug)
             ensure_pilot_schema(connection)
             ensure_monitoring_runtime_schema_capabilities(connection)
             if request is not None:
