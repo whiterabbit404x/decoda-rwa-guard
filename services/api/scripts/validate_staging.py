@@ -355,6 +355,19 @@ def run_validation(mode: str) -> int:
             ],
         )
     )
+    if normalized_mode in {'production', 'prod'}:
+        checks.append(
+            run_command(
+                'api_runtime_readiness',
+                'runtime_status_release_gate',
+                ['python', 'services/api/scripts/check_runtime_status_release_gate.py'],
+                env=env,
+                remediation=[
+                    'Resolve degraded/offline runtime-status for configured production workspace(s) before deployment.',
+                    'Verify monitoring worker heartbeat and live coverage receipts for the production workspace.',
+                ],
+            )
+        )
 
     checks.append(
         run_command(

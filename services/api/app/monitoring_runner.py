@@ -3218,6 +3218,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'last_heartbeat_at': None,
             'last_coverage_telemetry_at': None,
             'last_telemetry_at': None,
+            'coverage_receipts_last_at': None,
+            'coverage_receipts_workspace_count': 0,
+            'stale_heartbeat': True,
+            'provider_degraded_flag': True,
             'evidence_source': 'none',
             'confidence_status': 'degraded',
             'runtime_status_summary': 'offline',
@@ -3250,6 +3254,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'last_heartbeat_at': None,
                 'last_coverage_telemetry_at': None,
                 'last_telemetry_at': None,
+                'coverage_receipts_last_at': None,
+                'coverage_receipts_workspace_count': 0,
+                'stale_heartbeat': True,
+                'provider_degraded_flag': True,
                 'evidence_source': 'none',
                 'confidence_status': 'degraded',
                 'runtime_status_summary': 'offline',
@@ -3285,6 +3293,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         error_message: str,
         error_stage: str,
         error_stage_detail: str | None = None,
+        error_reason_tokens: list[str] | None = None,
         status_reason: str,
         hint: str,
     ) -> dict[str, Any]:
@@ -3307,6 +3316,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'message': error_message,
             'stage': error_stage,
             'stage_detail': error_stage_detail,
+            'reason_tokens': [str(token) for token in (error_reason_tokens or []) if str(token).strip()],
             'hint': hint,
         }
         summary = dict(payload['workspace_monitoring_summary'])
@@ -4119,6 +4129,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         summary['source_of_evidence'] = source_of_evidence
         summary['configuration_reason_codes'] = list(configuration_reason_codes)
         summary['configuration_diagnostics'] = dict(configuration_diagnostics)
+        summary['stale_heartbeat'] = stale_heartbeat
+        summary['provider_degraded_flag'] = provider_degraded_or_unreachable
+        summary['coverage_receipts_last_at'] = (
+            live_coverage_receipts_workspace_latest.isoformat() if live_coverage_receipts_workspace_latest else None
+        )
+        summary['coverage_receipts_workspace_count'] = int(live_coverage_receipts_persisted_count)
         summary_freshness_status = str(summary.get('freshness_status') or '').strip().lower()
         summary_confidence_status = str(summary.get('confidence_status') or '').strip().lower()
         strict_live_healthy_proof = bool(
@@ -4231,6 +4247,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'last_poll_at': summary['last_poll_at'],
             'last_telemetry_at': summary['last_telemetry_at'],
             'last_coverage_telemetry_at': summary['last_coverage_telemetry_at'],
+            'coverage_receipts_last_at': summary['coverage_receipts_last_at'],
+            'coverage_receipts_workspace_count': summary['coverage_receipts_workspace_count'],
+            'stale_heartbeat': summary['stale_heartbeat'],
+            'provider_degraded_flag': summary['provider_degraded_flag'],
             'telemetry_kind': summary.get('telemetry_kind'),
             'last_detection_at': summary['last_detection_at'],
             'workspace_monitoring_summary': summary,
@@ -4357,11 +4377,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         raise
     except psycopg.Error as exc:
         workspace_id, workspace_slug = _workspace_context_from_request(request)
+        reason_tokens = ['runtime_status_degraded', 'database_error', 'stage_query']
+        if last_query_checkpoint:
+            reason_tokens.append(f'checkpoint_{last_query_checkpoint}')
         logger.exception(
             'monitoring_runtime_status_db_error workspace_id=%s workspace_slug=%s checkpoint=%s',
             workspace_id,
             workspace_slug,
             last_query_checkpoint,
+        )
+        logger.warning(
+            'monitoring_runtime_status_degraded_payload_reasons workspace_id=%s workspace_slug=%s reason_tokens=%s',
+            workspace_id,
+            workspace_slug,
+            ','.join(reason_tokens),
         )
         return _normalize_monitoring_runtime_contract(_runtime_failure_payload(
             workspace_id=workspace_id,
@@ -4371,12 +4400,21 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             error_message='Monitoring runtime data unavailable due to database connectivity or query failure.',
             error_stage='query',
             error_stage_detail=last_query_checkpoint,
+            error_reason_tokens=reason_tokens,
             status_reason='runtime_status_degraded:database_error',
             hint='retry_request_or_check_database_health',
         ))
     except RuntimeError as exc:
         workspace_id, workspace_slug = _workspace_context_from_request(request)
+        stage_detail = last_query_checkpoint or type(exc).__name__
+        reason_tokens = ['runtime_status_degraded', 'runtime_error', 'stage_aggregation', f'checkpoint_{stage_detail}']
         logger.exception('monitoring_runtime_status_runtime_error workspace_id=%s workspace_slug=%s', workspace_id, workspace_slug)
+        logger.warning(
+            'monitoring_runtime_status_degraded_payload_reasons workspace_id=%s workspace_slug=%s reason_tokens=%s',
+            workspace_id,
+            workspace_slug,
+            ','.join(reason_tokens),
+        )
         return _normalize_monitoring_runtime_contract(_runtime_failure_payload(
             workspace_id=workspace_id,
             workspace_slug=workspace_slug,
@@ -4384,12 +4422,22 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             error_type=type(exc).__name__,
             error_message='Monitoring runtime status could not be aggregated from current telemetry context.',
             error_stage='aggregation',
+            error_stage_detail=stage_detail,
+            error_reason_tokens=reason_tokens,
             status_reason='runtime_status_degraded:runtime_error',
             hint='retry_request_or_check_monitoring_worker_runtime',
         ))
     except Exception as exc:
         workspace_id, workspace_slug = _workspace_context_from_request(request)
+        stage_detail = last_query_checkpoint or type(exc).__name__
+        reason_tokens = ['runtime_status_degraded', 'internal_error', 'stage_context', f'checkpoint_{stage_detail}']
         logger.exception('monitoring_runtime_status_unhandled_error workspace_id=%s workspace_slug=%s', workspace_id, workspace_slug)
+        logger.warning(
+            'monitoring_runtime_status_degraded_payload_reasons workspace_id=%s workspace_slug=%s reason_tokens=%s',
+            workspace_id,
+            workspace_slug,
+            ','.join(reason_tokens),
+        )
         return _normalize_monitoring_runtime_contract(_runtime_failure_payload(
             workspace_id=workspace_id,
             workspace_slug=workspace_slug,
@@ -4397,6 +4445,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             error_type=type(exc).__name__,
             error_message='Monitoring runtime status unavailable due to an unexpected internal error.',
             error_stage='context',
+            error_stage_detail=stage_detail,
+            error_reason_tokens=reason_tokens,
             status_reason='runtime_status_degraded:internal_error',
             hint='retry_request_or_contact_support_with_timestamp',
         ))
