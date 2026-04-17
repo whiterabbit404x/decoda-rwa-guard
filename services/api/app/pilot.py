@@ -58,6 +58,19 @@ CORE_PILOT_TABLES = (
     'audit_logs',
     'workspace_onboarding_states',
 )
+MONITORING_RUNTIME_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
+    'monitored_systems': (
+        'last_coverage_telemetry_at',
+        'freshness_status',
+        'confidence_status',
+        'coverage_reason',
+    ),
+    'monitoring_event_receipts': (
+        'evidence_source',
+        'telemetry_kind',
+    ),
+}
+MONITORING_RUNTIME_SCHEMA_MIGRATION_HINTS = ('0036', '0037', '0038', '0039')
 DEFAULT_DEMO_EMAIL = 'demo@decoda.app'
 EMAIL_VERIFICATION_TTL_MINUTES = 60 * 24
 PASSWORD_RESET_TTL_MINUTES = 30
@@ -257,6 +270,22 @@ def run_startup_migrations_if_enabled(*, process_role: str = 'api') -> dict[str,
     applied_versions = run_migrations()
     plan['ran'] = True
     plan['applied_versions'] = applied_versions
+    try:
+        with pg_connection() as connection:
+            ensure_pilot_schema(connection)
+            missing_runtime_columns = _fetch_missing_runtime_schema_columns(connection)
+            plan['monitoring_runtime_missing_columns'] = missing_runtime_columns
+            if missing_runtime_columns:
+                logger.warning(
+                    'startup_monitoring_runtime_schema_incomplete missing_columns=%s migration_hints=%s',
+                    missing_runtime_columns,
+                    ', '.join(MONITORING_RUNTIME_SCHEMA_MIGRATION_HINTS),
+                )
+    except Exception:
+        logger.exception(
+            'startup_monitoring_runtime_schema_check_failed migration_hints=%s',
+            ', '.join(MONITORING_RUNTIME_SCHEMA_MIGRATION_HINTS),
+        )
     return plan
 
 
@@ -671,6 +700,60 @@ def ensure_pilot_schema(connection: Any) -> None:
     missing_tables = _fetch_missing_pilot_tables(connection)
     if missing_tables:
         raise _schema_missing_http_exception(missing_tables)
+
+
+def _fetch_missing_runtime_schema_columns(connection: Any) -> list[str]:
+    missing: list[str] = []
+    for table_name, required_columns in MONITORING_RUNTIME_REQUIRED_COLUMNS.items():
+        table_exists_row = connection.execute('SELECT to_regclass(%s) IS NOT NULL AS exists', (table_name,)).fetchone()
+        table_exists = bool((table_exists_row or {}).get('exists'))
+        if not table_exists:
+            missing.extend([f'{table_name}.{column}' for column in required_columns])
+            continue
+        rows = connection.execute(
+            '''
+            SELECT required.column_name
+            FROM unnest(%s::text[]) AS required(column_name)
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns columns
+                WHERE columns.table_schema = 'public'
+                  AND columns.table_name = %s
+                  AND columns.column_name = required.column_name
+            )
+            ORDER BY required.column_name
+            ''',
+            (list(required_columns), table_name),
+        ).fetchall()
+        missing.extend([f'{table_name}.{str(row["column_name"])}' for row in rows])
+    return sorted(dict.fromkeys(missing))
+
+
+def ensure_monitoring_runtime_schema_capabilities(connection: Any) -> None:
+    missing_columns = _fetch_missing_runtime_schema_columns(connection)
+    if not missing_columns:
+        return
+    first_missing = missing_columns[0]
+    hint = ', '.join(MONITORING_RUNTIME_SCHEMA_MIGRATION_HINTS)
+    logger.warning(
+        'monitoring_runtime_schema_incomplete missing_columns=%s migration_hints=%s',
+        missing_columns,
+        hint,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            'code': 'runtime_schema_incomplete',
+            'message': (
+                'Monitoring runtime schema is incomplete. '
+                f'Apply migrations {hint} to enable runtime telemetry fields.'
+            ),
+            'configuration_reason': 'runtime_schema_incomplete',
+            'status_reason': f'runtime_schema_column_missing:{first_missing}',
+            'missing_columns': missing_columns,
+            'migration_hints': list(MONITORING_RUNTIME_SCHEMA_MIGRATION_HINTS),
+        },
+    )
 
 
 def pilot_schema_status() -> dict[str, Any]:

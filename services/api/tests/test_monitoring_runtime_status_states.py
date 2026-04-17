@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException, status
 
 from services.api.app import monitoring_runner
 
@@ -70,6 +71,7 @@ def _enable_live_mode(monkeypatch):
 @pytest.fixture(autouse=True)
 def _runtime_defaults(monkeypatch):
     _enable_live_mode(monkeypatch)
+    monkeypatch.setattr(monitoring_runner, 'ensure_monitoring_runtime_schema_capabilities', lambda _c: None)
 
 
 def test_runtime_status_idle_when_worker_healthy_without_recent_evidence(monkeypatch):
@@ -1875,3 +1877,35 @@ def test_runtime_debug_reports_workspace_configured_true_after_workspace_repaire
     assert payload['workspace_configured'] is True
     assert diagnostics['workspace_configured'] is True
     assert diagnostics['reason_codes'] == []
+
+
+def test_runtime_status_returns_schema_incomplete_payload_when_runtime_columns_missing(monkeypatch):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling'},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+
+    def _raise_schema_error(_connection):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                'code': 'runtime_schema_incomplete',
+                'missing_columns': ['monitored_systems.last_coverage_telemetry_at'],
+                'migration_hints': ['0036', '0037', '0038', '0039'],
+            },
+        )
+
+    monkeypatch.setattr(monitoring_runner, 'ensure_monitoring_runtime_schema_capabilities', _raise_schema_error)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_Conn(now - timedelta(seconds=30))))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    summary = payload['workspace_monitoring_summary']
+    assert payload['configuration_reason'] == 'runtime_schema_incomplete'
+    assert payload['status_reason'] == 'runtime_schema_column_missing:monitored_systems.last_coverage_telemetry_at'
+    assert payload['error']['code'] == 'runtime_schema_incomplete'
+    assert payload['error']['migration_hints'] == ['0036', '0037', '0038', '0039']
+    assert summary['configuration_reason'] == 'runtime_schema_incomplete'
+    assert summary['status_reason'] == 'runtime_schema_column_missing:monitored_systems.last_coverage_telemetry_at'
