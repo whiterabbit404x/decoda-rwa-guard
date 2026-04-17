@@ -1833,7 +1833,7 @@ def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure
     class _SyntaxErrorConn(_Conn):
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
-            if "COALESCE(LOWER(e.ingestion_source), '') <> ALL(%s)" in q:
+            if "COALESCE(LOWER(e.ingestion_source), '') = ANY(%s::text[])" in q:
                 raise PsycopgSyntaxError('syntax error at or near "$1"')
             return super().execute(query, params)
 
@@ -1863,6 +1863,11 @@ def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure
     assert payload['error']['code'] == 'runtime_status_db_error'
     assert payload['error']['type'] == 'SyntaxError'
     assert payload['field_reason_codes']['protected_assets'] == ['query_failure']
+    assert payload['field_reason_codes']['configured_systems'] == ['query_failure']
+    assert payload['field_reason_codes']['reporting_systems'] == ['query_failure']
+    assert payload['field_reason_codes']['last_poll_at'] == ['query_failure']
+    assert payload['field_reason_codes']['last_heartbeat_at'] == ['query_failure']
+    assert payload['field_reason_codes']['last_telemetry_at'] == ['query_failure']
     assert payload['configuration_diagnostics']['reason_codes'] == ['runtime_status_unavailable']
 
 
