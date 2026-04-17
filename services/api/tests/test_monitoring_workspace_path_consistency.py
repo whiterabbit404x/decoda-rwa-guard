@@ -26,6 +26,29 @@ _SUMMARY_FIELD_REASON_KEYS = {
     'last_telemetry_at',
 }
 
+_RUNTIME_STATUS_REQUIRED_FIELDS = {
+    'workspace_id',
+    'workspace_slug',
+    'workspace_configured',
+    'configuration_reason',
+    'configuration_reason_codes',
+    'status_reason',
+    'count_reason_codes',
+    'field_reason_codes',
+    'workspace_monitoring_summary',
+    'runtime_status_summary',
+    'configuration_diagnostics',
+    'evidence_source',
+    'confidence_status',
+}
+
+_RUNTIME_DEBUG_REQUIRED_FIELDS = _RUNTIME_STATUS_REQUIRED_FIELDS | {
+    'configuration_diagnostics',
+}
+
+_SAFE_ERROR_DIAGNOSTIC_KEYS = {'code', 'type', 'stage'}
+_SECRET_SUBSTRINGS = ('token', 'authorization', 'password', 'secret', 'api_key')
+
 
 class _Result:
     def __init__(self, row=None, rows=None):
@@ -170,6 +193,7 @@ def test_monitoring_list_runtime_debug_and_reconcile_stay_consistent(monkeypatch
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_monitoring_runtime_schema_capabilities', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
 
@@ -331,6 +355,175 @@ def test_runtime_debug_endpoint_returns_structured_error_when_runtime_status_cra
     assert payload['configuration_diagnostics']['reason_codes'] == ['runtime_status_exception']
 
 
+def test_runtime_status_and_debug_return_structured_json_for_authenticated_workspace(monkeypatch):
+    conn = _Conn()
+    client = TestClient(api_main.app)
+    now = datetime.now(timezone.utc)
+
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_monitoring_runtime_schema_capabilities', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda *_a, **_k: ({'id': 'user-1'}, _workspace_context(), True),
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(),
+            'last_cycle_at': now.isoformat(),
+            'degraded': False,
+            'last_error': None,
+            'source_type': 'polling',
+            'worker_running': True,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+
+    headers = {'authorization': 'Bearer token', 'x-workspace-id': 'ws-legacy'}
+    runtime_response = client.get('/ops/monitoring/runtime-status', headers=headers)
+    debug_response = client.get('/ops/monitoring/runtime-debug', headers=headers)
+
+    assert runtime_response.status_code == 200
+    runtime_payload = runtime_response.json()
+    assert _RUNTIME_STATUS_REQUIRED_FIELDS.issubset(set(runtime_payload.keys()))
+    assert runtime_payload['workspace_configured'] is True
+
+    assert debug_response.status_code == 200
+    debug_payload = debug_response.json()
+    assert _RUNTIME_DEBUG_REQUIRED_FIELDS.issubset(set(debug_payload.keys()))
+    assert debug_payload['workspace_configured'] is True
+    assert set(debug_payload['workspace_monitoring_summary']['field_reason_codes'].keys()) == _SUMMARY_FIELD_REASON_KEYS
+
+
+def test_runtime_status_and_debug_return_structured_offline_json_for_unconfigured_workspace(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        monitoring_runner,
+        'monitoring_runtime_status',
+        lambda _request=None: {
+            'workspace_id': 'ws-unconfigured',
+            'workspace_slug': 'unconfigured-workspace',
+            'workspace_configured': False,
+            'configuration_reason': 'workspace_not_configured',
+            'configuration_reason_codes': ['workspace_not_configured'],
+            'status_reason': 'runtime_status_unconfigured',
+            'count_reason_codes': {key: 'workspace_not_configured' for key in _PREREQUISITE_COUNTER_KEYS},
+            'field_reason_codes': {},
+            'workspace_monitoring_summary': {
+                'workspace_configured': False,
+                'configuration_reason': 'workspace_not_configured',
+                'configuration_reason_codes': ['workspace_not_configured'],
+                'status_reason': 'runtime_status_unconfigured',
+                'count_reason_codes': {key: 'workspace_not_configured' for key in _PREREQUISITE_COUNTER_KEYS},
+                'field_reason_codes': {},
+            },
+            'runtime_status_summary': 'offline',
+            'configuration_diagnostics': {
+                'workspace_configured': False,
+                'configuration_reason': 'workspace_not_configured',
+                'reason_codes': ['workspace_not_configured'],
+            },
+            'evidence_source': 'none',
+            'confidence_status': 'unavailable',
+        },
+    )
+
+    headers = {'authorization': 'Bearer token', 'x-workspace-id': 'ws-unconfigured'}
+    runtime_response = client.get('/ops/monitoring/runtime-status', headers=headers)
+    debug_response = client.get('/ops/monitoring/runtime-debug', headers=headers)
+
+    assert runtime_response.status_code == 200
+    runtime_payload = runtime_response.json()
+    assert _RUNTIME_STATUS_REQUIRED_FIELDS.issubset(set(runtime_payload.keys()))
+    assert runtime_payload['workspace_configured'] is False
+    assert runtime_payload['runtime_status_summary'] == 'offline'
+
+    assert debug_response.status_code == 200
+    debug_payload = debug_response.json()
+    assert _RUNTIME_DEBUG_REQUIRED_FIELDS.issubset(set(debug_payload.keys()))
+    assert debug_payload['workspace_configured'] is False
+    assert debug_payload['runtime_status_summary'] == 'offline'
+
+
+def test_runtime_status_returns_safe_structured_error_json_for_missing_column_runtime_exception(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': None,
+            'last_cycle_at': None,
+            'degraded': False,
+            'last_error': None,
+            'source_type': 'polling',
+            'worker_running': True,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda *_a, **_k: ({'id': 'user-1'}, _workspace_context(), True),
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'pg_connection',
+        lambda: (_ for _ in ()).throw(RuntimeError('UndefinedColumn: monitored_systems.last_coverage_telemetry_at token=supersecret')),
+    )
+
+    response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer token', 'x-workspace-id': 'ws-legacy'})
+    assert response.status_code == 200
+    payload = response.json()
+    assert _RUNTIME_STATUS_REQUIRED_FIELDS.issubset(set(payload.keys()))
+    assert payload['workspace_configured'] is False
+    assert payload['runtime_status_summary'] == 'offline'
+    assert isinstance(payload.get('error'), dict)
+    assert _SAFE_ERROR_DIAGNOSTIC_KEYS.issubset(set(payload['error'].keys()))
+    assert payload['error']['code'] == 'runtime_status_runtime_error'
+    assert payload['error']['type'] == 'RuntimeError'
+    assert payload['error']['stage'] == 'aggregation'
+    for secret_substring in _SECRET_SUBSTRINGS:
+        assert secret_substring not in str(payload.get('error', {})).lower()
+        assert secret_substring not in str(payload.get('configuration_diagnostics', {})).lower()
+
+
+def test_runtime_debug_returns_structured_fallback_json_when_runtime_status_raises_http_500(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        monitoring_runner,
+        'monitoring_runtime_status',
+        lambda _request=None: (_ for _ in ()).throw(
+            HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    'workspace_id': 'ws-broken',
+                    'workspace_slug': 'broken-workspace',
+                    'status_reason': 'runtime_status_degraded:database_error',
+                },
+            )
+        ),
+    )
+
+    response = client.get('/ops/monitoring/runtime-debug', headers={'authorization': 'Bearer token', 'x-workspace-id': 'ws-broken'})
+    assert response.status_code == 200
+    payload = response.json()
+    assert _RUNTIME_DEBUG_REQUIRED_FIELDS.issubset(set(payload.keys()))
+    assert payload['workspace_id'] == 'ws-broken'
+    assert payload['workspace_configured'] is False
+    assert payload['runtime_status_summary'] == 'offline'
+    assert 'runtime_debug_status_exception' not in payload['status_reason']
+    assert payload['field_reason_codes'] == {}
+
+
 def test_runtime_status_keeps_list_path_counts_when_raw_workspace_query_fails(monkeypatch):
     class _RawQueryFailConn(_Conn):
         def execute(self, query, params=None):
@@ -346,6 +539,7 @@ def test_runtime_status_keeps_list_path_counts_when_raw_workspace_query_fails(mo
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_monitoring_runtime_schema_capabilities', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
     monkeypatch.setattr(
@@ -389,6 +583,7 @@ def test_runtime_status_uses_parameterized_detection_query_and_keeps_idle_system
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_monitoring_runtime_schema_capabilities', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
     monkeypatch.setattr(
