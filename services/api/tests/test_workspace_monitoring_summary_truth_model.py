@@ -34,6 +34,10 @@ def test_summary_includes_unified_truth_model_fields() -> None:
         persisted_enabled_config_count=3,
         valid_target_system_link_count=3,
         telemetry_window_seconds=300,
+        configuration_reason_codes=None,
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
     )
     assert summary['workspace_configured'] is True
     assert summary['runtime_status'] == 'healthy'
@@ -82,6 +86,10 @@ def test_heartbeat_recent_without_telemetry_sets_unavailable_freshness() -> None
         persisted_enabled_config_count=2,
         valid_target_system_link_count=2,
         telemetry_window_seconds=300,
+        configuration_reason_codes=None,
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
     )
     assert summary['freshness_status'] == 'unavailable'
     assert summary['last_telemetry_at'] is None
@@ -113,6 +121,10 @@ def test_poll_recent_without_telemetry_sets_unavailable_freshness() -> None:
         persisted_enabled_config_count=2,
         valid_target_system_link_count=2,
         telemetry_window_seconds=300,
+        configuration_reason_codes=None,
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
     )
     assert summary['freshness_status'] == 'unavailable'
     assert summary['last_telemetry_at'] is None
@@ -144,6 +156,10 @@ def test_fresh_live_coverage_telemetry_sets_high_confidence() -> None:
         persisted_enabled_config_count=3,
         valid_target_system_link_count=3,
         telemetry_window_seconds=300,
+        configuration_reason_codes=None,
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
     )
     assert summary['freshness_status'] == 'fresh'
     assert summary['confidence_status'] == 'high'
@@ -175,6 +191,10 @@ def test_live_poll_and_heartbeat_without_coverage_keeps_confidence_unavailable()
         persisted_enabled_config_count=2,
         valid_target_system_link_count=2,
         telemetry_window_seconds=300,
+        configuration_reason_codes=None,
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
     )
     assert summary['freshness_status'] == 'unavailable'
     assert summary['confidence_status'] == 'unavailable'
@@ -206,8 +226,77 @@ def test_workspace_unconfigured_cannot_report_monitored_or_protected_counts() ->
         persisted_enabled_config_count=1,
         valid_target_system_link_count=0,
         telemetry_window_seconds=300,
+        configuration_reason_codes=None,
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
     )
     assert 'workspace_unconfigured_with_coverage' in summary['contradiction_flags']
+    assert set(summary['field_reason_codes'].keys()) == {
+        'protected_assets',
+        'configured_systems',
+        'reporting_systems',
+        'last_poll_at',
+        'last_heartbeat_at',
+        'last_telemetry_at',
+    }
+    assert summary['field_reason_codes']['protected_assets'] == []
+    assert summary['field_reason_codes']['configured_systems'] == []
+    assert summary['field_reason_codes']['reporting_systems'] == []
+    assert summary['field_reason_codes']['last_poll_at'] == []
+    assert summary['field_reason_codes']['last_heartbeat_at'] == []
+    assert summary['field_reason_codes']['last_telemetry_at'] == []
+
+
+def test_workspace_unconfigured_zero_coverage_derives_unconfigured_field_reason_codes() -> None:
+    now = _now()
+    summary = build_workspace_monitoring_summary(
+        now=now,
+        workspace_configured=False,
+        monitoring_mode='offline',
+        runtime_status='offline',
+        configured_systems=0,
+        monitored_systems_count=0,
+        reporting_systems=0,
+        protected_assets=0,
+        last_poll_at=None,
+        last_heartbeat_at=None,
+        last_telemetry_at=None,
+        last_coverage_telemetry_at=None,
+        telemetry_kind=None,
+        last_detection_at=None,
+        evidence_source='none',
+        status_reason='workspace_not_configured',
+        configuration_reason='target_system_linkage_invalid',
+        valid_protected_asset_count=0,
+        linked_monitored_system_count=0,
+        persisted_enabled_config_count=0,
+        valid_target_system_link_count=0,
+        telemetry_window_seconds=300,
+        configuration_reason_codes=[
+            'no_valid_protected_assets',
+            'no_linked_monitored_systems',
+            'no_persisted_enabled_monitoring_config',
+            'target_system_linkage_invalid',
+        ],
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
+    )
+    assert set(summary['field_reason_codes'].keys()) == {
+        'protected_assets',
+        'configured_systems',
+        'reporting_systems',
+        'last_poll_at',
+        'last_heartbeat_at',
+        'last_telemetry_at',
+    }
+    assert summary['field_reason_codes']['protected_assets'] == ['unconfigured_workspace']
+    assert summary['field_reason_codes']['configured_systems'] == ['unconfigured_workspace']
+    assert summary['field_reason_codes']['reporting_systems'] == ['unconfigured_workspace']
+    assert summary['field_reason_codes']['last_poll_at'] == ['unconfigured_workspace']
+    assert summary['field_reason_codes']['last_heartbeat_at'] == ['unconfigured_workspace']
+    assert summary['field_reason_codes']['last_telemetry_at'] == ['unconfigured_workspace']
 
 
 def test_healthy_status_without_reporting_is_flagged() -> None:
@@ -235,6 +324,10 @@ def test_healthy_status_without_reporting_is_flagged() -> None:
         persisted_enabled_config_count=3,
         valid_target_system_link_count=3,
         telemetry_window_seconds=300,
+        configuration_reason_codes=None,
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
     )
     assert 'healthy_without_reporting_systems' in summary['contradiction_flags']
 
@@ -264,6 +357,10 @@ def test_workspace_configured_with_missing_required_link_counts_is_flagged() -> 
         persisted_enabled_config_count=0,
         valid_target_system_link_count=1,
         telemetry_window_seconds=300,
+        configuration_reason_codes=None,
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
     )
     assert 'workspace_configured_missing_required_links' in summary['contradiction_flags']
 
@@ -294,6 +391,10 @@ def test_simulator_telemetry_timestamp_is_preserved_from_persisted_event() -> No
         persisted_enabled_config_count=1,
         valid_target_system_link_count=1,
         telemetry_window_seconds=300,
+        configuration_reason_codes=None,
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
     )
     assert summary['last_telemetry_at'] == simulator_event_at.isoformat()
     assert summary['telemetry_kind'] == 'target_event'
