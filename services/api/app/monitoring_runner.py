@@ -1917,7 +1917,11 @@ def _process_single_event(
     incident_id = None
     severity_threshold = str(target.get('severity_threshold') or 'medium')
     matched_patterns = response.get('matched_patterns') if isinstance(response.get('matched_patterns'), list) else []
-    if matched_patterns:
+    should_create_detection = bool(matched_patterns) or _severity_meets_threshold(
+        str(response.get('severity') or 'low'),
+        severity_threshold,
+    )
+    if should_create_detection:
         confidence_raw = response.get('confidence')
         confidence = float(confidence_raw) if isinstance(confidence_raw, (int, float)) else None
         source_rule = None
@@ -1926,7 +1930,8 @@ def _process_single_event(
             source_rule = str(first_match.get('label') or first_match.get('rule_id') or '').strip() or None
         elif first_match is not None:
             source_rule = str(first_match).strip() or None
-        evidence_source = 'simulator' if str(event.ingestion_source or '').lower() == 'demo' else 'live'
+        ingestion_source = str(event.ingestion_source or '').lower()
+        evidence_source = 'simulator' if ingestion_source in {'demo', 'simulator'} else 'live'
         detection_id = _create_detection(
             connection,
             workspace_id=str(target['workspace_id']),

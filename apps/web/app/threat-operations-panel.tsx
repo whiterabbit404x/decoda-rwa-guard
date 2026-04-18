@@ -216,7 +216,7 @@ type DetectionItem = {
   targetName?: string | null;
   state: ThreatFeedState;
   href: string;
-  source: 'alert' | 'incident' | 'evidence';
+  source: 'alert' | 'incident' | 'evidence' | 'detection';
 };
 
 type TimelineItem = {
@@ -683,7 +683,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         targetName: matchedAsset?.name ?? null,
         state: isTest ? ('Test' as const) : ('Live' as const),
         href: item.linked_alert_id ? '/alerts' : '/threat',
-        source: 'evidence' as const,
+        source: 'detection' as const,
       };
     }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }, [alerts, detections, targets]);
