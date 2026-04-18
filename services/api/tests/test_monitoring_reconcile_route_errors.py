@@ -195,3 +195,25 @@ def test_ops_monitoring_runtime_status_returns_degraded_payload_when_route_raise
     assert payload['monitoring_status'] == 'offline'
     assert payload['error']['code'] == 'runtime_status_route_failed'
     assert payload['workspace_monitoring_summary']['runtime_status'] == 'offline'
+
+
+def test_ops_monitoring_run_returns_structured_error_for_unexpected_exception(monkeypatch, caplog):
+    monkeypatch.setenv('APP_ENV', 'development')
+    monkeypatch.setattr(
+        api_main,
+        'run_monitoring_cycle',
+        lambda **_kwargs: (_ for _ in ()).throw(UnboundLocalError("local variable 'monitored_systems_updated' referenced before assignment")),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        response = client.post('/ops/monitoring/run', json={'worker_name': 'test-worker', 'limit': 1})
+
+    assert response.status_code == 500
+    assert response.json() == {
+        'code': 'monitoring_run_failed',
+        'detail': 'Unexpected backend error during monitoring run.',
+        'stage': 'run_monitoring_cycle',
+        'debug_error_type': 'UnboundLocalError',
+        'debug_error_message': "local variable 'monitored_systems_updated' referenced before assignment",
+    }
+    assert 'ops_monitoring_run_unexpected_error method=POST path=/ops/monitoring/run' in caplog.text

@@ -2341,6 +2341,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     live_targets_checked = 0
     events_ingested = 0
     incidents_created = 0
+    monitored_systems_updated = 0
     runs: list[dict[str, Any]] = []
     error_message: str | None = None
     cycle_started_at = utc_now()
