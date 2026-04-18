@@ -4,14 +4,6 @@ import { normalizeMonitoringPresentation } from './monitoring-status-presentatio
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import { resolveWorkspaceMonitoringTruthFromSummary } from './workspace-monitoring-truth';
 
-const LIVE_TELEMETRY_INVALIDATING_FLAGS = new Set([
-  'offline_with_current_telemetry',
-  'telemetry_unavailable_with_timestamp',
-  'zero_coverage_with_live_telemetry',
-  'poll_without_telemetry_timestamp',
-  'heartbeat_without_telemetry_timestamp',
-]);
-
 function runtimeStatusAllowsLive(runtimeStatus: string): boolean {
   return runtimeStatus === 'healthy';
 }
@@ -28,13 +20,11 @@ export default function MonitoringOverviewPanel() {
   const runtime = liveFeed.runtimeStatus;
   const truth = resolveWorkspaceMonitoringTruthFromSummary(runtime?.workspace_monitoring_summary);
   const presentation = normalizeMonitoringPresentation(truth);
-  const telemetryProofTimestamp = truth.last_coverage_telemetry_at ?? truth.last_telemetry_at;
-  const hasInvalidatingLiveTelemetryContradiction = truth.contradiction_flags.some((flag) => LIVE_TELEMETRY_INVALIDATING_FLAGS.has(flag));
+  const telemetryProofTimestamp = truth.last_telemetry_at;
   const showLiveWithVerifiedTelemetry = runtimeStatusAllowsLive(truth.runtime_status)
-    && truth.freshness_status === 'fresh'
-    && truth.reporting_systems > 0
-    && Boolean(telemetryProofTimestamp)
-    && !hasInvalidatingLiveTelemetryContradiction;
+    && truth.telemetry_freshness === 'fresh'
+    && truth.reporting_systems_count > 0
+    && Boolean(telemetryProofTimestamp);
   const truthCopy = presentation.status === 'offline'
     ? 'Workspace monitoring offline. Fresh telemetry unavailable until connectivity returns.'
     : presentation.status === 'limited coverage'
@@ -53,18 +43,7 @@ export default function MonitoringOverviewPanel() {
     if (!telemetryProofTimestamp) {
       return 'Detection evidence unavailable.';
     }
-    if (!truth.last_coverage_telemetry_at) {
-      return truth.last_detection_at ? 'Recent detections available.' : 'No recent target events.';
-    }
-    if (!truth.last_detection_at) {
-      return 'No recent detections.';
-    }
-    const detectionAtMs = new Date(truth.last_detection_at).getTime();
-    const coverageAtMs = new Date(truth.last_coverage_telemetry_at).getTime();
-    if (Number.isFinite(detectionAtMs) && Number.isFinite(coverageAtMs) && detectionAtMs < coverageAtMs) {
-      return 'No recent detections.';
-    }
-    return 'Recent detections available.';
+    return 'Recent telemetry available.';
   })();
 
   return (
@@ -93,7 +72,7 @@ export default function MonitoringOverviewPanel() {
       </article>
       <article className="metricCard">
         <p className="metricLabel">Coverage freshness</p>
-        <p className="metricValue">{truth.freshness_status === 'unavailable' ? 'Unavailable' : truth.freshness_status.toUpperCase()}</p>
+        <p className="metricValue">{truth.telemetry_freshness === 'unavailable' ? 'Unavailable' : truth.telemetry_freshness.toUpperCase()}</p>
         <p className="metricMeta">Last telemetry {formatTelemetryTimestamp(telemetryProofTimestamp)}.</p>
         <p className="metricMeta">
           Last telemetry: {formatTelemetryTimestamp(telemetryProofTimestamp)} · Last heartbeat: {formatTelemetryTimestamp(truth.last_heartbeat_at)} · Last poll: {formatTelemetryTimestamp(truth.last_poll_at)}

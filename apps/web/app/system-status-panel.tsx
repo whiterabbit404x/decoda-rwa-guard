@@ -70,7 +70,7 @@ export default function SystemStatusPanel({ monitoring, diagnostics, healthDetai
         <p><span>Last telemetry</span>{presentation.telemetryTimestampLabel}</p>
         <p><span>Last heartbeat</span>{presentation.heartbeatTimestampLabel}</p>
         <p><span>Last poll</span>{presentation.pollTimestampLabel}</p>
-        <p><span>Reporting / configured / protected</span>{truth.reporting_systems} / {truth.configured_systems} / {truth.protected_assets_count}</p>
+        <p><span>Reporting / monitored / protected</span>{truth.reporting_systems_count} / {truth.monitored_systems_count} / {truth.protected_assets_count}</p>
         {showDiagnostics ? <p><span>Gateway reachable</span>{gatewayReachable ? 'Yes' : 'No'}</p> : null}
         {showDiagnostics && diagnostics ? <p><span>API source</span>{diagnostics.apiUrlSource}</p> : null}
         {showDiagnostics ? <p><span>Dependency health</span>{dependencySummary}</p> : null}

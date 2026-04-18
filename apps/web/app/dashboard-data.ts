@@ -1875,9 +1875,9 @@ export function buildDashboardViewModel(
     openAlerts,
     openIncidents,
     protectedAssets: monitoringTruth.protected_assets_count,
-    monitoredTargets: monitoringTruth.reporting_systems,
-    configuredSystems: monitoringTruth.configured_systems,
-    reportingSystems: monitoringTruth.reporting_systems,
+    monitoredTargets: monitoringTruth.reporting_systems_count,
+    configuredSystems: monitoringTruth.monitored_systems_count,
+    reportingSystems: monitoringTruth.reporting_systems_count,
   };
   const summaryCards = [
     {

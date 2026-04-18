@@ -106,15 +106,8 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
     console.debug('useLiveWorkspaceFeed state-updated', {
       workspaceId: user?.current_workspace?.id ?? null,
       monitoring_status: runtimeStatus?.monitoring_status ?? null,
-      reporting_systems:
-        runtimeStatus?.workspace_monitoring_summary?.reporting_systems ??
-        runtimeStatus?.workspace_monitoring_summary?.coverage_state?.reporting_systems ??
-        runtimeStatus?.active_systems ??
-        null,
-      evidence_source:
-        runtimeStatus?.workspace_monitoring_summary?.evidence_source ??
-        runtimeStatus?.evidence_source ??
-        null,
+      reporting_systems: runtimeStatus?.workspace_monitoring_summary?.reporting_systems_count ?? null,
+      evidence_source: runtimeStatus?.workspace_monitoring_summary?.evidence_source_summary ?? null,
       appliedCounts: counts,
       lastFetchCompletedAt,
     });
@@ -173,24 +166,9 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
         const historyCount = Number(historyPayload?.counts?.analysis_runs ?? (historyPayload.analysis_runs ?? []).length ?? 0);
         const truth = nextRuntime?.workspace_monitoring_summary;
         const nextCounts: LiveWorkspaceCounts = {
-          protectedAssets: Number(
-            truth?.protected_assets ??
-              truth?.coverage_state?.protected_assets ??
-              nextRuntime?.protected_assets ??
-              0,
-          ),
-          monitoredSystems: Number(
-            truth?.configured_systems ??
-              truth?.coverage_state?.configured_systems ??
-              nextRuntime?.monitored_systems ??
-              0,
-          ),
-          activeSystems: Number(
-            truth?.reporting_systems ??
-              truth?.coverage_state?.reporting_systems ??
-              nextRuntime?.active_systems ??
-              0,
-          ),
+          protectedAssets: Number(truth?.protected_assets_count ?? 0),
+          monitoredSystems: Number(truth?.monitored_systems_count ?? 0),
+          activeSystems: Number(truth?.reporting_systems_count ?? 0),
           openAlerts: (alertsPayload.alerts ?? []).length,
           openIncidents: (incidentsPayload.incidents ?? []).length,
           historyRecords: historyCount,
@@ -202,15 +180,8 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
             statusCode: statusRes?.status ?? 'network_error',
             payload: statusPayload,
             monitoring_status: statusPayload?.monitoring_status ?? null,
-            reporting_systems:
-              statusPayload?.workspace_monitoring_summary?.reporting_systems ??
-              statusPayload?.workspace_monitoring_summary?.coverage_state?.reporting_systems ??
-              statusPayload?.active_systems ??
-              null,
-            evidence_source:
-              statusPayload?.workspace_monitoring_summary?.evidence_source ??
-              statusPayload?.evidence_source ??
-              null,
+            reporting_systems: statusPayload?.workspace_monitoring_summary?.reporting_systems_count ?? null,
+            evidence_source: statusPayload?.workspace_monitoring_summary?.evidence_source_summary ?? null,
             monitoredSystems: nextRuntime?.monitored_systems ?? null,
             enabledSystems: nextRuntime?.enabled_systems ?? null,
             runtimeUnavailable,

@@ -58,14 +58,10 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
       : resolvedBackendState;
   const telemetryUnavailable =
     !monitoringTruth.last_telemetry_at
-    || monitoringTruth.freshness_status === 'unavailable'
-    || monitoringTruth.contradiction_flags.includes('telemetry_unavailable_with_timestamp')
-    || monitoringTruth.contradiction_flags.includes('poll_without_telemetry_timestamp')
-    || monitoringTruth.contradiction_flags.includes('heartbeat_without_telemetry_timestamp');
+    || monitoringTruth.telemetry_freshness === 'unavailable';
   const showHealthySummary =
     monitoringHealthyCopyAllowed(monitoringTruth)
-    && monitoringPresentation.status === 'live'
-    && !monitoringTruth.contradiction_flags.includes('healthy_without_reporting_systems');
+    && monitoringPresentation.status === 'live';
   const safeMonitoringSummary = telemetryUnavailable
     ? 'Telemetry currently unavailable.'
     : showHealthySummary
@@ -108,7 +104,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <p><strong>Last telemetry:</strong> {lastTelemetryLabel}</p>
           <p><strong>Last heartbeat:</strong> {lastHeartbeatLabel}</p>
           <p><strong>Last poll:</strong> {lastPollLabel}</p>
-          <p><strong>Reporting/configured/protected:</strong> {monitoringTruth.reporting_systems} / {monitoringTruth.configured_systems} / {monitoringTruth.protected_assets_count}</p>
+          <p><strong>Reporting/monitored/protected:</strong> {monitoringTruth.reporting_systems_count} / {monitoringTruth.monitored_systems_count} / {monitoringTruth.protected_assets_count}</p>
           <p><strong>Open alerts:</strong> {openAlerts} · <strong>Open incidents:</strong> {openIncidents}</p>
           <p><strong>Monitoring summary:</strong> {safeMonitoringSummary}</p>
           <p><strong>System message:</strong> {systemMessage}</p>
