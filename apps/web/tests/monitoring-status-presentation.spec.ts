@@ -10,17 +10,17 @@ function makeTruth(partial: Partial<WorkspaceMonitoringTruth>): WorkspaceMonitor
     runtime_status: 'healthy',
     configured_systems: 3,
     monitored_systems_count: 3,
-    reporting_systems: 3,
+    reporting_systems_count: 3,
     protected_assets_count: 3,
-    freshness_status: 'fresh',
-    confidence_status: 'high',
+    telemetry_freshness: 'fresh',
+    confidence: 'high',
     last_poll_at: '2026-04-13T10:00:00Z',
     last_heartbeat_at: '2026-04-13T10:00:00Z',
     last_telemetry_at: '2026-04-13T10:00:00Z',
     last_coverage_telemetry_at: '2026-04-13T10:00:00Z',
     telemetry_kind: 'target_event',
     last_detection_at: '2026-04-13T10:00:00Z',
-    evidence_source: 'live',
+    evidence_source_summary: 'live',
     status_reason: null,
     contradiction_flags: [],
     ...partial,
@@ -33,10 +33,10 @@ test.describe('monitoring status presentation adapter', () => {
       normalizeMonitoringPresentation(makeTruth({ runtime_status: 'healthy' })).status,
       normalizeMonitoringPresentation(makeTruth({ runtime_status: 'degraded' })).status,
       normalizeMonitoringPresentation(makeTruth({ runtime_status: 'offline' })).status,
-      normalizeMonitoringPresentation(makeTruth({ freshness_status: 'stale' })).status,
+      normalizeMonitoringPresentation(makeTruth({ telemetry_freshness: 'stale' })).status,
       normalizeMonitoringPresentation(makeTruth({ monitoring_mode: 'simulator' })).status,
-      normalizeMonitoringPresentation(makeTruth({ evidence_source: 'simulator' })).status,
-      normalizeMonitoringPresentation(makeTruth({ evidence_source: 'replay' })).status,
+      normalizeMonitoringPresentation(makeTruth({ evidence_source_summary: 'simulator' })).status,
+      normalizeMonitoringPresentation(makeTruth({ evidence_source_summary: 'replay' })).status,
     ];
 
     const allowed = new Set(['live', 'degraded', 'offline', 'stale', 'limited coverage']);
@@ -46,8 +46,8 @@ test.describe('monitoring status presentation adapter', () => {
 
   test('never overstates weak evidence as verified/live telemetry', async () => {
     const weak = normalizeMonitoringPresentation(makeTruth({
-      confidence_status: 'unavailable',
-      freshness_status: 'unavailable',
+      confidence: 'unavailable',
+      telemetry_freshness: 'unavailable',
       last_telemetry_at: null,
     }));
 
@@ -59,8 +59,8 @@ test.describe('monitoring status presentation adapter', () => {
 
   test('exposes only enterprise-safe evidence and freshness values', async () => {
     const value = normalizeMonitoringPresentation(makeTruth({
-      confidence_status: 'medium',
-      freshness_status: 'fresh',
+      confidence: 'medium',
+      telemetry_freshness: 'fresh',
     }));
     expect(['verified', 'recent', 'delayed', 'unavailable']).toContain(value.evidence);
     expect(['verified', 'recent', 'delayed', 'unavailable']).toContain(value.freshness);
@@ -71,7 +71,7 @@ test.describe('monitoring status presentation adapter', () => {
     const idle = normalizeMonitoringPresentation(makeTruth({
       runtime_status: 'idle',
       monitoring_mode: 'live',
-      confidence_status: 'unavailable',
+      confidence: 'unavailable',
     }));
     expect(idle.status).not.toBe('offline');
     expect(idle.statusLabel).not.toBe('OFFLINE');
@@ -80,9 +80,9 @@ test.describe('monitoring status presentation adapter', () => {
   test('does not treat polling heartbeats alone as live telemetry', async () => {
     const idleHealthy = normalizeMonitoringPresentation(makeTruth({
       runtime_status: 'idle',
-      confidence_status: 'low',
-      freshness_status: 'unavailable',
-      evidence_source: 'none',
+      confidence: 'low',
+      telemetry_freshness: 'unavailable',
+      evidence_source_summary: 'none',
       last_telemetry_at: null,
     }));
     expect(idleHealthy.freshness).toBe('unavailable');
@@ -103,7 +103,7 @@ test.describe('monitoring status presentation adapter', () => {
 
   test('keeps telemetry freshness wording tied to telemetry timestamp and freshness status', async () => {
     const value = normalizeMonitoringPresentation(makeTruth({
-      freshness_status: 'unavailable',
+      telemetry_freshness: 'unavailable',
       last_telemetry_at: null,
       last_heartbeat_at: '2026-04-13T10:01:00Z',
       last_poll_at: '2026-04-13T10:02:00Z',
@@ -117,7 +117,7 @@ test.describe('monitoring status presentation adapter', () => {
       last_telemetry_at: null,
       last_coverage_telemetry_at: '2026-04-13T10:00:00Z',
       last_detection_at: null,
-      confidence_status: 'medium',
+      confidence: 'medium',
     }));
     expect(value.status).toBe('live');
     expect(value.summary).toContain('Live telemetry verified.');
@@ -127,7 +127,7 @@ test.describe('monitoring status presentation adapter', () => {
   test('uses coverage telemetry timestamp label even when target-event telemetry is absent', async () => {
     const value = normalizeMonitoringPresentation(makeTruth({
       runtime_status: 'degraded',
-      freshness_status: 'stale',
+      telemetry_freshness: 'stale',
       telemetry_kind: 'target_event',
       last_telemetry_at: null,
       last_coverage_telemetry_at: '2026-04-13T10:00:00Z',
@@ -153,11 +153,21 @@ test.describe('monitoring status presentation adapter', () => {
       last_coverage_telemetry_at: '2026-04-13T10:00:00Z',
       last_telemetry_at: '2026-04-13T10:00:00Z',
       last_detection_at: '2026-04-13T09:00:00Z',
-      confidence_status: 'high',
-      freshness_status: 'fresh',
+      confidence: 'high',
+      telemetry_freshness: 'fresh',
       runtime_status: 'healthy',
     }));
     expect(value.status).toBe('live');
-    expect(value.summary).toContain('Historical detections only.');
+    expect(value.summary).toContain('No recent detections.');
+  });
+
+  test('contradictions always force guarded fallback presentation copy', async () => {
+    const value = normalizeMonitoringPresentation(makeTruth({
+      contradiction_flags: ['offline_with_current_telemetry'],
+      status_reason: 'guard:offline_with_current_telemetry',
+    }));
+    expect(value.status).toBe('limited coverage');
+    expect(value.summary).toContain('Monitoring copy guarded');
+    expect(value.summary).toContain('guard:offline_with_current_telemetry');
   });
 });

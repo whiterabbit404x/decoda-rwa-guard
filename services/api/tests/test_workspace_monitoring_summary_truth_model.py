@@ -437,3 +437,137 @@ def test_simulator_telemetry_timestamp_is_preserved_from_persisted_event() -> No
     assert summary['telemetry_kind'] == 'target_event'
     assert summary['freshness_status'] == 'fresh'
     assert summary['confidence_status'] == 'unavailable'
+
+
+def test_offline_with_fresh_telemetry_sets_guard_flag_and_reason() -> None:
+    now = _now()
+    summary = build_workspace_monitoring_summary(
+        now=now,
+        workspace_configured=True,
+        monitoring_mode='live',
+        runtime_status='offline',
+        configured_systems=2,
+        monitored_systems_count=2,
+        reporting_systems=1,
+        protected_assets=1,
+        last_poll_at=now,
+        last_heartbeat_at=now,
+        last_telemetry_at=now - timedelta(seconds=30),
+        last_coverage_telemetry_at=now - timedelta(seconds=30),
+        telemetry_kind='target_event',
+        last_detection_at=None,
+        evidence_source='live',
+        status_reason=None,
+        configuration_reason=None,
+        valid_protected_asset_count=1,
+        linked_monitored_system_count=2,
+        persisted_enabled_config_count=1,
+        valid_target_system_link_count=2,
+        telemetry_window_seconds=300,
+        configuration_reason_codes=[],
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
+    )
+    assert 'offline_with_current_telemetry' in summary['contradiction_flags']
+    assert summary['status_reason'] == 'guard:offline_with_current_telemetry'
+
+
+def test_unavailable_telemetry_with_high_confidence_sets_guard_flag() -> None:
+    now = _now()
+    summary = build_workspace_monitoring_summary(
+        now=now,
+        workspace_configured=True,
+        monitoring_mode='live',
+        runtime_status='healthy',
+        configured_systems=2,
+        monitored_systems_count=2,
+        reporting_systems=2,
+        protected_assets=2,
+        last_poll_at=now,
+        last_heartbeat_at=now,
+        last_telemetry_at=None,
+        last_coverage_telemetry_at=now - timedelta(seconds=20),
+        telemetry_kind=None,
+        last_detection_at=None,
+        evidence_source='live',
+        status_reason=None,
+        configuration_reason=None,
+        valid_protected_asset_count=2,
+        linked_monitored_system_count=2,
+        persisted_enabled_config_count=2,
+        valid_target_system_link_count=2,
+        telemetry_window_seconds=300,
+        configuration_reason_codes=[],
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
+    )
+    assert 'telemetry_unavailable_with_high_confidence' in summary['contradiction_flags']
+    assert 'live_telemetry_verified_without_timestamp' in summary['contradiction_flags']
+
+
+def test_idle_runtime_with_continuous_healthy_monitoring_sets_guard_without_reason() -> None:
+    now = _now()
+    summary = build_workspace_monitoring_summary(
+        now=now,
+        workspace_configured=True,
+        monitoring_mode='live',
+        runtime_status='idle',
+        configured_systems=2,
+        monitored_systems_count=2,
+        reporting_systems=2,
+        protected_assets=2,
+        last_poll_at=now,
+        last_heartbeat_at=now,
+        last_telemetry_at=now - timedelta(seconds=20),
+        last_coverage_telemetry_at=now - timedelta(seconds=20),
+        telemetry_kind='coverage',
+        last_detection_at=None,
+        evidence_source='live',
+        status_reason=None,
+        configuration_reason=None,
+        valid_protected_asset_count=2,
+        linked_monitored_system_count=2,
+        persisted_enabled_config_count=2,
+        valid_target_system_link_count=2,
+        telemetry_window_seconds=300,
+        configuration_reason_codes=[],
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
+    )
+    assert 'idle_runtime_with_active_monitoring_claim' in summary['contradiction_flags']
+
+
+def test_idle_runtime_with_explicit_reason_does_not_set_continuous_monitoring_guard() -> None:
+    now = _now()
+    summary = build_workspace_monitoring_summary(
+        now=now,
+        workspace_configured=True,
+        monitoring_mode='live',
+        runtime_status='idle',
+        configured_systems=2,
+        monitored_systems_count=2,
+        reporting_systems=2,
+        protected_assets=2,
+        last_poll_at=now,
+        last_heartbeat_at=now,
+        last_telemetry_at=now - timedelta(seconds=20),
+        last_coverage_telemetry_at=now - timedelta(seconds=20),
+        telemetry_kind='coverage',
+        last_detection_at=None,
+        evidence_source='live',
+        status_reason='runtime_degraded_external_dependency',
+        configuration_reason=None,
+        valid_protected_asset_count=2,
+        linked_monitored_system_count=2,
+        persisted_enabled_config_count=2,
+        valid_target_system_link_count=2,
+        telemetry_window_seconds=300,
+        configuration_reason_codes=[],
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
+    )
+    assert 'idle_runtime_with_active_monitoring_claim' not in summary['contradiction_flags']
