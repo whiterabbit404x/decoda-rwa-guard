@@ -76,6 +76,27 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
   const startedRef = useRef(false);
 
   useEffect(() => {
+    if (!shouldLogLiveWorkspaceFeedDebug()) {
+      return;
+    }
+    console.debug('useLiveWorkspaceFeed state-updated', {
+      workspaceId: user?.current_workspace?.id ?? null,
+      monitoring_status: runtimeStatus?.monitoring_status ?? null,
+      reporting_systems:
+        runtimeStatus?.workspace_monitoring_summary?.reporting_systems ??
+        runtimeStatus?.workspace_monitoring_summary?.coverage_state?.reporting_systems ??
+        runtimeStatus?.active_systems ??
+        null,
+      evidence_source:
+        runtimeStatus?.workspace_monitoring_summary?.evidence_source ??
+        runtimeStatus?.workspace_monitoring_summary?.coverage_state?.evidence_source ??
+        null,
+      appliedCounts: counts,
+      lastFetchCompletedAt,
+    });
+  }, [counts, lastFetchCompletedAt, runtimeStatus, user?.current_workspace?.id]);
+
+  useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -121,26 +142,55 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
         const alertsPayload = await safeJson(alertsRes);
         const incidentsPayload = await safeJson(incidentsRes);
         const historyCount = Number(historyPayload?.counts?.analysis_runs ?? (historyPayload.analysis_runs ?? []).length ?? 0);
+        const truth = nextRuntime?.workspace_monitoring_summary;
+        const nextCounts: LiveWorkspaceCounts = {
+          protectedAssets: Number(
+            truth?.protected_assets ??
+              truth?.coverage_state?.protected_assets ??
+              nextRuntime?.protected_assets ??
+              0,
+          ),
+          monitoredSystems: Number(
+            truth?.configured_systems ??
+              truth?.coverage_state?.configured_systems ??
+              nextRuntime?.monitored_systems ??
+              0,
+          ),
+          activeSystems: Number(
+            truth?.reporting_systems ??
+              truth?.coverage_state?.reporting_systems ??
+              nextRuntime?.active_systems ??
+              0,
+          ),
+          openAlerts: (alertsPayload.alerts ?? []).length,
+          openIncidents: (incidentsPayload.incidents ?? []).length,
+          historyRecords: historyCount,
+        };
         if (shouldLogLiveWorkspaceFeedDebug()) {
-          console.debug('useLiveWorkspaceFeed runtime-status', {
+          console.debug('useLiveWorkspaceFeed refresh-result', {
+            workspaceId: user?.current_workspace?.id ?? null,
+            requestPath: RUNTIME_STATUS_PROXY_PATH,
             statusCode: statusRes?.status ?? 'network_error',
             payload: statusPayload,
+            monitoring_status: statusPayload?.monitoring_status ?? null,
+            reporting_systems:
+              statusPayload?.workspace_monitoring_summary?.reporting_systems ??
+              statusPayload?.workspace_monitoring_summary?.coverage_state?.reporting_systems ??
+              statusPayload?.active_systems ??
+              null,
+            evidence_source:
+              statusPayload?.workspace_monitoring_summary?.evidence_source ??
+              statusPayload?.workspace_monitoring_summary?.coverage_state?.evidence_source ??
+              null,
             monitoredSystems: nextRuntime?.monitored_systems ?? null,
             enabledSystems: nextRuntime?.enabled_systems ?? null,
             runtimeUnavailable,
             ancillaryFailed: !historyRes?.ok || !alertsRes?.ok || !incidentsRes?.ok,
+            appliedCounts: nextCounts,
           });
         }
         setRuntimeStatus(nextRuntime);
-        const truth = nextRuntime?.workspace_monitoring_summary;
-        setCounts({
-          protectedAssets: Number(truth?.protected_assets ?? truth?.coverage_state?.protected_assets ?? nextRuntime?.protected_assets ?? 0),
-          monitoredSystems: Number(truth?.configured_systems ?? truth?.coverage_state?.configured_systems ?? nextRuntime?.monitored_systems ?? 0),
-          activeSystems: Number(truth?.reporting_systems ?? truth?.coverage_state?.reporting_systems ?? nextRuntime?.active_systems ?? 0),
-          openAlerts: (alertsPayload.alerts ?? []).length,
-          openIncidents: (incidentsPayload.incidents ?? []).length,
-          historyRecords: historyCount,
-        });
+        setCounts(nextCounts);
         const completedAt = new Date().toISOString();
         setLastFetchCompletedAt(completedAt);
       } catch {
