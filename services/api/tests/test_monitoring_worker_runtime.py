@@ -63,7 +63,12 @@ class _FakeConnection:
         if 'LEFT JOIN workspaces AS workspace' in normalized:
             return _Result(rows=self.due_targets)
         if 'FROM targets' in normalized and 'FOR UPDATE SKIP LOCKED' in normalized:
-            return _Result(rows=self.due_targets)
+            rows = []
+            for target in self.due_targets:
+                row = dict(target)
+                row.setdefault('workspace_id', target.get('workspace_exists_id') or 'ws-1')
+                rows.append(row)
+            return _Result(rows=rows)
         if normalized.startswith('SELECT worker_name, running, status, last_started_at'):
             return _Result(row=self.health_row)
         if normalized.startswith('SELECT COUNT(*) AS overdue_count'):
@@ -246,9 +251,26 @@ def test_monitoring_cycle_zero_events_does_not_mark_monitored_system_error(monke
     assert summary['checked'] == 1
     assert summary['events_ingested'] == 0
     assert len(connection.monitored_system_updates) == 1
-    runtime_status, status, _monitored_system_id = connection.monitored_system_updates[0]
+    runtime_status, status = connection.monitored_system_updates[0][0], connection.monitored_system_updates[0][1]
     assert runtime_status == 'idle'
     assert status == 'active'
+
+
+def test_monitoring_cycle_without_due_targets_reports_zero_updates(monkeypatch):
+    connection = _FakeConnection(due_targets=[])
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+
+    assert summary['due_targets'] == 0
+    assert summary['checked'] == 0
+    assert summary['alerts_generated'] == 0
+    assert connection.last_worker_state_update_params[1] == 0
+    assert connection.last_worker_state_update_params[2] == 0
+    assert connection.last_worker_state_update_params[3] == 0
 
 
 def test_worker_once_mode_runs_single_cycle(monkeypatch):

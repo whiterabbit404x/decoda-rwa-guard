@@ -1738,10 +1738,33 @@ def ops_run_jobs(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.post('/ops/monitoring/run', summary='Run monitoring worker cycle (operator)')
-def ops_run_monitoring(payload: dict[str, Any]) -> dict[str, Any]:
+def ops_run_monitoring(payload: dict[str, Any], request: Request) -> Any:
     worker_name = str(payload.get('worker_name', 'monitoring-worker')).strip() or 'monitoring-worker'
     limit = int(payload.get('limit', 50))
-    return with_auth_schema_json(lambda: run_monitoring_cycle(worker_name=worker_name, limit=max(1, min(limit, 200))))
+    try:
+        return with_auth_schema_json(lambda: run_monitoring_cycle(worker_name=worker_name, limit=max(1, min(limit, 200))))
+    except HTTPException as exc:
+        if isinstance(exc.detail, dict):
+            return JSONResponse(exc.detail, status_code=exc.status_code)
+        raise
+    except Exception as exc:
+        logger.exception(
+            'ops_monitoring_run_unexpected_error method=%s path=%s worker_name=%s limit=%s error_type=%s',
+            request.method,
+            request.url.path,
+            worker_name,
+            limit,
+            type(exc).__name__,
+        )
+        error_payload: dict[str, Any] = {
+            'code': 'monitoring_run_failed',
+            'detail': 'Unexpected backend error during monitoring run.',
+            'stage': 'run_monitoring_cycle',
+        }
+        if not _is_production_like_runtime():
+            error_payload['debug_error_type'] = type(exc).__name__
+            error_payload['debug_error_message'] = str(exc)
+        return JSONResponse(error_payload, status_code=500)
 
 
 @app.get('/ops/monitoring/health', summary='Monitoring worker health snapshot')
