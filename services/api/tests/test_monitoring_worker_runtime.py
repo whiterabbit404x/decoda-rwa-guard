@@ -35,6 +35,8 @@ class _FakeConnection:
         self.latest_health_row = None
         self.last_worker_state_update_params = None
         self.monitored_system_updates = []
+        self.monitoring_run_inserts = []
+        self.monitoring_run_updates = []
 
     def transaction(self):
         return _FakeTransaction()
@@ -97,6 +99,12 @@ class _FakeConnection:
             return _Result()
         if normalized.startswith('UPDATE monitored_systems SET last_heartbeat = NOW()'):
             self.monitored_system_updates.append(params)
+            return _Result()
+        if normalized.startswith('INSERT INTO monitoring_runs'):
+            self.monitoring_run_inserts.append(params)
+            return _Result()
+        if normalized.startswith('UPDATE monitoring_runs'):
+            self.monitoring_run_updates.append(params)
             return _Result()
         return _Result()
 
@@ -308,6 +316,55 @@ def test_monitoring_cycle_without_due_targets_reports_zero_updates(monkeypatch):
     assert connection.last_worker_state_update_params[3] == 0
 
 
+def test_monitoring_cycle_persists_workspace_run_counts(monkeypatch):
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'target-1',
+            'name': 'Target 1',
+            'asset_id': 'asset-1',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda _connection, target, triggered_by_user_id=None: {
+            'alerts_generated': 2,
+            'incidents_created': 1,
+            'events_ingested': 3,
+            'target_id': target['id'],
+            'runs': ['run-1'],
+            'status': 'completed',
+        },
+    )
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10, trigger_type='scheduler')
+    assert summary['checked'] == 1
+    assert len(connection.monitoring_run_inserts) == 1
+    assert len(connection.monitoring_run_updates) == 1
+    insert = connection.monitoring_run_inserts[0]
+    update = connection.monitoring_run_updates[0]
+    assert insert[2] == 'scheduler'
+    assert update[0] == 'completed'
+    assert update[1] == 1
+    assert update[2] == 1
+    assert update[3] == 3
+    assert update[4] == 2
+    assert update[5] == 3
+
+
 def test_worker_once_mode_runs_single_cycle(monkeypatch):
     calls = []
 
@@ -317,14 +374,14 @@ def test_worker_once_mode_runs_single_cycle(monkeypatch):
         lambda: SimpleNamespace(worker_name='test-worker', interval_seconds=0.01, limit=5, once=True),
     )
 
-    def _cycle(worker_name, limit):
-        calls.append((worker_name, limit))
+    def _cycle(worker_name, limit, trigger_type='scheduler'):
+        calls.append((worker_name, limit, trigger_type))
         return {'due_targets': 0, 'checked': 0, 'alerts_generated': 0, 'live_mode': True}
 
     monkeypatch.setattr(run_monitoring_worker, 'run_monitoring_cycle', _cycle)
 
     assert run_monitoring_worker.main() == 0
-    assert calls == [('test-worker', 5)]
+    assert calls == [('test-worker', 5, 'scheduler')]
 
 
 def test_due_target_selection_query_keeps_monitoring_filters() -> None:

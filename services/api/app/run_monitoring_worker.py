@@ -49,7 +49,7 @@ def main() -> int:
     )
     while True:
         try:
-            summary = run_monitoring_cycle(worker_name=args.worker_name, limit=args.limit)
+            summary = run_monitoring_cycle(worker_name=args.worker_name, limit=args.limit, trigger_type='scheduler')
             logger.info(
                 'monitoring cycle summary due=%s checked=%s alerts=%s live_mode=%s',
                 summary.get('due_targets', 0),

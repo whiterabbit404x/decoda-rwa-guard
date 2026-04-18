@@ -2354,7 +2354,7 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
     return {'status': 'processed', 'event_id': event.event_id, 'analysis_run_id': processed['analysis_run_id'], 'alert_id': processed.get('alert_id')}
 
 
-def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int = 50) -> dict[str, Any]:
+def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int = 50, trigger_type: str = 'scheduler') -> dict[str, Any]:
     ingestion_runtime = monitoring_ingestion_runtime()
     if not live_mode_enabled():
         return {'checked': 0, 'alerts_generated': 0, 'runs': [], 'live_mode': False, 'ingestion_mode': ingestion_runtime.get('source', 'demo')}
@@ -2372,6 +2372,13 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     logger.info('monitoring cycle started worker=%s limit=%s', worker_name, limit)
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
+        workspace_run_ids: dict[str, str] = {}
+        workspace_systems_checked: dict[str, int] = defaultdict(int)
+        workspace_assets_checked: dict[str, set[str]] = defaultdict(set)
+        workspace_detections_created: dict[str, int] = defaultdict(int)
+        workspace_alerts_created: dict[str, int] = defaultdict(int)
+        workspace_telemetry_seen: dict[str, int] = defaultdict(int)
+        workspace_errors: dict[str, str] = {}
         connection.execute(
             '''
             INSERT INTO monitoring_worker_state (
@@ -2503,6 +2510,29 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         for row in due_targets:
             target = dict(row)
             target['monitored_system_id'] = due_system_ids.get(str(target['id']))
+            workspace_id = str(target.get('workspace_id') or '').strip()
+            if workspace_id and workspace_id not in workspace_run_ids:
+                run_id = str(uuid.uuid4())
+                workspace_run_ids[workspace_id] = run_id
+                connection.execute(
+                    '''
+                    INSERT INTO monitoring_runs (
+                        id,
+                        workspace_id,
+                        started_at,
+                        status,
+                        trigger_type,
+                        systems_checked_count,
+                        assets_checked_count,
+                        detections_created_count,
+                        alerts_created_count,
+                        telemetry_records_seen_count,
+                        notes
+                    )
+                    VALUES (%s::uuid, %s::uuid, NOW(), 'running', %s, 0, 0, 0, 0, 0, %s)
+                    ''',
+                    (run_id, workspace_id, trigger_type, f'worker_name={worker_name}'),
+                )
             try:
                 with connection.transaction():
                     connection.execute(
@@ -2555,6 +2585,15 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         )
                         monitored_systems_updated += 1
                 alerts_generated += int(result['alerts_generated'])
+                if workspace_id:
+                    workspace_systems_checked[workspace_id] += 1
+                    asset_id = str(target.get('asset_id') or '').strip()
+                    if asset_id:
+                        workspace_assets_checked[workspace_id].add(asset_id)
+                    result_events_ingested = int(result.get('events_ingested', 0))
+                    workspace_detections_created[workspace_id] += result_events_ingested
+                    workspace_alerts_created[workspace_id] += int(result.get('alerts_generated', 0))
+                    workspace_telemetry_seen[workspace_id] += result_events_ingested
                 live_targets_checked += 1 if is_monitorable_target_type(target.get('target_type')) else 0
                 events_ingested += int(result.get('events_ingested', 0))
                 incidents_created += int(result.get('incidents_created', 0))
@@ -2562,6 +2601,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 checked += 1
             except Exception as exc:
                 error_message = str(exc)
+                if workspace_id:
+                    workspace_errors[workspace_id] = str(exc)
                 logger.exception('monitoring target failed target=%s name=%s', target.get('id'), target.get('name'))
                 connection.execute(
                     'UPDATE targets SET last_checked_at = NOW(), last_run_status = %s, monitoring_claimed_by = NULL, monitoring_claimed_at = NULL WHERE id = %s AND workspace_id = %s',
@@ -2576,6 +2617,37 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         (error_message, monitored_system_id, str(target['workspace_id'])),
                     )
                     monitored_systems_updated += 1
+        for workspace_id, monitoring_run_id in workspace_run_ids.items():
+            workspace_note = f'worker_name={worker_name}'
+            workspace_error = workspace_errors.get(workspace_id)
+            if workspace_error:
+                workspace_note = f'{workspace_note};error={workspace_error}'
+            connection.execute(
+                '''
+                UPDATE monitoring_runs
+                SET completed_at = NOW(),
+                    status = %s,
+                    systems_checked_count = %s,
+                    assets_checked_count = %s,
+                    detections_created_count = %s,
+                    alerts_created_count = %s,
+                    telemetry_records_seen_count = %s,
+                    notes = %s
+                WHERE id = %s::uuid
+                  AND workspace_id = %s::uuid
+                ''',
+                (
+                    'error' if workspace_error else 'completed',
+                    int(workspace_systems_checked.get(workspace_id, 0)),
+                    len(workspace_assets_checked.get(workspace_id, set())),
+                    int(workspace_detections_created.get(workspace_id, 0)),
+                    int(workspace_alerts_created.get(workspace_id, 0)),
+                    int(workspace_telemetry_seen.get(workspace_id, 0)),
+                    workspace_note,
+                    monitoring_run_id,
+                    workspace_id,
+                ),
+            )
         connection.execute(
             '''
             UPDATE monitoring_worker_state
@@ -2789,9 +2861,71 @@ def run_monitoring_once(target_id: str, request: Request) -> dict[str, Any]:
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
-        result = process_monitoring_target(connection, dict(row), triggered_by_user_id=str(user['id']))
-        connection.commit()
-        return {**result, 'debug_only': True, 'enterprise_proof_eligible': False, 'reason_code': 'manual_run_once_debug_path'}
+        target = dict(row)
+        run_id = str(uuid.uuid4())
+        workspace_id = str(target['workspace_id'])
+        connection.execute(
+            '''
+            INSERT INTO monitoring_runs (
+                id,
+                workspace_id,
+                started_at,
+                status,
+                trigger_type,
+                systems_checked_count,
+                assets_checked_count,
+                detections_created_count,
+                alerts_created_count,
+                telemetry_records_seen_count,
+                notes
+            )
+            VALUES (%s::uuid, %s::uuid, NOW(), 'running', 'manual', 0, 0, 0, 0, 0, %s)
+            ''',
+            (run_id, workspace_id, f'target_id={target_id}'),
+        )
+        try:
+            result = process_monitoring_target(connection, target, triggered_by_user_id=str(user['id']))
+            events_ingested = int(result.get('events_ingested', 0))
+            connection.execute(
+                '''
+                UPDATE monitoring_runs
+                SET completed_at = NOW(),
+                    status = 'completed',
+                    systems_checked_count = 1,
+                    assets_checked_count = %s,
+                    detections_created_count = %s,
+                    alerts_created_count = %s,
+                    telemetry_records_seen_count = %s,
+                    notes = %s
+                WHERE id = %s::uuid
+                  AND workspace_id = %s::uuid
+                ''',
+                (
+                    1 if target.get('asset_id') else 0,
+                    events_ingested,
+                    int(result.get('alerts_generated', 0)),
+                    events_ingested,
+                    f'target_id={target_id};status=completed',
+                    run_id,
+                    workspace_id,
+                ),
+            )
+            connection.commit()
+            return {**result, 'debug_only': True, 'enterprise_proof_eligible': False, 'reason_code': 'manual_run_once_debug_path'}
+        except Exception as exc:
+            connection.execute(
+                '''
+                UPDATE monitoring_runs
+                SET completed_at = NOW(),
+                    status = 'error',
+                    notes = %s
+                WHERE id = %s::uuid
+                  AND workspace_id = %s::uuid
+                ''',
+                (f'target_id={target_id};error={exc}', run_id, workspace_id),
+            )
+            connection.commit()
+            raise
 
 
 def list_incidents(request: Request, *, status_value: str | None = None, severity: str | None = None, target_id: str | None = None) -> dict[str, Any]:

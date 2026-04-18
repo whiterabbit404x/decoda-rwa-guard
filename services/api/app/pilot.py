@@ -5641,6 +5641,37 @@ def list_monitored_systems(request: Request) -> dict[str, Any]:
         return {'systems': [_json_safe_value(row) for row in rows], 'workspace': workspace_context['workspace']}
 
 
+def list_monitoring_runs(request: Request, *, limit: int = 20) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        max_limit = max(1, min(int(limit or 20), 100))
+        rows = connection.execute(
+            '''
+            SELECT id,
+                   workspace_id,
+                   started_at,
+                   completed_at,
+                   status,
+                   trigger_type,
+                   systems_checked_count,
+                   assets_checked_count,
+                   detections_created_count,
+                   alerts_created_count,
+                   telemetry_records_seen_count,
+                   notes
+            FROM monitoring_runs
+            WHERE workspace_id = %s::uuid
+            ORDER BY started_at DESC
+            LIMIT %s
+            ''',
+            (workspace_id, max_limit),
+        ).fetchall()
+        return {'runs': [_json_safe_value(dict(row)) for row in rows], 'workspace': workspace_context['workspace']}
+
+
 def create_monitored_system(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     asset_id = str(payload.get('asset_id') or '').strip()

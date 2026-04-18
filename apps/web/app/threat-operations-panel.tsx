@@ -74,6 +74,19 @@ type HistoryRun = {
   title: string;
   created_at: string;
 };
+type MonitoringRunRow = {
+  id: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  status?: string | null;
+  trigger_type?: string | null;
+  systems_checked_count?: number | null;
+  assets_checked_count?: number | null;
+  detections_created_count?: number | null;
+  alerts_created_count?: number | null;
+  telemetry_records_seen_count?: number | null;
+  notes?: string | null;
+};
 type EvidenceRow = {
   id: string;
   observed_at?: string;
@@ -102,7 +115,7 @@ export type PageOperationalState =
   | 'unconfigured_workspace'
   | 'fetch_error';
 
-type SnapshotFailureKey = 'targets' | 'systems' | 'alerts' | 'incidents' | 'history' | 'evidence';
+type SnapshotFailureKey = 'targets' | 'systems' | 'alerts' | 'incidents' | 'history' | 'evidence' | 'runs';
 
 const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
   'no_valid_protected_assets',
@@ -466,6 +479,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [historyRuns, setHistoryRuns] = useState<HistoryRun[]>([]);
+  const [monitoringRuns, setMonitoringRuns] = useState<MonitoringRunRow[]>([]);
   const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
   const [monitoredSystems, setMonitoredSystems] = useState<MonitoredSystemRow[]>([]);
 
@@ -478,13 +492,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         return;
       }
       try {
-        const [targetsResult, systemsResult, alertsResult, incidentsResult, historyResult, evidenceResult] = await Promise.allSettled([
+        const [targetsResult, systemsResult, alertsResult, incidentsResult, historyResult, evidenceResult, runsResult] = await Promise.allSettled([
           fetch(`${apiUrl}/monitoring/targets`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(MONITORING_SYSTEMS_PROXY_PATH, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/incidents?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/pilot/history?limit=12`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/monitoring/runs?limit=12`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         if (!active) return;
         const responseEntries: [SnapshotFailureKey, PromiseSettledResult<Response>][] = [
@@ -494,6 +509,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ['incidents', incidentsResult],
           ['history', historyResult],
           ['evidence', evidenceResult],
+          ['runs', runsResult],
         ];
         const failedEndpoints = responseEntries
           .filter(([, result]) => !(result.status === 'fulfilled' && result.value.ok))
@@ -501,13 +517,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const responses = responseEntries.map(([, result]) => (
           result.status === 'fulfilled' && result.value.ok ? result.value : null
         ));
-        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, historyResponse, evidenceResponse] = responses;
+        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, historyResponse, evidenceResponse, runsResponse] = responses;
         const targetsPayload = targetsResponse ? await targetsResponse.json().catch(() => ({})) : {};
         const systemsPayload = systemsResponse ? await systemsResponse.json().catch(() => ({})) : {};
         const alertsPayload = alertsResponse ? await alertsResponse.json().catch(() => ({})) : {};
         const incidentsPayload = incidentsResponse ? await incidentsResponse.json().catch(() => ({})) : {};
         const historyPayload = historyResponse ? await historyResponse.json().catch(() => ({})) : {};
         const evidencePayload = evidenceResponse ? await evidenceResponse.json().catch(() => ({})) : {};
+        const runsPayload = runsResponse ? await runsResponse.json().catch(() => ({})) : {};
 
         if (targetsResponse) {
           setTargets((targetsPayload?.targets ?? []) as TargetRow[]);
@@ -526,6 +543,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         }
         if (evidenceResponse) {
           setEvidence((evidencePayload?.evidence ?? []) as EvidenceRow[]);
+        }
+        if (runsResponse) {
+          setMonitoringRuns((runsPayload?.runs ?? []) as MonitoringRunRow[]);
         }
         setSystemsPanelWarning(formatSystemsPanelWarning(failedEndpoints));
         setSnapshotError(formatSnapshotErrorMessage(failedEndpoints));
@@ -1042,6 +1062,54 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
 
         <div className="stack compactStack">
+          <article className="dataCard">
+            <div className="listHeader">
+              <div>
+                <p className="sectionEyebrow">Recent Monitoring Runs</p>
+                <h3>Workspace cycle persistence</h3>
+              </div>
+              <Link href="/history" prefetch={false}>Open full history</Link>
+            </div>
+            {loadingSnapshot ? <p className="muted">Loading recent monitoring runs…</p> : null}
+            {!loadingSnapshot && monitoringRuns.length === 0 ? (
+              <div className="emptyStatePanel">
+                <h4>No monitoring runs recorded yet</h4>
+                <p className="muted">Run monitoring once or wait for the scheduler to persist the next workspace cycle.</p>
+              </div>
+            ) : (
+              <div className="tableWrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Started</th>
+                      <th>Status</th>
+                      <th>Trigger</th>
+                      <th>Systems</th>
+                      <th>Assets</th>
+                      <th>Detections</th>
+                      <th>Alerts</th>
+                      <th>Telemetry</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {monitoringRuns.slice(0, 8).map((run) => (
+                      <tr key={run.id}>
+                        <td>{formatAbsoluteTime(run.started_at)}<span className="tableMeta">{formatRelativeTime(run.started_at)}</span></td>
+                        <td><span className={`statusBadge statusBadge-${String(run.status || '').toLowerCase() === 'completed' ? 'healthy' : (String(run.status || '').toLowerCase() === 'error' ? 'attention' : 'offline')}`}>{String(run.status || 'unknown')}</span></td>
+                        <td>{String(run.trigger_type || 'unknown')}</td>
+                        <td>{Number(run.systems_checked_count ?? 0)}</td>
+                        <td>{Number(run.assets_checked_count ?? 0)}</td>
+                        <td>{Number(run.detections_created_count ?? 0)}</td>
+                        <td>{Number(run.alerts_created_count ?? 0)}</td>
+                        <td>{Number(run.telemetry_records_seen_count ?? 0)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </article>
+
           <article className="dataCard">
             <div className="listHeader">
               <div>
