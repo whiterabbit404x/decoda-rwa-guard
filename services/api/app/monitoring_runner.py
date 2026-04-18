@@ -4299,7 +4299,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 summary,
             )
         provider_health = 'healthy' if str(payload.get('recent_evidence_state')) == 'real' and int(payload.get('recent_real_event_count') or 0) > 0 else 'degraded'
-        mode = str(health.get('operational_mode') or health.get('mode') or 'DEGRADED').upper()
+        live_coverage_mode = 'HYBRID' if monitoring_mode_raw == 'hybrid' else 'LIVE'
+        mode = str(health.get('operational_mode') or health.get('mode') or live_coverage_mode).upper()
         active_live_coverage = bool(
             workspace_configured
             and monitoring_status == 'active'
@@ -4319,8 +4320,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             degraded_mode_reasons.append('runtime_status_degraded')
         if int(payload.get('recent_real_event_count') or 0) <= 0:
             claim_safety_risk_indicators.append('no_recent_real_events')
-        if mode == 'DEGRADED' and not degraded_mode_reasons and active_live_coverage:
-            mode = 'HYBRID' if monitoring_mode_raw == 'hybrid' else 'LIVE'
+        if runtime_status_summary in {'healthy', 'idle'} and active_live_coverage and not degraded_mode_reasons:
+            mode = live_coverage_mode
         elif degraded_mode_reasons:
             mode = 'DEGRADED'
         claim_validator_status = str(claim_validator.get('status') or 'FAIL')

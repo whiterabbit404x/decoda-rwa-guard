@@ -184,6 +184,62 @@ def test_runtime_status_active_live_coverage_promotes_mode_out_of_degraded(monke
     assert payload['mode'] != 'DEGRADED'
 
 
+def test_runtime_status_healthy_summary_with_live_coverage_does_not_force_degraded_mode(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _HealthyCoverageConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                now_iso = now.isoformat()
+                telemetry_iso = (now - timedelta(seconds=15)).isoformat()
+                return _Result(
+                    rows=[
+                        {
+                            'id': 'sys-1',
+                            'workspace_id': 'ws-1',
+                            'asset_id': 'asset-1',
+                            'target_id': 'target-1',
+                            'is_enabled': True,
+                            'runtime_status': 'active',
+                            'last_heartbeat': now_iso,
+                            'last_event_at': telemetry_iso,
+                            'last_coverage_telemetry_at': telemetry_iso,
+                            'monitoring_interval_seconds': 30,
+                            'created_at': now_iso,
+                        },
+                    ]
+                )
+            if 'FROM analysis_runs' in q:
+                return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 2, 'evidence_state': 'real'}}})
+            return super().execute(query, params)
+
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'operational_mode': 'DEGRADED',
+            'mode': 'live',
+            'last_heartbeat_at': now.isoformat(),
+            'last_cycle_at': now.isoformat(),
+            'degraded': False,
+            'degraded_reason': None,
+            'last_error': None,
+            'source_type': 'polling',
+            'worker_running': True,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_HealthyCoverageConn(now - timedelta(seconds=15))))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    assert payload['workspace_monitoring_summary']['runtime_status'] == 'healthy'
+    assert payload['workspace_monitoring_summary']['status_reason'] is None
+    assert payload['workspace_monitoring_summary']['reporting_systems'] > 0
+    assert payload['source_of_evidence'] == 'live'
+    assert payload['mode'] != 'DEGRADED'
+
+
 def test_runtime_status_degraded_mode_requires_degraded_reasons(monkeypatch):
     now = datetime.now(timezone.utc)
 
