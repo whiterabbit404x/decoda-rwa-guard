@@ -4,7 +4,9 @@ import json
 import logging
 import os
 import uuid
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 from typing import Any
 from fastapi import HTTPException, Request, status
 import psycopg
@@ -62,6 +64,11 @@ PREREQUISITE_COUNTER_KEYS: tuple[str, ...] = (
 )
 
 NON_LIVE_PROVIDER_SOURCE_TYPES: set[str] = {'demo', 'simulator', 'replay', 'unknown'}
+RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS = int(os.getenv('RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS', os.getenv('PROXY_TIMEOUT_SECONDS', '30')))
+RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES = int(os.getenv('RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES', '200'))
+RUNTIME_STATUS_QUERY_PROFILE_HISTORY: dict[str, deque[float]] = defaultdict(
+    lambda: deque(maxlen=max(RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES, 20))
+)
 
 
 def _provider_source_is_live(source_type: Any) -> bool:
@@ -197,6 +204,23 @@ def _parse_ts(value: Any) -> datetime | None:
         return datetime.fromisoformat(raw.replace('Z', '+00:00'))
     except ValueError:
         return None
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    if percentile <= 0:
+        return min(values)
+    if percentile >= 100:
+        return max(values)
+    ordered = sorted(values)
+    rank = (len(ordered) - 1) * (percentile / 100.0)
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    if lower == upper:
+        return ordered[lower]
+    weight = rank - lower
+    return ordered[lower] + ((ordered[upper] - ordered[lower]) * weight)
 
 
 def _compute_mttd_seconds(*, observed_at: datetime, detected_at: datetime) -> int:
@@ -3201,6 +3225,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         _persist_workspace_context(req, workspace_id=workspace_id, workspace_slug=workspace_slug)
         return workspace_id, workspace_slug
 
+    def _safe_checkpoint_reason_token(checkpoint_label: str | None) -> str:
+        checkpoint = str(checkpoint_label or '').strip().lower()
+        if checkpoint in {'', 'none', 'not_started'}:
+            checkpoint = 'init'
+        checkpoint = checkpoint.replace('token', 'redacted')
+        return f'checkpoint_{checkpoint}'
+
     def _base_runtime_failure_payload(*, workspace_id: str | None = None, workspace_slug: str | None = None) -> dict[str, Any]:
         field_reason_codes = {
             'protected_assets': ['query_failure'],
@@ -3401,10 +3432,22 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         nonlocal last_query_checkpoint
         nonlocal resolved_workspace_id
         nonlocal resolved_workspace_slug
+        checkpoint_started_at = perf_counter()
+        checkpoint_durations_ms: dict[str, float] = {}
+        completed_checkpoints: list[str] = []
 
         def _mark_query_checkpoint(label: str) -> None:
             nonlocal last_query_checkpoint
+            nonlocal checkpoint_started_at
+            previous_checkpoint = last_query_checkpoint
+            now_counter = perf_counter()
+            if previous_checkpoint and previous_checkpoint != 'not_started':
+                elapsed_ms = max(0.0, (now_counter - checkpoint_started_at) * 1000.0)
+                checkpoint_durations_ms[previous_checkpoint] = checkpoint_durations_ms.get(previous_checkpoint, 0.0) + elapsed_ms
+                completed_checkpoints.append(previous_checkpoint)
+                RUNTIME_STATUS_QUERY_PROFILE_HISTORY[previous_checkpoint].append(elapsed_ms)
             last_query_checkpoint = label
+            checkpoint_started_at = now_counter
 
         health = get_monitoring_health()
         now = utc_now()
@@ -3762,38 +3805,47 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ).fetchone()
             latest_detection_evaluation_at = _parse_ts((latest_detection_eval or {}).get('created_at'))
             latest_detection_payload = _json_safe_value((latest_detection_eval or {}).get('response_payload') or {}) if latest_detection_eval else None
-            synthetic_ingestion_sources = ('demo', 'simulator', 'replay', 'synthetic', 'fallback')
-            synthetic_ingestion_sources_sql = ', '.join(
-                f"'{source}'" for source in synthetic_ingestion_sources
-            )
             live_coverage_receipts_query = f'''
+                WITH filtered_receipts AS (
+                    SELECT
+                        e.processed_at,
+                        ms.id AS monitored_system_id
+                    FROM monitoring_event_receipts e
+                    JOIN monitored_systems ms
+                      ON ms.workspace_id = e.workspace_id
+                     AND ms.target_id = e.target_id
+                     AND ms.is_enabled IS DISTINCT FROM FALSE
+                    JOIN targets t
+                      ON t.id = e.target_id
+                     AND t.workspace_id = e.workspace_id
+                     AND t.deleted_at IS NULL
+                     AND t.enabled = TRUE
+                     AND {monitorable_target_types_sql_clause('t.target_type')}
+                    WHERE e.evidence_source = 'live'
+                      AND (
+                        e.telemetry_kind = 'coverage'
+                        OR (e.telemetry_kind = 'target_event' AND e.receipt_kind = 'target_event')
+                      )
+                      AND e.processed_at IS NOT NULL
+                      AND COALESCE(LOWER(e.ingestion_source), '') NOT IN ('demo', 'simulator', 'replay', 'synthetic', 'fallback')
+                      {'AND e.workspace_id = %s' if workspace_id else ''}
+                ),
+                rolled AS (
+                    SELECT
+                        monitored_system_id,
+                        MAX(processed_at) AS latest_processed_at,
+                        COUNT(*) AS receipt_count
+                    FROM filtered_receipts
+                    GROUP BY monitored_system_id
+                )
                 SELECT
-                    e.processed_at,
-                    e.target_id,
-                    ms.id AS monitored_system_id,
-                    e.telemetry_kind,
-                    e.receipt_kind
-                FROM monitoring_event_receipts e
-                LEFT JOIN monitored_systems ms
-                  ON ms.workspace_id = e.workspace_id
-                 AND ms.target_id = e.target_id
-                 AND COALESCE(ms.is_enabled, TRUE) = TRUE
-                LEFT JOIN targets t
-                  ON t.id = e.target_id
-                 AND t.workspace_id = e.workspace_id
-                WHERE e.evidence_source = 'live'
-                  AND (
-                    e.telemetry_kind = 'coverage'
-                    OR (e.telemetry_kind = 'target_event' AND e.receipt_kind = 'target_event')
-                  )
-                  AND e.processed_at IS NOT NULL
-                  AND COALESCE(LOWER(e.ingestion_source), '') NOT IN ({synthetic_ingestion_sources_sql})
-                  AND ms.id IS NOT NULL
-                  AND t.deleted_at IS NULL
-                  AND t.enabled = TRUE
-                  AND {monitorable_target_types_sql_clause('t.target_type')}
-                  {'AND e.workspace_id = %s' if workspace_id else ''}
-                ORDER BY e.processed_at DESC
+                    monitored_system_id,
+                    latest_processed_at,
+                    receipt_count,
+                    MAX(latest_processed_at) OVER () AS workspace_latest_processed_at,
+                    SUM(receipt_count) OVER () AS workspace_receipt_count
+                FROM rolled
+                ORDER BY latest_processed_at DESC
             '''
             _mark_query_checkpoint('select_live_coverage_receipts')
             if workspace_id:
@@ -3805,25 +3857,54 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 live_coverage_receipt_rows = connection.execute(
                     live_coverage_receipts_query,
                 ).fetchall()
-            live_coverage_receipts_persisted_count = len(live_coverage_receipt_rows)
+            live_coverage_receipts_persisted_count = int((live_coverage_receipt_rows[0] or {}).get('workspace_receipt_count') or 0) if live_coverage_receipt_rows else 0
             for receipt in live_coverage_receipt_rows:
-                processed_at = _parse_ts((receipt or {}).get('processed_at'))
+                processed_at = _parse_ts((receipt or {}).get('latest_processed_at'))
                 if processed_at is None:
                     continue
                 live_coverage_receipts_workspace_latest = (
-                    processed_at
+                    _parse_ts((receipt or {}).get('workspace_latest_processed_at'))
                     if live_coverage_receipts_workspace_latest is None
-                    else max(live_coverage_receipts_workspace_latest, processed_at)
+                    else live_coverage_receipts_workspace_latest
                 )
                 monitored_system_id = str((receipt or {}).get('monitored_system_id') or '').strip()
                 if not monitored_system_id:
                     continue
-                previous = live_coverage_receipts_by_system.get(monitored_system_id)
-                if previous is None or processed_at > previous:
-                    live_coverage_receipts_by_system[monitored_system_id] = processed_at
+                live_coverage_receipts_by_system[monitored_system_id] = processed_at
             if request is None:
                 _mark_query_checkpoint('load_runtime_monitored_rows_unscoped')
                 monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
+        _mark_query_checkpoint('aggregation_complete')
+        query_total_duration_ms = sum(checkpoint_durations_ms.values())
+        RUNTIME_STATUS_QUERY_PROFILE_HISTORY['total_runtime_status_query'].append(query_total_duration_ms)
+        proxy_timeout_ms = max(RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS, 1) * 1000
+        query_p95_ms = _percentile(list(RUNTIME_STATUS_QUERY_PROFILE_HISTORY['total_runtime_status_query']), 95)
+        slow_checkpoint_summary: list[dict[str, Any]] = []
+        for checkpoint in sorted(set(completed_checkpoints), key=lambda label: checkpoint_durations_ms.get(label, 0.0), reverse=True)[:5]:
+            checkpoint_history = list(RUNTIME_STATUS_QUERY_PROFILE_HISTORY[checkpoint])
+            slow_checkpoint_summary.append(
+                {
+                    'checkpoint': checkpoint,
+                    'duration_ms': round(checkpoint_durations_ms.get(checkpoint, 0.0), 2),
+                    'p95_ms': round(_percentile(checkpoint_history, 95) or 0.0, 2),
+                }
+            )
+        logger.info(
+            'monitoring_runtime_status_query_profile workspace_id=%s total_ms=%s p95_total_ms=%s proxy_timeout_ms=%s checkpoint_count=%s slowest_checkpoints=%s',
+            workspace_id,
+            round(query_total_duration_ms, 2),
+            round(query_p95_ms, 2) if query_p95_ms is not None else None,
+            proxy_timeout_ms,
+            len(completed_checkpoints),
+            slow_checkpoint_summary,
+        )
+        if query_p95_ms is not None and query_p95_ms >= proxy_timeout_ms:
+            logger.warning(
+                'monitoring_runtime_status_query_profile_timeout_risk workspace_id=%s p95_total_ms=%s proxy_timeout_ms=%s',
+                workspace_id,
+                round(query_p95_ms, 2),
+                proxy_timeout_ms,
+            )
         expected_monitored_row_fields = {
             'id',
             'asset_id',
@@ -4426,7 +4507,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         workspace_id, workspace_slug = _workspace_context_from_request(request)
         reason_tokens = ['runtime_status_degraded', 'database_error', 'stage_query']
         if last_query_checkpoint:
-            reason_tokens.append(f'checkpoint_{last_query_checkpoint}')
+            reason_tokens.append(_safe_checkpoint_reason_token(last_query_checkpoint))
         logger.exception(
             'monitoring_runtime_status_db_error workspace_id=%s workspace_slug=%s checkpoint=%s',
             workspace_id,
@@ -4454,7 +4535,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     except RuntimeError as exc:
         workspace_id, workspace_slug = _workspace_context_from_request(request)
         stage_detail = last_query_checkpoint or type(exc).__name__
-        reason_tokens = ['runtime_status_degraded', 'runtime_error', 'stage_aggregation', f'checkpoint_{stage_detail}']
+        reason_tokens = ['runtime_status_degraded', 'runtime_error', 'stage_aggregation', _safe_checkpoint_reason_token(stage_detail)]
         logger.exception('monitoring_runtime_status_runtime_error workspace_id=%s workspace_slug=%s', workspace_id, workspace_slug)
         logger.warning(
             'monitoring_runtime_status_degraded_payload_reasons workspace_id=%s workspace_slug=%s reason_tokens=%s',
@@ -4477,7 +4558,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     except Exception as exc:
         workspace_id, workspace_slug = _workspace_context_from_request(request)
         stage_detail = last_query_checkpoint or type(exc).__name__
-        reason_tokens = ['runtime_status_degraded', 'internal_error', 'stage_context', f'checkpoint_{stage_detail}']
+        reason_tokens = ['runtime_status_degraded', 'internal_error', 'stage_context', _safe_checkpoint_reason_token(stage_detail)]
         logger.exception('monitoring_runtime_status_unhandled_error workspace_id=%s workspace_slug=%s', workspace_id, workspace_slug)
         logger.warning(
             'monitoring_runtime_status_degraded_payload_reasons workspace_id=%s workspace_slug=%s reason_tokens=%s',
