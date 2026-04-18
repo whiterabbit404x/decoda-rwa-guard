@@ -48,3 +48,46 @@ def test_summarize_audit_activity_flags_suspicious_events_within_window() -> Non
     assert summary['suspicious_event_count'] == 2
     suspicious_actions = {entry['action'] for entry in summary['suspicious_events']}
     assert suspicious_actions == {'export.generate', 'auth.password_reset'}
+
+
+def test_run_marks_leaked_token_revoked_after_signout_all(monkeypatch) -> None:
+    class _Args:
+        api_url = 'http://localhost:8000'
+        leaked_token = 'leaked-token'
+        email = 'user@example.com'
+        password = 'password'
+        workspace_id = ''
+        audit_limit = 50
+        audit_lookback_minutes = 60
+        timeout = 5
+        output = ''
+
+    responses = iter([
+        script.ApiResponse(200, {'user': {'id': 'user-1', 'current_workspace': {'id': 'ws-1'}}}),
+        script.ApiResponse(200, {'sessions': []}),
+        script.ApiResponse(200, {'ok': True}),
+        script.ApiResponse(401, {'detail': 'invalid token'}),
+        script.ApiResponse(200, {'user': {'id': 'user-1'}}),
+        script.ApiResponse(200, {'sessions': []}),
+        script.ApiResponse(200, {'status': 'healthy'}),
+        script.ApiResponse(200, {'audit_logs': []}),
+    ])
+
+    def _fake_json_request(**kwargs):
+        return next(responses)
+
+    monkeypatch.setattr(script, '_json_request', _fake_json_request)
+    monkeypatch.setattr(
+        script,
+        '_signin_for_new_token',
+        lambda api_url, *, email, password, timeout_seconds: (
+            'new-token',
+            {'id': 'user-1', 'current_workspace': {'id': 'ws-1'}},
+        ),
+    )
+
+    report = script.run(_Args())
+
+    revoke_step = report['steps']['revoke_rotate_sessions']
+    assert revoke_step['leaked_token_post_rotation_status'] == 401
+    assert revoke_step['leaked_token_revoked'] is True
