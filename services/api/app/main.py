@@ -170,6 +170,7 @@ from services.api.app.monitoring_runner import (
     run_monitoring_cycle,
     run_monitoring_once,
 )
+from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary_fallback
 from services.api.app.threat_payloads import normalize_threat_payload
 
 
@@ -1793,26 +1794,14 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
                 'type': type(exc).__name__,
                 'message': 'Monitoring runtime endpoint degraded due to unexpected route error.',
             },
-            'workspace_monitoring_summary': {
-                'workspace_configured': False,
-                'monitoring_mode': 'unavailable',
-                'runtime_status': 'offline',
-                'configured_systems': 0,
-                'reporting_systems': 0,
-                'protected_assets': 0,
-                'coverage_state': {'configured_systems': 0, 'reporting_systems': 0, 'protected_assets': 0},
-                'freshness_status': 'unavailable',
-                'confidence_status': 'unavailable',
-                'last_heartbeat_at': None,
-                'last_telemetry_at': None,
-                'last_poll_at': None,
-                'last_detection_at': None,
-                'evidence_source': 'none',
-                'status_reason': 'runtime_status_route_error',
-                'configuration_reason': 'runtime_status_route_error',
-                'configuration_reason_codes': ['runtime_status_route_error'],
-                'contradiction_flags': [],
-            },
+            'workspace_monitoring_summary': build_workspace_monitoring_summary_fallback(
+                status_reason='runtime_status_route_error',
+                workspace_configured=False,
+                runtime_status='offline',
+                monitoring_status='offline',
+                telemetry_freshness='unavailable',
+                confidence='unavailable',
+            ),
         }
 
 

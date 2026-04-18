@@ -23,7 +23,10 @@ from services.api.app.monitorable_target_types import (
     is_monitorable_target_type,
     monitorable_target_types_sql_clause,
 )
-from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary
+from services.api.app.workspace_monitoring_summary import (
+    build_workspace_monitoring_summary,
+    build_workspace_monitoring_summary_fallback,
+)
 from services.api.app.pilot import (
     _json_dumps,
     _json_safe_value,
@@ -158,9 +161,6 @@ def _normalize_monitoring_runtime_contract(payload: dict[str, Any]) -> dict[str,
     normalized['count_reason_codes'] = count_reason_codes
     normalized['configuration_reason_codes'] = configuration_reason_codes
     normalized['field_reason_codes'] = field_reason_codes
-    summary['count_reason_codes'] = dict(count_reason_codes)
-    summary['configuration_reason_codes'] = list(configuration_reason_codes)
-    summary['field_reason_codes'] = dict(field_reason_codes)
     normalized['workspace_monitoring_summary'] = summary
     return normalized
 
@@ -3279,51 +3279,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'runtime_status_summary': 'offline',
             'monitoring_status': 'offline',
             'status': 'Offline',
-            'workspace_monitoring_summary': {
-                'workspace_configured': False,
-                'configuration_reason': 'runtime_status_unavailable',
-                'configuration_reason_codes': ['runtime_status_unavailable'],
-                'status_reason': 'runtime_status_error',
-                'valid_protected_assets': 0,
-                'linked_monitored_systems': 0,
-                'enabled_configs': 0,
-                'valid_link_count': 0,
-                'raw_enabled_targets': 0,
-                'monitorable_enabled_targets': 0,
-                'valid_asset_linked_targets': 0,
-                'enabled_monitored_systems': 0,
-                'valid_target_system_links': 0,
-                'count_reason_codes': {
-                    'raw_enabled_targets': 'runtime_status_unavailable',
-                    'monitorable_enabled_targets': 'runtime_status_unavailable',
-                    'valid_asset_linked_targets': 'runtime_status_unavailable',
-                    'enabled_monitored_systems': 'runtime_status_unavailable',
-                    'valid_target_system_links': 'runtime_status_unavailable',
-                },
-                'configured_systems': 0,
-                'reporting_systems': 0,
-                'last_poll_at': None,
-                'last_heartbeat_at': None,
-                'last_coverage_telemetry_at': None,
-                'last_telemetry_at': None,
-                'coverage_receipts_last_at': None,
-                'coverage_receipts_workspace_count': 0,
-                'stale_heartbeat': True,
-                'provider_degraded_flag': True,
-                'evidence_source': 'none',
-                'confidence_status': 'degraded',
-                'runtime_status_summary': 'offline',
-                'configuration_diagnostics': {
-                    'valid_protected_assets': 0,
-                    'linked_monitored_systems': 0,
-                    'enabled_configs': 0,
-                    'valid_link_count': 0,
-                    'workspace_configured': False,
-                    'configuration_reason': 'runtime_status_unavailable',
-                    'reason_codes': ['runtime_status_unavailable'],
-                },
-                'field_reason_codes': field_reason_codes,
-            },
+            'workspace_monitoring_summary': build_workspace_monitoring_summary_fallback(
+                status_reason='runtime_status_error',
+                workspace_configured=False,
+                runtime_status='offline',
+                monitoring_status='offline',
+                telemetry_freshness='unavailable',
+                confidence='unavailable',
+            ),
             'configuration_diagnostics': {
                 'valid_protected_assets': 0,
                 'linked_monitored_systems': 0,
@@ -4226,19 +4189,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             persisted_enabled_config_count=persisted_enabled_config_count,
             valid_target_system_link_count=valid_target_system_link_count,
             telemetry_window_seconds=telemetry_window_seconds,
+            active_alerts_count=int((open_alerts or {}).get('c') or 0),
+            active_incidents_count=int((open_incidents or {}).get('c') or 0),
         )
-        summary['poll_freshness_status'] = poll_freshness_status
-        summary['source_of_evidence'] = source_of_evidence
-        summary['configuration_reason_codes'] = list(configuration_reason_codes)
-        summary['configuration_diagnostics'] = dict(configuration_diagnostics)
-        summary['stale_heartbeat'] = stale_heartbeat
-        summary['provider_degraded_flag'] = provider_degraded_or_unreachable
-        summary['coverage_receipts_last_at'] = (
-            live_coverage_receipts_workspace_latest.isoformat() if live_coverage_receipts_workspace_latest else None
-        )
-        summary['coverage_receipts_workspace_count'] = int(live_coverage_receipts_persisted_count)
-        summary_freshness_status = str(summary.get('freshness_status') or '').strip().lower()
-        summary_confidence_status = str(summary.get('confidence_status') or '').strip().lower()
+        summary_freshness_status = str(summary.get('telemetry_freshness') or '').strip().lower()
+        summary_confidence_status = str(summary.get('confidence') or '').strip().lower()
         strict_live_healthy_proof = bool(
             workspace_configured
             and evidence_source == 'live'
@@ -4251,6 +4206,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         if runtime_status_summary == 'healthy' and not strict_live_healthy_proof:
             runtime_status_summary = 'idle'
             summary['runtime_status'] = 'idle'
+            summary['monitoring_status'] = 'idle'
             if runtime_status_reason is None:
                 runtime_status_reason = 'no_fresh_live_coverage_telemetry'
                 summary['status_reason'] = runtime_status_reason
@@ -4270,7 +4226,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             reporting_systems,
             enabled_system_count,
             evidence_source,
-            summary.get('last_coverage_telemetry_at'),
+            last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None,
             runtime_status_reason or 'none',
         )
         if (
@@ -4322,10 +4278,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'recent_real_event_count': recent_real_event_count,
             'recent_confidence_basis': str((latest_detection_metadata or {}).get('confidence_basis') or latest_detection_payload.get('confidence_basis') or 'none') if isinstance(latest_detection_payload, dict) else 'none',
             'last_real_event_at': (latest_detection_metadata or {}).get('last_real_event_at') if isinstance(latest_detection_metadata, dict) else None,
-            'freshness_status': (
-                summary['freshness_status']
-            ),
-            'confidence_status': summary['confidence_status'],
+            'freshness_status': summary['telemetry_freshness'],
+            'confidence_status': summary['confidence'],
             'coverage_reason': (
                 degraded_reason
                 or (
@@ -4341,22 +4295,22 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'configuration_reason': configuration_reason,
             'configuration_reason_codes': list(configuration_reason_codes),
             'status_reason': runtime_status_reason,
-            'valid_protected_assets': summary['valid_protected_assets'],
-            'linked_monitored_systems': summary['linked_monitored_systems'],
-            'enabled_configs': summary['enabled_configs'],
-            'valid_link_count': summary['valid_link_count'],
-            'configuration_diagnostics': summary['configuration_diagnostics'],
+            'valid_protected_assets': valid_protected_asset_count,
+            'linked_monitored_systems': linked_monitored_system_count,
+            'enabled_configs': persisted_enabled_config_count,
+            'valid_link_count': valid_target_system_link_count,
+            'configuration_diagnostics': dict(configuration_diagnostics),
             'last_poll_at': summary['last_poll_at'],
             'last_telemetry_at': summary['last_telemetry_at'],
-            'last_coverage_telemetry_at': summary['last_coverage_telemetry_at'],
-            'coverage_receipts_last_at': summary['coverage_receipts_last_at'],
-            'coverage_receipts_workspace_count': summary['coverage_receipts_workspace_count'],
-            'stale_heartbeat': summary['stale_heartbeat'],
-            'provider_degraded_flag': summary['provider_degraded_flag'],
-            'telemetry_kind': summary.get('telemetry_kind'),
-            'last_detection_at': summary['last_detection_at'],
+            'last_coverage_telemetry_at': last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None,
+            'coverage_receipts_last_at': live_coverage_receipts_workspace_latest.isoformat() if live_coverage_receipts_workspace_latest else None,
+            'coverage_receipts_workspace_count': int(live_coverage_receipts_persisted_count),
+            'stale_heartbeat': stale_heartbeat,
+            'provider_degraded_flag': provider_degraded_or_unreachable,
+            'telemetry_kind': telemetry_kind,
+            'last_detection_at': latest_detection_evaluation_at.isoformat() if latest_detection_evaluation_at else None,
             'workspace_monitoring_summary': summary,
-            'field_reason_codes': summary.get('field_reason_codes') or {},
+            'field_reason_codes': {},
         }
         payload.update(summary)
         logger.info(
@@ -4372,13 +4326,6 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             configuration_reason,
             runtime_status_reason,
         )
-        if summary['contradiction_flags']:
-            logger.warning(
-                'monitoring_runtime_status_contradiction workspace_id=%s flags=%s summary=%s',
-                workspace_id,
-                summary['contradiction_flags'],
-                summary,
-            )
         provider_health = 'healthy' if str(payload.get('recent_evidence_state')) == 'real' and int(payload.get('recent_real_event_count') or 0) > 0 else 'degraded'
         live_coverage_mode = 'HYBRID' if monitoring_mode_raw == 'hybrid' else 'LIVE'
         mode = str(health.get('operational_mode') or health.get('mode') or live_coverage_mode).upper()

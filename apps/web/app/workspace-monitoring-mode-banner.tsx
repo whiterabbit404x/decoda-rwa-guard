@@ -32,7 +32,7 @@ function summarizeFromTruth(status: ReturnType<typeof normalizeMonitoringPresent
   if (status === 'degraded') {
     return 'Monitoring state degraded.';
   }
-  if (status === 'stale' || truth.freshness_status === 'stale') {
+  if (status === 'stale' || truth.telemetry_freshness === 'stale') {
     return 'Monitoring data delayed.';
   }
   if (hasLiveTelemetry(truth)) {
@@ -77,20 +77,16 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
     <div className={`statusBanner ${tone}`}>
       <strong>{presentation.statusLabel}</strong>
       <span>Monitoring state: {summary}</span>
-      <span>Freshness: {formatTruthValue(truth.freshness_status)} · Confidence: {formatTruthValue(truth.confidence_status)}</span>
+      <span>Freshness: {formatTruthValue(truth.telemetry_freshness)} · Confidence: {formatTruthValue(truth.confidence)}</span>
       <span>{timestampLine('Last telemetry', truth.last_telemetry_at)}</span>
       <span>
-        {truth.last_telemetry_at
-          ? (truth.telemetry_kind === 'coverage' ? 'Live telemetry verified.' : 'Live target-event telemetry verified.')
-          : 'Live telemetry proof unavailable.'}
-        {' '}
-        {truth.last_detection_at ? 'Recent detections available.' : 'No recent detections.'}
+        {truth.last_telemetry_at ? 'Live telemetry verified.' : 'Live telemetry proof unavailable.'}
       </span>
       <span>{timestampLine('Last heartbeat', truth.last_heartbeat_at)}</span>
       <span>{timestampLine('Last poll', truth.last_poll_at)}</span>
       {presentation.status === 'limited coverage' ? <span>Coverage currently limited.</span> : null}
       {presentation.status === 'offline' ? <span>Workspace coverage offline.</span> : null}
-      {truth.freshness_status === 'unavailable' ? <span>Fresh telemetry unavailable.</span> : null}
+      {truth.telemetry_freshness === 'unavailable' ? <span>Fresh telemetry unavailable.</span> : null}
     </div>
   );
 }

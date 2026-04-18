@@ -22,7 +22,7 @@ export type MonitoringPresentation = {
 };
 
 function normalizeEvidence(truth: WorkspaceMonitoringTruth): MonitoringPresentationEvidence {
-  const confidence = truth.confidence_status;
+  const confidence = truth.confidence;
   if (confidence === 'high') return 'verified';
   if (confidence === 'medium') return 'recent';
   if (confidence === 'low') return 'delayed';
@@ -30,13 +30,13 @@ function normalizeEvidence(truth: WorkspaceMonitoringTruth): MonitoringPresentat
 }
 
 function normalizeFreshness(truth: WorkspaceMonitoringTruth, evidence: MonitoringPresentationEvidence): MonitoringPresentationFreshness {
-  if (truth.freshness_status === 'fresh') {
+  if (truth.telemetry_freshness === 'fresh') {
     return evidence === 'verified' ? 'verified' : 'recent';
   }
-  if (truth.freshness_status === 'stale') {
+  if (truth.telemetry_freshness === 'stale') {
     return 'delayed';
   }
-  if (truth.freshness_status === 'unavailable') {
+  if (truth.telemetry_freshness === 'unavailable') {
     return 'unavailable';
   }
   return evidence === 'unavailable' ? 'unavailable' : 'recent';
@@ -49,9 +49,9 @@ function normalizeStatus(
 ): MonitoringPresentationStatus {
   const hasCoverageTelemetry = Boolean(coverageTelemetryTimestamp(truth));
   const hasFreshLiveCoverage = hasCoverageTelemetry
-    && truth.freshness_status === 'fresh'
-    && truth.evidence_source === 'live'
-    && truth.reporting_systems > 0;
+    && truth.telemetry_freshness === 'fresh'
+    && truth.evidence_source_summary === 'live'
+    && truth.reporting_systems_count > 0;
   if (truth.runtime_status === 'offline' || truth.runtime_status === 'failed' || truth.runtime_status === 'disabled') {
     return 'offline';
   }
@@ -62,11 +62,7 @@ function normalizeStatus(
     return 'limited coverage';
   }
 
-  if (truth.monitoring_mode === 'offline') {
-    return 'offline';
-  }
-
-  if (truth.monitoring_mode === 'simulator' || truth.evidence_source === 'simulator' || truth.evidence_source === 'replay') {
+  if (truth.evidence_source_summary === 'simulator' || truth.evidence_source_summary === 'replay') {
     return 'limited coverage';
   }
 
@@ -74,7 +70,7 @@ function normalizeStatus(
     return 'stale';
   }
 
-  if (evidence === 'unavailable' || truth.contradiction_flags.length > 0) {
+  if (evidence === 'unavailable') {
     return 'degraded';
   }
 
@@ -94,22 +90,16 @@ function formatTimestamp(kind: 'telemetry' | 'heartbeat' | 'poll', value: string
 }
 
 function coverageTelemetryTimestamp(truth: WorkspaceMonitoringTruth): string | null {
-  if (truth.last_coverage_telemetry_at) {
-    return truth.last_coverage_telemetry_at;
-  }
-  if (truth.telemetry_kind === 'coverage') {
-    return truth.last_telemetry_at;
-  }
-  return null;
+  return truth.last_telemetry_at;
 }
 
 function telemetryFreshnessSummary(truth: WorkspaceMonitoringTruth): string {
   const coverageTelemetryAt = coverageTelemetryTimestamp(truth);
   const proofTimestamp = coverageTelemetryAt ?? truth.last_telemetry_at;
-  if (!proofTimestamp || truth.freshness_status === 'unavailable') {
+  if (!proofTimestamp || truth.telemetry_freshness === 'unavailable') {
     return 'Telemetry freshness unavailable.';
   }
-  if (truth.freshness_status === 'stale') {
+  if (truth.telemetry_freshness === 'stale') {
     return 'Telemetry is stale.';
   }
   return coverageTelemetryAt
@@ -137,16 +127,6 @@ function detectionSummary(truth: WorkspaceMonitoringTruth): string {
   const coverageTelemetryAt = coverageTelemetryTimestamp(truth);
   if (!truth.last_telemetry_at && !coverageTelemetryAt) {
     return '';
-  }
-  if (truth.last_detection_at && coverageTelemetryAt) {
-    const detectionAtMs = new Date(truth.last_detection_at).getTime();
-    const coverageAtMs = new Date(coverageTelemetryAt).getTime();
-    if (Number.isFinite(detectionAtMs) && Number.isFinite(coverageAtMs) && detectionAtMs < coverageAtMs) {
-      return ' Historical detections only.';
-    }
-  }
-  if (truth.last_detection_at) {
-    return ' Recent detections available.';
   }
   if (coverageTelemetryAt) {
     return ' No recent detections.';

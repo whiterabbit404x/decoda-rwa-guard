@@ -576,13 +576,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const activeIncidents = incidents.length;
   const truth = feed.monitoring.truth;
   const canonicalPresentation = feed.monitoring.presentation;
-  const simulatorMode = truth.monitoring_mode === 'simulator' || truth.evidence_source === 'simulator';
+  const simulatorMode = truth.evidence_source_summary === 'simulator';
   const protectedAssetCount = Number(truth.protected_assets_count ?? feed.counts.protectedAssets);
   const workspaceConfigured = truth.workspace_configured;
-  const configuredSystems = truth.configured_systems;
-  const reportingSystems = truth.reporting_systems;
-  const monitoringMode = truth.monitoring_mode;
-  const contradictionFlags = truth.contradiction_flags;
+  const configuredSystems = truth.monitored_systems_count;
+  const reportingSystems = truth.reporting_systems_count;
+  const monitoringMode = truth.evidence_source_summary;
+  const contradictionFlags: string[] = [];
   const runtimeStatus = String(truth.runtime_status ?? '').toLowerCase();
   const presentationStatus = canonicalPresentation.status;
   const monitoringPresentation = {
@@ -590,7 +590,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     tone: monitoringTone(presentationStatus),
     statusLabel: canonicalPresentation.statusLabel,
     summary: canonicalPresentation.summary,
-    evidenceSourceLabel: String(truth.evidence_source || 'none'),
+    evidenceSourceLabel: String(truth.evidence_source_summary || 'none'),
     lastTelemetryAt: feed.monitoring.lastTelemetryAt,
     lastHeartbeatAt: feed.monitoring.lastHeartbeatAt,
     lastPollAt: feed.monitoring.lastPollAt,
@@ -601,11 +601,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   };
   const showLiveTelemetry = monitoringPresentation.hasLiveTelemetry;
   const telemetryLabel = monitoringPresentation.telemetryLabel;
-  const coverageTelemetryAt = truth.last_coverage_telemetry_at ?? monitoringPresentation.lastTelemetryAt;
+  const coverageTelemetryAt = monitoringPresentation.lastTelemetryAt;
   const hasTelemetryTimestamp = Boolean(coverageTelemetryAt);
   const telemetryDisplayLabel = formatRelativeTime(coverageTelemetryAt);
   const pollLabel = monitoringPresentation.pollLabel;
-  const detectionEvalLabel = formatRelativeTime(truth.last_detection_at ?? monitoringPresentation.lastTelemetryAt ?? monitoringPresentation.lastPollAt);
+  const detectionEvalLabel = formatRelativeTime(monitoringPresentation.lastTelemetryAt ?? monitoringPresentation.lastPollAt);
 
   const baseDetections = useMemo<DetectionItem[]>(() => {
     const matchedAsset = targets[0];
@@ -690,22 +690,22 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     targets,
     liveDetections: categorizedDetections.live,
     workspaceConfigured,
-    freshnessStatus: truth.freshness_status,
-    contradictionFlags,
+    freshnessStatus: truth.telemetry_freshness,
+    contradictionFlags: [],
     reportingSystems,
     runtimeStatus,
     monitoredSystems: feed.counts.monitoredSystems,
     hasLiveTelemetry: showLiveTelemetry,
     statusReason: truth.status_reason,
-    configurationReason: truth.configuration_reason,
-    configurationReasonCodes: truth.configuration_reason_codes,
+    configurationReason: null,
+    configurationReasonCodes: [],
     runtimeErrorCode: feed.runtimeStatus?.error_code ?? null,
     runtimeDegradedReason: feed.runtimeStatus?.degraded_reason ?? null,
     runtimeMonitoringStatus: feed.runtimeStatus?.monitoring_status ?? null,
     fieldReasonCodes: feed.runtimeStatus?.field_reason_codes ?? null,
-    summaryStatusReason: feed.runtimeStatus?.workspace_monitoring_summary?.status_reason ?? null,
-    summaryConfigurationReason: feed.runtimeStatus?.workspace_monitoring_summary?.configuration_reason ?? null,
-    summaryConfigurationReasonCodes: feed.runtimeStatus?.workspace_monitoring_summary?.configuration_reason_codes ?? [],
+    summaryStatusReason: truth.status_reason,
+    summaryConfigurationReason: null,
+    summaryConfigurationReasonCodes: [],
   });
 
   const timelineItems = useMemo<TimelineItem[]>(() => {
@@ -744,7 +744,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ? 'Simulator/dev mode active: records are persisted but are not live production telemetry.'
             : workspaceConfigured && reportingSystems > 0
               ? (monitoringHealthyCopyAllowed(truth) ? 'Monitoring healthy: telemetry and polling are current.' : 'Monitoring configured: waiting for reporting telemetry.')
-              : (workspaceConfigured ? 'Monitoring configured: waiting for reporting telemetry.' : `Workspace not configured: ${configurationReasonMessage(truth.configuration_reason)}`),
+              : (workspaceConfigured ? 'Monitoring configured: waiting for reporting telemetry.' : 'Workspace not configured: monitoring setup is incomplete.'),
       href: '/threat',
     };
 
@@ -760,7 +760,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const showRuntimeCoverageFallback = !loadingSnapshot && !hasTargetCoverageRows && !hasMonitoredSystemCoverageRows && hasCoverageFromRuntime;
   const showCoverageEmptyState = !loadingSnapshot && !hasTargetCoverageRows && !hasMonitoredSystemCoverageRows && !hasCoverageFromRuntime;
   const runtimeCoverageStatusNote = !workspaceConfigured
-    ? `Workspace not configured: ${configurationReasonMessage(truth.configuration_reason)}`
+    ? 'Workspace not configured: monitoring setup is incomplete.'
     : monitoringPresentation.status === 'offline'
     ? 'Runtime reports coverage, but telemetry is currently offline.'
     : monitoringPresentation.status === 'degraded' || monitoringPresentation.status === 'stale' || monitoringPresentation.status === 'limited coverage'
@@ -819,9 +819,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Open alerts {openAlerts}</span>
           <span className="ruleChip">Active incidents {activeIncidents}</span>
         </div>
-        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth.status_reason} configurationReason={truth.configuration_reason} />
+        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth.status_reason} configurationReason={null} />
         <p className="tableMeta">
-          Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {pollLabel} · Last heartbeat: {monitoringPresentation.heartbeatLabel} · Runtime freshness: {String(truth.freshness_status || 'unavailable')} · Runtime confidence: {String(truth.confidence_status || 'unavailable')}
+          Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {pollLabel} · Last heartbeat: {monitoringPresentation.heartbeatLabel} · Runtime freshness: {String(truth.telemetry_freshness || 'unavailable')} · Runtime confidence: {String(truth.confidence || 'unavailable')}
         </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
@@ -887,7 +887,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               {pageState === 'configured_no_signals'
                 ? 'Monitoring is healthy and no active detections are currently open.'
                 : pageState === 'unconfigured_workspace'
-                  ? `Workspace not configured: ${configurationReasonMessage(truth.configuration_reason)}`
+                  ? 'Workspace not configured: monitoring setup is incomplete.'
                   : 'No historical detections are available for display at this time.'}
             </p>
             <div className="buttonRow">
