@@ -4,7 +4,9 @@ import { getRuntimeConfig } from 'app/runtime-config';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const PROXY_TIMEOUT_MS = 15000;
+const PROXY_TIMEOUT_MS = 45000;
+const TIMEOUT_RETRY_ATTEMPTS = 1;
+const SLOW_REQUEST_LOG_THRESHOLD_MS = 10000;
 
 function jsonError(status: number, body: Record<string, unknown>) {
   return Response.json(body, {
@@ -14,6 +16,56 @@ function jsonError(status: number, body: Record<string, unknown>) {
       'Content-Type': 'application/json',
     },
   });
+}
+
+async function fetchMonitoringSystemsWithRetry(
+  backendApiUrl: string,
+  headers: Headers,
+): Promise<{ response: Response; durationMs: number; attempts: number }> {
+  const maxAttempts = TIMEOUT_RETRY_ATTEMPTS + 1;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const timeoutId = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
+    console.info('[monitoring-systems-proxy] forwarding request to backend', { backendApiUrl, attempt, maxAttempts, timeoutMs: PROXY_TIMEOUT_MS });
+
+    try {
+      const response = await fetch(`${backendApiUrl}/monitoring/systems`, {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      const durationMs = Date.now() - startedAt;
+      const logger = durationMs >= SLOW_REQUEST_LOG_THRESHOLD_MS ? console.warn : console.info;
+      logger('[monitoring-systems-proxy] backend response received', {
+        status: response.status,
+        durationMs,
+        attempt,
+      });
+      return { response, durationMs, attempts: attempt };
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.warn('[monitoring-systems-proxy] backend request timed out', {
+          durationMs,
+          attempt,
+          maxAttempts,
+          timeoutMs: PROXY_TIMEOUT_MS,
+          willRetry: attempt < maxAttempts,
+        });
+        if (attempt < maxAttempts) {
+          continue;
+        }
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  throw new Error('monitoring systems proxy exhausted retries unexpectedly');
 }
 
 export async function GET(request: Request) {
@@ -38,25 +90,18 @@ export async function GET(request: Request) {
     headers.set('X-Workspace-Id', workspaceId);
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
   try {
-    const response = await fetch(`${backendApiUrl}/monitoring/systems`, {
-      method: 'GET',
-      headers,
-      cache: 'no-store',
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+    const { response, durationMs, attempts } = await fetchMonitoringSystemsWithRetry(backendApiUrl, headers);
     const payload = await response.json().catch(() => ({}));
     return Response.json(payload, {
       status: response.status,
       headers: {
         'Cache-Control': 'no-store',
+        'X-Proxy-Duration-Ms': String(durationMs),
+        'X-Proxy-Attempts': String(attempts),
       },
     });
   } catch (error) {
-    clearTimeout(timeoutId);
     if (error instanceof Error && error.name === 'AbortError') {
       return jsonError(504, { detail: 'Timed out waiting for backend monitored systems list.', code: 'backend_timeout', transport: 'same-origin proxy' });
     }
