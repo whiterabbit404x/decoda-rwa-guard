@@ -32,6 +32,7 @@ export default function WorkspaceOwnershipBar() {
         Last telemetry: {presentation.telemetryTimestampLabel} · Last heartbeat: {presentation.heartbeatTimestampLabel} · Last poll: {presentation.pollTimestampLabel} · Monitoring health: {presentation.status.toLowerCase()} · Monitoring freshness: {presentation.freshness} ·
         fetch completed: {feed.monitoring.lastFetchCompletedAt ? new Date(feed.monitoring.lastFetchCompletedAt).toLocaleString() : 'pending'}.
         {telemetryFlowing ? ' Current telemetry is live for this workspace.' : ' Current telemetry is not yet live for this workspace.'}
+        {feed.runtimeFetchWarning ? ' Refresh delayed; showing last confirmed monitoring snapshot.' : ''}
       </p>
     </section>
   );

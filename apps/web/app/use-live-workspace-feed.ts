@@ -53,12 +53,16 @@ type RuntimeStatusResolution = {
   offline: boolean;
   degraded: boolean;
   fetchWarning: boolean;
+  explicitOfflineStreak: number;
 };
+const OFFLINE_PROMOTION_THRESHOLD = 2;
 
 export function resolveRuntimeStatus(
   statusPayload: MonitoringRuntimeStatus | null,
   statusOk: boolean,
   previousRuntime: MonitoringRuntimeStatus | null = null,
+  previousExplicitOfflineStreak = 0,
+  offlinePromotionThreshold = OFFLINE_PROMOTION_THRESHOLD,
 ): RuntimeStatusResolution {
   if (!statusPayload || !statusOk) {
     return {
@@ -66,13 +70,16 @@ export function resolveRuntimeStatus(
       offline: false,
       degraded: previousRuntime?.monitoring_status === 'degraded',
       fetchWarning: true,
+      explicitOfflineStreak: 0,
     };
   }
   const runtimeMode = runtimeStatusModeFromMonitoringStatus(statusPayload.monitoring_status);
   const nextRuntime = { ...statusPayload, mode: normalizeMonitoringMode(runtimeMode) };
-  const offline = nextRuntime.monitoring_status === 'offline' || nextRuntime.monitoring_status === 'error';
+  const explicitlyOffline = nextRuntime.monitoring_status === 'offline' || nextRuntime.monitoring_status === 'error';
+  const explicitOfflineStreak = explicitlyOffline ? previousExplicitOfflineStreak + 1 : 0;
+  const offline = explicitlyOffline && explicitOfflineStreak >= offlinePromotionThreshold;
   const degraded = nextRuntime.monitoring_status === 'degraded';
-  return { nextRuntime, offline, degraded, fetchWarning: false };
+  return { nextRuntime, offline, degraded, fetchWarning: false, explicitOfflineStreak };
 }
 
 export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
@@ -86,6 +93,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
   const [counts, setCounts] = useState<LiveWorkspaceCounts>(DEFAULT_COUNTS);
   const startedRef = useRef(false);
   const lastKnownRuntimeRef = useRef<MonitoringRuntimeStatus | null>(null);
+  const explicitOfflineStreakRef = useRef(0);
 
   useEffect(() => {
     if (!shouldLogLiveWorkspaceFeedDebug()) {
@@ -141,7 +149,12 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
           statusPayload = null;
         }
         const runtimeUnavailable = !statusRes || !statusRes.ok;
-        const { nextRuntime, fetchWarning } = resolveRuntimeStatus(statusPayload, Boolean(statusRes?.ok), lastKnownRuntimeRef.current);
+        const { nextRuntime, fetchWarning, explicitOfflineStreak } = resolveRuntimeStatus(
+          statusPayload,
+          Boolean(statusRes?.ok),
+          lastKnownRuntimeRef.current,
+          explicitOfflineStreakRef.current,
+        );
         const ancillaryResults = await Promise.allSettled([
           fetch(`${apiUrl}/pilot/history?limit=20`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
@@ -199,12 +212,14 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
             runtimeUnavailable,
             runtimeFetchWarning: fetchWarning,
             runtimeFetchDegraded: runtimeUnavailable,
+            explicitOfflineStreak,
             ancillaryFailed: !historyRes?.ok || !alertsRes?.ok || !incidentsRes?.ok,
             appliedCounts: nextCounts,
           });
         }
         setRuntimeFetchWarning(fetchWarning);
         setRuntimeFetchDegraded(runtimeUnavailable);
+        explicitOfflineStreakRef.current = explicitOfflineStreak;
         lastKnownRuntimeRef.current = nextRuntime;
         setRuntimeStatus(nextRuntime);
         setCounts(nextCounts);
