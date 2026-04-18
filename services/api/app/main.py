@@ -125,6 +125,7 @@ from services.api.app.pilot import (
     list_incidents,
     patch_incident,
     list_incident_timeline,
+    list_action_history,
     append_incident_timeline_note,
     create_enforcement_action,
     approve_enforcement_action,
@@ -2342,6 +2343,11 @@ def incidents_timeline_list(incident_id: str, request: Request) -> dict[str, Any
 @app.post('/incidents/{incident_id}/timeline', summary='Append incident timeline note')
 def incidents_timeline_create(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: append_incident_timeline_note(incident_id, payload, request))
+
+
+@app.get('/history/actions', summary='List action history for alert/incident workflows')
+def history_actions(request: Request, object_type: str | None = None, object_id: str | None = None, limit: int = 200) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_action_history(request, object_type=object_type, object_id=object_id, limit=limit))
 
 
 @app.post('/enforcement/actions', summary='Plan a workspace enforcement action')

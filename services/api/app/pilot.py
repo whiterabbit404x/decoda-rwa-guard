@@ -56,6 +56,7 @@ CORE_PILOT_TABLES = (
     'governance_actions',
     'incidents',
     'audit_logs',
+    'action_history',
     'workspace_onboarding_states',
 )
 MONITORING_RUNTIME_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
@@ -1201,6 +1202,48 @@ def log_audit(
             entity_id,
             ip_address,
             _json_dumps(safe_metadata),
+        ),
+    )
+
+
+def _normalize_incident_status(value: str | None) -> str:
+    normalized = str(value or '').strip().lower().replace('_', '-')
+    if normalized in {'investigating', 'in-progress', 'triaged'}:
+        return 'investigating'
+    if normalized in {'contained', 'containment'}:
+        return 'contained'
+    if normalized in {'resolved', 'closed'}:
+        return 'resolved'
+    if normalized in {'reopened', 're-opened'}:
+        return 'reopened'
+    return 'open'
+
+
+def write_action_history(
+    connection: Any,
+    *,
+    workspace_id: str,
+    actor_type: str,
+    actor_id: str | None,
+    object_type: str,
+    object_id: str,
+    action_type: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    connection.execute(
+        '''
+        INSERT INTO action_history (id, workspace_id, actor_type, actor_id, object_type, object_id, action_type, timestamp, details_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s::jsonb)
+        ''',
+        (
+            str(uuid.uuid4()),
+            workspace_id,
+            actor_type,
+            actor_id,
+            object_type,
+            object_id,
+            action_type,
+            _json_dumps(details or {}),
         ),
     )
 
@@ -6756,7 +6799,7 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, alert_type, title, severity, status, summary, module_key, target_id, detection_id, source, source_service, recommended_action, degraded, occurrence_count, last_seen_at, findings, owner_user_id, triage_status, resolution_note, suppressed_until, acknowledged_at, resolved_at, created_at, updated_at
+            SELECT id, alert_type, title, severity, status, summary, module_key, target_id, detection_id, incident_id, assigned_to, evidence_summary, source, source_service, recommended_action, degraded, occurrence_count, last_seen_at, findings, owner_user_id, triage_status, resolution_note, suppressed_until, acknowledged_at, resolved_at, created_at, updated_at
             FROM alerts
             WHERE workspace_id = %s
               AND (%s::text IS NULL OR severity = %s::text)
@@ -6820,15 +6863,50 @@ def patch_alert(alert_id: str, payload: dict[str, Any], request: Request) -> dic
                 resolved_at = CASE WHEN %s = 'resolved' THEN NOW() ELSE resolved_at END,
                 resolved_by_user_id = CASE WHEN %s = 'resolved' THEN %s ELSE resolved_by_user_id END,
                 owner_user_id = COALESCE(%s::uuid, owner_user_id),
+                assigned_to = COALESCE(%s::uuid, assigned_to),
                 triage_status = CASE WHEN %s IN ('open', 'investigating', 'resolved', 'suppressed') THEN %s ELSE triage_status END,
                 resolution_note = COALESCE(%s, resolution_note),
+                evidence_summary = COALESCE(%s, evidence_summary),
+                incident_id = COALESCE(%s::uuid, incident_id),
                 suppressed_until = COALESCE(%s::timestamptz, suppressed_until),
                 updated_at = NOW()
             WHERE id = %s
             ''',
-            (next_status, next_status, next_status, user['id'], next_status, next_status, user['id'], payload.get('owner_user_id'), next_status, next_status, payload.get('resolution_note'), payload.get('suppressed_until'), alert_id),
+            (
+                next_status,
+                next_status,
+                next_status,
+                user['id'],
+                next_status,
+                next_status,
+                user['id'],
+                payload.get('owner_user_id'),
+                payload.get('assigned_to'),
+                next_status,
+                next_status,
+                payload.get('resolution_note'),
+                payload.get('evidence_summary'),
+                payload.get('incident_id'),
+                payload.get('suppressed_until'),
+                alert_id,
+            ),
         )
         connection.execute('INSERT INTO alert_events (id, workspace_id, alert_id, actor_user_id, event_type, details) VALUES (%s, %s, %s, %s, %s, %s::jsonb)', (str(uuid.uuid4()), workspace_context['workspace_id'], alert_id, user['id'], f'alert.{next_status}', _json_dumps({'status': next_status, 'owner_user_id': payload.get('owner_user_id'), 'suppressed_until': payload.get('suppressed_until')})))
+        write_action_history(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            actor_type='user',
+            actor_id=user['id'],
+            object_type='alert',
+            object_id=alert_id,
+            action_type=f'alert.{next_status}',
+            details={
+                'status': next_status,
+                'incident_id': payload.get('incident_id'),
+                'assigned_to': payload.get('assigned_to'),
+                'owner_user_id': payload.get('owner_user_id'),
+            },
+        )
         connection.commit()
         return {'id': alert_id, 'status': next_status}
 
@@ -6839,7 +6917,7 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         alert = connection.execute(
-            'SELECT id, target_id, analysis_run_id, title, severity, summary FROM alerts WHERE id = %s AND workspace_id = %s',
+            'SELECT id, target_id, analysis_run_id, title, severity, summary, detection_id FROM alerts WHERE id = %s AND workspace_id = %s',
             (alert_id, workspace_context['workspace_id']),
         ).fetchone()
         if alert is None:
@@ -6849,8 +6927,8 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
         summary = str(payload.get('summary') or alert.get('summary') or 'Escalated from alert')
         connection.execute(
             '''
-            INSERT INTO incidents (id, workspace_id, user_id, analysis_run_id, target_id, event_type, title, severity, status, summary, linked_alert_ids, timeline, payload, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, 'alert_escalation', %s, %s, 'open', %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW(), NOW())
+            INSERT INTO incidents (id, workspace_id, user_id, analysis_run_id, target_id, event_type, title, severity, status, workflow_status, source_alert_id, owner, summary, linked_alert_ids, timeline, payload, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, 'alert_escalation', %s, %s, 'open', 'open', %s::uuid, %s::uuid, %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW(), NOW())
             ''',
             (
                 incident_id,
@@ -6860,13 +6938,45 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
                 alert.get('target_id'),
                 title,
                 str(alert.get('severity') or 'medium'),
+                alert_id,
+                user['id'],
                 summary,
                 _json_dumps([alert_id]),
                 _json_dumps([{'event': 'incident.created_from_alert', 'at': datetime.now(timezone.utc).isoformat(), 'alert_id': alert_id}]),
-                _json_dumps({'source': 'alert_escalation', 'alert_id': alert_id}),
+                _json_dumps({'source': 'alert_escalation', 'alert_id': alert_id, 'detection_id': alert.get('detection_id')}),
             ),
         )
+        connection.execute(
+            '''
+            UPDATE alerts
+            SET incident_id = %s::uuid,
+                status = CASE WHEN status = 'resolved' THEN status ELSE 'investigating' END,
+                updated_at = NOW()
+            WHERE id = %s AND workspace_id = %s
+            ''',
+            (incident_id, alert_id, workspace_context['workspace_id']),
+        )
         connection.execute('INSERT INTO alert_events (id, workspace_id, alert_id, actor_user_id, event_type, details) VALUES (%s, %s, %s, %s, %s, %s::jsonb)', (str(uuid.uuid4()), workspace_context['workspace_id'], alert_id, user['id'], 'alert.escalated', _json_dumps({'incident_id': incident_id})))
+        write_action_history(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            actor_type='user',
+            actor_id=user['id'],
+            object_type='alert',
+            object_id=alert_id,
+            action_type='alert.escalated_to_incident',
+            details={'incident_id': incident_id, 'detection_id': alert.get('detection_id')},
+        )
+        write_action_history(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            actor_type='user',
+            actor_id=user['id'],
+            object_type='incident',
+            object_id=incident_id,
+            action_type='incident.created_from_alert',
+            details={'alert_id': alert_id, 'detection_id': alert.get('detection_id')},
+        )
         connection.commit()
         return {'incident_id': incident_id, 'alert_id': alert_id, 'status': 'open'}
 
@@ -6979,7 +7089,7 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, event_type, title, severity, status, workflow_status, target_id, linked_alert_ids, owner_user_id, assignee_user_id, summary, resolution_note, timeline, created_at, updated_at
+            SELECT id, event_type, title, severity, status, workflow_status, target_id, source_alert_id, linked_alert_ids, owner, owner_user_id, assignee_user_id, summary, resolution_note, resolution_notes, timeline, created_at, updated_at
             FROM incidents
             WHERE workspace_id = %s
               AND (%s::text IS NULL OR severity = %s::text)
@@ -6996,7 +7106,7 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
 
 def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
-    next_workflow_status = str(payload.get('workflow_status', payload.get('status', ''))).strip().lower()
+    next_workflow_status = _normalize_incident_status(payload.get('workflow_status', payload.get('status', '')))
     if next_workflow_status not in {'open', 'investigating', 'contained', 'resolved', 'reopened'}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='workflow_status must be open/investigating/contained/resolved/reopened.')
     with pg_connection() as connection:
@@ -7017,8 +7127,10 @@ def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) 
                 workflow_status = %s,
                 resolved_at = CASE WHEN %s = 'resolved' THEN NOW() WHEN %s = 'reopened' THEN NULL ELSE resolved_at END,
                 owner_user_id = COALESCE(%s, owner_user_id),
+                owner = COALESCE(%s, owner),
                 assignee_user_id = COALESCE(%s, assignee_user_id),
                 resolution_note = COALESCE(%s, resolution_note),
+                resolution_notes = COALESCE(%s, resolution_notes),
                 timeline = %s::jsonb,
                 updated_at = NOW()
             WHERE id = %s
@@ -7029,12 +7141,19 @@ def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) 
                 next_workflow_status,
                 next_workflow_status,
                 payload.get('owner_user_id'),
+                payload.get('owner'),
                 payload.get('assignee_user_id'),
                 payload.get('resolution_note'),
+                payload.get('resolution_notes'),
                 _json_dumps(timeline),
                 incident_id,
             ),
         )
+        if payload.get('source_alert_id'):
+            connection.execute(
+                'UPDATE alerts SET incident_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid AND workspace_id = %s',
+                (incident_id, payload.get('source_alert_id'), workspace_context['workspace_id']),
+            )
         connection.execute(
             '''
             INSERT INTO incident_timeline (id, workspace_id, incident_id, event_type, message, actor_user_id, metadata, created_at)
@@ -7051,6 +7170,21 @@ def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) 
             ),
         )
         log_audit(connection, action='incident.updated', entity_type='incident', entity_id=incident_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'workflow_status': next_workflow_status, 'assignee_user_id': payload.get('assignee_user_id')})
+        write_action_history(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            actor_type='user',
+            actor_id=user['id'],
+            object_type='incident',
+            object_id=incident_id,
+            action_type=f'incident.{next_workflow_status}',
+            details={
+                'workflow_status': next_workflow_status,
+                'assignee_user_id': payload.get('assignee_user_id'),
+                'owner': payload.get('owner'),
+                'source_alert_id': payload.get('source_alert_id'),
+            },
+        )
         connection.commit()
         return {'id': incident_id, 'workflow_status': next_workflow_status, 'assignee_user_id': payload.get('assignee_user_id'), 'resolution_note': payload.get('resolution_note')}
 
@@ -7078,6 +7212,29 @@ def list_incident_timeline(incident_id: str, request: Request) -> dict[str, Any]
         return {'incident_id': incident_id, 'timeline': [_json_safe_value(dict(row)) for row in rows]}
 
 
+def list_action_history(request: Request, *, object_type: str | None = None, object_id: str | None = None, limit: int = 200) -> dict[str, Any]:
+    require_live_mode()
+    max_limit = max(1, min(limit, 500))
+    normalized_type = str(object_type or '').strip().lower() or None
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT id, actor_type, actor_id, object_type, object_id, action_type, timestamp, details_json
+            FROM action_history
+            WHERE workspace_id = %s
+              AND (%s::text IS NULL OR object_type = %s::text)
+              AND (%s::text IS NULL OR object_id = %s::text)
+            ORDER BY timestamp DESC
+            LIMIT %s
+            ''',
+            (workspace_context['workspace_id'], normalized_type, normalized_type, object_id, object_id, max_limit),
+        ).fetchall()
+        return {'history': [_json_safe_value(dict(row)) for row in rows]}
+
+
 def append_incident_timeline_note(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     message = str(payload.get('message') or '').strip()
@@ -7103,6 +7260,16 @@ def append_incident_timeline_note(incident_id: str, payload: dict[str, Any], req
             (_json_dumps([{'event': 'note', 'message': message, 'at': utc_now_iso(), 'actor_user_id': user['id']}]), incident_id),
         )
         log_audit(connection, action='incident.timeline_note_added', entity_type='incident_timeline', entity_id=timeline_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'incident_id': incident_id, 'event_type': 'note'})
+        write_action_history(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            actor_type='user',
+            actor_id=user['id'],
+            object_type='incident',
+            object_id=incident_id,
+            action_type='incident.timeline_note_added',
+            details={'timeline_id': timeline_id, 'message': message},
+        )
         connection.commit()
         return {'id': timeline_id, 'incident_id': incident_id, 'event_type': 'note', 'message': message}
 
