@@ -43,3 +43,11 @@ test('renders empty state only when there is no runtime coverage and no rows', (
   expect(threat).toContain('const showCoverageEmptyState = !loadingSnapshot && !hasTargetCoverageRows && !hasMonitoredSystemCoverageRows && !hasCoverageFromRuntime;');
   expect(threat).toContain('No protected systems configured');
 });
+
+test('keeps prior systems rows on systems refresh errors and surfaces secondary warning badge copy', () => {
+  const threat = readThreatPanel();
+  expect(threat).toContain('if (systemsResponse) {');
+  expect(threat).toContain('setMonitoredSystems((systemsPayload?.systems ?? []) as MonitoredSystemRow[]);');
+  expect(threat).toContain('formatSystemsPanelWarning(failedEndpoints)');
+  expect(threat).toContain('{systemsPanelWarning ? <span className="statusBadge statusBadge-attention">{systemsPanelWarning}</span> : null}');
+});

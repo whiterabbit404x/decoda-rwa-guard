@@ -102,6 +102,8 @@ export type PageOperationalState =
   | 'unconfigured_workspace'
   | 'fetch_error';
 
+type SnapshotFailureKey = 'targets' | 'systems' | 'alerts' | 'incidents' | 'history' | 'evidence';
+
 const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
   'no_valid_protected_assets',
   'no_linked_monitored_systems',
@@ -364,10 +366,6 @@ export function derivePageState(params: {
     return 'fetch_error';
   }
 
-  if (!loadingSnapshot && snapshotError && reportingSystems === 0) {
-    return 'fetch_error';
-  }
-
   if (!workspaceConfigured && structuralUnconfiguredReason && !runtimeQueryFailure) {
     return 'unconfigured_workspace';
   }
@@ -397,6 +395,15 @@ export function derivePageState(params: {
   }
 
   return 'degraded_partial';
+}
+
+function formatSnapshotErrorMessage(failedEndpoints: SnapshotFailureKey[]): string | null {
+  if (failedEndpoints.length === 0) return null;
+  return `Monitoring snapshot partially unavailable (${failedEndpoints.length} endpoint${failedEndpoints.length === 1 ? '' : 's'} failed).`;
+}
+
+export function formatSystemsPanelWarning(failedEndpoints: SnapshotFailureKey[]): string | null {
+  return failedEndpoints.includes('systems') ? 'Systems list unavailable' : null;
 }
 
 export function pageStatePrimaryCopy(state: PageOperationalState, configurationReason?: string | null): string {
@@ -454,6 +461,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const feed = useLiveWorkspaceFeed();
   const [loadingSnapshot, setLoadingSnapshot] = useState(true);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const [systemsPanelWarning, setSystemsPanelWarning] = useState<string | null>(null);
   const [targets, setTargets] = useState<TargetRow[]>([]);
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
@@ -479,7 +487,18 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         if (!active) return;
-        const responses = [targetsResult, systemsResult, alertsResult, incidentsResult, historyResult, evidenceResult].map((result) => (
+        const responseEntries: [SnapshotFailureKey, PromiseSettledResult<Response>][] = [
+          ['targets', targetsResult],
+          ['systems', systemsResult],
+          ['alerts', alertsResult],
+          ['incidents', incidentsResult],
+          ['history', historyResult],
+          ['evidence', evidenceResult],
+        ];
+        const failedEndpoints = responseEntries
+          .filter(([, result]) => !(result.status === 'fulfilled' && result.value.ok))
+          .map(([key]) => key);
+        const responses = responseEntries.map(([, result]) => (
           result.status === 'fulfilled' && result.value.ok ? result.value : null
         ));
         const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, historyResponse, evidenceResponse] = responses;
@@ -508,11 +527,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         if (evidenceResponse) {
           setEvidence((evidencePayload?.evidence ?? []) as EvidenceRow[]);
         }
-        const failedRequests = [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, historyResponse, evidenceResponse].filter((item) => !item).length;
-        setSnapshotError(failedRequests > 0 ? `Monitoring snapshot partially unavailable (${failedRequests} endpoint${failedRequests === 1 ? '' : 's'} failed).` : null);
+        setSystemsPanelWarning(formatSystemsPanelWarning(failedEndpoints));
+        setSnapshotError(formatSnapshotErrorMessage(failedEndpoints));
       } catch {
         if (active) {
           setSnapshotError('Monitoring snapshot refresh failed');
+          setSystemsPanelWarning('Systems list unavailable');
         }
       } finally {
         if (active) {
@@ -795,6 +815,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Reporting systems {reportingSystems}</span>
           {!workspaceConfigured ? <span className="ruleChip">Workspace not configured</span> : null}
           {contradictionFlags.length > 0 ? <span className="statusBadge statusBadge-attention">Guarded fallback copy active</span> : null}
+          {systemsPanelWarning ? <span className="statusBadge statusBadge-attention">{systemsPanelWarning}</span> : null}
           <span className="ruleChip">Open alerts {openAlerts}</span>
           <span className="ruleChip">Active incidents {activeIncidents}</span>
         </div>
