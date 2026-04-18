@@ -110,6 +110,8 @@ def test_monitoring_pipeline_source_has_detection_alert_incident_run_and_guard_j
 
     assert 'INSERT INTO monitoring_runs' in runner_source
     assert 'INSERT INTO detections' in runner_source
+    assert 'should_create_detection' in runner_source
+    assert "ingestion_source in {'demo', 'simulator'}" in runner_source
     assert 'COALESCE(%s::uuid, detection_id)' in runner_source
     assert 'INSERT INTO alerts' in runner_source
     assert 'incidents_created' in runner_source
