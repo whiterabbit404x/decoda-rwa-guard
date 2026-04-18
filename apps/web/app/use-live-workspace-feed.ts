@@ -53,7 +53,7 @@ type RuntimeStatusResolution = {
   offline: boolean;
   degraded: boolean;
   fetchWarning: boolean;
-  explicitOfflineStreak: number;
+  failureStreak: number;
 };
 const OFFLINE_PROMOTION_THRESHOLD = 2;
 
@@ -61,25 +61,29 @@ export function resolveRuntimeStatus(
   statusPayload: MonitoringRuntimeStatus | null,
   statusOk: boolean,
   previousRuntime: MonitoringRuntimeStatus | null = null,
-  previousExplicitOfflineStreak = 0,
-  offlinePromotionThreshold = OFFLINE_PROMOTION_THRESHOLD,
+  previousFailureStreak = 0,
+  failurePromotionThreshold = OFFLINE_PROMOTION_THRESHOLD,
 ): RuntimeStatusResolution {
   if (!statusPayload || !statusOk) {
+    const failureStreak = previousFailureStreak + 1;
+    const offline = failureStreak >= failurePromotionThreshold;
+    const nextRuntime = offline && previousRuntime
+      ? { ...previousRuntime, monitoring_status: 'offline', mode: 'OFFLINE' as const }
+      : previousRuntime;
     return {
-      nextRuntime: previousRuntime,
-      offline: false,
-      degraded: previousRuntime?.monitoring_status === 'degraded',
+      nextRuntime,
+      offline,
+      degraded: offline || previousRuntime?.monitoring_status === 'degraded',
       fetchWarning: true,
-      explicitOfflineStreak: 0,
+      failureStreak,
     };
   }
   const runtimeMode = runtimeStatusModeFromMonitoringStatus(statusPayload.monitoring_status);
   const nextRuntime = { ...statusPayload, mode: normalizeMonitoringMode(runtimeMode) };
   const explicitlyOffline = nextRuntime.monitoring_status === 'offline' || nextRuntime.monitoring_status === 'error';
-  const explicitOfflineStreak = explicitlyOffline ? previousExplicitOfflineStreak + 1 : 0;
-  const offline = explicitlyOffline && explicitOfflineStreak >= offlinePromotionThreshold;
+  const offline = explicitlyOffline;
   const degraded = nextRuntime.monitoring_status === 'degraded';
-  return { nextRuntime, offline, degraded, fetchWarning: false, explicitOfflineStreak };
+  return { nextRuntime, offline, degraded, fetchWarning: false, failureStreak: 0 };
 }
 
 export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
@@ -93,7 +97,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
   const [counts, setCounts] = useState<LiveWorkspaceCounts>(DEFAULT_COUNTS);
   const startedRef = useRef(false);
   const lastKnownRuntimeRef = useRef<MonitoringRuntimeStatus | null>(null);
-  const explicitOfflineStreakRef = useRef(0);
+  const runtimeFailureStreakRef = useRef(0);
 
   useEffect(() => {
     if (!shouldLogLiveWorkspaceFeedDebug()) {
@@ -149,11 +153,11 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
           statusPayload = null;
         }
         const runtimeUnavailable = !statusRes || !statusRes.ok;
-        const { nextRuntime, fetchWarning, explicitOfflineStreak } = resolveRuntimeStatus(
+        const { nextRuntime, fetchWarning, failureStreak } = resolveRuntimeStatus(
           statusPayload,
           Boolean(statusRes?.ok),
           lastKnownRuntimeRef.current,
-          explicitOfflineStreakRef.current,
+          runtimeFailureStreakRef.current,
         );
         const ancillaryResults = await Promise.allSettled([
           fetch(`${apiUrl}/pilot/history?limit=20`, { headers: authHeaders(), cache: 'no-store' }),
@@ -212,14 +216,14 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
             runtimeUnavailable,
             runtimeFetchWarning: fetchWarning,
             runtimeFetchDegraded: runtimeUnavailable,
-            explicitOfflineStreak,
+            runtimeFailureStreak: failureStreak,
             ancillaryFailed: !historyRes?.ok || !alertsRes?.ok || !incidentsRes?.ok,
             appliedCounts: nextCounts,
           });
         }
         setRuntimeFetchWarning(fetchWarning);
         setRuntimeFetchDegraded(runtimeUnavailable);
-        explicitOfflineStreakRef.current = explicitOfflineStreak;
+        runtimeFailureStreakRef.current = failureStreak;
         lastKnownRuntimeRef.current = nextRuntime;
         setRuntimeStatus(nextRuntime);
         setCounts(nextCounts);
