@@ -1455,6 +1455,29 @@ Optional env vars:
 
 In production deploy three processes: web app, API, and monitoring worker (`python -m services.api.app.run_monitoring_worker`).
 
+### Railway runtime validation checklist (worker + scheduler + evidence)
+
+1. Run a **dedicated Railway service** for the monitoring worker (not only the API service background loop), with:
+   - `APP_START_COMMAND=python -m services.api.app.run_monitoring_worker --worker-name railway-monitoring-worker --interval-seconds 15 --limit 50`
+2. Restart API + monitoring-worker services.
+3. Validate repeated worker cycles and runtime health:
+
+```bash
+python services/api/scripts/verify_monitoring_runtime.py \
+  --api-url "https://<your-api>.up.railway.app" \
+  --token "<ops-token>" \
+  --workspace-id "<workspace-id>" \
+  --cycles 3 \
+  --poll-seconds 30
+```
+
+This validation confirms:
+- `/ops/monitoring/health` reports `worker_running=true` and `heartbeat_stale=false`.
+- Worker cycle timestamps advance across polls (continuous loop, not one-shot run).
+- `overdue_targets` does not regress during the polling window.
+- `/ops/monitoring/evidence` returns recent rows.
+- `/ops/monitoring/runtime-status` reports `reporting_systems > 0` without degraded status reason.
+
 ## Production hardening updates (March 31, 2026)
 
 ### Deterministic-by-default test split
