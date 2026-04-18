@@ -642,7 +642,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const configuredSystems = truth.monitored_systems_count;
   const reportingSystems = truth.reporting_systems_count;
   const monitoringMode = truth.evidence_source_summary;
-  const contradictionFlags: string[] = [];
+  const contradictionFlags: string[] = Array.isArray(truth.contradiction_flags) ? truth.contradiction_flags : [];
   const runtimeStatus = String(truth.runtime_status ?? '').toLowerCase();
   const presentationStatus = canonicalPresentation.status;
   const monitoringPresentation = {
@@ -730,7 +730,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     liveDetections: categorizedDetections.live,
     workspaceConfigured,
     freshnessStatus: truth.telemetry_freshness,
-    contradictionFlags: [],
+    contradictionFlags,
     reportingSystems,
     runtimeStatus,
     monitoredSystems: feed.counts.monitoredSystems,
@@ -753,7 +753,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const hasMonitoredSystemCoverageRows = !hasTargetCoverageRows && monitoredSystems.length > 0;
   const showRuntimeCoverageFallback = !loadingSnapshot && !hasTargetCoverageRows && !hasMonitoredSystemCoverageRows && hasCoverageFromRuntime;
   const showCoverageEmptyState = !loadingSnapshot && !hasTargetCoverageRows && !hasMonitoredSystemCoverageRows && !hasCoverageFromRuntime;
-  const runtimeCoverageStatusNote = !workspaceConfigured
+  const runtimeCoverageStatusNote = contradictionFlags.length > 0
+    ? 'Runtime consistency guards are active. Displaying enterprise-safe fallback coverage text.'
+    : !workspaceConfigured
     ? 'Workspace not configured: monitoring setup is incomplete.'
     : monitoringPresentation.status === 'offline'
     ? 'Runtime reports coverage, but telemetry is currently offline.'
@@ -922,7 +924,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   : 'No detections available'}
             </h4>
             <p className="muted">
-              {pageState === 'configured_no_signals'
+              {contradictionFlags.length > 0
+                ? 'Monitoring copy is guarded while runtime consistency checks complete.'
+                : pageState === 'configured_no_signals'
                 ? 'Monitoring is healthy and no active detections are currently open.'
                 : pageState === 'unconfigured_workspace'
                   ? 'Workspace not configured: monitoring setup is incomplete.'

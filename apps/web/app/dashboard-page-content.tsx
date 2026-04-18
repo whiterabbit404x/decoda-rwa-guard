@@ -59,10 +59,14 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
   const telemetryUnavailable =
     !monitoringTruth.last_telemetry_at
     || monitoringTruth.telemetry_freshness === 'unavailable';
+  const contradictionGuarded = monitoringTruth.contradiction_flags.length > 0;
   const showHealthySummary =
     monitoringHealthyCopyAllowed(monitoringTruth)
-    && monitoringPresentation.status === 'live';
-  const safeMonitoringSummary = telemetryUnavailable
+    && monitoringPresentation.status === 'live'
+    && !contradictionGuarded;
+  const safeMonitoringSummary = contradictionGuarded
+    ? 'Monitoring summary unavailable while runtime consistency checks complete.'
+    : telemetryUnavailable
     ? 'Telemetry currently unavailable.'
     : showHealthySummary
       ? monitoringPresentation.summary
@@ -81,7 +85,9 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
     : 'Poll timestamp unavailable';
   const openAlerts = riskDashboard.summary.high_alert_count + threatDashboard.summary.critical_or_high_alerts;
   const openIncidents = resilienceDashboard.summary.incident_count;
-  const systemMessage = safeMonitoringSummary;
+  const systemMessage = contradictionGuarded
+    ? `Guarded fallback: ${monitoringTruth.status_reason ?? 'runtime_consistency_guarded'}`
+    : safeMonitoringSummary;
 
   return (
     <main className="container productPage">

@@ -160,7 +160,7 @@ test.describe('workspace monitoring truth guardrails', () => {
 
     expect(truth.contradiction_flags).toContain('offline_with_current_telemetry');
     expect(hasLiveTelemetry(truth)).toBeFalsy();
-    expect(monitoringHealthyCopyAllowed(truth)).toBeTruthy();
+    expect(monitoringHealthyCopyAllowed(truth)).toBeFalsy();
   });
 
   test('configured flag with missing required linkage counts is contradicted', () => {
@@ -242,5 +242,83 @@ test.describe('workspace monitoring truth guardrails', () => {
     }));
 
     expect(hasLiveTelemetry(truth)).toBeFalsy();
+  });
+
+  test('telemetry unavailable plus high confidence is always contradicted', () => {
+    const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      runtime_status: 'healthy',
+      monitoring_status: 'active',
+      reporting_systems_count: 2,
+      monitored_systems_count: 2,
+      protected_assets_count: 2,
+      telemetry_freshness: 'unavailable',
+      confidence: 'high',
+      last_poll_at: '2026-04-15T10:00:00Z',
+      last_heartbeat_at: '2026-04-15T10:00:00Z',
+      last_telemetry_at: null,
+      active_alerts_count: 0,
+      active_incidents_count: 0,
+      evidence_source_summary: 'live',
+      status_reason: null,
+      contradiction_flags: [],
+    }));
+
+    expect(truth.contradiction_flags).toContain('telemetry_unavailable_with_high_confidence');
+    expect(truth.status_reason).toContain('guard:');
+    expect(hasLiveTelemetry(truth)).toBeFalsy();
+  });
+
+  test('live telemetry verification with missing timestamp is contradicted', () => {
+    const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      runtime_status: 'healthy',
+      monitoring_status: 'active',
+      reporting_systems_count: 2,
+      monitored_systems_count: 2,
+      protected_assets_count: 2,
+      telemetry_freshness: 'fresh',
+      confidence: 'high',
+      last_poll_at: '2026-04-15T10:00:00Z',
+      last_heartbeat_at: '2026-04-15T10:00:00Z',
+      last_telemetry_at: null,
+      active_alerts_count: 0,
+      active_incidents_count: 0,
+      evidence_source_summary: 'live',
+      status_reason: null,
+      contradiction_flags: [],
+    }));
+
+    expect(truth.contradiction_flags).toContain('live_telemetry_verified_without_timestamp');
+    expect(monitoringHealthyCopyAllowed(truth)).toBeFalsy();
+  });
+
+  test('idle runtime with fresh/high live telemetry is contradicted unless a reason exists', () => {
+    const contradicted = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      runtime_status: 'idle',
+      monitoring_status: 'idle',
+      reporting_systems_count: 1,
+      monitored_systems_count: 1,
+      protected_assets_count: 1,
+      telemetry_freshness: 'fresh',
+      confidence: 'high',
+      last_poll_at: '2026-04-15T10:00:00Z',
+      last_heartbeat_at: '2026-04-15T10:00:00Z',
+      last_telemetry_at: '2026-04-15T09:59:30Z',
+      active_alerts_count: 0,
+      active_incidents_count: 0,
+      evidence_source_summary: 'live',
+      status_reason: null,
+      contradiction_flags: [],
+    }));
+    const reasoned = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      ...contradicted,
+      status_reason: 'runtime_degraded_external_dependency',
+      contradiction_flags: [],
+    }));
+
+    expect(contradicted.contradiction_flags).toContain('idle_runtime_with_active_monitoring_claim');
+    expect(reasoned.contradiction_flags).not.toContain('idle_runtime_with_active_monitoring_claim');
   });
 });

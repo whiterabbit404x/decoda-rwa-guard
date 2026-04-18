@@ -73,6 +73,7 @@ export type MonitoringRuntimeStatus = {
     evidence_source_summary: 'live' | 'simulator' | 'replay' | 'none';
     monitoring_status: 'active' | 'idle' | 'degraded' | 'offline' | 'error';
     status_reason: string | null;
+    contradiction_flags?: string[];
   };
   workspace_configured?: boolean;
   monitoring_mode?: 'live' | 'hybrid' | 'simulator' | 'offline' | 'unavailable';
