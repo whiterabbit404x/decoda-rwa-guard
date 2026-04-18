@@ -21,6 +21,7 @@ type LiveWorkspaceFeed = {
   refreshing: boolean;
   lastFetchCompletedAt: string | null;
   runtimeFetchWarning: boolean;
+  runtimeFetchDegraded: boolean;
   runtimeStatus: MonitoringRuntimeStatus | null;
   counts: LiveWorkspaceCounts;
   monitoring: {
@@ -80,6 +81,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
   const [refreshing, setRefreshing] = useState(false);
   const [lastFetchCompletedAt, setLastFetchCompletedAt] = useState<string | null>(null);
   const [runtimeFetchWarning, setRuntimeFetchWarning] = useState(false);
+  const [runtimeFetchDegraded, setRuntimeFetchDegraded] = useState(false);
   const [runtimeStatus, setRuntimeStatus] = useState<MonitoringRuntimeStatus | null>(null);
   const [counts, setCounts] = useState<LiveWorkspaceCounts>(DEFAULT_COUNTS);
   const startedRef = useRef(false);
@@ -196,11 +198,13 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
             enabledSystems: nextRuntime?.enabled_systems ?? null,
             runtimeUnavailable,
             runtimeFetchWarning: fetchWarning,
+            runtimeFetchDegraded: runtimeUnavailable,
             ancillaryFailed: !historyRes?.ok || !alertsRes?.ok || !incidentsRes?.ok,
             appliedCounts: nextCounts,
           });
         }
         setRuntimeFetchWarning(fetchWarning);
+        setRuntimeFetchDegraded(runtimeUnavailable);
         lastKnownRuntimeRef.current = nextRuntime;
         setRuntimeStatus(nextRuntime);
         setCounts(nextCounts);
@@ -248,6 +252,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
     refreshing,
     lastFetchCompletedAt,
     runtimeFetchWarning,
+    runtimeFetchDegraded,
     runtimeStatus,
     counts,
     monitoring: {

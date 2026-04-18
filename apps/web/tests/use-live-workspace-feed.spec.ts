@@ -33,4 +33,23 @@ test.describe('useLiveWorkspaceFeed runtime semantics', () => {
     expect(transientFailure.offline).toBe(false);
     expect(transientFailure.fetchWarning).toBe(true);
   });
+
+  test('failed poll between successful polls does not flip runtime to offline', async () => {
+    const firstSuccess = resolveRuntimeStatus(
+      { monitoring_status: 'active', mode: 'LIVE' } as MonitoringRuntimeStatus,
+      true,
+    );
+    const failedPoll = resolveRuntimeStatus(null, false, firstSuccess.nextRuntime);
+    const secondSuccess = resolveRuntimeStatus(
+      { monitoring_status: 'active', mode: 'LIVE' } as MonitoringRuntimeStatus,
+      true,
+      failedPoll.nextRuntime,
+    );
+
+    expect(firstSuccess.offline).toBe(false);
+    expect(failedPoll.offline).toBe(false);
+    expect(failedPoll.nextRuntime?.monitoring_status).toBe('active');
+    expect(secondSuccess.offline).toBe(false);
+    expect(secondSuccess.nextRuntime?.monitoring_status).toBe('active');
+  });
 });
