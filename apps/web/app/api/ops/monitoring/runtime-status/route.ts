@@ -5,6 +5,7 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 const PROXY_TIMEOUT_MS = 15000;
+const FORWARDED_HEADERS = ['authorization', 'x-workspace-id', 'x-csrf-token', 'cookie'] as const;
 
 function jsonError(status: number, body: Record<string, unknown>) {
   return Response.json(body, {
@@ -14,6 +15,20 @@ function jsonError(status: number, body: Record<string, unknown>) {
       'Content-Type': 'application/json',
     },
   });
+}
+
+function buildForwardHeaders(request: Request) {
+  const headers = new Headers();
+  headers.set('Accept', 'application/json');
+
+  FORWARDED_HEADERS.forEach((name) => {
+    const value = request.headers.get(name);
+    if (value !== null) {
+      headers.set(name, value);
+    }
+  });
+
+  return headers;
 }
 
 export async function GET(request: Request) {
@@ -27,24 +42,15 @@ export async function GET(request: Request) {
       configured: false,
     });
   }
-  const headers = new Headers();
-  headers.set('Accept', 'application/json');
-  const authorization = request.headers.get('authorization');
-  if (authorization !== null) {
-    headers.set('Authorization', authorization);
-  }
-  const workspaceId = request.headers.get('x-workspace-id');
-  if (workspaceId !== null) {
-    headers.set('X-Workspace-Id', workspaceId);
-  }
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
   try {
     const response = await fetch(`${backendApiUrl}/ops/monitoring/runtime-status`, {
       method: 'GET',
-      headers,
+      headers: buildForwardHeaders(request),
       cache: 'no-store',
+      next: { revalidate: 0 },
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
@@ -53,6 +59,7 @@ export async function GET(request: Request) {
       status: response.status,
       headers: {
         'Cache-Control': 'no-store',
+        Vary: 'Authorization, X-Workspace-Id, X-CSRF-Token, Cookie',
       },
     });
   } catch (error) {
