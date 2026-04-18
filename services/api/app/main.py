@@ -2354,9 +2354,17 @@ def history_actions(request: Request, object_type: str | None = None, object_id:
 def enforcement_actions_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_enforcement_action(payload, request))
 
+@app.post('/response/actions', summary='Plan a workspace response action')
+def response_actions_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_enforcement_action(payload, request))
+
 
 @app.post('/enforcement/actions/{action_id}/approve', summary='Approve a planned enforcement action')
 def enforcement_actions_approve(action_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: approve_enforcement_action(action_id, request))
+
+@app.post('/response/actions/{action_id}/approve', summary='Approve a planned response action')
+def response_actions_approve(action_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: approve_enforcement_action(action_id, request))
 
 
@@ -2364,9 +2372,17 @@ def enforcement_actions_approve(action_id: str, request: Request) -> dict[str, A
 def enforcement_actions_execute(action_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: execute_enforcement_action(action_id, request))
 
+@app.post('/response/actions/{action_id}/execute', summary='Execute an approved response action')
+def response_actions_execute(action_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: execute_enforcement_action(action_id, request))
+
 
 @app.post('/enforcement/actions/{action_id}/rollback', summary='Rollback enforcement action by creating a compensating action')
 def enforcement_actions_rollback(action_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: rollback_enforcement_action(action_id, request))
+
+@app.post('/response/actions/{action_id}/rollback', summary='Rollback response action by creating a compensating action')
+def response_actions_rollback(action_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: rollback_enforcement_action(action_id, request))
 
 

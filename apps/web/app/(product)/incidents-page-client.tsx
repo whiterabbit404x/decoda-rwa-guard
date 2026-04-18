@@ -36,6 +36,9 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   }, [apiUrl, authHeaders, selectedId]);
 
   const selected = useMemo(() => incidents.find((item) => item.id === selectedId), [incidents, selectedId]);
+  const responseModeLabel = selected?.response_action_mode && selected.response_action_mode !== 'live_enforcement'
+    ? 'SIMULATED'
+    : null;
 
   async function updateWorkflow(nextStatus: typeof WORKFLOW_STATUSES[number]) {
     if (!selected) return;
@@ -83,6 +86,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
           <article className="dataCard">
             {!selected ? <p className="muted">Select an incident.</p> : <>
               <h3>{selected.title || selected.event_type}</h3>
+              {responseModeLabel ? <p className="statusLine">Response mode: <strong>{responseModeLabel}</strong></p> : null}
               <p className="muted">Severity: {selected.severity || 'n/a'} · Owner: {selected.owner_user_id || selected.assignee_user_id || 'unassigned'}</p>
               <p className="muted">Linked alerts: {(selected.linked_alert_ids || []).join(', ') || 'none'}</p>
               <p className="muted">Created: {selected.created_at ? new Date(selected.created_at).toLocaleString() : 'n/a'} · Resolved: {selected.resolved_at ? new Date(selected.resolved_at).toLocaleString() : 'not resolved'}</p>
@@ -92,6 +96,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
                 <button type="button" onClick={() => void updateWorkflow('resolved')}>Resolve</button>
                 <button type="button" onClick={() => void updateWorkflow('reopened')}>Reopen</button>
               </div>
+              <p className="tableMeta">Response actions: Freeze wallet · Block transaction · Revoke approval · Disable monitored system · Suppress rule · Notify team</p>
               <p className="sectionEyebrow">Merged event timeline</p>
               {timeline.map((item, index) => <p key={`${item.id || index}`}>{item.event_type}: {item.message || ''} · {item.created_at ? new Date(item.created_at).toLocaleString() : 'n/a'}</p>)}
               <div className="buttonRow">
