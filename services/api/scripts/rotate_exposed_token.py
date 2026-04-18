@@ -170,6 +170,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if signout_all.status != 200:
         raise IncidentResponseError(f'Failed to revoke sessions via /auth/signout-all (status={signout_all.status}): {signout_all.payload}')
 
+    leaked_token_post_rotation = _json_request(
+        api_url=args.api_url,
+        method='GET',
+        path='/auth/me',
+        token=args.leaked_token,
+        timeout_seconds=args.timeout,
+    )
+
     new_token, signed_in_user = _signin_for_new_token(
         args.api_url,
         email=args.email,
@@ -223,6 +231,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             'revoke_rotate_sessions': {
                 'sessions_before_rotation': sessions_before.payload,
                 'signout_all_response': signout_all.payload,
+                'leaked_token_post_rotation_status': leaked_token_post_rotation.status,
+                'leaked_token_revoked': leaked_token_post_rotation.status in {401, 403},
             },
             'new_token_issued': True,
             'diagnostics_with_new_token': diagnostics,
