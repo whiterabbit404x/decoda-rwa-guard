@@ -6656,6 +6656,98 @@ def put_module_config(module_key: str, payload: dict[str, Any], request: Request
         return {'module': module_key, 'config': normalized_config, 'summary': summarize_module_config(module_key, normalized_config), 'saved': True}
 
 
+def list_detections(
+    request: Request,
+    *,
+    limit: int = 50,
+    severity: str | None = None,
+    status_value: str | None = None,
+    evidence_source: str | None = None,
+) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        max_limit = max(1, min(int(limit or 50), 200))
+        rows = connection.execute(
+            '''
+            SELECT id,
+                   workspace_id,
+                   monitored_system_id,
+                   protected_asset_id,
+                   detection_type,
+                   severity,
+                   confidence,
+                   title,
+                   evidence_summary,
+                   evidence_source,
+                   source_rule,
+                   status,
+                   detected_at,
+                   raw_evidence_json,
+                   monitoring_run_id,
+                   linked_alert_id,
+                   created_at,
+                   updated_at
+            FROM detections
+            WHERE workspace_id = %s
+              AND (%s::text IS NULL OR severity = %s::text)
+              AND (%s::text IS NULL OR status = %s::text)
+              AND (%s::text IS NULL OR evidence_source = %s::text)
+            ORDER BY detected_at DESC
+            LIMIT %s
+            ''',
+            (
+                workspace_context['workspace_id'],
+                severity,
+                severity,
+                status_value,
+                status_value,
+                evidence_source,
+                evidence_source,
+                max_limit,
+            ),
+        ).fetchall()
+        return {'detections': [_json_safe_value(dict(row)) for row in rows]}
+
+
+def get_detection(detection_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        row = connection.execute(
+            '''
+            SELECT id,
+                   workspace_id,
+                   monitored_system_id,
+                   protected_asset_id,
+                   detection_type,
+                   severity,
+                   confidence,
+                   title,
+                   evidence_summary,
+                   evidence_source,
+                   source_rule,
+                   status,
+                   detected_at,
+                   raw_evidence_json,
+                   monitoring_run_id,
+                   linked_alert_id,
+                   created_at,
+                   updated_at
+            FROM detections
+            WHERE id = %s::uuid AND workspace_id = %s
+            ''',
+            (detection_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Detection not found.')
+        return {'detection': _json_safe_value(dict(row))}
+
+
 def list_alerts(request: Request, *, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None, source: str | None = None) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -6664,7 +6756,7 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, alert_type, title, severity, status, summary, module_key, target_id, source, source_service, recommended_action, degraded, occurrence_count, last_seen_at, findings, owner_user_id, triage_status, resolution_note, suppressed_until, acknowledged_at, resolved_at, created_at, updated_at
+            SELECT id, alert_type, title, severity, status, summary, module_key, target_id, detection_id, source, source_service, recommended_action, degraded, occurrence_count, last_seen_at, findings, owner_user_id, triage_status, resolution_note, suppressed_until, acknowledged_at, resolved_at, created_at, updated_at
             FROM alerts
             WHERE workspace_id = %s
               AND (%s::text IS NULL OR severity = %s::text)

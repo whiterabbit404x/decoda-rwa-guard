@@ -1602,6 +1602,7 @@ def _upsert_alert(
     title: str,
     response: dict[str, Any],
     signature: str,
+    detection_id: str | None = None,
 ) -> str:
     suppression = connection.execute(
         '''
@@ -1639,7 +1640,8 @@ def _upsert_alert(
                 reasons = %s::jsonb,
                 matched_patterns = %s::jsonb,
                 recommended_action = %s,
-                degraded = %s
+                degraded = %s,
+                detection_id = COALESCE(%s::uuid, detection_id)
             WHERE id = %s
             ''',
             (
@@ -1648,6 +1650,7 @@ def _upsert_alert(
                 _json_dumps(response.get('matched_patterns') or []),
                 str(response.get('recommended_action') or 'review'),
                 bool(response.get('degraded', False)),
+                detection_id,
                 existing['id'],
             ),
         )
@@ -1659,9 +1662,9 @@ def _upsert_alert(
         INSERT INTO alerts (
             id, workspace_id, user_id, analysis_run_id, target_id, alert_type, title, severity, status,
             source_service, source, summary, payload, matched_patterns, reasons, recommended_action,
-            degraded, dedupe_signature, occurrence_count, first_seen_at, last_seen_at, created_at, updated_at
+            degraded, dedupe_signature, detection_id, occurrence_count, first_seen_at, last_seen_at, created_at, updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'open', %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, 1, NOW(), NOW(), NOW(), NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'open', %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s::uuid, 1, NOW(), NOW(), NOW(), NOW())
         ''',
         (
             alert_id,
@@ -1681,9 +1684,89 @@ def _upsert_alert(
             str(response.get('recommended_action') or 'review'),
             bool(response.get('degraded', False)),
             signature,
+            detection_id,
         ),
     )
     return alert_id
+
+
+def _create_detection(
+    connection: Any,
+    *,
+    workspace_id: str,
+    monitored_system_id: str | None,
+    protected_asset_id: str | None,
+    detection_type: str,
+    severity: str,
+    confidence: float | None,
+    title: str,
+    evidence_summary: str,
+    evidence_source: str,
+    source_rule: str | None,
+    raw_evidence_json: dict[str, Any],
+    monitoring_run_id: str | None,
+) -> str:
+    detection_id = str(uuid.uuid4())
+    connection.execute(
+        '''
+        INSERT INTO detections (
+            id,
+            workspace_id,
+            monitored_system_id,
+            protected_asset_id,
+            detection_type,
+            severity,
+            confidence,
+            title,
+            evidence_summary,
+            evidence_source,
+            source_rule,
+            status,
+            detected_at,
+            raw_evidence_json,
+            monitoring_run_id,
+            linked_alert_id,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            %s,
+            %s::uuid,
+            %s::uuid,
+            %s::uuid,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            'open',
+            NOW(),
+            %s::jsonb,
+            %s::uuid,
+            NULL,
+            NOW(),
+            NOW()
+        )
+        ''',
+        (
+            detection_id,
+            workspace_id,
+            monitored_system_id,
+            protected_asset_id,
+            detection_type,
+            severity,
+            confidence,
+            title,
+            evidence_summary,
+            evidence_source,
+            source_rule,
+            _json_dumps(raw_evidence_json),
+            monitoring_run_id,
+        ),
+    )
+    return detection_id
 
 
 def _maybe_create_incident(connection: Any, *, workspace_id: str, user_id: str, target_id: str, analysis_run_id: str, alert_id: str, response: dict[str, Any], auto_create: bool) -> str | None:
@@ -1830,8 +1913,39 @@ def _process_single_event(
         request=None,
     )
     alert_id = None
+    detection_id = None
     incident_id = None
     severity_threshold = str(target.get('severity_threshold') or 'medium')
+    matched_patterns = response.get('matched_patterns') if isinstance(response.get('matched_patterns'), list) else []
+    if matched_patterns:
+        confidence_raw = response.get('confidence')
+        confidence = float(confidence_raw) if isinstance(confidence_raw, (int, float)) else None
+        source_rule = None
+        first_match = matched_patterns[0] if matched_patterns else None
+        if isinstance(first_match, dict):
+            source_rule = str(first_match.get('label') or first_match.get('rule_id') or '').strip() or None
+        elif first_match is not None:
+            source_rule = str(first_match).strip() or None
+        evidence_source = 'simulator' if str(event.ingestion_source or '').lower() == 'demo' else 'live'
+        detection_id = _create_detection(
+            connection,
+            workspace_id=str(target['workspace_id']),
+            monitored_system_id=str(target.get('monitored_system_id') or '') or None,
+            protected_asset_id=str(target.get('asset_id') or '') or None,
+            detection_type=f'monitoring_{kind}',
+            severity=str(response.get('severity') or 'medium'),
+            confidence=confidence,
+            title=f"{target.get('name')}: {response.get('severity', 'medium')} risk",
+            evidence_summary=str(response.get('explanation') or response.get('summary') or 'Rule matched from monitored evidence.'),
+            evidence_source=evidence_source,
+            source_rule=source_rule,
+            raw_evidence_json={
+                'event': normalized,
+                'response': response,
+                'event_id': event.event_id,
+            },
+            monitoring_run_id=monitoring_run_id,
+        )
     if bool(target.get('auto_create_alerts', True)) and _severity_meets_threshold(str(response.get('severity') or 'low'), severity_threshold):
         signature = _signature(str(target['id']), normalized, response)
         alert_id = _upsert_alert(
@@ -1843,8 +1957,20 @@ def _process_single_event(
             title=f"{target.get('name')}: {response.get('severity', 'medium')} risk",
             response=response,
             signature=signature,
+            detection_id=detection_id,
         )
         if alert_id:
+            if detection_id:
+                connection.execute(
+                    '''
+                    UPDATE detections
+                    SET linked_alert_id = %s::uuid,
+                        status = 'escalated',
+                        updated_at = NOW()
+                    WHERE id = %s::uuid
+                    ''',
+                    (alert_id, detection_id),
+                )
             incident_id = _maybe_create_incident(
                 connection,
                 workspace_id=str(target['workspace_id']),
@@ -1885,6 +2011,7 @@ def _process_single_event(
     )
     return {
         'analysis_run_id': analysis_run_id,
+        'detection_id': detection_id,
         'alert_id': alert_id,
         'incident_id': incident_id,
         'monitoring_state': response.get('monitoring_state'),

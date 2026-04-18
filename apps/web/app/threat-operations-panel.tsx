@@ -105,6 +105,23 @@ type EvidenceRow = {
   asset_name?: string | null;
   target_name?: string | null;
 };
+type DetectionRow = {
+  id: string;
+  monitored_system_id?: string | null;
+  protected_asset_id?: string | null;
+  detection_type?: string | null;
+  severity?: string | null;
+  confidence?: number | null;
+  title?: string | null;
+  evidence_summary?: string | null;
+  evidence_source?: string | null;
+  source_rule?: string | null;
+  status?: string | null;
+  detected_at?: string | null;
+  raw_evidence_json?: Record<string, any> | null;
+  monitoring_run_id?: string | null;
+  linked_alert_id?: string | null;
+};
 
 type ThreatFeedState = 'Live' | 'Historical' | 'Test' | 'Stale' | 'Investigating' | 'Resolved';
 export type PageOperationalState =
@@ -115,7 +132,7 @@ export type PageOperationalState =
   | 'unconfigured_workspace'
   | 'fetch_error';
 
-type SnapshotFailureKey = 'targets' | 'systems' | 'alerts' | 'incidents' | 'history' | 'evidence' | 'runs';
+type SnapshotFailureKey = 'targets' | 'systems' | 'alerts' | 'incidents' | 'history' | 'evidence' | 'runs' | 'detections';
 
 const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
   'no_valid_protected_assets',
@@ -481,6 +498,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [historyRuns, setHistoryRuns] = useState<HistoryRun[]>([]);
   const [monitoringRuns, setMonitoringRuns] = useState<MonitoringRunRow[]>([]);
   const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
+  const [detections, setDetections] = useState<DetectionRow[]>([]);
   const [monitoredSystems, setMonitoredSystems] = useState<MonitoredSystemRow[]>([]);
 
   useEffect(() => {
@@ -492,7 +510,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         return;
       }
       try {
-        const [targetsResult, systemsResult, alertsResult, incidentsResult, historyResult, evidenceResult, runsResult] = await Promise.allSettled([
+        const [targetsResult, systemsResult, alertsResult, incidentsResult, historyResult, evidenceResult, runsResult, detectionsResult] = await Promise.allSettled([
           fetch(`${apiUrl}/monitoring/targets`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(MONITORING_SYSTEMS_PROXY_PATH, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
@@ -500,6 +518,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           fetch(`${apiUrl}/pilot/history?limit=12`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/monitoring/runs?limit=12`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/detections?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         if (!active) return;
         const responseEntries: [SnapshotFailureKey, PromiseSettledResult<Response>][] = [
@@ -510,6 +529,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ['history', historyResult],
           ['evidence', evidenceResult],
           ['runs', runsResult],
+          ['detections', detectionsResult],
         ];
         const failedEndpoints = responseEntries
           .filter(([, result]) => !(result.status === 'fulfilled' && result.value.ok))
@@ -517,7 +537,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const responses = responseEntries.map(([, result]) => (
           result.status === 'fulfilled' && result.value.ok ? result.value : null
         ));
-        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, historyResponse, evidenceResponse, runsResponse] = responses;
+        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, historyResponse, evidenceResponse, runsResponse, detectionsResponse] = responses;
         const targetsPayload = targetsResponse ? await targetsResponse.json().catch(() => ({})) : {};
         const systemsPayload = systemsResponse ? await systemsResponse.json().catch(() => ({})) : {};
         const alertsPayload = alertsResponse ? await alertsResponse.json().catch(() => ({})) : {};
@@ -525,6 +545,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const historyPayload = historyResponse ? await historyResponse.json().catch(() => ({})) : {};
         const evidencePayload = evidenceResponse ? await evidenceResponse.json().catch(() => ({})) : {};
         const runsPayload = runsResponse ? await runsResponse.json().catch(() => ({})) : {};
+        const detectionsPayload = detectionsResponse ? await detectionsResponse.json().catch(() => ({})) : {};
 
         if (targetsResponse) {
           setTargets((targetsPayload?.targets ?? []) as TargetRow[]);
@@ -546,6 +567,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         }
         if (runsResponse) {
           setMonitoringRuns((runsPayload?.runs ?? []) as MonitoringRunRow[]);
+        }
+        if (detectionsResponse) {
+          setDetections((detectionsPayload?.detections ?? []) as DetectionRow[]);
         }
         setSystemsPanelWarning(formatSystemsPanelWarning(failedEndpoints));
         setSnapshotError(formatSnapshotErrorMessage(failedEndpoints));
@@ -631,56 +655,35 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const matchedAsset = targets[0];
     const fallbackAssetName = matchedAsset?.name || 'Unbound workspace asset';
     const fallbackAssetType = matchedAsset?.target_type || matchedAsset?.asset_type || 'system';
-
-    const fromEvidence: DetectionItem[] = evidence.slice(0, 20).map((item) => ({
-      id: `evidence-${item.id}`,
-      timestamp: item.observed_at || new Date(0).toISOString(),
-      severity: severityLabel(item.severity),
-      title: item.summary || item.event_type || 'Observed monitoring event',
-      assetName: item.asset_name || fallbackAssetName,
-      assetType: fallbackAssetType,
-      monitoringStatus: 'Monitored',
-      evidenceSummary: item.summary || 'Evidence ingested from provider-backed monitoring.',
-      txHash: item.tx_hash ?? null,
-      blockNumber: item.block_number ?? null,
-      counterparty: item.counterparty ?? null,
-      amount: item.amount_text ?? null,
-      tokenOrContract: item.contract_address ?? item.token_address ?? null,
-      ruleId: item.rule_label ?? item.event_type ?? null,
-      sourceProvider: item.source_provider ?? null,
-      targetName: item.target_name ?? null,
-      state: 'Live',
-      href: '/alerts',
-      source: 'evidence',
-    }));
-
-    const fromAlerts: DetectionItem[] = alerts.slice(0, 10).map((item) => {
-      const isTest = isTestOrLabSignal(item.title) || isTestOrLabSignal(item.explanation);
+    return detections.slice(0, 50).map((item) => {
+      const rawEvidence = item.raw_evidence_json || {};
+      const rawEvent = rawEvidence.event || {};
+      const responsePayload = rawEvidence.response || {};
+      const linkedAlert = item.linked_alert_id ? alerts.find((alert) => alert.id === item.linked_alert_id) : null;
+      const isTest = isTestOrLabSignal(item.title ?? undefined) || isTestOrLabSignal(item.evidence_summary ?? undefined);
       return {
-        id: `alert-${item.id}`,
-        timestamp: item.created_at || new Date(0).toISOString(),
-        severity: severityLabel(item.severity),
-        title: item.title,
+        id: `detection-${item.id}`,
+        timestamp: item.detected_at || new Date(0).toISOString(),
+        severity: severityLabel(item.severity || linkedAlert?.severity),
+        title: item.title || linkedAlert?.title || 'Detection matched',
         assetName: fallbackAssetName,
         assetType: fallbackAssetType,
         monitoringStatus: matchedAsset?.monitoring_enabled ? 'Monitored' : 'Status unavailable',
-        evidenceSummary: item.explanation || 'Alert condition triggered and is waiting for operator review.',
-        txHash: item.payload?.tx_hash ?? null,
-        blockNumber: item.payload?.block_number ?? null,
-        counterparty: item.payload?.counterparty ?? item.payload?.from ?? null,
-        amount: item.payload?.amount ? String(item.payload?.amount) : null,
-        tokenOrContract: item.payload?.contract_address ?? item.payload?.token_address ?? null,
-        ruleId: item.findings?.rule_id ?? item.alert_type ?? null,
-        sourceProvider: item.source_service ?? item.source ?? null,
-        targetName: item.target_id ?? null,
+        evidenceSummary: item.evidence_summary || linkedAlert?.explanation || 'Rule matched from monitored evidence.',
+        txHash: rawEvent.tx_hash ?? responsePayload.observed_evidence?.tx_hash ?? null,
+        blockNumber: rawEvent.block_number ?? responsePayload.observed_evidence?.block_number ?? null,
+        counterparty: rawEvent.counterparty ?? rawEvent.from ?? null,
+        amount: rawEvent.amount ? String(rawEvent.amount) : null,
+        tokenOrContract: rawEvent.contract_address ?? rawEvent.token_address ?? null,
+        ruleId: item.source_rule ?? responsePayload.findings?.rule_id ?? item.detection_type ?? null,
+        sourceProvider: item.evidence_source ?? linkedAlert?.source_service ?? linkedAlert?.source ?? null,
+        targetName: matchedAsset?.name ?? null,
         state: isTest ? ('Test' as const) : ('Live' as const),
-        href: '/alerts',
-        source: 'alert' as const,
+        href: item.linked_alert_id ? '/alerts' : '/threat',
+        source: 'evidence' as const,
       };
-    });
-
-    return [...fromEvidence, ...fromAlerts].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  }, [alerts, targets, evidence]);
+    }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  }, [alerts, detections, targets]);
 
   const categorizedDetections = useMemo(() => {
     const now = Date.now();
