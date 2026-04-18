@@ -4300,7 +4300,27 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             )
         provider_health = 'healthy' if str(payload.get('recent_evidence_state')) == 'real' and int(payload.get('recent_real_event_count') or 0) > 0 else 'degraded'
         mode = str(health.get('operational_mode') or health.get('mode') or 'DEGRADED').upper()
+        active_live_coverage = bool(
+            workspace_configured
+            and monitoring_status == 'active'
+            and source_of_evidence == 'live'
+            and reporting_systems > 0
+            and coverage_fresh
+            and not degraded_reason
+            and not provider_degraded_or_unreachable
+        )
+        degraded_mode_reasons: list[str] = []
+        if degraded_reason:
+            degraded_mode_reasons.append(str(degraded_reason))
+        if provider_degraded_or_unreachable:
+            degraded_mode_reasons.append('provider_degraded_or_unreachable')
+        if monitoring_status == 'degraded' or runtime_status_summary == 'degraded':
+            degraded_mode_reasons.append('runtime_status_degraded')
         if mode == 'LIVE' and int(payload.get('recent_real_event_count') or 0) <= 0:
+            degraded_mode_reasons.append('no_recent_real_events')
+        if mode == 'DEGRADED' and not degraded_mode_reasons and active_live_coverage:
+            mode = 'HYBRID' if monitoring_mode_raw == 'hybrid' else 'LIVE'
+        elif degraded_mode_reasons:
             mode = 'DEGRADED'
         payload.update(
             {
