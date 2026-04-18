@@ -4,9 +4,38 @@ import { getRuntimeConfig } from 'app/runtime-config';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const PROXY_TIMEOUT_MS = 45000;
+const PROXY_TIMEOUT_MS = 60000;
 const TIMEOUT_RETRY_ATTEMPTS = 1;
 const SLOW_REQUEST_LOG_THRESHOLD_MS = 10000;
+const LATENCY_SAMPLE_SIZE = 200;
+
+const monitoringSystemsLatencySamples: number[] = [];
+
+function percentile(values: number[], quantile: number): number {
+  if (!values.length) {
+    return 0;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * quantile) - 1));
+  return sorted[index];
+}
+
+function recordMonitoringSystemsLatency(durationMs: number, status?: number) {
+  monitoringSystemsLatencySamples.push(durationMs);
+  if (monitoringSystemsLatencySamples.length > LATENCY_SAMPLE_SIZE) {
+    monitoringSystemsLatencySamples.shift();
+  }
+  console.info('[monitoring-systems-proxy] latency percentiles', {
+    endpoint: '/monitoring/systems',
+    status,
+    sampleSize: monitoringSystemsLatencySamples.length,
+    p50Ms: percentile(monitoringSystemsLatencySamples, 0.5),
+    p90Ms: percentile(monitoringSystemsLatencySamples, 0.9),
+    p95Ms: percentile(monitoringSystemsLatencySamples, 0.95),
+    p99Ms: percentile(monitoringSystemsLatencySamples, 0.99),
+    timeoutMs: PROXY_TIMEOUT_MS,
+  });
+}
 
 function jsonError(status: number, body: Record<string, unknown>) {
   return Response.json(body, {
@@ -44,6 +73,7 @@ async function fetchMonitoringSystemsWithRetry(
         durationMs,
         attempt,
       });
+      recordMonitoringSystemsLatency(durationMs, response.status);
       return { response, durationMs, attempts: attempt };
     } catch (error) {
       const durationMs = Date.now() - startedAt;
@@ -55,6 +85,7 @@ async function fetchMonitoringSystemsWithRetry(
           timeoutMs: PROXY_TIMEOUT_MS,
           willRetry: attempt < maxAttempts,
         });
+        recordMonitoringSystemsLatency(durationMs);
         if (attempt < maxAttempts) {
           continue;
         }
