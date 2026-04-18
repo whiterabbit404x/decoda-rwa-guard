@@ -18,9 +18,9 @@ test('localhost:3000/threat renders persistent workspace monitoring workflow', a
   expect(response?.ok()).toBeTruthy();
   await expect(page.getByRole('heading', { name: 'Threat Monitoring Console' })).toBeVisible();
   await expect(page.locator('text=Threat monitoring command center')).toBeVisible();
-  await expect(page.locator('text=Live Threat Feed')).toBeVisible();
-  await expect(page.locator('text=Protected Assets & Coverage')).toBeVisible();
-  await expect(page.locator('text=Investigation and response actions')).toBeVisible();
+  await expect(page.locator('text=Recent Detections')).toBeVisible();
+  await expect(page.locator('text=Recent Monitoring Runs')).toBeVisible();
+  await expect(page.locator('text=Response Actions')).toBeVisible();
 
   await expect(page.locator('text=Run analysis')).toHaveCount(0);
   await expect(page.locator('text=Scenario library')).toHaveCount(0);

@@ -40,9 +40,11 @@ test('primary threat page uses always-on monitoring language and removes scenari
 
   expect(threatPage).toContain('Threat Monitoring Console');
   expect(threatPanel).toContain('Threat monitoring command center');
-  expect(threatPanel).toContain('Live Threat Feed');
-  expect(threatPanel).toContain('Protected Assets & Coverage');
-  expect(threatPanel).toContain('Investigation and response actions');
+  expect(threatPanel).toContain('Recent Monitoring Runs');
+  expect(threatPanel).toContain('Recent Detections');
+  expect(threatPanel).toContain('Alerts');
+  expect(threatPanel).toContain('Incidents');
+  expect(threatPanel).toContain('Response Actions');
 
   expect(threatPanel).not.toContain('scenario presets');
   expect(threatPanel).not.toContain('Run analysis');
