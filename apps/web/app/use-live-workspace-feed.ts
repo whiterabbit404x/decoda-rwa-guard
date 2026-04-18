@@ -89,7 +89,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
         null,
       evidence_source:
         runtimeStatus?.workspace_monitoring_summary?.evidence_source ??
-        runtimeStatus?.workspace_monitoring_summary?.coverage_state?.evidence_source ??
+        runtimeStatus?.evidence_source ??
         null,
       appliedCounts: counts,
       lastFetchCompletedAt,
@@ -180,7 +180,7 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
               null,
             evidence_source:
               statusPayload?.workspace_monitoring_summary?.evidence_source ??
-              statusPayload?.workspace_monitoring_summary?.coverage_state?.evidence_source ??
+              statusPayload?.evidence_source ??
               null,
             monitoredSystems: nextRuntime?.monitored_systems ?? null,
             enabledSystems: nextRuntime?.enabled_systems ?? null,
