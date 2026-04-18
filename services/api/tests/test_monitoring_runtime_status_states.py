@@ -1592,8 +1592,10 @@ def test_runtime_status_live_uses_fresh_coverage_receipts_fallback(monkeypatch):
                 return _Result(
                     rows=[
                         {
-                            'processed_at': (now - timedelta(seconds=15)).isoformat(),
-                            'target_id': 'target-1',
+                            'latest_processed_at': (now - timedelta(seconds=15)).isoformat(),
+                            'workspace_latest_processed_at': (now - timedelta(seconds=15)).isoformat(),
+                            'workspace_receipt_count': 1,
+                            'receipt_count': 1,
                             'monitored_system_id': 'sys-1',
                         }
                     ]
@@ -1644,11 +1646,11 @@ def test_runtime_status_live_counts_target_event_receipts_for_coverage_compat(mo
                 return _Result(
                     rows=[
                         {
-                            'processed_at': (now - timedelta(seconds=10)).isoformat(),
-                            'target_id': 'target-1',
+                            'latest_processed_at': (now - timedelta(seconds=10)).isoformat(),
+                            'workspace_latest_processed_at': (now - timedelta(seconds=10)).isoformat(),
+                            'workspace_receipt_count': 1,
+                            'receipt_count': 1,
                             'monitored_system_id': 'sys-1',
-                            'telemetry_kind': 'target_event',
-                            'receipt_kind': 'target_event',
                         }
                     ]
                 )
@@ -1694,13 +1696,15 @@ def test_runtime_status_treats_null_enabled_system_as_enabled_for_live_coverage(
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
             if 'FROM monitoring_event_receipts e' in q and "e.evidence_source = 'live'" in q and "e.telemetry_kind = 'coverage'" in q:
-                if 'COALESCE(ms.is_enabled, TRUE) = TRUE' not in q:
+                if 'ms.is_enabled IS DISTINCT FROM FALSE' not in q:
                     return _Result(rows=[])
                 return _Result(
                     rows=[
                         {
-                            'processed_at': (now - timedelta(seconds=12)).isoformat(),
-                            'target_id': 'target-1',
+                            'latest_processed_at': (now - timedelta(seconds=12)).isoformat(),
+                            'workspace_latest_processed_at': (now - timedelta(seconds=12)).isoformat(),
+                            'workspace_receipt_count': 1,
+                            'receipt_count': 1,
                             'monitored_system_id': 'sys-null-enabled',
                         }
                     ]

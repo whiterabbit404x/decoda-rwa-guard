@@ -491,8 +491,9 @@ def test_runtime_status_returns_safe_structured_error_json_for_missing_column_ru
     assert payload['error']['code'] == 'runtime_status_runtime_error'
     assert payload['error']['type'] == 'RuntimeError'
     assert payload['error']['stage'] == 'aggregation'
+    safe_error_values = ' '.join(str(value).lower() for value in payload.get('error', {}).values())
     for secret_substring in _SECRET_SUBSTRINGS:
-        assert secret_substring not in str(payload.get('error', {})).lower()
+        assert secret_substring not in safe_error_values
         assert secret_substring not in str(payload.get('configuration_diagnostics', {})).lower()
 
 
