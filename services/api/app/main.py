@@ -114,6 +114,8 @@ from services.api.app.pilot import (
     delete_target,
     get_module_config,
     put_module_config,
+    list_detections,
+    get_detection,
     list_alerts,
     get_alert,
     patch_alert,
@@ -2268,6 +2270,24 @@ def modules_put_config(module_key: str, payload: dict[str, Any], request: Reques
 @app.get('/alerts', summary='List alerts')
 def alerts_list(request: Request, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None, source: str | None = None) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_alerts(request, severity=severity, module=module, target_id=target_id, status_value=status_value, source=source))
+
+
+@app.get('/detections', summary='List detections')
+def detections_list(request: Request, limit: int = 50, severity: str | None = None, status_value: str | None = None, evidence_source: str | None = None) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: list_detections(
+            request,
+            limit=limit,
+            severity=severity,
+            status_value=status_value,
+            evidence_source=evidence_source,
+        )
+    )
+
+
+@app.get('/detections/{detection_id}', summary='Detection detail')
+def detections_get(detection_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_detection(detection_id, request))
 
 
 @app.get('/alerts/{alert_id}', summary='Alert detail')
