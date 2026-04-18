@@ -364,4 +364,31 @@ test.describe('threat runtime guards', () => {
     expect(hasLiveTelemetry(truth)).toBeFalsy();
     expect(state).toBe('degraded_partial');
   });
+
+  test('partial snapshot failure does not force offline state while runtime is live', async () => {
+    const state = derivePageState({
+      loadingSnapshot: false,
+      snapshotError: true,
+      targets: [],
+      liveDetections: [],
+      workspaceConfigured: true,
+      freshnessStatus: 'fresh',
+      contradictionFlags: [],
+      reportingSystems: 2,
+      runtimeStatus: 'healthy',
+      monitoredSystems: 2,
+      hasLiveTelemetry: true,
+      statusReason: null,
+      configurationReason: null,
+      configurationReasonCodes: [],
+      runtimeMonitoringStatus: 'active',
+      summaryStatusReason: null,
+      summaryConfigurationReason: null,
+      summaryConfigurationReasonCodes: [],
+    });
+
+    expect(state).toBe('configured_no_signals');
+    expect(state).not.toBe('offline_no_telemetry');
+    expect(state).not.toBe('fetch_error');
+  });
 });

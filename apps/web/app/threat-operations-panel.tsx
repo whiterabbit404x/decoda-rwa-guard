@@ -490,12 +490,24 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const historyPayload = historyResponse ? await historyResponse.json().catch(() => ({})) : {};
         const evidencePayload = evidenceResponse ? await evidenceResponse.json().catch(() => ({})) : {};
 
-        setTargets((targetsPayload?.targets ?? []) as TargetRow[]);
-        setMonitoredSystems((systemsPayload?.systems ?? []) as MonitoredSystemRow[]);
-        setAlerts((alertsPayload?.alerts ?? []) as AlertRow[]);
-        setIncidents((incidentsPayload?.incidents ?? []) as IncidentRow[]);
-        setHistoryRuns((historyPayload?.analysis_runs ?? []) as HistoryRun[]);
-        setEvidence((evidencePayload?.evidence ?? []) as EvidenceRow[]);
+        if (targetsResponse) {
+          setTargets((targetsPayload?.targets ?? []) as TargetRow[]);
+        }
+        if (systemsResponse) {
+          setMonitoredSystems((systemsPayload?.systems ?? []) as MonitoredSystemRow[]);
+        }
+        if (alertsResponse) {
+          setAlerts((alertsPayload?.alerts ?? []) as AlertRow[]);
+        }
+        if (incidentsResponse) {
+          setIncidents((incidentsPayload?.incidents ?? []) as IncidentRow[]);
+        }
+        if (historyResponse) {
+          setHistoryRuns((historyPayload?.analysis_runs ?? []) as HistoryRun[]);
+        }
+        if (evidenceResponse) {
+          setEvidence((evidencePayload?.evidence ?? []) as EvidenceRow[]);
+        }
         const failedRequests = [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, historyResponse, evidenceResponse].filter((item) => !item).length;
         setSnapshotError(failedRequests > 0 ? `Monitoring snapshot partially unavailable (${failedRequests} endpoint${failedRequests === 1 ? '' : 's'} failed).` : null);
       } catch {
