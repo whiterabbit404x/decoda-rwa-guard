@@ -10,32 +10,26 @@ test.describe('useLiveWorkspaceFeed runtime semantics', () => {
     const degraded = resolveRuntimeStatus({ monitoring_status: 'degraded', mode: 'DEGRADED' } as MonitoringRuntimeStatus, true);
 
     expect(active.offline).toBe(false);
-    expect(active.explicitOfflineStreak).toBe(0);
+    expect(active.failureStreak).toBe(0);
     expect(idle.offline).toBe(false);
-    expect(idle.explicitOfflineStreak).toBe(0);
+    expect(idle.failureStreak).toBe(0);
     expect(degraded.offline).toBe(false);
-    expect(degraded.explicitOfflineStreak).toBe(0);
+    expect(degraded.failureStreak).toBe(0);
   });
 
-  test('offline only after repeated explicit offline/error statuses', async () => {
+  test('explicit backend offline/error status immediately reports offline', async () => {
     const explicitOfflineFirst = resolveRuntimeStatus({ monitoring_status: 'offline', mode: 'OFFLINE' } as MonitoringRuntimeStatus, true);
-    const explicitOfflineSecond = resolveRuntimeStatus(
-      { monitoring_status: 'offline', mode: 'OFFLINE' } as MonitoringRuntimeStatus,
-      true,
-      explicitOfflineFirst.nextRuntime,
-      explicitOfflineFirst.explicitOfflineStreak,
-    );
-    const explicitErrorSecond = resolveRuntimeStatus(
+    const explicitError = resolveRuntimeStatus(
       { monitoring_status: 'error', mode: 'OFFLINE' } as MonitoringRuntimeStatus,
       true,
       explicitOfflineFirst.nextRuntime,
-      explicitOfflineFirst.explicitOfflineStreak,
+      explicitOfflineFirst.failureStreak,
     );
 
-    expect(explicitOfflineFirst.offline).toBe(false);
-    expect(explicitOfflineFirst.explicitOfflineStreak).toBe(1);
-    expect(explicitOfflineSecond.offline).toBe(true);
-    expect(explicitErrorSecond.offline).toBe(true);
+    expect(explicitOfflineFirst.offline).toBe(true);
+    expect(explicitOfflineFirst.failureStreak).toBe(0);
+    expect(explicitError.offline).toBe(true);
+    expect(explicitError.failureStreak).toBe(0);
   });
 
   test('intermittent runtime fetch failure keeps last good runtime without false offline regression', async () => {
@@ -48,7 +42,7 @@ test.describe('useLiveWorkspaceFeed runtime semantics', () => {
     expect(transientFailure.nextRuntime).toEqual(lastKnownGood.nextRuntime);
     expect(transientFailure.offline).toBe(false);
     expect(transientFailure.fetchWarning).toBe(true);
-    expect(transientFailure.explicitOfflineStreak).toBe(0);
+    expect(transientFailure.failureStreak).toBe(1);
   });
 
   test('success → timeout → success does not trigger OFFLINE flicker', async () => {
@@ -68,6 +62,21 @@ test.describe('useLiveWorkspaceFeed runtime semantics', () => {
     expect(failedPoll.nextRuntime?.monitoring_status).toBe('active');
     expect(secondSuccess.offline).toBe(false);
     expect(secondSuccess.nextRuntime?.monitoring_status).toBe('active');
-    expect(secondSuccess.explicitOfflineStreak).toBe(0);
+    expect(secondSuccess.failureStreak).toBe(0);
+  });
+
+  test('consecutive runtime failures promote runtime to offline', async () => {
+    const firstSuccess = resolveRuntimeStatus(
+      { monitoring_status: 'active', mode: 'LIVE' } as MonitoringRuntimeStatus,
+      true,
+    );
+    const firstFailedPoll = resolveRuntimeStatus(null, false, firstSuccess.nextRuntime, firstSuccess.failureStreak);
+    const secondFailedPoll = resolveRuntimeStatus(null, false, firstFailedPoll.nextRuntime, firstFailedPoll.failureStreak);
+
+    expect(firstFailedPoll.offline).toBe(false);
+    expect(firstFailedPoll.failureStreak).toBe(1);
+    expect(secondFailedPoll.offline).toBe(true);
+    expect(secondFailedPoll.failureStreak).toBe(2);
+    expect(secondFailedPoll.nextRuntime?.monitoring_status).toBe('offline');
   });
 });
