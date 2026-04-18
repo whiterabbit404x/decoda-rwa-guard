@@ -32,6 +32,7 @@ class _FakeConnection:
     def __init__(self, due_targets):
         self.due_targets = due_targets
         self.health_row = None
+        self.latest_health_row = None
         self.last_worker_state_update_params = None
         self.monitored_system_updates = []
 
@@ -70,7 +71,9 @@ class _FakeConnection:
                 rows.append(row)
             return _Result(rows=rows)
         if normalized.startswith('SELECT worker_name, running, status, last_started_at'):
-            return _Result(row=self.health_row)
+            if 'WHERE worker_name = %s' in normalized:
+                return _Result(row=self.health_row)
+            return _Result(row=self.latest_health_row)
         if normalized.startswith('SELECT COUNT(*) AS overdue_count'):
             return _Result(row={'overdue_count': 0})
         if "COUNT(*) FILTER (WHERE status = 'queued')" in normalized:
@@ -90,6 +93,7 @@ class _FakeConnection:
                 'last_error': params[4],
                 'updated_at': datetime.now(timezone.utc),
             }
+            self.latest_health_row = dict(self.health_row)
             return _Result()
         if normalized.startswith('UPDATE monitored_systems SET last_heartbeat = NOW()'):
             self.monitored_system_updates.append(params)
@@ -165,6 +169,37 @@ def test_monitoring_cycle_updates_health_and_handles_target_exception(monkeypatc
     assert health['last_error'] == 'boom'
     assert connection.last_worker_state_update_params[0] == 'boom'
     assert connection.last_worker_state_update_params[4] == 'boom'
+
+
+def test_monitoring_health_falls_back_to_latest_worker_when_configured_name_missing(monkeypatch):
+    now = datetime.now(timezone.utc)
+    connection = _FakeConnection(due_targets=[])
+    connection.health_row = None
+    connection.latest_health_row = {
+        'worker_name': 'railway-monitoring-worker',
+        'running': True,
+        'status': 'running',
+        'last_started_at': now,
+        'last_heartbeat_at': now,
+        'last_cycle_at': now,
+        'last_cycle_due_targets': 4,
+        'last_cycle_targets_checked': 4,
+        'last_cycle_alerts_generated': 1,
+        'last_error': None,
+        'updated_at': now,
+    }
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monitoring_runner.WORKER_STATE['worker_name'] = 'monitoring-worker'
+
+    health = monitoring_runner.get_monitoring_health()
+    assert health['worker_running'] is True
+    assert health['worker_state_fallback_used'] is True
+    assert health['worker_name_mismatch'] is True
+    assert health['configured_worker_name'] == 'monitoring-worker'
+    assert health['active_worker_name'] == 'railway-monitoring-worker'
 
 
 def test_monitoring_cycle_updates_health_with_null_error_message(monkeypatch):

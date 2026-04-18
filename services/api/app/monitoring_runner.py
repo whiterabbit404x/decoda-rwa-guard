@@ -2842,7 +2842,7 @@ def get_monitoring_health() -> dict[str, Any]:
         }
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        worker_name = WORKER_STATE['worker_name']
+        configured_worker_name = WORKER_STATE['worker_name']
         row = connection.execute(
             '''
             SELECT worker_name, running, status, last_started_at, last_heartbeat_at, last_cycle_at, last_cycle_due_targets,
@@ -2850,11 +2850,31 @@ def get_monitoring_health() -> dict[str, Any]:
             FROM monitoring_worker_state
             WHERE worker_name = %s
             ''',
-            (worker_name,),
+            (configured_worker_name,),
         ).fetchone()
+        using_fallback_worker = False
+        if row is None:
+            row = connection.execute(
+                '''
+                SELECT worker_name, running, status, last_started_at, last_heartbeat_at, last_cycle_at, last_cycle_due_targets,
+                       last_cycle_targets_checked, last_cycle_alerts_generated, last_error, updated_at
+                FROM monitoring_worker_state
+                ORDER BY COALESCE(last_heartbeat_at, last_cycle_at, updated_at) DESC
+                LIMIT 1
+                '''
+            ).fetchone()
+            using_fallback_worker = row is not None
         if row is None:
             return {**WORKER_STATE, 'live_mode': True}
         normalized = _json_safe_value(dict(row))
+        normalized['configured_worker_name'] = configured_worker_name
+        normalized['active_worker_name'] = normalized.get('worker_name')
+        normalized['worker_name_mismatch'] = bool(
+            configured_worker_name
+            and normalized.get('worker_name')
+            and configured_worker_name != normalized.get('worker_name')
+        )
+        normalized['worker_state_fallback_used'] = using_fallback_worker
         last_cycle_at = _parse_ts(normalized.get('last_cycle_at'))
         worker_running = bool(normalized.get('running'))
         if last_cycle_at is not None:
