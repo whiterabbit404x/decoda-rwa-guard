@@ -67,8 +67,8 @@ export function resolveRuntimeStatus(
   if (!statusPayload || !statusOk) {
     const failureStreak = previousFailureStreak + 1;
     const offline = failureStreak >= failurePromotionThreshold;
-    const nextRuntime = offline && previousRuntime
-      ? { ...previousRuntime, monitoring_status: 'offline', mode: 'OFFLINE' as const }
+    const nextRuntime: MonitoringRuntimeStatus | null = offline && previousRuntime
+      ? { ...previousRuntime, monitoring_status: 'offline' as const, mode: 'OFFLINE' as const }
       : previousRuntime;
     return {
       nextRuntime,
