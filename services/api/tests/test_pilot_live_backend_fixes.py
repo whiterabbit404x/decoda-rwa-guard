@@ -421,6 +421,8 @@ def test_seed_demo_workspace_creates_demo_user_workspace_and_membership(pilot_mo
     assert payload['membership_created'] is True
     assert payload['monitoring_bootstrap']['bootstrapped'] is True
     assert payload['monitoring_bootstrap']['evidence_source'] == 'simulator'
+    assert payload['monitoring_bootstrap']['detection_id']
+    assert payload['monitoring_bootstrap']['response_action_id']
     target_insert = next(params for statement, params in executed if 'INSERT INTO targets' in statement)
     assert target_insert is not None
     assert target_insert[3] is not None
@@ -428,8 +430,15 @@ def test_seed_demo_workspace_creates_demo_user_workspace_and_membership(pilot_mo
     assert target_insert[4] is not None
     alert_insert = next(params for statement, params in executed if 'INSERT INTO alerts' in statement)
     assert alert_insert[5] == 'high'
+    detection_insert = next(params for statement, params in executed if 'INSERT INTO detections' in statement)
+    assert detection_insert[5] == 'high'
     incident_insert = next(params for statement, params in executed if 'INSERT INTO incidents' in statement)
     assert incident_insert[6] == 'high'
+    response_action_statement, response_action_insert = next((statement, params) for statement, params in executed if 'INSERT INTO response_actions' in statement)
+    assert "'notify_team'" in response_action_statement
+    assert "'simulated'" in response_action_statement
+    assert "'executed'" in response_action_statement
+    assert response_action_insert[4]
     evidence_insert = next(params for statement, params in executed if 'INSERT INTO evidence' in statement)
     assert evidence_insert[11] == 'high'
     assert float(evidence_insert[12]) > 0.8
@@ -439,6 +448,7 @@ def test_seed_demo_workspace_creates_demo_user_workspace_and_membership(pilot_mo
     assert any('INSERT INTO assets' in statement for statement, _ in executed)
     assert any('INSERT INTO targets' in statement for statement, _ in executed)
     assert any('INSERT INTO evidence' in statement for statement, _ in executed)
+    assert any('INSERT INTO action_history' in statement for statement, _ in executed)
 
 
 def test_seed_demo_workspace_backfills_existing_demo_login(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
