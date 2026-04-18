@@ -64,6 +64,21 @@ def seed() -> None:
         print(pretty_json({'pilot_schema_status': pilot_schema_status()}))
         seeded = seed_demo_workspace(args.demo_email, args.demo_password, args.demo_workspace, args.demo_full_name)
         print(pretty_json(seeded))
+        monitoring_bootstrap = seeded.get('monitoring_bootstrap') if isinstance(seeded, dict) else None
+        if isinstance(monitoring_bootstrap, dict) and monitoring_bootstrap.get('bootstrapped'):
+            print(
+                pretty_json(
+                    {
+                        'demo_seed_path': {
+                            'detection_id': monitoring_bootstrap.get('detection_id'),
+                            'alert_id': monitoring_bootstrap.get('alert_id'),
+                            'incident_id': monitoring_bootstrap.get('incident_id'),
+                            'response_action_id': monitoring_bootstrap.get('response_action_id'),
+                            'mode': 'simulated',
+                        }
+                    }
+                )
+            )
         print(pretty_json({'demo_seed_status': demo_seed_status(args.demo_email)}))
 
 
