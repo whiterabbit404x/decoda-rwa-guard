@@ -9,7 +9,7 @@ export type MonitoringRuntimeStatus = {
     hint?: string;
   };
   field_reason_codes?: Record<string, string[]>;
-  monitoring_status?: 'active' | 'idle' | 'degraded' | 'offline' | 'error';
+  monitoring_status?: 'live' | 'limited' | 'offline';
   monitored_systems?: number;
   enabled_systems?: number;
   protected_assets?: number;
@@ -59,7 +59,8 @@ export type MonitoringRuntimeStatus = {
   synthetic_leak_detected?: boolean;
   workspace_monitoring_summary?: {
     workspace_configured: boolean;
-    runtime_status: 'provisioning' | 'healthy' | 'degraded' | 'idle' | 'failed' | 'disabled' | 'offline';
+    runtime_status: 'live' | 'degraded' | 'offline' | 'idle';
+    monitoring_status: 'live' | 'limited' | 'offline';
     last_poll_at: string | null;
     last_heartbeat_at: string | null;
     last_telemetry_at: string | null;
@@ -71,13 +72,11 @@ export type MonitoringRuntimeStatus = {
     active_alerts_count: number;
     active_incidents_count: number;
     evidence_source_summary: 'live' | 'simulator' | 'replay' | 'none';
-    monitoring_status: 'active' | 'idle' | 'degraded' | 'offline' | 'error';
     status_reason: string | null;
-    contradiction_flags?: string[];
   };
   workspace_configured?: boolean;
   monitoring_mode?: 'live' | 'hybrid' | 'simulator' | 'offline' | 'unavailable';
-  runtime_status?: 'provisioning' | 'healthy' | 'degraded' | 'idle' | 'failed' | 'disabled' | 'offline';
+  runtime_status?: 'live' | 'degraded' | 'offline' | 'idle';
   configured_systems?: number;
   reporting_systems?: number;
   coverage_state?: { configured_systems: number; reporting_systems: number; protected_assets: number };
@@ -90,20 +89,16 @@ export type MonitoringRuntimeStatus = {
   last_detection_at?: string | null;
   evidence_source?: 'live' | 'simulator' | 'replay' | 'none';
   status_reason?: string | null;
-  contradiction_flags?: string[];
 };
 
 export function runtimeStatusModeFromMonitoringStatus(value: MonitoringRuntimeStatus['monitoring_status']): MonitoringMode {
-  if (value === 'active') {
+  if (value === 'live') {
     return 'LIVE';
   }
-  if (value === 'offline' || value === 'error') {
+  if (value === 'offline') {
     return 'OFFLINE';
   }
-  if (value === 'degraded') {
-    return 'DEGRADED';
-  }
-  if (value === 'idle') {
+  if (value === 'limited') {
     return 'LIMITED_COVERAGE';
   }
   return 'LIMITED_COVERAGE';

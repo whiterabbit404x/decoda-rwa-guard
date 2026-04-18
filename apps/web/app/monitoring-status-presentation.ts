@@ -47,41 +47,25 @@ function normalizeStatus(
   evidence: MonitoringPresentationEvidence,
   freshness: MonitoringPresentationFreshness,
 ): MonitoringPresentationStatus {
-  if (truth.contradiction_flags.length > 0) {
-    return 'limited coverage';
+  if (truth.monitoring_status === 'offline') {
+    return 'offline';
   }
-  const hasCoverageTelemetry = Boolean(coverageTelemetryTimestamp(truth));
-  const hasFreshLiveCoverage = hasCoverageTelemetry
-    && truth.telemetry_freshness === 'fresh'
-    && truth.evidence_source_summary === 'live'
-    && truth.reporting_systems_count > 0;
-  if (truth.runtime_status === 'offline' || truth.runtime_status === 'failed' || truth.runtime_status === 'disabled') {
+  if (truth.monitoring_status === 'limited') {
+    if (freshness === 'delayed') {
+      return 'stale';
+    }
+    return truth.runtime_status === 'degraded' ? 'degraded' : 'limited coverage';
+  }
+  if (truth.runtime_status === 'offline') {
     return 'offline';
   }
   if (truth.runtime_status === 'degraded') {
     return 'degraded';
   }
-  if (truth.runtime_status === 'idle' || truth.runtime_status === 'provisioning') {
+  if (truth.runtime_status === 'idle') {
     return 'limited coverage';
   }
-
-  if (truth.evidence_source_summary === 'simulator' || truth.evidence_source_summary === 'replay') {
-    return 'limited coverage';
-  }
-
-  if (freshness === 'delayed') {
-    return 'stale';
-  }
-
-  if (evidence === 'unavailable') {
-    return 'degraded';
-  }
-
-  if (truth.runtime_status === 'healthy' && hasFreshLiveCoverage) {
-    return 'live';
-  }
-
-  return hasFreshLiveCoverage ? 'live' : 'limited coverage';
+  return truth.monitoring_status === 'live' ? 'live' : (evidence === 'unavailable' ? 'degraded' : 'limited coverage');
 }
 
 function formatTimestamp(kind: 'telemetry' | 'heartbeat' | 'poll', value: string | null): string {
@@ -93,16 +77,12 @@ function formatTimestamp(kind: 'telemetry' | 'heartbeat' | 'poll', value: string
 }
 
 function coverageTelemetryTimestamp(truth: WorkspaceMonitoringTruth): string | null {
-  return truth.last_telemetry_at ?? truth.last_coverage_telemetry_at ?? null;
+  return truth.last_telemetry_at ?? null;
 }
 
 function telemetryFreshnessSummary(truth: WorkspaceMonitoringTruth): string {
-  if (truth.contradiction_flags.length > 0) {
-    return 'Telemetry claims are guarded pending runtime consistency checks.';
-  }
   const coverageTelemetryAt = coverageTelemetryTimestamp(truth);
-  const proofTimestamp = coverageTelemetryAt ?? truth.last_telemetry_at;
-  if (!proofTimestamp || truth.telemetry_freshness === 'unavailable') {
+  if (!coverageTelemetryAt || truth.telemetry_freshness === 'unavailable') {
     return 'Telemetry freshness unavailable.';
   }
   if (truth.telemetry_freshness === 'stale') {
@@ -131,13 +111,10 @@ function summarizeStatus(status: MonitoringPresentationStatus, freshness: Monito
 
 function detectionSummary(truth: WorkspaceMonitoringTruth): string {
   const coverageTelemetryAt = coverageTelemetryTimestamp(truth);
-  if (!truth.last_telemetry_at && !coverageTelemetryAt) {
+  if (!coverageTelemetryAt) {
     return '';
   }
-  if (coverageTelemetryAt) {
-    return ' No recent detections.';
-  }
-  return ' No recent target events.';
+  return ' No recent detections.';
 }
 
 function confidenceFromEvidence(
@@ -164,9 +141,6 @@ export function normalizeMonitoringPresentation(
   const presentationStatus = normalizeStatus(truth, evidence, freshness);
   const confidence = confidenceFromEvidence(evidence, presentationStatus);
 
-  const contradictionGuardedSummary = truth.contradiction_flags.length > 0
-    ? 'Monitoring copy guarded due to contradictory runtime signals.'
-    : null;
   const statusReasonSuffix = truth.status_reason ? ` Reason: ${truth.status_reason}.` : '';
   return {
     status: presentationStatus,
@@ -182,9 +156,7 @@ export function normalizeMonitoringPresentation(
     evidence,
     freshness,
     confidence,
-    summary: contradictionGuardedSummary
-      ? `${contradictionGuardedSummary}${statusReasonSuffix}`
-      : `${summarizeStatus(presentationStatus, freshness)} ${telemetryFreshnessSummary(truth)}${detectionSummary(truth)}`,
+    summary: `${summarizeStatus(presentationStatus, freshness)} ${telemetryFreshnessSummary(truth)}${detectionSummary(truth)}${statusReasonSuffix}`,
     telemetryTimestampLabel: formatTimestamp('telemetry', coverageTelemetryTimestamp(truth) ?? truth.last_telemetry_at),
     heartbeatTimestampLabel: formatTimestamp('heartbeat', truth.last_heartbeat_at),
     pollTimestampLabel: formatTimestamp('poll', truth.last_poll_at),

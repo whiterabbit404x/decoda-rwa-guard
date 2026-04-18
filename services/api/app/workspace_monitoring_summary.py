@@ -4,8 +4,8 @@ from datetime import datetime
 from typing import Any
 
 
-CANONICAL_RUNTIME_STATUS = {'provisioning', 'healthy', 'degraded', 'idle', 'failed', 'disabled', 'offline'}
-CANONICAL_MONITORING_STATUS = {'active', 'idle', 'degraded', 'offline', 'error'}
+CANONICAL_RUNTIME_STATUS = {'live', 'degraded', 'offline', 'idle'}
+CANONICAL_MONITORING_STATUS = {'live', 'limited', 'offline'}
 CANONICAL_TELEMETRY_FRESHNESS = {'fresh', 'stale', 'unavailable'}
 CANONICAL_CONFIDENCE = {'high', 'medium', 'low', 'unavailable'}
 CANONICAL_EVIDENCE_SOURCE = {'live', 'simulator', 'replay', 'none'}
@@ -16,21 +16,34 @@ def _isoformat(value: datetime | None) -> str | None:
 
 
 def _normalized_runtime_status(value: str) -> str:
-    return value if value in CANONICAL_RUNTIME_STATUS else 'offline'
-
-
-def _normalized_monitoring_status(*, runtime_status: str, monitoring_status: str | None = None) -> str:
-    if monitoring_status in CANONICAL_MONITORING_STATUS:
-        return monitoring_status
-    if runtime_status == 'healthy':
-        return 'active'
-    if runtime_status in {'provisioning', 'idle'}:
+    normalized = str(value or '').strip().lower()
+    if normalized in CANONICAL_RUNTIME_STATUS:
+        return normalized
+    if normalized in {'healthy'}:
+        return 'live'
+    if normalized in {'provisioning', 'disabled'}:
         return 'idle'
-    if runtime_status == 'degraded':
-        return 'degraded'
-    if runtime_status == 'failed':
-        return 'error'
-    return 'offline'
+    if normalized in {'failed'}:
+        return 'offline'
+    return 'degraded' if normalized == 'degraded' else 'offline'
+
+
+def _normalized_monitoring_status(
+    *,
+    runtime_status: str,
+    reporting_systems_count: int,
+    telemetry_freshness: str,
+    contradiction_flags: list[str],
+) -> str:
+    if runtime_status == 'offline':
+        return 'offline'
+    if contradiction_flags:
+        return 'limited'
+    if reporting_systems_count <= 0:
+        return 'limited'
+    if runtime_status == 'live' and telemetry_freshness == 'fresh':
+        return 'live'
+    return 'limited'
 
 
 def _normalized_telemetry_freshness(value: str) -> str:
@@ -80,7 +93,6 @@ def build_workspace_monitoring_summary(
     normalized_reporting = max(int(reporting_systems), 0)
     normalized_assets = max(int(protected_assets), 0)
     normalized_runtime = _normalized_runtime_status(runtime_status)
-    normalized_monitoring_status = _normalized_monitoring_status(runtime_status=normalized_runtime)
     normalized_evidence = _normalized_evidence_source(evidence_source)
     normalized_telemetry_kind = telemetry_kind if telemetry_kind in {'coverage', 'target_event'} else None
     telemetry_timestamp = None
@@ -123,7 +135,7 @@ def build_workspace_monitoring_summary(
         contradiction_flags.append('heartbeat_without_telemetry_timestamp')
     if last_poll_at and telemetry_timestamp is None:
         contradiction_flags.append('poll_without_telemetry_timestamp')
-    if normalized_reporting == 0 and normalized_runtime == 'healthy':
+    if normalized_reporting == 0 and normalized_runtime == 'live':
         contradiction_flags.append('healthy_without_reporting_systems')
     live_telemetry_verified = normalized_evidence == 'live' and confidence_status == 'high'
     if live_telemetry_verified and telemetry_timestamp is None:
@@ -158,62 +170,30 @@ def build_workspace_monitoring_summary(
     ):
         contradiction_flags.append('workspace_configured_missing_required_links')
     contradiction_flags = sorted(set(contradiction_flags))
+    normalized_monitoring_status = _normalized_monitoring_status(
+        runtime_status=normalized_runtime,
+        reporting_systems_count=normalized_reporting,
+        telemetry_freshness=freshness_status,
+        contradiction_flags=contradiction_flags,
+    )
     normalized_status_reason = str(status_reason).strip() if isinstance(status_reason, str) and status_reason.strip() else None
     resolved_status_reason = normalized_status_reason or (f'guard:{contradiction_flags[0]}' if contradiction_flags else None)
-    field_reason_codes = {
-        'protected_assets': [],
-        'configured_systems': [],
-        'reporting_systems': [],
-        'last_poll_at': [],
-        'last_heartbeat_at': [],
-        'last_telemetry_at': [],
-    }
-    if not workspace_configured and not workspace_has_coverage:
-        for key in field_reason_codes:
-            field_reason_codes[key] = ['unconfigured_workspace']
-    normalized_reason_codes = [str(code) for code in (configuration_reason_codes or []) if str(code).strip()]
     return {
         'workspace_configured': bool(workspace_configured),
-        'monitoring_mode': monitoring_mode,
         'runtime_status': normalized_runtime,
         'monitoring_status': normalized_monitoring_status,
-        'configured_systems': max(int(configured_systems), 0),
-        'reporting_systems': normalized_reporting,
-        'protected_assets': normalized_assets,
-        'coverage_counts': {
-            'configured_systems': max(int(configured_systems), 0),
-            'monitored_systems_count': normalized_monitored,
-            'reporting_systems': normalized_reporting,
-            'protected_assets': normalized_assets,
-        },
         'last_poll_at': _isoformat(last_poll_at),
         'last_heartbeat_at': _isoformat(last_heartbeat_at),
         'last_telemetry_at': _isoformat(telemetry_timestamp),
-        'last_coverage_telemetry_at': _isoformat(last_coverage_telemetry_at),
-        'telemetry_kind': normalized_telemetry_kind,
-        'last_detection_at': _isoformat(last_detection_at),
         'telemetry_freshness': freshness_status,
-        'freshness': freshness_status,
-        'freshness_status': freshness_status,
         'confidence': confidence_status,
-        'confidence_level': confidence_status,
-        'confidence_status': confidence_status,
         'reporting_systems_count': normalized_reporting,
         'monitored_systems_count': normalized_monitored,
         'protected_assets_count': normalized_assets,
         'active_alerts_count': max(int(active_alerts_count), 0),
         'active_incidents_count': max(int(active_incidents_count), 0),
         'evidence_source_summary': evidence_source_summary,
-        'evidence_source': normalized_evidence,
-        'configuration_reason': configuration_reason,
-        'configuration_reason_codes': normalized_reason_codes,
-        'field_reason_codes': field_reason_codes,
-        'valid_protected_asset_count': max(int(valid_protected_asset_count), 0),
-        'linked_monitored_system_count': max(int(linked_monitored_system_count), 0),
-        'persisted_enabled_config_count': max(int(persisted_enabled_config_count), 0),
-        'valid_target_system_link_count': max(int(valid_target_system_link_count), 0),
         'status_reason': resolved_status_reason,
-        'contradiction_flags': contradiction_flags,
     }
 
 
@@ -222,53 +202,30 @@ def build_workspace_monitoring_summary_fallback(
     status_reason: str,
     workspace_configured: bool = False,
     runtime_status: str = 'offline',
-    monitoring_status: str | None = None,
     telemetry_freshness: str = 'unavailable',
     confidence: str = 'unavailable',
 ) -> dict[str, Any]:
     normalized_runtime = _normalized_runtime_status(runtime_status)
+    normalized_freshness = _normalized_telemetry_freshness(telemetry_freshness)
     return {
         'workspace_configured': bool(workspace_configured),
-        'monitoring_mode': 'offline',
         'runtime_status': normalized_runtime,
-        'monitoring_status': _normalized_monitoring_status(runtime_status=normalized_runtime, monitoring_status=monitoring_status),
-        'configured_systems': 0,
-        'reporting_systems': 0,
-        'protected_assets': 0,
-        'coverage_counts': {'configured_systems': 0, 'monitored_systems_count': 0, 'reporting_systems': 0, 'protected_assets': 0},
+        'monitoring_status': _normalized_monitoring_status(
+            runtime_status=normalized_runtime,
+            reporting_systems_count=0,
+            telemetry_freshness=normalized_freshness,
+            contradiction_flags=[],
+        ),
         'last_poll_at': None,
         'last_heartbeat_at': None,
         'last_telemetry_at': None,
-        'last_coverage_telemetry_at': None,
-        'telemetry_kind': None,
-        'last_detection_at': None,
-        'telemetry_freshness': _normalized_telemetry_freshness(telemetry_freshness),
-        'freshness': _normalized_telemetry_freshness(telemetry_freshness),
-        'freshness_status': _normalized_telemetry_freshness(telemetry_freshness),
+        'telemetry_freshness': normalized_freshness,
         'confidence': _normalized_confidence(confidence),
-        'confidence_level': _normalized_confidence(confidence),
-        'confidence_status': _normalized_confidence(confidence),
         'reporting_systems_count': 0,
         'monitored_systems_count': 0,
         'protected_assets_count': 0,
         'active_alerts_count': 0,
         'active_incidents_count': 0,
         'evidence_source_summary': 'none',
-        'evidence_source': 'none',
-        'configuration_reason': status_reason,
-        'configuration_reason_codes': [status_reason] if status_reason else [],
-        'field_reason_codes': {
-            'protected_assets': ['unconfigured_workspace'],
-            'configured_systems': ['unconfigured_workspace'],
-            'reporting_systems': ['unconfigured_workspace'],
-            'last_poll_at': ['unconfigured_workspace'],
-            'last_heartbeat_at': ['unconfigured_workspace'],
-            'last_telemetry_at': ['unconfigured_workspace'],
-        },
-        'valid_protected_asset_count': 0,
-        'linked_monitored_system_count': 0,
-        'persisted_enabled_config_count': 0,
-        'valid_target_system_link_count': 0,
         'status_reason': status_reason,
-        'contradiction_flags': [],
     }

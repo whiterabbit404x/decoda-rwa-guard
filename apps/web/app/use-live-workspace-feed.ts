@@ -73,16 +73,16 @@ export function resolveRuntimeStatus(
     return {
       nextRuntime,
       offline,
-      degraded: offline || previousRuntime?.monitoring_status === 'degraded',
+      degraded: offline || previousRuntime?.monitoring_status === 'limited',
       fetchWarning: true,
       failureStreak,
     };
   }
   const runtimeMode = runtimeStatusModeFromMonitoringStatus(statusPayload.monitoring_status);
   const nextRuntime = { ...statusPayload, mode: normalizeMonitoringMode(runtimeMode) };
-  const explicitlyOffline = nextRuntime.monitoring_status === 'offline' || nextRuntime.monitoring_status === 'error';
+  const explicitlyOffline = nextRuntime.monitoring_status === 'offline';
   const offline = explicitlyOffline;
-  const degraded = nextRuntime.monitoring_status === 'degraded';
+  const degraded = nextRuntime.monitoring_status === 'limited';
   return { nextRuntime, offline, degraded, fetchWarning: false, failureStreak: 0 };
 }
 
