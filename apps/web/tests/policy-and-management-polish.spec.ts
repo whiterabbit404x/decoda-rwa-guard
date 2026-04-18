@@ -10,9 +10,10 @@ test('threat operations panel emphasizes monitoring and investigation over manua
   const threat = readAppFile('threat-operations-panel.tsx');
 
   expect(threat).toContain('Threat monitoring command center');
-  expect(threat).toContain('Active threat signals');
-  expect(threat).toContain('System coverage and telemetry health');
-  expect(threat).toContain('Investigation and response actions');
+  expect(threat).toContain('Recent Detections');
+  expect(threat).toContain('Protected systems and telemetry coverage');
+  expect(threat).toContain('Response Actions');
+  expect(threat).toContain('Open evidence');
   expect(threat).not.toContain('Advanced policy configuration (JSON)');
   expect(threat).not.toContain('Run analysis');
   expect(threat).not.toContain('scenario presets');

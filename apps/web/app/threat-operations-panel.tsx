@@ -227,9 +227,15 @@ type DetectionItem = {
 type TimelineItem = {
   id: string;
   timestamp: string;
-  category: 'Alert' | 'Incident' | 'Checkpoint' | 'Monitoring';
+  category: 'Telemetry Event' | 'Detection' | 'Alert' | 'Incident' | 'Action';
   description: string;
   href: string;
+};
+
+type EvidenceDrawerState = {
+  title: string;
+  summary: string;
+  raw: Record<string, any> | null;
 };
 
 const TELEMETRY_STALE_MS = 20 * 60 * 1000;
@@ -324,6 +330,13 @@ function stateTone(state: ThreatFeedState) {
   if (state === 'Resolved') return 'low';
   if (state === 'Test') return 'attention';
   return 'offline';
+}
+
+function categoryTone(category: TimelineItem['category']) {
+  if (category === 'Alert' || category === 'Incident') return 'attention';
+  if (category === 'Detection') return 'high';
+  if (category === 'Action') return 'healthy';
+  return 'low';
 }
 
 function displayIdentifier(target: TargetRow): string {
@@ -502,6 +515,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
   const [detections, setDetections] = useState<DetectionRow[]>([]);
   const [monitoredSystems, setMonitoredSystems] = useState<MonitoredSystemRow[]>([]);
+  const [evidenceDrawer, setEvidenceDrawer] = useState<EvidenceDrawerState | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -733,51 +747,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     summaryConfigurationReasonCodes: [],
   });
 
-  const timelineItems = useMemo<TimelineItem[]>(() => {
-    const alertItems = alerts.slice(0, 5).map((item) => ({
-      id: `alert-${item.id}`,
-      timestamp: item.created_at || new Date(0).toISOString(),
-      category: 'Alert' as const,
-      description: `${item.title}${item.response_action_mode && item.response_action_mode !== 'live_enforcement' ? ' · SIMULATED' : ''}`,
-      href: '/alerts',
-    }));
-    const incidentItems = incidents.slice(0, 5).map((item) => ({
-      id: `incident-${item.id}`,
-      timestamp: item.created_at || new Date(0).toISOString(),
-      category: 'Incident' as const,
-      description: `${item.title || item.event_type || 'Incident opened'}${item.response_action_mode && item.response_action_mode !== 'live_enforcement' ? ' · SIMULATED' : ''}`,
-      href: '/incidents',
-    }));
-    const historyItems = historyRuns.slice(0, 4).map((item) => ({
-      id: `history-${item.id}`,
-      timestamp: item.created_at || new Date(0).toISOString(),
-      category: 'Checkpoint' as const,
-      description: item.title,
-      href: '/history',
-    }));
-    const monitoringEvent = {
-      id: `monitoring-${monitoringPresentation.lastPollAt ?? 'none'}`,
-      timestamp: monitoringPresentation.lastPollAt || new Date().toISOString(),
-      category: 'Monitoring' as const,
-      description: pageState === 'offline_no_telemetry'
-        ? 'Monitoring offline: no fresh telemetry available.'
-        : runtimeStatus && runtimeStatus !== 'healthy'
-          ? `Monitoring ${runtimeStatus}: ${truth.status_reason || 'runtime is not healthy'}.`
-        : pageState === 'degraded_partial'
-          ? 'Monitoring degraded: telemetry is partial or delayed.'
-        : simulatorMode
-          ? 'Simulator/dev mode active: records are persisted but are not live production telemetry.'
-            : workspaceConfigured && reportingSystems > 0
-              ? (monitoringHealthyCopyAllowed(truth) ? 'Monitoring healthy: telemetry and polling are current.' : 'Monitoring configured: waiting for reporting telemetry.')
-              : (workspaceConfigured ? 'Monitoring configured: waiting for reporting telemetry.' : 'Workspace not configured: monitoring setup is incomplete.'),
-      href: '/threat',
-    };
-
-    return [monitoringEvent, ...alertItems, ...incidentItems, ...historyItems]
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-      .slice(0, 12);
-  }, [alerts, historyRuns, incidents, monitoringPresentation.lastPollAt, pageState, reportingSystems, runtimeStatus, simulatorMode, truth.status_reason, truth.runtime_status]);
-
   const coverageSummary = `${Math.max(reportingSystems, 0)} / ${Math.max(configuredSystems, 0)}`;
   const hasCoverageFromRuntime = workspaceConfigured && (protectedAssetCount > 0 || configuredSystems > 0);
   const hasTargetCoverageRows = targets.length > 0;
@@ -802,17 +771,53 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     ? `last evaluated ${detectionEvalLabel} across ${Math.max(configuredSystems, 0)} monitored systems`
     : `last known score from ${detectionEvalLabel}; current telemetry unavailable`;
 
-  const feedHeading = pageState === 'healthy_live'
-    ? 'Live detections available'
-    : pageState === 'configured_no_signals'
-      ? (categorizedDetections.historical.length > 0
-          ? 'Historical detections only'
-          : (reportingSystems > 0 ? 'No active detections, monitoring healthy' : 'No active detections, waiting for live telemetry'))
-      : pageState === 'unconfigured_workspace'
-          ? 'Workspace not configured'
-          : 'Monitoring unavailable or partial';
-
   const detectionsToRender = pageState === 'healthy_live' ? categorizedDetections.live : categorizedDetections.historical;
+  const linkedAlertRows = alerts.slice(0, 10).map((alert) => {
+    const linkedDetection = detections.find((item) => item.linked_alert_id === alert.id) ?? null;
+    return { alert, linkedDetection };
+  });
+  const incidentTimelineItems = useMemo<TimelineItem[]>(() => {
+    const telemetryItems: TimelineItem[] = [{
+      id: `telemetry-${monitoringPresentation.lastTelemetryAt ?? monitoringPresentation.lastPollAt ?? 'none'}`,
+      timestamp: monitoringPresentation.lastTelemetryAt ?? monitoringPresentation.lastPollAt ?? new Date(0).toISOString(),
+      category: 'Telemetry Event',
+      description: hasTelemetryTimestamp
+        ? `Latest telemetry seen ${telemetryDisplayLabel}.`
+        : 'No current telemetry timestamp available.',
+      href: '/threat',
+    }];
+    const detectionItems = detections.slice(0, 4).map((item) => ({
+      id: `incident-detection-${item.id}`,
+      timestamp: item.detected_at || new Date(0).toISOString(),
+      category: 'Detection' as const,
+      description: item.title || item.evidence_summary || 'Detection matched a monitoring rule.',
+      href: '/alerts',
+    }));
+    const alertItems = alerts.slice(0, 4).map((item) => ({
+      id: `incident-alert-${item.id}`,
+      timestamp: item.created_at || new Date(0).toISOString(),
+      category: 'Alert' as const,
+      description: item.title || 'Alert created',
+      href: '/alerts',
+    }));
+    const incidentItems = incidents.slice(0, 4).map((item) => ({
+      id: `incident-row-${item.id}`,
+      timestamp: item.created_at || new Date(0).toISOString(),
+      category: 'Incident' as const,
+      description: item.title || item.event_type || 'Incident opened',
+      href: '/incidents',
+    }));
+    const actionItems = historyRuns.slice(0, 4).map((item) => ({
+      id: `incident-action-${item.id}`,
+      timestamp: item.created_at || new Date(0).toISOString(),
+      category: 'Action' as const,
+      description: item.title,
+      href: '/history',
+    }));
+    return [...telemetryItems, ...detectionItems, ...alertItems, ...incidentItems, ...actionItems]
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .slice(0, 10);
+  }, [alerts, detections, hasTelemetryTimestamp, historyRuns, incidents, monitoringPresentation.lastPollAt, monitoringPresentation.lastTelemetryAt, telemetryDisplayLabel]);
 
   return (
     <section className="stack monitoringConsoleStack">
@@ -838,6 +843,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Protected assets {protectedAssetCount}</span>
           <span className="ruleChip">Monitored systems {configuredSystems}</span>
           <span className="ruleChip">Reporting systems {reportingSystems}</span>
+          <span className="ruleChip">Evidence records {evidence.length}</span>
           {!workspaceConfigured ? <span className="ruleChip">Workspace not configured</span> : null}
           {contradictionFlags.length > 0 ? <span className="statusBadge statusBadge-attention">Guarded fallback copy active</span> : null}
           {systemsPanelWarning ? <span className="statusBadge statusBadge-attention">{systemsPanelWarning}</span> : null}
@@ -893,12 +899,19 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       <article className="dataCard">
         <div className="listHeader">
           <div>
-            <p className="sectionEyebrow">Threat Feed</p>
-            <h3>{feedHeading}</h3>
+            <p className="sectionEyebrow">Recent Detections</p>
+            <h3>Detection records from monitoring rules</h3>
           </div>
           <Link href="/alerts" prefetch={false}>Review alerts</Link>
         </div>
-        {loadingSnapshot ? <p className="muted">Loading threat feed…</p> : null}
+        <div className="chipRow">
+          <span className="ruleChip">Category: Telemetry Events</span>
+          <span className="ruleChip">Category: Detections</span>
+          <span className="ruleChip">Category: Alerts</span>
+          <span className="ruleChip">Category: Incidents</span>
+          <span className="ruleChip">Category: Actions</span>
+        </div>
+        {loadingSnapshot ? <p className="muted">Loading detection records…</p> : null}
         {!loadingSnapshot && detectionsToRender.length === 0 ? (
           <div className="emptyStatePanel">
             <h4>
@@ -941,10 +954,22 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               </div>
               <div className="signalActions">
                 <span className={`statusBadge statusBadge-${stateTone(signal.state)}`}>{signal.state}</span>
+                <span className="statusBadge statusBadge-high">Detection</span>
                 <Link href="/alerts" prefetch={false}>View alert</Link>
                 <Link href="/incidents" prefetch={false}>Open incident</Link>
                 <Link href="/alerts" prefetch={false}>Mute rule</Link>
-                <Link href={signal.href} prefetch={false}>View raw evidence</Link>
+                <button
+                  type="button"
+                  className="secondaryCta"
+                  onClick={() => setEvidenceDrawer({
+                    title: signal.title,
+                    summary: signal.evidenceSummary,
+                    raw: detections.find((item) => `detection-${item.id}` === signal.id)?.raw_evidence_json ?? null,
+                  })}
+                >
+                  Open evidence
+                </button>
+                <Link href={signal.href} prefetch={false}>View destination</Link>
               </div>
             </div>
           ))}
@@ -1118,25 +1143,46 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <article className="dataCard">
             <div className="listHeader">
               <div>
-                <p className="sectionEyebrow">Operational Timeline</p>
-                <h3>Alerts, incidents, and monitoring transitions</h3>
+                <p className="sectionEyebrow">Alerts</p>
+                <h3>Open alerts with linked detections</h3>
               </div>
-              <Link href="/history" prefetch={false}>Open full history</Link>
+              <Link href="/alerts" prefetch={false}>Open alert queue</Link>
             </div>
-            {timelineItems.length === 0 ? (
+            {loadingSnapshot ? <p className="muted">Loading alerts…</p> : null}
+            {!loadingSnapshot && linkedAlertRows.length === 0 ? (
               <div className="emptyStatePanel">
-                <h4>No activity recorded</h4>
-                <p className="muted">No alerts, incidents, or health transitions have been recorded yet.</p>
+                <h4>No alerts recorded</h4>
+                <p className="muted">No open alerts are currently linked to this workspace.</p>
               </div>
             ) : (
               <div className="stack compactStack">
-                {timelineItems.map((item) => (
-                  <div key={item.id} className="overviewListItem">
+                {linkedAlertRows.map(({ alert, linkedDetection }) => (
+                  <div key={alert.id} className="overviewListItem">
                     <div>
-                      <p>{item.description}</p>
-                      <p className="tableMeta">{item.category} · {formatAbsoluteTime(item.timestamp)}</p>
+                      <p>{alert.title}</p>
+                      <p className="tableMeta">
+                        <span className="statusBadge statusBadge-attention">Alert</span>{' '}
+                        <span className="statusBadge statusBadge-high">Detection</span>{' '}
+                        {formatAbsoluteTime(alert.created_at)}
+                      </p>
+                      <p className="tableMeta">
+                        Linked detection: {linkedDetection?.title || linkedDetection?.id || 'Not linked'} · severity {severityLabel(alert.severity)}
+                      </p>
                     </div>
-                    <Link href={item.href} prefetch={false}>Open</Link>
+                    <div className="signalActions">
+                      <Link href="/alerts" prefetch={false}>Open</Link>
+                      <button
+                        type="button"
+                        className="secondaryCta"
+                        onClick={() => setEvidenceDrawer({
+                          title: alert.title,
+                          summary: linkedDetection?.evidence_summary || alert.explanation || 'Alert evidence available in raw payload.',
+                          raw: linkedDetection?.raw_evidence_json ?? alert.payload ?? alert.findings ?? null,
+                        })}
+                      >
+                        Open evidence
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1144,7 +1190,54 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           </article>
 
           <article className="dataCard">
-            <p className="sectionEyebrow">Action Center</p>
+            <div className="listHeader">
+              <div>
+                <p className="sectionEyebrow">Incidents</p>
+                <h3>Active incidents with timeline and audit history</h3>
+              </div>
+              <Link href="/incidents" prefetch={false}>Open incident queue</Link>
+            </div>
+            {loadingSnapshot ? <p className="muted">Loading incidents…</p> : null}
+            {!loadingSnapshot && incidents.length === 0 ? (
+              <div className="emptyStatePanel">
+                <h4>No incidents recorded</h4>
+                <p className="muted">Open incidents will include timeline and audit history entries here.</p>
+              </div>
+            ) : (
+              <div className="stack compactStack">
+                {incidents.slice(0, 6).map((incident) => (
+                  <div key={incident.id} className="overviewListItem">
+                    <div>
+                      <p>{incident.title || incident.event_type || 'Incident opened'}</p>
+                      <p className="tableMeta">
+                        <span className="statusBadge statusBadge-attention">Incident</span>{' '}
+                        <span className="statusBadge statusBadge-low">Audit</span>{' '}
+                        {formatAbsoluteTime(incident.created_at)}
+                      </p>
+                    </div>
+                    <Link href="/incidents" prefetch={false}>Open</Link>
+                  </div>
+                ))}
+                <div className="stack compactStack">
+                  {incidentTimelineItems.map((item) => (
+                    <div key={item.id} className="overviewListItem">
+                      <div>
+                        <p>{item.description}</p>
+                        <p className="tableMeta">
+                          <span className={`statusBadge statusBadge-${categoryTone(item.category)}`}>{item.category}</span>{' '}
+                          {formatAbsoluteTime(item.timestamp)}
+                        </p>
+                      </div>
+                      <Link href={item.href} prefetch={false}>Open</Link>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </article>
+
+          <article className="dataCard">
+            <p className="sectionEyebrow">Response Actions</p>
             <h3>Operational actions</h3>
             <p className="muted">Use investigation and escalation workflows to restore healthy monitoring and resolve risk.</p>
             <div className="buttonRow">
@@ -1158,6 +1251,21 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           </article>
         </div>
       </section>
+      {evidenceDrawer ? (
+        <article className="dataCard" role="dialog" aria-label="Evidence details">
+          <div className="listHeader">
+            <div>
+              <p className="sectionEyebrow">Evidence</p>
+              <h3>{evidenceDrawer.title}</h3>
+            </div>
+            <button type="button" className="secondaryCta" onClick={() => setEvidenceDrawer(null)}>Close</button>
+          </div>
+          <p className="muted">Summary: {evidenceDrawer.summary || 'No evidence summary available.'}</p>
+          <pre className="tableMeta" style={{ whiteSpace: 'pre-wrap', overflowX: 'auto' }}>
+            {JSON.stringify(evidenceDrawer.raw ?? { message: 'No raw evidence found.' }, null, 2)}
+          </pre>
+        </article>
+      ) : null}
     </section>
   );
 }
