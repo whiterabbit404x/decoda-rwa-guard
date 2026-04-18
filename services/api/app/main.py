@@ -153,6 +153,7 @@ from services.api.app.pilot import (
     set_target_enabled,
     get_workspace_monitoring_debug,
     list_monitored_systems,
+    list_monitoring_runs,
     create_monitored_system,
     patch_monitored_system,
     delete_monitored_system,
@@ -1230,7 +1231,7 @@ async def lifespan(_: FastAPI):
             interval = max(10, int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30')))
             while True:
                 try:
-                    run_monitoring_cycle(worker_name='monitoring-worker', limit=100)
+                    run_monitoring_cycle(worker_name='monitoring-worker', limit=100, trigger_type='scheduler')
                 except Exception:
                     logger.exception('background_monitoring_cycle_failed')
                 await asyncio.sleep(interval)
@@ -1743,7 +1744,7 @@ def ops_run_monitoring(payload: dict[str, Any], request: Request) -> Any:
     worker_name = str(payload.get('worker_name', 'monitoring-worker')).strip() or 'monitoring-worker'
     limit = int(payload.get('limit', 50))
     try:
-        return with_auth_schema_json(lambda: run_monitoring_cycle(worker_name=worker_name, limit=max(1, min(limit, 200))))
+        return with_auth_schema_json(lambda: run_monitoring_cycle(worker_name=worker_name, limit=max(1, min(limit, 200)), trigger_type='system'))
     except HTTPException as exc:
         if isinstance(exc.detail, dict):
             return JSONResponse(exc.detail, status_code=exc.status_code)
@@ -1982,6 +1983,11 @@ def targets_list(request: Request) -> dict[str, Any]:
 @app.get('/monitoring/targets', summary='List target monitoring settings')
 def monitoring_targets_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_monitoring_targets(request))
+
+
+@app.get('/monitoring/runs', summary='List recent monitoring runs for workspace')
+def monitoring_runs_list(request: Request, limit: int = 20) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_monitoring_runs(request, limit=limit))
 
 
 @app.patch('/monitoring/targets/{target_id}', summary='Update target monitoring settings')
