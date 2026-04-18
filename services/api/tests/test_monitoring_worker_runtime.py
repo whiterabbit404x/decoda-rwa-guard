@@ -316,6 +316,45 @@ def test_monitoring_cycle_without_due_targets_reports_zero_updates(monkeypatch):
     assert connection.last_worker_state_update_params[3] == 0
 
 
+def test_monitoring_cycle_persists_scheduler_run_without_due_targets(monkeypatch):
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'not-due-target',
+            'name': 'Not Due Target',
+            'asset_id': 'asset-1',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': now,
+            'monitoring_interval_seconds': 3600,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10, trigger_type='scheduler')
+
+    assert summary['due_targets'] == 0
+    assert summary['checked'] == 0
+    assert len(connection.monitoring_run_inserts) == 1
+    assert len(connection.monitoring_run_updates) == 1
+    insert = connection.monitoring_run_inserts[0]
+    update = connection.monitoring_run_updates[0]
+    assert insert[2] == 'scheduler'
+    assert update[0] == 'completed'
+    assert update[1] == 0
+    assert update[2] == 0
+    assert update[3] == 0
+    assert update[4] == 0
+    assert update[5] == 0
+
+
 def test_monitoring_cycle_persists_workspace_run_counts(monkeypatch):
     now = datetime.now(timezone.utc)
     due_targets = [
