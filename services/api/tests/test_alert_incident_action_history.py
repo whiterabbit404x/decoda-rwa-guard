@@ -117,9 +117,9 @@ def test_history_actions_endpoint_and_linked_ids_in_payloads(monkeypatch):
             normalized = ' '.join(str(statement).split())
             if 'FROM action_history' in normalized:
                 return _Result(rows=[{'id': 'h-1', 'object_type': 'alert', 'object_id': 'alert-1', 'action_type': 'alert.escalated_to_incident'}])
-            if 'SELECT id, alert_type, title, severity, status, summary, module_key, target_id, detection_id, incident_id, assigned_to, evidence_summary' in normalized:
+            if 'FROM alerts a' in normalized:
                 return _Result(rows=[{'id': 'alert-1', 'detection_id': 'det-1', 'incident_id': 'inc-1', 'assigned_to': 'user-2', 'evidence_summary': 'summary'}])
-            if 'SELECT id, event_type, title, severity, status, workflow_status, target_id, source_alert_id' in normalized:
+            if 'FROM incidents i' in normalized:
                 return _Result(rows=[{'id': 'inc-1', 'source_alert_id': 'alert-1', 'status': 'open', 'workflow_status': 'open'}])
             return _Result()
 

@@ -37,6 +37,9 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
   useEffect(() => { void load(); }, [status, severity, targetFilter, timeRange, assetFilter]);
 
   const selectedAlert = useMemo(() => alerts.find((item) => item.id === selectedAlertId) ?? null, [alerts, selectedAlertId]);
+  const responseModeLabel = selectedAlert?.response_action_mode && selectedAlert.response_action_mode !== 'live_enforcement'
+    ? 'SIMULATED'
+    : null;
 
   useEffect(() => {
     if (!selectedAlertId) return;
@@ -94,6 +97,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
             {!selectedAlert ? <p className="muted">Select an alert.</p> : <>
               <h3>{selectedAlert.title}</h3>
               <p className="muted">{selectedAlert.summary || 'No summary available.'}</p>
+              {responseModeLabel ? <p className="statusLine">Response mode: <strong>{responseModeLabel}</strong></p> : null}
               <p className="muted">Severity: {selectedAlert.severity} · Status: {selectedAlert.status}</p>
               <p className="muted">Asset: {selectedAlert.payload?.asset_label || 'n/a'} · Target: {selectedAlert.target_id || 'n/a'}</p>
               <p className="muted">First seen: {selectedAlert.created_at ? new Date(selectedAlert.created_at).toLocaleString() : 'n/a'} · Last seen: {selectedAlert.last_seen_at ? new Date(selectedAlert.last_seen_at).toLocaleString() : 'n/a'}</p>
@@ -104,6 +108,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
                 <button type="button" onClick={() => void escalateIncident()}>Escalate to incident</button>
                 <button type="button" onClick={() => void patchAlert('suppressed')}>Mute rule</button>
               </div>
+              <p className="tableMeta">Response actions: Freeze wallet · Block transaction · Revoke approval · Disable monitored system · Suppress rule · Notify team</p>
               <p className="sectionEyebrow">Evidence timeline</p>
               <p className="tableMeta">tx {evidence?.tx_hash || 'n/a'} · block {evidence?.block_number || 'n/a'} · target {evidence?.target_name || 'n/a'}</p>
               <pre>{JSON.stringify(evidence?.raw_payload_excerpt || {}, null, 2)}</pre>

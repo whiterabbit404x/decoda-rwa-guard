@@ -58,6 +58,7 @@ type AlertRow = {
   source?: string;
   source_service?: string;
   target_id?: string;
+  response_action_mode?: string | null;
 };
 
 type IncidentRow = {
@@ -67,6 +68,7 @@ type IncidentRow = {
   severity?: string;
   status?: string;
   created_at?: string;
+  response_action_mode?: string | null;
 };
 
 type HistoryRun = {
@@ -736,14 +738,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       id: `alert-${item.id}`,
       timestamp: item.created_at || new Date(0).toISOString(),
       category: 'Alert' as const,
-      description: item.title,
+      description: `${item.title}${item.response_action_mode && item.response_action_mode !== 'live_enforcement' ? ' · SIMULATED' : ''}`,
       href: '/alerts',
     }));
     const incidentItems = incidents.slice(0, 5).map((item) => ({
       id: `incident-${item.id}`,
       timestamp: item.created_at || new Date(0).toISOString(),
       category: 'Incident' as const,
-      description: item.title || item.event_type || 'Incident opened',
+      description: `${item.title || item.event_type || 'Incident opened'}${item.response_action_mode && item.response_action_mode !== 'live_enforcement' ? ' · SIMULATED' : ''}`,
       href: '/incidents',
     }));
     const historyItems = historyRuns.slice(0, 4).map((item) => ({

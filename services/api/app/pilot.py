@@ -1524,7 +1524,7 @@ def update_onboarding_state(payload: dict[str, Any], request: Request) -> dict[s
             '''
             UPDATE workspace_onboarding_states
             SET state = %s::jsonb, updated_by_user_id = %s, updated_at = NOW(), completed_at = CASE WHEN completed_at IS NOT NULL AND %s = FALSE THEN NULL ELSE completed_at END
-            WHERE workspace_id = %s
+            WHERE a.workspace_id = %s
             ''',
             (_json_dumps(state), user['id'], complete, workspace_context['workspace_id']),
         )
@@ -2149,7 +2149,7 @@ def list_workspace_invitations(request: Request) -> dict[str, Any]:
             '''
             SELECT id, email, role, status, expires_at, created_at, updated_at
             FROM workspace_invitations
-            WHERE workspace_id = %s
+            WHERE i.workspace_id = %s
             ORDER BY created_at DESC
             ''',
             (workspace_context['workspace_id'],),
@@ -6799,8 +6799,19 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, alert_type, title, severity, status, summary, module_key, target_id, detection_id, incident_id, assigned_to, evidence_summary, source, source_service, recommended_action, degraded, occurrence_count, last_seen_at, findings, owner_user_id, triage_status, resolution_note, suppressed_until, acknowledged_at, resolved_at, created_at, updated_at
-            FROM alerts
+            SELECT
+                a.id, a.alert_type, a.title, a.severity, a.status, a.summary, a.module_key, a.target_id, a.detection_id, a.incident_id, a.assigned_to, a.evidence_summary,
+                a.source, a.source_service, a.recommended_action, a.degraded, a.occurrence_count, a.last_seen_at, a.findings, a.owner_user_id, a.triage_status,
+                a.resolution_note, a.suppressed_until, a.acknowledged_at, a.resolved_at, a.created_at, a.updated_at,
+                (
+                    SELECT ra.mode
+                    FROM response_actions ra
+                    WHERE ra.workspace_id = a.workspace_id
+                      AND (ra.alert_id = a.id OR (a.incident_id IS NOT NULL AND ra.incident_id = a.incident_id))
+                    ORDER BY ra.created_at DESC
+                    LIMIT 1
+                ) AS response_action_mode
+            FROM alerts a
             WHERE workspace_id = %s
               AND (%s::text IS NULL OR severity = %s::text)
               AND (%s::text IS NULL OR module_key = %s::text)
@@ -7089,8 +7100,17 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, event_type, title, severity, status, workflow_status, target_id, source_alert_id, linked_alert_ids, owner, owner_user_id, assignee_user_id, summary, resolution_note, resolution_notes, timeline, created_at, updated_at
-            FROM incidents
+            SELECT
+                i.id, i.event_type, i.title, i.severity, i.status, i.workflow_status, i.target_id, i.source_alert_id, i.linked_alert_ids, i.owner, i.owner_user_id,
+                i.assignee_user_id, i.summary, i.resolution_note, i.resolution_notes, i.timeline, i.created_at, i.updated_at,
+                (
+                    SELECT ra.mode
+                    FROM response_actions ra
+                    WHERE ra.workspace_id = i.workspace_id AND ra.incident_id = i.id
+                    ORDER BY ra.created_at DESC
+                    LIMIT 1
+                ) AS response_action_mode
+            FROM incidents i
             WHERE workspace_id = %s
               AND (%s::text IS NULL OR severity = %s::text)
               AND (%s::uuid IS NULL OR target_id = %s::uuid)
@@ -7274,7 +7294,20 @@ def append_incident_timeline_note(incident_id: str, payload: dict[str, Any], req
         return {'id': timeline_id, 'incident_id': incident_id, 'event_type': 'note', 'message': message}
 
 
-ENFORCEMENT_ACTION_TYPES = {'revoke_erc20_approval', 'freeze_wallet', 'pause_asset', 'notify_only', 'compensating_reapprove_erc20_approval'}
+RESPONSE_ACTION_TYPES = {
+    'freeze_wallet',
+    'block_transaction',
+    'revoke_approval',
+    'disable_monitored_system',
+    'suppress_rule',
+    'notify_team',
+}
+LEGACY_ACTION_TYPE_ALIASES = {
+    'revoke_erc20_approval': 'revoke_approval',
+    'pause_asset': 'disable_monitored_system',
+    'notify_only': 'notify_team',
+    'compensating_reapprove_erc20_approval': 'revoke_approval',
+}
 ENFORCEMENT_STATUSES = {'planned', 'approved', 'executed', 'failed', 'rolled_back'}
 
 
@@ -7299,6 +7332,30 @@ def _encode_erc20_approve_calldata(spender: str, amount: int) -> str:
 
 def _enforcement_default_dry_run() -> bool:
     return env_flag('ENFORCEMENT_DRY_RUN_DEFAULT', default=True)
+
+
+def _normalize_response_action_type(value: Any) -> str:
+    action_type = str(value or '').strip().lower()
+    return LEGACY_ACTION_TYPE_ALIASES.get(action_type, action_type)
+
+
+def _normalize_response_action_mode(payload: dict[str, Any]) -> str:
+    mode = str(payload.get('mode') or '').strip().lower()
+    if not mode:
+        dry_run = payload.get('dry_run')
+        if dry_run is None:
+            dry_run = _enforcement_default_dry_run()
+        mode = 'simulated' if bool(dry_run) else 'live_enforcement'
+    if mode not in {'simulated', 'live_enforcement'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='mode must be simulated/live_enforcement.')
+    return mode
+
+
+def _response_action_payload(action: dict[str, Any]) -> dict[str, Any]:
+    mode = str(action.get('mode') or 'simulated')
+    result = dict(action)
+    result['dry_run'] = mode != 'live_enforcement'
+    return result
 
 
 def _safe_signer_key() -> str:
@@ -7345,8 +7402,8 @@ def _propose_safe_transaction(action_id: str, *, to: str, data: str, chain_netwo
 
 def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
-    action_type = str(payload.get('action_type', '')).strip().lower()
-    if action_type not in ENFORCEMENT_ACTION_TYPES - {'compensating_reapprove_erc20_approval'}:
+    action_type = _normalize_response_action_type(payload.get('action_type'))
+    if action_type not in RESPONSE_ACTION_TYPES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported action_type.')
     params = payload.get('params') if isinstance(payload.get('params'), dict) else {}
     with pg_connection() as connection:
@@ -7359,25 +7416,25 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
         token_contract = _normalize_eth_address(params.get('token_contract'), field='token_contract')
         spender = _normalize_eth_address(params.get('spender'), field='spender')
         target_wallet = _normalize_eth_address(params.get('target_wallet'), field='target_wallet')
-        dry_run = bool(payload.get('dry_run')) if payload.get('dry_run') is not None else _enforcement_default_dry_run()
+        mode = _normalize_response_action_mode(payload)
         execution_metadata = {'params': params, 'created_via': 'api'}
         calldata: str | None = None
-        if action_type in {'revoke_erc20_approval', 'compensating_reapprove_erc20_approval'}:
+        if action_type == 'revoke_approval':
             if not token_contract or not spender:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='token_contract and spender are required for ERC20 approval actions.')
-            amount = 0 if action_type == 'revoke_erc20_approval' else int(params.get('amount') or 0)
+            amount = int(params.get('amount') or 0)
             calldata = _encode_erc20_approve_calldata(spender, amount)
             execution_metadata['erc20_approve_amount'] = str(amount)
             if params.get('previous_allowance') is not None:
                 execution_metadata['previous_allowance'] = str(params.get('previous_allowance'))
         connection.execute(
             '''
-            INSERT INTO enforcement_actions (
-                id, workspace_id, incident_id, alert_id, action_type, status, dry_run,
+            INSERT INTO response_actions (
+                id, workspace_id, incident_id, alert_id, action_type, mode, status, result_summary, operator_notes,
                 chain_network, target_wallet, token_contract, spender, calldata,
                 execution_metadata, created_by_user_id
             )
-            VALUES (%s, %s, %s::uuid, %s::uuid, %s, 'planned', %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, 'planned', %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
             ''',
             (
                 action_id,
@@ -7385,7 +7442,9 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 incident_id,
                 alert_id,
                 action_type,
-                dry_run,
+                mode,
+                str(payload.get('result_summary') or '').strip() or None,
+                str(payload.get('operator_notes') or '').strip() or None,
                 chain_network,
                 target_wallet,
                 token_contract,
@@ -7395,10 +7454,42 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 user['id'],
             ),
         )
-        log_audit(connection, action='enforcement.action.create', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'action_type': action_type, 'dry_run': dry_run})
+        write_action_history(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            actor_type='user',
+            actor_id=user['id'],
+            object_type='response_action',
+            object_id=action_id,
+            action_type='response_action.created',
+            details={'action_type': action_type, 'mode': mode, 'incident_id': incident_id, 'alert_id': alert_id},
+        )
+        if incident_id:
+            write_action_history(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                actor_type='user',
+                actor_id=user['id'],
+                object_type='incident',
+                object_id=str(incident_id),
+                action_type='incident.response_action_created',
+                details={'response_action_id': action_id, 'action_type': action_type, 'mode': mode},
+            )
+        if alert_id:
+            write_action_history(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                actor_type='user',
+                actor_id=user['id'],
+                object_type='alert',
+                object_id=str(alert_id),
+                action_type='alert.response_action_created',
+                details={'response_action_id': action_id, 'action_type': action_type, 'mode': mode},
+            )
+        log_audit(connection, action='enforcement.action.create', entity_type='response_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'action_type': action_type, 'mode': mode})
         connection.commit()
-        logger.info('enforcement_planned action_id=%s type=%s dry_run=%s', action_id, action_type, str(dry_run).lower())
-        return {'id': action_id, 'status': 'planned', 'action_type': action_type, 'dry_run': dry_run, 'calldata': calldata}
+        logger.info('response_action_planned action_id=%s type=%s mode=%s', action_id, action_type, mode)
+        return _response_action_payload({'id': action_id, 'status': 'planned', 'action_type': action_type, 'mode': mode, 'calldata': calldata})
 
 
 def approve_enforcement_action(action_id: str, request: Request) -> dict[str, Any]:
@@ -7406,12 +7497,22 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
-        row = connection.execute('SELECT id, status FROM enforcement_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
+        row = connection.execute('SELECT id, status FROM response_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
         if str(row.get('status')) not in {'planned', 'failed'}:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action cannot be approved from current status.')
-        connection.execute('UPDATE enforcement_actions SET status = %s, approved_by_user_id = %s, execution_metadata = execution_metadata || %s::jsonb WHERE id = %s', ('approved', user['id'], _json_dumps({'approved_at': utc_now_iso()}), action_id))
+        connection.execute('UPDATE response_actions SET status = %s, approved_by_user_id = %s, execution_metadata = execution_metadata || %s::jsonb WHERE id = %s', ('approved', user['id'], _json_dumps({'approved_at': utc_now_iso()}), action_id))
+        write_action_history(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            actor_type='user',
+            actor_id=user['id'],
+            object_type='response_action',
+            object_id=action_id,
+            action_type='response_action.approved',
+            details={},
+        )
         log_audit(connection, action='enforcement.action.approve', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
         connection.commit()
         return {'id': action_id, 'status': 'approved'}
@@ -7422,7 +7523,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
-        row = connection.execute('SELECT * FROM enforcement_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
+        row = connection.execute('SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
         if str(row.get('status')) != 'approved':
@@ -7431,9 +7532,9 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         action = _json_safe_value(dict(row))
         safe_tx_hash = None
         metadata = action.get('execution_metadata') if isinstance(action.get('execution_metadata'), dict) else {}
-        if bool(action.get('dry_run')):
-            metadata['execution_mode'] = 'dry_run'
-        elif action.get('action_type') in {'revoke_erc20_approval', 'compensating_reapprove_erc20_approval'}:
+        if str(action.get('mode') or 'simulated') != 'live_enforcement':
+            metadata['execution_mode'] = 'simulated'
+        elif action.get('action_type') == 'revoke_approval':
             safe_tx_hash = _propose_safe_transaction(
                 action_id,
                 to=str(action.get('token_contract') or ''),
@@ -7446,15 +7547,25 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             metadata['execution_mode'] = 'manual_or_notify'
         connection.execute(
             '''
-            UPDATE enforcement_actions
-            SET status = 'executed', safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, executed_at = NOW()
+            UPDATE response_actions
+            SET status = 'executed', safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, executed_at = NOW(), result_summary = COALESCE(result_summary, %s)
             WHERE id = %s
             ''',
-            (safe_tx_hash, _json_dumps(metadata), action_id),
+            (safe_tx_hash, _json_dumps(metadata), 'Action executed', action_id),
+        )
+        write_action_history(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            actor_type='user',
+            actor_id=user['id'],
+            object_type='response_action',
+            object_id=action_id,
+            action_type='response_action.executed',
+            details={'mode': action.get('mode'), 'safe_tx_hash': safe_tx_hash},
         )
         log_audit(connection, action='enforcement.action.execute', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'safe_tx_hash': safe_tx_hash})
         connection.commit()
-        return {'id': action_id, 'status': 'executed', 'safe_tx_hash': safe_tx_hash, 'dry_run': bool(action.get('dry_run'))}
+        return _response_action_payload({'id': action_id, 'status': 'executed', 'safe_tx_hash': safe_tx_hash, 'mode': action.get('mode')})
 
 
 def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, Any]:
@@ -7462,7 +7573,7 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
-        row = connection.execute('SELECT * FROM enforcement_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
+        row = connection.execute('SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
         action = _json_safe_value(dict(row))
@@ -7470,18 +7581,18 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Only executed/failed actions can be rolled back.')
         metadata = action.get('execution_metadata') if isinstance(action.get('execution_metadata'), dict) else {}
         rollback_id = str(uuid.uuid4())
-        compensating_type = 'notify_only'
+        compensating_type = 'notify_team'
         compensating_calldata = None
-        if action.get('action_type') == 'revoke_erc20_approval' and metadata.get('previous_allowance') is not None:
-            compensating_type = 'compensating_reapprove_erc20_approval'
+        if action.get('action_type') == 'revoke_approval' and metadata.get('previous_allowance') is not None:
+            compensating_type = 'revoke_approval'
             compensating_calldata = _encode_erc20_approve_calldata(str(action.get('spender')), int(metadata.get('previous_allowance')))
         connection.execute(
             '''
-            INSERT INTO enforcement_actions (
-                id, workspace_id, incident_id, alert_id, action_type, status, dry_run, chain_network, target_wallet,
+            INSERT INTO response_actions (
+                id, workspace_id, incident_id, alert_id, action_type, mode, status, chain_network, target_wallet,
                 token_contract, spender, calldata, execution_metadata, created_by_user_id
             )
-            VALUES (%s, %s, %s::uuid, %s::uuid, %s, 'planned', %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, 'planned', %s, %s, %s, %s, %s, %s::jsonb, %s)
             ''',
             (
                 rollback_id,
@@ -7489,7 +7600,7 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
                 action.get('incident_id'),
                 action.get('alert_id'),
                 compensating_type,
-                bool(action.get('dry_run')),
+                action.get('mode') or 'simulated',
                 action.get('chain_network'),
                 action.get('target_wallet'),
                 action.get('token_contract'),
@@ -7499,7 +7610,17 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
                 user['id'],
             ),
         )
-        connection.execute('UPDATE enforcement_actions SET status = %s, rolled_back_at = NOW() WHERE id = %s', ('rolled_back', action_id))
+        connection.execute('UPDATE response_actions SET status = %s, rolled_back_at = NOW() WHERE id = %s', ('rolled_back', action_id))
+        write_action_history(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            actor_type='user',
+            actor_id=user['id'],
+            object_type='response_action',
+            object_id=action_id,
+            action_type='response_action.rolled_back',
+            details={'compensating_action_id': rollback_id, 'compensating_action_type': compensating_type},
+        )
         log_audit(connection, action='enforcement.action.rollback', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'compensating_action_id': rollback_id})
         connection.commit()
         return {'id': action_id, 'status': 'rolled_back', 'compensating_action_id': rollback_id, 'compensating_action_type': compensating_type}
@@ -7886,7 +8007,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                     (workspace_id, alert_ids),
                 ).fetchall()
             enforcement_actions = connection.execute(
-                'SELECT id, action_type, status, dry_run, execution_metadata, created_at, updated_at FROM enforcement_actions WHERE workspace_id = %s AND incident_id = %s ORDER BY created_at DESC',
+                "SELECT id, action_type, status, mode <> 'live_enforcement' AS dry_run, mode, execution_metadata, created_at, executed_at, rolled_back_at FROM response_actions WHERE workspace_id = %s AND incident_id = %s ORDER BY created_at DESC",
                 (workspace_id, incident_id),
             ).fetchall()
             rows = [{
