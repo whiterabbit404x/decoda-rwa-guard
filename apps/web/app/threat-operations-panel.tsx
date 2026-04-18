@@ -660,7 +660,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       const rawEvent = rawEvidence.event || {};
       const responsePayload = rawEvidence.response || {};
       const linkedAlert = item.linked_alert_id ? alerts.find((alert) => alert.id === item.linked_alert_id) : null;
-      const isTest = isTestOrLabSignal(item.title) || isTestOrLabSignal(item.evidence_summary);
+      const isTest = isTestOrLabSignal(item.title ?? undefined) || isTestOrLabSignal(item.evidence_summary ?? undefined);
       return {
         id: `detection-${item.id}`,
         timestamp: item.detected_at || new Date(0).toISOString(),
