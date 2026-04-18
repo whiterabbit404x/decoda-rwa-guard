@@ -2547,6 +2547,33 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             ORDER BY COALESCE(ms.last_heartbeat, t.last_checked_at, '1970-01-01'::timestamptz) ASC, ms.created_at ASC
             ''',
         ).fetchall()
+        cycle_workspace_ids: set[str] = set()
+        for row in candidate_systems:
+            workspace_id = str((dict(row)).get('workspace_id') or '').strip()
+            if workspace_id:
+                cycle_workspace_ids.add(workspace_id)
+        for workspace_id in sorted(cycle_workspace_ids):
+            run_id = str(uuid.uuid4())
+            workspace_run_ids[workspace_id] = run_id
+            connection.execute(
+                '''
+                INSERT INTO monitoring_runs (
+                    id,
+                    workspace_id,
+                    started_at,
+                    status,
+                    trigger_type,
+                    systems_checked_count,
+                    assets_checked_count,
+                    detections_created_count,
+                    alerts_created_count,
+                    telemetry_records_seen_count,
+                    notes
+                )
+                VALUES (%s::uuid, %s::uuid, NOW(), 'running', %s, 0, 0, 0, 0, 0, %s)
+                ''',
+                (run_id, workspace_id, trigger_type, f'worker_name={worker_name}'),
+            )
         connection.execute(
             '''
             UPDATE monitored_systems ms
@@ -2638,28 +2665,6 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             target = dict(row)
             target['monitored_system_id'] = due_system_ids.get(str(target['id']))
             workspace_id = str(target.get('workspace_id') or '').strip()
-            if workspace_id and workspace_id not in workspace_run_ids:
-                run_id = str(uuid.uuid4())
-                workspace_run_ids[workspace_id] = run_id
-                connection.execute(
-                    '''
-                    INSERT INTO monitoring_runs (
-                        id,
-                        workspace_id,
-                        started_at,
-                        status,
-                        trigger_type,
-                        systems_checked_count,
-                        assets_checked_count,
-                        detections_created_count,
-                        alerts_created_count,
-                        telemetry_records_seen_count,
-                        notes
-                    )
-                    VALUES (%s::uuid, %s::uuid, NOW(), 'running', %s, 0, 0, 0, 0, 0, %s)
-                    ''',
-                    (run_id, workspace_id, trigger_type, f'worker_name={worker_name}'),
-                )
             try:
                 with connection.transaction():
                     connection.execute(
