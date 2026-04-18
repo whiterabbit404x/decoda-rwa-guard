@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 import {
   derivePageState,
+  formatSystemsPanelWarning,
   formatOperationalStateLabel,
   hasRuntimeQueryFailureMarker,
   pageStatePrimaryCopy,
@@ -390,5 +391,31 @@ test.describe('threat runtime guards', () => {
     expect(state).toBe('configured_no_signals');
     expect(state).not.toBe('offline_no_telemetry');
     expect(state).not.toBe('fetch_error');
+  });
+
+  test('runtime healthy with systems endpoint failure stays LIVE and shows systems warning badge copy', async () => {
+    const state = derivePageState({
+      loadingSnapshot: false,
+      snapshotError: true,
+      targets: [],
+      liveDetections: [],
+      workspaceConfigured: true,
+      freshnessStatus: 'fresh',
+      contradictionFlags: [],
+      reportingSystems: 2,
+      runtimeStatus: 'healthy',
+      monitoredSystems: 2,
+      hasLiveTelemetry: true,
+      statusReason: null,
+      configurationReason: null,
+      configurationReasonCodes: [],
+      runtimeMonitoringStatus: 'active',
+      summaryStatusReason: null,
+      summaryConfigurationReason: null,
+      summaryConfigurationReasonCodes: [],
+    });
+
+    expect(state).toBe('configured_no_signals');
+    expect(formatSystemsPanelWarning(['systems'])).toBe('Systems list unavailable');
   });
 });
