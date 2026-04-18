@@ -14,13 +14,23 @@ test.describe('useLiveWorkspaceFeed runtime semantics', () => {
     expect(degraded.offline).toBe(false);
   });
 
-  test('offline only when runtime-status is offline/error or runtime-status request fails', async () => {
+  test('offline only when runtime-status is explicitly offline/error', async () => {
     const explicitOffline = resolveRuntimeStatus({ monitoring_status: 'offline', mode: 'OFFLINE' } as MonitoringRuntimeStatus, true);
     const explicitError = resolveRuntimeStatus({ monitoring_status: 'error', mode: 'OFFLINE' } as MonitoringRuntimeStatus, true);
-    const unreachableRuntime = resolveRuntimeStatus(null, false);
 
     expect(explicitOffline.offline).toBe(true);
     expect(explicitError.offline).toBe(true);
-    expect(unreachableRuntime.offline).toBe(true);
+  });
+
+  test('intermittent runtime fetch failure keeps last good runtime without false offline regression', async () => {
+    const lastKnownGood = resolveRuntimeStatus(
+      { monitoring_status: 'active', mode: 'LIVE' } as MonitoringRuntimeStatus,
+      true,
+    );
+    const transientFailure = resolveRuntimeStatus(null, false, lastKnownGood.nextRuntime);
+
+    expect(transientFailure.nextRuntime).toEqual(lastKnownGood.nextRuntime);
+    expect(transientFailure.offline).toBe(false);
+    expect(transientFailure.fetchWarning).toBe(true);
   });
 });
