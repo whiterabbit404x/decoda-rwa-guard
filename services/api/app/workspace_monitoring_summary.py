@@ -142,7 +142,15 @@ def build_workspace_monitoring_summary(
         contradiction_flags.append('heartbeat_without_telemetry_timestamp')
     if last_poll_at and telemetry_timestamp is None:
         contradiction_flags.append('poll_without_telemetry_timestamp')
-    if normalized_reporting == 0 and normalized_runtime == 'live':
+    monitoring_claimed_healthy = (
+        normalized_runtime == 'live'
+        or (
+            freshness_status == 'fresh'
+            and confidence_status == 'high'
+            and normalized_evidence == 'live'
+        )
+    )
+    if normalized_reporting == 0 and monitoring_claimed_healthy:
         contradiction_flags.append('live_monitoring_without_reporting_systems')
     live_telemetry_verified = normalized_evidence == 'live' and confidence_status == 'high'
     if live_telemetry_verified and telemetry_timestamp is None:
@@ -177,7 +185,7 @@ def build_workspace_monitoring_summary(
     ):
         contradiction_flags.append('workspace_configured_missing_required_links')
     contradiction_flags = sorted(set(contradiction_flags))
-    guard_flags = [flag for flag in contradiction_flags if flag in HARD_GUARD_FLAGS]
+    guard_flags = sorted(flag for flag in contradiction_flags if flag in HARD_GUARD_FLAGS)
     normalized_monitoring_status = _normalized_monitoring_status(
         runtime_status=normalized_runtime,
         reporting_systems_count=normalized_reporting,
@@ -201,6 +209,8 @@ def build_workspace_monitoring_summary(
         'active_alerts_count': max(int(active_alerts_count), 0),
         'active_incidents_count': max(int(active_incidents_count), 0),
         'evidence_source_summary': evidence_source_summary,
+        'contradiction_flags': contradiction_flags,
+        'guard_flags': guard_flags,
         'status_reason': resolved_status_reason,
     }
 
@@ -235,5 +245,7 @@ def build_workspace_monitoring_summary_fallback(
         'active_alerts_count': 0,
         'active_incidents_count': 0,
         'evidence_source_summary': 'none',
+        'contradiction_flags': [],
+        'guard_flags': [],
         'status_reason': status_reason,
     }

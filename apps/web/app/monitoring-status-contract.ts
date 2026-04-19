@@ -2,7 +2,7 @@ export type MonitoringMode = 'LIVE' | 'DEGRADED' | 'OFFLINE' | 'STALE' | 'LIMITE
 
 export type WorkspaceMonitoringSummary = {
   workspace_configured: boolean;
-  runtime_status: 'live' | 'degraded' | 'offline' | 'idle';
+  runtime_status: 'live' | 'healthy' | 'degraded' | 'offline' | 'idle';
   monitoring_status: 'live' | 'limited' | 'offline';
   last_poll_at: string | null;
   last_heartbeat_at: string | null;
@@ -15,6 +15,8 @@ export type WorkspaceMonitoringSummary = {
   active_alerts_count: number;
   active_incidents_count: number;
   evidence_source_summary: 'live' | 'simulator' | 'replay' | 'none';
+  contradiction_flags: string[];
+  guard_flags: string[];
   status_reason: string | null;
 };
 
