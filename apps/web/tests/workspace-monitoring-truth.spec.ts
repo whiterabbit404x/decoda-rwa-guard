@@ -317,4 +317,58 @@ test.describe('workspace monitoring truth guardrails', () => {
     expect(contradicted.guard_flags).toContain('idle_runtime_with_active_monitoring_claim');
     expect(contradicted.status_reason).toBe('guard:idle_runtime_with_active_monitoring_claim');
   });
+
+  test('idle runtime with explicit degraded reason does not trigger healthy-idle contradiction', () => {
+    const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      runtime_status: 'idle',
+      monitoring_status: 'limited',
+      reporting_systems_count: 1,
+      monitored_systems_count: 1,
+      protected_assets_count: 1,
+      telemetry_freshness: 'fresh',
+      confidence: 'high',
+      last_poll_at: '2026-04-15T10:00:00Z',
+      last_heartbeat_at: '2026-04-15T10:00:00Z',
+      last_telemetry_at: '2026-04-15T09:59:30Z',
+      active_alerts_count: 0,
+      active_incidents_count: 0,
+      evidence_source_summary: 'live',
+      status_reason: 'runtime_status_degraded:database_error',
+      contradiction_flags: [],
+      guard_flags: [],
+    }));
+
+    expect(truth.contradiction_flags).not.toContain('idle_runtime_with_active_monitoring_claim');
+    expect(truth.status_reason).toBe('runtime_status_degraded:database_error');
+  });
+
+  test('status reason uses deterministic hard-guard priority', () => {
+    const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      runtime_status: 'offline',
+      monitoring_status: 'limited',
+      reporting_systems_count: 0,
+      monitored_systems_count: 1,
+      protected_assets_count: 1,
+      telemetry_freshness: 'fresh',
+      confidence: 'high',
+      last_poll_at: '2026-04-15T10:00:00Z',
+      last_heartbeat_at: '2026-04-15T10:00:00Z',
+      last_telemetry_at: null,
+      active_alerts_count: 0,
+      active_incidents_count: 0,
+      evidence_source_summary: 'live',
+      status_reason: null,
+      contradiction_flags: [],
+      guard_flags: [],
+    }));
+
+    expect(truth.guard_flags).toEqual(expect.arrayContaining([
+      'offline_with_current_telemetry',
+      'live_monitoring_without_reporting_systems',
+      'live_telemetry_verified_without_timestamp',
+    ]));
+    expect(truth.status_reason).toBe('guard:offline_with_current_telemetry');
+  });
 });

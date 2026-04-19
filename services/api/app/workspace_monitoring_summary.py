@@ -35,6 +35,13 @@ HARD_GUARD_FLAGS = {
     'live_telemetry_verified_without_timestamp',
     'idle_runtime_with_active_monitoring_claim',
 }
+HARD_GUARD_PRIORITY = (
+    'offline_with_current_telemetry',
+    'telemetry_unavailable_with_high_confidence',
+    'live_monitoring_without_reporting_systems',
+    'live_telemetry_verified_without_timestamp',
+    'idle_runtime_with_active_monitoring_claim',
+)
 
 
 def _isoformat(value: datetime | None) -> str | None:
@@ -201,12 +208,15 @@ def build_workspace_monitoring_summary(
     live_telemetry_verified = normalized_evidence == 'live' and confidence_status == 'high'
     if live_telemetry_verified and telemetry_timestamp is None:
         contradiction_flags.append('live_telemetry_verified_without_timestamp')
+    normalized_status_reason = str(status_reason).strip() if isinstance(status_reason, str) and status_reason.strip() else None
+    degraded_reason_explicit = normalized_status_reason is not None and normalized_status_reason.startswith('runtime_status_degraded:')
     idle_with_continuous_healthy_monitoring = (
         normalized_runtime == 'idle'
         and normalized_reporting > 0
         and freshness_status == 'fresh'
         and confidence_status == 'high'
         and normalized_evidence == 'live'
+        and not degraded_reason_explicit
     )
     if idle_with_continuous_healthy_monitoring:
         contradiction_flags.append('idle_runtime_with_active_monitoring_claim')
@@ -238,8 +248,8 @@ def build_workspace_monitoring_summary(
         telemetry_freshness=freshness_status,
         contradiction_flags=contradiction_flags,
     )
-    normalized_status_reason = str(status_reason).strip() if isinstance(status_reason, str) and status_reason.strip() else None
-    resolved_status_reason = f'guard:{guard_flags[0]}' if guard_flags else normalized_status_reason
+    prioritized_guard = next((flag for flag in HARD_GUARD_PRIORITY if flag in guard_flags), None)
+    resolved_status_reason = f'guard:{prioritized_guard}' if prioritized_guard else normalized_status_reason
     summary = {
         'workspace_configured': bool(workspace_configured),
         'runtime_status': normalized_runtime,
