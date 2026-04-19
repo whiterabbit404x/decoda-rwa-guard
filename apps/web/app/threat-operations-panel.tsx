@@ -51,6 +51,10 @@ type AlertRow = {
   severity?: string;
   status?: string;
   created_at?: string;
+  summary?: string;
+  detection_id?: string | null;
+  incident_id?: string | null;
+  evidence_summary?: string | null;
   explanation?: string;
   payload?: Record<string, any>;
   findings?: Record<string, any>;
@@ -68,7 +72,17 @@ type IncidentRow = {
   severity?: string;
   status?: string;
   created_at?: string;
+  source_alert_id?: string | null;
   response_action_mode?: string | null;
+};
+
+type ActionHistoryRow = {
+  id: string;
+  object_type?: string;
+  object_id?: string;
+  action_type?: string;
+  timestamp?: string;
+  details_json?: Record<string, any> | null;
 };
 
 type MonitoringRunRow = {
@@ -129,7 +143,7 @@ export type PageOperationalState =
   | 'unconfigured_workspace'
   | 'fetch_error';
 
-type SnapshotFailureKey = 'targets' | 'systems' | 'alerts' | 'incidents' | 'evidence' | 'runs' | 'detections';
+type SnapshotFailureKey = 'targets' | 'systems' | 'alerts' | 'incidents' | 'evidence' | 'runs' | 'detections' | 'history';
 
 const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
   'no_valid_protected_assets',
@@ -224,6 +238,14 @@ type TimelineItem = {
   timestamp: string;
   category: 'Telemetry Event' | 'Detection' | 'Alert' | 'Incident' | 'Action';
   description: string;
+  href: string;
+};
+
+type ThreatChainStep = {
+  id: string;
+  label: string;
+  detail: string;
+  timestamp: string | null;
   href: string;
 };
 
@@ -508,6 +530,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [monitoringRuns, setMonitoringRuns] = useState<MonitoringRunRow[]>([]);
   const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
   const [detections, setDetections] = useState<DetectionRow[]>([]);
+  const [actionHistory, setActionHistory] = useState<ActionHistoryRow[]>([]);
   const [monitoredSystems, setMonitoredSystems] = useState<MonitoredSystemRow[]>([]);
   const [evidenceDrawer, setEvidenceDrawer] = useState<EvidenceDrawerState | null>(null);
 
@@ -520,7 +543,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         return;
       }
       try {
-        const [targetsResult, systemsResult, alertsResult, incidentsResult, evidenceResult, runsResult, detectionsResult] = await Promise.allSettled([
+        const [targetsResult, systemsResult, alertsResult, incidentsResult, evidenceResult, runsResult, detectionsResult, actionsResult] = await Promise.allSettled([
           fetch(`${apiUrl}/monitoring/targets`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(MONITORING_SYSTEMS_PROXY_PATH, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
@@ -528,6 +551,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/monitoring/runs?limit=12`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/detections?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/history/actions?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         if (!active) return;
         const responseEntries: [SnapshotFailureKey, PromiseSettledResult<Response>][] = [
@@ -538,6 +562,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ['evidence', evidenceResult],
           ['runs', runsResult],
           ['detections', detectionsResult],
+          ['history', actionsResult],
         ];
         const failedEndpoints = responseEntries
           .filter(([, result]) => !(result.status === 'fulfilled' && result.value.ok))
@@ -545,7 +570,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const responses = responseEntries.map(([, result]) => (
           result.status === 'fulfilled' && result.value.ok ? result.value : null
         ));
-        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, evidenceResponse, runsResponse, detectionsResponse] = responses;
+        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, evidenceResponse, runsResponse, detectionsResponse, actionsResponse] = responses;
         const targetsPayload = targetsResponse ? await targetsResponse.json().catch(() => ({})) : {};
         const systemsPayload = systemsResponse ? await systemsResponse.json().catch(() => ({})) : {};
         const alertsPayload = alertsResponse ? await alertsResponse.json().catch(() => ({})) : {};
@@ -553,6 +578,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const evidencePayload = evidenceResponse ? await evidenceResponse.json().catch(() => ({})) : {};
         const runsPayload = runsResponse ? await runsResponse.json().catch(() => ({})) : {};
         const detectionsPayload = detectionsResponse ? await detectionsResponse.json().catch(() => ({})) : {};
+        const actionsPayload = actionsResponse ? await actionsResponse.json().catch(() => ({})) : {};
 
         if (targetsResponse) {
           setTargets((targetsPayload?.targets ?? []) as TargetRow[]);
@@ -574,6 +600,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         }
         if (detectionsResponse) {
           setDetections((detectionsPayload?.detections ?? []) as DetectionRow[]);
+        }
+        if (actionsResponse) {
+          setActionHistory((actionsPayload?.history ?? []) as ActionHistoryRow[]);
         }
         setSystemsPanelWarning(formatSystemsPanelWarning(failedEndpoints));
         setSnapshotError(formatSnapshotErrorMessage(failedEndpoints));
@@ -805,6 +834,62 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .slice(0, 10);
   }, [alerts, detections, hasTelemetryTimestamp, incidents, monitoringPresentation.lastPollAt, monitoringPresentation.lastTelemetryAt, monitoringRuns, telemetryDisplayLabel]);
+  const threatChainSteps = useMemo<ThreatChainStep[]>(() => {
+    const recentDetection = detections
+      .slice()
+      .sort((a, b) => new Date(b.detected_at || 0).getTime() - new Date(a.detected_at || 0).getTime())
+      .find((item) => item.linked_alert_id || alerts.some((alert) => alert.detection_id === item.id));
+    const relatedAlert = recentDetection
+      ? alerts.find((alert) => alert.id === recentDetection.linked_alert_id || alert.detection_id === recentDetection.id) ?? null
+      : alerts[0] ?? null;
+    const relatedIncident = relatedAlert
+      ? incidents.find((incident) => incident.id === relatedAlert.incident_id || incident.source_alert_id === relatedAlert.id) ?? null
+      : incidents[0] ?? null;
+    const relatedAction = actionHistory
+      .slice()
+      .sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime())
+      .find((item) => {
+        const details = item.details_json ?? {};
+        const detailsIncidentId = String(details.incident_id ?? '');
+        const detailsAlertId = String(details.alert_id ?? details.source_alert_id ?? '');
+        return (
+          item.action_type === 'incident.action_recorded'
+          || (relatedIncident && detailsIncidentId === relatedIncident.id)
+          || (relatedAlert && detailsAlertId === relatedAlert.id)
+        );
+      }) ?? null;
+
+    return [
+      {
+        id: 'chain-detection',
+        label: 'Detection created',
+        detail: recentDetection?.title || recentDetection?.evidence_summary || 'No linked detection yet.',
+        timestamp: recentDetection?.detected_at ?? null,
+        href: '/alerts',
+      },
+      {
+        id: 'chain-alert',
+        label: 'Alert created',
+        detail: relatedAlert?.title || relatedAlert?.summary || 'No linked alert yet.',
+        timestamp: relatedAlert?.created_at ?? null,
+        href: '/alerts',
+      },
+      {
+        id: 'chain-incident',
+        label: 'Incident opened',
+        detail: relatedIncident?.title || relatedIncident?.event_type || 'No linked incident yet.',
+        timestamp: relatedIncident?.created_at ?? null,
+        href: '/incidents',
+      },
+      {
+        id: 'chain-action',
+        label: 'Action recorded',
+        detail: relatedAction?.action_type || 'No linked action-history entry yet.',
+        timestamp: relatedAction?.timestamp ?? null,
+        href: '/history',
+      },
+    ];
+  }, [actionHistory, alerts, detections, incidents]);
 
   return (
     <section className="stack monitoringConsoleStack">
@@ -1204,6 +1289,21 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                     <Link href="/incidents" prefetch={false}>Open</Link>
                   </div>
                 ))}
+                <div className="stack compactStack">
+                  {threatChainSteps.map((step) => (
+                    <div key={step.id} className="overviewListItem">
+                      <div>
+                        <p>{step.label}</p>
+                        <p className="tableMeta">{step.detail}</p>
+                        <p className="tableMeta">
+                          <span className="statusBadge statusBadge-low">Threat chain</span>{' '}
+                          {formatAbsoluteTime(step.timestamp)}
+                        </p>
+                      </div>
+                      <Link href={step.href} prefetch={false}>Open</Link>
+                    </div>
+                  ))}
+                </div>
                 <div className="stack compactStack">
                   {incidentTimelineItems.map((item) => (
                     <div key={item.id} className="overviewListItem">

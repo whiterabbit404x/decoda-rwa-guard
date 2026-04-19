@@ -7155,6 +7155,16 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
             action_type='incident.created_from_alert',
             details={'alert_id': alert_id, 'detection_id': alert.get('detection_id')},
         )
+        write_action_history(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            actor_type='user',
+            actor_id=user['id'],
+            object_type='incident',
+            object_id=incident_id,
+            action_type='incident.action_recorded',
+            details={'source_alert_id': alert_id, 'incident_id': incident_id, 'detection_id': alert.get('detection_id')},
+        )
         connection.commit()
         return {'incident_id': incident_id, 'alert_id': alert_id, 'status': 'open'}
 
