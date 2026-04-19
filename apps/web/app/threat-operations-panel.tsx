@@ -1222,6 +1222,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   <thead>
                     <tr>
                       <th>Started</th>
+                      <th>Completed</th>
                       <th>Status</th>
                       <th>Trigger</th>
                       <th>Systems</th>
@@ -1229,12 +1230,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                       <th>Detections</th>
                       <th>Alerts</th>
                       <th>Telemetry</th>
+                      <th>Notes</th>
                     </tr>
                   </thead>
                   <tbody>
                     {monitoringRuns.slice(0, 8).map((run) => (
                       <tr key={run.id}>
                         <td>{formatAbsoluteTime(run.started_at)}<span className="tableMeta">{formatRelativeTime(run.started_at)}</span></td>
+                        <td>{run.completed_at ? formatRelativeTime(run.completed_at) : 'In progress'}</td>
                         <td><span className={`statusBadge statusBadge-${String(run.status || '').toLowerCase() === 'completed' ? 'healthy' : (String(run.status || '').toLowerCase() === 'error' ? 'attention' : 'offline')}`}>{String(run.status || 'unknown')}</span></td>
                         <td>{String(run.trigger_type || 'unknown')}</td>
                         <td>{Number(run.systems_checked_count ?? 0)}</td>
@@ -1242,6 +1245,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                         <td>{Number(run.detections_created_count ?? 0)}</td>
                         <td>{Number(run.alerts_created_count ?? 0)}</td>
                         <td>{Number(run.telemetry_records_seen_count ?? 0)}</td>
+                        <td>{run.notes || '—'}</td>
                       </tr>
                     ))}
                   </tbody>
