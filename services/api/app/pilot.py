@@ -2877,6 +2877,9 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
         'alert_id': alert_id,
         'incident_id': incident_id,
         'response_action_id': response_action_id,
+        'response_action_history_id': response_action_history_id,
+        'incident_action_history_id': incident_action_history_id,
+        'alert_action_history_id': alert_action_history_id,
         'evidence_source': 'simulator',
         'telemetry_event_observed_at': last_event_at.isoformat() if isinstance(last_event_at, datetime) else str(last_event_at),
     }
