@@ -533,6 +533,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [actionHistory, setActionHistory] = useState<ActionHistoryRow[]>([]);
   const [monitoredSystems, setMonitoredSystems] = useState<MonitoredSystemRow[]>([]);
   const [evidenceDrawer, setEvidenceDrawer] = useState<EvidenceDrawerState | null>(null);
+  const [responseToast, setResponseToast] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -890,6 +891,28 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       },
     ];
   }, [actionHistory, alerts, detections, incidents]);
+
+  async function runSimulatedThreatAction(actionType: string, label: string) {
+    const create = await fetch(`${apiUrl}/enforcement/actions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        action_type: actionType,
+        mode: 'simulated',
+        status: 'pending',
+        incident_id: incidents[0]?.id,
+        alert_id: alerts[0]?.id,
+        result_summary: `SIMULATED ${label} created from threat client`,
+      }),
+    });
+    if (!create.ok) {
+      setResponseToast(`SIMULATED ${label} failed to create.`);
+      return;
+    }
+    const action = await create.json();
+    const execute = await fetch(`${apiUrl}/enforcement/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
+    setResponseToast(execute.ok ? `SIMULATED ${label} executed.` : `SIMULATED ${label} failed during execute.`);
+  }
 
   return (
     <section className="stack monitoringConsoleStack">
@@ -1325,8 +1348,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <article className="dataCard">
             <p className="sectionEyebrow">Response Actions</p>
             <h3>Operational actions</h3>
-            <p className="muted">Use investigation and escalation workflows to restore healthy monitoring and resolve risk.</p>
+            <p className="muted">Use investigation and escalation workflows to restore healthy monitoring and resolve risk. Non-live actions are visibly marked SIMULATED.</p>
             <div className="buttonRow">
+              <button type="button" onClick={() => void runSimulatedThreatAction('notify_team', 'Execute simulated response')}>Execute simulated response (SIMULATED)</button>
+              <button type="button" onClick={() => void runSimulatedThreatAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
+              <button type="button" onClick={() => void runSimulatedThreatAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet (SIMULATED)</button>
+              <button type="button" onClick={() => void runSimulatedThreatAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system (SIMULATED)</button>
+              <button type="button" onClick={() => void runSimulatedThreatAction('suppress_rule', 'Suppress/mute rule')}>Suppress/mute rule (SIMULATED)</button>
               <Link href="/alerts" prefetch={false}>Review alerts</Link>
               <Link href="/incidents" prefetch={false}>Open incident queue</Link>
               <Link href="/history" prefetch={false}>View workspace history</Link>
@@ -1334,6 +1362,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               <Link href="/compliance" prefetch={false}>Review governance actions</Link>
               <Link href="/integrations" prefetch={false}>Inspect integration health</Link>
             </div>
+            {responseToast ? <p className="statusLine">{responseToast}</p> : null}
           </article>
         </div>
       </section>
