@@ -7114,10 +7114,21 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
         incident_id = str(uuid.uuid4())
         title = str(payload.get('title') or f"Escalated alert: {alert.get('title') or alert_id}")
         summary = str(payload.get('summary') or alert.get('summary') or 'Escalated from alert')
-        connection.execute(
+        link_row = connection.execute(
             '''
-            INSERT INTO incidents (id, workspace_id, user_id, analysis_run_id, target_id, event_type, title, severity, status, workflow_status, source_alert_id, owner, summary, linked_alert_ids, timeline, payload, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, 'alert_escalation', %s, %s, 'open', 'open', %s::uuid, %s::uuid, %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW(), NOW())
+            WITH inserted_incident AS (
+                INSERT INTO incidents (id, workspace_id, user_id, analysis_run_id, target_id, event_type, title, severity, status, workflow_status, source_alert_id, owner, summary, linked_alert_ids, timeline, payload, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, 'alert_escalation', %s, %s, 'open', 'open', %s::uuid, %s::uuid, %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW(), NOW())
+                RETURNING id
+            )
+            UPDATE alerts
+            SET incident_id = inserted_incident.id,
+                status = CASE WHEN status = 'resolved' THEN status ELSE 'investigating' END,
+                updated_at = NOW()
+            FROM inserted_incident
+            WHERE alerts.id = %s
+              AND alerts.workspace_id = %s
+            RETURNING inserted_incident.id AS incident_id
             ''',
             (
                 incident_id,
@@ -7133,18 +7144,12 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
                 _json_dumps([alert_id]),
                 _json_dumps([{'event': 'incident.created_from_alert', 'at': datetime.now(timezone.utc).isoformat(), 'alert_id': alert_id}]),
                 _json_dumps({'source': 'alert_escalation', 'alert_id': alert_id, 'detection_id': alert.get('detection_id')}),
+                alert_id,
+                workspace_context['workspace_id'],
             ),
-        )
-        connection.execute(
-            '''
-            UPDATE alerts
-            SET incident_id = %s::uuid,
-                status = CASE WHEN status = 'resolved' THEN status ELSE 'investigating' END,
-                updated_at = NOW()
-            WHERE id = %s AND workspace_id = %s
-            ''',
-            (incident_id, alert_id, workspace_context['workspace_id']),
-        )
+        ).fetchone()
+        if link_row is None:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Unable to link alert and incident.')
         connection.execute('INSERT INTO alert_events (id, workspace_id, alert_id, actor_user_id, event_type, details) VALUES (%s, %s, %s, %s, %s, %s::jsonb)', (str(uuid.uuid4()), workspace_context['workspace_id'], alert_id, user['id'], 'alert.escalated', _json_dumps({'incident_id': incident_id})))
         write_action_history(
             connection,

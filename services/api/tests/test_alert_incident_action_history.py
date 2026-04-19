@@ -29,6 +29,8 @@ def test_escalate_alert_to_incident_updates_bidirectional_links_and_history(monk
             executed.append((normalized, params))
             if 'SELECT id, target_id, analysis_run_id, title, severity, summary, detection_id FROM alerts' in normalized:
                 return _Result({'id': 'alert-1', 'target_id': 'target-1', 'analysis_run_id': 'run-1', 'title': 'Large transfer', 'severity': 'high', 'summary': 'Escalate me', 'detection_id': 'det-1'})
+            if 'WITH inserted_incident AS' in normalized:
+                return _Result({'incident_id': 'inc-1'})
             return _Result()
 
         def commit(self):
@@ -49,7 +51,7 @@ def test_escalate_alert_to_incident_updates_bidirectional_links_and_history(monk
     assert response['alert_id'] == 'alert-1'
     assert response['incident_id']
 
-    assert any('UPDATE alerts SET incident_id = %s::uuid' in statement for statement, _ in executed)
+    assert any('WITH inserted_incident AS' in statement and 'UPDATE alerts SET incident_id = inserted_incident.id' in statement for statement, _ in executed)
     incident_insert_rows = [params for statement, params in executed if 'INSERT INTO incidents' in statement]
     assert len(incident_insert_rows) == 1
     assert incident_insert_rows[0][7] == 'alert-1'
