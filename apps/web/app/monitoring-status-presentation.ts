@@ -47,7 +47,7 @@ function normalizeStatus(
   evidence: MonitoringPresentationEvidence,
   freshness: MonitoringPresentationFreshness,
 ): MonitoringPresentationStatus {
-  const monitoringStatus = truth.monitoring_status ?? (truth.runtime_status === 'live' || truth.runtime_status === 'healthy' ? 'live' : 'limited');
+  const monitoringStatus = truth.monitoring_status ?? (truth.runtime_status === 'live' ? 'live' : 'limited');
   if ((truth.guard_flags ?? []).length > 0) {
     return truth.runtime_status === 'offline' ? 'offline' : 'degraded';
   }

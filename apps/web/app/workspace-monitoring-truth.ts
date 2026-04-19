@@ -4,7 +4,7 @@ export type WorkspaceMonitoringTruth = {
   workspace_slug: string | null;
   workspace_name: string | null;
   workspace_configured: boolean;
-  runtime_status: 'live' | 'healthy' | 'degraded' | 'offline' | 'idle';
+  runtime_status: 'live' | 'degraded' | 'offline' | 'idle';
   monitoring_status: 'live' | 'limited' | 'offline';
   monitoring_mode?: 'live' | 'hybrid' | 'simulator' | 'offline' | 'unavailable';
   configured_systems?: number;
@@ -74,90 +74,33 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   if (!summary) {
     return DEFAULT_TRUTH;
   }
-  const summaryRecord = summary as unknown as Record<string, unknown>;
-  const runtimeStatusRaw = String(summary.runtime_status ?? summaryRecord.runtime_status ?? 'offline').toLowerCase();
-  const runtimeStatus = runtimeStatusRaw === 'healthy'
-    ? 'live'
-    : runtimeStatusRaw === 'failed'
-      ? 'offline'
-      : runtimeStatusRaw === 'provisioning' || runtimeStatusRaw === 'disabled'
-        ? 'idle'
-        : runtimeStatusRaw;
-  const monitoringStatusRaw = String(
-    summary.monitoring_status
-    ?? summaryRecord.monitoring_status
-    ?? (runtimeStatus === 'live' ? 'live' : 'limited'),
-  ).toLowerCase();
-  const monitoringStatus = monitoringStatusRaw === 'active' ? 'live' : (monitoringStatusRaw === 'offline' ? 'offline' : monitoringStatusRaw === 'live' ? 'live' : 'limited');
-  const telemetryFreshness = String(summary.telemetry_freshness ?? summaryRecord.freshness_status ?? 'unavailable').toLowerCase() as WorkspaceMonitoringTruth['telemetry_freshness'];
-  const confidence = String(summary.confidence ?? summaryRecord.confidence_status ?? 'unavailable').toLowerCase() as WorkspaceMonitoringTruth['confidence'];
+  const runtimeStatus = summary.runtime_status;
+  const monitoringStatus = summary.monitoring_status;
+  const telemetryFreshness = summary.telemetry_freshness;
+  const confidence = summary.confidence;
   const resolvedStatusReason = asTrimmedString(summary.status_reason);
-  const telemetryKind = asTrimmedString(summaryRecord.telemetry_kind) as WorkspaceMonitoringTruth['telemetry_kind'];
-  const lastCoverageTelemetryAt = asTimestamp(summaryRecord.last_coverage_telemetry_at);
-  let lastTelemetryAt = asTimestamp(summary.last_telemetry_at);
-  if (!lastTelemetryAt && lastCoverageTelemetryAt && telemetryKind === 'coverage') {
-    lastTelemetryAt = lastCoverageTelemetryAt;
-  }
-  const reportingSystemsCount = asCount((summary as Record<string, unknown>).reporting_systems_count ?? summaryRecord.reporting_systems);
-  const monitoredSystemsCount = asCount((summary as Record<string, unknown>).monitored_systems_count ?? summaryRecord.monitored_systems_count ?? summaryRecord.configured_systems);
-  const protectedAssetsCount = asCount((summary as Record<string, unknown>).protected_assets_count ?? summaryRecord.protected_assets_count ?? summaryRecord.protected_assets);
+  const lastCoverageTelemetryAt = null;
+  const telemetryKind = null;
+  const lastTelemetryAt = asTimestamp(summary.last_telemetry_at);
+  const reportingSystemsCount = asCount(summary.reporting_systems_count);
+  const monitoredSystemsCount = asCount(summary.monitored_systems_count);
+  const protectedAssetsCount = asCount(summary.protected_assets_count);
   const lastHeartbeatAt = asTimestamp(summary.last_heartbeat_at);
   const lastPollAt = asTimestamp(summary.last_poll_at);
-  const evidenceSourceSummary = String(summary.evidence_source_summary ?? summaryRecord.evidence_source ?? 'none').toLowerCase() as WorkspaceMonitoringTruth['evidence_source_summary'];
-  const contradictionFlags = Array.isArray((summary as Record<string, unknown>).contradiction_flags)
-    ? ((summary as Record<string, unknown>).contradiction_flags as unknown[])
+  const evidenceSourceSummary = summary.evidence_source_summary;
+  const contradictionFlags = Array.isArray(summary.contradiction_flags)
+    ? (summary.contradiction_flags as unknown[])
         .map((value) => asTrimmedString(value))
         .filter((value): value is string => Boolean(value))
     : [];
-  const derivedContradictionFlags = [...contradictionFlags];
-  if ((runtimeStatus === 'offline' || runtimeStatus === 'failed') && telemetryFreshness === 'fresh') {
-    derivedContradictionFlags.push('offline_with_current_telemetry');
-  }
-  if (telemetryFreshness === 'unavailable' && confidence === 'high') {
-    derivedContradictionFlags.push('telemetry_unavailable_with_high_confidence');
-  }
-  if (lastHeartbeatAt && !lastTelemetryAt) {
-    derivedContradictionFlags.push('heartbeat_without_telemetry_timestamp');
-  }
-  if (lastPollAt && !lastTelemetryAt) {
-    derivedContradictionFlags.push('poll_without_telemetry_timestamp');
-  }
-  if (reportingSystemsCount <= 0 && runtimeStatus === 'live') {
-    derivedContradictionFlags.push('live_monitoring_without_reporting_systems');
-  }
-  const effectiveTelemetryTimestamp = lastTelemetryAt ?? lastCoverageTelemetryAt;
-  if (!effectiveTelemetryTimestamp && evidenceSourceSummary === 'live' && confidence === 'high') {
-    derivedContradictionFlags.push('live_telemetry_verified_without_timestamp');
-  }
-  if (runtimeStatus === 'idle' && evidenceSourceSummary === 'live' && confidence === 'high' && telemetryFreshness === 'fresh') {
-    derivedContradictionFlags.push('idle_runtime_with_active_monitoring_claim');
-  }
   const workspaceConfigured = Boolean(summary.workspace_configured);
-  const workspaceHasCoverage = monitoredSystemsCount > 0 || reportingSystemsCount > 0 || protectedAssetsCount > 0 || Boolean(lastTelemetryAt || lastHeartbeatAt || lastPollAt);
-  if (!workspaceConfigured && workspaceHasCoverage) {
-    derivedContradictionFlags.push('workspace_unconfigured_with_coverage');
-  }
-  const validProtectedAssetCount = asCount(summaryRecord.valid_protected_asset_count);
-  const linkedMonitoredSystemCount = asCount(summaryRecord.linked_monitored_system_count);
-  const persistedEnabledConfigCount = asCount(summaryRecord.persisted_enabled_config_count);
-  const validTargetSystemLinkCount = asCount(summaryRecord.valid_target_system_link_count);
-  if (workspaceConfigured && [validProtectedAssetCount, linkedMonitoredSystemCount, persistedEnabledConfigCount, validTargetSystemLinkCount].some((count) => count === 0) && [validProtectedAssetCount, linkedMonitoredSystemCount, persistedEnabledConfigCount, validTargetSystemLinkCount].some((count) => count > 0)) {
-    derivedContradictionFlags.push('workspace_configured_missing_required_links');
-  }
-  const normalizedContradictionFlags = [...new Set(derivedContradictionFlags)].sort();
-  const declaredGuardFlags = Array.isArray((summary as Record<string, unknown>).guard_flags)
-    ? ((summary as Record<string, unknown>).guard_flags as unknown[])
+  const normalizedContradictionFlags = [...new Set(contradictionFlags)].sort();
+  const declaredGuardFlags = Array.isArray(summary.guard_flags)
+    ? (summary.guard_flags as unknown[])
         .map((value) => asTrimmedString(value))
         .filter((value): value is string => Boolean(value))
     : [];
-  const derivedGuardFlags = normalizedContradictionFlags.filter((flag) => (
-    flag === 'offline_with_current_telemetry'
-    || flag === 'telemetry_unavailable_with_high_confidence'
-    || flag === 'live_monitoring_without_reporting_systems'
-    || flag === 'live_telemetry_verified_without_timestamp'
-    || flag === 'idle_runtime_with_active_monitoring_claim'
-  ));
-  const normalizedGuardFlags = [...new Set([...declaredGuardFlags, ...derivedGuardFlags])].sort();
+  const normalizedGuardFlags = [...new Set(declaredGuardFlags)].sort();
   const normalizedStatusReason = normalizedGuardFlags.length > 0
     ? `guard:${normalizedGuardFlags[0]}`
     : resolvedStatusReason;
@@ -177,7 +120,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     last_telemetry_at: lastTelemetryAt,
     last_coverage_telemetry_at: lastCoverageTelemetryAt,
     telemetry_kind: telemetryKind,
-    last_detection_at: asTimestamp(summaryRecord.last_detection_at),
+    last_detection_at: null,
     active_alerts_count: Number(summary.active_alerts_count ?? 0),
     active_incidents_count: Number(summary.active_incidents_count ?? 0),
     evidence_source_summary: evidenceSourceSummary,

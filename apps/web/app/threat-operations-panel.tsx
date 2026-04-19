@@ -683,7 +683,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const hasTelemetryTimestamp = Boolean(coverageTelemetryAt);
   const telemetryDisplayLabel = formatRelativeTime(coverageTelemetryAt);
   const pollLabel = monitoringPresentation.pollLabel;
-  const detectionEvalLabel = formatRelativeTime(monitoringPresentation.lastTelemetryAt ?? monitoringPresentation.lastPollAt);
+  const detectionEvalLabel = formatRelativeTime(truth.last_detection_at ?? monitoringPresentation.lastTelemetryAt);
 
   const targetById = useMemo(() => {
     return new Map(targets.map((target) => [target.id, target] as const));
@@ -810,8 +810,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   });
   const incidentTimelineItems = useMemo<TimelineItem[]>(() => {
     const telemetryItems: TimelineItem[] = [{
-      id: `telemetry-${monitoringPresentation.lastTelemetryAt ?? monitoringPresentation.lastPollAt ?? 'none'}`,
-      timestamp: monitoringPresentation.lastTelemetryAt ?? monitoringPresentation.lastPollAt ?? new Date(0).toISOString(),
+      id: `telemetry-${monitoringPresentation.lastTelemetryAt ?? 'none'}`,
+      timestamp: monitoringPresentation.lastTelemetryAt ?? new Date(0).toISOString(),
       category: 'Telemetry Event',
       description: hasTelemetryTimestamp
         ? `Latest telemetry seen ${telemetryDisplayLabel}.`
@@ -849,7 +849,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     return [...telemetryItems, ...detectionItems, ...alertItems, ...incidentItems, ...actionItems]
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .slice(0, 10);
-  }, [alerts, detections, hasTelemetryTimestamp, incidents, monitoringPresentation.lastPollAt, monitoringPresentation.lastTelemetryAt, monitoringRuns, telemetryDisplayLabel]);
+  }, [alerts, detections, hasTelemetryTimestamp, incidents, monitoringPresentation.lastTelemetryAt, monitoringRuns, telemetryDisplayLabel]);
   const threatChainSteps = useMemo<ThreatChainStep[]>(() => {
     const recentDetection = detections
       .slice()

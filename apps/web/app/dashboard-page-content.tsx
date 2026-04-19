@@ -59,9 +59,8 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
     gatewayReachableOverride && resolvedBackendState === 'offline'
       ? 'degraded'
       : resolvedBackendState;
-  const telemetryUnavailable =
-    !monitoringTruth.last_telemetry_at
-    || monitoringTruth.telemetry_freshness === 'unavailable';
+  const telemetryAvailable = Boolean(monitoringTruth.last_telemetry_at) && monitoringTruth.telemetry_freshness !== 'unavailable';
+  const telemetryUnavailable = !telemetryAvailable;
   const showHealthySummary =
     monitoringHealthyCopyAllowed(monitoringTruth)
     && monitoringTruth.monitoring_status === 'live';
