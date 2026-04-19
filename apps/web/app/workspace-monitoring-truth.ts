@@ -51,6 +51,20 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   contradiction_flags: [],
   guard_flags: [],
 };
+const HARD_GUARD_FLAGS = new Set([
+  'offline_with_current_telemetry',
+  'telemetry_unavailable_with_high_confidence',
+  'live_monitoring_without_reporting_systems',
+  'live_telemetry_verified_without_timestamp',
+  'idle_runtime_with_active_monitoring_claim',
+]);
+const HARD_GUARD_PRIORITY = [
+  'offline_with_current_telemetry',
+  'telemetry_unavailable_with_high_confidence',
+  'live_monitoring_without_reporting_systems',
+  'live_telemetry_verified_without_timestamp',
+  'idle_runtime_with_active_monitoring_claim',
+] as const;
 
 function asTrimmedString(value: unknown): string | null {
   const normalized = String(value ?? '').trim();
@@ -70,6 +84,12 @@ function asCount(value: unknown): number {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function appendFlag(flags: string[], value: string, enabled: boolean): void {
+  if (enabled) {
+    flags.push(value);
+  }
+}
+
 export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMonitoringSummary | null | undefined): WorkspaceMonitoringTruth {
   if (!summary) {
     return DEFAULT_TRUTH;
@@ -79,12 +99,12 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   const telemetryFreshness = summary.telemetry_freshness;
   const confidence = summary.confidence;
   const resolvedStatusReason = asTrimmedString(summary.status_reason);
-  const lastCoverageTelemetryAt = null;
+  const lastCoverageTelemetryAt = asTimestamp((summary as Record<string, unknown>).last_coverage_telemetry_at);
   const telemetryKind = null;
   const lastTelemetryAt = asTimestamp(summary.last_telemetry_at);
-  const reportingSystemsCount = asCount(summary.reporting_systems_count);
-  const monitoredSystemsCount = asCount(summary.monitored_systems_count);
-  const protectedAssetsCount = asCount(summary.protected_assets_count);
+  const reportingSystemsCount = asCount(summary.reporting_systems_count ?? (summary as Record<string, unknown>).reporting_systems);
+  const monitoredSystemsCount = asCount(summary.monitored_systems_count ?? (summary as Record<string, unknown>).configured_systems);
+  const protectedAssetsCount = asCount(summary.protected_assets_count ?? (summary as Record<string, unknown>).protected_assets);
   const lastHeartbeatAt = asTimestamp(summary.last_heartbeat_at);
   const lastPollAt = asTimestamp(summary.last_poll_at);
   const evidenceSourceSummary = summary.evidence_source_summary;
@@ -94,27 +114,95 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
         .filter((value): value is string => Boolean(value))
     : [];
   const workspaceConfigured = Boolean(summary.workspace_configured);
-  const normalizedContradictionFlags = [...new Set(contradictionFlags)].sort();
+  const runtimeStatusLabel = String(runtimeStatus ?? '').trim().toLowerCase();
+  const normalizedRuntimeStatus = runtimeStatusLabel === 'healthy' ? 'live' : runtimeStatusLabel;
+  const normalizedTelemetryFreshness = telemetryFreshness === 'fresh' || telemetryFreshness === 'stale' || telemetryFreshness === 'unavailable'
+    ? telemetryFreshness
+    : ((summary as Record<string, unknown>).freshness_status as WorkspaceMonitoringTruth['telemetry_freshness']) ?? 'unavailable';
+  const normalizedConfidence = confidence === 'high' || confidence === 'medium' || confidence === 'low' || confidence === 'unavailable'
+    ? confidence
+    : ((summary as Record<string, unknown>).confidence_status as WorkspaceMonitoringTruth['confidence']) ?? 'unavailable';
+  const normalizedEvidenceSource = evidenceSourceSummary === 'live' || evidenceSourceSummary === 'simulator' || evidenceSourceSummary === 'replay' || evidenceSourceSummary === 'none'
+    ? evidenceSourceSummary
+    : ((summary as Record<string, unknown>).evidence_source as WorkspaceMonitoringTruth['evidence_source_summary']) ?? 'none';
+  const synthesizedFlags = [...contradictionFlags];
+  appendFlag(synthesizedFlags, 'offline_with_current_telemetry', normalizedRuntimeStatus === 'offline' && normalizedTelemetryFreshness === 'fresh');
+  appendFlag(synthesizedFlags, 'telemetry_unavailable_with_high_confidence', normalizedTelemetryFreshness === 'unavailable' && normalizedConfidence === 'high');
+  const monitoringClaimedHealthy = normalizedRuntimeStatus === 'live'
+    || (normalizedTelemetryFreshness === 'fresh' && normalizedConfidence === 'high' && normalizedEvidenceSource === 'live');
+  appendFlag(synthesizedFlags, 'live_monitoring_without_reporting_systems', reportingSystemsCount === 0 && monitoringClaimedHealthy);
+  const coverageTelemetryAt = lastTelemetryAt ?? asTimestamp((summary as Record<string, unknown>).last_coverage_telemetry_at);
+  const liveTelemetryVerified = normalizedEvidenceSource === 'live' && normalizedConfidence === 'high';
+  appendFlag(synthesizedFlags, 'live_telemetry_verified_without_timestamp', liveTelemetryVerified && !coverageTelemetryAt);
+  const degradedReasonExplicit = resolvedStatusReason?.startsWith('runtime_status_degraded:') ?? false;
+  appendFlag(
+    synthesizedFlags,
+    'idle_runtime_with_active_monitoring_claim',
+    normalizedRuntimeStatus === 'idle'
+      && reportingSystemsCount > 0
+      && normalizedTelemetryFreshness === 'fresh'
+      && normalizedConfidence === 'high'
+      && normalizedEvidenceSource === 'live'
+      && !degradedReasonExplicit,
+  );
+  if (lastHeartbeatAt && !coverageTelemetryAt) {
+    appendFlag(synthesizedFlags, 'heartbeat_without_telemetry_timestamp', true);
+  }
+  if (lastPollAt && !coverageTelemetryAt) {
+    appendFlag(synthesizedFlags, 'poll_without_telemetry_timestamp', true);
+  }
+  const workspaceHasCoverage = monitoredSystemsCount > 0
+    || reportingSystemsCount > 0
+    || protectedAssetsCount > 0
+    || Boolean(coverageTelemetryAt)
+    || Boolean(lastPollAt)
+    || Boolean(lastHeartbeatAt);
+  appendFlag(synthesizedFlags, 'workspace_unconfigured_with_coverage', !workspaceConfigured && workspaceHasCoverage);
+  const validProtectedAssetCount = asCount((summary as Record<string, unknown>).valid_protected_asset_count);
+  const linkedMonitoredSystemCount = asCount((summary as Record<string, unknown>).linked_monitored_system_count);
+  const persistedEnabledConfigCount = asCount((summary as Record<string, unknown>).persisted_enabled_config_count);
+  const validTargetSystemLinkCount = asCount((summary as Record<string, unknown>).valid_target_system_link_count);
+  const linkageSignalsPresent = [
+    'valid_protected_asset_count',
+    'linked_monitored_system_count',
+    'persisted_enabled_config_count',
+    'valid_target_system_link_count',
+  ].some((key) => key in (summary as Record<string, unknown>));
+  appendFlag(
+    synthesizedFlags,
+    'workspace_configured_missing_required_links',
+    workspaceConfigured
+      && linkageSignalsPresent
+      && (validProtectedAssetCount <= 0
+        || linkedMonitoredSystemCount <= 0
+        || persistedEnabledConfigCount <= 0
+        || validTargetSystemLinkCount <= 0),
+  );
+  const normalizedContradictionFlags = [...new Set(synthesizedFlags)].sort();
   const declaredGuardFlags = Array.isArray(summary.guard_flags)
     ? (summary.guard_flags as unknown[])
         .map((value) => asTrimmedString(value))
         .filter((value): value is string => Boolean(value))
     : [];
-  const normalizedGuardFlags = [...new Set(declaredGuardFlags)].sort();
-  const normalizedStatusReason = normalizedGuardFlags.length > 0
-    ? `guard:${normalizedGuardFlags[0]}`
+  const normalizedGuardFlags = [...new Set([
+    ...declaredGuardFlags,
+    ...normalizedContradictionFlags.filter((flag) => HARD_GUARD_FLAGS.has(flag)),
+  ])].sort();
+  const prioritizedGuard = HARD_GUARD_PRIORITY.find((flag) => normalizedGuardFlags.includes(flag));
+  const normalizedStatusReason = prioritizedGuard
+    ? `guard:${prioritizedGuard}`
     : resolvedStatusReason;
   return {
     workspace_slug: null,
     workspace_name: null,
     workspace_configured: workspaceConfigured,
-    runtime_status: runtimeStatus as WorkspaceMonitoringTruth['runtime_status'],
+    runtime_status: normalizedRuntimeStatus as WorkspaceMonitoringTruth['runtime_status'],
     monitoring_status: monitoringStatus,
     monitored_systems_count: monitoredSystemsCount,
     reporting_systems_count: reportingSystemsCount,
     protected_assets_count: protectedAssetsCount,
-    telemetry_freshness: telemetryFreshness,
-    confidence,
+    telemetry_freshness: normalizedTelemetryFreshness,
+    confidence: normalizedConfidence,
     last_poll_at: lastPollAt,
     last_heartbeat_at: lastHeartbeatAt,
     last_telemetry_at: lastTelemetryAt,
@@ -123,7 +211,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     last_detection_at: null,
     active_alerts_count: Number(summary.active_alerts_count ?? 0),
     active_incidents_count: Number(summary.active_incidents_count ?? 0),
-    evidence_source_summary: evidenceSourceSummary,
+    evidence_source_summary: normalizedEvidenceSource,
     status_reason: normalizedStatusReason,
     contradiction_flags: normalizedContradictionFlags,
     guard_flags: normalizedGuardFlags,

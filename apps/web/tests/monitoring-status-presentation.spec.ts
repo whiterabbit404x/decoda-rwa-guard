@@ -166,7 +166,7 @@ test.describe('monitoring status presentation adapter', () => {
       contradiction_flags: ['offline_with_current_telemetry'],
       status_reason: 'guard:offline_with_current_telemetry',
     }));
-    expect(value.status).toBe('limited coverage');
+    expect(value.status).toBe('degraded');
     expect(value.summary).toContain('Monitoring copy guarded');
     expect(value.summary).toContain('guard:offline_with_current_telemetry');
   });

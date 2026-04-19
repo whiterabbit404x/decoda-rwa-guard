@@ -95,3 +95,20 @@ def test_coverage_telemetry_can_backfill_last_telemetry_at() -> None:
 def test_guard_reason_is_exposed_as_status_reason() -> None:
     summary = _build_summary(runtime_status='offline')
     assert summary['status_reason'] == 'guard:offline_with_current_telemetry'
+
+
+def test_idle_runtime_guard_skips_when_explicit_degraded_reason_is_present() -> None:
+    summary = _build_summary(
+        runtime_status='idle',
+        status_reason='runtime_status_degraded:database_error',
+    )
+    assert 'idle_runtime_with_active_monitoring_claim' not in summary['contradiction_flags']
+    assert summary['status_reason'] == 'runtime_status_degraded:database_error'
+
+
+def test_status_reason_uses_deterministic_hard_guard_priority() -> None:
+    summary = _build_summary(
+        runtime_status='offline',
+    )
+    assert 'offline_with_current_telemetry' in summary['guard_flags']
+    assert summary['status_reason'] == 'guard:offline_with_current_telemetry'

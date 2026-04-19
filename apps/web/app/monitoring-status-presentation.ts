@@ -1,4 +1,11 @@
 import type { WorkspaceMonitoringTruth } from './workspace-monitoring-truth';
+const HARD_GUARD_FLAGS = new Set([
+  'offline_with_current_telemetry',
+  'telemetry_unavailable_with_high_confidence',
+  'live_monitoring_without_reporting_systems',
+  'live_telemetry_verified_without_timestamp',
+  'idle_runtime_with_active_monitoring_claim',
+]);
 
 export type MonitoringPresentationStatus = 'live' | 'degraded' | 'offline' | 'stale' | 'limited coverage';
 export type MonitoringPresentationEvidence = 'verified' | 'recent' | 'delayed' | 'unavailable';
@@ -47,9 +54,13 @@ function normalizeStatus(
   evidence: MonitoringPresentationEvidence,
   freshness: MonitoringPresentationFreshness,
 ): MonitoringPresentationStatus {
-  const monitoringStatus = truth.monitoring_status ?? (truth.runtime_status === 'live' ? 'live' : 'limited');
-  if ((truth.guard_flags ?? []).length > 0) {
-    return truth.runtime_status === 'offline' ? 'offline' : 'degraded';
+  const runtimeStatus = String(truth.runtime_status ?? '').trim().toLowerCase() === 'healthy'
+    ? 'live'
+    : truth.runtime_status;
+  const monitoringStatus = truth.monitoring_status ?? (runtimeStatus === 'live' ? 'live' : 'limited');
+  const contradictionGuardsTriggered = (truth.contradiction_flags ?? []).some((flag) => HARD_GUARD_FLAGS.has(flag));
+  if ((truth.guard_flags ?? []).length > 0 || contradictionGuardsTriggered) {
+    return runtimeStatus === 'offline' ? 'offline' : 'degraded';
   }
   if ((truth.contradiction_flags ?? []).length > 0) {
     return 'limited coverage';
@@ -58,18 +69,21 @@ function normalizeStatus(
     return 'offline';
   }
   if (monitoringStatus === 'limited') {
+    if (evidence === 'unavailable') {
+      return 'degraded';
+    }
     if (freshness === 'delayed') {
       return 'stale';
     }
-    return truth.runtime_status === 'degraded' ? 'degraded' : 'limited coverage';
+    return runtimeStatus === 'degraded' ? 'degraded' : 'limited coverage';
   }
-  if (truth.runtime_status === 'offline') {
+  if (runtimeStatus === 'offline') {
     return 'offline';
   }
-  if (truth.runtime_status === 'degraded') {
+  if (runtimeStatus === 'degraded') {
     return 'degraded';
   }
-  if (truth.runtime_status === 'idle') {
+  if (runtimeStatus === 'idle') {
     return 'limited coverage';
   }
   if (monitoringStatus === 'live') {
