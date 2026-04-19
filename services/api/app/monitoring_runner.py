@@ -182,9 +182,18 @@ WORKER_STATE: dict[str, Any] = {
     },
 }
 
+MONITORING_RUN_TRIGGER_TYPES: set[str] = {'scheduler', 'system', 'manual', 'bootstrap'}
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _normalize_monitoring_run_trigger_type(value: Any) -> str:
+    normalized = str(value or '').strip().lower()
+    if normalized in MONITORING_RUN_TRIGGER_TYPES:
+        return normalized
+    return 'scheduler'
 
 
 def _runtime_status_debug_enabled() -> bool:
@@ -2487,6 +2496,7 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
 
 
 def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int = 50, trigger_type: str = 'scheduler') -> dict[str, Any]:
+    trigger_type = _normalize_monitoring_run_trigger_type(trigger_type)
     ingestion_runtime = monitoring_ingestion_runtime()
     if not live_mode_enabled():
         return {'checked': 0, 'alerts_generated': 0, 'runs': [], 'live_mode': False, 'ingestion_mode': ingestion_runtime.get('source', 'demo')}
