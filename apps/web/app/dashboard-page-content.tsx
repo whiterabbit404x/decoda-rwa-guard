@@ -47,9 +47,9 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
     ?? resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary);
   const monitoringPresentation = liveFeed?.monitoring.presentation ?? normalizeMonitoringPresentation(monitoringTruth);
   const resolvedBackendState =
-    monitoringPresentation.status === 'live'
+    monitoringTruth.monitoring_status === 'live'
       ? 'online'
-      : monitoringPresentation.status === 'offline'
+      : monitoringTruth.monitoring_status === 'offline'
         ? 'offline'
         : 'degraded';
   const backendState =
@@ -61,7 +61,7 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
     || monitoringTruth.telemetry_freshness === 'unavailable';
   const showHealthySummary =
     monitoringHealthyCopyAllowed(monitoringTruth)
-    && monitoringPresentation.status === 'live';
+    && monitoringTruth.monitoring_status === 'live';
   const safeMonitoringSummary = telemetryUnavailable
     ? 'Telemetry currently unavailable.'
     : showHealthySummary
