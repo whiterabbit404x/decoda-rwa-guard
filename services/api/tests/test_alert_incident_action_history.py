@@ -50,10 +50,14 @@ def test_escalate_alert_to_incident_updates_bidirectional_links_and_history(monk
     assert response['incident_id']
 
     assert any('UPDATE alerts SET incident_id = %s::uuid' in statement for statement, _ in executed)
+    incident_insert_rows = [params for statement, params in executed if 'INSERT INTO incidents' in statement]
+    assert len(incident_insert_rows) == 1
+    assert incident_insert_rows[0][7] == 'alert-1'
     history_rows = [params for statement, params in executed if 'INSERT INTO action_history' in statement]
-    assert len(history_rows) == 2
+    assert len(history_rows) == 3
     assert any(params[6] == 'alert.escalated_to_incident' for params in history_rows)
     assert any(params[6] == 'incident.created_from_alert' for params in history_rows)
+    assert any(params[6] == 'incident.action_recorded' for params in history_rows)
 
 
 def test_patch_handlers_write_action_history(monkeypatch):
