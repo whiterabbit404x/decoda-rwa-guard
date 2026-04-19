@@ -943,7 +943,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }
 
   async function runSimulatedThreatAction(actionType: string, label: string) {
-    const create = await fetch(`${apiUrl}/enforcement/actions`, {
+    const create = await fetch(`${apiUrl}/response/actions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
@@ -960,7 +960,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       return;
     }
     const action = await create.json();
-    const execute = await fetch(`${apiUrl}/enforcement/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
+    const execute = await fetch(`${apiUrl}/response/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
     setResponseToast(execute.ok ? `SIMULATED ${label} executed.` : `SIMULATED ${label} failed during execute.`);
   }
 

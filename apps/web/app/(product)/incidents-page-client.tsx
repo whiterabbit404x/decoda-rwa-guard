@@ -41,6 +41,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   const responseModeLabel = selected?.response_action_mode && selected.response_action_mode !== 'live'
     ? 'SIMULATED'
     : null;
+  const actionExecutionLabel = actionMode === 'live' ? 'LIVE' : 'SIMULATED';
 
   async function updateWorkflow(nextStatus: typeof WORKFLOW_STATUSES[number]) {
     if (!selected) return;
@@ -75,7 +76,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   async function runSimulatedAction(actionType: string, label: string) {
     if (!selected) return;
     const isNonLive = actionMode !== 'live';
-    const create = await fetch(`${apiUrl}/enforcement/actions`, {
+    const create = await fetch(`${apiUrl}/response/actions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
@@ -93,7 +94,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
       return;
     }
     const action = await create.json();
-    const execute = await fetch(`${apiUrl}/enforcement/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
+    const execute = await fetch(`${apiUrl}/response/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
     setMessage(execute.ok ? `${isNonLive ? 'SIMULATED ' : ''}${label} executed.` : `${isNonLive ? 'SIMULATED ' : ''}${label} failed during execute.`);
   }
 
@@ -130,12 +131,12 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
                 <button type="button" onClick={() => void updateWorkflow('contained')}>Mark contained</button>
                 <button type="button" onClick={() => void updateWorkflow('resolved')}>Resolve</button>
                 <button type="button" onClick={() => void updateWorkflow('reopened')}>Reopen</button>
-                <button type="button" onClick={() => void runSimulatedAction('notify_team', 'Execute simulated response')}>Execute simulated response (SIMULATED)</button>
-                <button type="button" onClick={() => void runSimulatedAction('block_transaction', 'Block transaction')}>Block transaction (SIMULATED)</button>
-                <button type="button" onClick={() => void runSimulatedAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
-                <button type="button" onClick={() => void runSimulatedAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet (SIMULATED)</button>
-                <button type="button" onClick={() => void runSimulatedAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system (SIMULATED)</button>
-                <button type="button" onClick={() => void runSimulatedAction('suppress_rule', 'Suppress rule')}>Suppress/mute rule (SIMULATED)</button>
+                <button type="button" onClick={() => void runSimulatedAction('notify_team', 'Execute simulated response')}>Execute simulated response ({actionExecutionLabel})</button>
+                <button type="button" onClick={() => void runSimulatedAction('block_transaction', 'Block transaction')}>Block transaction ({actionExecutionLabel})</button>
+                <button type="button" onClick={() => void runSimulatedAction('revoke_approval', 'Revoke approval')}>Revoke approval ({actionExecutionLabel})</button>
+                <button type="button" onClick={() => void runSimulatedAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet ({actionExecutionLabel})</button>
+                <button type="button" onClick={() => void runSimulatedAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system ({actionExecutionLabel})</button>
+                <button type="button" onClick={() => void runSimulatedAction('suppress_rule', 'Suppress rule')}>Suppress/mute rule ({actionExecutionLabel})</button>
               </div>
               <p className="tableMeta">Response actions: Freeze wallet · Block transaction · Revoke approval · Disable monitored system · Suppress rule · Notify team</p>
               <p className="sectionEyebrow">Merged event timeline</p>

@@ -2384,6 +2384,11 @@ def enforcement_actions_list(request: Request, incident_id: str | None = None, a
     return with_auth_schema_json(lambda: list_enforcement_actions(request, incident_id=incident_id, alert_id=alert_id, status_value=status_value, limit=limit))
 
 
+@app.get('/response/actions', summary='List response actions')
+def response_actions_list(request: Request, incident_id: str | None = None, alert_id: str | None = None, status_value: str | None = None, limit: int = 200) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_enforcement_actions(request, incident_id=incident_id, alert_id=alert_id, status_value=status_value, limit=limit))
+
+
 @app.post('/enforcement/actions', summary='Plan a workspace enforcement action')
 def enforcement_actions_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_enforcement_action(payload, request))
