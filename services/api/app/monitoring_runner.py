@@ -2581,6 +2581,20 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             ''',
         ).fetchall()
         cycle_workspace_ids: set[str] = set()
+        monitored_workspace_rows = connection.execute(
+            '''
+            SELECT DISTINCT workspace_id
+            FROM targets
+            WHERE deleted_at IS NULL
+              AND monitoring_enabled = TRUE
+              AND enabled = TRUE
+              AND is_active = TRUE
+            '''
+        ).fetchall()
+        for row in monitored_workspace_rows:
+            workspace_id = str((dict(row)).get('workspace_id') or '').strip()
+            if workspace_id:
+                cycle_workspace_ids.add(workspace_id)
         for row in candidate_systems:
             workspace_id = str((dict(row)).get('workspace_id') or '').strip()
             if workspace_id:

@@ -5885,6 +5885,38 @@ def list_monitoring_runs(request: Request, *, limit: int = 20) -> dict[str, Any]
         return {'runs': [_json_safe_value(dict(row)) for row in rows], 'workspace': workspace_context['workspace']}
 
 
+def get_monitoring_run(run_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        row = connection.execute(
+            '''
+            SELECT id,
+                   workspace_id,
+                   started_at,
+                   completed_at,
+                   status,
+                   trigger_type,
+                   systems_checked_count,
+                   assets_checked_count,
+                   detections_created_count,
+                   alerts_created_count,
+                   telemetry_records_seen_count,
+                   notes
+            FROM monitoring_runs
+            WHERE id = %s::uuid
+              AND workspace_id = %s::uuid
+            LIMIT 1
+            ''',
+            (run_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Monitoring run not found.')
+        return {'run': _json_safe_value(dict(row)), 'workspace': workspace_context['workspace']}
+
+
 def create_monitored_system(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     asset_id = str(payload.get('asset_id') or '').strip()

@@ -159,6 +159,7 @@ from services.api.app.pilot import (
     get_workspace_monitoring_debug,
     list_monitored_systems,
     list_monitoring_runs,
+    get_monitoring_run,
     create_monitored_system,
     patch_monitored_system,
     delete_monitored_system,
@@ -1993,6 +1994,11 @@ def monitoring_targets_list(request: Request) -> dict[str, Any]:
 @app.get('/monitoring/runs', summary='List recent monitoring runs for workspace')
 def monitoring_runs_list(request: Request, limit: int = 20) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_monitoring_runs(request, limit=limit))
+
+
+@app.get('/monitoring/runs/{run_id}', summary='Get a monitoring run for workspace')
+def monitoring_run_get(run_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_monitoring_run(run_id, request))
 
 
 @app.patch('/monitoring/targets/{target_id}', summary='Update target monitoring settings')
