@@ -54,7 +54,9 @@ function normalizeStatus(
   evidence: MonitoringPresentationEvidence,
   freshness: MonitoringPresentationFreshness,
 ): MonitoringPresentationStatus {
-  const runtimeStatus = truth.runtime_status === 'healthy' ? 'live' : truth.runtime_status;
+  const runtimeStatus = String(truth.runtime_status ?? '').trim().toLowerCase() === 'healthy'
+    ? 'live'
+    : truth.runtime_status;
   const monitoringStatus = truth.monitoring_status ?? (runtimeStatus === 'live' ? 'live' : 'limited');
   const contradictionGuardsTriggered = (truth.contradiction_flags ?? []).some((flag) => HARD_GUARD_FLAGS.has(flag));
   if ((truth.guard_flags ?? []).length > 0 || contradictionGuardsTriggered) {
