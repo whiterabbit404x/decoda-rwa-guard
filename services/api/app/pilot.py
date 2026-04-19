@@ -6876,6 +6876,8 @@ def list_detections(
     severity: str | None = None,
     status_value: str | None = None,
     evidence_source: str | None = None,
+    monitored_system_id: str | None = None,
+    protected_asset_id: str | None = None,
 ) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -6908,6 +6910,8 @@ def list_detections(
               AND (%s::text IS NULL OR severity = %s::text)
               AND (%s::text IS NULL OR status = %s::text)
               AND (%s::text IS NULL OR evidence_source = %s::text)
+              AND (%s::uuid IS NULL OR monitored_system_id = %s::uuid)
+              AND (%s::uuid IS NULL OR protected_asset_id = %s::uuid)
             ORDER BY detected_at DESC
             LIMIT %s
             ''',
@@ -6919,6 +6923,10 @@ def list_detections(
                 status_value,
                 evidence_source,
                 evidence_source,
+                monitored_system_id,
+                monitored_system_id,
+                protected_asset_id,
+                protected_asset_id,
                 max_limit,
             ),
         ).fetchall()

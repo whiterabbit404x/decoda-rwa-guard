@@ -289,7 +289,7 @@ export function formatOperationalStateLabel(value: unknown): string {
   return normalized ? normalized.replaceAll('_', ' ') : 'unknown';
 }
 
-function severityClass(severity?: string) {
+function severityClass(severity?: string | null) {
   const normalized = String(severity ?? '').toLowerCase();
   if (normalized.includes('critical')) return 'critical';
   if (normalized.includes('high')) return 'high';
@@ -297,7 +297,7 @@ function severityClass(severity?: string) {
   return 'low';
 }
 
-function severityLabel(severity?: string) {
+function severityLabel(severity?: string | null) {
   const normalized = String(severity ?? '').toLowerCase();
   if (normalized.includes('critical')) return 'Critical';
   if (normalized.includes('high')) return 'High';
@@ -305,7 +305,7 @@ function severityLabel(severity?: string) {
   return 'Low';
 }
 
-function isTestOrLabSignal(text: string | undefined): boolean {
+function isTestOrLabSignal(text: string | null | undefined): boolean {
   const value = String(text ?? '').toLowerCase();
   return ['test', 'lab', 'synthetic', 'simulation'].some((term) => value.includes(term));
 }
@@ -668,39 +668,53 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const pollLabel = monitoringPresentation.pollLabel;
   const detectionEvalLabel = formatRelativeTime(monitoringPresentation.lastTelemetryAt ?? monitoringPresentation.lastPollAt);
 
+  const targetById = useMemo(() => {
+    return new Map(targets.map((target) => [target.id, target] as const));
+  }, [targets]);
+
+  const monitoredSystemById = useMemo(() => {
+    return new Map(monitoredSystems.map((system) => [system.id, system] as const));
+  }, [monitoredSystems]);
+
   const baseDetections = useMemo<DetectionItem[]>(() => {
-    const matchedAsset = targets[0];
-    const fallbackAssetName = matchedAsset?.name || 'Unbound workspace asset';
-    const fallbackAssetType = matchedAsset?.target_type || matchedAsset?.asset_type || 'system';
     return detections.slice(0, 50).map((item) => {
       const rawEvidence = item.raw_evidence_json || {};
       const rawEvent = rawEvidence.event || {};
       const responsePayload = rawEvidence.response || {};
-      const linkedAlert = item.linked_alert_id ? alerts.find((alert) => alert.id === item.linked_alert_id) : null;
       const isTest = isTestOrLabSignal(item.title ?? undefined) || isTestOrLabSignal(item.evidence_summary ?? undefined);
+      const monitoredSystem = item.monitored_system_id ? monitoredSystemById.get(item.monitored_system_id) : null;
+      const matchedTarget = monitoredSystem?.target_id ? targetById.get(monitoredSystem.target_id) : null;
+      const fallbackAssetName = monitoredSystem?.asset_name || monitoredSystem?.target_name || matchedTarget?.name || 'Unbound workspace asset';
+      const fallbackAssetType = matchedTarget?.target_type || matchedTarget?.asset_type || 'system';
+      const monitoringStatus = monitoredSystem?.is_enabled
+        ? 'Monitored'
+        : monitoredSystem
+        ? 'Disabled'
+        : (matchedTarget?.monitoring_enabled ? 'Monitored' : 'Status unavailable');
+      const evidenceSourceLabel = item.evidence_source === 'simulator' ? 'simulator' : 'live';
       return {
         id: `detection-${item.id}`,
         timestamp: item.detected_at || new Date(0).toISOString(),
-        severity: severityLabel(item.severity || linkedAlert?.severity),
-        title: item.title || linkedAlert?.title || 'Detection matched',
+        severity: severityLabel(item.severity),
+        title: item.title || 'Detection matched',
         assetName: fallbackAssetName,
         assetType: fallbackAssetType,
-        monitoringStatus: matchedAsset?.monitoring_enabled ? 'Monitored' : 'Status unavailable',
-        evidenceSummary: item.evidence_summary || linkedAlert?.explanation || 'Rule matched from monitored evidence.',
+        monitoringStatus,
+        evidenceSummary: item.evidence_summary || 'Rule matched from monitored evidence.',
         txHash: rawEvent.tx_hash ?? responsePayload.observed_evidence?.tx_hash ?? null,
         blockNumber: rawEvent.block_number ?? responsePayload.observed_evidence?.block_number ?? null,
         counterparty: rawEvent.counterparty ?? rawEvent.from ?? null,
         amount: rawEvent.amount ? String(rawEvent.amount) : null,
         tokenOrContract: rawEvent.contract_address ?? rawEvent.token_address ?? null,
         ruleId: item.source_rule ?? responsePayload.findings?.rule_id ?? item.detection_type ?? null,
-        sourceProvider: item.evidence_source ?? linkedAlert?.source_service ?? linkedAlert?.source ?? null,
-        targetName: matchedAsset?.name ?? null,
+        sourceProvider: evidenceSourceLabel,
+        targetName: monitoredSystem?.target_name ?? matchedTarget?.name ?? null,
         state: isTest ? ('Test' as const) : ('Live' as const),
         href: item.linked_alert_id ? '/alerts' : '/threat',
         source: 'detection' as const,
       };
     }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  }, [alerts, detections, targets]);
+  }, [detections, monitoredSystemById, targetById]);
 
   const categorizedDetections = useMemo(() => {
     const now = Date.now();

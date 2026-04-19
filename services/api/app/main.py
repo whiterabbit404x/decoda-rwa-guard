@@ -2276,7 +2276,15 @@ def alerts_list(request: Request, severity: str | None = None, module: str | Non
 
 
 @app.get('/detections', summary='List detections')
-def detections_list(request: Request, limit: int = 50, severity: str | None = None, status_value: str | None = None, evidence_source: str | None = None) -> dict[str, Any]:
+def detections_list(
+    request: Request,
+    limit: int = 50,
+    severity: str | None = None,
+    status_value: str | None = None,
+    evidence_source: str | None = None,
+    monitored_system_id: str | None = None,
+    protected_asset_id: str | None = None,
+) -> dict[str, Any]:
     return with_auth_schema_json(
         lambda: list_detections(
             request,
@@ -2284,6 +2292,8 @@ def detections_list(request: Request, limit: int = 50, severity: str | None = No
             severity=severity,
             status_value=status_value,
             evidence_source=evidence_source,
+            monitored_system_id=monitored_system_id,
+            protected_asset_id=protected_asset_id,
         )
     )
 
