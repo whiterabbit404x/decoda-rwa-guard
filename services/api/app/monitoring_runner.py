@@ -82,8 +82,10 @@ def _normalize_detection_evidence_source(*, ingestion_source: Any, analysis_sour
     normalized_ingestion_source = str(ingestion_source or '').strip().lower()
     normalized_analysis_source = str(analysis_source or '').strip().lower()
     normalized_ingestion_mode = str(ingestion_mode or '').strip().lower()
+    ingestion_source = normalized_ingestion_source
     if (
-        normalized_ingestion_source in {'demo', 'simulator', 'synthetic'}
+        ingestion_source in {'demo', 'simulator'}
+        or ingestion_source == 'synthetic'
         or normalized_analysis_source in {'demo', 'simulator', 'fallback', 'replay'}
         or normalized_ingestion_mode in {'demo', 'simulator'}
     ):
