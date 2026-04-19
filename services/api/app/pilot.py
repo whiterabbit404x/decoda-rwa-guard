@@ -7995,7 +7995,7 @@ def list_enforcement_actions(
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, action_type, mode, status, result_summary, operator_notes, created_at, executed_at, incident_id, alert_id
+            SELECT id, action_type, mode, status, result_summary, operator_notes, created_at, executed_at, rolled_back_at, incident_id, alert_id
             FROM response_actions
             WHERE workspace_id = %s
               AND (%s::uuid IS NULL OR incident_id = %s::uuid)
