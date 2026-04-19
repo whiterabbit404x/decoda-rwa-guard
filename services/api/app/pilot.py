@@ -7485,7 +7485,7 @@ LEGACY_ACTION_TYPE_ALIASES = {
     'notify_only': 'notify_team',
     'compensating_reapprove_erc20_approval': 'revoke_approval',
 }
-ENFORCEMENT_STATUSES = {'planned', 'approved', 'executed', 'failed', 'rolled_back'}
+ENFORCEMENT_STATUSES = {'pending', 'executed', 'failed', 'canceled'}
 
 
 def _normalize_eth_address(value: str | None, *, field: str) -> str | None:
@@ -7522,17 +7522,33 @@ def _normalize_response_action_mode(payload: dict[str, Any]) -> str:
         dry_run = payload.get('dry_run')
         if dry_run is None:
             dry_run = _enforcement_default_dry_run()
-        mode = 'simulated' if bool(dry_run) else 'live_enforcement'
-    if mode not in {'simulated', 'live_enforcement'}:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='mode must be simulated/live_enforcement.')
+        mode = 'simulated' if bool(dry_run) else 'live'
+    if mode == 'live_enforcement':
+        mode = 'live'
+    if mode not in {'simulated', 'recommended', 'live'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='mode must be simulated/recommended/live.')
     return mode
 
 
 def _response_action_payload(action: dict[str, Any]) -> dict[str, Any]:
     mode = str(action.get('mode') or 'simulated')
     result = dict(action)
-    result['dry_run'] = mode != 'live_enforcement'
+    result['dry_run'] = mode != 'live'
+    result['is_simulated'] = mode != 'live'
     return result
+
+
+def _normalize_response_action_status(value: Any) -> str:
+    status_value = str(value or '').strip().lower()
+    if status_value in {'', 'pending'}:
+        return 'pending'
+    if status_value in {'planned', 'approved'}:
+        return 'pending'
+    if status_value == 'rolled_back':
+        return 'canceled'
+    if status_value in {'executed', 'failed', 'canceled'}:
+        return status_value
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='status must be pending/executed/failed/canceled.')
 
 
 def _safe_signer_key() -> str:
@@ -7594,6 +7610,7 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
         spender = _normalize_eth_address(params.get('spender'), field='spender')
         target_wallet = _normalize_eth_address(params.get('target_wallet'), field='target_wallet')
         mode = _normalize_response_action_mode(payload)
+        status_value = _normalize_response_action_status(payload.get('status'))
         execution_metadata = {'params': params, 'created_via': 'api'}
         calldata: str | None = None
         if action_type == 'revoke_approval':
@@ -7611,7 +7628,7 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 chain_network, target_wallet, token_contract, spender, calldata,
                 execution_metadata, created_by_user_id
             )
-            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, 'planned', %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
             ''',
             (
                 action_id,
@@ -7620,6 +7637,7 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 alert_id,
                 action_type,
                 mode,
+                status_value,
                 str(payload.get('result_summary') or '').strip() or None,
                 str(payload.get('operator_notes') or '').strip() or None,
                 chain_network,
@@ -7665,8 +7683,8 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
             )
         log_audit(connection, action='enforcement.action.create', entity_type='response_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'action_type': action_type, 'mode': mode})
         connection.commit()
-        logger.info('response_action_planned action_id=%s type=%s mode=%s', action_id, action_type, mode)
-        return _response_action_payload({'id': action_id, 'status': 'planned', 'action_type': action_type, 'mode': mode, 'calldata': calldata})
+        logger.info('response_action_created action_id=%s type=%s mode=%s status=%s', action_id, action_type, mode, status_value)
+        return _response_action_payload({'id': action_id, 'status': status_value, 'action_type': action_type, 'mode': mode, 'calldata': calldata})
 
 
 def approve_enforcement_action(action_id: str, request: Request) -> dict[str, Any]:
@@ -7677,9 +7695,9 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
         row = connection.execute('SELECT id, status FROM response_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
-        if str(row.get('status')) not in {'planned', 'failed'}:
+        if str(row.get('status')) not in {'pending', 'failed', 'planned'}:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action cannot be approved from current status.')
-        connection.execute('UPDATE response_actions SET status = %s, approved_by_user_id = %s, execution_metadata = execution_metadata || %s::jsonb WHERE id = %s', ('approved', user['id'], _json_dumps({'approved_at': utc_now_iso()}), action_id))
+        connection.execute('UPDATE response_actions SET status = %s, approved_by_user_id = %s, execution_metadata = execution_metadata || %s::jsonb WHERE id = %s', ('pending', user['id'], _json_dumps({'approved_at': utc_now_iso()}), action_id))
         write_action_history(
             connection,
             workspace_id=workspace_context['workspace_id'],
@@ -7692,7 +7710,7 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
         )
         log_audit(connection, action='enforcement.action.approve', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
         connection.commit()
-        return {'id': action_id, 'status': 'approved'}
+        return {'id': action_id, 'status': 'pending'}
 
 
 def execute_enforcement_action(action_id: str, request: Request) -> dict[str, Any]:
@@ -7703,13 +7721,13 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         row = connection.execute('SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
-        if str(row.get('status')) != 'approved':
-            logger.warning('execute_blocked_missing_approval action_id=%s', action_id)
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action must be approved before execute.')
+        if str(row.get('status')) not in {'pending', 'approved', 'planned'}:
+            logger.warning('execute_blocked_invalid_status action_id=%s status=%s', action_id, row.get('status'))
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action must be pending before execute.')
         action = _json_safe_value(dict(row))
         safe_tx_hash = None
         metadata = action.get('execution_metadata') if isinstance(action.get('execution_metadata'), dict) else {}
-        if str(action.get('mode') or 'simulated') != 'live_enforcement':
+        if str(action.get('mode') or 'simulated') != 'live':
             metadata['execution_mode'] = 'simulated'
         elif action.get('action_type') == 'revoke_approval':
             safe_tx_hash = _propose_safe_transaction(
@@ -7769,7 +7787,7 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
                 id, workspace_id, incident_id, alert_id, action_type, mode, status, chain_network, target_wallet,
                 token_contract, spender, calldata, execution_metadata, created_by_user_id
             )
-            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, 'planned', %s, %s, %s, %s, %s, %s::jsonb, %s)
+            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, 'pending', %s, %s, %s, %s, %s, %s::jsonb, %s)
             ''',
             (
                 rollback_id,
@@ -7787,7 +7805,7 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
                 user['id'],
             ),
         )
-        connection.execute('UPDATE response_actions SET status = %s, rolled_back_at = NOW() WHERE id = %s', ('rolled_back', action_id))
+        connection.execute('UPDATE response_actions SET status = %s, rolled_back_at = NOW() WHERE id = %s', ('canceled', action_id))
         write_action_history(
             connection,
             workspace_id=workspace_context['workspace_id'],
@@ -7800,7 +7818,71 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
         )
         log_audit(connection, action='enforcement.action.rollback', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'compensating_action_id': rollback_id})
         connection.commit()
-        return {'id': action_id, 'status': 'rolled_back', 'compensating_action_id': rollback_id, 'compensating_action_type': compensating_type}
+        return {'id': action_id, 'status': 'canceled', 'compensating_action_id': rollback_id, 'compensating_action_type': compensating_type}
+
+
+def list_enforcement_actions(
+    request: Request,
+    *,
+    incident_id: str | None = None,
+    alert_id: str | None = None,
+    status_value: str | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    require_live_mode()
+    max_limit = max(1, min(limit, 500))
+    normalized_status = _normalize_response_action_status(status_value) if status_value else None
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        rows = connection.execute(
+            '''
+            SELECT id, action_type, mode, status, result_summary, operator_notes, created_at, executed_at, incident_id, alert_id
+            FROM response_actions
+            WHERE workspace_id = %s
+              AND (%s::uuid IS NULL OR incident_id = %s::uuid)
+              AND (%s::uuid IS NULL OR alert_id = %s::uuid)
+              AND (%s::text IS NULL OR status = %s::text)
+            ORDER BY created_at DESC
+            LIMIT %s
+            ''',
+            (workspace_context['workspace_id'], incident_id, incident_id, alert_id, alert_id, normalized_status, normalized_status, max_limit),
+        ).fetchall()
+        return {'actions': [_response_action_payload(_json_safe_value(dict(row))) for row in rows]}
+
+
+def create_action_history_entry(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_live_mode()
+    object_type = str(payload.get('object_type') or '').strip().lower()
+    object_id = str(payload.get('object_id') or '').strip()
+    action_type = str(payload.get('action_type') or '').strip()
+    if not object_type or not object_id or not action_type:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='object_type, object_id, and action_type are required.')
+    details = payload.get('details_json') if isinstance(payload.get('details_json'), dict) else {}
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        history_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO action_history (id, workspace_id, actor_type, actor_id, object_type, object_id, action_type, timestamp, details_json)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s::jsonb)
+            ''',
+            (
+                history_id,
+                workspace_context['workspace_id'],
+                'user',
+                user['id'],
+                object_type,
+                object_id,
+                action_type,
+                _json_dumps(details),
+            ),
+        )
+        log_audit(connection, action='action_history.created', entity_type='action_history', entity_id=history_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'object_type': object_type, 'object_id': object_id, 'action_type': action_type})
+        connection.commit()
+        return {'id': history_id, 'object_type': object_type, 'object_id': object_id, 'action_type': action_type, 'details_json': details}
 
 
 def create_finding_decision(finding_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -8184,7 +8266,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                     (workspace_id, alert_ids),
                 ).fetchall()
             enforcement_actions = connection.execute(
-                "SELECT id, action_type, status, mode <> 'live_enforcement' AS dry_run, mode, execution_metadata, created_at, executed_at, rolled_back_at FROM response_actions WHERE workspace_id = %s AND incident_id = %s ORDER BY created_at DESC",
+                "SELECT id, action_type, status, mode <> 'live' AS dry_run, mode, execution_metadata, created_at, executed_at, rolled_back_at FROM response_actions WHERE workspace_id = %s AND incident_id = %s ORDER BY created_at DESC",
                 (workspace_id, incident_id),
             ).fetchall()
             rows = [{

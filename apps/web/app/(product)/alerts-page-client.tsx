@@ -37,7 +37,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
   useEffect(() => { void load(); }, [status, severity, targetFilter, timeRange, assetFilter]);
 
   const selectedAlert = useMemo(() => alerts.find((item) => item.id === selectedAlertId) ?? null, [alerts, selectedAlertId]);
-  const responseModeLabel = selectedAlert?.response_action_mode && selectedAlert.response_action_mode !== 'live_enforcement'
+  const responseModeLabel = selectedAlert?.response_action_mode && selectedAlert.response_action_mode !== 'live'
     ? 'SIMULATED'
     : null;
 
@@ -69,7 +69,30 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
         summary: selectedAlert.summary || selectedAlert.title,
       }),
     });
-    setMessage(response.ok ? 'Escalated to incident.' : 'Unable to escalate alert to incident.');
+    setMessage(response.ok ? 'Open incident (SIMULATED workflow prep) completed.' : 'Unable to open incident.');
+  }
+
+  async function runSimulatedAction(actionType: string, label: string) {
+    if (!selectedAlert) return;
+    const create = await fetch(`${apiUrl}/enforcement/actions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        action_type: actionType,
+        mode: 'simulated',
+        status: 'pending',
+        alert_id: selectedAlert.id,
+        incident_id: selectedAlert.incident_id,
+        result_summary: `SIMULATED ${label} created from alerts client`,
+      }),
+    });
+    if (!create.ok) {
+      setMessage(`SIMULATED ${label} failed to create.`);
+      return;
+    }
+    const action = await create.json();
+    const execute = await fetch(`${apiUrl}/enforcement/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
+    setMessage(execute.ok ? `SIMULATED ${label} executed.` : `SIMULATED ${label} failed during execute.`);
   }
 
   return (
@@ -105,7 +128,11 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
               <div className="buttonRow">
                 <button type="button" onClick={() => void patchAlert('acknowledged')}>Acknowledge</button>
                 <button type="button" onClick={() => void patchAlert('resolved')}>Resolve</button>
-                <button type="button" onClick={() => void escalateIncident()}>Escalate to incident</button>
+                <button type="button" onClick={() => void escalateIncident()}>Open incident</button>
+                <button type="button" onClick={() => void runSimulatedAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet (SIMULATED)</button>
+                <button type="button" onClick={() => void runSimulatedAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
+                <button type="button" onClick={() => void runSimulatedAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system (SIMULATED)</button>
+                <button type="button" onClick={() => void runSimulatedAction('suppress_rule', 'Suppress rule')}>Suppress/mute rule (SIMULATED)</button>
                 <button type="button" onClick={() => void patchAlert('suppressed')}>Mute rule</button>
               </div>
               <p className="tableMeta">Response actions: Freeze wallet · Block transaction · Revoke approval · Disable monitored system · Suppress rule · Notify team</p>

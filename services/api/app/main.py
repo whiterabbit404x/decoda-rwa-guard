@@ -127,9 +127,11 @@ from services.api.app.pilot import (
     list_incident_timeline,
     list_action_history,
     append_incident_timeline_note,
+    create_action_history_entry,
     create_enforcement_action,
     approve_enforcement_action,
     execute_enforcement_action,
+    list_enforcement_actions,
     rollback_enforcement_action,
     create_export_job,
     create_proof_bundle_export,
@@ -2348,6 +2350,16 @@ def incidents_timeline_create(incident_id: str, payload: dict[str, Any], request
 @app.get('/history/actions', summary='List action history for alert/incident workflows')
 def history_actions(request: Request, object_type: str | None = None, object_id: str | None = None, limit: int = 200) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_action_history(request, object_type=object_type, object_id=object_id, limit=limit))
+
+
+@app.post('/history/actions', summary='Create an action history entry')
+def history_actions_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_action_history_entry(payload, request))
+
+
+@app.get('/enforcement/actions', summary='List enforcement actions')
+def enforcement_actions_list(request: Request, incident_id: str | None = None, alert_id: str | None = None, status_value: str | None = None, limit: int = 200) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_enforcement_actions(request, incident_id=incident_id, alert_id=alert_id, status_value=status_value, limit=limit))
 
 
 @app.post('/enforcement/actions', summary='Plan a workspace enforcement action')

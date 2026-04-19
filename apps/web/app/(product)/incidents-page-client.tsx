@@ -36,7 +36,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   }, [apiUrl, authHeaders, selectedId]);
 
   const selected = useMemo(() => incidents.find((item) => item.id === selectedId), [incidents, selectedId]);
-  const responseModeLabel = selected?.response_action_mode && selected.response_action_mode !== 'live_enforcement'
+  const responseModeLabel = selected?.response_action_mode && selected.response_action_mode !== 'live'
     ? 'SIMULATED'
     : null;
 
@@ -70,6 +70,29 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
     }
   }
 
+  async function runSimulatedAction(actionType: string, label: string) {
+    if (!selected) return;
+    const create = await fetch(`${apiUrl}/enforcement/actions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        action_type: actionType,
+        mode: 'simulated',
+        status: 'pending',
+        incident_id: selected.id,
+        alert_id: selected.source_alert_id,
+        result_summary: `SIMULATED ${label} created from incidents client`,
+      }),
+    });
+    if (!create.ok) {
+      setMessage(`SIMULATED ${label} failed to create.`);
+      return;
+    }
+    const action = await create.json();
+    const execute = await fetch(`${apiUrl}/enforcement/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
+    setMessage(execute.ok ? `SIMULATED ${label} executed.` : `SIMULATED ${label} failed during execute.`);
+  }
+
   return (
     <main className="productPage">
       <section className="featureSection">
@@ -95,6 +118,11 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
                 <button type="button" onClick={() => void updateWorkflow('contained')}>Mark contained</button>
                 <button type="button" onClick={() => void updateWorkflow('resolved')}>Resolve</button>
                 <button type="button" onClick={() => void updateWorkflow('reopened')}>Reopen</button>
+                <button type="button" onClick={() => void runSimulatedAction('notify_team', 'Execute simulated response')}>Execute simulated response (SIMULATED)</button>
+                <button type="button" onClick={() => void runSimulatedAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
+                <button type="button" onClick={() => void runSimulatedAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet (SIMULATED)</button>
+                <button type="button" onClick={() => void runSimulatedAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system (SIMULATED)</button>
+                <button type="button" onClick={() => void runSimulatedAction('suppress_rule', 'Suppress rule')}>Suppress/mute rule (SIMULATED)</button>
               </div>
               <p className="tableMeta">Response actions: Freeze wallet · Block transaction · Revoke approval · Disable monitored system · Suppress rule · Notify team</p>
               <p className="sectionEyebrow">Merged event timeline</p>
