@@ -116,6 +116,7 @@ from services.api.app.pilot import (
     put_module_config,
     list_detections,
     get_detection,
+    get_detection_evidence,
     list_alerts,
     get_alert,
     patch_alert,
@@ -2307,6 +2308,11 @@ def detections_list(
 @app.get('/detections/{detection_id}', summary='Detection detail')
 def detections_get(detection_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_detection(detection_id, request))
+
+
+@app.get('/detections/{detection_id}/evidence', summary='Detection evidence detail')
+def detections_evidence_get(detection_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_detection_evidence(detection_id, request))
 
 
 @app.get('/alerts/{alert_id}', summary='Alert detail')

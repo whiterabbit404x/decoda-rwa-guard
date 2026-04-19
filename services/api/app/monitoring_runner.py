@@ -1801,8 +1801,11 @@ def _maybe_create_incident(connection: Any, *, workspace_id: str, user_id: str, 
     title = f"{severity.upper()} monitoring incident"
     connection.execute(
         '''
-        INSERT INTO incidents (id, workspace_id, user_id, analysis_run_id, target_id, event_type, title, severity, status, summary, linked_alert_ids, timeline, payload, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'open', %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW(), NOW())
+        INSERT INTO incidents (
+            id, workspace_id, user_id, analysis_run_id, target_id, event_type, title, severity, status,
+            source_alert_id, summary, linked_alert_ids, timeline, payload, created_at, updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'open', %s::uuid, %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW(), NOW())
         ''',
         (
             incident_id,
@@ -1813,6 +1816,7 @@ def _maybe_create_incident(connection: Any, *, workspace_id: str, user_id: str, 
             'threat_monitoring_incident',
             title,
             severity,
+            alert_id,
             str(response.get('explanation') or title),
             _json_dumps([alert_id]),
             _json_dumps([{'event': 'incident.created', 'at': utc_now().isoformat(), 'alert_id': alert_id}]),
