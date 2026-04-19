@@ -897,7 +897,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       },
       {
         id: 'chain-action',
-        label: 'Actions recorded',
+        label: 'Action logged',
         detail: relatedAction
           ? `${String(relatedAction.action_type || 'workflow.action_recorded')} by ${String(relatedAction.actor_type || 'system')}`
           : relatedRun
@@ -1380,7 +1380,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 <div className="stack compactStack">
                   <div className="listHeader">
                     <p className="sectionEyebrow">Chain proof</p>
-                    <h4>Detection created → Alert created → Incident opened → Actions recorded</h4>
+                    <h4>Detection created → Alert created → Incident opened → Action logged</h4>
                   </div>
                   {actionHistory.slice(0, 4).map((entry) => {
                     const entryAlertId = typeof entry.details_json?.alert_id === 'string' ? entry.details_json.alert_id : null;

@@ -7106,6 +7106,7 @@ def patch_alert(alert_id: str, payload: dict[str, Any], request: Request) -> dic
         found = connection.execute('SELECT id FROM alerts WHERE id = %s AND workspace_id = %s', (alert_id, workspace_context['workspace_id'])).fetchone()
         if found is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found.')
+        incident_id = payload.get('incident_id')
         connection.execute(
             '''
             UPDATE alerts
@@ -7138,11 +7139,26 @@ def patch_alert(alert_id: str, payload: dict[str, Any], request: Request) -> dic
                 next_status,
                 payload.get('resolution_note'),
                 payload.get('evidence_summary'),
-                payload.get('incident_id'),
+                incident_id,
                 payload.get('suppressed_until'),
                 alert_id,
             ),
         )
+        if incident_id:
+            connection.execute(
+                '''
+                UPDATE incidents
+                SET source_alert_id = COALESCE(source_alert_id, %s::uuid),
+                    linked_alert_ids = CASE
+                        WHEN linked_alert_ids @> to_jsonb(ARRAY[%s::text]) THEN linked_alert_ids
+                        ELSE linked_alert_ids || to_jsonb(ARRAY[%s::text])
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s::uuid
+                  AND workspace_id = %s
+                ''',
+                (alert_id, alert_id, alert_id, incident_id, workspace_context['workspace_id']),
+            )
         connection.execute('INSERT INTO alert_events (id, workspace_id, alert_id, actor_user_id, event_type, details) VALUES (%s, %s, %s, %s, %s, %s::jsonb)', (str(uuid.uuid4()), workspace_context['workspace_id'], alert_id, user['id'], f'alert.{next_status}', _json_dumps({'status': next_status, 'owner_user_id': payload.get('owner_user_id'), 'suppressed_until': payload.get('suppressed_until')})))
         write_action_history(
             connection,
@@ -7154,11 +7170,26 @@ def patch_alert(alert_id: str, payload: dict[str, Any], request: Request) -> dic
             action_type=f'alert.{next_status}',
             details={
                 'status': next_status,
-                'incident_id': payload.get('incident_id'),
+                'incident_id': incident_id,
                 'assigned_to': payload.get('assigned_to'),
                 'owner_user_id': payload.get('owner_user_id'),
             },
         )
+        if incident_id:
+            write_action_history(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                actor_type='user',
+                actor_id=user['id'],
+                object_type='incident',
+                object_id=str(incident_id),
+                action_type='incident.linked_alert_updated',
+                details={
+                    'alert_id': alert_id,
+                    'status': next_status,
+                    'assigned_to': payload.get('assigned_to'),
+                },
+            )
         connection.commit()
         return {'id': alert_id, 'status': next_status}
 
@@ -7425,10 +7456,24 @@ def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) 
                 incident_id,
             ),
         )
-        if payload.get('source_alert_id'):
+        source_alert_id = payload.get('source_alert_id')
+        if source_alert_id:
+            connection.execute(
+                '''
+                UPDATE incidents
+                SET source_alert_id = COALESCE(source_alert_id, %s::uuid),
+                    linked_alert_ids = CASE
+                        WHEN linked_alert_ids @> to_jsonb(ARRAY[%s::text]) THEN linked_alert_ids
+                        ELSE linked_alert_ids || to_jsonb(ARRAY[%s::text])
+                    END,
+                    updated_at = NOW()
+                WHERE id = %s
+                ''',
+                (source_alert_id, source_alert_id, source_alert_id, incident_id),
+            )
             connection.execute(
                 'UPDATE alerts SET incident_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid AND workspace_id = %s',
-                (incident_id, payload.get('source_alert_id'), workspace_context['workspace_id']),
+                (incident_id, source_alert_id, workspace_context['workspace_id']),
             )
         connection.execute(
             '''
@@ -7458,9 +7503,20 @@ def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) 
                 'workflow_status': next_workflow_status,
                 'assignee_user_id': payload.get('assignee_user_id'),
                 'owner': payload.get('owner'),
-                'source_alert_id': payload.get('source_alert_id'),
+                'source_alert_id': source_alert_id,
             },
         )
+        if source_alert_id:
+            write_action_history(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                actor_type='user',
+                actor_id=user['id'],
+                object_type='alert',
+                object_id=str(source_alert_id),
+                action_type='alert.linked_incident_updated',
+                details={'incident_id': incident_id, 'workflow_status': next_workflow_status},
+            )
         connection.commit()
         return {'id': incident_id, 'workflow_status': next_workflow_status, 'assignee_user_id': payload.get('assignee_user_id'), 'resolution_note': payload.get('resolution_note')}
 
