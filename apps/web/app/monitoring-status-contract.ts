@@ -73,6 +73,8 @@ export type MonitoringRuntimeStatus = {
     active_incidents_count: number;
     evidence_source_summary: 'live' | 'simulator' | 'replay' | 'none';
     status_reason: string | null;
+    contradiction_flags?: string[];
+    guard_flags?: string[];
   };
   workspace_configured?: boolean;
   monitoring_mode?: 'live' | 'hybrid' | 'simulator' | 'offline' | 'unavailable';
@@ -89,6 +91,8 @@ export type MonitoringRuntimeStatus = {
   last_detection_at?: string | null;
   evidence_source?: 'live' | 'simulator' | 'replay' | 'none';
   status_reason?: string | null;
+  contradiction_flags?: string[];
+  guard_flags?: string[];
 };
 
 export function runtimeStatusModeFromMonitoringStatus(value: MonitoringRuntimeStatus['monitoring_status']): MonitoringMode {

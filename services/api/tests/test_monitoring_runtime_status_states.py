@@ -1383,7 +1383,7 @@ def test_contradiction_guard_offline_runtime_clears_current_telemetry(monkeypatc
     assert 'offline_with_current_telemetry' not in summary['contradiction_flags']
 
 
-def test_contradiction_guard_never_marks_healthy_without_reporting_systems(monkeypatch):
+def test_contradiction_guard_never_marks_live_monitoring_without_reporting_systems(monkeypatch):
     now = datetime.now(timezone.utc)
 
     class _NoReportingConn(_Conn):
@@ -1412,7 +1412,7 @@ def test_contradiction_guard_never_marks_healthy_without_reporting_systems(monke
     assert summary['coverage_state']['configured_systems'] > 0
     assert summary['coverage_state']['reporting_systems'] == 0
     assert summary['runtime_status'] != 'healthy'
-    assert 'healthy_without_reporting_systems' not in summary['contradiction_flags']
+    assert 'live_monitoring_without_reporting_systems' not in summary['contradiction_flags']
 
 
 def test_workspace_summary_stays_idle_until_first_reporting_telemetry(monkeypatch):

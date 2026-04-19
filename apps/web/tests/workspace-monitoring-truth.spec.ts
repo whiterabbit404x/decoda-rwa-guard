@@ -133,7 +133,8 @@ test.describe('workspace monitoring truth guardrails', () => {
       contradiction_flags: [],
     }));
 
-    expect(truth.contradiction_flags).toContain('healthy_without_reporting_systems');
+    expect(truth.contradiction_flags).toContain('live_monitoring_without_reporting_systems');
+    expect(truth.guard_flags).toContain('live_monitoring_without_reporting_systems');
     expect(hasLiveTelemetry(truth)).toBeFalsy();
     expect(monitoringHealthyCopyAllowed(truth)).toBeFalsy();
   });
@@ -293,7 +294,7 @@ test.describe('workspace monitoring truth guardrails', () => {
     expect(monitoringHealthyCopyAllowed(truth)).toBeFalsy();
   });
 
-  test('idle runtime with fresh/high live telemetry is contradicted unless a reason exists', () => {
+  test('idle runtime with fresh/high live telemetry is always contradicted', () => {
     const contradicted = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
       workspace_configured: true,
       runtime_status: 'idle',
@@ -312,13 +313,8 @@ test.describe('workspace monitoring truth guardrails', () => {
       status_reason: null,
       contradiction_flags: [],
     }));
-    const reasoned = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
-      ...contradicted,
-      status_reason: 'runtime_degraded_external_dependency',
-      contradiction_flags: [],
-    }));
-
     expect(contradicted.contradiction_flags).toContain('idle_runtime_with_active_monitoring_claim');
-    expect(reasoned.contradiction_flags).not.toContain('idle_runtime_with_active_monitoring_claim');
+    expect(contradicted.guard_flags).toContain('idle_runtime_with_active_monitoring_claim');
+    expect(contradicted.status_reason).toBe('guard:idle_runtime_with_active_monitoring_claim');
   });
 });
