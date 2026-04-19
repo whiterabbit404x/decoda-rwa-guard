@@ -47,10 +47,17 @@ function normalizeStatus(
   evidence: MonitoringPresentationEvidence,
   freshness: MonitoringPresentationFreshness,
 ): MonitoringPresentationStatus {
-  if (truth.monitoring_status === 'offline') {
+  const monitoringStatus = truth.monitoring_status ?? (truth.runtime_status === 'live' || truth.runtime_status === 'healthy' ? 'live' : 'limited');
+  if ((truth.guard_flags ?? []).length > 0) {
+    return truth.runtime_status === 'offline' ? 'offline' : 'degraded';
+  }
+  if ((truth.contradiction_flags ?? []).length > 0) {
+    return 'limited coverage';
+  }
+  if (monitoringStatus === 'offline') {
     return 'offline';
   }
-  if (truth.monitoring_status === 'limited') {
+  if (monitoringStatus === 'limited') {
     if (freshness === 'delayed') {
       return 'stale';
     }
@@ -65,7 +72,10 @@ function normalizeStatus(
   if (truth.runtime_status === 'idle') {
     return 'limited coverage';
   }
-  return truth.monitoring_status === 'live' ? 'live' : (evidence === 'unavailable' ? 'degraded' : 'limited coverage');
+  if (monitoringStatus === 'live') {
+    return evidence === 'unavailable' ? 'degraded' : 'live';
+  }
+  return evidence === 'unavailable' ? 'degraded' : 'limited coverage';
 }
 
 function formatTimestamp(kind: 'telemetry' | 'heartbeat' | 'poll', value: string | null): string {
@@ -77,7 +87,7 @@ function formatTimestamp(kind: 'telemetry' | 'heartbeat' | 'poll', value: string
 }
 
 function coverageTelemetryTimestamp(truth: WorkspaceMonitoringTruth): string | null {
-  return truth.last_telemetry_at ?? null;
+  return truth.last_telemetry_at ?? truth.last_coverage_telemetry_at ?? null;
 }
 
 function telemetryFreshnessSummary(truth: WorkspaceMonitoringTruth): string {
@@ -142,6 +152,9 @@ export function normalizeMonitoringPresentation(
   const confidence = confidenceFromEvidence(evidence, presentationStatus);
 
   const statusReasonSuffix = truth.status_reason ? ` Reason: ${truth.status_reason}.` : '';
+  const guardSummaryPrefix = ((truth.guard_flags ?? []).length > 0 || (truth.contradiction_flags ?? []).length > 0)
+    ? 'Monitoring copy guarded due to contradictory runtime signals. '
+    : '';
   return {
     status: presentationStatus,
     statusLabel: presentationStatus === 'limited coverage'
@@ -156,7 +169,7 @@ export function normalizeMonitoringPresentation(
     evidence,
     freshness,
     confidence,
-    summary: `${summarizeStatus(presentationStatus, freshness)} ${telemetryFreshnessSummary(truth)}${detectionSummary(truth)}${statusReasonSuffix}`,
+    summary: `${guardSummaryPrefix}${summarizeStatus(presentationStatus, freshness)} ${telemetryFreshnessSummary(truth)}${detectionSummary(truth)}${statusReasonSuffix}`,
     telemetryTimestampLabel: formatTimestamp('telemetry', coverageTelemetryTimestamp(truth) ?? truth.last_telemetry_at),
     heartbeatTimestampLabel: formatTimestamp('heartbeat', truth.last_heartbeat_at),
     pollTimestampLabel: formatTimestamp('poll', truth.last_poll_at),

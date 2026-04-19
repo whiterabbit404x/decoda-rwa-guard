@@ -62,6 +62,8 @@ def test_summary_returns_only_strict_contract_fields() -> None:
         'active_alerts_count',
         'active_incidents_count',
         'evidence_source_summary',
+        'contradiction_flags',
+        'guard_flags',
         'status_reason',
     }
 
@@ -93,4 +95,3 @@ def test_coverage_telemetry_can_backfill_last_telemetry_at() -> None:
 def test_guard_reason_is_exposed_as_status_reason() -> None:
     summary = _build_summary(runtime_status='offline')
     assert summary['status_reason'] == 'guard:offline_with_current_telemetry'
-
