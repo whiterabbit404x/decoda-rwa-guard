@@ -76,15 +76,6 @@ type IncidentRow = {
   response_action_mode?: string | null;
 };
 
-type ActionHistoryRow = {
-  id: string;
-  object_type?: string;
-  object_id?: string;
-  action_type?: string;
-  timestamp?: string;
-  details_json?: Record<string, any> | null;
-};
-
 type MonitoringRunRow = {
   id: string;
   started_at?: string | null;
@@ -143,7 +134,7 @@ export type PageOperationalState =
   | 'unconfigured_workspace'
   | 'fetch_error';
 
-type SnapshotFailureKey = 'targets' | 'systems' | 'alerts' | 'incidents' | 'evidence' | 'runs' | 'detections' | 'history';
+type SnapshotFailureKey = 'targets' | 'systems' | 'alerts' | 'incidents' | 'evidence' | 'runs' | 'detections';
 
 const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
   'no_valid_protected_assets',
@@ -530,7 +521,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [monitoringRuns, setMonitoringRuns] = useState<MonitoringRunRow[]>([]);
   const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
   const [detections, setDetections] = useState<DetectionRow[]>([]);
-  const [actionHistory, setActionHistory] = useState<ActionHistoryRow[]>([]);
   const [monitoredSystems, setMonitoredSystems] = useState<MonitoredSystemRow[]>([]);
   const [evidenceDrawer, setEvidenceDrawer] = useState<EvidenceDrawerState | null>(null);
   const [responseToast, setResponseToast] = useState<string | null>(null);
@@ -544,7 +534,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         return;
       }
       try {
-        const [targetsResult, systemsResult, alertsResult, incidentsResult, evidenceResult, runsResult, detectionsResult, actionsResult] = await Promise.allSettled([
+        const [targetsResult, systemsResult, alertsResult, incidentsResult, evidenceResult, runsResult, detectionsResult] = await Promise.allSettled([
           fetch(`${apiUrl}/monitoring/targets`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(MONITORING_SYSTEMS_PROXY_PATH, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
@@ -552,7 +542,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/monitoring/runs?limit=12`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/detections?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/history/actions?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         if (!active) return;
         const responseEntries: [SnapshotFailureKey, PromiseSettledResult<Response>][] = [
@@ -563,7 +552,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ['evidence', evidenceResult],
           ['runs', runsResult],
           ['detections', detectionsResult],
-          ['history', actionsResult],
         ];
         const failedEndpoints = responseEntries
           .filter(([, result]) => !(result.status === 'fulfilled' && result.value.ok))
@@ -571,7 +559,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const responses = responseEntries.map(([, result]) => (
           result.status === 'fulfilled' && result.value.ok ? result.value : null
         ));
-        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, evidenceResponse, runsResponse, detectionsResponse, actionsResponse] = responses;
+        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, evidenceResponse, runsResponse, detectionsResponse] = responses;
         const targetsPayload = targetsResponse ? await targetsResponse.json().catch(() => ({})) : {};
         const systemsPayload = systemsResponse ? await systemsResponse.json().catch(() => ({})) : {};
         const alertsPayload = alertsResponse ? await alertsResponse.json().catch(() => ({})) : {};
@@ -579,7 +567,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const evidencePayload = evidenceResponse ? await evidenceResponse.json().catch(() => ({})) : {};
         const runsPayload = runsResponse ? await runsResponse.json().catch(() => ({})) : {};
         const detectionsPayload = detectionsResponse ? await detectionsResponse.json().catch(() => ({})) : {};
-        const actionsPayload = actionsResponse ? await actionsResponse.json().catch(() => ({})) : {};
 
         if (targetsResponse) {
           setTargets((targetsPayload?.targets ?? []) as TargetRow[]);
@@ -601,9 +588,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         }
         if (detectionsResponse) {
           setDetections((detectionsPayload?.detections ?? []) as DetectionRow[]);
-        }
-        if (actionsResponse) {
-          setActionHistory((actionsPayload?.history ?? []) as ActionHistoryRow[]);
         }
         setSystemsPanelWarning(formatSystemsPanelWarning(failedEndpoints));
         setSnapshotError(formatSnapshotErrorMessage(failedEndpoints));
@@ -846,19 +830,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const relatedIncident = relatedAlert
       ? incidents.find((incident) => incident.id === relatedAlert.incident_id || incident.source_alert_id === relatedAlert.id) ?? null
       : incidents[0] ?? null;
-    const relatedAction = actionHistory
+    const relatedRun = monitoringRuns
       .slice()
-      .sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime())
-      .find((item) => {
-        const details = item.details_json ?? {};
-        const detailsIncidentId = String(details.incident_id ?? '');
-        const detailsAlertId = String(details.alert_id ?? details.source_alert_id ?? '');
-        return (
-          item.action_type === 'incident.action_recorded'
-          || (relatedIncident && detailsIncidentId === relatedIncident.id)
-          || (relatedAlert && detailsAlertId === relatedAlert.id)
-        );
-      }) ?? null;
+      .sort((a, b) => new Date((b.completed_at || b.started_at) || 0).getTime() - new Date((a.completed_at || a.started_at) || 0).getTime())[0] ?? null;
 
     return [
       {
@@ -884,13 +858,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       },
       {
         id: 'chain-action',
-        label: 'Action recorded',
-        detail: relatedAction?.action_type || 'No linked action-history entry yet.',
-        timestamp: relatedAction?.timestamp ?? null,
-        href: '/history',
+        label: 'Monitoring run recorded',
+        detail: relatedRun
+          ? `${String(relatedRun.trigger_type || 'unknown')} run ${String(relatedRun.status || 'unknown')}`
+          : 'No monitoring run evidence recorded yet.',
+        timestamp: relatedRun?.completed_at ?? relatedRun?.started_at ?? null,
+        href: '/threat',
       },
     ];
-  }, [actionHistory, alerts, detections, incidents]);
+  }, [alerts, detections, incidents, monitoringRuns]);
 
   async function runSimulatedThreatAction(actionType: string, label: string) {
     const create = await fetch(`${apiUrl}/enforcement/actions`, {
@@ -1287,7 +1263,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <div className="listHeader">
               <div>
                 <p className="sectionEyebrow">Incidents</p>
-                <h3>Active incidents with timeline and audit history</h3>
+                <h3>Active incidents with timeline and run evidence</h3>
               </div>
               <Link href="/incidents" prefetch={false}>Open incident queue</Link>
             </div>
@@ -1295,7 +1271,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             {!loadingSnapshot && incidents.length === 0 ? (
               <div className="emptyStatePanel">
                 <h4>No incidents recorded</h4>
-                <p className="muted">Open incidents will include timeline and audit history entries here.</p>
+                <p className="muted">Open incidents will include timeline and monitoring run evidence entries here.</p>
               </div>
             ) : (
               <div className="stack compactStack">
