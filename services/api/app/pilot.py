@@ -601,7 +601,7 @@ def _run_migrations_once(connection: Any) -> list[str]:
 
 
 def _wait_for_migration_readiness(connection: Any) -> bool:
-    wait_timeout_seconds = _migration_float_setting(MIGRATION_READINESS_WAIT_SECONDS_ENV, default=90.0, minimum=0.0)
+    wait_timeout_seconds = _migration_float_setting(MIGRATION_READINESS_WAIT_SECONDS_ENV, default=300.0, minimum=0.0)
     poll_seconds = _migration_float_setting(MIGRATION_READINESS_POLL_SECONDS_ENV, default=1.0, minimum=0.05)
     started = monotonic()
     while True:

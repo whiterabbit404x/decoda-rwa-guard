@@ -46,8 +46,11 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
   const monitoringTruth = liveFeed?.monitoring.truth
     ?? resolveWorkspaceMonitoringTruthFromSummary(data.workspaceMonitoringSummary);
   const monitoringPresentation = liveFeed?.monitoring.presentation ?? normalizeMonitoringPresentation(monitoringTruth);
+  const guardedPresentation = (monitoringTruth.guard_flags ?? []).length > 0;
   const resolvedBackendState =
-    monitoringTruth.monitoring_status === 'live'
+    guardedPresentation
+      ? (monitoringTruth.runtime_status === 'offline' ? 'offline' : 'degraded')
+      : monitoringTruth.monitoring_status === 'live'
       ? 'online'
       : monitoringTruth.monitoring_status === 'offline'
         ? 'offline'
