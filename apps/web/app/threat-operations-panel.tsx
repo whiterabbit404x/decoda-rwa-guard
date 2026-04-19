@@ -289,7 +289,7 @@ export function formatOperationalStateLabel(value: unknown): string {
   return normalized ? normalized.replaceAll('_', ' ') : 'unknown';
 }
 
-function severityClass(severity?: string) {
+function severityClass(severity?: string | null) {
   const normalized = String(severity ?? '').toLowerCase();
   if (normalized.includes('critical')) return 'critical';
   if (normalized.includes('high')) return 'high';
@@ -297,7 +297,7 @@ function severityClass(severity?: string) {
   return 'low';
 }
 
-function severityLabel(severity?: string) {
+function severityLabel(severity?: string | null) {
   const normalized = String(severity ?? '').toLowerCase();
   if (normalized.includes('critical')) return 'Critical';
   if (normalized.includes('high')) return 'High';
@@ -305,7 +305,7 @@ function severityLabel(severity?: string) {
   return 'Low';
 }
 
-function isTestOrLabSignal(text: string | undefined): boolean {
+function isTestOrLabSignal(text: string | null | undefined): boolean {
   const value = String(text ?? '').toLowerCase();
   return ['test', 'lab', 'synthetic', 'simulation'].some((term) => value.includes(term));
 }
