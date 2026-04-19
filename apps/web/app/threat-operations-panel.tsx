@@ -535,6 +535,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [monitoredSystems, setMonitoredSystems] = useState<MonitoredSystemRow[]>([]);
   const [evidenceDrawer, setEvidenceDrawer] = useState<EvidenceDrawerState | null>(null);
   const [responseToast, setResponseToast] = useState<string | null>(null);
+  const [actionMode, setActionMode] = useState<'simulated' | 'recommended' | 'live'>('simulated');
+  const [actionOperatorNotes, setActionOperatorNotes] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -908,26 +910,32 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     ];
   }, [actionHistory, alerts, detections, incidents, monitoringRuns]);
 
-  async function runSimulatedThreatAction(actionType: string, label: string) {
+  function actionLabelSuffix() {
+    return actionMode === 'live' ? 'LIVE' : 'SIMULATED';
+  }
+
+  async function runResponseThreatAction(actionType: string, label: string) {
+    const isNonLive = actionMode !== 'live';
     const create = await fetch(`${apiUrl}/enforcement/actions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
         action_type: actionType,
-        mode: 'simulated',
+        mode: actionMode,
         status: 'pending',
         incident_id: incidents[0]?.id,
         alert_id: alerts[0]?.id,
-        result_summary: `SIMULATED ${label} created from threat client`,
+        result_summary: `${isNonLive ? 'SIMULATED ' : ''}${label} created from threat client`,
+        operator_notes: actionOperatorNotes.trim() || undefined,
       }),
     });
     if (!create.ok) {
-      setResponseToast(`SIMULATED ${label} failed to create.`);
+      setResponseToast(`${isNonLive ? 'SIMULATED ' : ''}${label} failed to create.`);
       return;
     }
     const action = await create.json();
     const execute = await fetch(`${apiUrl}/enforcement/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
-    setResponseToast(execute.ok ? `SIMULATED ${label} executed.` : `SIMULATED ${label} failed during execute.`);
+    setResponseToast(execute.ok ? `${isNonLive ? 'SIMULATED ' : ''}${label} executed.` : `${isNonLive ? 'SIMULATED ' : ''}${label} failed during execute.`);
   }
 
   return (
@@ -1351,6 +1359,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   {actionHistory.slice(0, 4).map((entry) => {
                     const entryAlertId = typeof entry.details_json?.alert_id === 'string' ? entry.details_json.alert_id : null;
                     const entryIncidentId = typeof entry.details_json?.incident_id === 'string' ? entry.details_json.incident_id : null;
+                    const entryMode = typeof entry.details_json?.mode === 'string' ? entry.details_json.mode : null;
+                    const showSimulatedLabel = entryMode !== null && entryMode !== 'live';
                     const href = entry.object_type === 'alert' || entryAlertId ? '/alerts' : entry.object_type === 'incident' || entryIncidentId ? '/incidents' : '/history';
                     return (
                       <div key={entry.id} className="overviewListItem">
@@ -1359,6 +1369,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                           <p className="tableMeta">
                             object {String(entry.object_type || 'unknown')}:{String(entry.object_id || 'n/a')} · actor {String(entry.actor_type || 'system')}
                           </p>
+                          {showSimulatedLabel ? <p className="tableMeta"><strong>SIMULATED</strong> non-live action</p> : null}
                           <p className="tableMeta">{formatAbsoluteTime(entry.timestamp)}</p>
                         </div>
                         <Link href={href} prefetch={false}>Open</Link>
@@ -1390,11 +1401,20 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <h3>Operational actions</h3>
             <p className="muted">Use investigation and escalation workflows to restore healthy monitoring and resolve risk. Non-live actions are visibly marked SIMULATED.</p>
             <div className="buttonRow">
-              <button type="button" onClick={() => void runSimulatedThreatAction('notify_team', 'Execute simulated response')}>Execute simulated response (SIMULATED)</button>
-              <button type="button" onClick={() => void runSimulatedThreatAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
-              <button type="button" onClick={() => void runSimulatedThreatAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet (SIMULATED)</button>
-              <button type="button" onClick={() => void runSimulatedThreatAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system (SIMULATED)</button>
-              <button type="button" onClick={() => void runSimulatedThreatAction('suppress_rule', 'Suppress/mute rule')}>Suppress/mute rule (SIMULATED)</button>
+              <select value={actionMode} onChange={(event) => setActionMode(event.target.value as 'simulated' | 'recommended' | 'live')}>
+                <option value="simulated">SIMULATED mode</option>
+                <option value="recommended">Recommended mode (SIMULATED)</option>
+                <option value="live">Live mode</option>
+              </select>
+              <input value={actionOperatorNotes} onChange={(event) => setActionOperatorNotes(event.target.value)} placeholder="Operator notes (optional)" />
+            </div>
+            <div className="buttonRow">
+              <button type="button" onClick={() => void runResponseThreatAction('notify_team', 'Execute simulated response')}>Execute simulated response ({actionLabelSuffix()})</button>
+              <button type="button" onClick={() => void runResponseThreatAction('block_transaction', 'Block transaction')}>Block transaction ({actionLabelSuffix()})</button>
+              <button type="button" onClick={() => void runResponseThreatAction('revoke_approval', 'Revoke approval')}>Revoke approval ({actionLabelSuffix()})</button>
+              <button type="button" onClick={() => void runResponseThreatAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet ({actionLabelSuffix()})</button>
+              <button type="button" onClick={() => void runResponseThreatAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system ({actionLabelSuffix()})</button>
+              <button type="button" onClick={() => void runResponseThreatAction('suppress_rule', 'Suppress/mute rule')}>Suppress/mute rule ({actionLabelSuffix()})</button>
               <Link href="/alerts" prefetch={false}>Review alerts</Link>
               <Link href="/incidents" prefetch={false}>Open incident queue</Link>
               <Link href="/history" prefetch={false}>View workspace history</Link>
