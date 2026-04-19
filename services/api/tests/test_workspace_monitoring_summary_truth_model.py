@@ -366,7 +366,9 @@ def test_healthy_status_without_reporting_is_flagged() -> None:
         schema_drift_detected=False,
         missing_telemetry_only=False,
     )
-    assert 'healthy_without_reporting_systems' in summary['contradiction_flags']
+    assert 'live_monitoring_without_reporting_systems' in summary['contradiction_flags']
+    assert 'live_monitoring_without_reporting_systems' in summary['guard_flags']
+    assert summary['status_reason'] == 'guard:live_monitoring_without_reporting_systems'
 
 
 def test_workspace_configured_with_missing_required_link_counts_is_flagged() -> None:
@@ -505,6 +507,11 @@ def test_unavailable_telemetry_with_high_confidence_sets_guard_flag() -> None:
     )
     assert 'telemetry_unavailable_with_high_confidence' in summary['contradiction_flags']
     assert 'live_telemetry_verified_without_timestamp' in summary['contradiction_flags']
+    assert summary['guard_flags'] == [
+        'live_telemetry_verified_without_timestamp',
+        'telemetry_unavailable_with_high_confidence',
+    ]
+    assert summary['status_reason'] == 'guard:live_telemetry_verified_without_timestamp'
 
 
 def test_idle_runtime_with_continuous_healthy_monitoring_sets_guard_without_reason() -> None:
@@ -540,7 +547,7 @@ def test_idle_runtime_with_continuous_healthy_monitoring_sets_guard_without_reas
     assert 'idle_runtime_with_active_monitoring_claim' in summary['contradiction_flags']
 
 
-def test_idle_runtime_with_explicit_reason_does_not_set_continuous_monitoring_guard() -> None:
+def test_idle_runtime_with_explicit_reason_still_sets_continuous_monitoring_guard() -> None:
     now = _now()
     summary = build_workspace_monitoring_summary(
         now=now,
@@ -570,4 +577,6 @@ def test_idle_runtime_with_explicit_reason_does_not_set_continuous_monitoring_gu
         schema_drift_detected=False,
         missing_telemetry_only=False,
     )
-    assert 'idle_runtime_with_active_monitoring_claim' not in summary['contradiction_flags']
+    assert 'idle_runtime_with_active_monitoring_claim' in summary['contradiction_flags']
+    assert 'idle_runtime_with_active_monitoring_claim' in summary['guard_flags']
+    assert summary['status_reason'] == 'guard:idle_runtime_with_active_monitoring_claim'

@@ -9,6 +9,13 @@ CANONICAL_MONITORING_STATUS = {'live', 'limited', 'offline'}
 CANONICAL_TELEMETRY_FRESHNESS = {'fresh', 'stale', 'unavailable'}
 CANONICAL_CONFIDENCE = {'high', 'medium', 'low', 'unavailable'}
 CANONICAL_EVIDENCE_SOURCE = {'live', 'simulator', 'replay', 'none'}
+HARD_GUARD_FLAGS = {
+    'offline_with_current_telemetry',
+    'telemetry_unavailable_with_high_confidence',
+    'live_monitoring_without_reporting_systems',
+    'live_telemetry_verified_without_timestamp',
+    'idle_runtime_with_active_monitoring_claim',
+}
 
 
 def _isoformat(value: datetime | None) -> str | None:
@@ -136,7 +143,7 @@ def build_workspace_monitoring_summary(
     if last_poll_at and telemetry_timestamp is None:
         contradiction_flags.append('poll_without_telemetry_timestamp')
     if normalized_reporting == 0 and normalized_runtime == 'live':
-        contradiction_flags.append('healthy_without_reporting_systems')
+        contradiction_flags.append('live_monitoring_without_reporting_systems')
     live_telemetry_verified = normalized_evidence == 'live' and confidence_status == 'high'
     if live_telemetry_verified and telemetry_timestamp is None:
         contradiction_flags.append('live_telemetry_verified_without_timestamp')
@@ -147,7 +154,7 @@ def build_workspace_monitoring_summary(
         and confidence_status == 'high'
         and normalized_evidence == 'live'
     )
-    if idle_with_continuous_healthy_monitoring and not status_reason:
+    if idle_with_continuous_healthy_monitoring:
         contradiction_flags.append('idle_runtime_with_active_monitoring_claim')
     workspace_has_coverage = (
         normalized_monitored > 0
@@ -170,6 +177,7 @@ def build_workspace_monitoring_summary(
     ):
         contradiction_flags.append('workspace_configured_missing_required_links')
     contradiction_flags = sorted(set(contradiction_flags))
+    guard_flags = [flag for flag in contradiction_flags if flag in HARD_GUARD_FLAGS]
     normalized_monitoring_status = _normalized_monitoring_status(
         runtime_status=normalized_runtime,
         reporting_systems_count=normalized_reporting,
@@ -177,7 +185,7 @@ def build_workspace_monitoring_summary(
         contradiction_flags=contradiction_flags,
     )
     normalized_status_reason = str(status_reason).strip() if isinstance(status_reason, str) and status_reason.strip() else None
-    resolved_status_reason = normalized_status_reason or (f'guard:{contradiction_flags[0]}' if contradiction_flags else None)
+    resolved_status_reason = f'guard:{guard_flags[0]}' if guard_flags else normalized_status_reason
     return {
         'workspace_configured': bool(workspace_configured),
         'runtime_status': normalized_runtime,
@@ -194,6 +202,8 @@ def build_workspace_monitoring_summary(
         'active_incidents_count': max(int(active_incidents_count), 0),
         'evidence_source_summary': evidence_source_summary,
         'status_reason': resolved_status_reason,
+        'contradiction_flags': contradiction_flags,
+        'guard_flags': guard_flags,
     }
 
 
@@ -228,4 +238,6 @@ def build_workspace_monitoring_summary_fallback(
         'active_incidents_count': 0,
         'evidence_source_summary': 'none',
         'status_reason': status_reason,
+        'contradiction_flags': [],
+        'guard_flags': [],
     }

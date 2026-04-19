@@ -747,7 +747,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     liveDetections: categorizedDetections.live,
     workspaceConfigured,
     freshnessStatus: truth.telemetry_freshness,
-    contradictionFlags: [],
+    contradictionFlags: truth.guard_flags,
     reportingSystems,
     runtimeStatus,
     monitoredSystems: feed.counts.monitoredSystems,
