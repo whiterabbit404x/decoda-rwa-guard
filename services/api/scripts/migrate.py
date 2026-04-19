@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -25,14 +26,38 @@ from phase1_local.dev_support import load_env_file
 from services.api.app.pilot import pilot_schema_status, run_migrations
 
 
+def _migration_fail_open_enabled() -> bool:
+    value = os.getenv('MIGRATION_FAIL_OPEN', 'true').strip().lower()
+    return value not in {'0', 'false', 'no', 'off'}
+
+
+def _is_database_bootstrap_unavailable_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        'exceeded the compute time quota' in message
+        or 'network is unreachable' in message
+        or 'connection to server' in message
+    )
+
+
 if __name__ == '__main__':
     load_env_file()
-    applied = run_migrations()
-    if applied:
-        print('Applied migrations:')
-        for version in applied:
-            print(f'- {version}')
-    else:
-        print('No pending migrations.')
-    print('Pilot schema status:')
-    print(pilot_schema_status())
+    try:
+        applied = run_migrations()
+        if applied:
+            print('Applied migrations:')
+            for version in applied:
+                print(f'- {version}')
+        else:
+            print('No pending migrations.')
+        print('Pilot schema status:')
+        print(pilot_schema_status())
+    except Exception as exc:
+        if _migration_fail_open_enabled() and _is_database_bootstrap_unavailable_error(exc):
+            print(
+                'Migration skipped (fail-open): database is currently unreachable or over quota. '
+                'Retry once database connectivity and quota are restored.'
+            )
+            print(f'Underlying error: {exc}')
+            sys.exit(0)
+        raise

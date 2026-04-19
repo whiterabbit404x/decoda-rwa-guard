@@ -32,7 +32,7 @@ test('threat page source renders persisted detections with linked alerts, incide
   expect(threat).toContain('fetch(`${apiUrl}/history/actions?limit=50`');
   expect(threat).toContain('Linked detection: {linkedDetection?.title || linkedDetection?.id || \'Not linked\'}');
   expect(threat).toContain('Active incidents with timeline and run evidence');
-  expect(threat).toContain('Detection created → Alert created → Incident opened → Actions recorded');
+  expect(threat).toContain('Detection created → Alert created → Incident opened → Action logged');
   expect(threat).toContain("category: 'Action' as const");
   expect(threat).toContain('Response Actions');
 });
