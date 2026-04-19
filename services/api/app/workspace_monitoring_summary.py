@@ -9,6 +9,25 @@ CANONICAL_MONITORING_STATUS = {'live', 'limited', 'offline'}
 CANONICAL_TELEMETRY_FRESHNESS = {'fresh', 'stale', 'unavailable'}
 CANONICAL_CONFIDENCE = {'high', 'medium', 'low', 'unavailable'}
 CANONICAL_EVIDENCE_SOURCE = {'live', 'simulator', 'replay', 'none'}
+CANONICAL_SUMMARY_KEYS = (
+    'workspace_configured',
+    'runtime_status',
+    'monitoring_status',
+    'last_poll_at',
+    'last_heartbeat_at',
+    'last_telemetry_at',
+    'telemetry_freshness',
+    'confidence',
+    'reporting_systems_count',
+    'monitored_systems_count',
+    'protected_assets_count',
+    'active_alerts_count',
+    'active_incidents_count',
+    'evidence_source_summary',
+    'contradiction_flags',
+    'guard_flags',
+    'status_reason',
+)
 HARD_GUARD_FLAGS = {
     'offline_with_current_telemetry',
     'telemetry_unavailable_with_high_confidence',
@@ -63,6 +82,33 @@ def _normalized_confidence(value: str) -> str:
 
 def _normalized_evidence_source(value: str) -> str:
     return value if value in CANONICAL_EVIDENCE_SOURCE else 'none'
+
+
+def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    canonical = {
+        'workspace_configured': bool(payload.get('workspace_configured', False)),
+        'runtime_status': _normalized_runtime_status(str(payload.get('runtime_status', 'offline'))),
+        'monitoring_status': (
+            payload.get('monitoring_status')
+            if payload.get('monitoring_status') in CANONICAL_MONITORING_STATUS
+            else 'offline'
+        ),
+        'last_poll_at': payload.get('last_poll_at') if isinstance(payload.get('last_poll_at'), str) else None,
+        'last_heartbeat_at': payload.get('last_heartbeat_at') if isinstance(payload.get('last_heartbeat_at'), str) else None,
+        'last_telemetry_at': payload.get('last_telemetry_at') if isinstance(payload.get('last_telemetry_at'), str) else None,
+        'telemetry_freshness': _normalized_telemetry_freshness(str(payload.get('telemetry_freshness', 'unavailable'))),
+        'confidence': _normalized_confidence(str(payload.get('confidence', 'unavailable'))),
+        'reporting_systems_count': max(int(payload.get('reporting_systems_count', 0)), 0),
+        'monitored_systems_count': max(int(payload.get('monitored_systems_count', 0)), 0),
+        'protected_assets_count': max(int(payload.get('protected_assets_count', 0)), 0),
+        'active_alerts_count': max(int(payload.get('active_alerts_count', 0)), 0),
+        'active_incidents_count': max(int(payload.get('active_incidents_count', 0)), 0),
+        'evidence_source_summary': _normalized_evidence_source(str(payload.get('evidence_source_summary', 'none'))),
+        'contradiction_flags': sorted({str(flag).strip() for flag in payload.get('contradiction_flags', []) if str(flag).strip()}),
+        'guard_flags': sorted({str(flag).strip() for flag in payload.get('guard_flags', []) if str(flag).strip()}),
+        'status_reason': str(payload.get('status_reason')).strip() if isinstance(payload.get('status_reason'), str) and str(payload.get('status_reason')).strip() else None,
+    }
+    return {key: canonical[key] for key in CANONICAL_SUMMARY_KEYS}
 
 
 def build_workspace_monitoring_summary(
@@ -194,7 +240,7 @@ def build_workspace_monitoring_summary(
     )
     normalized_status_reason = str(status_reason).strip() if isinstance(status_reason, str) and status_reason.strip() else None
     resolved_status_reason = f'guard:{guard_flags[0]}' if guard_flags else normalized_status_reason
-    return {
+    summary = {
         'workspace_configured': bool(workspace_configured),
         'runtime_status': normalized_runtime,
         'monitoring_status': normalized_monitoring_status,
@@ -213,6 +259,7 @@ def build_workspace_monitoring_summary(
         'guard_flags': guard_flags,
         'status_reason': resolved_status_reason,
     }
+    return _canonical_summary(summary)
 
 
 def build_workspace_monitoring_summary_fallback(
@@ -225,7 +272,7 @@ def build_workspace_monitoring_summary_fallback(
 ) -> dict[str, Any]:
     normalized_runtime = _normalized_runtime_status(runtime_status)
     normalized_freshness = _normalized_telemetry_freshness(telemetry_freshness)
-    return {
+    summary = {
         'workspace_configured': bool(workspace_configured),
         'runtime_status': normalized_runtime,
         'monitoring_status': _normalized_monitoring_status(
@@ -249,3 +296,4 @@ def build_workspace_monitoring_summary_fallback(
         'guard_flags': [],
         'status_reason': status_reason,
     }
+    return _canonical_summary(summary)
