@@ -69,12 +69,19 @@ def seed() -> None:
             print(
                 pretty_json(
                     {
-                        'demo_seed_path': {
-                            'detection_id': monitoring_bootstrap.get('detection_id'),
-                            'alert_id': monitoring_bootstrap.get('alert_id'),
-                            'incident_id': monitoring_bootstrap.get('incident_id'),
-                            'response_action_id': monitoring_bootstrap.get('response_action_id'),
-                            'mode': 'simulated',
+                        'deterministic_demo_chain': {
+                            'workspace_id': monitoring_bootstrap.get('workspace_id'),
+                            'target_id': monitoring_bootstrap.get('target_id'),
+                            'monitored_system_id': monitoring_bootstrap.get('monitored_system_id'),
+                            'steps': [
+                                {'name': 'detection', 'id': monitoring_bootstrap.get('detection_id')},
+                                {'name': 'alert', 'id': monitoring_bootstrap.get('alert_id')},
+                                {'name': 'incident', 'id': monitoring_bootstrap.get('incident_id')},
+                                {'name': 'response_action', 'id': monitoring_bootstrap.get('response_action_id'), 'mode': 'simulated'},
+                                {'name': 'action_history', 'id': monitoring_bootstrap.get('response_action_history_id'), 'action_type': 'response_action.executed'},
+                            ],
+                            'evidence_source': monitoring_bootstrap.get('evidence_source'),
+                            'telemetry_event_observed_at': monitoring_bootstrap.get('telemetry_event_observed_at'),
                         }
                     }
                 )
