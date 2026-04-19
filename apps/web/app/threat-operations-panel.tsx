@@ -362,7 +362,7 @@ export function derivePageState(params: {
   liveDetections: DetectionItem[];
   workspaceConfigured: boolean;
   freshnessStatus: string;
-  contradictionFlags: string[];
+  monitoringStatus: 'live' | 'limited' | 'offline';
   reportingSystems: number;
   runtimeStatus: string;
   monitoredSystems: number;
@@ -385,7 +385,7 @@ export function derivePageState(params: {
     liveDetections,
     workspaceConfigured,
     freshnessStatus,
-    contradictionFlags,
+    monitoringStatus,
     reportingSystems,
     runtimeStatus,
     monitoredSystems,
@@ -433,8 +433,8 @@ export function derivePageState(params: {
     || runtimeStatus === 'failed'
     || runtimeStatus === 'disabled'
     || runtimeStatus === 'provisioning'
+    || monitoringStatus === 'limited'
     || freshnessStatus === 'stale'
-    || contradictionFlags.length > 0
   ) {
     return 'degraded_partial';
   }
@@ -731,7 +731,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     liveDetections: categorizedDetections.live,
     workspaceConfigured,
     freshnessStatus: truth.telemetry_freshness,
-    contradictionFlags: truth.guard_flags,
+    monitoringStatus: truth.monitoring_status,
     reportingSystems,
     runtimeStatus,
     monitoredSystems: feed.counts.monitoredSystems,
@@ -739,10 +739,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     statusReason: truth.status_reason,
     configurationReason: null,
     configurationReasonCodes: [],
-    runtimeErrorCode: feed.runtimeStatus?.error_code ?? null,
-    runtimeDegradedReason: feed.runtimeStatus?.degraded_reason ?? null,
-    runtimeMonitoringStatus: feed.runtimeStatus?.monitoring_status ?? null,
-    fieldReasonCodes: feed.runtimeStatus?.field_reason_codes ?? null,
+    runtimeMonitoringStatus: truth.monitoring_status,
+    runtimeErrorCode: null,
+    runtimeDegradedReason: null,
+    fieldReasonCodes: null,
     summaryStatusReason: truth.status_reason,
     summaryConfigurationReason: null,
     summaryConfigurationReasonCodes: [],

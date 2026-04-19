@@ -1,5 +1,23 @@
 export type MonitoringMode = 'LIVE' | 'DEGRADED' | 'OFFLINE' | 'STALE' | 'LIMITED_COVERAGE';
 
+export type WorkspaceMonitoringSummary = {
+  workspace_configured: boolean;
+  runtime_status: 'live' | 'degraded' | 'offline' | 'idle';
+  monitoring_status: 'live' | 'limited' | 'offline';
+  last_poll_at: string | null;
+  last_heartbeat_at: string | null;
+  last_telemetry_at: string | null;
+  telemetry_freshness: 'fresh' | 'stale' | 'unavailable';
+  confidence: 'high' | 'medium' | 'low' | 'unavailable';
+  reporting_systems_count: number;
+  monitored_systems_count: number;
+  protected_assets_count: number;
+  active_alerts_count: number;
+  active_incidents_count: number;
+  evidence_source_summary: 'live' | 'simulator' | 'replay' | 'none';
+  status_reason: string | null;
+};
+
 export type MonitoringRuntimeStatus = {
   error?: {
     code?: string;
@@ -57,25 +75,7 @@ export type MonitoringRuntimeStatus = {
   successful_detection_evaluation?: boolean;
   successful_detection_evaluation_recent?: boolean;
   synthetic_leak_detected?: boolean;
-  workspace_monitoring_summary?: {
-    workspace_configured: boolean;
-    runtime_status: 'live' | 'degraded' | 'offline' | 'idle';
-    monitoring_status: 'live' | 'limited' | 'offline';
-    last_poll_at: string | null;
-    last_heartbeat_at: string | null;
-    last_telemetry_at: string | null;
-    telemetry_freshness: 'fresh' | 'stale' | 'unavailable';
-    confidence: 'high' | 'medium' | 'low' | 'unavailable';
-    reporting_systems_count: number;
-    monitored_systems_count: number;
-    protected_assets_count: number;
-    active_alerts_count: number;
-    active_incidents_count: number;
-    evidence_source_summary: 'live' | 'simulator' | 'replay' | 'none';
-    status_reason: string | null;
-    contradiction_flags?: string[];
-    guard_flags?: string[];
-  };
+  workspace_monitoring_summary?: WorkspaceMonitoringSummary;
   workspace_configured?: boolean;
   monitoring_mode?: 'live' | 'hybrid' | 'simulator' | 'offline' | 'unavailable';
   runtime_status?: 'live' | 'degraded' | 'offline' | 'idle';

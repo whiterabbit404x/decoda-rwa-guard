@@ -202,8 +202,6 @@ def build_workspace_monitoring_summary(
         'active_incidents_count': max(int(active_incidents_count), 0),
         'evidence_source_summary': evidence_source_summary,
         'status_reason': resolved_status_reason,
-        'contradiction_flags': contradiction_flags,
-        'guard_flags': guard_flags,
     }
 
 
@@ -238,6 +236,4 @@ def build_workspace_monitoring_summary_fallback(
         'active_incidents_count': 0,
         'evidence_source_summary': 'none',
         'status_reason': status_reason,
-        'contradiction_flags': [],
-        'guard_flags': [],
     }
