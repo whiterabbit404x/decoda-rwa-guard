@@ -78,6 +78,19 @@ def _provider_source_is_live(source_type: Any) -> bool:
     return str(source_type or '').strip().lower() not in NON_LIVE_PROVIDER_SOURCE_TYPES
 
 
+def _normalize_detection_evidence_source(*, ingestion_source: Any, analysis_source: Any, ingestion_mode: Any) -> str:
+    normalized_ingestion_source = str(ingestion_source or '').strip().lower()
+    normalized_analysis_source = str(analysis_source or '').strip().lower()
+    normalized_ingestion_mode = str(ingestion_mode or '').strip().lower()
+    if (
+        normalized_ingestion_source in {'demo', 'simulator', 'synthetic'}
+        or normalized_analysis_source in {'demo', 'simulator', 'fallback', 'replay'}
+        or normalized_ingestion_mode in {'demo', 'simulator'}
+    ):
+        return 'simulator'
+    return 'live'
+
+
 def _normalize_monitoring_runtime_contract(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload or {})
     summary_payload = normalized.get('workspace_monitoring_summary')
@@ -1939,8 +1952,11 @@ def _process_single_event(
             source_rule = str(first_match.get('label') or first_match.get('rule_id') or '').strip() or None
         elif first_match is not None:
             source_rule = str(first_match).strip() or None
-        ingestion_source = str(event.ingestion_source or '').lower()
-        evidence_source = 'simulator' if ingestion_source in {'demo', 'simulator'} else 'live'
+        evidence_source = _normalize_detection_evidence_source(
+            ingestion_source=event.ingestion_source,
+            analysis_source=response.get('source'),
+            ingestion_mode=response.get('ingestion_mode'),
+        )
         detection_id = _create_detection(
             connection,
             workspace_id=str(target['workspace_id']),

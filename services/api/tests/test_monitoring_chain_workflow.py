@@ -113,6 +113,16 @@ def test_process_single_event_creates_detection_alert_incident_chain(monkeypatch
     assert any('INSERT INTO alerts' in statement for statement, _ in connection.calls)
     assert any('INSERT INTO incidents' in statement for statement, _ in connection.calls)
     assert any('UPDATE detections SET linked_alert_id = %s::uuid' in statement for statement, _ in connection.calls)
+    detection_insert_call = next((call for call in connection.calls if 'INSERT INTO detections' in call[0]), None)
+    assert detection_insert_call is not None
+    assert detection_insert_call[1][9] == 'live'
+
+
+def test_normalize_detection_evidence_source_returns_simulator_for_non_live_inputs() -> None:
+    assert monitoring_runner._normalize_detection_evidence_source(ingestion_source='demo', analysis_source='live', ingestion_mode='live') == 'simulator'
+    assert monitoring_runner._normalize_detection_evidence_source(ingestion_source='websocket', analysis_source='fallback', ingestion_mode='live') == 'simulator'
+    assert monitoring_runner._normalize_detection_evidence_source(ingestion_source='websocket', analysis_source='live', ingestion_mode='simulator') == 'simulator'
+    assert monitoring_runner._normalize_detection_evidence_source(ingestion_source='websocket', analysis_source='live', ingestion_mode='live') == 'live'
 
 
 def test_execute_response_action_writes_audit_and_action_history(monkeypatch):
