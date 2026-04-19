@@ -1351,6 +1351,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   {actionHistory.slice(0, 4).map((entry) => {
                     const entryAlertId = typeof entry.details_json?.alert_id === 'string' ? entry.details_json.alert_id : null;
                     const entryIncidentId = typeof entry.details_json?.incident_id === 'string' ? entry.details_json.incident_id : null;
+                    const entryMode = typeof entry.details_json?.mode === 'string' ? entry.details_json.mode : null;
+                    const showSimulatedLabel = entryMode !== null && entryMode !== 'live';
                     const href = entry.object_type === 'alert' || entryAlertId ? '/alerts' : entry.object_type === 'incident' || entryIncidentId ? '/incidents' : '/history';
                     return (
                       <div key={entry.id} className="overviewListItem">
@@ -1359,6 +1361,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                           <p className="tableMeta">
                             object {String(entry.object_type || 'unknown')}:{String(entry.object_id || 'n/a')} · actor {String(entry.actor_type || 'system')}
                           </p>
+                          {showSimulatedLabel ? <p className="tableMeta"><strong>SIMULATED</strong> non-live action</p> : null}
                           <p className="tableMeta">{formatAbsoluteTime(entry.timestamp)}</p>
                         </div>
                         <Link href={href} prefetch={false}>Open</Link>
@@ -1391,6 +1394,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <p className="muted">Use investigation and escalation workflows to restore healthy monitoring and resolve risk. Non-live actions are visibly marked SIMULATED.</p>
             <div className="buttonRow">
               <button type="button" onClick={() => void runSimulatedThreatAction('notify_team', 'Execute simulated response')}>Execute simulated response (SIMULATED)</button>
+              <button type="button" onClick={() => void runSimulatedThreatAction('block_transaction', 'Block transaction')}>Block transaction (SIMULATED)</button>
               <button type="button" onClick={() => void runSimulatedThreatAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
               <button type="button" onClick={() => void runSimulatedThreatAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet (SIMULATED)</button>
               <button type="button" onClick={() => void runSimulatedThreatAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system (SIMULATED)</button>
