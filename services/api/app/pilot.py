@@ -7774,6 +7774,28 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             action_type='response_action.executed',
             details={'mode': action.get('mode'), 'safe_tx_hash': safe_tx_hash},
         )
+        if action.get('incident_id'):
+            write_action_history(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                actor_type='user',
+                actor_id=user['id'],
+                object_type='incident',
+                object_id=str(action.get('incident_id')),
+                action_type='incident.response_action_executed',
+                details={'response_action_id': action_id, 'action_type': action.get('action_type'), 'mode': action.get('mode')},
+            )
+        if action.get('alert_id'):
+            write_action_history(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                actor_type='user',
+                actor_id=user['id'],
+                object_type='alert',
+                object_id=str(action.get('alert_id')),
+                action_type='alert.response_action_executed',
+                details={'response_action_id': action_id, 'action_type': action.get('action_type'), 'mode': action.get('mode')},
+            )
         log_audit(connection, action='enforcement.action.execute', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'safe_tx_hash': safe_tx_hash})
         connection.commit()
         return _response_action_payload({'id': action_id, 'status': 'executed', 'safe_tx_hash': safe_tx_hash, 'mode': action.get('mode')})

@@ -14,6 +14,8 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   const [timeline, setTimeline] = useState<any[]>([]);
   const [note, setNote] = useState('');
   const [message, setMessage] = useState('');
+  const [actionMode, setActionMode] = useState<'simulated' | 'recommended' | 'live'>('simulated');
+  const [operatorNotes, setOperatorNotes] = useState('');
 
   async function load() {
     const params = new URLSearchParams();
@@ -72,25 +74,27 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
 
   async function runSimulatedAction(actionType: string, label: string) {
     if (!selected) return;
+    const isNonLive = actionMode !== 'live';
     const create = await fetch(`${apiUrl}/enforcement/actions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
         action_type: actionType,
-        mode: 'simulated',
+        mode: actionMode,
         status: 'pending',
         incident_id: selected.id,
         alert_id: selected.source_alert_id,
-        result_summary: `SIMULATED ${label} created from incidents client`,
+        result_summary: `${isNonLive ? 'SIMULATED ' : ''}${label} created from incidents client`,
+        operator_notes: operatorNotes.trim() || undefined,
       }),
     });
     if (!create.ok) {
-      setMessage(`SIMULATED ${label} failed to create.`);
+      setMessage(`${isNonLive ? 'SIMULATED ' : ''}${label} failed to create.`);
       return;
     }
     const action = await create.json();
     const execute = await fetch(`${apiUrl}/enforcement/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
-    setMessage(execute.ok ? `SIMULATED ${label} executed.` : `SIMULATED ${label} failed during execute.`);
+    setMessage(execute.ok ? `${isNonLive ? 'SIMULATED ' : ''}${label} executed.` : `${isNonLive ? 'SIMULATED ' : ''}${label} failed during execute.`);
   }
 
   return (
@@ -114,11 +118,20 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
               <p className="muted">Linked alerts: {(selected.linked_alert_ids || []).join(', ') || 'none'}</p>
               <p className="muted">Created: {selected.created_at ? new Date(selected.created_at).toLocaleString() : 'n/a'} · Resolved: {selected.resolved_at ? new Date(selected.resolved_at).toLocaleString() : 'not resolved'}</p>
               <div className="buttonRow">
+                <select value={actionMode} onChange={(event) => setActionMode(event.target.value as 'simulated' | 'recommended' | 'live')}>
+                  <option value="simulated">SIMULATED mode</option>
+                  <option value="recommended">Recommended mode (SIMULATED)</option>
+                  <option value="live">Live mode</option>
+                </select>
+                <input value={operatorNotes} onChange={(event) => setOperatorNotes(event.target.value)} placeholder="Operator notes (optional)" />
+              </div>
+              <div className="buttonRow">
                 <button type="button" onClick={() => void updateWorkflow('investigating')}>Mark investigating</button>
                 <button type="button" onClick={() => void updateWorkflow('contained')}>Mark contained</button>
                 <button type="button" onClick={() => void updateWorkflow('resolved')}>Resolve</button>
                 <button type="button" onClick={() => void updateWorkflow('reopened')}>Reopen</button>
                 <button type="button" onClick={() => void runSimulatedAction('notify_team', 'Execute simulated response')}>Execute simulated response (SIMULATED)</button>
+                <button type="button" onClick={() => void runSimulatedAction('block_transaction', 'Block transaction')}>Block transaction (SIMULATED)</button>
                 <button type="button" onClick={() => void runSimulatedAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
                 <button type="button" onClick={() => void runSimulatedAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet (SIMULATED)</button>
                 <button type="button" onClick={() => void runSimulatedAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system (SIMULATED)</button>

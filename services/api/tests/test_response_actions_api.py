@@ -69,7 +69,17 @@ def test_execute_response_action_returns_back_compat_dry_run_flag(monkeypatch):
             normalized = ' '.join(str(statement).split())
             executed.append((normalized, params))
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
-                return _Result({'id': 'act-1', 'status': 'pending', 'mode': 'simulated', 'action_type': 'notify_team', 'execution_metadata': {}})
+                return _Result(
+                    {
+                        'id': 'act-1',
+                        'status': 'pending',
+                        'mode': 'simulated',
+                        'action_type': 'notify_team',
+                        'execution_metadata': {},
+                        'incident_id': 'inc-1',
+                        'alert_id': 'alert-1',
+                    }
+                )
             return _Result()
 
         def commit(self):
@@ -91,6 +101,10 @@ def test_execute_response_action_returns_back_compat_dry_run_flag(monkeypatch):
     assert response['status'] == 'executed'
     assert response['dry_run'] is True
     assert any('UPDATE response_actions SET status = \'executed\'' in statement for statement, _ in executed)
+    history_calls = [params for statement, params in executed if 'INSERT INTO action_history' in statement]
+    assert any(params[6] == 'response_action.executed' for params in history_calls)
+    assert any(params[6] == 'incident.response_action_executed' for params in history_calls)
+    assert any(params[6] == 'alert.response_action_executed' for params in history_calls)
 
 
 def test_list_response_actions_returns_supported_fields(monkeypatch):
