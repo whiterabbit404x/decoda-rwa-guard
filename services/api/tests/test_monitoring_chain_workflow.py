@@ -113,6 +113,10 @@ def test_process_single_event_creates_detection_alert_incident_chain(monkeypatch
     assert any('INSERT INTO alerts' in statement for statement, _ in connection.calls)
     assert any('INSERT INTO incidents' in statement for statement, _ in connection.calls)
     assert any('UPDATE detections SET linked_alert_id = %s::uuid' in statement for statement, _ in connection.calls)
+    incident_insert_call = next((call for call in connection.calls if 'INSERT INTO incidents' in call[0]), None)
+    assert incident_insert_call is not None
+    assert 'source_alert_id' in incident_insert_call[0]
+    assert result['alert_id'] in incident_insert_call[1]
     detection_insert_call = next((call for call in connection.calls if 'INSERT INTO detections' in call[0]), None)
     assert detection_insert_call is not None
     assert detection_insert_call[1][9] == 'live'

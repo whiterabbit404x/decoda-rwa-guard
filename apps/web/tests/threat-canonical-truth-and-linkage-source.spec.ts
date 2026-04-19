@@ -23,6 +23,7 @@ test('threat page source renders persisted detections with linked alerts, incide
   const threat = appSource('threat-operations-panel.tsx');
 
   expect(threat).toContain('fetch(`${apiUrl}/detections?limit=50`');
+  expect(threat).toContain('fetch(`${apiUrl}/detections/${detectionId}/evidence`');
   expect(threat).toContain('const targetById = useMemo(() => {');
   expect(threat).toContain('const monitoredSystemById = useMemo(() => {');
   expect(threat).toContain('const evidenceSourceLabel = item.evidence_source === \'simulator\' ? \'simulator\' : \'live\';');

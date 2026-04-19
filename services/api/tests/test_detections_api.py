@@ -45,6 +45,17 @@ class _Conn:
                     'updated_at': '2026-04-18T00:00:00Z',
                 }
             )
+        if normalized.startswith('SELECT id, workspace_id, evidence_summary, raw_evidence_json, linked_alert_id, monitoring_run_id FROM detections'):
+            return _Result(
+                row={
+                    'id': 'det-1',
+                    'workspace_id': 'ws-1',
+                    'evidence_summary': 'Counterparty rule triggered.',
+                    'raw_evidence_json': {'event': {'tx_hash': '0xabc'}},
+                    'linked_alert_id': 'alert-1',
+                    'monitoring_run_id': 'run-1',
+                }
+            )
         if normalized.startswith('SELECT id, workspace_id, monitored_system_id, protected_asset_id, detection_type,'):
             return _Result(
                 rows=[
@@ -117,3 +128,24 @@ def test_get_detection_returns_detail(monkeypatch):
 
     assert payload['detection']['id'] == 'det-1'
     assert payload['detection']['evidence_source'] == 'live'
+
+
+def test_get_detection_evidence_returns_persisted_payload(monkeypatch):
+    connection = _Conn()
+    request = Request({'type': 'http', 'headers': []})
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda _connection, _request: {'id': 'user-1'})
+    monkeypatch.setattr(
+        pilot,
+        'resolve_workspace',
+        lambda _connection, _user_id, _workspace_id: {'workspace_id': 'ws-1'},
+    )
+
+    payload = pilot.get_detection_evidence('det-1', request)
+
+    assert payload['detection_id'] == 'det-1'
+    assert payload['linked_alert_id'] == 'alert-1'
+    assert payload['raw_evidence_json']['event']['tx_hash'] == '0xabc'

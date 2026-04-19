@@ -251,6 +251,7 @@ type ThreatChainStep = {
 };
 
 type EvidenceDrawerState = {
+  detectionId?: string | null;
   title: string;
   summary: string;
   raw: Record<string, any> | null;
@@ -908,6 +909,39 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     ];
   }, [actionHistory, alerts, detections, incidents, monitoringRuns]);
 
+  async function openDetectionEvidence(signal: DetectionItem) {
+    const detectionId = signal.id.replace('detection-', '');
+    const fallback = detections.find((item) => item.id === detectionId) ?? null;
+    const fallbackRaw = fallback?.raw_evidence_json ?? null;
+    const fallbackSummary = fallback?.evidence_summary || signal.evidenceSummary;
+    try {
+      const response = await fetch(`${apiUrl}/detections/${detectionId}/evidence`, { headers: authHeaders(), cache: 'no-store' });
+      if (!response.ok) {
+        setEvidenceDrawer({
+          detectionId,
+          title: signal.title,
+          summary: fallbackSummary,
+          raw: fallbackRaw,
+        });
+        return;
+      }
+      const payload = await response.json().catch(() => ({}));
+      setEvidenceDrawer({
+        detectionId,
+        title: signal.title,
+        summary: String(payload?.summary || fallbackSummary || 'No evidence summary available.'),
+        raw: (payload?.raw_evidence_json ?? fallbackRaw ?? null) as Record<string, any> | null,
+      });
+    } catch {
+      setEvidenceDrawer({
+        detectionId,
+        title: signal.title,
+        summary: fallbackSummary,
+        raw: fallbackRaw,
+      });
+    }
+  }
+
   async function runSimulatedThreatAction(actionType: string, label: string) {
     const create = await fetch(`${apiUrl}/enforcement/actions`, {
       method: 'POST',
@@ -1071,11 +1105,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 <button
                   type="button"
                   className="secondaryCta"
-                  onClick={() => setEvidenceDrawer({
-                    title: signal.title,
-                    summary: signal.evidenceSummary,
-                    raw: detections.find((item) => `detection-${item.id}` === signal.id)?.raw_evidence_json ?? null,
-                  })}
+                  onClick={() => void openDetectionEvidence(signal)}
                 >
                   Open evidence
                 </button>

@@ -7001,6 +7001,37 @@ def get_detection(detection_id: str, request: Request) -> dict[str, Any]:
         return {'detection': _json_safe_value(dict(row))}
 
 
+def get_detection_evidence(detection_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        row = connection.execute(
+            '''
+            SELECT id,
+                   workspace_id,
+                   evidence_summary,
+                   raw_evidence_json,
+                   linked_alert_id,
+                   monitoring_run_id
+            FROM detections
+            WHERE id = %s::uuid AND workspace_id = %s
+            ''',
+            (detection_id, workspace_context['workspace_id']),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Detection not found.')
+        detection = _json_safe_value(dict(row))
+        return {
+            'detection_id': detection.get('id'),
+            'summary': detection.get('evidence_summary'),
+            'raw_evidence_json': detection.get('raw_evidence_json') or {},
+            'linked_alert_id': detection.get('linked_alert_id'),
+            'monitoring_run_id': detection.get('monitoring_run_id'),
+        }
+
+
 def list_alerts(request: Request, *, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None, source: str | None = None) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
