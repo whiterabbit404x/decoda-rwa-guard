@@ -69,6 +69,7 @@ test('monitoring source files remain guarded from legacy presentation signals', 
 
 test('threat panel keeps telemetry and healthy monitoring copy guarded by truth constraints', () => {
   const threat = appSource('threat-operations-panel.tsx');
+  const truth = appSource('workspace-monitoring-truth.ts');
 
   expect(threat).toContain("showLiveTelemetry ? `Live telemetry ${telemetryLabel}` : 'Current telemetry unavailable'");
   expect(threat).toContain('Persistence outage active: {dbPersistenceOutageReason}.');
@@ -82,4 +83,9 @@ test('threat panel keeps telemetry and healthy monitoring copy guarded by truth 
   expect(threat).toContain('const hasCoverageFromRuntime = workspaceConfigured && (protectedAssetCount > 0 || configuredSystems > 0);');
   expect(threat).toContain('const presentationStatus = canonicalPresentation.status;');
   expect(threat).toContain('const dbPersistenceOutageReason = truth.db_failure_reason || null;');
+  expect(threat).toContain('const dbPersistenceOutageActive = Boolean(dbPersistenceOutageReason);');
+  expect(threat).toContain('&& !dbPersistenceOutageActive');
+  expect(truth).toContain('export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {');
+  expect(truth).toContain('&& !truth.db_failure_reason');
+  expect(truth).toContain('export function monitoringHealthyCopyAllowed(truth: WorkspaceMonitoringTruth): boolean {');
 });
