@@ -196,6 +196,7 @@ def test_signin_db_quota_exceeded_returns_graceful_503_and_throttles_degraded_wa
     assert all(response.headers['X-Decoda-DB-Classification'] == 'quota_exceeded' for response in responses)
     warning_messages = [record.message for record in caplog.records if 'event=auth_db_degraded classification=quota_exceeded' in record.message]
     assert len(warning_messages) == 1
+    assert 'reason=' in warning_messages[0]
 
 
 def test_signin_db_network_unreachable_returns_graceful_503_without_credential_failure(

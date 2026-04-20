@@ -112,6 +112,7 @@ def test_db_backoff_progression_caps_and_quota_backoff_is_slower_than_network(
         record.message for record in caplog.records if 'event=background_monitoring_db_degraded ' in record.message
     ]
     assert len(degraded_warnings) == 5
+    assert all('reason=' in message for message in degraded_warnings)
     assert sum('backoff_seconds=120' in message for message in degraded_warnings) == 1
 
     # quota progression should be slower and larger on first retry.

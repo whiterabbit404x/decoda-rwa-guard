@@ -104,6 +104,26 @@ def db_error_reason_label(classification: DbErrorClassification) -> str:
     return labels.get(classification, 'Unknown database error')
 
 
+def db_error_classification_context(exc: Exception, *, raw_snippet_limit: int = 180) -> dict[str, str]:
+    classification = classify_db_error(exc)
+    context: dict[str, str] = {
+        'classification': classification,
+        'reason': db_error_reason_label(classification),
+    }
+    normalized_message = _normalize_message(exc)
+    if (
+        any(pattern in normalized_message for pattern in _QUOTA_PATTERNS)
+        and any(pattern in normalized_message for pattern in _NETWORK_PATTERNS)
+    ):
+        context['classification_source'] = 'normalized_message'
+        raw_error = ' '.join(str(exc).strip().split())
+        if raw_error:
+            if len(raw_error) > raw_snippet_limit:
+                raw_error = f'{raw_error[:raw_snippet_limit]}…'
+            context['raw_error_snippet'] = raw_error
+    return context
+
+
 def extract_db_host_from_dsn(dsn: str | None) -> str | None:
     if not dsn:
         return None
