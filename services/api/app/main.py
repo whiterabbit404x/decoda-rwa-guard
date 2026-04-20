@@ -1272,6 +1272,31 @@ def bootstrap_live_pilot() -> dict[str, Any]:
             )
         else:
             logger.exception('startup monitored systems reconcile failed')
+            last_logged_backoff_seconds: int | None = None
+                    last_logged_backoff_seconds = None
+                        should_emit_degraded_warning = (
+                            state_downgraded
+                            or last_classification is None
+                            or last_classification != classification
+                            or last_logged_backoff_seconds != backoff_seconds
+                        if should_emit_degraded_warning:
+                            logger.warning(
+                                'event=background_monitoring_db_degraded classification=%s db_host=%s backoff_seconds=%s next_retry_at=%s state_downgraded=%s',
+                        last_logged_backoff_seconds = backoff_seconds
+                        if last_classification is None or last_classification != classification:
+                            condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
+                            logger.warning(
+                                'event=background_monitoring_db_degraded_cause classification=%s db_host=%s condensed_error=%s',
+                                classification,
+                                db_host or 'unknown',
+                                condensed_error,
+                            )
+                'classification=%s db_host=%s',
+                classification,
+                db_host,
+            )
+        else:
+            logger.exception('startup monitored systems reconcile failed')
     return STARTUP_BOOTSTRAP_STATUS
 
 

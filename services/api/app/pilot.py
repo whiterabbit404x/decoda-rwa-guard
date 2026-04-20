@@ -85,6 +85,7 @@ _rate_limit_state: dict[str, list[float]] = {}
 logger = logging.getLogger(__name__)
 _redis_rate_limiter: Any | None = None
 _redis_rate_limiter_lock = threading.Lock()
+_degraded_log_last_emitted_at: dict[str, float] = {}
 _AUTH_DB_CLASSIFICATIONS = {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'unknown_db_error'}
 _AUTH_DB_ERROR_CODE_BY_CLASSIFICATION = {
     'quota_exceeded': 'AUTH_DB_QUOTA_EXCEEDED',
@@ -92,6 +93,22 @@ _AUTH_DB_ERROR_CODE_BY_CLASSIFICATION = {
     'db_unavailable': 'AUTH_BACKEND_UNAVAILABLE',
     'unknown_db_error': 'AUTH_BACKEND_UNAVAILABLE',
 }
+
+
+def _condense_error_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    if not message:
+        return 'unknown_error'
+    return message.splitlines()[0]
+
+
+def _should_emit_degraded_log(log_key: str, *, min_interval_seconds: float = 300.0) -> bool:
+    now = monotonic()
+    previous = _degraded_log_last_emitted_at.get(log_key)
+    if previous is None or now - previous >= min_interval_seconds:
+        _degraded_log_last_emitted_at[log_key] = now
+        return True
+    return False
 
 
 def _condense_error_message(exc: Exception) -> str:
@@ -1152,8 +1169,14 @@ def _validate_session(connection: Any, token: str, payload: dict[str, Any]) -> N
     if session is None or session['revoked_at'] is not None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Session is no longer active.')
     if session['expires_at'] and session['expires_at'] < utc_now():
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Session expired.')
-    user_session_version = connection.execute('SELECT session_version FROM users WHERE id = %s', (payload.get('sub'),)).fetchone()
+        except Exception as exc:
+            condensed_error = _condense_error_message(exc)
+            if _should_emit_degraded_log('rate_limit.fallback.redis_unavailable', min_interval_seconds=300.0):
+                logger.warning(
+                    'redis rate limiter unavailable; falling back to in-memory limiter error=%s',
+                    condensed_error,
+                    extra={'event': 'rate_limit.fallback'},
+                )
     if not user_session_version or int(payload.get('sv', 0)) != int(user_session_version['session_version']):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Session version is no longer valid.')
     connection.execute(
@@ -1727,13 +1750,16 @@ def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             ''',
             (str(uuid.uuid4()), workspace_id, user_id, 'owner'),
         )
-        connection.execute(
-            'UPDATE users SET current_workspace_id = %s, updated_at = NOW() WHERE id = %s',
-            (workspace_id, user_id),
-        )
-        log_audit(
-            connection,
-            action='auth.signup',
+        log_key = f'auth_db_degraded:{classification}:{db_host or "unknown"}'
+        if _should_emit_degraded_log(log_key, min_interval_seconds=300.0):
+            logger.warning(
+                'event=auth_db_degraded classification=%s db_host=%s request_path=%s downgraded_response=%s condensed_error=%s',
+                classification,
+                db_host,
+                request_path or '/auth/signin',
+                True,
+                _condense_error_message(exc),
+            )
             entity_type='user',
             entity_id=user_id,
             request=request,
