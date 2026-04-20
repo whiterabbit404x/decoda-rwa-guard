@@ -261,6 +261,8 @@ RECONCILIATION_DATA_DIR = Path(__file__).resolve().parents[2] / 'reconciliation-
 OPTIONAL_FIXTURE_WARNINGS_EMITTED: set[tuple[str, str]] = set()
 STARTUP_BOOTSTRAP_STATUS: dict[str, Any] = {'enabled': False, 'ran': False, 'applied_versions': []}
 MONITORING_BACKGROUND_TASK: asyncio.Task[Any] | None = None
+HAS_EMITTED_INITIAL_MONITORING_DB_DEGRADED_EVENT = False
+HAS_EMITTED_INITIAL_STARTUP_RECONCILE_DB_DEGRADED_EVENT = False
 MONITORING_LOOP_RUNTIME_STATE: dict[str, Any] = {
     'degraded': False,
     'classification': None,
@@ -1234,7 +1236,7 @@ def emit_startup_fixture_diagnostics() -> None:
 
 
 def bootstrap_live_pilot() -> dict[str, Any]:
-    global STARTUP_BOOTSTRAP_STATUS
+    global STARTUP_BOOTSTRAP_STATUS, HAS_EMITTED_INITIAL_STARTUP_RECONCILE_DB_DEGRADED_EVENT
     runtime_validation = validate_runtime_configuration()
     for warning in runtime_validation.get('warnings', []):
         logger.warning('startup configuration warning: %s', warning)
@@ -1264,18 +1266,32 @@ def bootstrap_live_pilot() -> dict[str, Any]:
         classification = classify_db_error(exc)
         if classification in {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'auth_error'}:
             db_host = extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url())
+            reason = db_error_reason_label(classification)
             STARTUP_BOOTSTRAP_STATUS['monitored_systems_reconcile'] = {
                 'degraded': True,
                 'classification': classification,
-                'reason': db_error_reason_label(classification),
+                'reason': reason,
                 'db_host': db_host,
             }
-            logger.info(
-                'startup monitored systems reconcile skipped due to degraded database connectivity '
-                'classification=%s db_host=%s',
-                classification,
-                db_host,
-            )
+            if not HAS_EMITTED_INITIAL_STARTUP_RECONCILE_DB_DEGRADED_EVENT:
+                logger.info(
+                    'event=startup_monitored_systems_reconcile_db_degraded classification=%s reason=%s '
+                    'db_host=%s retry_scheduled=%s retry_backoff_seconds=%s next_retry_at=%s',
+                    classification,
+                    reason,
+                    db_host or 'unknown',
+                    False,
+                    0,
+                    'none',
+                )
+                HAS_EMITTED_INITIAL_STARTUP_RECONCILE_DB_DEGRADED_EVENT = True
+            else:
+                logger.info(
+                    'startup monitored systems reconcile skipped due to degraded database connectivity '
+                    'classification=%s db_host=%s',
+                    classification,
+                    db_host,
+                )
         else:
             logger.exception('startup monitored systems reconcile failed')
     return STARTUP_BOOTSTRAP_STATUS
@@ -1290,7 +1306,7 @@ async def lifespan(_: FastAPI):
     emit_startup_fixture_diagnostics()
     if str(os.getenv('LIVE_MONITORING_ENABLED', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'}:
         async def _monitoring_loop() -> None:
-            global MONITORING_LOOP_RUNTIME_STATE
+            global MONITORING_LOOP_RUNTIME_STATE, HAS_EMITTED_INITIAL_MONITORING_DB_DEGRADED_EVENT
             interval = max(10, int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30')))
             default_backoff_base_seconds = max(5, int(os.getenv('MONITOR_DB_RETRY_BASE_SECONDS', '15')))
             default_backoff_cap_seconds = max(default_backoff_base_seconds, int(os.getenv('MONITOR_DB_RETRY_CAP_SECONDS', '300')))
@@ -1356,7 +1372,8 @@ async def lifespan(_: FastAPI):
                         }
                         warning_state = (classification, backoff_seconds)
                         should_emit_degraded_warning = (
-                            state_downgraded
+                            not HAS_EMITTED_INITIAL_MONITORING_DB_DEGRADED_EVENT
+                            or state_downgraded
                             or last_emitted_degraded_warning_state is None
                             or last_emitted_degraded_warning_state[0] != classification
                             or last_emitted_degraded_warning_state[1] != backoff_seconds
@@ -1379,6 +1396,7 @@ async def lifespan(_: FastAPI):
                                 *(value for value in (error_context.get('classification_source'), error_context.get('raw_error_snippet')) if value),
                             )
                             last_emitted_degraded_warning_state = warning_state
+                            HAS_EMITTED_INITIAL_MONITORING_DB_DEGRADED_EVENT = True
                         if last_classification is None or last_classification != classification:
                             condensed_error = normalize_db_error_snippet(str(exc)) or 'unknown_error'
                             cause_details = ''

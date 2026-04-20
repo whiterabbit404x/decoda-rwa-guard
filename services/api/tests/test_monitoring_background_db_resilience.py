@@ -77,6 +77,77 @@ def test_loop_survives_db_error_and_marks_degraded_state(api_main, monkeypatch: 
     assert not any('event=background_monitoring_db_degraded_traceback' in record.message for record in caplog.records)
 
 
+def test_startup_reconcile_emits_first_structured_db_degraded_event_once(
+    api_main, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(api_main, 'validate_runtime_configuration', lambda: {'warnings': [], 'errors': []})
+    monkeypatch.setattr(api_main, 'run_startup_migrations_if_enabled', lambda process_role='api': {'enabled': True, 'ran': False, 'applied_versions': []})
+    monkeypatch.setattr(
+        api_main,
+        'reconcile_monitored_systems_for_enabled_targets',
+        lambda: (_ for _ in ()).throw(RuntimeError('connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable')),
+    )
+    monkeypatch.setattr(api_main, 'database_url', lambda: 'postgresql://user:pw@db.internal:5432/app')
+    api_main.HAS_EMITTED_INITIAL_STARTUP_RECONCILE_DB_DEGRADED_EVENT = False
+
+    with caplog.at_level('INFO'):
+        api_main.bootstrap_live_pilot()
+        api_main.bootstrap_live_pilot()
+
+    structured_records = [
+        record.message for record in caplog.records if 'event=startup_monitored_systems_reconcile_db_degraded' in record.message
+    ]
+    assert len(structured_records) == 1
+    assert 'classification=network_unreachable' in structured_records[0]
+    assert 'reason=Database network unreachable' in structured_records[0]
+    assert 'db_host=db.internal' in structured_records[0]
+    assert 'retry_scheduled=False retry_backoff_seconds=0 next_retry_at=none' in structured_records[0]
+
+
+def test_first_loop_degraded_event_logs_then_suppresses_unchanged_retries(
+    api_main, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv('MONITOR_DB_RETRY_NETWORK_BASE_SECONDS', '10')
+    monkeypatch.setenv('MONITOR_DB_RETRY_NETWORK_CAP_SECONDS', '10')
+    sleep_calls: list[float] = []
+    side_effects: Iterator[object] = iter([
+        RuntimeError('connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable'),
+        RuntimeError('connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable'),
+        RuntimeError('connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable'),
+    ])
+    sleep_count = {'value': 0}
+
+    def _run_cycle(*_args, **_kwargs):
+        effect = next(side_effects)
+        if isinstance(effect, Exception):
+            raise effect
+        return effect
+
+    async def _fake_sleep(seconds: float):
+        sleep_calls.append(float(seconds))
+        sleep_count['value'] += 1
+        if sleep_count['value'] >= 3:
+            raise asyncio.CancelledError()
+        return None
+
+    api_main.HAS_EMITTED_INITIAL_MONITORING_DB_DEGRADED_EVENT = False
+    monkeypatch.setattr(api_main, 'run_monitoring_cycle', _run_cycle)
+    monkeypatch.setattr(api_main.asyncio, 'sleep', _fake_sleep)
+    with caplog.at_level('INFO'):
+        with _lifespan_test_client(api_main, monkeypatch):
+            pass
+
+    assert sleep_calls == [10.0, 10.0, 10.0]
+    degraded_records = [
+        record.message for record in caplog.records if 'event=background_monitoring_db_degraded ' in record.message
+    ]
+    assert len(degraded_records) == 1
+    assert 'classification=network_unreachable' in degraded_records[0]
+    assert 'reason=Database network unreachable' in degraded_records[0]
+    assert 'db_host=' in degraded_records[0]
+    assert 'backoff_seconds=10 next_retry_at=' in degraded_records[0]
+
+
 def test_db_backoff_progression_caps_and_quota_backoff_is_slower_than_network(
     api_main, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
