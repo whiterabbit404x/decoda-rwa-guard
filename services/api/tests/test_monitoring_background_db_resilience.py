@@ -37,7 +37,7 @@ def _lifespan_test_client(api_main, monkeypatch: pytest.MonkeyPatch):
         yield client
 
 
-def test_loop_survives_db_error_and_marks_degraded_state(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_loop_survives_db_error_and_marks_degraded_state(api_main, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     sleep_calls: list[float] = []
     snapshots: list[dict[str, object]] = []
     attempts = {'value': 0}
@@ -66,6 +66,8 @@ def test_loop_survives_db_error_and_marks_degraded_state(api_main, monkeypatch: 
     assert snapshots[0]['backoff_seconds'] == 10
     assert snapshots[0]['next_retry_at'] is not None
     assert snapshots[1]['state_downgraded'] is False
+    assert any('event=background_monitoring_db_degraded_cause' in record.message for record in caplog.records)
+    assert not any('event=background_monitoring_db_degraded_traceback' in record.message for record in caplog.records)
 
 
 def test_db_backoff_progression_caps_and_quota_backoff_is_slower_than_network(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
