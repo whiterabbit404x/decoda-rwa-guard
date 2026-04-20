@@ -23,8 +23,11 @@ def pilot_module():
     return module
 
 
-def _request() -> Request:
-    return Request({'type': 'http', 'headers': []})
+def _request(headers: dict[str, str] | None = None) -> Request:
+    encoded_headers = []
+    if headers:
+        encoded_headers = [(key.lower().encode('latin-1'), value.encode('latin-1')) for key, value in headers.items()]
+    return Request({'type': 'http', 'headers': encoded_headers})
 
 
 def test_signup_success_returns_verification_required(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -183,10 +186,13 @@ def test_signin_db_quota_exceeded_returns_graceful_503_and_throttles_degraded_wa
 
     responses: list[HTTPException] = []
     with caplog.at_level('INFO'):
-        for current in (10_000.0, 10_010.0):
+        for current, request_id in ((10_000.0, 'req-first-window'), (10_010.0, 'req-second-window')):
             now['value'] = current
             with pytest.raises(HTTPException) as exc_info:
-                pilot_module.signin_user({'email': 'team@example.com', 'password': 'StrongPass1234'}, _request())
+                pilot_module.signin_user(
+                    {'email': 'team@example.com', 'password': 'StrongPass1234'},
+                    _request({'x-request-id': request_id}),
+                )
             responses.append(exc_info.value)
 
     assert len(responses) == 2
@@ -194,10 +200,14 @@ def test_signin_db_quota_exceeded_returns_graceful_503_and_throttles_degraded_wa
     assert all(response.detail == 'Authentication is temporarily unavailable. Please retry in a moment.' for response in responses)
     assert all(response.headers['X-Decoda-Error-Code'] == 'AUTH_DB_QUOTA_EXCEEDED' for response in responses)
     assert all(response.headers['X-Decoda-DB-Classification'] == 'quota_exceeded' for response in responses)
+    assert responses[0].headers['X-Decoda-Correlation-Id'] == 'req-first-window'
+    assert responses[1].headers['X-Decoda-Correlation-Id'] == 'req-second-window'
     degraded_records = [record for record in caplog.records if 'event=auth_db_degraded classification=quota_exceeded' in record.message]
     assert len(degraded_records) == 1
     assert degraded_records[0].levelname == 'INFO'
     assert 'reason=' in degraded_records[0].message
+    assert 'correlation_id=req-first-window' in degraded_records[0].message
+    assert 'correlation_id=req-second-window' not in degraded_records[0].message
 
 
 def test_signin_db_network_unreachable_returns_graceful_503_without_credential_failure(
