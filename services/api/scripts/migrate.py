@@ -23,6 +23,7 @@ def _ensure_repo_root_on_path() -> Path:
 REPO_ROOT = _ensure_repo_root_on_path()
 
 from phase1_local.dev_support import load_env_file
+from services.api.app.db_failure import classify_db_error
 from services.api.app.pilot import pilot_schema_status, run_migrations
 
 
@@ -32,12 +33,11 @@ def _migration_fail_open_enabled() -> bool:
 
 
 def _is_database_bootstrap_unavailable_error(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return (
-        'exceeded the compute time quota' in message
-        or 'network is unreachable' in message
-        or 'connection to server' in message
-    )
+    return classify_db_error(exc) in {
+        'quota_exceeded',
+        'network_unreachable',
+        'db_unavailable',
+    }
 
 
 if __name__ == '__main__':
