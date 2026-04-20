@@ -1254,8 +1254,24 @@ def bootstrap_live_pilot() -> dict[str, Any]:
             reconcile_result.get('created_or_updated', 0),
             len(reconcile_result.get('invalid_targets', [])),
         )
-    except Exception:  # pragma: no cover - startup safety
-        logger.exception('startup monitored systems reconcile failed')
+    except Exception as exc:  # pragma: no cover - startup safety
+        classification = classify_db_error(exc)
+        if classification in {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'auth_error'}:
+            db_host = extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url())
+            STARTUP_BOOTSTRAP_STATUS['monitored_systems_reconcile'] = {
+                'degraded': True,
+                'classification': classification,
+                'reason': db_error_reason_label(classification),
+                'db_host': db_host,
+            }
+            logger.warning(
+                'startup monitored systems reconcile skipped due to degraded database connectivity '
+                'classification=%s db_host=%s',
+                classification,
+                db_host,
+            )
+        else:
+            logger.exception('startup monitored systems reconcile failed')
     return STARTUP_BOOTSTRAP_STATUS
 
 
@@ -1338,13 +1354,12 @@ async def lifespan(_: FastAPI):
                             state_downgraded,
                         )
                         if last_classification is None or last_classification != classification:
-                            logger.exception(
-                                'event=background_monitoring_db_degraded_traceback classification=%s db_host=%s backoff_seconds=%s next_retry_at=%s state_downgraded=%s',
+                            condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
+                            logger.warning(
+                                'event=background_monitoring_db_degraded_cause classification=%s db_host=%s condensed_error=%s',
                                 classification,
                                 db_host or 'unknown',
-                                backoff_seconds,
-                                next_retry_at,
-                                state_downgraded,
+                                condensed_error,
                             )
                         await asyncio.sleep(backoff_seconds)
                         continue

@@ -1177,8 +1177,13 @@ def enforce_auth_rate_limit(request: Request, action: str) -> None:
             return
         except HTTPException:
             raise
-        except Exception:
-            logger.exception('redis rate limiter unavailable; falling back to in-memory limiter', extra={'event': 'rate_limit.fallback'})
+        except Exception as exc:
+            condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
+            logger.warning(
+                'redis rate limiter unavailable; falling back to in-memory limiter error=%s',
+                condensed_error,
+                extra={'event': 'rate_limit.fallback'},
+            )
     key = f'{action}:{client_host}'
     cutoff = monotonic() - AUTH_WINDOW_SECONDS
     with _rate_limit_lock:
@@ -1751,12 +1756,14 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             return
         db_host = extract_db_host_from_dsn(database_url())
         request_path = request.scope.get('path') if isinstance(getattr(request, 'scope', None), dict) else None
-        logger.exception(
-            'event=auth_db_degraded classification=%s db_host=%s request_path=%s downgraded_response=%s',
+        condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
+        logger.warning(
+            'event=auth_db_degraded classification=%s db_host=%s request_path=%s downgraded_response=%s condensed_error=%s',
             classification,
             db_host,
             request_path or '/auth/signin',
             True,
+            condensed_error,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
