@@ -1104,10 +1104,33 @@ def auth_schema_error_response(exc: HTTPException) -> JSONResponse | None:
     return JSONResponse(payload, status_code=exc.status_code, headers={'Cache-Control': 'no-store'})
 
 
+def auth_backend_error_response(exc: HTTPException) -> JSONResponse | None:
+    if exc.status_code != 503:
+        return None
+    error_code = (exc.headers or {}).get('X-Decoda-Error-Code')
+    if error_code not in {'AUTH_BACKEND_UNAVAILABLE', 'AUTH_DB_QUOTA_EXCEEDED'}:
+        return None
+    detail = str(exc.detail or 'Authentication is temporarily unavailable. Please retry in a moment.')
+    classification = (exc.headers or {}).get('X-Decoda-DB-Classification') or None
+    # Contract choice: return HTTP 503 for infrastructure/database outages so clients do not mistake it for credential failure.
+    payload: dict[str, Any] = {
+        'code': error_code,
+        'detail': detail,
+        'message': detail,
+        'retryable': True,
+    }
+    if classification:
+        payload['classification'] = classification
+    return JSONResponse(payload, status_code=exc.status_code, headers={'Cache-Control': 'no-store'})
+
+
 def with_auth_schema_json(handler):
     try:
         return handler()
     except HTTPException as exc:
+        backend_response = auth_backend_error_response(exc)
+        if backend_response is not None:
+            return backend_response
         response = auth_schema_error_response(exc)
         if response is not None:
             return response
