@@ -182,7 +182,7 @@ def test_signin_db_quota_exceeded_returns_graceful_503_and_throttles_degraded_wa
     monkeypatch.setattr(pilot_module, 'monotonic', lambda: now['value'])
 
     responses: list[HTTPException] = []
-    with caplog.at_level('WARNING'):
+    with caplog.at_level('INFO'):
         for current in (10_000.0, 10_010.0):
             now['value'] = current
             with pytest.raises(HTTPException) as exc_info:
@@ -194,9 +194,10 @@ def test_signin_db_quota_exceeded_returns_graceful_503_and_throttles_degraded_wa
     assert all(response.detail == 'Authentication is temporarily unavailable. Please retry in a moment.' for response in responses)
     assert all(response.headers['X-Decoda-Error-Code'] == 'AUTH_DB_QUOTA_EXCEEDED' for response in responses)
     assert all(response.headers['X-Decoda-DB-Classification'] == 'quota_exceeded' for response in responses)
-    warning_messages = [record.message for record in caplog.records if 'event=auth_db_degraded classification=quota_exceeded' in record.message]
-    assert len(warning_messages) == 1
-    assert 'reason=' in warning_messages[0]
+    degraded_records = [record for record in caplog.records if 'event=auth_db_degraded classification=quota_exceeded' in record.message]
+    assert len(degraded_records) == 1
+    assert degraded_records[0].levelname == 'INFO'
+    assert 'reason=' in degraded_records[0].message
 
 
 def test_signin_db_network_unreachable_returns_graceful_503_without_credential_failure(
@@ -244,17 +245,18 @@ def test_enforce_auth_rate_limit_redis_failure_logs_are_throttled_per_window(
     now = {'value': 1_000.0}
     monkeypatch.setattr(pilot_module, 'monotonic', lambda: now['value'])
 
-    with caplog.at_level('WARNING'):
+    with caplog.at_level('INFO'):
         for current in (1_000.0, 1_010.0, 1_020.0, 1_030.0, 1_301.0):
             now['value'] = current
             pilot_module.enforce_auth_rate_limit(_request(), 'signin')
 
-    warning_messages = [
+    degraded_records = [
         record.message
         for record in caplog.records
         if 'redis rate limiter unavailable; falling back to in-memory limiter error=dns lookup failed' in record.message
     ]
-    assert len(warning_messages) == 2
+    assert len(degraded_records) == 2
+    assert all(record.levelname == 'INFO' for record in caplog.records if 'redis rate limiter unavailable; falling back to in-memory limiter error=dns lookup failed' in record.message)
 
 
 def test_json_safe_value_serializes_uuid_and_datetime(pilot_module) -> None:

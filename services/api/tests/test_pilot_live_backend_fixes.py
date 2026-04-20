@@ -789,7 +789,9 @@ def test_bootstrap_live_pilot_records_startup_status(api_main, monkeypatch: pyte
     assert api_main.STARTUP_BOOTSTRAP_STATUS == payload
 
 
-def test_bootstrap_live_pilot_marks_reconcile_as_degraded_for_quota_errors(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_bootstrap_live_pilot_marks_reconcile_as_degraded_for_quota_errors(
+    api_main, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     monkeypatch.setattr(
         api_main,
         'run_startup_migrations_if_enabled',
@@ -808,7 +810,8 @@ def test_bootstrap_live_pilot_marks_reconcile_as_degraded_for_quota_errors(api_m
     )
     monkeypatch.setenv('DATABASE_URL', 'postgresql://user:pass@db.example.test:5432/app')
 
-    payload = api_main.bootstrap_live_pilot()
+    with caplog.at_level('INFO'):
+        payload = api_main.bootstrap_live_pilot()
 
     assert payload['monitored_systems_reconcile'] == {
         'degraded': True,
@@ -816,6 +819,11 @@ def test_bootstrap_live_pilot_marks_reconcile_as_degraded_for_quota_errors(api_m
         'reason': 'Database quota exhausted',
         'db_host': 'db.example.test',
     }
+    degraded_records = [
+        record for record in caplog.records if 'startup monitored systems reconcile skipped due to degraded database connectivity' in record.message
+    ]
+    assert len(degraded_records) == 1
+    assert degraded_records[0].levelname == 'INFO'
 
 
 def test_embedded_loader_isolates_top_level_app_package_namespaces(api_main) -> None:
