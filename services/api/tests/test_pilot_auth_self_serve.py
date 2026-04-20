@@ -210,7 +210,7 @@ def test_signin_db_network_unreachable_returns_graceful_503_without_credential_f
     assert exc_info.value.headers['X-Decoda-DB-Classification'] == 'network_unreachable'
 
 
-def test_enforce_auth_rate_limit_redis_failure_logs_condensed_warning(
+def test_enforce_auth_rate_limit_redis_failure_logs_are_throttled_per_window(
     pilot_module, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     class _RedisClient:
@@ -228,14 +228,23 @@ def test_enforce_auth_rate_limit_redis_failure_logs_condensed_warning(
     monkeypatch.setenv('REDIS_URL', 'redis://redis.invalid:6379/0')
     monkeypatch.setattr(pilot_module.importlib, 'import_module', lambda _: _RedisModule())
     monkeypatch.setattr(pilot_module, '_redis_rate_limiter', None)
+    monkeypatch.setattr(pilot_module, '_rate_limit_state', {})
+    monkeypatch.setattr(pilot_module, '_rate_limit_fallback_last_emitted', {})
+
+    now = {'value': 1_000.0}
+    monkeypatch.setattr(pilot_module, 'monotonic', lambda: now['value'])
 
     with caplog.at_level('WARNING'):
-        pilot_module.enforce_auth_rate_limit(_request(), 'signin')
+        for current in (1_000.0, 1_010.0, 1_020.0, 1_030.0, 1_301.0):
+            now['value'] = current
+            pilot_module.enforce_auth_rate_limit(_request(), 'signin')
 
-    assert any(
-        'redis rate limiter unavailable; falling back to in-memory limiter error=dns lookup failed' in record.message
+    warning_messages = [
+        record.message
         for record in caplog.records
-    )
+        if 'redis rate limiter unavailable; falling back to in-memory limiter error=dns lookup failed' in record.message
+    ]
+    assert len(warning_messages) == 2
 
 
 def test_json_safe_value_serializes_uuid_and_datetime(pilot_module) -> None:
