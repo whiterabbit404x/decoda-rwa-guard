@@ -185,6 +185,7 @@ from services.api.app.db_failure import (
     db_error_classification_context,
     db_error_reason_label,
     extract_db_host_from_dsn,
+    normalize_db_error_snippet,
 )
 
 
@@ -1379,7 +1380,7 @@ async def lifespan(_: FastAPI):
                             )
                             last_emitted_degraded_warning_state = warning_state
                         if last_classification is None or last_classification != classification:
-                            condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
+                            condensed_error = normalize_db_error_snippet(str(exc)) or 'unknown_error'
                             cause_details = ''
                             if error_context.get('classification_source'):
                                 cause_details += ' classification_source=%s'

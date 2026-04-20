@@ -3,7 +3,9 @@ from __future__ import annotations
 from services.api.app.db_failure import (
     classify_db_error,
     db_error_reason_label,
+    db_error_classification_context,
     extract_db_host_from_dsn,
+    normalize_db_error_snippet,
 )
 
 
@@ -66,3 +68,36 @@ def test_extract_db_host_from_keyword_dsn() -> None:
 def test_extract_db_host_from_dsn_handles_empty_input() -> None:
     assert extract_db_host_from_dsn('') is None
     assert extract_db_host_from_dsn(None) is None
+
+
+def test_normalize_db_error_snippet_collapses_whitespace_and_keeps_first_sentence() -> None:
+    raw_error = (
+        'could not connect to server: Connection refused. \n'
+        'DETAIL: Is the server running on host "db.internal" and accepting\n'
+        'TCP/IP connections?'
+    )
+    assert normalize_db_error_snippet(raw_error) == 'could not connect to server: Connection refused.'
+
+
+def test_normalize_db_error_snippet_truncates_with_ellipsis_only_when_needed() -> None:
+    raw_error = (
+        'FATAL: password authentication failed for user "app" '
+        'DETAIL: Connection matched pg_hba.conf line 95: "host all all 0.0.0.0/0 md5"'
+    )
+    snippet = normalize_db_error_snippet(raw_error, snippet_limit=60)
+    assert snippet == 'FATAL: password authentication failed for user "app" DETAIL…'
+    assert snippet.endswith('…')
+    assert len(snippet) == 60
+
+
+def test_db_error_context_uses_normalized_raw_error_snippet_with_hard_cap() -> None:
+    exc = RuntimeError(
+        'ERROR: Your account or project has exceeded the compute time quota. \n'
+        'connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable\n'
+        'DETAIL: temporary routing failure from node-12 to gateway-3'
+    )
+    context = db_error_classification_context(exc, raw_snippet_limit=90)
+
+    assert context['classification'] == 'quota_exceeded'
+    assert context['classification_source'] == 'normalized_message'
+    assert context['raw_error_snippet'] == 'ERROR: Your account or project has exceeded the compute time quota.'

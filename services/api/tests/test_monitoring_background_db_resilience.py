@@ -215,6 +215,42 @@ def test_db_degraded_warning_dedupes_when_capped_backoff_is_unchanged(
     assert 'classification=quota_exceeded' in degraded_cause_warnings[1]
 
 
+def test_db_degraded_cause_uses_normalized_condensed_error_snippet(
+    api_main, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    sleep_calls: list[float] = []
+    attempts = {'value': 0}
+    multiline_psycopg_error = (
+        'connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable.\n'
+        'DETAIL: Is the server running on that host and accepting TCP/IP connections?\n'
+        'HINT: Check VPC routing and firewall rules for outbound access.'
+    )
+
+    def _run_cycle(*_args, **_kwargs):
+        attempts['value'] += 1
+        raise RuntimeError(multiline_psycopg_error)
+
+    async def _fake_sleep(seconds: float):
+        sleep_calls.append(float(seconds))
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(api_main, 'run_monitoring_cycle', _run_cycle)
+    monkeypatch.setattr(api_main.asyncio, 'sleep', _fake_sleep)
+    with caplog.at_level('INFO'):
+        with _lifespan_test_client(api_main, monkeypatch):
+            pass
+
+    assert attempts['value'] == 1
+    assert sleep_calls == [10.0]
+    cause_records = [record.message for record in caplog.records if 'event=background_monitoring_db_degraded_cause' in record.message]
+    assert len(cause_records) == 1
+    assert (
+        'condensed_error=connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable.'
+        in cause_records[0]
+    )
+    assert 'DETAIL:' not in cause_records[0]
+
+
 def test_db_outage_never_reports_live_fresh_or_high_confidence_in_truth_summary() -> None:
     from datetime import datetime, timedelta, timezone
 
