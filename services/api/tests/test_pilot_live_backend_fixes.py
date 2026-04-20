@@ -789,6 +789,35 @@ def test_bootstrap_live_pilot_records_startup_status(api_main, monkeypatch: pyte
     assert api_main.STARTUP_BOOTSTRAP_STATUS == payload
 
 
+def test_bootstrap_live_pilot_marks_reconcile_as_degraded_for_quota_errors(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        api_main,
+        'run_startup_migrations_if_enabled',
+        lambda process_role='api': {
+            'enabled': True,
+            'ran': True,
+            'applied_versions': ['0001_pilot_foundation.sql'],
+            'process_role': process_role,
+            'reason': 'RUN_MIGRATIONS_ON_STARTUP is enabled',
+        },
+    )
+    monkeypatch.setattr(
+        api_main,
+        'reconcile_monitored_systems_for_enabled_targets',
+        lambda: (_ for _ in ()).throw(RuntimeError('Your account has exceeded the compute time quota.')),
+    )
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://user:pass@db.example.test:5432/app')
+
+    payload = api_main.bootstrap_live_pilot()
+
+    assert payload['monitored_systems_reconcile'] == {
+        'degraded': True,
+        'classification': 'quota_exceeded',
+        'reason': 'Database quota exhausted',
+        'db_host': 'db.example.test',
+    }
+
+
 def test_embedded_loader_isolates_top_level_app_package_namespaces(api_main) -> None:
     api_main.load_embedded_service_main.cache_clear()
 

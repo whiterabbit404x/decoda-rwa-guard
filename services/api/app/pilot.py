@@ -85,6 +85,7 @@ _rate_limit_state: dict[str, list[float]] = {}
 logger = logging.getLogger(__name__)
 _redis_rate_limiter: Any | None = None
 _redis_rate_limiter_lock = threading.Lock()
+_degraded_log_last_emitted_at: dict[str, float] = {}
 _AUTH_DB_CLASSIFICATIONS = {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'unknown_db_error'}
 _AUTH_DB_ERROR_CODE_BY_CLASSIFICATION = {
     'quota_exceeded': 'AUTH_DB_QUOTA_EXCEEDED',
@@ -92,6 +93,22 @@ _AUTH_DB_ERROR_CODE_BY_CLASSIFICATION = {
     'db_unavailable': 'AUTH_BACKEND_UNAVAILABLE',
     'unknown_db_error': 'AUTH_BACKEND_UNAVAILABLE',
 }
+
+
+def _condense_error_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    if not message:
+        return 'unknown_error'
+    return message.splitlines()[0]
+
+
+def _should_emit_degraded_log(log_key: str, *, min_interval_seconds: float = 300.0) -> bool:
+    now = monotonic()
+    previous = _degraded_log_last_emitted_at.get(log_key)
+    if previous is None or now - previous >= min_interval_seconds:
+        _degraded_log_last_emitted_at[log_key] = now
+        return True
+    return False
 
 
 STARTUP_BOOTSTRAP_ENV = 'RUN_MIGRATIONS_ON_STARTUP'
@@ -1177,8 +1194,13 @@ def enforce_auth_rate_limit(request: Request, action: str) -> None:
             return
         except HTTPException:
             raise
-        except Exception:
-            logger.exception('redis rate limiter unavailable; falling back to in-memory limiter', extra={'event': 'rate_limit.fallback'})
+        except Exception as exc:
+            if _should_emit_degraded_log('rate_limit.fallback.redis_unavailable', min_interval_seconds=300.0):
+                logger.warning(
+                    'redis rate limiter unavailable; falling back to in-memory limiter error=%s',
+                    _condense_error_message(exc),
+                    extra={'event': 'rate_limit.fallback'},
+                )
     key = f'{action}:{client_host}'
     cutoff = monotonic() - AUTH_WINDOW_SECONDS
     with _rate_limit_lock:
@@ -1751,13 +1773,16 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             return
         db_host = extract_db_host_from_dsn(database_url())
         request_path = request.scope.get('path') if isinstance(getattr(request, 'scope', None), dict) else None
-        logger.exception(
-            'event=auth_db_degraded classification=%s db_host=%s request_path=%s downgraded_response=%s',
-            classification,
-            db_host,
-            request_path or '/auth/signin',
-            True,
-        )
+        log_key = f'auth_db_degraded:{classification}:{db_host or "unknown"}'
+        if _should_emit_degraded_log(log_key, min_interval_seconds=300.0):
+            logger.warning(
+                'event=auth_db_degraded classification=%s db_host=%s request_path=%s downgraded_response=%s condensed_error=%s',
+                classification,
+                db_host,
+                request_path or '/auth/signin',
+                True,
+                _condense_error_message(exc),
+            )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail='Authentication is temporarily unavailable. Please retry in a moment.',

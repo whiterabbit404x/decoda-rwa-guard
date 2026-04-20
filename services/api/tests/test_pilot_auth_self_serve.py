@@ -177,9 +177,10 @@ def test_signin_db_quota_exceeded_returns_graceful_503_and_machine_code(
     monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg)
     monkeypatch.setattr(pilot_module, 'database_url', lambda: 'postgres://user:pass@ep-decoda-neon.us-east-1.aws.neon.tech/db')
+    monkeypatch.setattr(pilot_module, '_degraded_log_last_emitted_at', {})
 
     with pytest.raises(HTTPException) as exc_info:
-        with caplog.at_level('ERROR'):
+        with caplog.at_level('WARNING'):
             pilot_module.signin_user({'email': 'team@example.com', 'password': 'StrongPass1234'}, _request())
 
     assert exc_info.value.status_code == 503
@@ -187,6 +188,59 @@ def test_signin_db_quota_exceeded_returns_graceful_503_and_machine_code(
     assert exc_info.value.headers['X-Decoda-Error-Code'] == 'AUTH_DB_QUOTA_EXCEEDED'
     assert exc_info.value.headers['X-Decoda-DB-Classification'] == 'quota_exceeded'
     assert any('event=auth_db_degraded classification=quota_exceeded' in record.message for record in caplog.records)
+
+
+def test_signin_db_degraded_log_is_throttled_within_window(
+    pilot_module, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    @contextmanager
+    def fake_pg():
+        raise RuntimeError('Neon error: exceeded the compute time quota for this project')
+        yield
+
+    monotonic_values = iter([100.0, 120.0])
+    monkeypatch.setattr(pilot_module, 'monotonic', lambda: next(monotonic_values))
+    monkeypatch.setattr(pilot_module, '_degraded_log_last_emitted_at', {})
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg)
+    monkeypatch.setattr(pilot_module, 'database_url', lambda: 'postgres://user:pass@ep-decoda-neon.us-east-1.aws.neon.tech/db')
+
+    with caplog.at_level('WARNING'):
+        for _ in range(2):
+            with pytest.raises(HTTPException):
+                pilot_module.signin_user({'email': 'team@example.com', 'password': 'StrongPass1234'}, _request())
+
+    degraded_logs = [record for record in caplog.records if 'event=auth_db_degraded classification=quota_exceeded' in record.message]
+    assert len(degraded_logs) == 1
+
+
+def test_enforce_auth_rate_limit_redis_failure_logs_condensed_warning_once_per_window(
+    pilot_module, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class _RedisClient:
+        def incr(self, *_args, **_kwargs):
+            raise RuntimeError('dns lookup failed')
+
+    class _RedisFactory:
+        @staticmethod
+        def from_url(*_args, **_kwargs):
+            return _RedisClient()
+
+    class _RedisModule:
+        Redis = _RedisFactory
+
+    monkeypatch.setattr(pilot_module, 'monotonic', lambda: 200.0)
+    monkeypatch.setenv('REDIS_URL', 'redis://redis.invalid:6379/0')
+    monkeypatch.setattr(pilot_module.importlib, 'import_module', lambda _: _RedisModule())
+    monkeypatch.setattr(pilot_module, '_redis_rate_limiter', None)
+    monkeypatch.setattr(pilot_module, '_degraded_log_last_emitted_at', {})
+
+    with caplog.at_level('WARNING'):
+        pilot_module.enforce_auth_rate_limit(_request(), 'signin')
+        pilot_module.enforce_auth_rate_limit(_request(), 'signin')
+
+    fallback_logs = [record for record in caplog.records if 'redis rate limiter unavailable; falling back to in-memory limiter error=' in record.message]
+    assert len(fallback_logs) == 1
 
 
 def test_signin_db_network_unreachable_returns_graceful_503_without_credential_failure(
