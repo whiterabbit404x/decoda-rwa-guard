@@ -1294,13 +1294,11 @@ async def lifespan(_: FastAPI):
             quota_backoff_cap_seconds = max(quota_backoff_base_seconds, int(os.getenv('MONITOR_DB_RETRY_QUOTA_CAP_SECONDS', '900')))
             consecutive_db_failures = 0
             last_db_failure_classification: str | None = None
-            last_logged_backoff_seconds: int | None = None
             while True:
                 try:
                     run_monitoring_cycle(worker_name='monitoring-worker', limit=100, trigger_type='scheduler')
                     consecutive_db_failures = 0
                     last_db_failure_classification = None
-                    last_logged_backoff_seconds = None
                     MONITORING_LOOP_RUNTIME_STATE = {
                         'degraded': False,
                         'classification': None,
@@ -1347,22 +1345,14 @@ async def lifespan(_: FastAPI):
                             'state_downgraded': state_downgraded,
                             'updated_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
                         }
-                        should_emit_degraded_warning = (
-                            state_downgraded
-                            or last_classification is None
-                            or last_classification != classification
-                            or last_logged_backoff_seconds != backoff_seconds
+                        logger.warning(
+                            'event=background_monitoring_db_degraded classification=%s db_host=%s backoff_seconds=%s next_retry_at=%s state_downgraded=%s',
+                            classification,
+                            db_host or 'unknown',
+                            backoff_seconds,
+                            next_retry_at,
+                            state_downgraded,
                         )
-                        if should_emit_degraded_warning:
-                            logger.warning(
-                                'event=background_monitoring_db_degraded classification=%s db_host=%s backoff_seconds=%s next_retry_at=%s state_downgraded=%s',
-                                classification,
-                                db_host or 'unknown',
-                                backoff_seconds,
-                                next_retry_at,
-                                state_downgraded,
-                            )
-                        last_logged_backoff_seconds = backoff_seconds
                         if last_classification is None or last_classification != classification:
                             condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
                             logger.warning(
