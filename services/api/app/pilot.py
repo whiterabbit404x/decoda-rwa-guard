@@ -30,7 +30,7 @@ from services.api.app.monitorable_target_types import (
     monitorable_target_types_sql_clause,
     normalize_target_type,
 )
-from services.api.app.db_failure import classify_db_error, extract_db_host_from_dsn
+from services.api.app.db_failure import db_error_classification_context, extract_db_host_from_dsn
 from services.api.app.secret_crypto import encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
 from services.api.app.export_storage import load_export_storage
 
@@ -1766,7 +1766,8 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     password = str(payload.get('password', ''))
 
     def _raise_graceful_auth_backend_error(exc: Exception) -> None:
-        classification = classify_db_error(exc)
+        error_context = db_error_classification_context(exc)
+        classification = error_context['classification']
         if classification not in _AUTH_DB_CLASSIFICATIONS:
             return
         db_host = extract_db_host_from_dsn(database_url())
@@ -1781,13 +1782,21 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 _auth_db_degraded_last_emitted[warning_key] = now
                 should_emit_warning = True
         if should_emit_warning:
+            warning_details = ''
+            if error_context.get('classification_source'):
+                warning_details += ' classification_source=%s'
+            if error_context.get('raw_error_snippet'):
+                warning_details += ' raw_error_snippet=%s'
             logger.warning(
-                'event=auth_db_degraded classification=%s db_host=%s request_path=%s downgraded_response=%s condensed_error=%s',
+                f'event=auth_db_degraded classification=%s reason=%s db_host=%s request_path=%s '
+                f'downgraded_response=%s condensed_error=%s{warning_details}',
                 classification,
+                error_context['reason'],
                 db_host,
                 request_path or '/auth/signin',
                 True,
                 condensed_error,
+                *(value for value in (error_context.get('classification_source'), error_context.get('raw_error_snippet')) if value),
             )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

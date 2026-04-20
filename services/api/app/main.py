@@ -180,7 +180,12 @@ from services.api.app.monitoring_runner import (
 )
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary_fallback
 from services.api.app.threat_payloads import normalize_threat_payload
-from services.api.app.db_failure import classify_db_error, db_error_reason_label, extract_db_host_from_dsn
+from services.api.app.db_failure import (
+    classify_db_error,
+    db_error_classification_context,
+    db_error_reason_label,
+    extract_db_host_from_dsn,
+)
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -1313,7 +1318,8 @@ async def lifespan(_: FastAPI):
                     await asyncio.sleep(interval)
                     continue
                 except Exception as exc:
-                    classification = classify_db_error(exc)
+                    error_context = db_error_classification_context(exc)
+                    classification = error_context['classification']
                     if classification in {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'auth_error'}:
                         consecutive_db_failures += 1
                         state_downgraded = not bool(MONITORING_LOOP_RUNTIME_STATE.get('degraded'))
@@ -1355,22 +1361,38 @@ async def lifespan(_: FastAPI):
                             or last_emitted_degraded_warning_state[1] != backoff_seconds
                         )
                         if should_emit_degraded_warning:
+                            warning_details = ''
+                            if error_context.get('classification_source'):
+                                warning_details += ' classification_source=%s'
+                            if error_context.get('raw_error_snippet'):
+                                warning_details += ' raw_error_snippet=%s'
                             logger.warning(
-                                'event=background_monitoring_db_degraded classification=%s db_host=%s backoff_seconds=%s next_retry_at=%s state_downgraded=%s',
+                                f'event=background_monitoring_db_degraded classification=%s reason=%s db_host=%s '
+                                f'backoff_seconds=%s next_retry_at=%s state_downgraded=%s{warning_details}',
                                 classification,
+                                error_context['reason'],
                                 db_host or 'unknown',
                                 backoff_seconds,
                                 next_retry_at,
                                 state_downgraded,
+                                *(value for value in (error_context.get('classification_source'), error_context.get('raw_error_snippet')) if value),
                             )
                             last_emitted_degraded_warning_state = warning_state
                         if last_classification is None or last_classification != classification:
                             condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
+                            cause_details = ''
+                            if error_context.get('classification_source'):
+                                cause_details += ' classification_source=%s'
+                            if error_context.get('raw_error_snippet'):
+                                cause_details += ' raw_error_snippet=%s'
                             logger.warning(
-                                'event=background_monitoring_db_degraded_cause classification=%s db_host=%s condensed_error=%s',
+                                f'event=background_monitoring_db_degraded_cause classification=%s reason=%s db_host=%s '
+                                f'condensed_error=%s{cause_details}',
                                 classification,
+                                error_context['reason'],
                                 db_host or 'unknown',
                                 condensed_error,
+                                *(value for value in (error_context.get('classification_source'), error_context.get('raw_error_snippet')) if value),
                             )
                         await asyncio.sleep(backoff_seconds)
                         continue
