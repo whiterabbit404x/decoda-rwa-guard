@@ -59,6 +59,9 @@ function normalizeStatus(
     : truth.runtime_status;
   const monitoringStatus = truth.monitoring_status ?? (runtimeStatus === 'live' ? 'live' : 'limited');
   const contradictionGuardsTriggered = (truth.contradiction_flags ?? []).some((flag) => HARD_GUARD_FLAGS.has(flag));
+  if (truth.db_failure_reason) {
+    return runtimeStatus === 'offline' ? 'offline' : 'degraded';
+  }
   if ((truth.guard_flags ?? []).length > 0 || contradictionGuardsTriggered) {
     return runtimeStatus === 'offline' ? 'offline' : 'degraded';
   }
@@ -105,6 +108,9 @@ function coverageTelemetryTimestamp(truth: WorkspaceMonitoringTruth): string | n
 }
 
 function telemetryFreshnessSummary(truth: WorkspaceMonitoringTruth): string {
+  if (truth.db_failure_reason) {
+    return 'Telemetry verification paused while monitoring persistence is unavailable.';
+  }
   const coverageTelemetryAt = coverageTelemetryTimestamp(truth);
   if (!coverageTelemetryAt || truth.telemetry_freshness === 'unavailable') {
     return 'Telemetry freshness unavailable.';

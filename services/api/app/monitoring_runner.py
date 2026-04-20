@@ -3556,6 +3556,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         workspace_slug: str | None = None,
         db_persistence_available: bool = True,
         db_persistence_reason: str | None = None,
+        db_failure_classification: str | None = None,
+        db_failure_reason: str | None = None,
     ) -> dict[str, Any]:
         field_reason_codes = {
             'protected_assets': ['query_failure'],
@@ -3623,6 +3625,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'field_reason_codes': field_reason_codes,
             'db_persistence_available': bool(db_persistence_available),
             'db_persistence_reason': db_persistence_reason,
+            'db_failure_classification': db_failure_classification,
+            'db_failure_reason': db_failure_reason,
         }
 
     def _runtime_failure_payload(
@@ -3639,6 +3643,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         hint: str,
         db_persistence_available: bool = True,
         db_persistence_reason: str | None = None,
+        db_failure_classification: str | None = None,
+        db_failure_reason: str | None = None,
     ) -> dict[str, Any]:
         effective_workspace_id = workspace_id or resolved_workspace_id
         effective_workspace_slug = workspace_slug or resolved_workspace_slug
@@ -3651,6 +3657,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             workspace_slug=effective_workspace_slug,
             db_persistence_available=db_persistence_available,
             db_persistence_reason=db_persistence_reason,
+            db_failure_classification=db_failure_classification,
+            db_failure_reason=db_failure_reason,
         )
         payload['status_reason'] = status_reason
         payload['configuration_reason'] = 'runtime_status_unavailable'
@@ -3690,6 +3698,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             summary['telemetry_freshness'] = 'unavailable'
             summary['confidence'] = 'unavailable'
             summary['status_reason'] = str(payload.get('db_persistence_reason') or 'Monitoring persistence unavailable')
+            summary['db_failure_classification'] = payload.get('db_failure_classification')
+            summary['db_failure_reason'] = payload.get('db_failure_reason') or payload.get('db_persistence_reason')
         payload['workspace_monitoring_summary'] = summary
         payload['configuration_diagnostics'] = dict(summary.get('configuration_diagnostics') or {})
         payload.update(summary)
@@ -4651,6 +4661,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'last_detection_at': latest_detection_evaluation_at.isoformat() if latest_detection_evaluation_at else None,
             'workspace_monitoring_summary': summary,
             'field_reason_codes': {},
+            'db_failure_classification': None,
+            'db_failure_reason': None,
         }
         payload.update(summary)
         logger.info(
@@ -4827,6 +4839,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             hint='retry_request_or_check_database_health',
             db_persistence_available=False,
             db_persistence_reason='Monitoring persistence unavailable',
+            db_failure_classification=db_classification,
+            db_failure_reason=db_status_reason,
         ))
     except RuntimeError as exc:
         workspace_id, workspace_slug = _workspace_context_from_request(request)

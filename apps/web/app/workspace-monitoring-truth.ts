@@ -23,6 +23,8 @@ export type WorkspaceMonitoringTruth = {
   active_incidents_count: number;
   evidence_source_summary: 'live' | 'simulator' | 'replay' | 'none';
   status_reason: string | null;
+  db_failure_classification?: string | null;
+  db_failure_reason?: string | null;
   contradiction_flags: string[];
   guard_flags: string[];
 };
@@ -48,6 +50,8 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   active_incidents_count: 0,
   evidence_source_summary: 'none',
   status_reason: 'summary_unavailable',
+  db_failure_classification: null,
+  db_failure_reason: null,
   contradiction_flags: [],
   guard_flags: [],
 };
@@ -99,6 +103,9 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   const telemetryFreshness = summary.telemetry_freshness;
   const confidence = summary.confidence;
   const resolvedStatusReason = asTrimmedString(summary.status_reason);
+  const dbFailureClassification = asTrimmedString((summary as Record<string, unknown>).db_failure_classification);
+  const dbFailureReason = asTrimmedString((summary as Record<string, unknown>).db_failure_reason)
+    ?? (resolvedStatusReason && resolvedStatusReason.toLowerCase().includes('database') ? resolvedStatusReason : null);
   const lastCoverageTelemetryAt = asTimestamp((summary as Record<string, unknown>).last_coverage_telemetry_at);
   const telemetryKind = null;
   const lastTelemetryAt = asTimestamp(summary.last_telemetry_at);
@@ -213,6 +220,8 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     active_incidents_count: Number(summary.active_incidents_count ?? 0),
     evidence_source_summary: normalizedEvidenceSource,
     status_reason: normalizedStatusReason,
+    db_failure_classification: dbFailureClassification,
+    db_failure_reason: dbFailureReason,
     contradiction_flags: normalizedContradictionFlags,
     guard_flags: normalizedGuardFlags,
   };
@@ -243,6 +252,7 @@ export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
     && truth.reporting_systems_count > 0
     && Boolean(telemetryTimestamp)
     && (truth.guard_flags ?? []).length === 0
+    && !truth.db_failure_reason
     && (truth.contradiction_flags ?? []).length === 0;
 }
 
@@ -251,6 +261,7 @@ export function monitoringHealthyCopyAllowed(truth: WorkspaceMonitoringTruth): b
   return truth.runtime_status === 'live'
     && monitoringStatus === 'live'
     && truth.reporting_systems_count > 0
+    && !truth.db_failure_reason
     && (truth.guard_flags ?? []).length === 0
     && (truth.contradiction_flags ?? []).length === 0;
 }

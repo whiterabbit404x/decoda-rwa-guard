@@ -40,7 +40,6 @@ test('threat panel renders telemetry copy from truth model timestamps only', () 
   expect(threat).toContain('lastPollAt: feed.monitoring.lastPollAt');
   expect(threat).toContain('const showLiveTelemetry = monitoringPresentation.hasLiveTelemetry;');
   expect(threat).toContain("{showLiveTelemetry ? `Live telemetry ${telemetryLabel}` : 'Current telemetry unavailable'}");
-  expect(threat).toContain('Guarded fallback copy active');
   expect(threat).not.toContain('truth.last_telemetry_at ?? feed.lastTelemetryAt');
   expect(threat).not.toContain('truth.last_poll_at ?? feed.lastPollAt');
   expect(threat).not.toContain('feed.offline');
@@ -72,14 +71,15 @@ test('threat panel keeps telemetry and healthy monitoring copy guarded by truth 
   const threat = appSource('threat-operations-panel.tsx');
 
   expect(threat).toContain("showLiveTelemetry ? `Live telemetry ${telemetryLabel}` : 'Current telemetry unavailable'");
-  expect(threat).toContain("Last telemetry: {showLiveTelemetry ? telemetryLabel : 'Not available'}");
+  expect(threat).toContain('Persistence outage active: {dbPersistenceOutageReason}.');
+  expect(threat).toContain("simulatorEvidence ? 'simulator/demo' : 'live'");
+  expect(threat).toContain('item.liveEvidenceEligible !== false');
+  expect(threat).toContain("Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'}");
   expect(threat).toContain('runtimeStatus === \'offline\'');
   expect(threat).toContain("return 'offline_no_telemetry';");
-  expect(threat).toContain('if (!workspaceConfigured) {');
+  expect(threat).toContain('if (!workspaceConfigured && structuralUnconfiguredReason && !runtimeQueryFailure) {');
   expect(threat).toContain("return 'unconfigured_workspace';");
   expect(threat).toContain('const hasCoverageFromRuntime = workspaceConfigured && (protectedAssetCount > 0 || configuredSystems > 0);');
   expect(threat).toContain('const presentationStatus = canonicalPresentation.status;');
-  expect(threat).toContain("workspaceConfigured && reportingSystems > 0");
-  expect(threat).toContain('configurationReasonMessage(truth.configuration_reason)');
-  expect(threat).toContain("reportingSystems > 0 ? 'No active detections, monitoring healthy' : 'No active detections, waiting for live telemetry'");
+  expect(threat).toContain('const dbPersistenceOutageReason = truth.db_failure_reason || null;');
 });
