@@ -1195,10 +1195,11 @@ def enforce_auth_rate_limit(request: Request, action: str) -> None:
         except HTTPException:
             raise
         except Exception as exc:
+            condensed_error = _condense_error_message(exc)
             if _should_emit_degraded_log('rate_limit.fallback.redis_unavailable', min_interval_seconds=300.0):
                 logger.warning(
                     'redis rate limiter unavailable; falling back to in-memory limiter error=%s',
-                    _condense_error_message(exc),
+                    condensed_error,
                     extra={'event': 'rate_limit.fallback'},
                 )
     key = f'{action}:{client_host}'
