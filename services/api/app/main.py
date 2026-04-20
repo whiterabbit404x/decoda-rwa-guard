@@ -1254,8 +1254,24 @@ def bootstrap_live_pilot() -> dict[str, Any]:
             reconcile_result.get('created_or_updated', 0),
             len(reconcile_result.get('invalid_targets', [])),
         )
-    except Exception:  # pragma: no cover - startup safety
-        logger.exception('startup monitored systems reconcile failed')
+    except Exception as exc:  # pragma: no cover - startup safety
+        classification = classify_db_error(exc)
+        if classification in {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'auth_error'}:
+            db_host = extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url())
+            STARTUP_BOOTSTRAP_STATUS['monitored_systems_reconcile'] = {
+                'degraded': True,
+                'classification': classification,
+                'reason': db_error_reason_label(classification),
+                'db_host': db_host,
+            }
+            logger.warning(
+                'startup monitored systems reconcile skipped due to degraded database connectivity '
+                'classification=%s db_host=%s',
+                classification,
+                db_host,
+            )
+        else:
+            logger.exception('startup monitored systems reconcile failed')
     return STARTUP_BOOTSTRAP_STATUS
 
 
