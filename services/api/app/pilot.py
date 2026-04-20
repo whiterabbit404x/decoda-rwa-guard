@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import secrets
+import socket
 import threading
 import traceback
 import uuid
@@ -19,7 +20,7 @@ from pathlib import Path
 from time import monotonic, sleep
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import Request as UrlRequest, urlopen
 
 import importlib
@@ -182,13 +183,81 @@ def pilot_mode() -> str:
     return os.getenv('APP_MODE', 'demo')
 
 
+def _safe_int_env(name: str, default: int, *, minimum: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw.strip())
+    except (TypeError, ValueError):
+        logger.warning('db_connect_option_invalid option=%s value=%s fallback=%s', name, raw, default)
+        return default
+    if value < minimum:
+        logger.warning('db_connect_option_out_of_range option=%s value=%s minimum=%s fallback=%s', name, value, minimum, default)
+        return default
+    return value
+
+
+def _database_connect_options() -> dict[str, int]:
+    return {
+        'connect_timeout': _safe_int_env('DB_CONNECT_TIMEOUT_SECONDS', 10, minimum=1),
+        'keepalives': _safe_int_env('DB_KEEPALIVES', 1, minimum=0),
+        'keepalives_idle': _safe_int_env('DB_KEEPALIVES_IDLE_SECONDS', 30, minimum=1),
+        'keepalives_interval': _safe_int_env('DB_KEEPALIVES_INTERVAL_SECONDS', 10, minimum=1),
+        'keepalives_count': _safe_int_env('DB_KEEPALIVES_COUNT', 5, minimum=1),
+    }
+
+
+def _resolve_database_url_for_connection(db_url: str) -> str:
+    if not env_flag('DB_PREFER_IPV4'):
+        return db_url
+
+    parsed = urlsplit(db_url)
+    hostname = parsed.hostname
+    if not hostname:
+        logger.info('db_ipv4_preference_skipped reason=missing_hostname')
+        return db_url
+    try:
+        candidates = socket.getaddrinfo(hostname, parsed.port, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError as exc:
+        logger.warning('db_ipv4_preference_skipped reason=resolution_failed host=%s error=%s', hostname, exc)
+        return db_url
+
+    ipv4_address = next((item[4][0] for item in candidates if item[4]), None)
+    if not ipv4_address:
+        logger.warning('db_ipv4_preference_skipped reason=no_ipv4_records host=%s', hostname)
+        return db_url
+
+    netloc = parsed.netloc
+    if '@' in netloc:
+        auth_prefix, host_segment = netloc.rsplit('@', 1)
+        delimiter = '@'
+    else:
+        auth_prefix, host_segment = '', netloc
+        delimiter = ''
+
+    port_suffix = ''
+    if host_segment.startswith('['):
+        closing_index = host_segment.find(']')
+        if closing_index != -1:
+            port_suffix = host_segment[closing_index + 1 :]
+    elif ':' in host_segment:
+        port_suffix = host_segment[host_segment.rfind(':') :]
+
+    resolved_netloc = f'{auth_prefix}{delimiter}{ipv4_address}{port_suffix}'
+    logger.info('db_ipv4_preference_applied host=%s resolved_ipv4=%s', hostname, ipv4_address)
+    return urlunsplit((parsed.scheme, resolved_netloc, parsed.path, parsed.query, parsed.fragment))
+
+
 @contextmanager
 def pg_connection() -> Iterable[Any]:
     db_url = database_url()
     if not db_url:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Live pilot mode is not configured.')
     psycopg, dict_row = load_psycopg()
-    with psycopg.connect(db_url, row_factory=dict_row) as connection:
+    resolved_db_url = _resolve_database_url_for_connection(db_url)
+    connect_options = _database_connect_options()
+    with psycopg.connect(resolved_db_url, row_factory=dict_row, **connect_options) as connection:
         yield connection
 
 
