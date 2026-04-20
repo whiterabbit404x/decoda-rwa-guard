@@ -112,3 +112,24 @@ def test_status_reason_uses_deterministic_hard_guard_priority() -> None:
     )
     assert 'offline_with_current_telemetry' in summary['guard_flags']
     assert summary['status_reason'] == 'guard:offline_with_current_telemetry'
+
+
+def test_db_outage_forces_non_live_and_unavailable_confidence() -> None:
+    summary = _build_summary(
+        runtime_status='live',
+        db_persistence_available=False,
+        db_persistence_reason='Monitoring persistence unavailable',
+    )
+    assert summary['runtime_status'] == 'degraded'
+    assert summary['monitoring_status'] == 'limited'
+    assert summary['confidence'] == 'unavailable'
+    assert summary['status_reason'] == 'Monitoring persistence unavailable'
+
+
+def test_db_outage_prevents_fresh_without_db_backed_evidence() -> None:
+    summary = _build_summary(
+        db_persistence_available=False,
+        db_persistence_reason='Monitoring loop running without database access',
+    )
+    assert summary['telemetry_freshness'] != 'fresh'
+    assert summary['status_reason'] == 'Monitoring loop running without database access'
