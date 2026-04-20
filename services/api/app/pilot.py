@@ -94,6 +94,13 @@ _AUTH_DB_ERROR_CODE_BY_CLASSIFICATION = {
 }
 
 
+def _condense_error_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    if not message:
+        return 'unknown_error'
+    return message.splitlines()[0]
+
+
 STARTUP_BOOTSTRAP_ENV = 'RUN_MIGRATIONS_ON_STARTUP'
 MIGRATION_LOCK_KEY = 840174210431559231
 MIGRATION_LOCK_WAIT_SECONDS_ENV = 'MIGRATION_LOCK_WAIT_SECONDS'
@@ -1178,7 +1185,7 @@ def enforce_auth_rate_limit(request: Request, action: str) -> None:
         except HTTPException:
             raise
         except Exception as exc:
-            condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
+            condensed_error = _condense_error_message(exc)
             logger.info(
                 'redis rate limiter unavailable; falling back to in-memory limiter error=%s',
                 condensed_error,

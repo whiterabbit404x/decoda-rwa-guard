@@ -180,7 +180,7 @@ from services.api.app.monitoring_runner import (
 )
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary_fallback
 from services.api.app.threat_payloads import normalize_threat_payload
-from services.api.app.db_failure import classify_db_error, db_error_reason_label, extract_db_host_from_dsn
+from services.api.app.db_failure import DbErrorClassification, classify_db_error, db_error_reason_label, extract_db_host_from_dsn
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -264,6 +264,16 @@ MONITORING_LOOP_RUNTIME_STATE: dict[str, Any] = {
     'db_host': extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url()),
     'updated_at': None,
 }
+
+
+def _degraded_db_context(classification: DbErrorClassification, db_host: str | None) -> dict[str, Any]:
+    return {
+        'classification': classification,
+        'reason': db_error_reason_label(classification),
+        'db_host': db_host,
+    }
+
+
 RUNTIME_MARKER_ENV_VARS = (
     'APP_VERSION',
     'APP_BUILD_COMMIT',
@@ -1258,19 +1268,17 @@ def bootstrap_live_pilot() -> dict[str, Any]:
         classification = classify_db_error(exc)
         if classification in {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'auth_error'}:
             db_host = extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url())
-            reason = db_error_reason_label(classification)
+            degraded_context = _degraded_db_context(classification, db_host)
             STARTUP_BOOTSTRAP_STATUS['monitored_systems_reconcile'] = {
                 'degraded': True,
-                'classification': classification,
-                'reason': reason,
-                'db_host': db_host,
+                **degraded_context,
             }
             logger.info(
                 'startup monitored systems reconcile skipped due to degraded database connectivity '
                 'classification=%s reason=%s db_host=%s',
-                classification,
-                reason,
-                db_host,
+                degraded_context['classification'],
+                degraded_context['reason'],
+                degraded_context['db_host'],
             )
         else:
             logger.exception('startup monitored systems reconcile failed')
@@ -1356,12 +1364,12 @@ async def lifespan(_: FastAPI):
                             state_downgraded,
                         )
                         if last_classification is None or last_classification != classification:
-                            reason = db_error_reason_label(classification)
+                            degraded_context = _degraded_db_context(classification, db_host)
                             logger.info(
                                 'event=background_monitoring_db_degraded_cause classification=%s reason=%s db_host=%s',
-                                classification,
-                                reason,
-                                db_host or 'unknown',
+                                degraded_context['classification'],
+                                degraded_context['reason'],
+                                degraded_context['db_host'] or 'unknown',
                             )
                         await asyncio.sleep(backoff_seconds)
                         continue
