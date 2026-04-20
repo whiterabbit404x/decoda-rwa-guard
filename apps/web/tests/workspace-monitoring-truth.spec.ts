@@ -270,6 +270,34 @@ test.describe('workspace monitoring truth guardrails', () => {
     expect(hasLiveTelemetry(truth)).toBeFalsy();
   });
 
+  test('db failure reason suppresses live telemetry and healthy copy allowances', () => {
+    const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      runtime_status: 'healthy',
+      monitoring_status: 'live',
+      reporting_systems_count: 2,
+      monitored_systems_count: 2,
+      protected_assets_count: 2,
+      telemetry_freshness: 'fresh',
+      confidence: 'high',
+      last_poll_at: '2026-04-15T10:00:00Z',
+      last_heartbeat_at: '2026-04-15T10:00:00Z',
+      last_telemetry_at: '2026-04-15T09:59:30Z',
+      evidence_source_summary: 'live',
+      status_reason: 'Database unavailable',
+      db_failure_classification: 'unavailable',
+      db_failure_reason: 'Database unavailable',
+      contradiction_flags: [],
+      guard_flags: [],
+      active_alerts_count: 0,
+      active_incidents_count: 0,
+    }));
+
+    expect(truth.db_failure_reason).toBe('Database unavailable');
+    expect(hasLiveTelemetry(truth)).toBeFalsy();
+    expect(monitoringHealthyCopyAllowed(truth)).toBeFalsy();
+  });
+
   test('live telemetry verification with missing timestamp is contradicted', () => {
     const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
       workspace_configured: true,

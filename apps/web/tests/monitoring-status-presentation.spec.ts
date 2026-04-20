@@ -22,6 +22,8 @@ function makeTruth(partial: Partial<WorkspaceMonitoringTruth>): WorkspaceMonitor
     last_detection_at: '2026-04-13T10:00:00Z',
     evidence_source_summary: 'live',
     status_reason: null,
+    db_failure_classification: null,
+    db_failure_reason: null,
     contradiction_flags: [],
     ...partial,
   };
@@ -169,5 +171,23 @@ test.describe('monitoring status presentation adapter', () => {
     expect(value.status).toBe('degraded');
     expect(value.summary).toContain('Monitoring copy guarded');
     expect(value.summary).toContain('guard:offline_with_current_telemetry');
+  });
+
+  test('db persistence outage forces degraded/offline presentation and blocks live telemetry copy', async () => {
+    const degraded = normalizeMonitoringPresentation(makeTruth({
+      runtime_status: 'healthy',
+      db_failure_classification: 'quota_exceeded',
+      db_failure_reason: 'Database quota exceeded',
+    }));
+    expect(degraded.status).toBe('degraded');
+    expect(degraded.summary).toContain('Telemetry verification paused while monitoring persistence is unavailable.');
+    expect(degraded.summary).not.toContain('Live telemetry verified.');
+
+    const offline = normalizeMonitoringPresentation(makeTruth({
+      runtime_status: 'offline',
+      db_failure_classification: 'unavailable',
+      db_failure_reason: 'Database unavailable',
+    }));
+    expect(offline.status).toBe('offline');
   });
 });

@@ -18,6 +18,8 @@ export type WorkspaceMonitoringSummary = {
   contradiction_flags: string[];
   guard_flags: string[];
   status_reason: string | null;
+  db_failure_classification?: string | null;
+  db_failure_reason?: string | null;
 };
 
 export type MonitoringRuntimeStatus = {
@@ -95,6 +97,8 @@ export type MonitoringRuntimeStatus = {
   status_reason?: string | null;
   contradiction_flags?: string[];
   guard_flags?: string[];
+  db_failure_classification?: string | null;
+  db_failure_reason?: string | null;
 };
 
 export function runtimeStatusModeFromMonitoringStatus(value: MonitoringRuntimeStatus['monitoring_status']): MonitoringMode {

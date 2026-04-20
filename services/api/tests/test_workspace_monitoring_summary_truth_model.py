@@ -65,6 +65,8 @@ def test_summary_returns_only_strict_contract_fields() -> None:
         'contradiction_flags',
         'guard_flags',
         'status_reason',
+        'db_failure_classification',
+        'db_failure_reason',
     }
 
 
@@ -123,6 +125,8 @@ def test_db_outage_forces_non_live_and_unavailable_confidence() -> None:
     assert summary['runtime_status'] == 'degraded'
     assert summary['monitoring_status'] == 'limited'
     assert summary['confidence'] == 'unavailable'
+    assert summary['db_failure_classification'] == 'persistence_unavailable'
+    assert summary['db_failure_reason'] == 'Monitoring persistence unavailable'
     assert summary['status_reason'] == 'Monitoring persistence unavailable'
 
 

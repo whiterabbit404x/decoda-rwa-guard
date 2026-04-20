@@ -27,6 +27,8 @@ CANONICAL_SUMMARY_KEYS = (
     'contradiction_flags',
     'guard_flags',
     'status_reason',
+    'db_failure_classification',
+    'db_failure_reason',
 )
 HARD_GUARD_FLAGS = {
     'offline_with_current_telemetry',
@@ -114,6 +116,8 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'contradiction_flags': sorted({str(flag).strip() for flag in payload.get('contradiction_flags', []) if str(flag).strip()}),
         'guard_flags': sorted({str(flag).strip() for flag in payload.get('guard_flags', []) if str(flag).strip()}),
         'status_reason': str(payload.get('status_reason')).strip() if isinstance(payload.get('status_reason'), str) and str(payload.get('status_reason')).strip() else None,
+        'db_failure_classification': str(payload.get('db_failure_classification')).strip() if isinstance(payload.get('db_failure_classification'), str) and str(payload.get('db_failure_classification')).strip() else None,
+        'db_failure_reason': str(payload.get('db_failure_reason')).strip() if isinstance(payload.get('db_failure_reason'), str) and str(payload.get('db_failure_reason')).strip() else None,
     }
     return {key: canonical[key] for key in CANONICAL_SUMMARY_KEYS}
 
@@ -267,6 +271,9 @@ def build_workspace_monitoring_summary(
                 else 'Monitoring persistence unavailable'
             )
         normalized_status_reason = db_reason
+        normalized_db_failure_reason = db_reason
+    else:
+        normalized_db_failure_reason = None
     prioritized_guard = next((flag for flag in HARD_GUARD_PRIORITY if flag in guard_flags), None)
     resolved_status_reason = f'guard:{prioritized_guard}' if prioritized_guard else normalized_status_reason
     summary = {
@@ -287,6 +294,8 @@ def build_workspace_monitoring_summary(
         'contradiction_flags': contradiction_flags,
         'guard_flags': guard_flags,
         'status_reason': resolved_status_reason,
+        'db_failure_classification': None if db_persistence_is_available else 'persistence_unavailable',
+        'db_failure_reason': normalized_db_failure_reason,
     }
     return _canonical_summary(summary)
 
@@ -324,5 +333,7 @@ def build_workspace_monitoring_summary_fallback(
         'contradiction_flags': [],
         'guard_flags': [],
         'status_reason': status_reason,
+        'db_failure_classification': None,
+        'db_failure_reason': None,
     }
     return _canonical_summary(summary)

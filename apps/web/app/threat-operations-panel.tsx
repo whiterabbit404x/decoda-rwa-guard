@@ -228,6 +228,7 @@ type DetectionItem = {
   tokenOrContract?: string | null;
   ruleId?: string | null;
   sourceProvider?: string | null;
+  liveEvidenceEligible?: boolean;
   targetName?: string | null;
   state: ThreatFeedState;
   href: string;
@@ -679,6 +680,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     hasLiveTelemetry: hasLiveTelemetry(truth),
   };
   const showLiveTelemetry = monitoringPresentation.hasLiveTelemetry;
+  const dbPersistenceOutageReason = truth.db_failure_reason || null;
+  const dbPersistenceOutageActive = Boolean(dbPersistenceOutageReason);
   const telemetryLabel = monitoringPresentation.telemetryLabel;
   const coverageTelemetryAt = monitoringPresentation.lastTelemetryAt;
   const hasTelemetryTimestamp = Boolean(coverageTelemetryAt);
@@ -709,7 +712,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         : monitoredSystem
         ? 'Disabled'
         : (matchedTarget?.monitoring_enabled ? 'Monitored' : 'Status unavailable');
-      const evidenceSourceLabel = item.evidence_source === 'simulator' ? 'simulator' : 'live';
+      const normalizedEvidenceSource = String(item.evidence_source ?? '').toLowerCase();
+      const simulatorEvidence = ['simulator', 'demo', 'synthetic', 'fallback', 'replay'].includes(normalizedEvidenceSource);
+      const evidenceSourceLabel = simulatorEvidence ? 'simulator/demo' : 'live';
       return {
         id: `detection-${item.id}`,
         timestamp: item.detected_at || new Date(0).toISOString(),
@@ -726,6 +731,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         tokenOrContract: rawEvent.contract_address ?? rawEvent.token_address ?? null,
         ruleId: item.source_rule ?? responsePayload.findings?.rule_id ?? item.detection_type ?? null,
         sourceProvider: evidenceSourceLabel,
+        liveEvidenceEligible: !simulatorEvidence,
         targetName: monitoredSystem?.target_name ?? matchedTarget?.name ?? null,
         state: isTest ? ('Test' as const) : ('Live' as const),
         href: item.linked_alert_id ? '/alerts' : '/threat',
@@ -742,7 +748,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     baseDetections.forEach((item) => {
       const ageMs = now - new Date(item.timestamp).getTime();
       const telemetryFresh = monitoringPresentation.status === 'live' && monitoringPresentation.hasLiveTelemetry;
-      const liveCandidate = telemetryFresh && ageMs <= DETECTION_LIVE_MS && item.state !== 'Test';
+      const liveCandidate = telemetryFresh
+        && !dbPersistenceOutageActive
+        && item.liveEvidenceEligible !== false
+        && ageMs <= DETECTION_LIVE_MS
+        && item.state !== 'Test';
       if (liveCandidate) {
         live.push(item);
         return;
@@ -754,7 +764,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     });
 
     return { live, historical };
-  }, [baseDetections, monitoringPresentation.hasLiveTelemetry, monitoringPresentation.status]);
+  }, [baseDetections, dbPersistenceOutageActive, monitoringPresentation.hasLiveTelemetry, monitoringPresentation.status]);
 
   const pageState = derivePageState({
     loadingSnapshot,
@@ -995,6 +1005,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Active incidents {activeIncidents}</span>
         </div>
         <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth.status_reason} configurationReason={null} />
+        {dbPersistenceOutageActive ? (
+          <p className="statusLine">
+            Persistence outage active: {dbPersistenceOutageReason}. Simulator/demo rows remain visible but are excluded from live-evidence claims.
+          </p>
+        ) : null}
         <p className="tableMeta">
           Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {pollLabel} · Last heartbeat: {monitoringPresentation.heartbeatLabel} · Runtime freshness: {String(truth.telemetry_freshness || 'unavailable')} · Runtime confidence: {String(truth.confidence || 'unavailable')}
         </p>
@@ -1089,7 +1104,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 </p>
                 <p className="muted">
                   {signal.assetName} ({signal.assetType}) · {signal.monitoringStatus} · {signal.evidenceSummary}
-                  {simulatorMode ? ' · Simulator evidence' : ''}
+                  {signal.liveEvidenceEligible === false ? ' · Simulator/demo evidence (not live)' : ''}
+                  {dbPersistenceOutageActive ? ' · Excluded from live evidence during persistence outage' : ''}
                 </p>
                 <p className="tableMeta">
                   {formatAbsoluteTime(signal.timestamp)} · {formatRelativeTime(signal.timestamp)} · Source: {signal.source}
