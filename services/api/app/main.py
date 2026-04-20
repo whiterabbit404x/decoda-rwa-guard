@@ -1354,13 +1354,12 @@ async def lifespan(_: FastAPI):
                             state_downgraded,
                         )
                         if last_classification is None or last_classification != classification:
-                            logger.exception(
-                                'event=background_monitoring_db_degraded_traceback classification=%s db_host=%s backoff_seconds=%s next_retry_at=%s state_downgraded=%s',
+                            condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
+                            logger.warning(
+                                'event=background_monitoring_db_degraded_cause classification=%s db_host=%s condensed_error=%s',
                                 classification,
                                 db_host or 'unknown',
-                                backoff_seconds,
-                                next_retry_at,
-                                state_downgraded,
+                                condensed_error,
                             )
                         await asyncio.sleep(backoff_seconds)
                         continue
