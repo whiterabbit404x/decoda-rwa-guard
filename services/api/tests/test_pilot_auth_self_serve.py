@@ -179,7 +179,7 @@ def test_signin_db_quota_exceeded_returns_graceful_503_and_machine_code(
     monkeypatch.setattr(pilot_module, 'database_url', lambda: 'postgres://user:pass@ep-decoda-neon.us-east-1.aws.neon.tech/db')
 
     with pytest.raises(HTTPException) as exc_info:
-        with caplog.at_level('WARNING'):
+        with caplog.at_level('INFO'):
             pilot_module.signin_user({'email': 'team@example.com', 'password': 'StrongPass1234'}, _request())
 
     assert exc_info.value.status_code == 503
@@ -232,7 +232,7 @@ def test_enforce_auth_rate_limit_redis_failure_logs_condensed_warning(
     monkeypatch.setattr(pilot_module.importlib, 'import_module', lambda _: _RedisModule())
     monkeypatch.setattr(pilot_module, '_redis_rate_limiter', None)
 
-    with caplog.at_level('WARNING'):
+    with caplog.at_level('INFO'):
         pilot_module.enforce_auth_rate_limit(_request(), 'signin')
 
     assert any(

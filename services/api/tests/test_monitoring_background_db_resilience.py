@@ -55,8 +55,9 @@ def test_loop_survives_db_error_and_marks_degraded_state(api_main, monkeypatch: 
 
     monkeypatch.setattr(api_main, 'run_monitoring_cycle', _run_cycle)
     monkeypatch.setattr(api_main.asyncio, 'sleep', _fake_sleep)
-    with _lifespan_test_client(api_main, monkeypatch):
-        pass
+    with caplog.at_level('INFO'):
+        with _lifespan_test_client(api_main, monkeypatch):
+            pass
 
     assert attempts['value'] >= 2
     assert sleep_calls == [10.0, 20.0]

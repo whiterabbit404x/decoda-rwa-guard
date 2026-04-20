@@ -1179,7 +1179,7 @@ def enforce_auth_rate_limit(request: Request, action: str) -> None:
             raise
         except Exception as exc:
             condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
-            logger.warning(
+            logger.info(
                 'redis rate limiter unavailable; falling back to in-memory limiter error=%s',
                 condensed_error,
                 extra={'event': 'rate_limit.fallback'},
@@ -1757,7 +1757,7 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         db_host = extract_db_host_from_dsn(database_url())
         request_path = request.scope.get('path') if isinstance(getattr(request, 'scope', None), dict) else None
         reason = db_error_reason_label(classification)
-        logger.warning(
+        logger.info(
             'event=auth_db_degraded classification=%s reason=%s db_host=%s request_path=%s downgraded_response=%s',
             classification,
             reason,
