@@ -101,7 +101,7 @@ _AUTH_DB_ERROR_CODE_BY_CLASSIFICATION = {
     'unknown_db_error': 'AUTH_BACKEND_UNAVAILABLE',
 }
 _auth_db_degraded_warning_lock = threading.Lock()
-_auth_db_degraded_last_emitted: dict[str, float] = {}
+_auth_db_degraded_last_emitted: dict[str, int] = {}
 AUTH_DB_DEGRADED_WARNING_WINDOW_SECONDS = 300
 
 
@@ -1774,16 +1774,19 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         classification = error_context['classification']
         if classification not in _AUTH_DB_CLASSIFICATIONS:
             return
+        request_id = request.headers.get('x-request-id') if request else None
+        correlation_id = request_id.strip() if request_id and request_id.strip() else secrets.token_hex(4)
         db_host = extract_db_host_from_dsn(database_url())
         request_path = request.scope.get('path') if isinstance(getattr(request, 'scope', None), dict) else None
         condensed_error = normalize_db_error_snippet(str(exc)) or 'unknown_error'
         warning_key = f'{classification}:{db_host or "unknown"}'
         should_emit_info = False
         now = monotonic()
+        window_slot = int(now // AUTH_DB_DEGRADED_WARNING_WINDOW_SECONDS)
         with _auth_db_degraded_warning_lock:
-            last_emitted = _auth_db_degraded_last_emitted.get(warning_key)
-            if last_emitted is None or now - last_emitted >= AUTH_DB_DEGRADED_WARNING_WINDOW_SECONDS:
-                _auth_db_degraded_last_emitted[warning_key] = now
+            last_window_slot = _auth_db_degraded_last_emitted.get(warning_key)
+            if last_window_slot != window_slot:
+                _auth_db_degraded_last_emitted[warning_key] = window_slot
                 should_emit_info = True
         if should_emit_info:
             warning_details = ''
@@ -1793,12 +1796,13 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 warning_details += ' raw_error_snippet=%s'
             logger.info(
                 f'event=auth_db_degraded classification=%s reason=%s db_host=%s request_path=%s '
-                f'downgraded_response=%s condensed_error=%s{warning_details}',
+                f'downgraded_response=%s correlation_id=%s condensed_error=%s{warning_details}',
                 classification,
                 error_context['reason'],
                 db_host,
                 request_path or '/auth/signin',
                 True,
+                correlation_id,
                 condensed_error,
                 *(value for value in (error_context.get('classification_source'), error_context.get('raw_error_snippet')) if value),
             )
@@ -1808,6 +1812,7 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             headers={
                 'X-Decoda-Error-Code': _AUTH_DB_ERROR_CODE_BY_CLASSIFICATION.get(classification, 'AUTH_BACKEND_UNAVAILABLE'),
                 'X-Decoda-DB-Classification': classification,
+                'X-Decoda-Correlation-Id': correlation_id,
             },
         ) from exc
 
