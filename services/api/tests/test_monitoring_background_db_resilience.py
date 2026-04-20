@@ -146,6 +146,65 @@ def test_db_backoff_progression_caps_and_quota_backoff_is_slower_than_network(
     assert quota_sleep_calls[0] > network_sleep_calls[0]
 
 
+def test_db_degraded_warning_dedupes_when_capped_backoff_is_unchanged(
+    api_main, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv('MONITOR_DB_RETRY_NETWORK_BASE_SECONDS', '10')
+    monkeypatch.setenv('MONITOR_DB_RETRY_NETWORK_CAP_SECONDS', '120')
+    monkeypatch.setenv('MONITOR_DB_RETRY_QUOTA_BASE_SECONDS', '60')
+    monkeypatch.setenv('MONITOR_DB_RETRY_QUOTA_CAP_SECONDS', '900')
+
+    sleep_calls: list[float] = []
+    side_effects: Iterator[object] = iter([
+        RuntimeError('connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable'),
+        RuntimeError('connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable'),
+        RuntimeError('connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable'),
+        RuntimeError('connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable'),
+        RuntimeError('connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable'),
+        RuntimeError('connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable'),
+        RuntimeError('connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable'),
+        RuntimeError('ERROR: Your account or project has exceeded the compute time quota.'),
+        RuntimeError('ERROR: Your account or project has exceeded the compute time quota.'),
+    ])
+    sleep_count = {'value': 0}
+
+    def _run_cycle(*_args, **_kwargs):
+        effect = next(side_effects)
+        if isinstance(effect, Exception):
+            raise effect
+        return effect
+
+    async def _fake_sleep(seconds: float):
+        sleep_calls.append(float(seconds))
+        sleep_count['value'] += 1
+        if sleep_count['value'] >= 9:
+            raise asyncio.CancelledError()
+        return None
+
+    monkeypatch.setattr(api_main, 'run_monitoring_cycle', _run_cycle)
+    monkeypatch.setattr(api_main.asyncio, 'sleep', _fake_sleep)
+    with _lifespan_test_client(api_main, monkeypatch):
+        pass
+
+    assert sleep_calls == [10.0, 20.0, 40.0, 80.0, 120.0, 120.0, 120.0, 900.0, 900.0]
+
+    degraded_warnings = [
+        record.message for record in caplog.records if 'event=background_monitoring_db_degraded ' in record.message
+    ]
+    assert len(degraded_warnings) == 6
+    assert sum('classification=network_unreachable' in message for message in degraded_warnings) == 5
+    assert sum('classification=quota_exceeded' in message for message in degraded_warnings) == 1
+    assert sum('backoff_seconds=120' in message for message in degraded_warnings) == 1
+    assert sum('backoff_seconds=900' in message for message in degraded_warnings) == 1
+
+    degraded_cause_warnings = [
+        record.message for record in caplog.records if 'event=background_monitoring_db_degraded_cause' in record.message
+    ]
+    assert len(degraded_cause_warnings) == 2
+    assert 'classification=network_unreachable' in degraded_cause_warnings[0]
+    assert 'classification=quota_exceeded' in degraded_cause_warnings[1]
+
+
 def test_db_outage_never_reports_live_fresh_or_high_confidence_in_truth_summary() -> None:
     from datetime import datetime, timedelta, timezone
 
