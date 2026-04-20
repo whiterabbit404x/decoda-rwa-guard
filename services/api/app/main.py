@@ -180,7 +180,7 @@ from services.api.app.monitoring_runner import (
 )
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary_fallback
 from services.api.app.threat_payloads import normalize_threat_payload
-from services.api.app.db_failure import DbErrorClassification, classify_db_error, db_error_reason_label, extract_db_host_from_dsn
+from services.api.app.db_failure import classify_db_error, db_error_reason_label, extract_db_host_from_dsn
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -264,16 +264,6 @@ MONITORING_LOOP_RUNTIME_STATE: dict[str, Any] = {
     'db_host': extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url()),
     'updated_at': None,
 }
-
-
-def _degraded_db_context(classification: DbErrorClassification, db_host: str | None) -> dict[str, Any]:
-    return {
-        'classification': classification,
-        'reason': db_error_reason_label(classification),
-        'db_host': db_host,
-    }
-
-
 RUNTIME_MARKER_ENV_VARS = (
     'APP_VERSION',
     'APP_BUILD_COMMIT',
@@ -1264,24 +1254,8 @@ def bootstrap_live_pilot() -> dict[str, Any]:
             reconcile_result.get('created_or_updated', 0),
             len(reconcile_result.get('invalid_targets', [])),
         )
-    except Exception as exc:  # pragma: no cover - startup safety
-        classification = classify_db_error(exc)
-        if classification in {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'auth_error'}:
-            db_host = extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url())
-            degraded_context = _degraded_db_context(classification, db_host)
-            STARTUP_BOOTSTRAP_STATUS['monitored_systems_reconcile'] = {
-                'degraded': True,
-                **degraded_context,
-            }
-            logger.info(
-                'startup monitored systems reconcile skipped due to degraded database connectivity '
-                'classification=%s reason=%s db_host=%s',
-                degraded_context['classification'],
-                degraded_context['reason'],
-                degraded_context['db_host'],
-            )
-        else:
-            logger.exception('startup monitored systems reconcile failed')
+    except Exception:  # pragma: no cover - startup safety
+        logger.exception('startup monitored systems reconcile failed')
     return STARTUP_BOOTSTRAP_STATUS
 
 
@@ -1355,7 +1329,7 @@ async def lifespan(_: FastAPI):
                             'state_downgraded': state_downgraded,
                             'updated_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
                         }
-                        logger.info(
+                        logger.warning(
                             'event=background_monitoring_db_degraded classification=%s db_host=%s backoff_seconds=%s next_retry_at=%s state_downgraded=%s',
                             classification,
                             db_host or 'unknown',
@@ -1364,12 +1338,13 @@ async def lifespan(_: FastAPI):
                             state_downgraded,
                         )
                         if last_classification is None or last_classification != classification:
-                            degraded_context = _degraded_db_context(classification, db_host)
-                            logger.info(
-                                'event=background_monitoring_db_degraded_cause classification=%s reason=%s db_host=%s',
-                                degraded_context['classification'],
-                                degraded_context['reason'],
-                                degraded_context['db_host'] or 'unknown',
+                            logger.exception(
+                                'event=background_monitoring_db_degraded_traceback classification=%s db_host=%s backoff_seconds=%s next_retry_at=%s state_downgraded=%s',
+                                classification,
+                                db_host or 'unknown',
+                                backoff_seconds,
+                                next_retry_at,
+                                state_downgraded,
                             )
                         await asyncio.sleep(backoff_seconds)
                         continue

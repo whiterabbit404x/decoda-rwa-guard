@@ -30,7 +30,7 @@ from services.api.app.monitorable_target_types import (
     monitorable_target_types_sql_clause,
     normalize_target_type,
 )
-from services.api.app.db_failure import classify_db_error, db_error_reason_label, extract_db_host_from_dsn
+from services.api.app.db_failure import classify_db_error, extract_db_host_from_dsn
 from services.api.app.secret_crypto import encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
 from services.api.app.export_storage import load_export_storage
 
@@ -92,13 +92,6 @@ _AUTH_DB_ERROR_CODE_BY_CLASSIFICATION = {
     'db_unavailable': 'AUTH_BACKEND_UNAVAILABLE',
     'unknown_db_error': 'AUTH_BACKEND_UNAVAILABLE',
 }
-
-
-def _condense_error_message(exc: Exception) -> str:
-    message = str(exc).strip()
-    if not message:
-        return 'unknown_error'
-    return message.splitlines()[0]
 
 
 STARTUP_BOOTSTRAP_ENV = 'RUN_MIGRATIONS_ON_STARTUP'
@@ -1184,13 +1177,8 @@ def enforce_auth_rate_limit(request: Request, action: str) -> None:
             return
         except HTTPException:
             raise
-        except Exception as exc:
-            condensed_error = _condense_error_message(exc)
-            logger.info(
-                'redis rate limiter unavailable; falling back to in-memory limiter error=%s',
-                condensed_error,
-                extra={'event': 'rate_limit.fallback'},
-            )
+        except Exception:
+            logger.exception('redis rate limiter unavailable; falling back to in-memory limiter', extra={'event': 'rate_limit.fallback'})
     key = f'{action}:{client_host}'
     cutoff = monotonic() - AUTH_WINDOW_SECONDS
     with _rate_limit_lock:
@@ -1763,11 +1751,9 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             return
         db_host = extract_db_host_from_dsn(database_url())
         request_path = request.scope.get('path') if isinstance(getattr(request, 'scope', None), dict) else None
-        reason = db_error_reason_label(classification)
-        logger.info(
-            'event=auth_db_degraded classification=%s reason=%s db_host=%s request_path=%s downgraded_response=%s',
+        logger.exception(
+            'event=auth_db_degraded classification=%s db_host=%s request_path=%s downgraded_response=%s',
             classification,
-            reason,
             db_host,
             request_path or '/auth/signin',
             True,

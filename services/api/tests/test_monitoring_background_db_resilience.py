@@ -37,7 +37,7 @@ def _lifespan_test_client(api_main, monkeypatch: pytest.MonkeyPatch):
         yield client
 
 
-def test_loop_survives_db_error_and_marks_degraded_state(api_main, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_loop_survives_db_error_and_marks_degraded_state(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
     sleep_calls: list[float] = []
     snapshots: list[dict[str, object]] = []
     attempts = {'value': 0}
@@ -55,9 +55,8 @@ def test_loop_survives_db_error_and_marks_degraded_state(api_main, monkeypatch: 
 
     monkeypatch.setattr(api_main, 'run_monitoring_cycle', _run_cycle)
     monkeypatch.setattr(api_main.asyncio, 'sleep', _fake_sleep)
-    with caplog.at_level('INFO'):
-        with _lifespan_test_client(api_main, monkeypatch):
-            pass
+    with _lifespan_test_client(api_main, monkeypatch):
+        pass
 
     assert attempts['value'] >= 2
     assert sleep_calls == [10.0, 20.0]
@@ -67,12 +66,6 @@ def test_loop_survives_db_error_and_marks_degraded_state(api_main, monkeypatch: 
     assert snapshots[0]['backoff_seconds'] == 10
     assert snapshots[0]['next_retry_at'] is not None
     assert snapshots[1]['state_downgraded'] is False
-    assert any(
-        'event=background_monitoring_db_degraded_cause classification=network_unreachable reason=Database network unreachable'
-        in record.message
-        for record in caplog.records
-    )
-    assert not any('event=background_monitoring_db_degraded_traceback' in record.message for record in caplog.records)
 
 
 def test_db_backoff_progression_caps_and_quota_backoff_is_slower_than_network(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
