@@ -148,6 +148,8 @@ def build_workspace_monitoring_summary(
     telemetry_window_seconds: int,
     active_alerts_count: int = 0,
     active_incidents_count: int = 0,
+    db_persistence_available: bool = True,
+    db_persistence_reason: str | None = None,
 ) -> dict[str, Any]:
     normalized_monitored = max(int(monitored_systems_count if monitored_systems_count is not None else configured_systems), 0)
     normalized_reporting = max(int(reporting_systems), 0)
@@ -209,6 +211,7 @@ def build_workspace_monitoring_summary(
     if live_telemetry_verified and telemetry_timestamp is None:
         contradiction_flags.append('live_telemetry_verified_without_timestamp')
     normalized_status_reason = str(status_reason).strip() if isinstance(status_reason, str) and status_reason.strip() else None
+    db_persistence_is_available = bool(db_persistence_available)
     degraded_reason_explicit = normalized_status_reason is not None and normalized_status_reason.startswith('runtime_status_degraded:')
     idle_with_continuous_healthy_monitoring = (
         normalized_runtime == 'idle'
@@ -248,6 +251,22 @@ def build_workspace_monitoring_summary(
         telemetry_freshness=freshness_status,
         contradiction_flags=contradiction_flags,
     )
+    if not db_persistence_is_available:
+        if normalized_runtime == 'live':
+            normalized_runtime = 'degraded'
+        if normalized_monitoring_status == 'live':
+            normalized_monitoring_status = 'limited'
+        confidence_status = 'unavailable'
+        if freshness_status == 'fresh':
+            freshness_status = 'stale'
+        db_reason = str(db_persistence_reason or '').strip()
+        if not db_reason:
+            db_reason = (
+                'Monitoring loop running without database access'
+                if normalized_status_reason == 'Monitoring loop running without database access'
+                else 'Monitoring persistence unavailable'
+            )
+        normalized_status_reason = db_reason
     prioritized_guard = next((flag for flag in HARD_GUARD_PRIORITY if flag in guard_flags), None)
     resolved_status_reason = f'guard:{prioritized_guard}' if prioritized_guard else normalized_status_reason
     summary = {
