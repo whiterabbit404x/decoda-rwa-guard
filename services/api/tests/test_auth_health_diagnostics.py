@@ -111,31 +111,40 @@ def test_auth_signin_route_returns_json_schema_error_instead_of_500(api_main, mo
     response = client.post('/auth/signin', json={'email': 'demo@decoda.app', 'password': 'PilotDemoPass123!'})
 
     assert response.status_code == 503
+    payload = response.json()
+    assert payload['code'] == 'pilot_schema_missing'
+    assert payload['missingTables'] == ['users']
+    assert payload['pilotSchemaReady'] is False
+    assert payload['schemaDiagnostics']['status'] == 'missing_tables'
+    assert payload['schemaDiagnostics']['missing_tables'] == ['users']
+    assert 'users' in payload['schemaDiagnostics']['required_tables']
+
+
+def test_auth_signin_route_returns_graceful_json_when_auth_db_is_unavailable(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda request, action: None)
+
+    def _raise_db_degraded(payload, request):
+        raise HTTPException(
+            status_code=503,
+            detail='Authentication is temporarily unavailable. Please retry in a moment.',
+            headers={
+                'X-Decoda-Error-Code': 'AUTH_DB_QUOTA_EXCEEDED',
+                'X-Decoda-DB-Classification': 'quota_exceeded',
+            },
+        )
+
+    monkeypatch.setattr(api_main, 'signin_user', _raise_db_degraded)
+
+    response = client.post('/auth/signin', json={'email': 'demo@decoda.app', 'password': 'PilotDemoPass123!'})
+
+    assert response.status_code == 503
     assert response.json() == {
-        'code': 'pilot_schema_missing',
-        'detail': 'Pilot auth schema is not initialized. Missing required tables: users. Run services/api/scripts/migrate.py before using live auth routes.',
-        'message': 'Pilot auth schema is not initialized. Missing required tables: users. Run services/api/scripts/migrate.py before using live auth routes.',
-        'missingTables': ['users'],
-        'pilotSchemaReady': False,
-        'schemaDiagnostics': {
-            'ready': False,
-            'status': 'missing_tables',
-            'missing_tables': ['users'],
-            'required_tables': [
-                'users',
-                'workspaces',
-                'workspace_members',
-                'auth_sessions',
-                'auth_tokens',
-                'mfa_recovery_codes',
-                'analysis_runs',
-                'alerts',
-                'governance_actions',
-                'incidents',
-                'audit_logs',
-                'workspace_onboarding_states',
-            ],
-        },
+        'code': 'AUTH_DB_QUOTA_EXCEEDED',
+        'detail': 'Authentication is temporarily unavailable. Please retry in a moment.',
+        'message': 'Authentication is temporarily unavailable. Please retry in a moment.',
+        'retryable': True,
+        'classification': 'quota_exceeded',
     }
 
 

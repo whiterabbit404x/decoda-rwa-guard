@@ -30,6 +30,7 @@ from services.api.app.monitorable_target_types import (
     monitorable_target_types_sql_clause,
     normalize_target_type,
 )
+from services.api.app.db_failure import classify_db_error, extract_db_host_from_dsn
 from services.api.app.secret_crypto import encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
 from services.api.app.export_storage import load_export_storage
 
@@ -84,6 +85,13 @@ _rate_limit_state: dict[str, list[float]] = {}
 logger = logging.getLogger(__name__)
 _redis_rate_limiter: Any | None = None
 _redis_rate_limiter_lock = threading.Lock()
+_AUTH_DB_CLASSIFICATIONS = {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'unknown_db_error'}
+_AUTH_DB_ERROR_CODE_BY_CLASSIFICATION = {
+    'quota_exceeded': 'AUTH_DB_QUOTA_EXCEEDED',
+    'network_unreachable': 'AUTH_BACKEND_UNAVAILABLE',
+    'db_unavailable': 'AUTH_BACKEND_UNAVAILABLE',
+    'unknown_db_error': 'AUTH_BACKEND_UNAVAILABLE',
+}
 
 
 STARTUP_BOOTSTRAP_ENV = 'RUN_MIGRATIONS_ON_STARTUP'
@@ -1736,6 +1744,29 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     email = _normalize_email(str(payload.get('email', '')))
     password = str(payload.get('password', ''))
+
+    def _raise_graceful_auth_backend_error(exc: Exception) -> None:
+        classification = classify_db_error(exc)
+        if classification not in _AUTH_DB_CLASSIFICATIONS:
+            return
+        db_host = extract_db_host_from_dsn(database_url())
+        request_path = request.scope.get('path') if isinstance(getattr(request, 'scope', None), dict) else None
+        logger.exception(
+            'event=auth_db_degraded classification=%s db_host=%s request_path=%s downgraded_response=%s',
+            classification,
+            db_host,
+            request_path or '/auth/signin',
+            True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Authentication is temporarily unavailable. Please retry in a moment.',
+            headers={
+                'X-Decoda-Error-Code': _AUTH_DB_ERROR_CODE_BY_CLASSIFICATION.get(classification, 'AUTH_BACKEND_UNAVAILABLE'),
+                'X-Decoda-DB-Classification': classification,
+            },
+        ) from exc
+
     try:
         with pg_connection() as connection:
             ensure_pilot_schema(connection)
@@ -1744,7 +1775,8 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                     'SELECT id, password_hash, email_verified_at, session_version, mfa_totp_secret, mfa_enabled_at FROM users WHERE email = %s',
                     (email,),
                 ).fetchone()
-            except Exception:
+            except Exception as exc:
+                _raise_graceful_auth_backend_error(exc)
                 logger.exception('signin_user failed during user lookup', extra={'step': 'fetch_user_by_email', 'email': email})
                 raise
             if user is None or not verify_password(password, user['password_hash']):
@@ -1759,7 +1791,8 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 return {'mfa_required': True, 'mfa_token': challenge_token}
             try:
                 connection.execute('UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = %s', (user_id,))
-            except Exception:
+            except Exception as exc:
+                _raise_graceful_auth_backend_error(exc)
                 logger.exception('signin_user failed during last_sign_in_at update', extra={'step': 'update_last_sign_in_at', 'user_id': user_id})
                 raise
             try:
@@ -1773,7 +1806,8 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                     workspace_id=None,
                     metadata={'email': email},
                 )
-            except Exception:
+            except Exception as exc:
+                _raise_graceful_auth_backend_error(exc)
                 logger.exception('signin_user failed during audit log insert', extra={'step': 'insert_audit_log', 'user_id': user_id})
                 raise
             connection.commit()
@@ -1781,12 +1815,14 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 hydrated_user = build_user_response(connection, user_id)
                 if not hydrated_user.get('current_workspace'):
                     logger.info('signin_user completed without active workspace', extra={'event': 'auth.signin.no_workspace', 'user_id': user_id})
-            except Exception:
+            except Exception as exc:
+                _raise_graceful_auth_backend_error(exc)
                 logger.exception('signin_user failed during user hydration', extra={'step': 'build_user_response', 'user_id': user_id})
                 raise
     except HTTPException:
         raise
     except Exception as exc:
+        _raise_graceful_auth_backend_error(exc)
         if _missing_relation_error(exc):
             raise _schema_missing_http_exception(('users',)) from exc
         logger.exception('signin_user failed due to unexpected backend exception', extra={'step': 'unexpected'})
@@ -1797,7 +1833,8 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             ensure_pilot_schema(connection)
             _store_session(connection, user_id, access_token, hydrated_user.get('current_workspace_id'), request=request)
             connection.commit()
-    except Exception:
+    except Exception as exc:
+        _raise_graceful_auth_backend_error(exc)
         logger.exception('signin_user failed during token creation', extra={'step': 'create_access_token', 'user_id': user_id})
         raise
     logger.info('signin_user succeeded', extra={'event': 'auth.signin.success', 'user_id': user_id})
