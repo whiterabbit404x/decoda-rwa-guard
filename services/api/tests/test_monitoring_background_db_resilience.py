@@ -70,7 +70,9 @@ def test_loop_survives_db_error_and_marks_degraded_state(api_main, monkeypatch: 
     assert not any('event=background_monitoring_db_degraded_traceback' in record.message for record in caplog.records)
 
 
-def test_db_backoff_progression_caps_and_quota_backoff_is_slower_than_network(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_db_backoff_progression_caps_and_quota_backoff_is_slower_than_network(
+    api_main, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     monkeypatch.setenv('MONITOR_DB_RETRY_NETWORK_BASE_SECONDS', '10')
     monkeypatch.setenv('MONITOR_DB_RETRY_NETWORK_CAP_SECONDS', '120')
     monkeypatch.setenv('MONITOR_DB_RETRY_QUOTA_BASE_SECONDS', '60')
@@ -106,6 +108,11 @@ def test_db_backoff_progression_caps_and_quota_backoff_is_slower_than_network(ap
     with _lifespan_test_client(api_main, monkeypatch):
         pass
     assert network_sleep_calls == [10.0, 20.0, 40.0, 80.0, 120.0, 120.0]
+    degraded_warnings = [
+        record.message for record in caplog.records if 'event=background_monitoring_db_degraded ' in record.message
+    ]
+    assert len(degraded_warnings) == 5
+    assert sum('backoff_seconds=120' in message for message in degraded_warnings) == 1
 
     # quota progression should be slower and larger on first retry.
     quota_sleep_calls: list[float] = []
