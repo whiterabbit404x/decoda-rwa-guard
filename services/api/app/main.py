@@ -1245,6 +1245,7 @@ async def lifespan(_: FastAPI):
     emit_startup_fixture_diagnostics()
     if str(os.getenv('LIVE_MONITORING_ENABLED', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'}:
         async def _monitoring_loop() -> None:
+            global MONITORING_LOOP_RUNTIME_STATE
             interval = max(10, int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30')))
             default_backoff_base_seconds = max(5, int(os.getenv('MONITOR_DB_RETRY_BASE_SECONDS', '15')))
             default_backoff_cap_seconds = max(default_backoff_base_seconds, int(os.getenv('MONITOR_DB_RETRY_CAP_SECONDS', '300')))
