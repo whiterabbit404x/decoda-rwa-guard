@@ -221,6 +221,35 @@ def test_signin_db_network_unreachable_returns_graceful_503_without_credential_f
     assert exc_info.value.headers['X-Decoda-DB-Classification'] == 'network_unreachable'
 
 
+def test_signin_db_degraded_log_uses_normalized_condensed_error_snippet(
+    pilot_module, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    @contextmanager
+    def fake_pg():
+        raise RuntimeError(
+            'connect failed: Network is unreachable.\n'
+            'DETAIL: could not connect to server at "db.internal.local" (10.0.0.8), port 5432\n'
+            'FATAL: timeout while opening socket for primary connection pool'
+        )
+        yield
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg)
+    monkeypatch.setattr(pilot_module, 'database_url', lambda: 'postgres://user:pass@db.internal.local:5432/app')
+    monkeypatch.setattr(pilot_module, '_auth_db_degraded_last_emitted', {})
+    monkeypatch.setattr(pilot_module, 'monotonic', lambda: 1000.0)
+
+    with caplog.at_level('INFO'):
+        with pytest.raises(HTTPException) as exc_info:
+            pilot_module.signin_user({'email': 'team@example.com', 'password': 'StrongPass1234'}, _request())
+
+    assert exc_info.value.status_code == 503
+    degraded_records = [record.message for record in caplog.records if 'event=auth_db_degraded classification=network_unreachable' in record.message]
+    assert len(degraded_records) == 1
+    assert 'condensed_error=connect failed: Network is unreachable.' in degraded_records[0]
+    assert 'DETAIL:' not in degraded_records[0]
+
+
 def test_enforce_auth_rate_limit_redis_failure_logs_are_throttled_per_window(
     pilot_module, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

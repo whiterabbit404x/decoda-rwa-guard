@@ -30,7 +30,11 @@ from services.api.app.monitorable_target_types import (
     monitorable_target_types_sql_clause,
     normalize_target_type,
 )
-from services.api.app.db_failure import db_error_classification_context, extract_db_host_from_dsn
+from services.api.app.db_failure import (
+    db_error_classification_context,
+    extract_db_host_from_dsn,
+    normalize_db_error_snippet,
+)
 from services.api.app.secret_crypto import encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
 from services.api.app.export_storage import load_export_storage
 
@@ -1772,7 +1776,7 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             return
         db_host = extract_db_host_from_dsn(database_url())
         request_path = request.scope.get('path') if isinstance(getattr(request, 'scope', None), dict) else None
-        condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
+        condensed_error = normalize_db_error_snippet(str(exc)) or 'unknown_error'
         warning_key = f'{classification}:{db_host or "unknown"}'
         should_emit_info = False
         now = monotonic()

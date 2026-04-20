@@ -49,6 +49,7 @@ _DB_UNAVAILABLE_PATTERNS = (
 )
 
 _KEYVALUE_HOST_PATTERN = re.compile(r'(?:^|\s)host\s*=\s*([^\s]+)')
+_FIRST_SENTENCE_PATTERN = re.compile(r'^(.+?[.!?])(?:\s|$)')
 
 
 def _normalize_message(exc: Exception) -> str:
@@ -104,7 +105,21 @@ def db_error_reason_label(classification: DbErrorClassification) -> str:
     return labels.get(classification, 'Unknown database error')
 
 
-def db_error_classification_context(exc: Exception, *, raw_snippet_limit: int = 180) -> dict[str, str]:
+def normalize_db_error_snippet(raw_error: str | None, *, snippet_limit: int = 120) -> str | None:
+    collapsed = ' '.join(str(raw_error or '').split())
+    if not collapsed:
+        return None
+
+    first_sentence_match = _FIRST_SENTENCE_PATTERN.match(collapsed)
+    snippet = first_sentence_match.group(1) if first_sentence_match else collapsed
+    if len(snippet) > snippet_limit:
+        if snippet_limit <= 1:
+            return '…'[:snippet_limit]
+        return f'{snippet[: snippet_limit - 1].rstrip()}…'
+    return snippet
+
+
+def db_error_classification_context(exc: Exception, *, raw_snippet_limit: int = 120) -> dict[str, str]:
     classification = classify_db_error(exc)
     context: dict[str, str] = {
         'classification': classification,
@@ -116,10 +131,8 @@ def db_error_classification_context(exc: Exception, *, raw_snippet_limit: int = 
         and any(pattern in normalized_message for pattern in _NETWORK_PATTERNS)
     ):
         context['classification_source'] = 'normalized_message'
-        raw_error = ' '.join(str(exc).strip().split())
+        raw_error = normalize_db_error_snippet(str(exc), snippet_limit=raw_snippet_limit)
         if raw_error:
-            if len(raw_error) > raw_snippet_limit:
-                raw_error = f'{raw_error[:raw_snippet_limit]}…'
             context['raw_error_snippet'] = raw_error
     return context
 
