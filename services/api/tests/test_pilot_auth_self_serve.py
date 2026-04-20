@@ -166,7 +166,7 @@ def test_signin_invalid_credentials_returns_401(pilot_module, monkeypatch: pytes
     assert exc_info.value.status_code == 401
 
 
-def test_signin_db_quota_exceeded_returns_graceful_503_and_machine_code(
+def test_signin_db_quota_exceeded_returns_graceful_503_and_throttles_degraded_warning_emission(
     pilot_module, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     @contextmanager
@@ -177,16 +177,25 @@ def test_signin_db_quota_exceeded_returns_graceful_503_and_machine_code(
     monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg)
     monkeypatch.setattr(pilot_module, 'database_url', lambda: 'postgres://user:pass@ep-decoda-neon.us-east-1.aws.neon.tech/db')
+    monkeypatch.setattr(pilot_module, '_auth_db_degraded_last_emitted', {})
+    now = {'value': 10_000.0}
+    monkeypatch.setattr(pilot_module, 'monotonic', lambda: now['value'])
 
-    with pytest.raises(HTTPException) as exc_info:
-        with caplog.at_level('WARNING'):
-            pilot_module.signin_user({'email': 'team@example.com', 'password': 'StrongPass1234'}, _request())
+    responses: list[HTTPException] = []
+    with caplog.at_level('WARNING'):
+        for current in (10_000.0, 10_010.0):
+            now['value'] = current
+            with pytest.raises(HTTPException) as exc_info:
+                pilot_module.signin_user({'email': 'team@example.com', 'password': 'StrongPass1234'}, _request())
+            responses.append(exc_info.value)
 
-    assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == 'Authentication is temporarily unavailable. Please retry in a moment.'
-    assert exc_info.value.headers['X-Decoda-Error-Code'] == 'AUTH_DB_QUOTA_EXCEEDED'
-    assert exc_info.value.headers['X-Decoda-DB-Classification'] == 'quota_exceeded'
-    assert any('event=auth_db_degraded classification=quota_exceeded' in record.message for record in caplog.records)
+    assert len(responses) == 2
+    assert all(response.status_code == 503 for response in responses)
+    assert all(response.detail == 'Authentication is temporarily unavailable. Please retry in a moment.' for response in responses)
+    assert all(response.headers['X-Decoda-Error-Code'] == 'AUTH_DB_QUOTA_EXCEEDED' for response in responses)
+    assert all(response.headers['X-Decoda-DB-Classification'] == 'quota_exceeded' for response in responses)
+    warning_messages = [record.message for record in caplog.records if 'event=auth_db_degraded classification=quota_exceeded' in record.message]
+    assert len(warning_messages) == 1
 
 
 def test_signin_db_network_unreachable_returns_graceful_503_without_credential_failure(
