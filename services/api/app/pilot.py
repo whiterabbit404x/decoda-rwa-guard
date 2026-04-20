@@ -96,6 +96,9 @@ _AUTH_DB_ERROR_CODE_BY_CLASSIFICATION = {
     'db_unavailable': 'AUTH_BACKEND_UNAVAILABLE',
     'unknown_db_error': 'AUTH_BACKEND_UNAVAILABLE',
 }
+_auth_db_degraded_warning_lock = threading.Lock()
+_auth_db_degraded_last_emitted: dict[str, float] = {}
+AUTH_DB_DEGRADED_WARNING_WINDOW_SECONDS = 300
 
 
 STARTUP_BOOTSTRAP_ENV = 'RUN_MIGRATIONS_ON_STARTUP'
@@ -1769,14 +1772,23 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         db_host = extract_db_host_from_dsn(database_url())
         request_path = request.scope.get('path') if isinstance(getattr(request, 'scope', None), dict) else None
         condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
-        logger.warning(
-            'event=auth_db_degraded classification=%s db_host=%s request_path=%s downgraded_response=%s condensed_error=%s',
-            classification,
-            db_host,
-            request_path or '/auth/signin',
-            True,
-            condensed_error,
-        )
+        warning_key = f'{classification}:{db_host or "unknown"}'
+        should_emit_warning = False
+        now = monotonic()
+        with _auth_db_degraded_warning_lock:
+            last_emitted = _auth_db_degraded_last_emitted.get(warning_key)
+            if last_emitted is None or now - last_emitted >= AUTH_DB_DEGRADED_WARNING_WINDOW_SECONDS:
+                _auth_db_degraded_last_emitted[warning_key] = now
+                should_emit_warning = True
+        if should_emit_warning:
+            logger.warning(
+                'event=auth_db_degraded classification=%s db_host=%s request_path=%s downgraded_response=%s condensed_error=%s',
+                classification,
+                db_host,
+                request_path or '/auth/signin',
+                True,
+                condensed_error,
+            )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail='Authentication is temporarily unavailable. Please retry in a moment.',
