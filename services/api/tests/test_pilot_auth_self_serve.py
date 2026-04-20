@@ -179,14 +179,17 @@ def test_signin_db_quota_exceeded_returns_graceful_503_and_machine_code(
     monkeypatch.setattr(pilot_module, 'database_url', lambda: 'postgres://user:pass@ep-decoda-neon.us-east-1.aws.neon.tech/db')
 
     with pytest.raises(HTTPException) as exc_info:
-        with caplog.at_level('ERROR'):
+        with caplog.at_level('WARNING'):
             pilot_module.signin_user({'email': 'team@example.com', 'password': 'StrongPass1234'}, _request())
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == 'Authentication is temporarily unavailable. Please retry in a moment.'
     assert exc_info.value.headers['X-Decoda-Error-Code'] == 'AUTH_DB_QUOTA_EXCEEDED'
     assert exc_info.value.headers['X-Decoda-DB-Classification'] == 'quota_exceeded'
-    assert any('event=auth_db_degraded classification=quota_exceeded' in record.message for record in caplog.records)
+    assert any(
+        'event=auth_db_degraded classification=quota_exceeded reason=Database quota exhausted' in record.message
+        for record in caplog.records
+    )
 
 
 def test_signin_db_network_unreachable_returns_graceful_503_without_credential_failure(
@@ -208,6 +211,34 @@ def test_signin_db_network_unreachable_returns_graceful_503_without_credential_f
     assert exc_info.value.detail == 'Authentication is temporarily unavailable. Please retry in a moment.'
     assert exc_info.value.headers['X-Decoda-Error-Code'] == 'AUTH_BACKEND_UNAVAILABLE'
     assert exc_info.value.headers['X-Decoda-DB-Classification'] == 'network_unreachable'
+
+
+def test_enforce_auth_rate_limit_redis_failure_logs_condensed_warning(
+    pilot_module, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class _RedisClient:
+        def incr(self, *_args, **_kwargs):
+            raise RuntimeError('dns lookup failed')
+
+    class _RedisFactory:
+        @staticmethod
+        def from_url(*_args, **_kwargs):
+            return _RedisClient()
+
+    class _RedisModule:
+        Redis = _RedisFactory
+
+    monkeypatch.setenv('REDIS_URL', 'redis://redis.invalid:6379/0')
+    monkeypatch.setattr(pilot_module.importlib, 'import_module', lambda _: _RedisModule())
+    monkeypatch.setattr(pilot_module, '_redis_rate_limiter', None)
+
+    with caplog.at_level('WARNING'):
+        pilot_module.enforce_auth_rate_limit(_request(), 'signin')
+
+    assert any(
+        'redis rate limiter unavailable; falling back to in-memory limiter error=dns lookup failed' in record.message
+        for record in caplog.records
+    )
 
 
 def test_json_safe_value_serializes_uuid_and_datetime(pilot_module) -> None:
