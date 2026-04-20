@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager, suppress
 from copy import deepcopy
 from functools import lru_cache
@@ -180,6 +180,7 @@ from services.api.app.monitoring_runner import (
 )
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary_fallback
 from services.api.app.threat_payloads import normalize_threat_payload
+from services.api.app.db_failure import classify_db_error, db_error_reason_label, extract_db_host_from_dsn
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -254,6 +255,15 @@ RECONCILIATION_DATA_DIR = Path(__file__).resolve().parents[2] / 'reconciliation-
 OPTIONAL_FIXTURE_WARNINGS_EMITTED: set[tuple[str, str]] = set()
 STARTUP_BOOTSTRAP_STATUS: dict[str, Any] = {'enabled': False, 'ran': False, 'applied_versions': []}
 MONITORING_BACKGROUND_TASK: asyncio.Task[Any] | None = None
+MONITORING_LOOP_RUNTIME_STATE: dict[str, Any] = {
+    'degraded': False,
+    'classification': None,
+    'reason': None,
+    'backoff_seconds': None,
+    'next_retry_at': None,
+    'db_host': extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url()),
+    'updated_at': None,
+}
 RUNTIME_MARKER_ENV_VARS = (
     'APP_VERSION',
     'APP_BUILD_COMMIT',
@@ -1228,7 +1238,7 @@ def bootstrap_live_pilot() -> dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global MONITORING_BACKGROUND_TASK
+    global MONITORING_BACKGROUND_TASK, MONITORING_LOOP_RUNTIME_STATE
     seed_service(SERVICE_NAME, PORT, DETAIL, DEFAULT_METRICS)
     seed_embedded_dependency_registry()
     bootstrap_live_pilot()
@@ -1236,12 +1246,86 @@ async def lifespan(_: FastAPI):
     if str(os.getenv('LIVE_MONITORING_ENABLED', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'}:
         async def _monitoring_loop() -> None:
             interval = max(10, int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30')))
+            default_backoff_base_seconds = max(5, int(os.getenv('MONITOR_DB_RETRY_BASE_SECONDS', '15')))
+            default_backoff_cap_seconds = max(default_backoff_base_seconds, int(os.getenv('MONITOR_DB_RETRY_CAP_SECONDS', '300')))
+            network_backoff_base_seconds = max(3, int(os.getenv('MONITOR_DB_RETRY_NETWORK_BASE_SECONDS', '10')))
+            network_backoff_cap_seconds = max(network_backoff_base_seconds, int(os.getenv('MONITOR_DB_RETRY_NETWORK_CAP_SECONDS', '120')))
+            quota_backoff_base_seconds = max(30, int(os.getenv('MONITOR_DB_RETRY_QUOTA_BASE_SECONDS', '60')))
+            quota_backoff_cap_seconds = max(quota_backoff_base_seconds, int(os.getenv('MONITOR_DB_RETRY_QUOTA_CAP_SECONDS', '900')))
+            consecutive_db_failures = 0
+            last_db_failure_classification: str | None = None
             while True:
                 try:
                     run_monitoring_cycle(worker_name='monitoring-worker', limit=100, trigger_type='scheduler')
-                except Exception:
+                    consecutive_db_failures = 0
+                    last_db_failure_classification = None
+                    MONITORING_LOOP_RUNTIME_STATE = {
+                        'degraded': False,
+                        'classification': None,
+                        'reason': None,
+                        'backoff_seconds': None,
+                        'next_retry_at': None,
+                        'db_host': extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url()),
+                        'updated_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                    }
+                    await asyncio.sleep(interval)
+                    continue
+                except Exception as exc:
+                    classification = classify_db_error(exc)
+                    if classification in {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'auth_error'}:
+                        consecutive_db_failures += 1
+                        state_downgraded = not bool(MONITORING_LOOP_RUNTIME_STATE.get('degraded'))
+                        last_classification = last_db_failure_classification
+                        last_db_failure_classification = classification
+                        backoff_base_seconds = (
+                            quota_backoff_base_seconds
+                            if classification == 'quota_exceeded'
+                            else network_backoff_base_seconds
+                            if classification == 'network_unreachable'
+                            else default_backoff_base_seconds
+                        )
+                        backoff_cap_seconds = (
+                            quota_backoff_cap_seconds
+                            if classification == 'quota_exceeded'
+                            else network_backoff_cap_seconds
+                            if classification == 'network_unreachable'
+                            else default_backoff_cap_seconds
+                        )
+                        backoff_seconds = min(backoff_cap_seconds, backoff_base_seconds * (2 ** (consecutive_db_failures - 1)))
+                        next_retry_at_dt = datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)
+                        next_retry_at = next_retry_at_dt.isoformat().replace('+00:00', 'Z')
+                        db_host = extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url())
+                        MONITORING_LOOP_RUNTIME_STATE = {
+                            'degraded': True,
+                            'classification': classification,
+                            'reason': db_error_reason_label(classification),
+                            'backoff_seconds': backoff_seconds,
+                            'next_retry_at': next_retry_at,
+                            'db_host': db_host,
+                            'state_downgraded': state_downgraded,
+                            'updated_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                        }
+                        logger.warning(
+                            'event=background_monitoring_db_degraded classification=%s db_host=%s backoff_seconds=%s next_retry_at=%s state_downgraded=%s',
+                            classification,
+                            db_host or 'unknown',
+                            backoff_seconds,
+                            next_retry_at,
+                            state_downgraded,
+                        )
+                        if last_classification is None or last_classification != classification:
+                            logger.exception(
+                                'event=background_monitoring_db_degraded_traceback classification=%s db_host=%s backoff_seconds=%s next_retry_at=%s state_downgraded=%s',
+                                classification,
+                                db_host or 'unknown',
+                                backoff_seconds,
+                                next_retry_at,
+                                state_downgraded,
+                            )
+                        await asyncio.sleep(backoff_seconds)
+                        continue
                     logger.exception('background_monitoring_cycle_failed')
-                await asyncio.sleep(interval)
+                    await asyncio.sleep(interval)
         MONITORING_BACKGROUND_TASK = asyncio.create_task(_monitoring_loop())
     yield
     if MONITORING_BACKGROUND_TASK is not None:
