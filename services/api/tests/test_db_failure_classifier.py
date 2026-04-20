@@ -12,6 +12,16 @@ def test_classify_detects_neon_quota_exhaustion() -> None:
     assert classify_db_error(exc) == 'quota_exceeded'
 
 
+def test_classify_prioritizes_quota_over_ipv6_network_noise() -> None:
+    try:
+        raise RuntimeError('ERROR: Your account or project has exceeded the compute time quota.')
+    except RuntimeError as quota_exc:
+        try:
+            raise RuntimeError('connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable') from quota_exc
+        except RuntimeError as combined_exc:
+            assert classify_db_error(combined_exc) == 'quota_exceeded'
+
+
 def test_classify_detects_network_unreachable_patterns() -> None:
     exc = RuntimeError('connection to server at "2600:abcd::1", port 5432 failed: Network is unreachable')
     assert classify_db_error(exc) == 'network_unreachable'

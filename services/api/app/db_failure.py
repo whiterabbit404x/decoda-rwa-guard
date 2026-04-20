@@ -52,7 +52,27 @@ _KEYVALUE_HOST_PATTERN = re.compile(r'(?:^|\s)host\s*=\s*([^\s]+)')
 
 
 def _normalize_message(exc: Exception) -> str:
-    return ' '.join(str(exc).strip().lower().split())
+    message_parts: list[str] = []
+    stack: list[BaseException | None] = [exc]
+    seen: set[int] = set()
+
+    while stack:
+        current = stack.pop()
+        if current is None:
+            continue
+        marker = id(current)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        normalized = ' '.join(str(current).strip().lower().split())
+        if normalized:
+            message_parts.append(normalized)
+        stack.extend([getattr(current, '__cause__', None), getattr(current, '__context__', None)])
+        for arg in getattr(current, 'args', ()) or ():
+            if isinstance(arg, BaseException):
+                stack.append(arg)
+
+    return ' '.join(message_parts)
 
 
 def classify_db_error(exc: Exception) -> DbErrorClassification:
