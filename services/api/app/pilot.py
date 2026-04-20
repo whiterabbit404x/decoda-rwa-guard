@@ -82,6 +82,10 @@ MFA_RECOVERY_CODE_COUNT = 8
 SLACK_OAUTH_STATE_TTL_MINUTES = 10
 _rate_limit_lock = threading.Lock()
 _rate_limit_state: dict[str, list[float]] = {}
+_rate_limit_fallback_warning_lock = threading.Lock()
+_rate_limit_fallback_last_emitted: dict[str, float] = {}
+RATE_LIMIT_FALLBACK_WARNING_WINDOW_SECONDS = 300
+RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY = 'rate_limit.fallback.redis_unavailable'
 logger = logging.getLogger(__name__)
 _redis_rate_limiter: Any | None = None
 _redis_rate_limiter_lock = threading.Lock()
@@ -1179,11 +1183,19 @@ def enforce_auth_rate_limit(request: Request, action: str) -> None:
             raise
         except Exception as exc:
             condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
-            logger.warning(
-                'redis rate limiter unavailable; falling back to in-memory limiter error=%s',
-                condensed_error,
-                extra={'event': 'rate_limit.fallback'},
-            )
+            should_emit_warning = False
+            now = monotonic()
+            with _rate_limit_fallback_warning_lock:
+                last_emitted = _rate_limit_fallback_last_emitted.get(RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY)
+                if last_emitted is None or now - last_emitted >= RATE_LIMIT_FALLBACK_WARNING_WINDOW_SECONDS:
+                    _rate_limit_fallback_last_emitted[RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY] = now
+                    should_emit_warning = True
+            if should_emit_warning:
+                logger.warning(
+                    'redis rate limiter unavailable; falling back to in-memory limiter error=%s',
+                    condensed_error,
+                    extra={'event': 'rate_limit.fallback', 'fallback_key': RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY},
+                )
     key = f'{action}:{client_host}'
     cutoff = monotonic() - AUTH_WINDOW_SECONDS
     with _rate_limit_lock:
