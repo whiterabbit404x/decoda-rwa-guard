@@ -789,8 +789,9 @@ def test_bootstrap_live_pilot_records_startup_status(api_main, monkeypatch: pyte
     assert api_main.STARTUP_BOOTSTRAP_STATUS == payload
 
 
-def test_bootstrap_live_pilot_marks_reconcile_as_degraded_for_quota_errors(
-    api_main, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize('classification', ['quota_exceeded', 'network_unreachable', 'db_unavailable', 'auth_error'])
+def test_bootstrap_live_pilot_marks_reconcile_as_degraded_for_handled_db_classifications(
+    api_main, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, classification: str
 ) -> None:
     monkeypatch.setattr(
         api_main,
@@ -806,8 +807,10 @@ def test_bootstrap_live_pilot_marks_reconcile_as_degraded_for_quota_errors(
     monkeypatch.setattr(
         api_main,
         'reconcile_monitored_systems_for_enabled_targets',
-        lambda: (_ for _ in ()).throw(RuntimeError('Your account has exceeded the compute time quota.')),
+        lambda: (_ for _ in ()).throw(RuntimeError('handled degraded startup reconcile error')),
     )
+    monkeypatch.setattr(api_main, 'classify_db_error', lambda exc: classification)
+    monkeypatch.setattr(api_main, 'HAS_EMITTED_INITIAL_STARTUP_RECONCILE_DB_DEGRADED_EVENT', True)
     monkeypatch.setenv('DATABASE_URL', 'postgresql://user:pass@db.example.test:5432/app')
 
     with caplog.at_level('INFO'):
@@ -815,8 +818,8 @@ def test_bootstrap_live_pilot_marks_reconcile_as_degraded_for_quota_errors(
 
     assert payload['monitored_systems_reconcile'] == {
         'degraded': True,
-        'classification': 'quota_exceeded',
-        'reason': 'Database quota exhausted',
+        'classification': classification,
+        'reason': api_main.db_error_reason_label(classification),
         'db_host': 'db.example.test',
     }
     degraded_records = [
@@ -824,6 +827,8 @@ def test_bootstrap_live_pilot_marks_reconcile_as_degraded_for_quota_errors(
     ]
     assert len(degraded_records) == 1
     assert degraded_records[0].levelname == 'INFO'
+    assert f'classification={classification}' in degraded_records[0].message
+    assert 'db_host=db.example.test' in degraded_records[0].message
 
 
 def test_embedded_loader_isolates_top_level_app_package_namespaces(api_main) -> None:
