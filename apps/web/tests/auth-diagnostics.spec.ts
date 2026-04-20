@@ -113,4 +113,16 @@ test.describe('auth diagnostics helpers', () => {
 
     expect(message).toContain('Authentication is temporarily unavailable');
   });
+
+  test('classifies structured auth DB outage payload as temporary backend unavailability, not invalid credentials', async () => {
+    const message = classifyAuthResponseError('sign in', '/api/auth/signin', 503, 'Authentication is temporarily unavailable. Please retry in a moment.', {
+      authTransport: 'same-origin proxy',
+      backendApiUrl: 'https://api.decoda.example',
+      configured: true,
+      code: 'AUTH_DB_QUOTA_EXCEEDED',
+    });
+
+    expect(message).toContain('temporarily unavailable');
+    expect(message).not.toContain('Invalid email or password');
+  });
 });

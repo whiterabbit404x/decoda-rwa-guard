@@ -130,6 +130,10 @@ export function classifyAuthResponseError(
     return safeDetail ?? 'Authentication service is temporarily unreachable. Please try again shortly.';
   }
 
+  if (diagnostics.code === 'AUTH_BACKEND_UNAVAILABLE' || diagnostics.code === 'AUTH_DB_QUOTA_EXCEEDED') {
+    return safeDetail ?? 'Authentication is temporarily unavailable. Please retry in a moment.';
+  }
+
   if (status === 401 && safeDetail === 'Invalid email or password.') {
     return safeDetail;
   }

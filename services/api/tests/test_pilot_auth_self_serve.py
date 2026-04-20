@@ -166,6 +166,51 @@ def test_signin_invalid_credentials_returns_401(pilot_module, monkeypatch: pytes
     assert exc_info.value.status_code == 401
 
 
+def test_signin_db_quota_exceeded_returns_graceful_503_and_machine_code(
+    pilot_module, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    @contextmanager
+    def fake_pg():
+        raise RuntimeError('Neon error: exceeded the compute time quota for this project')
+        yield
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg)
+    monkeypatch.setattr(pilot_module, 'database_url', lambda: 'postgres://user:pass@ep-decoda-neon.us-east-1.aws.neon.tech/db')
+
+    with pytest.raises(HTTPException) as exc_info:
+        with caplog.at_level('ERROR'):
+            pilot_module.signin_user({'email': 'team@example.com', 'password': 'StrongPass1234'}, _request())
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == 'Authentication is temporarily unavailable. Please retry in a moment.'
+    assert exc_info.value.headers['X-Decoda-Error-Code'] == 'AUTH_DB_QUOTA_EXCEEDED'
+    assert exc_info.value.headers['X-Decoda-DB-Classification'] == 'quota_exceeded'
+    assert any('event=auth_db_degraded classification=quota_exceeded' in record.message for record in caplog.records)
+    assert all(record.exc_info is None for record in caplog.records if 'event=auth_db_degraded' in record.message)
+
+
+def test_signin_db_network_unreachable_returns_graceful_503_without_credential_failure(
+    pilot_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    @contextmanager
+    def fake_pg():
+        raise RuntimeError('connect failed: Network is unreachable')
+        yield
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg)
+    monkeypatch.setattr(pilot_module, 'database_url', lambda: 'postgres://user:pass@db.internal.local:5432/app')
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot_module.signin_user({'email': 'team@example.com', 'password': 'StrongPass1234'}, _request())
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == 'Authentication is temporarily unavailable. Please retry in a moment.'
+    assert exc_info.value.headers['X-Decoda-Error-Code'] == 'AUTH_BACKEND_UNAVAILABLE'
+    assert exc_info.value.headers['X-Decoda-DB-Classification'] == 'network_unreachable'
+
+
 def test_json_safe_value_serializes_uuid_and_datetime(pilot_module) -> None:
     payload = {
         'id': uuid.uuid4(),
