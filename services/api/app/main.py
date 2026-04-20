@@ -1265,7 +1265,8 @@ def bootstrap_live_pilot() -> dict[str, Any]:
                 'db_host': db_host,
             }
             logger.warning(
-                'startup monitored systems reconcile skipped due to degraded database connectivity classification=%s db_host=%s',
+                'startup monitored systems reconcile skipped due to degraded database connectivity '
+                'classification=%s db_host=%s',
                 classification,
                 db_host,
             )
