@@ -1186,15 +1186,15 @@ def enforce_auth_rate_limit(request: Request, action: str) -> None:
             raise
         except Exception as exc:
             condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
-            should_emit_warning = False
+            should_emit_info = False
             now = monotonic()
             with _rate_limit_fallback_warning_lock:
                 last_emitted = _rate_limit_fallback_last_emitted.get(RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY)
                 if last_emitted is None or now - last_emitted >= RATE_LIMIT_FALLBACK_WARNING_WINDOW_SECONDS:
                     _rate_limit_fallback_last_emitted[RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY] = now
-                    should_emit_warning = True
-            if should_emit_warning:
-                logger.warning(
+                    should_emit_info = True
+            if should_emit_info:
+                logger.info(
                     'redis rate limiter unavailable; falling back to in-memory limiter error=%s',
                     condensed_error,
                     extra={'event': 'rate_limit.fallback', 'fallback_key': RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY},
@@ -1774,20 +1774,20 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         request_path = request.scope.get('path') if isinstance(getattr(request, 'scope', None), dict) else None
         condensed_error = str(exc).strip().splitlines()[0] if str(exc).strip() else 'unknown_error'
         warning_key = f'{classification}:{db_host or "unknown"}'
-        should_emit_warning = False
+        should_emit_info = False
         now = monotonic()
         with _auth_db_degraded_warning_lock:
             last_emitted = _auth_db_degraded_last_emitted.get(warning_key)
             if last_emitted is None or now - last_emitted >= AUTH_DB_DEGRADED_WARNING_WINDOW_SECONDS:
                 _auth_db_degraded_last_emitted[warning_key] = now
-                should_emit_warning = True
-        if should_emit_warning:
+                should_emit_info = True
+        if should_emit_info:
             warning_details = ''
             if error_context.get('classification_source'):
                 warning_details += ' classification_source=%s'
             if error_context.get('raw_error_snippet'):
                 warning_details += ' raw_error_snippet=%s'
-            logger.warning(
+            logger.info(
                 f'event=auth_db_degraded classification=%s reason=%s db_host=%s request_path=%s '
                 f'downgraded_response=%s condensed_error=%s{warning_details}',
                 classification,

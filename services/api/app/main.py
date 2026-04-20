@@ -1269,7 +1269,7 @@ def bootstrap_live_pilot() -> dict[str, Any]:
                 'reason': db_error_reason_label(classification),
                 'db_host': db_host,
             }
-            logger.warning(
+            logger.info(
                 'startup monitored systems reconcile skipped due to degraded database connectivity '
                 'classification=%s db_host=%s',
                 classification,
@@ -1366,7 +1366,7 @@ async def lifespan(_: FastAPI):
                                 warning_details += ' classification_source=%s'
                             if error_context.get('raw_error_snippet'):
                                 warning_details += ' raw_error_snippet=%s'
-                            logger.warning(
+                            logger.info(
                                 f'event=background_monitoring_db_degraded classification=%s reason=%s db_host=%s '
                                 f'backoff_seconds=%s next_retry_at=%s state_downgraded=%s{warning_details}',
                                 classification,
@@ -1385,7 +1385,7 @@ async def lifespan(_: FastAPI):
                                 cause_details += ' classification_source=%s'
                             if error_context.get('raw_error_snippet'):
                                 cause_details += ' raw_error_snippet=%s'
-                            logger.warning(
+                            logger.info(
                                 f'event=background_monitoring_db_degraded_cause classification=%s reason=%s db_host=%s '
                                 f'condensed_error=%s{cause_details}',
                                 classification,
