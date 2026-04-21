@@ -8578,9 +8578,9 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
             INSERT INTO response_actions (
                 id, workspace_id, incident_id, alert_id, action_type, mode, status, result_summary, operator_notes,
                 chain_network, target_wallet, token_contract, spender, calldata,
-                execution_metadata, created_by_user_id
+                execution_state, execution_metadata, created_by_user_id
             )
-            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
             ''',
             (
                 action_id,
@@ -8597,6 +8597,7 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 token_contract,
                 spender,
                 calldata,
+                'proposed' if mode == 'live' else 'simulated_executed',
                 _json_dumps(execution_metadata),
                 user['id'],
             ),
@@ -8659,7 +8660,7 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 'action_type': action_type,
                 'mode': mode,
                 'calldata': calldata,
-                'execution_state': 'proposed' if mode == 'live' else 'executed',
+                'execution_state': 'proposed' if mode == 'live' else 'simulated_executed',
                 'live_execution_path': capability.get('live_execution_path'),
             }
         )
@@ -8804,8 +8805,8 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             metadata['execution_state'] = 'unsupported'
             result_summary = str(capability.get('reason') or 'Unsupported live action')
             connection.execute(
-                'UPDATE response_actions SET status = %s, execution_metadata = %s::jsonb, result_summary = %s WHERE id = %s',
-                ('failed', _json_dumps(metadata), result_summary, action_id),
+                'UPDATE response_actions SET status = %s, execution_state = %s, execution_metadata = %s::jsonb, result_summary = %s WHERE id = %s',
+                ('failed', 'unsupported', _json_dumps(metadata), result_summary, action_id),
             )
             write_action_history(
                 connection,
@@ -8857,10 +8858,10 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         connection.execute(
             f"""
             UPDATE response_actions
-            SET status = '{next_status}', safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, executed_at = CASE WHEN '{next_status}' = 'executed' THEN NOW() ELSE executed_at END, result_summary = COALESCE(result_summary, %s)
+            SET status = '{next_status}', execution_state = %s, safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, executed_at = CASE WHEN '{next_status}' = 'executed' THEN NOW() ELSE executed_at END, result_summary = COALESCE(result_summary, %s)
             WHERE id = %s
             """,
-            (safe_tx_hash, _json_dumps(metadata), result_summary, action_id),
+            (execution_state, safe_tx_hash, _json_dumps(metadata), result_summary, action_id),
         )
         write_action_history(
             connection,
@@ -9077,7 +9078,7 @@ def list_enforcement_actions(
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, action_type, mode, status, result_summary, operator_notes, created_at, executed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, execution_metadata
+            SELECT id, action_type, mode, status, execution_state, result_summary, operator_notes, created_at, executed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, execution_metadata
             FROM response_actions
             WHERE workspace_id = %s
               AND (%s::uuid IS NULL OR incident_id = %s::uuid)
