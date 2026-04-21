@@ -8679,7 +8679,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             )
         else:
             metadata['execution_mode'] = 'unsupported'
-            metadata['execution_state'] = 'failed'
+            metadata['execution_state'] = 'unsupported'
             result_summary = str(capability.get('reason') or 'Unsupported live action')
             connection.execute(
                 'UPDATE response_actions SET status = %s, execution_metadata = %s::jsonb, result_summary = %s WHERE id = %s',
@@ -8707,7 +8707,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                     'action_type': action.get('action_type'),
                     'mode': action.get('mode'),
                     'status': 'failed',
-                    'execution_state': 'failed',
+                    'execution_state': 'unsupported',
                     'alert_id': action.get('alert_id'),
                 },
             )
@@ -8721,7 +8721,8 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                     'action_type': action.get('action_type'),
                     'live_execution_path': capability.get('live_execution_path'),
                     'status': 'failed',
-                    'execution_state': 'failed',
+                    'execution_state': 'unsupported',
+                    'reason': result_summary,
                 },
             )
         if next_status not in ENFORCEMENT_STATUSES:

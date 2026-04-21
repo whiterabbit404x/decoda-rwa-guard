@@ -48,3 +48,22 @@ export function actionDisabledReason(capability: ResponseActionCapability | unde
   if (mode !== 'live') return 'Mode not supported for this action';
   return capability?.reason || 'Unsupported live action';
 }
+
+export function responseActionExecutionMessage(payload: any): { isSuccess: boolean; text: string } {
+  const executionState = String(payload?.execution_state || '').trim().toLowerCase();
+  const liveExecutionPath = String(payload?.live_execution_path || '').trim().toLowerCase();
+  const fallbackReason = String(payload?.reason || payload?.message || '').trim();
+  if (executionState === 'simulated_executed' || executionState === 'live_executed') {
+    return { isSuccess: true, text: 'Action executed.' };
+  }
+  if (executionState === 'proposed') {
+    if (liveExecutionPath === 'safe') return { isSuccess: true, text: 'Proposed to Safe' };
+    if (liveExecutionPath === 'governance') return { isSuccess: true, text: 'Governance action submitted' };
+    if (liveExecutionPath === 'manual_only') return { isSuccess: false, text: 'Manual-only in live mode' };
+  }
+  if (executionState === 'unsupported') {
+    return { isSuccess: false, text: 'Unsupported live action' };
+  }
+  if (fallbackReason) return { isSuccess: false, text: fallbackReason };
+  return { isSuccess: false, text: 'Action could not be executed.' };
+}

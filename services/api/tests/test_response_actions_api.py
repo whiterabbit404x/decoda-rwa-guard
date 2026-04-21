@@ -201,7 +201,8 @@ def test_execute_live_unsupported_action_returns_structured_error_without_execut
         assert exc.status_code == 409
         assert exc.detail['code'] == 'RESPONSE_ACTION_UNSUPPORTED_EXECUTOR'
         assert exc.detail['status'] == 'failed'
-        assert exc.detail['execution_state'] == 'failed'
+        assert exc.detail['execution_state'] == 'unsupported'
+        assert exc.detail['reason'] == 'Unsupported live action'
 
     assert any(
         "UPDATE response_actions SET status = %s, execution_metadata = %s::jsonb, result_summary = %s WHERE id = %s" in statement
@@ -347,3 +348,82 @@ def test_execute_live_freeze_wallet_writes_governance_metadata_and_timeline(monk
     timeline_calls = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
     assert any(params[3] == 'response_action.proposed' for params in timeline_calls)
     assert any('governance_action_id' in str(params[6]) for params in timeline_calls)
+
+
+def test_execute_live_manual_only_action_returns_manual_required_state(monkeypatch):
+    executed: list[tuple[str, object]] = []
+
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            executed.append((normalized, params))
+            if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result(
+                    {
+                        'id': 'act-manual',
+                        'status': 'pending',
+                        'mode': 'live',
+                        'action_type': 'disable_monitored_system',
+                        'execution_metadata': {},
+                        'incident_id': 'inc-3',
+                        'alert_id': 'alert-3',
+                    }
+                )
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1'}))
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    response = pilot.execute_enforcement_action('act-manual', request)
+
+    assert response['status'] == 'pending'
+    assert response['execution_state'] == 'live_manual_required'
+    assert response['live_execution_path'] == 'manual_only'
+    assert response['reason'] == 'Manual-only in live mode'
+    assert any("SET status = 'pending'" in statement and 'execution_metadata' in statement for statement, _ in executed)
+    assert not any("SET status = 'executed'" in statement for statement, _ in executed)
+
+
+def test_list_response_action_capabilities_returns_workspace_scoped_payload(monkeypatch):
+    @contextmanager
+    def _fake_pg():
+        class _Connection:
+            pass
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda *_: {'id': 'admin-1'})
+    monkeypatch.setattr(pilot, 'resolve_workspace', lambda *_: {'workspace_id': 'ws-1'})
+    monkeypatch.setattr(pilot, '_safe_execution_configured', lambda: True)
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    response = pilot.list_response_action_capabilities(request)
+
+    assert response['workspace_id'] == 'ws-1'
+    capabilities = {row['action_type']: row for row in response['actions']}
+    assert capabilities['block_transaction']['live_execution_path'] == 'unsupported'
+    assert capabilities['block_transaction']['reason'] == 'Unsupported live action'
+    assert capabilities['disable_monitored_system']['live_execution_path'] == 'manual_only'
+    assert capabilities['disable_monitored_system']['reason'] == 'Manual-only in live mode'
+    assert capabilities['revoke_approval']['live_execution_path'] == 'safe'
+    assert capabilities['freeze_wallet']['live_execution_path'] == 'governance'
