@@ -1400,6 +1400,35 @@ def write_action_history(
     )
 
 
+def append_incident_timeline_event(
+    connection: Any,
+    *,
+    workspace_id: str,
+    incident_id: str | None,
+    event_type: str,
+    message: str,
+    actor_user_id: str | None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    if not incident_id:
+        return
+    connection.execute(
+        '''
+        INSERT INTO incident_timeline (id, workspace_id, incident_id, event_type, message, actor_user_id, metadata, created_at)
+        VALUES (%s, %s, %s::uuid, %s, %s, %s::uuid, %s::jsonb, NOW())
+        ''',
+        (
+            str(uuid.uuid4()),
+            workspace_id,
+            incident_id,
+            event_type,
+            message,
+            actor_user_id,
+            _json_dumps(metadata or {}),
+        ),
+    )
+
+
 def build_user_response(connection: psycopg.Connection, user_id: str) -> dict[str, Any]:
     user = connection.execute(
         '''
@@ -7476,6 +7505,17 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
         ).fetchone()
         if alert is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found.')
+        latest_evidence = connection.execute(
+            '''
+            SELECT id, tx_hash, observed_at
+            FROM evidence
+            WHERE workspace_id = %s
+              AND alert_id = %s::uuid
+            ORDER BY observed_at DESC, created_at DESC, id DESC
+            LIMIT 1
+            ''',
+            (workspace_context['workspace_id'], alert_id),
+        ).fetchone()
         incident_id = str(uuid.uuid4())
         title = str(payload.get('title') or f"Escalated alert: {alert.get('title') or alert_id}")
         summary = str(payload.get('summary') or alert.get('summary') or 'Escalated from alert')
@@ -7545,6 +7585,23 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
             object_id=incident_id,
             action_type='incident.action_recorded',
             details={'source_alert_id': alert_id, 'incident_id': incident_id, 'detection_id': alert.get('detection_id')},
+        )
+        append_incident_timeline_event(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            incident_id=incident_id,
+            event_type='alert.escalated',
+            message='Alert escalated to incident.',
+            actor_user_id=user['id'],
+            metadata={
+                'alert_id': alert_id,
+                'detection_id': alert.get('detection_id'),
+                'evidence_reference': {
+                    'evidence_id': str(latest_evidence.get('id') or '') if latest_evidence is not None else None,
+                    'tx_hash': latest_evidence.get('tx_hash') if latest_evidence is not None else None,
+                    'observed_at': latest_evidence.get('observed_at') if latest_evidence is not None else None,
+                },
+            },
         )
         connection.commit()
         return {'incident_id': incident_id, 'alert_id': alert_id, 'status': 'open'}
@@ -8228,6 +8285,15 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 action_type='incident.response_action_created',
                 details={'response_action_id': action_id, 'action_type': action_type, 'mode': mode},
             )
+            append_incident_timeline_event(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                incident_id=str(incident_id),
+                event_type='response_action.created',
+                message='Response action created.',
+                actor_user_id=user['id'],
+                metadata={'response_action_id': action_id, 'action_type': action_type, 'mode': mode, 'status': status_value, 'alert_id': alert_id},
+            )
         if alert_id:
             write_action_history(
                 connection,
@@ -8260,7 +8326,10 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
-        row = connection.execute('SELECT id, status FROM response_actions WHERE id = %s AND workspace_id = %s', (action_id, workspace_context['workspace_id'])).fetchone()
+        row = connection.execute(
+            'SELECT id, status, incident_id, alert_id, action_type, mode FROM response_actions WHERE id = %s AND workspace_id = %s',
+            (action_id, workspace_context['workspace_id']),
+        ).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
         if str(row.get('status')) not in {'pending', 'failed', 'planned'}:
@@ -8275,6 +8344,20 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
             object_id=action_id,
             action_type='response_action.approved',
             details={},
+        )
+        append_incident_timeline_event(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            incident_id=str(row.get('incident_id') or ''),
+            event_type='response_action.approved',
+            message='Response action approved.',
+            actor_user_id=user['id'],
+            metadata={
+                'response_action_id': action_id,
+                'action_type': row.get('action_type'),
+                'mode': row.get('mode'),
+                'alert_id': row.get('alert_id'),
+            },
         )
         log_audit(connection, action='enforcement.action.approve', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
         connection.commit()
@@ -8369,6 +8452,22 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 action_type='response_action.unsupported',
                 details={'mode': action.get('mode'), 'action_type': action.get('action_type'), 'code': 'RESPONSE_ACTION_UNSUPPORTED_EXECUTOR'},
             )
+            append_incident_timeline_event(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                incident_id=str(action.get('incident_id') or ''),
+                event_type='response_action.unsupported',
+                message='Response action execution is unsupported in selected mode.',
+                actor_user_id=user['id'],
+                metadata={
+                    'response_action_id': action_id,
+                    'action_type': action.get('action_type'),
+                    'mode': action.get('mode'),
+                    'status': 'failed',
+                    'execution_state': 'failed',
+                    'alert_id': action.get('alert_id'),
+                },
+            )
             connection.commit()
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -8401,6 +8500,35 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             object_id=action_id,
             action_type='response_action.executed',
             details={'mode': action.get('mode'), 'safe_tx_hash': safe_tx_hash, 'execution_state': execution_state},
+        )
+        governance_action = metadata.get('governance_action') if isinstance(metadata.get('governance_action'), dict) else {}
+        external_references: dict[str, Any] = {}
+        if safe_tx_hash:
+            external_references['safe_tx_hash'] = safe_tx_hash
+        governance_action_id = metadata.get('external_governance_action_id') or governance_action.get('action_id')
+        if governance_action_id:
+            external_references['governance_action_id'] = governance_action_id
+        attestation_hash = metadata.get('attestation_hash') or governance_action.get('attestation_hash')
+        if attestation_hash:
+            external_references['attestation_hash'] = attestation_hash
+        timeline_event_type = 'response_action.proposed' if execution_state == 'proposed' else 'response_action.executed'
+        timeline_message = 'Response action proposed; awaiting external execution.' if execution_state == 'proposed' else 'Response action executed.'
+        append_incident_timeline_event(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            incident_id=str(action.get('incident_id') or ''),
+            event_type=timeline_event_type,
+            message=timeline_message,
+            actor_user_id=user['id'],
+            metadata={
+                'response_action_id': action_id,
+                'action_type': action.get('action_type'),
+                'mode': action.get('mode'),
+                'status': next_status,
+                'execution_state': execution_state,
+                'alert_id': action.get('alert_id'),
+                'external_references': external_references,
+            },
         )
         if action.get('incident_id'):
             write_action_history(
@@ -8492,6 +8620,27 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
             object_id=action_id,
             action_type='response_action.rolled_back',
             details={'compensating_action_id': rollback_id, 'compensating_action_type': compensating_type},
+        )
+        append_incident_timeline_event(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            incident_id=str(action.get('incident_id') or ''),
+            event_type='response_action.rolled_back',
+            message='Response action rolled back with compensating action.',
+            actor_user_id=user['id'],
+            metadata={
+                'response_action_id': action_id,
+                'compensating_action_id': rollback_id,
+                'compensating_action_type': compensating_type,
+                'action_type': action.get('action_type'),
+                'mode': action.get('mode'),
+                'alert_id': action.get('alert_id'),
+                'external_references': {
+                    'safe_tx_hash': action.get('safe_tx_hash'),
+                    'governance_action_id': metadata.get('external_governance_action_id'),
+                    'attestation_hash': metadata.get('attestation_hash'),
+                },
+            },
         )
         log_audit(connection, action='enforcement.action.rollback', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'compensating_action_id': rollback_id})
         connection.commit()
