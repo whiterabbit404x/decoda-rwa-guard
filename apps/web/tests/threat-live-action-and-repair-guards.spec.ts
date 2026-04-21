@@ -54,8 +54,8 @@ test('LIVE/HYBRID empty states use no-evidence degraded copy instead of healthy 
   const alertsPage = read('(product)/alerts-page-client.tsx');
   const incidentsPage = read('(product)/incidents-page-client.tsx');
 
-  expect(alertsPage).toContain('Evidence degraded: no linked evidence is currently persisted for this alert in LIVE/HYBRID monitoring mode.');
-  expect(incidentsPage).toContain('Evidence degraded: no linked evidence is currently persisted for this incident in LIVE/HYBRID monitoring mode.');
+  expect(alertsPage).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this alert has no persisted linked evidence yet.');
+  expect(incidentsPage).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this incident has no persisted linked evidence yet.');
 
   expect(alertsPage.toLowerCase()).not.toContain('all clear');
   expect(incidentsPage.toLowerCase()).not.toContain('all clear');
@@ -88,6 +88,6 @@ test('repair flow exposes deterministic pending/success/failure transitions', ()
   expect(source).toContain('Sending repair request…');
   expect(source).toContain('Parsing repair response…');
   expect(source).toContain('Refreshing monitored systems from workspace truth…');
-  expect(source).toContain('Repair succeeded:');
+  expect(source).toContain("Repair {reconcileSummary.state || 'success'} (reconcile id: {reconcileSummary.reconcile_id || 'unknown'})");
   expect(source).toContain('Repair failed during {repairFailureReason.stage}.');
 });
