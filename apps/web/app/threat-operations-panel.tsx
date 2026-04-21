@@ -612,7 +612,7 @@ export function derivePageState(params: {
   summaryStatusReason?: string | null;
   summaryConfigurationReason?: string | null;
   summaryConfigurationReasonCodes?: string[];
-  continuityStatus?: 'live_continuous' | 'degraded' | 'offline' | 'idle_no_telemetry' | null;
+  continuityStatus?: 'continuous_live' | 'degraded' | 'offline' | 'idle_no_telemetry' | null;
 }): PageOperationalState {
   const {
     loadingSnapshot,
@@ -670,7 +670,7 @@ export function derivePageState(params: {
   if (continuityStatus === 'degraded') {
     return 'degraded_partial';
   }
-  if (continuityStatus === 'live_continuous') {
+  if (continuityStatus === 'continuous_live') {
     return liveDetections.length > 0 ? 'healthy_live' : 'configured_no_signals';
   }
 
@@ -683,14 +683,6 @@ export function derivePageState(params: {
     || freshnessStatus === 'stale'
   ) {
     return 'degraded_partial';
-  }
-
-  if (hasLiveTelemetry && liveDetections.length > 0) {
-    return 'healthy_live';
-  }
-
-  if (hasLiveTelemetry) {
-    return 'configured_no_signals';
   }
 
   return 'degraded_partial';
@@ -708,13 +700,13 @@ export function formatSystemsPanelWarning(failedEndpoints: SnapshotFailureKey[])
 export function pageStatePrimaryCopy(
   state: PageOperationalState,
   configurationReason?: string | null,
-  continuityStatus?: 'live_continuous' | 'degraded' | 'offline' | 'idle_no_telemetry' | null,
+  continuityStatus?: 'continuous_live' | 'degraded' | 'offline' | 'idle_no_telemetry' | null,
 ): string {
   if (state === 'healthy_live') {
     return 'Live monitoring is healthy. Telemetry freshness and threat detections reflect current workspace conditions.';
   }
   if (state === 'configured_no_signals') {
-    if (continuityStatus === 'live_continuous') {
+    if (continuityStatus === 'continuous_live') {
       return 'Telemetry continuity is live and continuous. No active detections are currently open.';
     }
     return 'No telemetry continuity is currently proven for this workspace. Active detections are not currently available.';
@@ -731,7 +723,7 @@ export function pageStatePrimaryCopy(
   return 'Monitoring is partially degraded. Threat outcomes may be delayed or incomplete.';
 }
 
-function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason, continuityStatus }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null; continuityStatus?: 'live_continuous' | 'degraded' | 'offline' | 'idle_no_telemetry' | null }) {
+function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason, continuityStatus }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null; continuityStatus?: 'continuous_live' | 'degraded' | 'offline' | 'idle_no_telemetry' | null }) {
   if (state === 'healthy_live') {
     return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus)}</p>;
   }

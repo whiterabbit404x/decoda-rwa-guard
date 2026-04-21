@@ -15,9 +15,14 @@ export type WorkspaceMonitoringSummary = {
   active_alerts_count: number;
   active_incidents_count: number;
   evidence_source_summary: 'live' | 'simulator' | 'replay' | 'none';
-  continuity_status?: 'live_continuous' | 'degraded' | 'offline' | 'idle_no_telemetry';
+  continuity_status?: 'continuous_live' | 'degraded' | 'offline' | 'idle_no_telemetry';
   continuity_reason_codes?: string[];
   continuity_signals?: Record<string, unknown>;
+  ingestion_freshness?: 'fresh' | 'stale' | 'offline' | 'missing';
+  detection_pipeline_freshness?: 'fresh' | 'stale' | 'offline' | 'missing';
+  worker_heartbeat_freshness?: 'fresh' | 'stale' | 'offline' | 'missing';
+  event_throughput_window?: 'in_window' | 'out_of_window' | 'offline' | 'no_events';
+  event_throughput_window_seconds?: number;
   contradiction_flags: string[];
   guard_flags: string[];
   status_reason: string | null;

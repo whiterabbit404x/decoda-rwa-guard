@@ -9,7 +9,7 @@ CANONICAL_MONITORING_STATUS = {'live', 'limited', 'offline'}
 CANONICAL_TELEMETRY_FRESHNESS = {'fresh', 'stale', 'unavailable'}
 CANONICAL_CONFIDENCE = {'high', 'medium', 'low', 'unavailable'}
 CANONICAL_EVIDENCE_SOURCE = {'live', 'simulator', 'replay', 'none'}
-CANONICAL_CONTINUITY_STATUS = {'live_continuous', 'degraded', 'offline', 'idle_no_telemetry'}
+CANONICAL_CONTINUITY_STATUS = {'continuous_live', 'degraded', 'offline', 'idle_no_telemetry'}
 CANONICAL_SUMMARY_KEYS = (
     'workspace_configured',
     'runtime_status',
@@ -28,6 +28,11 @@ CANONICAL_SUMMARY_KEYS = (
     'continuity_status',
     'continuity_reason_codes',
     'continuity_signals',
+    'ingestion_freshness',
+    'detection_pipeline_freshness',
+    'worker_heartbeat_freshness',
+    'event_throughput_window',
+    'event_throughput_window_seconds',
     'contradiction_flags',
     'guard_flags',
     'status_reason',
@@ -124,6 +129,11 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'continuity_status': _normalized_continuity_status(str(payload.get('continuity_status') or 'idle_no_telemetry')),
         'continuity_reason_codes': sorted({str(code).strip() for code in payload.get('continuity_reason_codes', []) if str(code).strip()}),
         'continuity_signals': dict(payload.get('continuity_signals') or {}),
+        'ingestion_freshness': str(payload.get('ingestion_freshness') or 'missing').strip().lower(),
+        'detection_pipeline_freshness': str(payload.get('detection_pipeline_freshness') or 'missing').strip().lower(),
+        'worker_heartbeat_freshness': str(payload.get('worker_heartbeat_freshness') or 'missing').strip().lower(),
+        'event_throughput_window': str(payload.get('event_throughput_window') or 'no_events').strip().lower(),
+        'event_throughput_window_seconds': max(int(payload.get('event_throughput_window_seconds', 0) or 0), 0),
         'contradiction_flags': sorted({str(flag).strip() for flag in payload.get('contradiction_flags', []) if str(flag).strip()}),
         'guard_flags': sorted({str(flag).strip() for flag in payload.get('guard_flags', []) if str(flag).strip()}),
         'status_reason': str(payload.get('status_reason')).strip() if isinstance(payload.get('status_reason'), str) and str(payload.get('status_reason')).strip() else None,
@@ -305,6 +315,11 @@ def build_workspace_monitoring_summary(
         'continuity_status': 'idle_no_telemetry',
         'continuity_reason_codes': ['continuity_not_evaluated'],
         'continuity_signals': {},
+        'ingestion_freshness': 'missing',
+        'detection_pipeline_freshness': 'missing',
+        'worker_heartbeat_freshness': 'missing',
+        'event_throughput_window': 'no_events',
+        'event_throughput_window_seconds': max(int(telemetry_window_seconds), 1),
         'contradiction_flags': contradiction_flags,
         'guard_flags': guard_flags,
         'status_reason': resolved_status_reason,
@@ -347,6 +362,11 @@ def build_workspace_monitoring_summary_fallback(
         'continuity_status': 'offline',
         'continuity_reason_codes': ['runtime_status_fallback'],
         'continuity_signals': {},
+        'ingestion_freshness': 'missing',
+        'detection_pipeline_freshness': 'missing',
+        'worker_heartbeat_freshness': 'missing',
+        'event_throughput_window': 'no_events',
+        'event_throughput_window_seconds': 0,
         'contradiction_flags': [],
         'guard_flags': [],
         'status_reason': status_reason,
