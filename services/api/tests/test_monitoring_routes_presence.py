@@ -20,6 +20,7 @@ def test_monitoring_routes_registered() -> None:
     assert "@app.get('/ops/monitoring/heartbeats'" in content
     assert "@app.get('/incidents'" in content
     assert "@app.get('/response/actions'" in content
+    assert "@app.get('/response/action-capabilities'" in content
     assert "@app.post('/response/actions'" in content
     assert "@app.post('/response/actions/{action_id}/execute'" in content
     assert "@app.patch('/incidents/{incident_id}'" in content

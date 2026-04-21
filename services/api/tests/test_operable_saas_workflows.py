@@ -24,6 +24,7 @@ def test_new_live_workflow_routes_exist() -> None:
     assert "/enforcement/actions/{action_id}/approve" in source
     assert "/enforcement/actions/{action_id}/execute" in source
     assert "/enforcement/actions/{action_id}/rollback" in source
+    assert "/response/action-capabilities" in source
 
 
 def test_export_generation_is_not_placeholder_complete() -> None:
