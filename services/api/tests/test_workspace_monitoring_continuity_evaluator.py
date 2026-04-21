@@ -7,7 +7,7 @@ def _now() -> datetime:
     return datetime(2026, 4, 21, 12, 0, tzinfo=timezone.utc)
 
 
-def test_continuity_live_continuous_at_freshness_boundary() -> None:
+def test_continuity_continuous_live_at_freshness_boundary() -> None:
     now = _now()
     payload = evaluate_workspace_monitoring_continuity(
         now=now,
@@ -20,8 +20,12 @@ def test_continuity_live_continuous_at_freshness_boundary() -> None:
         telemetry_window_seconds=120,
         detection_window_seconds=300,
     )
-    assert payload['continuity_status'] == 'live_continuous'
+    assert payload['continuity_status'] == 'continuous_live'
     assert payload['continuity_reason_codes'] == []
+    assert payload['ingestion_freshness'] == 'fresh'
+    assert payload['detection_pipeline_freshness'] == 'fresh'
+    assert payload['worker_heartbeat_freshness'] == 'fresh'
+    assert payload['event_throughput_window'] == 'in_window'
 
 
 def test_continuity_degraded_when_event_freshness_is_stale() -> None:
@@ -39,6 +43,7 @@ def test_continuity_degraded_when_event_freshness_is_stale() -> None:
     )
     assert payload['continuity_status'] == 'degraded'
     assert 'event_ingestion_stale' in payload['continuity_reason_codes']
+    assert payload['event_throughput_window'] == 'out_of_window'
 
 
 def test_continuity_offline_when_worker_dead_and_all_signals_offline() -> None:
@@ -56,6 +61,7 @@ def test_continuity_offline_when_worker_dead_and_all_signals_offline() -> None:
     )
     assert payload['continuity_status'] == 'offline'
     assert 'worker_not_live' in payload['continuity_reason_codes']
+    assert payload['event_throughput_window'] == 'offline'
 
 
 def test_continuity_idle_no_telemetry_when_no_runtime_timestamps_present() -> None:
@@ -72,3 +78,38 @@ def test_continuity_idle_no_telemetry_when_no_runtime_timestamps_present() -> No
     )
     assert payload['continuity_status'] == 'idle_no_telemetry'
     assert 'event_ingestion_missing' in payload['continuity_reason_codes']
+    assert payload['event_throughput_window'] == 'no_events'
+
+
+def test_continuity_boundary_transition_fresh_to_stale_to_offline() -> None:
+    now = _now()
+    common = {
+        'workspace_configured': True,
+        'worker_running': True,
+        'last_heartbeat_at': now - timedelta(seconds=10),
+        'last_detection_at': now - timedelta(seconds=10),
+        'heartbeat_ttl_seconds': 180,
+        'telemetry_window_seconds': 120,
+        'detection_window_seconds': 300,
+    }
+    fresh = evaluate_workspace_monitoring_continuity(
+        now=now,
+        last_event_at=now - timedelta(seconds=120),
+        **common,
+    )
+    stale = evaluate_workspace_monitoring_continuity(
+        now=now,
+        last_event_at=now - timedelta(seconds=121),
+        **common,
+    )
+    offline = evaluate_workspace_monitoring_continuity(
+        now=now,
+        last_event_at=now - timedelta(seconds=361),
+        **common,
+    )
+    assert fresh['ingestion_freshness'] == 'fresh'
+    assert fresh['event_throughput_window'] == 'in_window'
+    assert stale['ingestion_freshness'] == 'stale'
+    assert stale['event_throughput_window'] == 'out_of_window'
+    assert offline['ingestion_freshness'] == 'offline'
+    assert offline['event_throughput_window'] == 'offline'

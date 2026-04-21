@@ -256,7 +256,7 @@ def _safe_int_env(name: str, default: int, *, minimum: int) -> int:
     return value
 
 
-CONTINUITY_STATUS_VALUES = {'live_continuous', 'degraded', 'offline', 'idle_no_telemetry'}
+CONTINUITY_STATUS_VALUES = {'continuous_live', 'degraded', 'offline', 'idle_no_telemetry'}
 
 
 def evaluate_workspace_monitoring_continuity(
@@ -281,10 +281,21 @@ def evaluate_workspace_monitoring_continuity(
             return 'stale', age_seconds
         return 'offline', age_seconds
 
-    heartbeat_state, heartbeat_age_seconds = _freshness_state(last_heartbeat_at, fresh_seconds=max(heartbeat_ttl_seconds, 1))
-    event_state, event_age_seconds = _freshness_state(last_event_at, fresh_seconds=max(telemetry_window_seconds, 1))
-    detection_state, detection_age_seconds = _freshness_state(last_detection_at, fresh_seconds=max(detection_window_seconds, 1))
+    normalized_heartbeat_ttl_seconds = max(heartbeat_ttl_seconds, 1)
+    normalized_telemetry_window_seconds = max(telemetry_window_seconds, 1)
+    normalized_detection_window_seconds = max(detection_window_seconds, 1)
+    heartbeat_state, heartbeat_age_seconds = _freshness_state(last_heartbeat_at, fresh_seconds=normalized_heartbeat_ttl_seconds)
+    event_state, event_age_seconds = _freshness_state(last_event_at, fresh_seconds=normalized_telemetry_window_seconds)
+    detection_state, detection_age_seconds = _freshness_state(last_detection_at, fresh_seconds=normalized_detection_window_seconds)
     worker_liveness = 'live' if worker_running else 'offline'
+    if last_event_at is None:
+        event_throughput_window = 'no_events'
+    elif event_age_seconds is not None and event_age_seconds <= normalized_telemetry_window_seconds:
+        event_throughput_window = 'in_window'
+    elif event_state == 'stale':
+        event_throughput_window = 'out_of_window'
+    else:
+        event_throughput_window = 'offline'
 
     continuity_reason_codes: list[str] = []
     if not workspace_configured:
@@ -309,7 +320,7 @@ def evaluate_workspace_monitoring_continuity(
     elif all_offline_or_missing and worker_liveness != 'live':
         continuity_status = 'offline'
     elif worker_liveness == 'live' and heartbeat_state == 'fresh' and event_state == 'fresh' and detection_state == 'fresh':
-        continuity_status = 'live_continuous'
+        continuity_status = 'continuous_live'
     else:
         continuity_status = 'degraded'
 
@@ -324,7 +335,14 @@ def evaluate_workspace_monitoring_continuity(
             'heartbeat_age_seconds': heartbeat_age_seconds,
             'event_age_seconds': event_age_seconds,
             'detection_age_seconds': detection_age_seconds,
+            'event_throughput_window': event_throughput_window,
+            'event_throughput_window_seconds': normalized_telemetry_window_seconds,
         },
+        'ingestion_freshness': event_state,
+        'detection_pipeline_freshness': detection_state,
+        'worker_heartbeat_freshness': heartbeat_state,
+        'event_throughput_window': event_throughput_window,
+        'event_throughput_window_seconds': normalized_telemetry_window_seconds,
     }
 
 
