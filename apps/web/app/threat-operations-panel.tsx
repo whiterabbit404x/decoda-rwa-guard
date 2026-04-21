@@ -64,6 +64,7 @@ type AlertRow = {
   source_service?: string;
   target_id?: string;
   response_action_mode?: string | null;
+  linked_action_id?: string | null;
 };
 
 type IncidentRow = {
@@ -75,6 +76,8 @@ type IncidentRow = {
   created_at?: string;
   source_alert_id?: string | null;
   response_action_mode?: string | null;
+  linked_detection_id?: string | null;
+  linked_action_id?: string | null;
 };
 type ActionHistoryRow = {
   id: string;
@@ -137,6 +140,8 @@ type DetectionRow = {
   raw_evidence_json?: Record<string, any> | null;
   monitoring_run_id?: string | null;
   linked_alert_id?: string | null;
+  linked_incident_id?: string | null;
+  linked_action_id?: string | null;
 };
 
 type ThreatFeedState = 'Live' | 'Historical' | 'Test' | 'Stale' | 'Investigating' | 'Resolved';
@@ -237,6 +242,10 @@ type DetectionItem = {
   state: ThreatFeedState;
   href: string;
   source: 'alert' | 'incident' | 'evidence' | 'detection';
+  detectionId?: string | null;
+  alertId?: string | null;
+  incidentId?: string | null;
+  actionId?: string | null;
 };
 
 type TimelineItem = {
@@ -942,6 +951,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         state: isTest ? ('Test' as const) : ('Live' as const),
         href: item.linked_alert_id ? '/alerts' : '/threat',
         source: 'detection' as const,
+        detectionId: item.id,
+        alertId: item.linked_alert_id ?? null,
+        incidentId: item.linked_incident_id ?? null,
+        actionId: item.linked_action_id ?? null,
       };
     }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }, [detections, monitoredSystemById, targetById]);
@@ -1376,17 +1389,17 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <div className="emptyStatePanel">
             <h4>
               {pageState === 'configured_no_signals'
-                ? 'No active threat signals'
+                ? 'No evidence-linked threat signals'
                 : pageState === 'unconfigured_workspace'
                   ? 'No monitored systems configured'
                   : 'No detections available'}
             </h4>
             <p className="muted">
               {pageState === 'configured_no_signals'
-                ? 'Monitoring is healthy and no active detections are currently open.'
+                ? 'Monitoring is configured, but no persisted evidence is currently linked to active detections.'
                 : pageState === 'unconfigured_workspace'
                   ? 'Workspace not configured: monitoring setup is incomplete.'
-                  : 'No historical detections are available for display at this time.'}
+                  : 'No persisted or linked detections are available for display at this time.'}
             </p>
             <div className="buttonRow">
               <Link href="/monitored-systems" prefetch={false}>Manage monitored systems</Link>
@@ -1412,6 +1425,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   {formatAbsoluteTime(signal.timestamp)} · {formatRelativeTime(signal.timestamp)} · Source: {signal.source}
                 </p>
                 <p className="tableMeta">tx: {signal.txHash || 'n/a'} · block: {signal.blockNumber || 'n/a'} · counterparty: {signal.counterparty || 'n/a'} · amount: {signal.amount || 'n/a'} · contract/token: {signal.tokenOrContract || 'n/a'} · rule: {signal.ruleId || 'n/a'} · target: {signal.targetName || 'n/a'} · provider: {signal.sourceProvider || 'n/a'}</p>
+                <p className="tableMeta">Chain: detection {signal.detectionId || 'n/a'} · alert {signal.alertId || 'n/a'} · incident {signal.incidentId || 'n/a'} · action {signal.actionId || 'n/a'}</p>
               </div>
               <div className="signalActions">
                 <span className={`statusBadge statusBadge-${stateTone(signal.state)}`}>{signal.state}</span>
@@ -1426,6 +1440,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 >
                   Open evidence
                 </button>
+                {signal.alertId ? <Link href="/alerts" prefetch={false}>Open alert link</Link> : null}
+                {signal.incidentId ? <Link href="/incidents" prefetch={false}>Open incident link</Link> : null}
+                {signal.actionId ? <Link href="/history" prefetch={false}>Open action link</Link> : null}
                 <Link href={signal.href} prefetch={false}>View destination</Link>
               </div>
             </div>
@@ -1590,7 +1607,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             {!loadingSnapshot && linkedAlertRows.length === 0 ? (
               <div className="emptyStatePanel">
                 <h4>No alerts recorded</h4>
-                <p className="muted">No open alerts are currently linked to this workspace.</p>
+                <p className="muted">No persisted alerts with linked evidence are currently available in this workspace.</p>
               </div>
             ) : (
               <div className="stack compactStack">
@@ -1606,6 +1623,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                       <p className="tableMeta">
                         Linked detection: {linkedDetection?.title || linkedDetection?.id || 'Not linked'} · severity {severityLabel(alert.severity)}
                       </p>
+                      <p className="tableMeta">Chain: detection {alert.detection_id || linkedDetection?.id || 'n/a'} · alert {alert.id} · incident {alert.incident_id || 'n/a'} · action {alert.linked_action_id || 'n/a'}</p>
                     </div>
                     <div className="signalActions">
                       <Link href="/alerts" prefetch={false}>Open</Link>
@@ -1639,7 +1657,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             {!loadingSnapshot && incidents.length === 0 ? (
               <div className="emptyStatePanel">
                 <h4>No incidents recorded</h4>
-                <p className="muted">Open incidents will include timeline and monitoring run evidence entries here.</p>
+                <p className="muted">No persisted incidents with linked evidence chain entries are currently available.</p>
               </div>
             ) : (
               <div className="stack compactStack">
@@ -1652,6 +1670,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                         <span className="statusBadge statusBadge-low">Audit</span>{' '}
                         {formatAbsoluteTime(incident.created_at)}
                       </p>
+                      <p className="tableMeta">Chain: detection {incident.linked_detection_id || 'n/a'} · alert {incident.source_alert_id || 'n/a'} · incident {incident.id} · action {incident.linked_action_id || 'n/a'}</p>
                     </div>
                     <Link href="/incidents" prefetch={false}>Open</Link>
                   </div>
