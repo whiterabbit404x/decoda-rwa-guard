@@ -26,11 +26,12 @@ def main() -> int:
     logger.info('monitoring worker starting')
     identity = runtime_environment_identity()
     logger.info(
-        'monitoring worker runtime identity app_mode=%s live_mode=%s railway_environment=%s railway_service=%s database_fingerprint=%s',
+        'monitoring worker runtime identity app_mode=%s live_mode=%s railway_environment=%s railway_service=%s database_backend=%s database_fingerprint=%s',
         identity['app_mode'],
         identity['live_mode_enabled'],
         identity['railway_environment'] or 'unknown',
         identity['railway_service'] or 'unknown',
+        identity['database_backend'],
         identity['database_fingerprint'],
     )
     logger.info(

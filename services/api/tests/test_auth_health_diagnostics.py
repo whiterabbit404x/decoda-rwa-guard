@@ -151,6 +151,7 @@ def test_auth_signin_route_returns_graceful_json_when_auth_db_is_unavailable(api
 def test_health_endpoint_masks_database_url(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
     client = TestClient(api_main.app)
     monkeypatch.setattr(api_main, 'database_url', lambda: 'postgres://user:pass@example.internal:5432/app')
+    monkeypatch.setattr(api_main, 'runtime_environment_identity', lambda: {'database_backend': 'postgres_hosted_other'})
 
     response = client.get('/health')
     payload = response.json()
@@ -158,6 +159,27 @@ def test_health_endpoint_masks_database_url(api_main, monkeypatch: pytest.Monkey
     assert response.status_code == 200
     assert payload['database_url'] == '[configured]'
     assert payload['database_url_configured'] is True
+    assert payload['database_backend'] == 'postgres_hosted_other'
+
+
+def test_resolve_db_backend_classifies_sqlite_and_postgres_hosts(pilot_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv('DATABASE_URL', raising=False)
+    assert pilot_module.resolve_db_backend() == 'sqlite'
+
+    monkeypatch.setenv('DATABASE_URL', 'sqlite:///tmp/dev.db')
+    assert pilot_module.resolve_db_backend() == 'sqlite'
+
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://user:pass@localhost:5432/app')
+    assert pilot_module.resolve_db_backend() == 'postgres_local'
+
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://user:pass@monitoring.docker-local:5432/app')
+    assert pilot_module.resolve_db_backend() == 'postgres_local'
+
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://user:pass@my-db.us-east-2.aws.neon.tech:5432/app')
+    assert pilot_module.resolve_db_backend() == 'postgres_hosted_neon'
+
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://user:pass@db.example.internal:5432/app')
+    assert pilot_module.resolve_db_backend() == 'postgres_hosted_other'
 
 
 def test_health_details_reports_pilot_and_embedded_readiness_flags(api_main, monkeypatch: pytest.MonkeyPatch) -> None:

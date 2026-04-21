@@ -1224,11 +1224,12 @@ def emit_startup_fixture_diagnostics() -> None:
             diagnostics['modes']['demo_mode'],
         )
         logger.info(
-            'api runtime identity app_mode=%s live_mode=%s railway_environment=%s railway_service=%s database_fingerprint=%s',
+            'api runtime identity app_mode=%s live_mode=%s railway_environment=%s railway_service=%s database_backend=%s database_fingerprint=%s',
             identity['app_mode'],
             identity['live_mode_enabled'],
             identity['railway_environment'] or 'unknown',
             identity['railway_service'] or 'unknown',
+            identity['database_backend'],
             identity['database_fingerprint'],
         )
     except Exception as exc:  # pragma: no cover - defensive startup guard
@@ -1512,6 +1513,7 @@ def health() -> dict[str, object]:
         'app_mode': os.getenv('APP_MODE', 'local'),
         'database_url': masked_database_url(),
         'database_url_configured': database_url() is not None,
+        'database_backend': runtime_environment_identity()['database_backend'],
         'redis_enabled': os.getenv('REDIS_ENABLED', 'false').lower() == 'true',
         'risk_engine_url': RISK_ENGINE_URL,
         'threat_engine_url': THREAT_ENGINE_URL,
