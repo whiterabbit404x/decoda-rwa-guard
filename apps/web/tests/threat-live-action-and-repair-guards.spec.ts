@@ -35,6 +35,13 @@ test('threat row builder excludes unrelated workspace-global alert and incident 
       severity: 'low',
       detected_at: '2026-04-21T11:59:00.000Z',
       evidence_source: 'chain-indexer',
+    }, {
+      id: 'detection-other-target',
+      monitored_system_id: 'system-2',
+      linked_alert_id: null,
+      severity: 'critical',
+      detected_at: '2026-04-21T12:05:00.000Z',
+      evidence_source: 'chain-indexer',
     }],
     evidenceRows: [],
   });
@@ -48,6 +55,7 @@ test('threat row builder excludes unrelated workspace-global alert and incident 
   expect(linked.latestDetection?.id).toBe('detection-target');
   expect(linked.latestAlert).toBeNull();
   expect(linked.latestIncident).toBeNull();
+  expect(linked.latestDetection?.id).not.toBe('detection-other-target');
 });
 
 test('LIVE/HYBRID empty states use no-evidence degraded copy instead of healthy all-clear wording', () => {
@@ -86,6 +94,9 @@ test('repair flow exposes deterministic pending/success/failure transitions', ()
   expect(source).toContain("setRepairState('pending_refresh')");
   expect(source).toContain("setRepairState('success')");
   expect(source).toContain("setRepairState('failure')");
+  expect(source.indexOf("setRepairState('pending_request')")).toBeLessThan(source.indexOf("setRepairState('pending_parse')"));
+  expect(source.indexOf("setRepairState('pending_parse')")).toBeLessThan(source.indexOf("setRepairState('pending_refresh')"));
+  expect(source.indexOf("setRepairState('pending_refresh')")).toBeLessThan(source.indexOf("setRepairState('success')"));
 
   expect(source).toContain('Sending repair request…');
   expect(source).toContain('Parsing repair response…');
