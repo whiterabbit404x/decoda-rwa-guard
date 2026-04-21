@@ -25,8 +25,6 @@ type SystemRow = {
   coverage_reason?: string | null;
 };
 
-
-
 type ErrorDetail = {
   message: string;
   code?: string;
@@ -60,12 +58,21 @@ function extractErrorDetail(payload: unknown): ErrorDetail {
 
   return { message, code, stage };
 }
+
 type ReconcileSummary = {
   targets_scanned: number;
   created_or_updated: number;
   invalid_reasons: Record<string, number>;
   skipped_reasons: Record<string, number>;
   repaired_monitored_system_ids: string[];
+};
+
+type RepairState = 'idle' | 'pending_request' | 'pending_parse' | 'pending_refresh' | 'success' | 'failure';
+
+type RepairFailureReason = {
+  stage: 'request' | 'parse' | 'refresh' | 'reconcile';
+  backendCode: string | null;
+  backendReason: string;
 };
 
 function formatReasonCounts(label: string, reasons: Record<string, number>): string {
@@ -75,6 +82,10 @@ function formatReasonCounts(label: string, reasons: Record<string, number>): str
   }
   const details = entries.map(([reason, count]) => `${reason} (${count})`).join(', ');
   return `${label}: ${details}`;
+}
+
+function reasonCount(reasons: Record<string, number>): number {
+  return Object.values(reasons).reduce((sum, count) => sum + count, 0);
 }
 
 const isDev = process.env.NODE_ENV !== 'production';
@@ -96,7 +107,8 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const effectiveApiUrl = runtimeApiUrl || apiUrl;
   const [systems, setSystems] = useState<SystemRow[]>([]);
   const [message, setMessage] = useState('');
-  const [isReconciling, setIsReconciling] = useState(false);
+  const [repairState, setRepairState] = useState<RepairState>('idle');
+  const [repairFailureReason, setRepairFailureReason] = useState<RepairFailureReason | null>(null);
   const [isTogglingId, setIsTogglingId] = useState<string | null>(null);
   const [reconcileSummary, setReconcileSummary] = useState<ReconcileSummary | null>(null);
   const [lastRepairClickAt, setLastRepairClickAt] = useState<string | null>(null);
@@ -149,9 +161,13 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
     }
 
     setMessage('');
-    setIsReconciling(true);
+    setRepairFailureReason(null);
+    setRepairState('pending_request');
 
-    let stage: 'fetch' | 'parse' | 'reload' = 'fetch';
+    let stage: 'request' | 'parse' | 'refresh' = 'request';
+    let shouldRefreshAfterResponse = false;
+    let failedReason: RepairFailureReason | null = null;
+    let localSummary: ReconcileSummary | null = null;
 
     try {
       if (isDev) {
@@ -168,6 +184,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         method: 'POST',
         headers: authHeaders(),
       });
+      shouldRefreshAfterResponse = true;
       if (isDev) {
         console.debug('[monitored-systems] reconcile response received');
       }
@@ -178,78 +195,105 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         console.debug('[monitored-systems] reconcile response content-type', contentType || '(none)');
       }
 
-      if (!response.ok) {
-        const errorPayload = await response.json().catch(() => null);
-        if (isDev) {
-          console.debug('[monitored-systems] reconcile non-OK payload', errorPayload);
-        }
-        const errorDetail = extractErrorDetail(errorPayload);
-        const stageSuffix = errorDetail.stage ? ` (stage: ${errorDetail.stage})` : '';
-        const codeSuffix = isDev && errorDetail.code ? ` [code: ${errorDetail.code}]` : '';
-        setMessage(errorDetail.message
-          ? `Repair failed: ${errorDetail.message}${stageSuffix}${codeSuffix}`
-          : 'Unable to repair monitored systems.');
-        return;
-      }
-
       stage = 'parse';
+      setRepairState('pending_parse');
+
       if (!contentType.toLowerCase().includes('application/json')) {
         const responseText = await response.text();
         if (isDev) {
           console.debug('[monitored-systems] reconcile response was not JSON', responseText);
         }
-        setMessage('Repair response could not be parsed.');
-        return;
-      }
-
-      const payload = await response.json();
-      if (isDev) {
-        console.debug('[monitored-systems] reconcile response parsed');
-        console.debug('[monitored-systems] reconcile parsed payload', payload);
-      }
-
-      const summary: ReconcileSummary = {
-        targets_scanned: Number(payload?.reconcile?.targets_scanned ?? 0),
-        created_or_updated: Number(payload?.reconcile?.created_or_updated ?? 0),
-        invalid_reasons: payload?.reconcile?.invalid_reasons ?? {},
-        skipped_reasons: payload?.reconcile?.skipped_reasons ?? {},
-        repaired_monitored_system_ids: payload?.reconcile?.repaired_monitored_system_ids ?? [],
-      };
-      setReconcileSummary(summary);
-      const reconciledSystems = Array.isArray(payload?.systems) ? payload.systems : null;
-      if (reconciledSystems) {
-        setSystems(reconciledSystems);
-      }
-
-      stage = 'reload';
-      if (isDev) {
-        console.debug('[monitored-systems] reloading monitored systems');
-      }
-      const reloadedSystems = await load({
-        failureMessage: 'Repair request completed or failed, but refreshing monitored systems did not succeed.',
-        rethrow: true,
-      });
-
-      if (isDev) {
-        console.debug('[monitored-systems] reconcile reload result count', reloadedSystems?.length ?? 0);
-      }
-
-      const visibleSystems = reloadedSystems ?? reconciledSystems ?? [];
-      if (summary.created_or_updated > 0 && visibleSystems.length === 0) {
-        setMessage('Repair reported success, but no monitored systems were visible after reload.');
-        return;
-      }
-
-      setMessage(
-        `Repair completed. ${summary.created_or_updated} monitored systems created or updated from ${summary.targets_scanned} targets scanned.`,
-      );
-    } catch (error) {
-      if (stage === 'fetch') {
-        setMessage('Repair request failed before the server responded.');
-      } else if (stage === 'parse') {
-        setMessage('Repair response could not be parsed.');
+        failedReason = {
+          stage: 'parse',
+          backendCode: null,
+          backendReason: 'Repair response was not valid JSON.',
+        };
       } else {
-        setMessage('Repair request completed or failed, but refreshing monitored systems did not succeed.');
+        const payload = await response.json();
+        if (isDev) {
+          console.debug('[monitored-systems] reconcile response parsed');
+          console.debug('[monitored-systems] reconcile parsed payload', payload);
+        }
+
+        localSummary = {
+          targets_scanned: Number(payload?.reconcile?.targets_scanned ?? 0),
+          created_or_updated: Number(payload?.reconcile?.created_or_updated ?? 0),
+          invalid_reasons: payload?.reconcile?.invalid_reasons ?? {},
+          skipped_reasons: payload?.reconcile?.skipped_reasons ?? {},
+          repaired_monitored_system_ids: payload?.reconcile?.repaired_monitored_system_ids ?? [],
+        };
+        setReconcileSummary(localSummary);
+        const reconciledSystems = Array.isArray(payload?.systems) ? payload.systems : null;
+        if (reconciledSystems) {
+          setSystems(reconciledSystems);
+        }
+
+        if (!response.ok) {
+          const errorDetail = extractErrorDetail(payload);
+          failedReason = {
+            stage: 'reconcile',
+            backendCode: errorDetail.code ?? null,
+            backendReason: errorDetail.message || 'Reconcile request was rejected by the API.',
+          };
+        }
+
+        const unresolvedCount = reasonCount(localSummary.invalid_reasons) + reasonCount(localSummary.skipped_reasons);
+        if (!failedReason && localSummary.created_or_updated === 0 && unresolvedCount > 0) {
+          failedReason = {
+            stage: 'reconcile',
+            backendCode: null,
+            backendReason: 'No monitored systems were changed. Resolve invalid/skipped reasons and run Repair again.',
+          };
+        }
+      }
+
+      stage = 'refresh';
+      setRepairState('pending_refresh');
+      if (shouldRefreshAfterResponse) {
+        const reloadedSystems = await load({
+          failureMessage: 'Repair finished, but refreshing monitored systems failed.',
+          rethrow: true,
+        });
+
+        if (isDev) {
+          console.debug('[monitored-systems] reconcile reload result count', reloadedSystems?.length ?? 0);
+        }
+
+        if (!failedReason && localSummary && localSummary.created_or_updated > 0 && (reloadedSystems ?? []).length === 0) {
+          failedReason = {
+            stage: 'refresh',
+            backendCode: null,
+            backendReason: 'Repair reported updates, but no monitored systems were visible after refresh.',
+          };
+        }
+      }
+
+      if (failedReason) {
+        setRepairFailureReason(failedReason);
+        setRepairState('failure');
+      } else {
+        setRepairState('success');
+      }
+    } catch (error) {
+      setRepairState('failure');
+      if (stage === 'request') {
+        setRepairFailureReason({
+          stage: 'request',
+          backendCode: null,
+          backendReason: 'Repair request failed before the server responded.',
+        });
+      } else if (stage === 'parse') {
+        setRepairFailureReason({
+          stage: 'parse',
+          backendCode: null,
+          backendReason: 'Repair response could not be parsed.',
+        });
+      } else {
+        setRepairFailureReason({
+          stage: 'refresh',
+          backendCode: null,
+          backendReason: 'Repair finished, but refreshing monitored systems failed.',
+        });
       }
 
       if (isDev) {
@@ -258,11 +302,6 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
           : { name: typeof error, message: String(error) };
         console.debug('[monitored-systems] reconcile failed', { stage, error: normalizedError });
       }
-    } finally {
-      if (isDev) {
-        console.debug('[monitored-systems] finally clearing isReconciling');
-      }
-      setIsReconciling(false);
     }
   }
 
@@ -306,6 +345,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const telemetryLabel = truth.last_telemetry_at ? new Date(truth.last_telemetry_at).toLocaleString() : 'Not available';
   const pollLabel = truth.last_poll_at ? new Date(truth.last_poll_at).toLocaleString() : 'Not available';
   const showLiveTelemetry = hasLiveTelemetry(truth);
+  const isRepairPending = repairState === 'pending_request' || repairState === 'pending_parse' || repairState === 'pending_refresh';
 
   return (
     <section className="dataCard stack compactStack" data-monitored-systems-build={monitoredSystemsClientBuildTag}>
@@ -317,13 +357,23 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         </p>
       ) : null}
       <div className="buttonRow">
-        <button type="button" onClick={() => void runReconcile()} disabled={isReconciling}>
-          {isReconciling ? 'Repairing monitored systems…' : 'Repair monitored systems'}
+        <button type="button" onClick={() => void runReconcile()} disabled={isRepairPending}>
+          {isRepairPending ? 'Repairing monitored systems…' : 'Repair monitored systems'}
         </button>
       </div>
-      {isReconciling ? (
+      {repairState === 'pending_request' ? (
         <p className="statusLine" role="status" aria-live="polite">
-          Repairing monitored systems…
+          Sending repair request…
+        </p>
+      ) : null}
+      {repairState === 'pending_parse' ? (
+        <p className="statusLine" role="status" aria-live="polite">
+          Parsing repair response…
+        </p>
+      ) : null}
+      {repairState === 'pending_refresh' ? (
+        <p className="statusLine" role="status" aria-live="polite">
+          Refreshing monitored systems from workspace truth…
         </p>
       ) : null}
       {isDev && lastRepairClickAt ? (
@@ -334,6 +384,17 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       {message ? (
         <p className="statusLine" role="alert" aria-live="assertive">
           {message}
+        </p>
+      ) : null}
+      {repairState === 'success' && reconcileSummary ? (
+        <p className="statusLine" role="status" aria-live="polite">
+          Repair succeeded: {reconcileSummary.created_or_updated} monitored systems created or updated from {reconcileSummary.targets_scanned} targets scanned.
+        </p>
+      ) : null}
+      {repairState === 'failure' && repairFailureReason ? (
+        <p className="statusLine" role="alert" aria-live="assertive">
+          Repair failed during {repairFailureReason.stage}. {repairFailureReason.backendCode ? `Code ${repairFailureReason.backendCode}. ` : ''}
+          {repairFailureReason.backendReason}
         </p>
       ) : null}
       {systems.length === 0 ? (
@@ -369,7 +430,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
             {system.last_error_text ? <p className="tableMeta">Last error: {system.last_error_text}</p> : null}
           </div>
           <div className="buttonRow">
-            <button type="button" onClick={() => void toggle(system)} disabled={isTogglingId === system.id || isReconciling}>
+            <button type="button" onClick={() => void toggle(system)} disabled={isTogglingId === system.id || isRepairPending}>
               {system.is_enabled ? 'Disable' : 'Enable'}
             </button>
             <button type="button" onClick={() => void remove(system.id)}>
