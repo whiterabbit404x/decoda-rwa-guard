@@ -116,6 +116,9 @@ type EvidenceRow = {
   source_provider?: string | null;
   asset_name?: string | null;
   target_name?: string | null;
+  target_id?: string | null;
+  detection_id?: string | null;
+  linked_detection_id?: string | null;
 };
 type DetectionRow = {
   id: string;
@@ -365,6 +368,190 @@ function displayIdentifier(target: TargetRow): string {
     return value.length > 12 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value;
   }
   return target.contract_identifier || 'Identifier unavailable';
+}
+
+type CoverageIndexes = {
+  alertsById: Map<string, AlertRow>;
+  alertsByTargetId: Map<string, AlertRow[]>;
+  alertsByIncidentId: Map<string, AlertRow[]>;
+  incidentsBySourceAlertId: Map<string, IncidentRow[]>;
+  incidentsByLinkedAlertId: Map<string, IncidentRow[]>;
+  detectionsByMonitoredSystemId: Map<string, DetectionRow[]>;
+  detectionsByLinkedAlertId: Map<string, DetectionRow[]>;
+  evidenceByTargetId: Map<string, EvidenceRow[]>;
+  evidenceByTargetName: Map<string, EvidenceRow[]>;
+  evidenceByDetectionId: Map<string, EvidenceRow[]>;
+};
+
+type LinkedCoverageResolution = {
+  latestDetection: DetectionRow | null;
+  latestAlert: AlertRow | null;
+  latestIncident: IncidentRow | null;
+  latestEvidence: EvidenceRow | null;
+};
+
+function normalizeLookup(value?: string | null): string {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function parseTimestamp(value?: string | null): number {
+  if (!value) return 0;
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function pickLatestByTime<T>(items: T[], getTimestamp: (item: T) => string | null | undefined): T | null {
+  if (items.length === 0) return null;
+  return items.slice().sort((a, b) => parseTimestamp(getTimestamp(b)) - parseTimestamp(getTimestamp(a)))[0] ?? null;
+}
+
+export function buildCoverageIndexes(params: {
+  alerts: AlertRow[];
+  incidents: IncidentRow[];
+  detections: DetectionRow[];
+  evidenceRows: EvidenceRow[];
+}): CoverageIndexes {
+  const {
+    alerts,
+    incidents,
+    detections,
+    evidenceRows,
+  } = params;
+  const alertsByTargetId = new Map<string, AlertRow[]>();
+  const alertsByIncidentId = new Map<string, AlertRow[]>();
+  const alertsById = new Map<string, AlertRow>();
+  alerts.forEach((alert) => {
+    const alertId = normalizeLookup(alert.id);
+    if (alertId) alertsById.set(alertId, alert);
+    const targetId = normalizeLookup(alert.target_id);
+    if (targetId) alertsByTargetId.set(targetId, [...(alertsByTargetId.get(targetId) ?? []), alert]);
+    const incidentId = normalizeLookup(alert.incident_id);
+    if (incidentId) alertsByIncidentId.set(incidentId, [...(alertsByIncidentId.get(incidentId) ?? []), alert]);
+  });
+
+  const incidentsBySourceAlertId = new Map<string, IncidentRow[]>();
+  const incidentsByLinkedAlertId = new Map<string, IncidentRow[]>();
+  incidents.forEach((incident) => {
+    const sourceAlertId = normalizeLookup(incident.source_alert_id);
+    if (sourceAlertId) incidentsBySourceAlertId.set(sourceAlertId, [...(incidentsBySourceAlertId.get(sourceAlertId) ?? []), incident]);
+    const linkedAlertIds = [
+      ...((incident as IncidentRow & { linked_alert_ids?: string[] | null }).linked_alert_ids ?? []),
+      ...((incident as IncidentRow & { alert_ids?: string[] | null }).alert_ids ?? []),
+    ].map((value) => normalizeLookup(value)).filter(Boolean);
+    linkedAlertIds.forEach((alertId) => {
+      incidentsByLinkedAlertId.set(alertId, [...(incidentsByLinkedAlertId.get(alertId) ?? []), incident]);
+    });
+  });
+
+  const detectionsByMonitoredSystemId = new Map<string, DetectionRow[]>();
+  const detectionsByLinkedAlertId = new Map<string, DetectionRow[]>();
+  detections.forEach((detection) => {
+    const monitoredSystemId = normalizeLookup(detection.monitored_system_id);
+    if (monitoredSystemId) detectionsByMonitoredSystemId.set(monitoredSystemId, [...(detectionsByMonitoredSystemId.get(monitoredSystemId) ?? []), detection]);
+    const linkedAlertId = normalizeLookup(detection.linked_alert_id);
+    if (linkedAlertId) detectionsByLinkedAlertId.set(linkedAlertId, [...(detectionsByLinkedAlertId.get(linkedAlertId) ?? []), detection]);
+  });
+
+  const evidenceByTargetId = new Map<string, EvidenceRow[]>();
+  const evidenceByTargetName = new Map<string, EvidenceRow[]>();
+  const evidenceByDetectionId = new Map<string, EvidenceRow[]>();
+  evidenceRows.forEach((evidence) => {
+    const targetId = normalizeLookup(evidence.target_id);
+    if (targetId) evidenceByTargetId.set(targetId, [...(evidenceByTargetId.get(targetId) ?? []), evidence]);
+    const targetName = normalizeLookup(evidence.target_name ?? evidence.asset_name);
+    if (targetName) evidenceByTargetName.set(targetName, [...(evidenceByTargetName.get(targetName) ?? []), evidence]);
+    const detectionId = normalizeLookup(evidence.detection_id ?? evidence.linked_detection_id);
+    if (detectionId) evidenceByDetectionId.set(detectionId, [...(evidenceByDetectionId.get(detectionId) ?? []), evidence]);
+  });
+
+  return {
+    alertsById,
+    alertsByTargetId,
+    alertsByIncidentId,
+    incidentsBySourceAlertId,
+    incidentsByLinkedAlertId,
+    detectionsByMonitoredSystemId,
+    detectionsByLinkedAlertId,
+    evidenceByTargetId,
+    evidenceByTargetName,
+    evidenceByDetectionId,
+  };
+}
+
+function isRealEvidence(evidence: EvidenceRow | null, detection: DetectionRow | null): boolean {
+  const source = normalizeLookup(evidence?.source_provider ?? detection?.evidence_source);
+  if (!source) return false;
+  return !['simulator', 'synthetic', 'demo', 'fallback', 'test', 'lab', 'replay'].some((flag) => source.includes(flag));
+}
+
+function severityFromLinked(params: LinkedCoverageResolution): string | null {
+  const severities = [params.latestIncident?.severity, params.latestAlert?.severity, params.latestDetection?.severity];
+  return severities.find((value) => normalizeLookup(value)) ?? null;
+}
+
+export function resolveLinkedCoverageForTarget(params: {
+  target: TargetRow;
+  systemIds: string[];
+  indexes: CoverageIndexes;
+}): LinkedCoverageResolution {
+  const { target, systemIds, indexes } = params;
+  const targetId = normalizeLookup(target.id);
+  const detectionPool = systemIds.flatMap((id) => indexes.detectionsByMonitoredSystemId.get(normalizeLookup(id)) ?? []);
+  const latestDetection = pickLatestByTime(detectionPool, (item) => item.detected_at);
+  const targetAlerts = indexes.alertsByTargetId.get(targetId) ?? [];
+  const alertPool = [
+    ...targetAlerts,
+    ...detectionPool
+      .map((detection) => (detection.linked_alert_id ? indexes.alertsById.get(normalizeLookup(detection.linked_alert_id)) ?? null : null))
+      .filter((alert): alert is AlertRow => Boolean(alert)),
+  ];
+  const latestAlert = pickLatestByTime(alertPool, (item) => item.created_at);
+  const latestIncident = latestAlert
+    ? pickLatestByTime([
+      ...(indexes.incidentsBySourceAlertId.get(normalizeLookup(latestAlert.id)) ?? []),
+      ...(indexes.incidentsByLinkedAlertId.get(normalizeLookup(latestAlert.id)) ?? []),
+    ], (item) => item.created_at)
+    : null;
+  const evidencePool = [
+    ...(indexes.evidenceByTargetId.get(targetId) ?? []),
+    ...(indexes.evidenceByTargetName.get(normalizeLookup(target.name)) ?? []),
+    ...detectionPool.flatMap((detection) => indexes.evidenceByDetectionId.get(normalizeLookup(detection.id)) ?? []),
+  ];
+  const latestEvidence = pickLatestByTime(evidencePool, (item) => item.observed_at);
+  return { latestDetection, latestAlert, latestIncident, latestEvidence };
+}
+
+export function destinationForLinked(resolution: LinkedCoverageResolution): string {
+  if (resolution.latestIncident) return '/incidents';
+  if (resolution.latestAlert) return '/alerts';
+  if (resolution.latestDetection) return '/detections';
+  return '/monitored-systems';
+}
+
+function linkedSignalLabel(resolution: LinkedCoverageResolution): string {
+  if (resolution.latestIncident?.title) return resolution.latestIncident.title;
+  if (resolution.latestAlert?.title) return resolution.latestAlert.title;
+  if (resolution.latestDetection?.title) return resolution.latestDetection.title;
+  return 'No linked real evidence yet';
+}
+
+export function linkedRiskLabel(resolution: LinkedCoverageResolution): { label: string; tone: string } {
+  const severity = severityFromLinked(resolution);
+  if (!severity) return { label: 'No linked severity', tone: 'offline' };
+  const normalized = severityClass(severity);
+  return { label: severityLabel(severity), tone: normalized === 'medium' ? 'attention' : normalized };
+}
+
+export function evidenceStatusCopy(params: {
+  resolution: LinkedCoverageResolution;
+  fallback: string;
+}): string {
+  const { resolution, fallback } = params;
+  if (!resolution.latestEvidence && !resolution.latestDetection) return 'No linked real evidence yet';
+  if (!isRealEvidence(resolution.latestEvidence, resolution.latestDetection)) return 'Degraded evidence';
+  if (resolution.latestEvidence?.summary) return resolution.latestEvidence.summary;
+  if (resolution.latestDetection?.evidence_summary) return resolution.latestDetection.evidence_summary;
+  return fallback;
 }
 
 export function derivePageState(params: {
@@ -696,6 +883,23 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const monitoredSystemById = useMemo(() => {
     return new Map(monitoredSystems.map((system) => [system.id, system] as const));
   }, [monitoredSystems]);
+  const monitoredSystemIdsByTargetId = useMemo(() => {
+    const map = new Map<string, string[]>();
+    monitoredSystems.forEach((system) => {
+      const targetId = normalizeLookup(system.target_id);
+      if (!targetId) return;
+      map.set(targetId, [...(map.get(targetId) ?? []), system.id]);
+    });
+    return map;
+  }, [monitoredSystems]);
+  const coverageIndexes = useMemo(() => {
+    return buildCoverageIndexes({
+      alerts,
+      incidents,
+      detections,
+      evidenceRows: evidence,
+    });
+  }, [alerts, detections, evidence, incidents]);
 
   const baseDetections = useMemo<DetectionItem[]>(() => {
     return detections.slice(0, 50).map((item) => {
@@ -803,6 +1007,88 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : monitoringPresentation.status === 'degraded' || monitoringPresentation.status === 'stale' || monitoringPresentation.status === 'limited coverage'
       ? 'Runtime reports partial or stale telemetry. Detailed protected system rows are still syncing.'
       : 'Runtime reports healthy coverage. Detailed protected system rows are still syncing.';
+  const targetCoverageRows = useMemo(() => {
+    return targets.slice(0, 10).map((target) => {
+      const coverage = normalizeCoverageStatus(target);
+      const linked = resolveLinkedCoverageForTarget({
+        target,
+        systemIds: monitoredSystemIdsByTargetId.get(normalizeLookup(target.id)) ?? [],
+        indexes: coverageIndexes,
+      });
+      const risk = linkedRiskLabel(linked);
+      return {
+        target,
+        coverage,
+        linked,
+        risk,
+        destinationHref: destinationForLinked(linked),
+        latestSignal: linkedSignalLabel(linked),
+        evidenceCopy: evidenceStatusCopy({ resolution: linked, fallback: 'No linked real evidence yet' }),
+      };
+    });
+  }, [coverageIndexes, monitoredSystemIdsByTargetId, targets]);
+  const monitoredSystemCoverageRows = useMemo(() => {
+    return monitoredSystems.slice(0, 10).map((system) => {
+      const runtimeStatusValue = String(system.runtime_status || 'idle').toLowerCase();
+      const statusTone = runtimeStatusValue === 'failed' || runtimeStatusValue === 'degraded'
+        ? 'attention'
+        : (runtimeStatusValue === 'disabled' || !system.is_enabled ? 'offline' : 'healthy');
+      const statusLabel = runtimeStatusValue === 'healthy'
+        ? 'Monitored'
+        : runtimeStatusValue === 'failed'
+          ? 'Error'
+          : runtimeStatusValue === 'degraded'
+            ? 'Degraded'
+            : runtimeStatusValue === 'disabled'
+              ? 'Offline'
+              : 'Idle';
+      const coverage: ReturnType<typeof normalizeCoverageStatus> = runtimeStatusValue === 'healthy'
+        ? 'Full'
+        : runtimeStatusValue === 'idle'
+          ? 'Partial'
+          : runtimeStatusValue === 'disabled'
+            ? 'Offline'
+            : 'Stale';
+      const linkedDetections = coverageIndexes.detectionsByMonitoredSystemId.get(normalizeLookup(system.id)) ?? [];
+      const latestDetection = pickLatestByTime(linkedDetections, (item) => item.detected_at);
+      const linkedAlert = latestDetection?.linked_alert_id
+        ? coverageIndexes.alertsById.get(normalizeLookup(latestDetection.linked_alert_id)) ?? null
+        : null;
+      const linkedIncident = linkedAlert
+        ? pickLatestByTime([
+          ...(coverageIndexes.incidentsBySourceAlertId.get(normalizeLookup(linkedAlert.id)) ?? []),
+          ...(coverageIndexes.incidentsByLinkedAlertId.get(normalizeLookup(linkedAlert.id)) ?? []),
+        ], (item) => item.created_at)
+        : null;
+      const linkedEvidence = latestDetection
+        ? pickLatestByTime(coverageIndexes.evidenceByDetectionId.get(normalizeLookup(latestDetection.id)) ?? [], (item) => item.observed_at)
+        : null;
+      const linked = {
+        latestDetection,
+        latestAlert: linkedAlert,
+        latestIncident: linkedIncident,
+        latestEvidence: linkedEvidence,
+      };
+      const hasHeartbeat = Boolean(system.last_heartbeat);
+      const hasTelemetry = Boolean(system.last_event_at);
+      const statusText = !hasTelemetry && hasHeartbeat && !linkedEvidence
+        ? 'No recent telemetry for this protected system'
+        : evidenceStatusCopy({
+          resolution: linked,
+          fallback: system.last_error_text || system.coverage_reason || 'No linked real evidence yet',
+        });
+      return {
+        system,
+        statusTone,
+        statusLabel,
+        coverage,
+        latestSignal: linkedSignalLabel(linked),
+        risk: linkedRiskLabel(linked),
+        statusText,
+        destinationHref: destinationForLinked(linked),
+      };
+    });
+  }, [coverageIndexes, monitoredSystems]);
   const latestRiskScore = useMemo(() => {
     if (alerts.some((item) => severityClass(item.severity) === 'critical')) return { value: 92, tier: 'High' };
     if (alerts.some((item) => severityClass(item.severity) === 'high')) return { value: 78, tier: 'Elevated' };
@@ -1187,9 +1473,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {hasTargetCoverageRows ? targets.slice(0, 10).map((target) => {
-                    const coverage = normalizeCoverageStatus(target);
-                    const risk = openAlerts > 0 ? 'High' : 'Low';
+                  {hasTargetCoverageRows ? targetCoverageRows.map(({ target, coverage, risk, latestSignal, evidenceCopy, destinationHref }) => {
                     return (
                       <tr key={target.id}>
                         <td>{target.name}<span className="tableMeta">{displayIdentifier(target)}</span></td>
@@ -1199,33 +1483,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                         <td>{hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'}</td>
                         <td>{pollLabel}</td>
                         <td>{monitoringPresentation.heartbeatLabel}</td>
-                        <td>{alerts[0]?.title || incidents[0]?.title || 'No active signals'}</td>
-                        <td><span className={`statusBadge statusBadge-${risk === 'High' ? 'high' : 'low'}`}>{risk}</span></td>
-                        <td><Link href="/monitored-systems" prefetch={false}>Open asset coverage view</Link></td>
+                        <td>{latestSignal}<span className="tableMeta">{evidenceCopy}</span></td>
+                        <td><span className={`statusBadge statusBadge-${risk.tone}`}>{risk.label}</span></td>
+                        <td><Link href={destinationHref} prefetch={false}>Open linked destination</Link></td>
                       </tr>
                     );
-                  }) : monitoredSystems.slice(0, 10).map((system) => {
-                    const runtimeStatus = String(system.runtime_status || 'idle').toLowerCase();
-                    const statusTone = runtimeStatus === 'failed' || runtimeStatus === 'degraded'
-                      ? 'attention'
-                      : (runtimeStatus === 'disabled' || !system.is_enabled ? 'offline' : 'healthy');
-                    const statusLabel = runtimeStatus === 'healthy'
-                      ? 'Monitored'
-                      : runtimeStatus === 'failed'
-                        ? 'Error'
-                        : runtimeStatus === 'degraded'
-                          ? 'Degraded'
-                          : runtimeStatus === 'disabled'
-                            ? 'Offline'
-                            : 'Idle';
-                    const coverage = runtimeStatus === 'healthy'
-                      ? 'Full'
-                      : runtimeStatus === 'idle'
-                        ? 'Partial'
-                        : runtimeStatus === 'disabled'
-                          ? 'Offline'
-                          : 'Stale';
-                    const risk = openAlerts > 0 ? 'High' : 'Low';
+                  }) : monitoredSystemCoverageRows.map(({ system, statusTone, statusLabel, coverage, latestSignal, risk, statusText, destinationHref }) => {
                     return (
                       <tr key={system.id}>
                         <td>{system.target_name || system.asset_name || 'Monitored system'}<span className="tableMeta">{system.chain || 'Unknown chain'}</span></td>
@@ -1235,9 +1498,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                         <td>{system.last_event_at ? formatRelativeTime(system.last_event_at) : 'Not available'}</td>
                         <td>{pollLabel}</td>
                         <td>{formatRelativeTime(system.last_heartbeat)}</td>
-                        <td>{system.last_error_text || system.coverage_reason || alerts[0]?.title || incidents[0]?.title || 'No active signals'}</td>
-                        <td><span className={`statusBadge statusBadge-${risk === 'High' ? 'high' : 'low'}`}>{risk}</span></td>
-                        <td><Link href="/monitored-systems" prefetch={false}>Open asset coverage view</Link></td>
+                        <td>{latestSignal}<span className="tableMeta">{statusText}</span></td>
+                        <td><span className={`statusBadge statusBadge-${risk.tone}`}>{risk.label}</span></td>
+                        <td><Link href={destinationHref} prefetch={false}>Open linked destination</Link></td>
                       </tr>
                     );
                   })}
