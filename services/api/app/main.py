@@ -2567,7 +2567,7 @@ def history_actions_create(payload: dict[str, Any], request: Request) -> dict[st
     return with_auth_schema_json(lambda: create_action_history_entry(payload, request))
 
 
-@app.get('/enforcement/actions', summary='List enforcement actions')
+@app.get('/enforcement/actions', summary='List enforcement actions with capability and execution state details')
 def enforcement_actions_list(request: Request, incident_id: str | None = None, alert_id: str | None = None, status_value: str | None = None, limit: int = 200) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_enforcement_actions(request, incident_id=incident_id, alert_id=alert_id, status_value=status_value, limit=limit))
 
@@ -2577,7 +2577,7 @@ def response_actions_list(request: Request, incident_id: str | None = None, aler
     return with_auth_schema_json(lambda: list_enforcement_actions(request, incident_id=incident_id, alert_id=alert_id, status_value=status_value, limit=limit))
 
 
-@app.get('/response/action-capabilities', summary='List response action capabilities for the active workspace')
+@app.get('/response/action-capabilities', summary='List response action capabilities and live execution routing for the active workspace')
 def response_action_capabilities(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_response_action_capabilities(request))
 
