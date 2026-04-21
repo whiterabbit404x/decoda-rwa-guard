@@ -897,9 +897,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       alerts,
       incidents,
       detections,
-      evidenceRows,
+      evidenceRows: evidence,
     });
-  }, [alerts, detections, evidenceRows, incidents]);
+  }, [alerts, detections, evidence, incidents]);
 
   const baseDetections = useMemo<DetectionItem[]>(() => {
     return detections.slice(0, 50).map((item) => {
@@ -1042,7 +1042,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             : runtimeStatusValue === 'disabled'
               ? 'Offline'
               : 'Idle';
-      const coverage = runtimeStatusValue === 'healthy'
+      const coverage: ReturnType<typeof normalizeCoverageStatus> = runtimeStatusValue === 'healthy'
         ? 'Full'
         : runtimeStatusValue === 'idle'
           ? 'Partial'
