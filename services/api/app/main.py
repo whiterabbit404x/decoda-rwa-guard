@@ -131,6 +131,7 @@ from services.api.app.pilot import (
     append_incident_timeline_note,
     create_action_history_entry,
     create_enforcement_action,
+    list_response_action_capabilities,
     approve_enforcement_action,
     execute_enforcement_action,
     list_enforcement_actions,
@@ -2574,6 +2575,11 @@ def enforcement_actions_list(request: Request, incident_id: str | None = None, a
 @app.get('/response/actions', summary='List response actions')
 def response_actions_list(request: Request, incident_id: str | None = None, alert_id: str | None = None, status_value: str | None = None, limit: int = 200) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_enforcement_actions(request, incident_id=incident_id, alert_id=alert_id, status_value=status_value, limit=limit))
+
+
+@app.get('/response/action-capabilities', summary='List response action capabilities for the active workspace')
+def response_action_capabilities(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_response_action_capabilities(request))
 
 
 @app.post('/enforcement/actions', summary='Plan a workspace enforcement action')

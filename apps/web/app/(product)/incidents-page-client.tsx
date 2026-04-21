@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { usePilotAuth } from '../pilot-auth-context';
+import { actionDisabledReason, actionModeLabel, capabilityMapFromPayload, isActionDisabledInMode, type ResponseActionCapability } from '../response-action-capabilities';
 
 const WORKFLOW_STATUSES = ['open', 'investigating', 'contained', 'resolved', 'reopened'] as const;
 
@@ -16,6 +17,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   const [message, setMessage] = useState('');
   const [actionMode, setActionMode] = useState<'simulated' | 'recommended' | 'live'>('simulated');
   const [operatorNotes, setOperatorNotes] = useState('');
+  const [actionCapabilities, setActionCapabilities] = useState<Record<string, ResponseActionCapability>>({});
 
   async function load() {
     const params = new URLSearchParams();
@@ -29,6 +31,12 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   }
 
   useEffect(() => { void load(); }, [status, owner]);
+  useEffect(() => {
+    void fetch(`${apiUrl}/response/action-capabilities`, { headers: authHeaders(), cache: 'no-store' })
+      .then((response) => response.ok ? response.json() : null)
+      .then((payload) => setActionCapabilities(capabilityMapFromPayload(payload)))
+      .catch(() => setActionCapabilities({}));
+  }, [apiUrl, authHeaders]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -41,7 +49,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   const responseModeLabel = selected?.response_action_mode && selected.response_action_mode !== 'live'
     ? 'SIMULATED'
     : null;
-  const actionExecutionLabel = actionMode === 'live' ? 'LIVE' : 'SIMULATED';
+  const actionExecutionLabel = actionModeLabel(actionMode);
 
   async function updateWorkflow(nextStatus: typeof WORKFLOW_STATUSES[number]) {
     if (!selected) return;
@@ -75,7 +83,13 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
 
   async function runSimulatedAction(actionType: string, label: string) {
     if (!selected) return;
-    const isNonLive = actionMode !== 'live';
+    const capability = actionCapabilities[actionType];
+    const disabledReason = actionDisabledReason(capability, actionMode);
+    if (disabledReason) {
+      setMessage(disabledReason);
+      return;
+    }
+    const modeLabel = actionModeLabel(actionMode);
     const create = await fetch(`${apiUrl}/response/actions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -85,17 +99,23 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
         status: 'pending',
         incident_id: selected.id,
         alert_id: selected.source_alert_id,
-        result_summary: `${isNonLive ? 'SIMULATED ' : ''}${label} created from incidents client`,
+        result_summary: `${modeLabel} ${label} created from incidents client`,
         operator_notes: operatorNotes.trim() || undefined,
       }),
     });
     if (!create.ok) {
-      setMessage(`${isNonLive ? 'SIMULATED ' : ''}${label} failed to create.`);
+      setMessage(`${modeLabel} ${label} failed to create.`);
       return;
     }
     const action = await create.json();
     const execute = await fetch(`${apiUrl}/response/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
-    setMessage(execute.ok ? `${isNonLive ? 'SIMULATED ' : ''}${label} executed.` : `${isNonLive ? 'SIMULATED ' : ''}${label} failed during execute.`);
+    const executePayload = await execute.json().catch(() => ({}));
+    const executionState = String(executePayload?.execution_state || '');
+    if (execute.ok && (executionState === 'simulated_executed' || executionState === 'live_executed')) {
+      setMessage(`${modeLabel} ${label} executed.`);
+      return;
+    }
+    setMessage(String(executePayload?.reason || `${modeLabel} ${label} could not be executed.`));
   }
 
   return (
@@ -131,13 +151,14 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
                 <button type="button" onClick={() => void updateWorkflow('contained')}>Mark contained</button>
                 <button type="button" onClick={() => void updateWorkflow('resolved')}>Resolve</button>
                 <button type="button" onClick={() => void updateWorkflow('reopened')}>Reopen</button>
-                <button type="button" onClick={() => void runSimulatedAction('notify_team', 'Execute simulated response')}>Execute simulated response ({actionExecutionLabel})</button>
-                <button type="button" onClick={() => void runSimulatedAction('block_transaction', 'Block transaction')}>Block transaction ({actionExecutionLabel})</button>
-                <button type="button" onClick={() => void runSimulatedAction('revoke_approval', 'Revoke approval')}>Revoke approval ({actionExecutionLabel})</button>
-                <button type="button" onClick={() => void runSimulatedAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet ({actionExecutionLabel})</button>
-                <button type="button" onClick={() => void runSimulatedAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system ({actionExecutionLabel})</button>
-                <button type="button" onClick={() => void runSimulatedAction('suppress_rule', 'Suppress rule')}>Suppress/mute rule ({actionExecutionLabel})</button>
+                <button type="button" disabled={isActionDisabledInMode(actionCapabilities.notify_team, actionMode)} title={actionDisabledReason(actionCapabilities.notify_team, actionMode) || ''} onClick={() => void runSimulatedAction('notify_team', 'Execute simulated response')}>Execute simulated response ({actionExecutionLabel})</button>
+                <button type="button" disabled={isActionDisabledInMode(actionCapabilities.block_transaction, actionMode)} title={actionDisabledReason(actionCapabilities.block_transaction, actionMode) || ''} onClick={() => void runSimulatedAction('block_transaction', 'Block transaction')}>Block transaction ({actionExecutionLabel})</button>
+                <button type="button" disabled={isActionDisabledInMode(actionCapabilities.revoke_approval, actionMode)} title={actionDisabledReason(actionCapabilities.revoke_approval, actionMode) || ''} onClick={() => void runSimulatedAction('revoke_approval', 'Revoke approval')}>Revoke approval ({actionExecutionLabel})</button>
+                <button type="button" disabled={isActionDisabledInMode(actionCapabilities.freeze_wallet, actionMode)} title={actionDisabledReason(actionCapabilities.freeze_wallet, actionMode) || ''} onClick={() => void runSimulatedAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet ({actionExecutionLabel})</button>
+                <button type="button" disabled={isActionDisabledInMode(actionCapabilities.disable_monitored_system, actionMode)} title={actionDisabledReason(actionCapabilities.disable_monitored_system, actionMode) || ''} onClick={() => void runSimulatedAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system ({actionExecutionLabel})</button>
+                <button type="button" disabled={isActionDisabledInMode(actionCapabilities.suppress_rule, actionMode)} title={actionDisabledReason(actionCapabilities.suppress_rule, actionMode) || ''} onClick={() => void runSimulatedAction('suppress_rule', 'Suppress rule')}>Suppress/mute rule ({actionExecutionLabel})</button>
               </div>
+              {actionMode === 'live' ? <p className="tableMeta">Live constraints: unsupported actions show “Unsupported live action”; manual paths show “Manual-only in live mode”.</p> : null}
               <p className="tableMeta">Response actions: Freeze wallet · Block transaction · Revoke approval · Disable monitored system · Suppress rule · Notify team</p>
               <p className="sectionEyebrow">Merged event timeline</p>
               {timeline.map((item, index) => <p key={`${item.id || index}`}>{item.event_type}: {item.message || ''} · {item.created_at ? new Date(item.created_at).toLocaleString() : 'n/a'}</p>)}

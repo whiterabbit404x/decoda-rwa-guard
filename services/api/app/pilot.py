@@ -7820,6 +7820,15 @@ RESPONSE_ACTION_TYPES = {
     'suppress_rule',
     'notify_team',
 }
+RESPONSE_ACTION_SUPPORTED_MODES = ('simulated', 'recommended', 'live')
+RESPONSE_ACTION_LIVE_EXECUTION_PATHS = {'safe', 'governance', 'manual_only', 'unsupported'}
+RESPONSE_ACTION_LIVE_EXECUTION_DEFAULTS: dict[str, tuple[str, str | None]] = {
+    'notify_team': ('governance', None),
+    'disable_monitored_system': ('manual_only', 'Manual-only in live mode'),
+    'suppress_rule': ('manual_only', 'Manual-only in live mode'),
+    'freeze_wallet': ('unsupported', 'Unsupported live action'),
+    'block_transaction': ('unsupported', 'Unsupported live action'),
+}
 LEGACY_ACTION_TYPE_ALIASES = {
     'revoke_erc20_approval': 'revoke_approval',
     'pause_asset': 'disable_monitored_system',
@@ -7850,6 +7859,49 @@ def _encode_erc20_approve_calldata(spender: str, amount: int) -> str:
 
 def _enforcement_default_dry_run() -> bool:
     return env_flag('ENFORCEMENT_DRY_RUN_DEFAULT', default=True)
+
+
+def _safe_execution_configured() -> bool:
+    service_url = os.getenv('SAFE_TX_SERVICE_URL', '').strip()
+    safe_wallet = os.getenv('SAFE_WALLET_ADDRESS', '').strip()
+    return bool(service_url and safe_wallet)
+
+
+def response_action_capability(action_type: str) -> dict[str, Any]:
+    normalized_action_type = _normalize_response_action_type(action_type)
+    live_execution_path = 'unsupported'
+    reason: str | None = 'Unsupported live action'
+    supported_modes = list(RESPONSE_ACTION_SUPPORTED_MODES)
+
+    if normalized_action_type == 'revoke_approval':
+        if _safe_execution_configured():
+            live_execution_path = 'safe'
+            reason = None
+        else:
+            live_execution_path = 'manual_only'
+            reason = 'Manual-only in live mode'
+    elif normalized_action_type in RESPONSE_ACTION_LIVE_EXECUTION_DEFAULTS:
+        live_execution_path, reason = RESPONSE_ACTION_LIVE_EXECUTION_DEFAULTS[normalized_action_type]
+
+    if live_execution_path == 'unsupported':
+        supported_modes = ['simulated', 'recommended']
+
+    return {
+        'action_type': normalized_action_type,
+        'supported_modes': supported_modes,
+        'live_execution_path': live_execution_path,
+        'reason': reason,
+    }
+
+
+def list_response_action_capabilities(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        actions = [response_action_capability(action_type) for action_type in sorted(RESPONSE_ACTION_TYPES)]
+        return {'workspace_id': workspace_context['workspace_id'], 'actions': actions}
 
 
 def _normalize_response_action_type(value: Any) -> str:
@@ -7951,6 +8003,12 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
         spender = _normalize_eth_address(params.get('spender'), field='spender')
         target_wallet = _normalize_eth_address(params.get('target_wallet'), field='target_wallet')
         mode = _normalize_response_action_mode(payload)
+        capability = response_action_capability(action_type)
+        if mode not in set(capability.get('supported_modes') or []):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(capability.get('reason') or 'Selected mode is not supported for this action.'),
+            )
         status_value = _normalize_response_action_status(payload.get('status'))
         execution_metadata = {'params': params, 'created_via': 'api'}
         calldata: str | None = None
@@ -8068,9 +8126,13 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         action = _json_safe_value(dict(row))
         safe_tx_hash = None
         metadata = action.get('execution_metadata') if isinstance(action.get('execution_metadata'), dict) else {}
+        capability = response_action_capability(str(action.get('action_type') or ''))
+        execution_state = 'simulated_executed'
+        next_status = 'executed'
+        result_summary = 'Action executed'
         if str(action.get('mode') or 'simulated') != 'live':
             metadata['execution_mode'] = 'simulated'
-        elif action.get('action_type') == 'revoke_approval':
+        elif capability.get('live_execution_path') == 'safe':
             safe_tx_hash = _propose_safe_transaction(
                 action_id,
                 to=str(action.get('token_contract') or ''),
@@ -8079,15 +8141,27 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             )
             logger.info('enforcement_proposed_safe_tx action_id=%s safe_tx_hash=%s', action_id, safe_tx_hash)
             metadata['execution_mode'] = 'safe_proposed'
+            execution_state = 'live_executed'
+        elif capability.get('live_execution_path') == 'governance':
+            metadata['execution_mode'] = 'governance'
+            execution_state = 'live_executed'
+        elif capability.get('live_execution_path') == 'manual_only':
+            metadata['execution_mode'] = 'manual_only'
+            execution_state = 'live_manual_required'
+            next_status = 'pending'
+            result_summary = str(capability.get('reason') or 'Manual-only in live mode')
         else:
-            metadata['execution_mode'] = 'manual_or_notify'
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(capability.get('reason') or 'Unsupported live action'),
+            )
         connection.execute(
             '''
             UPDATE response_actions
-            SET status = 'executed', safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, executed_at = NOW(), result_summary = COALESCE(result_summary, %s)
+            SET status = %s, safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, executed_at = CASE WHEN %s = 'executed' THEN NOW() ELSE executed_at END, result_summary = COALESCE(result_summary, %s)
             WHERE id = %s
             ''',
-            (safe_tx_hash, _json_dumps(metadata), 'Action executed', action_id),
+            (next_status, safe_tx_hash, _json_dumps(metadata), next_status, result_summary, action_id),
         )
         write_action_history(
             connection,
@@ -8123,7 +8197,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             )
         log_audit(connection, action='enforcement.action.execute', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'safe_tx_hash': safe_tx_hash})
         connection.commit()
-        return _response_action_payload({'id': action_id, 'status': 'executed', 'safe_tx_hash': safe_tx_hash, 'mode': action.get('mode')})
+        return _response_action_payload({'id': action_id, 'status': next_status, 'safe_tx_hash': safe_tx_hash, 'mode': action.get('mode'), 'execution_state': execution_state, 'live_execution_path': capability.get('live_execution_path'), 'reason': capability.get('reason')})
 
 
 def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, Any]:

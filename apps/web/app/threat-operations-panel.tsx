@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import type { MonitoringPresentationStatus } from './monitoring-status-presentation';
 import { usePilotAuth } from 'app/pilot-auth-context';
+import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, type ResponseActionCapability } from './response-action-capabilities';
 import { hasLiveTelemetry, monitoringHealthyCopyAllowed } from './workspace-monitoring-truth';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 
@@ -724,6 +725,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [monitoredSystems, setMonitoredSystems] = useState<MonitoredSystemRow[]>([]);
   const [evidenceDrawer, setEvidenceDrawer] = useState<EvidenceDrawerState | null>(null);
   const [responseToast, setResponseToast] = useState<string | null>(null);
+  const [actionCapabilities, setActionCapabilities] = useState<Record<string, ResponseActionCapability>>({});
 
   useEffect(() => {
     let active = true;
@@ -1205,6 +1207,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     ];
   }, [actionHistory, alerts, detections, incidents, monitoringRuns]);
 
+  useEffect(() => {
+    void fetch(`${apiUrl}/response/action-capabilities`, { headers: authHeaders(), cache: 'no-store' })
+      .then((response) => response.ok ? response.json() : null)
+      .then((payload) => setActionCapabilities(capabilityMapFromPayload(payload)))
+      .catch(() => setActionCapabilities({}));
+  }, [apiUrl, authHeaders]);
+
   async function openDetectionEvidence(signal: DetectionItem) {
     const detectionId = signal.id.replace('detection-', '');
     const fallback = detections.find((item) => item.id === detectionId) ?? null;
@@ -1257,7 +1266,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     }
     const action = await create.json();
     const execute = await fetch(`${apiUrl}/response/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
-    setResponseToast(execute.ok ? `SIMULATED ${label} executed.` : `SIMULATED ${label} failed during execute.`);
+    const executePayload = await execute.json().catch(() => ({}));
+    const executionState = String(executePayload?.execution_state || '');
+    if (execute.ok && (executionState === 'simulated_executed' || executionState === 'live_executed')) {
+      setResponseToast(`SIMULATED ${label} executed.`);
+      return;
+    }
+    setResponseToast(String(executePayload?.reason || `SIMULATED ${label} could not be executed.`));
   }
 
   return (
@@ -1706,12 +1721,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <h3>Operational actions</h3>
             <p className="muted">Use investigation and escalation workflows to restore healthy monitoring and resolve risk. Non-live actions are visibly marked SIMULATED.</p>
             <div className="buttonRow">
-              <button type="button" onClick={() => void runSimulatedThreatAction('notify_team', 'Execute simulated response')}>Execute simulated response (SIMULATED)</button>
-              <button type="button" onClick={() => void runSimulatedThreatAction('block_transaction', 'Block transaction')}>Block transaction (SIMULATED)</button>
-              <button type="button" onClick={() => void runSimulatedThreatAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
-              <button type="button" onClick={() => void runSimulatedThreatAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet (SIMULATED)</button>
-              <button type="button" onClick={() => void runSimulatedThreatAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system (SIMULATED)</button>
-              <button type="button" onClick={() => void runSimulatedThreatAction('suppress_rule', 'Suppress/mute rule')}>Suppress/mute rule (SIMULATED)</button>
+              <button type="button" disabled={isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('notify_team', 'Execute simulated response')}>Execute simulated response (SIMULATED)</button>
+              <button type="button" disabled={isActionDisabledInMode(actionCapabilities.block_transaction, 'simulated')} title={actionDisabledReason(actionCapabilities.block_transaction, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('block_transaction', 'Block transaction')}>Block transaction (SIMULATED)</button>
+              <button type="button" disabled={isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
+              <button type="button" disabled={isActionDisabledInMode(actionCapabilities.freeze_wallet, 'simulated')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet (SIMULATED)</button>
+              <button type="button" disabled={isActionDisabledInMode(actionCapabilities.disable_monitored_system, 'simulated')} title={actionDisabledReason(actionCapabilities.disable_monitored_system, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system (SIMULATED)</button>
+              <button type="button" disabled={isActionDisabledInMode(actionCapabilities.suppress_rule, 'simulated')} title={actionDisabledReason(actionCapabilities.suppress_rule, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('suppress_rule', 'Suppress/mute rule')}>Suppress/mute rule (SIMULATED)</button>
               <Link href="/alerts" prefetch={false}>Review alerts</Link>
               <Link href="/incidents" prefetch={false}>Open incident queue</Link>
               <Link href="/history" prefetch={false}>View workspace history</Link>
