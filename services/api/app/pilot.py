@@ -198,27 +198,45 @@ def resolve_db_backend() -> str:
     return 'sqlite'
 
 
+def runtime_mode_config_summary() -> dict[str, Any]:
+    configured_mode = os.getenv('APP_MODE', 'demo').strip().lower() or 'demo'
+    db_backend = resolve_db_backend()
+    db_is_postgres = db_backend.startswith('postgres')
+    live_mode_requested = env_flag('LIVE_MODE_ENABLED')
+    live_mode = live_mode_requested and db_is_postgres
+    auth_worker_persistence_enabled = live_mode and db_is_postgres
+    return {
+        'configured_app_mode': configured_mode,
+        'resolved_app_mode': 'live' if live_mode else configured_mode,
+        'live_mode_enabled': live_mode,
+        'backend_classification': db_backend,
+        'auth_worker_persistence_enabled': auth_worker_persistence_enabled,
+        'demo_only_mode': not auth_worker_persistence_enabled,
+        'live_mode_requested': live_mode_requested,
+        'postgres_required_for_live_mode': live_mode_requested and not db_is_postgres,
+    }
+
+
 def runtime_environment_identity() -> dict[str, Any]:
+    mode_summary = runtime_mode_config_summary()
     db_url = database_url()
     db_fingerprint = hashlib.sha256(db_url.encode('utf-8')).hexdigest()[:12] if db_url else 'missing'
     return {
-        'app_mode': os.getenv('APP_MODE', 'local'),
-        'live_mode_enabled': live_mode_enabled(),
+        'app_mode': mode_summary['resolved_app_mode'],
+        'live_mode_enabled': mode_summary['live_mode_enabled'],
         'railway_environment': os.getenv('RAILWAY_ENVIRONMENT_NAME', '').strip() or None,
         'railway_service': os.getenv('RAILWAY_SERVICE_NAME', '').strip() or None,
-        'database_backend': resolve_db_backend(),
+        'database_backend': mode_summary['backend_classification'],
         'database_fingerprint': db_fingerprint,
     }
 
 
 def live_mode_enabled() -> bool:
-    return env_flag('LIVE_MODE_ENABLED') and database_url() is not None
+    return bool(runtime_mode_config_summary()['live_mode_enabled'])
 
 
 def pilot_mode() -> str:
-    if live_mode_enabled():
-        return 'live'
-    return os.getenv('APP_MODE', 'demo')
+    return str(runtime_mode_config_summary()['resolved_app_mode'])
 
 
 def _safe_int_env(name: str, default: int, *, minimum: int) -> int:
@@ -300,8 +318,15 @@ def pg_connection() -> Iterable[Any]:
 
 
 def require_live_mode() -> None:
-    if database_url() is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='DATABASE_URL is required for live pilot mode.')
+    mode_summary = runtime_mode_config_summary()
+    if mode_summary['live_mode_enabled']:
+        return
+    if mode_summary['postgres_required_for_live_mode']:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Postgres required for live pilot mode. Set DATABASE_URL to a Postgres connection string for local live development.',
+        )
+    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='DATABASE_URL is required for live pilot mode.')
 
 
 def load_psycopg() -> Any:
@@ -398,6 +423,7 @@ def run_startup_migrations_if_enabled(*, process_role: str = 'api') -> dict[str,
 
 
 def validate_runtime_configuration() -> dict[str, Any]:
+    mode_summary = runtime_mode_config_summary()
     mode = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
     errors: list[str] = []
     warnings: list[str] = []
@@ -429,11 +455,17 @@ def validate_runtime_configuration() -> dict[str, Any]:
     if is_production_like:
         _record_check(
             'live_mode_enabled',
-            env_flag('LIVE_MODE_ENABLED'),
+            mode_summary['live_mode_requested'],
             required=True,
             detail='LIVE_MODE_ENABLED must be true in production. Disabling live mode in production forces monitoring runtime into offline/unconfigured fallback behavior.',
         )
         _record_check('database_url', bool(database_url()), required=True, detail='DATABASE_URL must be configured when LIVE_MODE_ENABLED=true in production.')
+        _record_check(
+            'database_backend_postgres',
+            mode_summary['backend_classification'].startswith('postgres'),
+            required=mode_summary['live_mode_requested'],
+            detail='Postgres required when LIVE_MODE_ENABLED=true in production.',
+        )
         _record_check('auth_token_secret', auth_token_secret_configured(), required=True, detail='AUTH_TOKEN_SECRET must be configured in production.')
         try:
             validate_encryption_bootstrap()
