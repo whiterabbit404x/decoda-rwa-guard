@@ -51,10 +51,14 @@ test('renders evidence drawer and keeps SIMULATED labels explicit', () => {
 test('threat quick actions require linked context selection or explicit unlinked mode', () => {
   const threat = appSource('threat-operations-panel.tsx');
 
+  expect(threat).not.toContain('alerts[0]');
+  expect(threat).not.toContain('incidents[0]');
   expect(threat).not.toContain('incident_id: incidents[0]?.id');
   expect(threat).not.toContain('alert_id: alerts[0]?.id');
   expect(threat).toContain('incident_id: selectedThreatActionContext?.incidentId ?? null');
   expect(threat).toContain('alert_id: selectedThreatActionContext?.alertId ?? null');
-  expect(threat).toContain('UNLINKED ACTION');
+  expect(threat).toContain('UNLINKED ACTION (manual follow-up required)');
+  expect(threat).toContain('Unlinked action (manual follow-up required)');
+  expect(threat).toContain('Select a linked detection/alert/incident context or keep the action explicitly unlinked.');
   expect(threat).toContain('No linked alert/incident context available for this action.');
 });

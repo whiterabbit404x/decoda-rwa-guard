@@ -1206,10 +1206,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       .find((item) => item.linked_alert_id || alerts.some((alert) => alert.detection_id === item.id));
     const relatedAlert = recentDetection
       ? alerts.find((alert) => alert.id === recentDetection.linked_alert_id || alert.detection_id === recentDetection.id) ?? null
-      : alerts[0] ?? null;
+      : null;
     const relatedIncident = relatedAlert
       ? incidents.find((incident) => incident.id === relatedAlert.incident_id || incident.source_alert_id === relatedAlert.id) ?? null
-      : incidents[0] ?? null;
+      : null;
     const relatedRun = monitoringRuns
       .slice()
       .sort((a, b) => new Date((b.completed_at || b.started_at) || 0).getTime() - new Date((a.completed_at || a.started_at) || 0).getTime())[0] ?? null;
@@ -1306,11 +1306,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [selectedThreatActionContextId, setSelectedThreatActionContextId] = useState<string>('unlinked');
   useEffect(() => {
     setSelectedThreatActionContextId((current) => {
-      if (threatActionContextOptions.length === 0) return 'unlinked';
-      if (current === 'unlinked') return threatActionContextOptions[0].id;
+      if (current === 'unlinked') return 'unlinked';
       return threatActionContextOptions.some((option) => option.id === current)
         ? current
-        : threatActionContextOptions[0].id;
+        : 'unlinked';
     });
   }, [threatActionContextOptions]);
   const selectedThreatActionContext = useMemo(() => (
@@ -1361,7 +1360,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   async function runSimulatedThreatAction(actionType: string, label: string) {
     const contextLabel = selectedThreatActionContext
       ? `Linked context: ${selectedThreatActionContext.label}`
-      : 'UNLINKED ACTION';
+      : 'UNLINKED ACTION (manual follow-up required)';
     const create = await fetch(`${apiUrl}/response/actions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -1869,12 +1868,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               value={selectedThreatActionContext ? selectedThreatActionContext.id : 'unlinked'}
               onChange={(event) => setSelectedThreatActionContextId(event.target.value)}
             >
+              <option value="unlinked">Unlinked action (manual follow-up required)</option>
               {threatActionContextOptions.map((option) => (
                 <option key={option.id} value={option.id}>{option.label}</option>
               ))}
-              <option value="unlinked">Unlinked action</option>
             </select>
-            {noLinkedActionContextAvailable ? <p className="statusLine">No linked alert/incident context available for this action.</p> : null}
+            {noLinkedActionContextAvailable
+              ? <p className="statusLine">No linked alert/incident context available for this action.</p>
+              : <p className="statusLine">Select a linked detection/alert/incident context or keep the action explicitly unlinked.</p>}
             <div className="buttonRow">
               <button type="button" disabled={isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('notify_team', 'Execute simulated response')}>Execute simulated response (SIMULATED)</button>
               <button type="button" disabled={isActionDisabledInMode(actionCapabilities.block_transaction, 'simulated')} title={actionDisabledReason(actionCapabilities.block_transaction, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('block_transaction', 'Block transaction')}>Block transaction (SIMULATED)</button>
