@@ -3,6 +3,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+from fastapi import HTTPException
+
 from services.api.app import pilot
 
 
@@ -149,3 +151,199 @@ def test_list_response_actions_returns_supported_fields(monkeypatch):
     assert action['action_type'] == 'freeze_wallet'
     assert action['status'] == 'pending'
     assert action['mode'] == 'simulated'
+
+
+def test_execute_live_unsupported_action_returns_structured_error_without_executed_state(monkeypatch):
+    executed: list[tuple[str, object]] = []
+
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            executed.append((normalized, params))
+            if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result(
+                    {
+                        'id': 'act-unsupported',
+                        'status': 'pending',
+                        'mode': 'live',
+                        'action_type': 'block_transaction',
+                        'execution_metadata': {},
+                        'incident_id': 'inc-1',
+                        'alert_id': 'alert-1',
+                    }
+                )
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1'}))
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    try:
+        pilot.execute_enforcement_action('act-unsupported', request)
+        raise AssertionError('Expected HTTPException for unsupported live execution.')
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert exc.detail['code'] == 'RESPONSE_ACTION_UNSUPPORTED_EXECUTOR'
+        assert exc.detail['status'] == 'failed'
+        assert exc.detail['execution_state'] == 'failed'
+
+    assert any(
+        "UPDATE response_actions SET status = %s, execution_metadata = %s::jsonb, result_summary = %s WHERE id = %s" in statement
+        and params[0] == 'failed'
+        for statement, params in executed
+    )
+    assert not any("SET status = 'executed'" in statement for statement, _ in executed)
+
+
+def test_execute_live_revoke_approval_returns_proposed_state_with_safe_tx_hash_and_history(monkeypatch):
+    executed: list[tuple[str, object]] = []
+
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            executed.append((normalized, params))
+            if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result(
+                    {
+                        'id': 'act-safe',
+                        'status': 'pending',
+                        'mode': 'live',
+                        'action_type': 'revoke_approval',
+                        'execution_metadata': {},
+                        'incident_id': 'inc-1',
+                        'alert_id': 'alert-1',
+                        'token_contract': '0x1111111111111111111111111111111111111111',
+                        'calldata': '0x095ea7b3',
+                        'chain_network': 'ethereum',
+                    }
+                )
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1'}))
+    monkeypatch.setattr(pilot, '_propose_safe_transaction', lambda *_a, **_k: '0xsafehash')
+    monkeypatch.setattr(
+        pilot,
+        'resolve_response_action_capability',
+        lambda *_a, **_k: {
+            'action_type': 'revoke_approval',
+            'supported_modes': ['simulated', 'recommended', 'live'],
+            'live_execution_path': 'safe',
+            'reason': None,
+            'supports_mode': True,
+            'mode': 'live',
+        },
+    )
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    response = pilot.execute_enforcement_action('act-safe', request)
+
+    assert response['status'] == 'pending'
+    assert response['execution_state'] == 'proposed'
+    assert response['safe_tx_hash'] == '0xsafehash'
+    assert response['live_execution_path'] == 'safe'
+    history_calls = [params for statement, params in executed if 'INSERT INTO action_history' in statement]
+    assert any(params[6] == 'response_action.executed' for params in history_calls)
+    assert any(params[6] == 'incident.response_action_executed' for params in history_calls)
+    timeline_calls = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
+    assert any(params[3] == 'response_action.proposed' for params in timeline_calls)
+    assert any('0xsafehash' in str(params[6]) for params in timeline_calls)
+
+
+def test_execute_live_freeze_wallet_writes_governance_metadata_and_timeline(monkeypatch):
+    executed: list[tuple[str, object]] = []
+
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            executed.append((normalized, params))
+            if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result(
+                    {
+                        'id': 'act-governance',
+                        'status': 'pending',
+                        'mode': 'live',
+                        'action_type': 'freeze_wallet',
+                        'execution_metadata': {},
+                        'incident_id': 'inc-2',
+                        'alert_id': 'alert-2',
+                    }
+                )
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1'}))
+    monkeypatch.setattr(
+        pilot,
+        '_submit_freeze_wallet_governance_action',
+        lambda *_a, **_k: {
+            'action_id': 'gov-123',
+            'attestation_hash': 'attest-123',
+            'policy_effects': ['Wallet frozen'],
+        },
+    )
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    response = pilot.execute_enforcement_action('act-governance', request)
+
+    assert response['status'] == 'pending'
+    assert response['execution_state'] == 'proposed'
+    assert response['live_execution_path'] == 'governance'
+    update_calls = [params for statement, params in executed if 'SET status = \'pending\'' in statement and 'execution_metadata' in statement]
+    assert update_calls
+    assert 'gov-123' in str(update_calls[0][1])
+    assert 'attest-123' in str(update_calls[0][1])
+    assert 'Wallet frozen' in str(update_calls[0][1])
+    timeline_calls = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
+    assert any(params[3] == 'response_action.proposed' for params in timeline_calls)
+    assert any('governance_action_id' in str(params[6]) for params in timeline_calls)
