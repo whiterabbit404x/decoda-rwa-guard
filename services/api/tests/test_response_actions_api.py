@@ -63,6 +63,7 @@ def test_create_response_action_translates_legacy_payload_and_writes_history(mon
     assert insert_calls[0][4] == 'revoke_approval'
     assert insert_calls[0][5] == 'simulated'
     assert insert_calls[0][6] == 'pending'
+    assert insert_calls[0][14] == 'simulated_executed'
     history_calls = [params for statement, params in executed if 'INSERT INTO action_history' in statement]
     assert history_calls
     assert any(params[6] == 'response_action.created' for params in history_calls)
@@ -119,7 +120,7 @@ def test_execute_response_action_returns_back_compat_dry_run_flag(monkeypatch):
 
     assert response['status'] == 'executed'
     assert response['dry_run'] is True
-    assert any('UPDATE response_actions SET status = \'executed\'' in statement for statement, _ in executed)
+    assert any('UPDATE response_actions SET status = \'executed\', execution_state = %s' in statement for statement, _ in executed)
     history_calls = [params for statement, params in executed if 'INSERT INTO action_history' in statement]
     assert any(params[6] == 'response_action.executed' for params in history_calls)
     assert any(params[6] == 'incident.response_action_executed' for params in history_calls)
@@ -222,8 +223,9 @@ def test_execute_live_unsupported_action_returns_structured_error_without_execut
         assert exc.detail['reason'] == 'Unsupported live action'
 
     assert any(
-        "UPDATE response_actions SET status = %s, execution_metadata = %s::jsonb, result_summary = %s WHERE id = %s" in statement
+        "UPDATE response_actions SET status = %s, execution_state = %s, execution_metadata = %s::jsonb, result_summary = %s WHERE id = %s" in statement
         and params[0] == 'failed'
+        and params[1] == 'unsupported'
         for statement, params in executed
     )
     timeline_calls = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
@@ -297,6 +299,12 @@ def test_execute_live_revoke_approval_returns_proposed_state_with_safe_tx_hash_a
     assert response['execution_state'] == 'proposed'
     assert response['safe_tx_hash'] == '0xsafehash'
     assert response['live_execution_path'] == 'safe'
+    assert any(
+        "SET status = 'pending', execution_state = %s, safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb" in statement
+        and params[0] == 'proposed'
+        and params[1] == '0xsafehash'
+        for statement, params in executed
+    )
     history_calls = [params for statement, params in executed if 'INSERT INTO action_history' in statement]
     assert any(params[6] == 'response_action.executed' for params in history_calls)
     assert any(params[6] == 'incident.response_action_executed' for params in history_calls)
@@ -363,11 +371,12 @@ def test_execute_live_freeze_wallet_writes_governance_metadata_and_timeline(monk
     assert response['status'] == 'pending'
     assert response['execution_state'] == 'proposed'
     assert response['live_execution_path'] == 'governance'
-    update_calls = [params for statement, params in executed if 'SET status = \'pending\'' in statement and 'execution_metadata' in statement]
+    update_calls = [params for statement, params in executed if 'SET status = \'pending\', execution_state = %s' in statement and 'execution_metadata' in statement]
     assert update_calls
-    assert 'gov-123' in str(update_calls[0][1])
-    assert 'attest-123' in str(update_calls[0][1])
-    assert 'Wallet frozen' in str(update_calls[0][1])
+    assert update_calls[0][0] == 'proposed'
+    assert 'gov-123' in str(update_calls[0][2])
+    assert 'attest-123' in str(update_calls[0][2])
+    assert 'Wallet frozen' in str(update_calls[0][2])
     timeline_calls = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
     assert any(params[3] == 'response_action.proposed' for params in timeline_calls)
     assert any('governance_action_id' in str(params[6]) for params in timeline_calls)
@@ -422,7 +431,10 @@ def test_execute_live_manual_only_action_returns_manual_required_state(monkeypat
     assert response['execution_state'] == 'live_manual_required'
     assert response['live_execution_path'] == 'manual_only'
     assert response['reason'] == 'Manual-only in live mode'
-    assert any("SET status = 'pending'" in statement and 'execution_metadata' in statement for statement, _ in executed)
+    assert any(
+        "SET status = 'pending', execution_state = %s" in statement and params[0] == 'live_manual_required'
+        for statement, params in executed
+    )
     timeline_calls = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
     assert any(params[3] == 'response_action.manual_required' for params in timeline_calls)
     assert not any("SET status = 'executed'" in statement for statement, _ in executed)
