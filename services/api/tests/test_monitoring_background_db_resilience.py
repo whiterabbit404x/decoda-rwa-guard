@@ -77,6 +77,43 @@ def test_loop_survives_db_error_and_marks_degraded_state(api_main, monkeypatch: 
     assert not any('event=background_monitoring_db_degraded_traceback' in record.message for record in caplog.records)
 
 
+def test_loop_clears_degraded_state_after_db_recovers(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    sleep_calls: list[float] = []
+    snapshots: list[dict[str, object]] = []
+    effects: Iterator[object] = iter(
+        [
+            RuntimeError('ERROR: Your account or project has exceeded the compute time quota'),
+            {'checked': 1, 'alerts_generated': 0},
+        ]
+    )
+
+    def _run_cycle(*_args, **_kwargs):
+        effect = next(effects)
+        if isinstance(effect, Exception):
+            raise effect
+        return effect
+
+    async def _fake_sleep(seconds: float):
+        sleep_calls.append(float(seconds))
+        snapshots.append(dict(api_main.MONITORING_LOOP_RUNTIME_STATE))
+        if len(sleep_calls) >= 2:
+            raise asyncio.CancelledError()
+        return None
+
+    monkeypatch.setattr(api_main, 'run_monitoring_cycle', _run_cycle)
+    monkeypatch.setattr(api_main.asyncio, 'sleep', _fake_sleep)
+    with _lifespan_test_client(api_main, monkeypatch):
+        pass
+
+    assert sleep_calls == [60.0, 30.0]
+    assert snapshots[0]['degraded'] is True
+    assert snapshots[0]['classification'] == 'quota_exceeded'
+    assert snapshots[1]['degraded'] is False
+    assert snapshots[1]['classification'] is None
+    assert snapshots[1]['backoff_seconds'] is None
+    assert snapshots[1]['next_retry_at'] is None
+
+
 def test_startup_reconcile_emits_first_structured_db_degraded_event_once(
     api_main, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

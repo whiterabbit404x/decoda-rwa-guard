@@ -25,6 +25,27 @@ Only update environment/deploy settings, then restart/redeploy:
 7. Restart/redeploy monitoring worker service.
 8. Redeploy/restart web service so it points at the intended API URL for that environment.
 
+### Production Neon recovery runbook (Railway + Neon)
+
+Use this sequence when production auth/monitoring is degraded because Neon compute is paused, quota-restricted, or recently changed plans:
+
+1. In Neon, open the production branch and confirm it is active (not archived/suspended).
+2. In Neon, open **Branch → Computes** and restart compute if status is paused/unavailable.
+3. In Railway **API service** env vars, confirm:
+   - `APP_ENV=production`
+   - `LIVE_MODE_ENABLED=true`
+   - `DATABASE_URL=postgresql://...neon.tech/...?...sslmode=require`
+   - `AUTH_TOKEN_SECRET` is set
+4. In Railway **monitoring worker service**, set the same `DATABASE_URL`, `APP_ENV`, and `LIVE_MODE_ENABLED` values as API.
+5. Trigger Railway redeploys (any env var save triggers this) for:
+   - API service
+   - monitoring worker service
+6. Verify recovery:
+   - `GET /health/readiness` reports no `database_url`/live-mode errors.
+   - `POST /auth/signin` returns normal auth response (not temporary unavailable).
+   - `GET /ops/monitoring/health` shows worker heartbeat advancing.
+   - `GET /ops/monitoring/runtime-status` transitions from degraded/offline back to live/healthy once fresh telemetry arrives.
+
 ## Public self-serve SaaS mode (Railway + Vercel + Neon)
 
 The repo now supports a production-oriented **public self-serve SaaS mode** alongside the existing local/demo mode. Demo endpoints and UI still work, while authenticated live-mode actions persist workspace-scoped data through `services/api` into Postgres (local or hosted, including Neon). The backend deployment model remains the same: Railway still runs the existing API Dockerfile, and Vercel still hosts the Next.js frontend.

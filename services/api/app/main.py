@@ -34,6 +34,7 @@ from services.api.app.pilot import (
     create_governance_action_record,
     create_incident_record,
     create_workspace_for_user,
+    database_url as pilot_database_url,
     create_checkout_session,
     create_portal_session,
     create_webhook,
@@ -211,7 +212,7 @@ REPO_ROOT = _ensure_repo_root_on_path()
 
 from phase1_local.dev_support import (
     dashboard_payload,
-    database_url,
+    database_url as local_database_url,
     load_all_services,
     load_env_file,
     load_service,
@@ -269,7 +270,7 @@ MONITORING_LOOP_RUNTIME_STATE: dict[str, Any] = {
     'reason': None,
     'backoff_seconds': None,
     'next_retry_at': None,
-    'db_host': extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url()),
+    'db_host': extract_db_host_from_dsn(pilot_database_url()),
     'updated_at': None,
 }
 RUNTIME_MARKER_ENV_VARS = (
@@ -485,8 +486,16 @@ CORS_ALLOWED_HEADERS = [
 ]
 
 
+def database_url() -> str | None:
+    return pilot_database_url()
+
+
+def resolved_database_url() -> str | None:
+    return database_url()
+
+
 def masked_database_url() -> str | None:
-    return '[configured]' if database_url() else None
+    return '[configured]' if resolved_database_url() else None
 
 
 def resolve_runtime_marker() -> str:
@@ -1188,7 +1197,7 @@ def fixture_diagnostics() -> dict[str, Any]:
             'app_mode': os.getenv('APP_MODE', 'local'),
             'live_mode_enabled': live_mode_enabled(),
             'auth_token_secret_configured': auth_token_secret_configured(),
-            'database_url_configured': database_url() is not None,
+            'database_url_configured': resolved_database_url() is not None,
             'allowed_origins': ALLOWED_ORIGINS,
             'cors_allow_credentials': CORS_ALLOW_CREDENTIALS,
         },
@@ -1266,7 +1275,7 @@ def bootstrap_live_pilot() -> dict[str, Any]:
     except Exception as exc:  # pragma: no cover - startup safety
         classification = classify_db_error(exc)
         if classification in {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'auth_error'}:
-            db_host = extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url())
+            db_host = extract_db_host_from_dsn(resolved_database_url())
             reason = db_error_reason_label(classification)
             STARTUP_BOOTSTRAP_STATUS['monitored_systems_reconcile'] = {
                 'degraded': True,
@@ -1330,7 +1339,7 @@ async def lifespan(_: FastAPI):
                         'reason': None,
                         'backoff_seconds': None,
                         'next_retry_at': None,
-                        'db_host': extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url()),
+                        'db_host': extract_db_host_from_dsn(resolved_database_url()),
                         'updated_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
                     }
                     await asyncio.sleep(interval)
@@ -1360,7 +1369,7 @@ async def lifespan(_: FastAPI):
                         backoff_seconds = min(backoff_cap_seconds, backoff_base_seconds * (2 ** (consecutive_db_failures - 1)))
                         next_retry_at_dt = datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)
                         next_retry_at = next_retry_at_dt.isoformat().replace('+00:00', 'Z')
-                        db_host = extract_db_host_from_dsn(os.getenv('DATABASE_URL') or database_url())
+                        db_host = extract_db_host_from_dsn(resolved_database_url())
                         MONITORING_LOOP_RUNTIME_STATE = {
                             'degraded': True,
                             'classification': classification,
@@ -1512,7 +1521,7 @@ def health() -> dict[str, object]:
         'port': PORT,
         'app_mode': os.getenv('APP_MODE', 'local'),
         'database_url': masked_database_url(),
-        'database_url_configured': database_url() is not None,
+        'database_url_configured': resolved_database_url() is not None,
         'database_backend': runtime_environment_identity()['database_backend'],
         'redis_enabled': os.getenv('REDIS_ENABLED', 'false').lower() == 'true',
         'risk_engine_url': RISK_ENGINE_URL,
@@ -1627,6 +1636,7 @@ def state() -> dict[str, object]:
     return {
         'service': load_service(SERVICE_NAME),
         'sqlite_path': str(resolve_sqlite_path()),
+        'local_registry_database_url': local_database_url(),
     }
 
 

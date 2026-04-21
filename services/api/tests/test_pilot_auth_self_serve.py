@@ -231,6 +231,67 @@ def test_signin_db_network_unreachable_returns_graceful_503_without_credential_f
     assert exc_info.value.headers['X-Decoda-DB-Classification'] == 'network_unreachable'
 
 
+def test_signin_recovers_after_temporary_db_outage_without_stale_degraded_state(
+    pilot_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = {'count': 0}
+
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            if 'SELECT id, password_hash, email_verified_at, session_version, mfa_totp_secret, mfa_enabled_at FROM users WHERE email' in statement:
+                return _Result(
+                    {
+                        'id': 'user-1',
+                        'password_hash': 'stored',
+                        'email_verified_at': datetime(2026, 3, 1, tzinfo=timezone.utc),
+                        'session_version': 3,
+                        'mfa_totp_secret': None,
+                        'mfa_enabled_at': None,
+                    }
+                )
+            return _Result(None)
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def fake_pg():
+        attempts['count'] += 1
+        if attempts['count'] == 1:
+            raise RuntimeError('Neon error: exceeded the compute time quota for this project')
+        yield _Connection()
+
+    monkeypatch.setattr(pilot_module, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot_module, 'pg_connection', fake_pg)
+    monkeypatch.setattr(pilot_module, 'ensure_pilot_schema', lambda connection: None)
+    monkeypatch.setattr(pilot_module, 'database_url', lambda: 'postgresql://pilot:pilot@ep-decoda-neon.us-east-1.aws.neon.tech:5432/app')
+    monkeypatch.setattr(pilot_module, '_auth_db_degraded_last_emitted', {})
+    monkeypatch.setattr(pilot_module, 'verify_password', lambda password, encoded: True)
+    monkeypatch.setattr(pilot_module, 'build_user_response', lambda connection, user_id: {'id': user_id, 'current_workspace': None})
+    monkeypatch.setattr(pilot_module, 'log_audit', lambda *args, **kwargs: None)
+    monkeypatch.setattr(pilot_module, 'create_access_token', lambda user_id, session_version=1: f'token-{user_id}-{session_version}')
+    monkeypatch.setattr(pilot_module, '_store_session', lambda *args, **kwargs: None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot_module.signin_user({'email': 'team@example.com', 'password': 'StrongPass1234'}, _request())
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.headers['X-Decoda-DB-Classification'] == 'quota_exceeded'
+
+    response = pilot_module.signin_user({'email': 'team@example.com', 'password': 'StrongPass1234'}, _request())
+
+    assert response['token_type'] == 'bearer'
+    assert response['access_token'] == 'token-user-1-3'
+    assert response['user']['id'] == 'user-1'
+
+
 def test_signin_db_degraded_log_uses_normalized_condensed_error_snippet(
     pilot_module, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
