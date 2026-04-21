@@ -254,6 +254,78 @@ def _safe_int_env(name: str, default: int, *, minimum: int) -> int:
     return value
 
 
+CONTINUITY_STATUS_VALUES = {'live_continuous', 'degraded', 'offline', 'idle_no_telemetry'}
+
+
+def evaluate_workspace_monitoring_continuity(
+    *,
+    now: datetime,
+    workspace_configured: bool,
+    worker_running: bool,
+    last_heartbeat_at: datetime | None,
+    last_event_at: datetime | None,
+    last_detection_at: datetime | None,
+    heartbeat_ttl_seconds: int,
+    telemetry_window_seconds: int,
+    detection_window_seconds: int,
+) -> dict[str, Any]:
+    def _freshness_state(ts: datetime | None, *, fresh_seconds: int) -> tuple[str, int | None]:
+        if ts is None:
+            return 'missing', None
+        age_seconds = max(0, int((now - ts).total_seconds()))
+        if age_seconds <= max(fresh_seconds, 1):
+            return 'fresh', age_seconds
+        if age_seconds <= max(fresh_seconds * 3, fresh_seconds + 1):
+            return 'stale', age_seconds
+        return 'offline', age_seconds
+
+    heartbeat_state, heartbeat_age_seconds = _freshness_state(last_heartbeat_at, fresh_seconds=max(heartbeat_ttl_seconds, 1))
+    event_state, event_age_seconds = _freshness_state(last_event_at, fresh_seconds=max(telemetry_window_seconds, 1))
+    detection_state, detection_age_seconds = _freshness_state(last_detection_at, fresh_seconds=max(detection_window_seconds, 1))
+    worker_liveness = 'live' if worker_running else 'offline'
+
+    continuity_reason_codes: list[str] = []
+    if not workspace_configured:
+        continuity_reason_codes.append('workspace_not_configured')
+    if worker_liveness != 'live':
+        continuity_reason_codes.append('worker_not_live')
+    if heartbeat_state != 'fresh':
+        continuity_reason_codes.append(f'heartbeat_{heartbeat_state}')
+    if event_state != 'fresh':
+        continuity_reason_codes.append(f'event_ingestion_{event_state}')
+    if detection_state != 'fresh':
+        continuity_reason_codes.append(f'detection_pipeline_{detection_state}')
+
+    no_telemetry = (
+        last_heartbeat_at is None
+        and last_event_at is None
+        and last_detection_at is None
+    )
+    all_offline_or_missing = all(state in {'offline', 'missing'} for state in (heartbeat_state, event_state, detection_state))
+    if no_telemetry:
+        continuity_status = 'idle_no_telemetry'
+    elif all_offline_or_missing and worker_liveness != 'live':
+        continuity_status = 'offline'
+    elif worker_liveness == 'live' and heartbeat_state == 'fresh' and event_state == 'fresh' and detection_state == 'fresh':
+        continuity_status = 'live_continuous'
+    else:
+        continuity_status = 'degraded'
+
+    return {
+        'continuity_status': continuity_status if continuity_status in CONTINUITY_STATUS_VALUES else 'degraded',
+        'continuity_reason_codes': continuity_reason_codes,
+        'continuity_signals': {
+            'worker_liveness': worker_liveness,
+            'heartbeat_freshness': heartbeat_state,
+            'event_ingestion_freshness': event_state,
+            'detection_pipeline_freshness': detection_state,
+            'heartbeat_age_seconds': heartbeat_age_seconds,
+            'event_age_seconds': event_age_seconds,
+            'detection_age_seconds': detection_age_seconds,
+        },
+    }
+
+
 def _database_connect_options() -> dict[str, int]:
     return {
         'connect_timeout': _safe_int_env('DB_CONNECT_TIMEOUT_SECONDS', 10, minimum=1),

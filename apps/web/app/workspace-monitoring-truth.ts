@@ -22,6 +22,8 @@ export type WorkspaceMonitoringTruth = {
   active_alerts_count: number;
   active_incidents_count: number;
   evidence_source_summary: 'live' | 'simulator' | 'replay' | 'none';
+  continuity_status: 'live_continuous' | 'degraded' | 'offline' | 'idle_no_telemetry';
+  continuity_reason_codes: string[];
   status_reason: string | null;
   db_failure_classification?: string | null;
   db_failure_reason?: string | null;
@@ -49,6 +51,8 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   active_alerts_count: 0,
   active_incidents_count: 0,
   evidence_source_summary: 'none',
+  continuity_status: 'idle_no_telemetry',
+  continuity_reason_codes: ['summary_unavailable'],
   status_reason: 'summary_unavailable',
   db_failure_classification: null,
   db_failure_reason: null,
@@ -186,6 +190,18 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
         || validTargetSystemLinkCount <= 0),
   );
   const normalizedContradictionFlags = [...new Set(synthesizedFlags)].sort();
+  const continuityStatusValue = asTrimmedString((summary as Record<string, unknown>).continuity_status);
+  const continuityStatus = continuityStatusValue === 'live_continuous'
+    || continuityStatusValue === 'degraded'
+    || continuityStatusValue === 'offline'
+    || continuityStatusValue === 'idle_no_telemetry'
+    ? continuityStatusValue
+    : 'idle_no_telemetry';
+  const continuityReasonCodes = Array.isArray((summary as Record<string, unknown>).continuity_reason_codes)
+    ? ((summary as Record<string, unknown>).continuity_reason_codes as unknown[])
+        .map((value) => asTrimmedString(value))
+        .filter((value): value is string => Boolean(value))
+    : [];
   const declaredGuardFlags = Array.isArray(summary.guard_flags)
     ? (summary.guard_flags as unknown[])
         .map((value) => asTrimmedString(value))
@@ -219,6 +235,8 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     active_alerts_count: Number(summary.active_alerts_count ?? 0),
     active_incidents_count: Number(summary.active_incidents_count ?? 0),
     evidence_source_summary: normalizedEvidenceSource,
+    continuity_status: continuityStatus,
+    continuity_reason_codes: continuityReasonCodes,
     status_reason: normalizedStatusReason,
     db_failure_classification: dbFailureClassification,
     db_failure_reason: dbFailureReason,

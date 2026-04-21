@@ -9,6 +9,7 @@ CANONICAL_MONITORING_STATUS = {'live', 'limited', 'offline'}
 CANONICAL_TELEMETRY_FRESHNESS = {'fresh', 'stale', 'unavailable'}
 CANONICAL_CONFIDENCE = {'high', 'medium', 'low', 'unavailable'}
 CANONICAL_EVIDENCE_SOURCE = {'live', 'simulator', 'replay', 'none'}
+CANONICAL_CONTINUITY_STATUS = {'live_continuous', 'degraded', 'offline', 'idle_no_telemetry'}
 CANONICAL_SUMMARY_KEYS = (
     'workspace_configured',
     'runtime_status',
@@ -24,6 +25,9 @@ CANONICAL_SUMMARY_KEYS = (
     'active_alerts_count',
     'active_incidents_count',
     'evidence_source_summary',
+    'continuity_status',
+    'continuity_reason_codes',
+    'continuity_signals',
     'contradiction_flags',
     'guard_flags',
     'status_reason',
@@ -93,6 +97,10 @@ def _normalized_evidence_source(value: str) -> str:
     return value if value in CANONICAL_EVIDENCE_SOURCE else 'none'
 
 
+def _normalized_continuity_status(value: str) -> str:
+    return value if value in CANONICAL_CONTINUITY_STATUS else 'idle_no_telemetry'
+
+
 def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
     canonical = {
         'workspace_configured': bool(payload.get('workspace_configured', False)),
@@ -113,6 +121,9 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'active_alerts_count': max(int(payload.get('active_alerts_count', 0)), 0),
         'active_incidents_count': max(int(payload.get('active_incidents_count', 0)), 0),
         'evidence_source_summary': _normalized_evidence_source(str(payload.get('evidence_source_summary', 'none'))),
+        'continuity_status': _normalized_continuity_status(str(payload.get('continuity_status') or 'idle_no_telemetry')),
+        'continuity_reason_codes': sorted({str(code).strip() for code in payload.get('continuity_reason_codes', []) if str(code).strip()}),
+        'continuity_signals': dict(payload.get('continuity_signals') or {}),
         'contradiction_flags': sorted({str(flag).strip() for flag in payload.get('contradiction_flags', []) if str(flag).strip()}),
         'guard_flags': sorted({str(flag).strip() for flag in payload.get('guard_flags', []) if str(flag).strip()}),
         'status_reason': str(payload.get('status_reason')).strip() if isinstance(payload.get('status_reason'), str) and str(payload.get('status_reason')).strip() else None,
@@ -291,6 +302,9 @@ def build_workspace_monitoring_summary(
         'active_alerts_count': max(int(active_alerts_count), 0),
         'active_incidents_count': max(int(active_incidents_count), 0),
         'evidence_source_summary': evidence_source_summary,
+        'continuity_status': 'idle_no_telemetry',
+        'continuity_reason_codes': ['continuity_not_evaluated'],
+        'continuity_signals': {},
         'contradiction_flags': contradiction_flags,
         'guard_flags': guard_flags,
         'status_reason': resolved_status_reason,
@@ -330,6 +344,9 @@ def build_workspace_monitoring_summary_fallback(
         'active_alerts_count': 0,
         'active_incidents_count': 0,
         'evidence_source_summary': 'none',
+        'continuity_status': 'offline',
+        'continuity_reason_codes': ['runtime_status_fallback'],
+        'continuity_signals': {},
         'contradiction_flags': [],
         'guard_flags': [],
         'status_reason': status_reason,
