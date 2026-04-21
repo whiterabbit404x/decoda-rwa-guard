@@ -162,6 +162,13 @@ type DetectionRow = {
   detector_kind?: string | null;
   evidence_origin?: string | null;
 };
+type ThreatActionContextOption = {
+  id: string;
+  label: string;
+  detectionId: string | null;
+  alertId: string | null;
+  incidentId: string | null;
+};
 
 type ThreatFeedState = 'Live' | 'Historical' | 'Test' | 'Stale' | 'Investigating' | 'Resolved';
 export type PageOperationalState =
@@ -1281,6 +1288,44 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     };
   }, [alerts, detections, incidents]);
 
+  const threatActionContextOptions = useMemo<ThreatActionContextOption[]>(() => {
+    const options: ThreatActionContextOption[] = [];
+    const seen = new Set<string>();
+    detections.forEach((detection) => {
+      const alertId = detection.linked_alert_id ?? null;
+      const incidentId = detection.linked_incident_id
+        ?? (alertId ? alerts.find((item) => item.id === alertId)?.incident_id ?? null : null);
+      if (!alertId && !incidentId) {
+        return;
+      }
+      const key = `${detection.id}:${alertId ?? 'none'}:${incidentId ?? 'none'}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      options.push({
+        id: key,
+        label: `Detection ${detection.id.slice(0, 8)}${alertId ? ` · Alert ${alertId.slice(0, 8)}` : ''}${incidentId ? ` · Incident ${incidentId.slice(0, 8)}` : ''}`,
+        detectionId: detection.id,
+        alertId,
+        incidentId,
+      });
+    });
+    return options;
+  }, [alerts, detections]);
+  const [selectedThreatActionContextId, setSelectedThreatActionContextId] = useState<string>('unlinked');
+  useEffect(() => {
+    setSelectedThreatActionContextId((current) => {
+      if (threatActionContextOptions.length === 0) return 'unlinked';
+      if (current === 'unlinked') return threatActionContextOptions[0].id;
+      return threatActionContextOptions.some((option) => option.id === current)
+        ? current
+        : threatActionContextOptions[0].id;
+    });
+  }, [threatActionContextOptions]);
+  const selectedThreatActionContext = useMemo(() => (
+    threatActionContextOptions.find((option) => option.id === selectedThreatActionContextId) ?? null
+  ), [selectedThreatActionContextId, threatActionContextOptions]);
+  const noLinkedActionContextAvailable = threatActionContextOptions.length === 0;
+
   useEffect(() => {
     void fetch(`${apiUrl}/response/action-capabilities`, { headers: authHeaders(), cache: 'no-store' })
       .then((response) => response.ok ? response.json() : null)
@@ -1322,6 +1367,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }
 
   async function runSimulatedThreatAction(actionType: string, label: string) {
+    const contextLabel = selectedThreatActionContext
+      ? `Linked context: ${selectedThreatActionContext.label}`
+      : 'UNLINKED ACTION';
     const create = await fetch(`${apiUrl}/response/actions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -1329,9 +1377,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         action_type: actionType,
         mode: 'simulated',
         status: 'pending',
-        incident_id: incidents[0]?.id,
-        alert_id: alerts[0]?.id,
-        result_summary: `SIMULATED ${label} created from threat client`,
+        incident_id: selectedThreatActionContext?.incidentId ?? null,
+        alert_id: selectedThreatActionContext?.alertId ?? null,
+        result_summary: `SIMULATED ${label} created from threat client (${contextLabel})`,
       }),
     });
     if (!create.ok) {
@@ -1822,6 +1870,18 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <p className="sectionEyebrow">Response Actions</p>
             <h3>Operational actions</h3>
             <p className="muted">Use investigation and escalation workflows to restore healthy monitoring and resolve risk. Non-live actions are visibly marked SIMULATED.</p>
+            <label className="fieldLabel" htmlFor="threat-action-context-select">Launch action context</label>
+            <select
+              id="threat-action-context-select"
+              value={selectedThreatActionContext ? selectedThreatActionContext.id : 'unlinked'}
+              onChange={(event) => setSelectedThreatActionContextId(event.target.value)}
+            >
+              {threatActionContextOptions.map((option) => (
+                <option key={option.id} value={option.id}>{option.label}</option>
+              ))}
+              <option value="unlinked">Unlinked action</option>
+            </select>
+            {noLinkedActionContextAvailable ? <p className="statusLine">No linked alert/incident context available for this action.</p> : null}
             <div className="buttonRow">
               <button type="button" disabled={isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('notify_team', 'Execute simulated response')}>Execute simulated response (SIMULATED)</button>
               <button type="button" disabled={isActionDisabledInMode(actionCapabilities.block_transaction, 'simulated')} title={actionDisabledReason(actionCapabilities.block_transaction, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('block_transaction', 'Block transaction')}>Block transaction (SIMULATED)</button>
