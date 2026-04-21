@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePilotAuth } from '../pilot-auth-context';
 import { actionDisabledReason, actionModeLabel, capabilityMapFromPayload, isActionDisabledInMode, type ResponseActionCapability } from '../response-action-capabilities';
 
@@ -18,6 +18,8 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
   const [actionMode, setActionMode] = useState<'simulated' | 'recommended' | 'live'>('simulated');
   const [operatorNotes, setOperatorNotes] = useState('');
   const [actionCapabilities, setActionCapabilities] = useState<Record<string, ResponseActionCapability>>({});
+  const [evidenceSourceSummary, setEvidenceSourceSummary] = useState('none');
+  const evidenceSectionRef = useRef<HTMLParagraphElement | null>(null);
 
   async function load() {
     const params = new URLSearchParams();
@@ -58,6 +60,12 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
       .then((response) => response.ok ? response.json() : null)
       .then((payload) => setEvidence(payload?.evidence ?? null));
   }, [apiUrl, authHeaders, selectedAlertId]);
+  useEffect(() => {
+    void fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' })
+      .then((response) => response.ok ? response.json() : null)
+      .then((payload) => setEvidenceSourceSummary(String(payload?.workspace_monitoring_summary?.evidence_source_summary || 'none').toLowerCase()))
+      .catch(() => setEvidenceSourceSummary('none'));
+  }, [apiUrl, authHeaders]);
 
   async function patchAlert(nextStatus: 'acknowledged' | 'resolved' | 'suppressed') {
     if (!selectedAlert) return;
@@ -119,6 +127,8 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
     }
     setMessage(String(executePayload?.reason || `${modeLabel} ${label} could not be executed.`));
   }
+  const liveLikeMode = evidenceSourceSummary === 'live' || evidenceSourceSummary === 'hybrid';
+  const noEvidenceLinked = Number(selectedAlert?.linked_evidence_count || 0) <= 0;
 
   return (
     <main className="productPage">
@@ -150,6 +160,11 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
               <p className="muted">Asset: {selectedAlert.payload?.asset_label || 'n/a'} · Target: {selectedAlert.target_id || 'n/a'}</p>
               <p className="muted">First seen: {selectedAlert.created_at ? new Date(selectedAlert.created_at).toLocaleString() : 'n/a'} · Last seen: {selectedAlert.last_seen_at ? new Date(selectedAlert.last_seen_at).toLocaleString() : 'n/a'}</p>
               <p className="muted">Event count: {selectedAlert.occurrence_count || 1} · Dedup/group key: {selectedAlert.findings?.dedupe_key || selectedAlert.target_id || 'none'}</p>
+              <div className="emptyStatePanel">
+                <h4>Threat chain summary</h4>
+                <p className="tableMeta">Detection: {selectedAlert.detection_id || 'n/a'} · Alert: {selectedAlert.id} · Incident: {selectedAlert.incident_id || 'n/a'} · Action: {selectedAlert.linked_action_id || 'n/a'}</p>
+                <p className="tableMeta">Last evidence at: {selectedAlert.last_evidence_at ? new Date(selectedAlert.last_evidence_at).toLocaleString() : 'n/a'} · Alert created: {selectedAlert.created_at ? new Date(selectedAlert.created_at).toLocaleString() : 'n/a'}</p>
+              </div>
               <div className="buttonRow">
                 <select value={actionMode} onChange={(event) => setActionMode(event.target.value as 'simulated' | 'recommended' | 'live')}>
                   <option value="simulated">SIMULATED mode</option>
@@ -169,10 +184,12 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
                 <button type="button" disabled={isActionDisabledInMode(actionCapabilities.suppress_rule, actionMode)} title={actionDisabledReason(actionCapabilities.suppress_rule, actionMode) || ''} onClick={() => void runSimulatedAction('suppress_rule', 'Suppress rule')}>Suppress/mute rule ({actionExecutionLabel})</button>
                 <button type="button" onClick={() => void patchAlert('suppressed')}>Mute rule</button>
                 <button type="button" disabled={isActionDisabledInMode(actionCapabilities.notify_team, actionMode)} title={actionDisabledReason(actionCapabilities.notify_team, actionMode) || ''} onClick={() => void runSimulatedAction('notify_team', 'Notify team')}>Notify team ({actionExecutionLabel})</button>
+                <button type="button" onClick={() => evidenceSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>Open evidence</button>
               </div>
               {actionMode === 'live' ? <p className="tableMeta">Live constraints: unsupported actions show “Unsupported live action”; manual paths show “Manual-only in live mode”.</p> : null}
               <p className="tableMeta">Response actions: Freeze wallet · Block transaction · Revoke approval · Disable monitored system · Suppress rule · Notify team</p>
-              <p className="sectionEyebrow">Evidence timeline</p>
+              <p ref={evidenceSectionRef} className="sectionEyebrow">Evidence timeline</p>
+              {liveLikeMode && noEvidenceLinked ? <p className="statusLine">Evidence degraded: no linked evidence is currently persisted for this alert in LIVE/HYBRID monitoring mode.</p> : null}
               <p className="tableMeta">tx {evidence?.tx_hash || 'n/a'} · block {evidence?.block_number || 'n/a'} · target {evidence?.target_name || 'n/a'}</p>
               <pre>{JSON.stringify(evidence?.raw_payload_excerpt || {}, null, 2)}</pre>
               <p className="muted">Recommended actions: acknowledge if understood, escalate if active risk, suppress only with documented reason.</p>
