@@ -93,6 +93,8 @@ RATE_LIMIT_FALLBACK_REDIS_UNAVAILABLE_KEY = 'rate_limit.fallback.redis_unavailab
 logger = logging.getLogger(__name__)
 _redis_rate_limiter: Any | None = None
 _redis_rate_limiter_lock = threading.Lock()
+_workspace_reconcile_lock = threading.Lock()
+_workspace_reconcile_inflight: dict[str, dict[str, Any]] = {}
 _AUTH_DB_CLASSIFICATIONS = {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'unknown_db_error'}
 _AUTH_DB_ERROR_CODE_BY_CLASSIFICATION = {
     'quota_exceeded': 'AUTH_DB_QUOTA_EXCEEDED',
@@ -3397,13 +3399,15 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
     stage = 'require_live_mode'
     workspace_id: str | None = None
     user_id: str | None = None
+    reconcile_id = str(uuid.uuid4())
+    inflight_key: str | None = None
     logger.info('monitoring_reconcile step=%s', stage)
     try:
         require_live_mode()
     except HTTPException:
         raise
     except Exception as exc:
-        raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
+        raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id, reconcile_id=reconcile_id) from exc
     with pg_connection() as connection:
         stage = 'ensure_schema'
         logger.info('monitoring_reconcile step=%s', stage)
@@ -3412,7 +3416,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id, reconcile_id=reconcile_id) from exc
         stage = 'require_workspace_admin'
         logger.info('monitoring_reconcile step=%s', stage)
         try:
@@ -3420,10 +3424,32 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id, reconcile_id=reconcile_id) from exc
         workspace_id = workspace_context['workspace_id']
         user_id = str(user.get('id') or '')
+        inflight_key = f'{workspace_id}:{user_id}'
         logger.info('monitoring_reconcile step=workspace_resolved workspace_id=%s', workspace_id)
+        with _workspace_reconcile_lock:
+            in_flight = _workspace_reconcile_inflight.get(inflight_key)
+            if in_flight:
+                existing_reconcile_id = str(in_flight.get('reconcile_id') or '')
+                return {
+                    'workspace': workspace_context['workspace'],
+                    'reconcile_id': existing_reconcile_id or reconcile_id,
+                    'state': 'no_op_with_reasons',
+                    'reconcile': _normalize_reconcile_result({
+                        'targets_scanned': 0,
+                        'created_or_updated': 0,
+                        'skipped_reasons': {'reconcile_already_in_progress': 1},
+                        'skipped_target_details': [{
+                            'target_id': '__workspace__',
+                            'code': 'reconcile_already_in_progress',
+                            'reason': f"Reconcile request already in progress with reconcile_id={existing_reconcile_id or 'unknown'}.",
+                        }],
+                    }),
+                    'systems': [],
+                    'monitored_systems_count': 0,
+                }
         stage = 'verify_eligible_targets'
         logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
         try:
@@ -3436,7 +3462,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id, reconcile_id=reconcile_id) from exc
         stage = 'debug_snapshot_before'
         logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
         try:
@@ -3448,12 +3474,22 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
 
         stage = 'reconcile_targets'
         logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
+        with _workspace_reconcile_lock:
+            _workspace_reconcile_inflight[inflight_key] = {
+                'reconcile_id': reconcile_id,
+                'started_at': utc_now_iso(),
+            }
         try:
             result = _normalize_reconcile_result(reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id))
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id, reconcile_id=reconcile_id) from exc
+        finally:
+            with _workspace_reconcile_lock:
+                current = _workspace_reconcile_inflight.get(inflight_key)
+                if current and str(current.get('reconcile_id') or '') == reconcile_id:
+                    _workspace_reconcile_inflight.pop(inflight_key, None)
         logger.info(
             'monitoring_reconcile step=reconcile_completed workspace_id=%s created_or_updated=%s',
             workspace_id,
@@ -3468,7 +3504,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id, reconcile_id=reconcile_id) from exc
         stage = 'runtime_debug_assertions'
         logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
         try:
@@ -3484,7 +3520,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id, reconcile_id=reconcile_id) from exc
 
         stage = 'audit_log'
         logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
@@ -3512,7 +3548,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id, reconcile_id=reconcile_id) from exc
         logger.info('monitoring_reconcile step=audit_logged workspace_id=%s', workspace_id)
 
         stage = 'list_rows'
@@ -3522,7 +3558,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id, reconcile_id=reconcile_id) from exc
         logger.info('monitoring_reconcile step=rows_loaded workspace_id=%s count=%s', workspace_id, len(rows))
         stage = 'debug_snapshot_after'
         logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
@@ -3540,12 +3576,18 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id) from exc
+            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id, reconcile_id=reconcile_id) from exc
         logger.info('monitoring_reconcile step=commit_completed workspace_id=%s', workspace_id)
 
         systems = [_json_safe_value(row) for row in rows]
+        unresolved_count = len(result.get('invalid_target_details') or []) + len(result.get('skipped_target_details') or [])
+        reconcile_state = 'success'
+        if int(result.get('created_or_updated', 0) or 0) <= 0 and unresolved_count > 0:
+            reconcile_state = 'no_op_with_reasons'
         response: dict[str, Any] = {
             'workspace': workspace_context['workspace'],
+            'reconcile_id': reconcile_id,
+            'state': reconcile_state,
             'reconcile': result,
             'systems': systems,
             'monitored_systems_count': len(systems),
@@ -3712,6 +3754,7 @@ def _reconcile_error(
     request: Request | None = None,
     workspace_id: str | None = None,
     user_id: str | None = None,
+    reconcile_id: str | None = None,
 ) -> HTTPException:
     method = getattr(request, 'method', None) if request else None
     url = getattr(request, 'url', None) if request else None
@@ -3729,6 +3772,8 @@ def _reconcile_error(
     )
     detail: dict[str, Any] = {
         'code': 'monitoring_reconcile_failed',
+        'state': 'failure',
+        'reconcile_id': reconcile_id,
         'detail': 'Unexpected backend error during monitored systems reconcile.',
         'stage': stage,
     }
@@ -5706,7 +5751,9 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
     eligible_targets = 0
     invalid_targets: list[str] = []
     invalid_reasons: dict[str, int] = {}
+    invalid_target_details: list[dict[str, str]] = []
     skipped_reasons: dict[str, int] = {}
+    skipped_target_details: list[dict[str, str]] = []
     repaired_monitored_system_ids: list[str] = []
     unsupported_repairs = connection.execute(
         f'''
@@ -5779,6 +5826,11 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         if not target_enabled:
             disabled_or_invalid_targets_found += 1
             skipped_reasons['target_not_enabled'] = skipped_reasons.get('target_not_enabled', 0) + 1
+            skipped_target_details.append({
+                'target_id': target_id,
+                'code': 'target_not_enabled',
+                'reason': 'Target is disabled and cannot be reconciled.',
+            })
             logger.info(
                 'target_monitoring_reconcile target_id=%s workspace_id=%s enabled=%s monitoring_enabled=%s asset_id=%s resolved_asset_id=%s status=%s reason=%s monitored_system_id=%s',
                 target_id,
@@ -5815,6 +5867,11 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
             )
             skipped_reason = str(result.get('reason') or 'unsupported_target_type_for_live_coverage')
             skipped_reasons[skipped_reason] = skipped_reasons.get(skipped_reason, 0) + 1
+            skipped_target_details.append({
+                'target_id': target_id,
+                'code': skipped_reason,
+                'reason': 'Target type is not supported for live monitoring coverage.',
+            })
             continue
         if target_enabled and target_has_asset_id and not target_monitoring_enabled:
             connection.execute(
@@ -5850,16 +5907,31 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
                 repaired_monitored_system_ids.append(str(verified_row['id']))
             else:
                 skipped_reasons['post_upsert_not_visible'] = skipped_reasons.get('post_upsert_not_visible', 0) + 1
+                skipped_target_details.append({
+                    'target_id': target_id,
+                    'code': 'post_upsert_not_visible',
+                    'reason': 'Target reconcile completed, but the monitored system row was not visible after upsert.',
+                })
         elif result.get('status') == 'invalid_target':
             disabled_or_invalid_targets_found += 1
             invalid_targets.append(str(result.get('target_id')))
             invalid_reason = str(result.get('reason') or 'invalid_target')
             invalid_reasons[invalid_reason] = invalid_reasons.get(invalid_reason, 0) + 1
+            invalid_target_details.append({
+                'target_id': str(result.get('target_id') or target_id),
+                'code': invalid_reason,
+                'reason': invalid_reason.replace('_', ' '),
+            })
         else:
             if not target_enabled or not target_monitoring_enabled or not target_has_asset_id:
                 disabled_or_invalid_targets_found += 1
             skipped_reason = str(result.get('reason') or 'skipped')
             skipped_reasons[skipped_reason] = skipped_reasons.get(skipped_reason, 0) + 1
+            skipped_target_details.append({
+                'target_id': str(result.get('target_id') or target_id),
+                'code': skipped_reason,
+                'reason': skipped_reason.replace('_', ' '),
+            })
         logger.info(
             'target_monitoring_reconcile target_id=%s workspace_id=%s enabled=%s monitoring_enabled=%s asset_id=%s resolved_asset_id=%s status=%s reason=%s monitored_system_id=%s',
             result.get('target_id') or row.get('id'),
@@ -5925,7 +5997,9 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
         'disabled_or_invalid_targets_found': disabled_or_invalid_targets_found,
         'invalid_targets': invalid_targets,
         'invalid_reasons': invalid_reasons,
+        'invalid_target_details': invalid_target_details,
         'skipped_reasons': skipped_reasons,
+        'skipped_target_details': skipped_target_details,
         'repaired_monitored_system_ids': repaired_monitored_system_ids,
         'repaired_unsupported_monitored_systems': repaired_unsupported_count,
         'workspace_id': workspace_id,
@@ -5933,6 +6007,24 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
 
 
 def _normalize_reconcile_result(result: dict[str, Any]) -> dict[str, Any]:
+    invalid_target_details = [
+        {
+            'target_id': str(item.get('target_id') or ''),
+            'code': str(item.get('code') or 'invalid_target'),
+            'reason': str(item.get('reason') or ''),
+        }
+        for item in (result.get('invalid_target_details') or [])
+        if str(item.get('target_id') or '').strip()
+    ]
+    skipped_target_details = [
+        {
+            'target_id': str(item.get('target_id') or ''),
+            'code': str(item.get('code') or 'skipped'),
+            'reason': str(item.get('reason') or ''),
+        }
+        for item in (result.get('skipped_target_details') or [])
+        if str(item.get('target_id') or '').strip()
+    ]
     return {
         'enabled_targets_scanned': int(result.get('enabled_targets_scanned', 0) or 0),
         'targets_scanned': int(result.get('targets_scanned', 0) or 0),
@@ -5946,7 +6038,9 @@ def _normalize_reconcile_result(result: dict[str, Any]) -> dict[str, Any]:
         'disabled_or_invalid_targets_found': int(result.get('disabled_or_invalid_targets_found', 0) or 0),
         'invalid_targets': [str(value) for value in (result.get('invalid_targets') or []) if str(value).strip()],
         'invalid_reasons': {str(key): int(value) for key, value in dict(result.get('invalid_reasons') or {}).items()},
+        'invalid_target_details': invalid_target_details,
         'skipped_reasons': {str(key): int(value) for key, value in dict(result.get('skipped_reasons') or {}).items()},
+        'skipped_target_details': skipped_target_details,
         'repaired_monitored_system_ids': [str(value) for value in (result.get('repaired_monitored_system_ids') or []) if str(value).strip()],
         'repaired_unsupported_monitored_systems': int(result.get('repaired_unsupported_monitored_systems', 0) or 0),
         'workspace_id': result.get('workspace_id'),

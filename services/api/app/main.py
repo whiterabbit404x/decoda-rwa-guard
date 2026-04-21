@@ -2263,6 +2263,8 @@ def monitoring_systems_reconcile(request: Request) -> Any:
         )
         payload: dict[str, Any] = {
             'code': 'monitoring_reconcile_failed',
+            'state': 'failure',
+            'reconcile_id': None,
             'detail': 'Unexpected backend error during monitored systems reconcile.',
             'stage': 'reconcile_workspace_monitored_systems',
         }
@@ -2310,6 +2312,8 @@ def monitoring_systems_reconcile(request: Request) -> Any:
         )
         payload: dict[str, Any] = {
             'code': 'monitoring_reconcile_failed',
+            'state': 'failure',
+            'reconcile_id': None,
             'detail': 'Unexpected backend error during monitored systems reconcile.',
             'stage': 'attach_runtime_status_after_repair',
         }

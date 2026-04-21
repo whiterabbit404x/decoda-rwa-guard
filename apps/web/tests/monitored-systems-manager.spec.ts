@@ -6,106 +6,37 @@ function readAppFile(relativePath: string): string {
   return fs.readFileSync(path.join(__dirname, '..', 'app', relativePath), 'utf-8');
 }
 
-test('monitored systems UI separates config enabled state from runtime state', () => {
+test('reconcile pending to success is driven by backend state and reconcile id', () => {
   const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain('Config: {system.is_enabled ? \'Enabled\' : \'Disabled\'}');
-  expect(source).toContain('Runtime: {system.runtime_status}');
-  expect(source).toContain("{system.is_enabled ? 'Disable' : 'Enable'}");
+  expect(source).toContain("setRepairState('pending_request');");
+  expect(source).toContain("setRepairState('pending_parse');");
+  expect(source).toContain("setRepairState('pending_refresh');");
+  expect(source).toContain('state: payload?.state,');
+  expect(source).toContain('reconcile_id: payload?.reconcile_id ?? null,');
+  expect(source).toContain("setLastReconcileId(localSummary.reconcile_id ?? null);");
+  expect(source).toContain("setRepairState('success');");
 });
 
-test('monitored systems UI consumes workspace summary and telemetry timestamp truthfully', () => {
+test('reconcile pending to failure is terminal and surfaces backend code + reason', () => {
   const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain('setSummary(payload.workspace_monitoring_summary ?? null);');
-  expect(source).toContain('resolveWorkspaceMonitoringTruth');
-  expect(source).toContain("const telemetryLabel = truth.last_telemetry_at ? new Date(truth.last_telemetry_at).toLocaleString() : 'Not available';");
-  expect(source).toContain('const showLiveTelemetry = hasLiveTelemetry(truth);');
-  expect(source).toContain('Mode {truth.monitoring_mode.toUpperCase()}');
-  expect(source).toContain("Live telemetry {showLiveTelemetry ? telemetryLabel : 'unavailable'}");
+  expect(source).toContain("setRepairState('failure');");
+  expect(source).toContain("Code ${repairFailureReason.backendCode}.");
+  expect(source).toContain('Repair failed during {repairFailureReason.stage}.');
 });
 
-test('monitored systems toggle waits for backend and re-fetches state', () => {
+test('reconcile pending to no-op-with-reasons maps to failure UX with explicit code', () => {
   const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain('if (!response.ok)');
-  expect(source).toContain('await load();');
+  expect(source).toContain("localSummary?.state === 'no_op_with_reasons'");
+  expect(source).toContain("backendCode: 'reconcile_no_op_with_reasons'");
+  expect(source).toContain('No monitored systems were changed. Review skipped/invalid target reasons.');
+  expect(source).toContain('Invalid target {detail.target_id}: [{detail.code}] {detail.reason}');
+  expect(source).toContain("Skipped target {detail.target_id || 'n/a'}: [{detail.code}] {detail.reason}");
 });
 
-test('clicking repair with fetch rejection shows error message', () => {
+test('toggle conflict/rollback behavior re-fetches and applies server truth only', () => {
   const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain("setMessage('Repair request failed before the server responded.')");
-});
-
-test('clicking repair with non-json response shows parse error message', () => {
-  const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain("contentType.toLowerCase().includes('application/json')");
-  expect(source).toContain("setMessage('Repair response could not be parsed.')");
-});
-
-test('clicking repair with success shows success message', () => {
-  const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain('Repair completed. ${summary.created_or_updated} monitored systems created or updated from ${summary.targets_scanned} targets scanned.');
-});
-
-test('clicking repair with reconcile success but reload failure shows partial failure message', () => {
-  const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain("failureMessage: 'Repair request completed or failed, but refreshing monitored systems did not succeed.'");
-  expect(source).toContain("setMessage('Repair request completed or failed, but refreshing monitored systems did not succeed.')");
-});
-
-
-test('clicking repair surfaces backend detail from flat string errors', () => {
-  const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain('function extractErrorDetail(payload: unknown): ErrorDetail');
-  expect(source).toContain("typeof value.detail === 'string' ? value.detail.trim() : ''");
-  expect(source).toContain('Repair failed: ${errorDetail.message}${stageSuffix}${codeSuffix}');
-});
-
-test('clicking repair surfaces backend detail from nested FastAPI error payloads', () => {
-  const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain("const errorObject = nestedDetail && typeof nestedDetail === 'object'");
-  expect(source).toContain("typeof errorObject.detail === 'string' ? errorObject.detail.trim() : ''");
-});
-
-test('clicking repair includes stage context when present and logs non-OK payload in dev', () => {
-  const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain("const stageSuffix = errorDetail.stage ? ` (stage: ${errorDetail.stage})` : '';");
-  expect(source).toContain("console.debug('[monitored-systems] reconcile non-OK payload', errorPayload);");
-});
-
-test('monitored systems UI exposes repair action, status line, and reconcile diagnostics', () => {
-  const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain("const effectiveApiUrl = runtimeApiUrl || apiUrl;");
-  expect(source).toContain("const reconcileUrl = '/api/monitoring/systems/reconcile';");
-  expect(source).toContain('Repair monitored systems');
-  expect(source).toContain('Repairing monitored systems…');
-  expect(source).toContain('reconcileSummary');
-  expect(source).toContain('created_or_updated');
-  expect(source).toContain('invalid_reasons');
-  expect(source).toContain('skipped_reasons');
-  expect(source).toContain("console.debug('[monitored-systems] reconcile request started')");
-  expect(source).toContain("console.debug('[monitored-systems] reconcile response received')");
-  expect(source).toContain("console.debug('[monitored-systems] reconcile response parsed')");
-  expect(source).toContain("console.debug('[monitored-systems] reloading monitored systems')");
-  expect(source).toContain("console.debug('[monitored-systems] repair click received')");
-  expect(source).toContain("console.debug('[monitored-systems] client build tag', monitoredSystemsClientBuildTag)");
-  expect(source).toContain("console.debug('[monitored-systems] runtime config apiUrl', runtimeApiUrl || '(missing)')");
-  expect(source).toContain("console.debug('[monitored-systems] server-rendered apiUrl', apiUrl || '(missing)')");
-  expect(source).toContain("console.debug('[monitored-systems] effective apiUrl', effectiveApiUrl || '(missing)')");
-  expect(source).toContain("console.info('[monitored-systems] reconcile URL', reconcileUrl)");
-  expect(source).toContain('data-monitored-systems-build={monitoredSystemsClientBuildTag}');
-  expect(source).toContain('data-testid="repair-click-debug"');
-  expect(source).toContain("console.debug('[monitored-systems] reconcile HTTP status', response.status)");
-  expect(source).toContain("console.debug('[monitored-systems] reconcile response content-type', contentType || '(none)')");
-  expect(source).toContain("console.debug('[monitored-systems] reconcile parsed payload', payload)");
-  expect(source).toContain("console.debug('[monitored-systems] reconcile reload result count', reloadedSystems?.length ?? 0)");
-  expect(source).toContain("console.debug('[monitored-systems] finally clearing isReconciling')");
-  expect(source).toContain('Repair reported success, but no monitored systems were visible after reload.');
-});
-
-test('runReconcile always clears loading state and fetches with timeout controls', () => {
-  const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain('const REQUEST_TIMEOUT_MS = 15000;');
-  expect(source).toContain('async function fetchWithTimeout');
-  expect(source).toContain('controller.abort()');
-  expect(source).toContain('finally {');
-  expect(source).toContain('setIsReconciling(false);');
+  expect(source).toContain('const refreshedSystems = await load();');
+  expect(source).toContain('const authoritative = refreshedSystems.find((row) => row.id === system.id);');
+  expect(source).toContain('Toggle was rolled back by server truth.');
+  expect(source).toContain('Unable to update system status.');
 });

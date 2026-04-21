@@ -253,3 +253,86 @@ def test_reconcile_workspace_validates_runtime_debug_assertions(monkeypatch):
 
     assert exc.value.status_code == 500
     assert exc.value.detail['stage'] == 'runtime_debug_assertions'
+
+
+def test_reconcile_workspace_returns_success_state_and_reconcile_id(monkeypatch):
+    conn = _Conn()
+    request = _Request('ws-1')
+    rows = [{'id': 'ms-1', 'workspace_id': 'ws-1', 'target_id': 't-1', 'asset_id': 'a-1'}]
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}))
+    monkeypatch.setattr(
+        pilot,
+        'reconcile_enabled_targets_monitored_systems',
+        lambda *_a, **_k: {
+            'targets_scanned': 1,
+            'created_or_updated': 1,
+            'invalid_reasons': {},
+            'invalid_target_details': [],
+            'skipped_reasons': {},
+            'skipped_target_details': [],
+            'repaired_monitored_system_ids': ['ms-1'],
+        },
+    )
+    monkeypatch.setattr(pilot, 'list_workspace_monitored_system_rows', lambda *_a, **_k: rows)
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+
+    result = pilot.reconcile_workspace_monitored_systems(request)
+
+    assert result['state'] == 'success'
+    assert isinstance(result['reconcile_id'], str)
+    assert result['reconcile']['created_or_updated'] == 1
+
+
+def test_reconcile_workspace_returns_no_op_with_reasons_when_unresolved(monkeypatch):
+    conn = _Conn()
+    request = _Request('ws-1')
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}))
+    monkeypatch.setattr(
+        pilot,
+        'reconcile_enabled_targets_monitored_systems',
+        lambda *_a, **_k: {
+            'targets_scanned': 1,
+            'created_or_updated': 0,
+            'invalid_reasons': {'missing_asset': 1},
+            'invalid_target_details': [{'target_id': 't-1', 'code': 'missing_asset', 'reason': 'target missing asset'}],
+            'skipped_reasons': {},
+            'skipped_target_details': [],
+            'repaired_monitored_system_ids': [],
+        },
+    )
+    monkeypatch.setattr(pilot, 'list_workspace_monitored_system_rows', lambda *_a, **_k: [])
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+
+    result = pilot.reconcile_workspace_monitored_systems(request)
+
+    assert result['state'] == 'no_op_with_reasons'
+    assert result['reconcile']['invalid_target_details'][0]['code'] == 'missing_asset'
+    assert result['reconcile']['invalid_target_details'][0]['reason'] == 'target missing asset'
+
+
+def test_reconcile_workspace_idempotency_guard_returns_no_op_while_inflight(monkeypatch):
+    conn = _Conn()
+    request = _Request('ws-1')
+    key = 'ws-1:user-1'
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}))
+
+    pilot._workspace_reconcile_inflight[key] = {'reconcile_id': 'rid-existing'}
+    try:
+        result = pilot.reconcile_workspace_monitored_systems(request)
+    finally:
+        pilot._workspace_reconcile_inflight.pop(key, None)
+
+    assert result['state'] == 'no_op_with_reasons'
+    assert result['reconcile_id'] == 'rid-existing'
+    assert result['reconcile']['skipped_target_details'][0]['code'] == 'reconcile_already_in_progress'
