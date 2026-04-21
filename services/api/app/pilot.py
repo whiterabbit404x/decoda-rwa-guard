@@ -7350,10 +7350,52 @@ def list_detections(
                    COALESCE(raw_evidence_json->'observed_evidence'->>'evidence_origin', evidence_source) AS evidence_origin,
                    a.incident_id AS linked_incident_id,
                    ra.id AS linked_action_id,
+                   ev_stats.linked_evidence_count,
+                   ev_latest.last_evidence_at,
+                   ev_latest.evidence_source AS last_evidence_source,
+                   COALESCE(
+                       ev_latest.raw_payload_json->>'evidence_origin',
+                       ev_latest.evidence_source,
+                       COALESCE(raw_evidence_json->'observed_evidence'->>'evidence_origin', evidence_source)
+                   ) AS last_evidence_origin,
+                   COALESCE(ev_latest.tx_hash, COALESCE(raw_evidence_json->'observed_evidence'->>'tx_hash', raw_evidence_json->>'tx_hash')) AS chain_tx_hash,
+                   COALESCE(
+                       ev_latest.block_number,
+                       NULLIF(raw_evidence_json->'observed_evidence'->>'block_number', '')::bigint,
+                       NULLIF(raw_evidence_json->>'block_number', '')::bigint
+                   ) AS chain_block_number,
+                   COALESCE(
+                       ev_latest.raw_payload_json->>'detector_kind',
+                       ev_latest.raw_payload_json->>'detector_family',
+                       COALESCE(
+                           raw_evidence_json->'observed_evidence'->>'detector_kind',
+                           raw_evidence_json->'observed_evidence'->>'detector_family',
+                           raw_evidence_json->>'detector_kind',
+                           raw_evidence_json->>'detector_family'
+                       )
+                   ) AS chain_detector_kind,
                    created_at,
                    updated_at
             FROM detections
             LEFT JOIN alerts a ON a.id = detections.linked_alert_id AND a.workspace_id = detections.workspace_id
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*)::int AS linked_evidence_count
+                FROM evidence e
+                WHERE e.workspace_id = detections.workspace_id
+                  AND e.alert_id = detections.linked_alert_id
+            ) ev_stats ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT e.observed_at AS last_evidence_at,
+                       e.source_provider AS evidence_source,
+                       e.tx_hash,
+                       e.block_number,
+                       e.raw_payload_json
+                FROM evidence e
+                WHERE e.workspace_id = detections.workspace_id
+                  AND e.alert_id = detections.linked_alert_id
+                ORDER BY e.observed_at DESC, e.created_at DESC, e.id DESC
+                LIMIT 1
+            ) ev_latest ON TRUE
             LEFT JOIN LATERAL (
                 SELECT id
                 FROM response_actions
@@ -7389,7 +7431,22 @@ def list_detections(
                 max_limit,
             ),
         ).fetchall()
-        return {'detections': [_json_safe_value(dict(row)) for row in rows]}
+        serialized: list[dict[str, Any]] = []
+        for row in rows:
+            item = _json_safe_value(dict(row))
+            item['tx_hash'] = item.get('chain_tx_hash') or item.get('tx_hash')
+            item['block_number'] = item.get('chain_block_number') or item.get('block_number')
+            item['detector_kind'] = item.get('chain_detector_kind') or item.get('detector_kind')
+            item['evidence_source'] = item.get('last_evidence_source') or item.get('evidence_source')
+            item['evidence_origin'] = item.get('last_evidence_origin') or item.get('evidence_origin')
+            item['chain_linked_ids'] = {
+                'detection_id': item.get('id'),
+                'alert_id': item.get('linked_alert_id'),
+                'incident_id': item.get('linked_incident_id'),
+                'action_id': item.get('linked_action_id'),
+            }
+            serialized.append(item)
+        return {'detections': serialized}
 
 
 def get_detection(detection_id: str, request: Request) -> dict[str, Any]:
@@ -7530,7 +7587,17 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
             ''',
             (workspace_context['workspace_id'], severity, severity, module, module, target_id, target_id, status_value, status_value, source, source, source),
         ).fetchall()
-        return {'alerts': [_json_safe_value(dict(row)) for row in rows]}
+        serialized_alerts: list[dict[str, Any]] = []
+        for row in rows:
+            item = _json_safe_value(dict(row))
+            item['chain_linked_ids'] = {
+                'detection_id': item.get('detection_id'),
+                'alert_id': item.get('id'),
+                'incident_id': item.get('incident_id'),
+                'action_id': item.get('linked_action_id'),
+            }
+            serialized_alerts.append(item)
+        return {'alerts': serialized_alerts}
 
 
 def get_alert(alert_id: str, request: Request) -> dict[str, Any]:
@@ -7944,7 +8011,17 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
             ''',
             (workspace_context['workspace_id'], severity, severity, target_id, target_id, status_value, status_value, status_value, assignee_user_id, assignee_user_id),
         ).fetchall()
-        return {'incidents': [_json_safe_value(dict(row)) for row in rows]}
+        serialized_incidents: list[dict[str, Any]] = []
+        for row in rows:
+            item = _json_safe_value(dict(row))
+            item['chain_linked_ids'] = {
+                'detection_id': item.get('linked_detection_id'),
+                'alert_id': item.get('source_alert_id'),
+                'incident_id': item.get('id'),
+                'action_id': item.get('linked_action_id'),
+            }
+            serialized_incidents.append(item)
+        return {'incidents': serialized_incidents}
 
 
 def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
