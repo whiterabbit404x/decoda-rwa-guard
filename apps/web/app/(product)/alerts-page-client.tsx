@@ -67,6 +67,12 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
       .catch(() => setEvidenceSourceSummary('none'));
   }, [apiUrl, authHeaders]);
 
+  async function refreshSelectedAlertState(alertId: string) {
+    await load();
+    const evidenceResponse = await fetch(`${apiUrl}/alerts/${alertId}/evidence`, { headers: authHeaders(), cache: 'no-store' });
+    if (evidenceResponse.ok) setEvidence((await evidenceResponse.json()).evidence ?? null);
+  }
+
   async function patchAlert(nextStatus: 'acknowledged' | 'resolved' | 'suppressed') {
     if (!selectedAlert) return;
     const response = await fetch(`${apiUrl}/alerts/${selectedAlert.id}`, {
@@ -75,7 +81,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
       body: JSON.stringify({ status: nextStatus }),
     });
     setMessage(response.ok ? `Alert ${nextStatus}.` : `Unable to ${nextStatus} alert.`);
-    if (response.ok) void load();
+    if (response.ok) await refreshSelectedAlertState(selectedAlert.id);
   }
 
   async function escalateIncident() {
@@ -89,6 +95,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
       }),
     });
     setMessage(response.ok ? 'Open incident (SIMULATED workflow prep) completed.' : 'Unable to open incident.');
+    if (response.ok) await refreshSelectedAlertState(selectedAlert.id);
   }
 
   async function runSimulatedAction(actionType: string, label: string) {
@@ -123,8 +130,10 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
     const executionState = String(executePayload?.execution_state || '');
     if (execute.ok && (executionState === 'simulated_executed' || executionState === 'live_executed')) {
       setMessage(`${modeLabel} ${label} executed.`);
+      await refreshSelectedAlertState(selectedAlert.id);
       return;
     }
+    await refreshSelectedAlertState(selectedAlert.id);
     setMessage(String(executePayload?.reason || `${modeLabel} ${label} could not be executed.`));
   }
   const liveLikeMode = evidenceSourceSummary === 'live' || evidenceSourceSummary === 'hybrid';

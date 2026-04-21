@@ -68,6 +68,16 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
       .catch(() => setEvidenceSourceSummary('none'));
   }, [apiUrl, authHeaders]);
 
+  async function refreshSelectedIncidentState(incidentId: string, sourceAlertId?: string | null) {
+    await load();
+    const timelineResponse = await fetch(`${apiUrl}/incidents/${incidentId}/timeline`, { headers: authHeaders(), cache: 'no-store' });
+    if (timelineResponse.ok) setTimeline((await timelineResponse.json()).timeline ?? []);
+    if (sourceAlertId) {
+      const evidenceResponse = await fetch(`${apiUrl}/alerts/${sourceAlertId}/evidence`, { headers: authHeaders(), cache: 'no-store' });
+      if (evidenceResponse.ok) setEvidence((await evidenceResponse.json()).evidence ?? null);
+    }
+  }
+
   async function updateWorkflow(nextStatus: typeof WORKFLOW_STATUSES[number]) {
     if (!selected) return;
     const response = await fetch(`${apiUrl}/incidents/${selected.id}`, {
@@ -77,9 +87,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
     });
     setMessage(response.ok ? `Incident moved to ${nextStatus}.` : 'Unable to update incident workflow.');
     if (response.ok) {
-      await load();
-      const timelineResponse = await fetch(`${apiUrl}/incidents/${selected.id}/timeline`, { headers: authHeaders(), cache: 'no-store' });
-      if (timelineResponse.ok) setTimeline((await timelineResponse.json()).timeline ?? []);
+      await refreshSelectedIncidentState(selected.id, selected.source_alert_id);
     }
   }
 
@@ -93,8 +101,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
     setMessage(response.ok ? 'Note added.' : 'Unable to add note.');
     if (response.ok) {
       setNote('');
-      const timelineResponse = await fetch(`${apiUrl}/incidents/${selectedId}/timeline`, { headers: authHeaders(), cache: 'no-store' });
-      if (timelineResponse.ok) setTimeline((await timelineResponse.json()).timeline ?? []);
+      await refreshSelectedIncidentState(selectedId, selected?.source_alert_id);
     }
   }
 
@@ -130,8 +137,10 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
     const executionState = String(executePayload?.execution_state || '');
     if (execute.ok && (executionState === 'simulated_executed' || executionState === 'live_executed')) {
       setMessage(`${modeLabel} ${label} executed.`);
+      await refreshSelectedIncidentState(selected.id, selected.source_alert_id);
       return;
     }
+    await refreshSelectedIncidentState(selected.id, selected.source_alert_id);
     setMessage(String(executePayload?.reason || `${modeLabel} ${label} could not be executed.`));
   }
   const liveLikeMode = evidenceSourceSummary === 'live' || evidenceSourceSummary === 'hybrid';
