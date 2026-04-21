@@ -60,10 +60,14 @@ function extractErrorDetail(payload: unknown): ErrorDetail {
 }
 
 type ReconcileSummary = {
+  state?: 'success' | 'no_op_with_reasons' | 'failure';
+  reconcile_id?: string | null;
   targets_scanned: number;
   created_or_updated: number;
   invalid_reasons: Record<string, number>;
   skipped_reasons: Record<string, number>;
+  invalid_target_details?: Array<{ target_id: string; code: string; reason: string }>;
+  skipped_target_details?: Array<{ target_id: string; code: string; reason: string }>;
   repaired_monitored_system_ids: string[];
 };
 
@@ -82,10 +86,6 @@ function formatReasonCounts(label: string, reasons: Record<string, number>): str
   }
   const details = entries.map(([reason, count]) => `${reason} (${count})`).join(', ');
   return `${label}: ${details}`;
-}
-
-function reasonCount(reasons: Record<string, number>): number {
-  return Object.values(reasons).reduce((sum, count) => sum + count, 0);
 }
 
 const isDev = process.env.NODE_ENV !== 'production';
@@ -111,6 +111,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const [repairFailureReason, setRepairFailureReason] = useState<RepairFailureReason | null>(null);
   const [isTogglingId, setIsTogglingId] = useState<string | null>(null);
   const [reconcileSummary, setReconcileSummary] = useState<ReconcileSummary | null>(null);
+  const [lastReconcileId, setLastReconcileId] = useState<string | null>(null);
   const [lastRepairClickAt, setLastRepairClickAt] = useState<string | null>(null);
   const [summary, setSummary] = useState<MonitoringRuntimeStatus['workspace_monitoring_summary'] | null>(null);
 
@@ -216,13 +217,18 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         }
 
         localSummary = {
+          state: payload?.state,
+          reconcile_id: payload?.reconcile_id ?? null,
           targets_scanned: Number(payload?.reconcile?.targets_scanned ?? 0),
           created_or_updated: Number(payload?.reconcile?.created_or_updated ?? 0),
           invalid_reasons: payload?.reconcile?.invalid_reasons ?? {},
           skipped_reasons: payload?.reconcile?.skipped_reasons ?? {},
+          invalid_target_details: payload?.reconcile?.invalid_target_details ?? [],
+          skipped_target_details: payload?.reconcile?.skipped_target_details ?? [],
           repaired_monitored_system_ids: payload?.reconcile?.repaired_monitored_system_ids ?? [],
         };
         setReconcileSummary(localSummary);
+        setLastReconcileId(localSummary.reconcile_id ?? null);
         const reconciledSystems = Array.isArray(payload?.systems) ? payload.systems : null;
         if (reconciledSystems) {
           setSystems(reconciledSystems);
@@ -237,12 +243,11 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
           };
         }
 
-        const unresolvedCount = reasonCount(localSummary.invalid_reasons) + reasonCount(localSummary.skipped_reasons);
-        if (!failedReason && localSummary.created_or_updated === 0 && unresolvedCount > 0) {
+        if (!failedReason && localSummary.state === 'failure') {
           failedReason = {
             stage: 'reconcile',
-            backendCode: null,
-            backendReason: 'No monitored systems were changed. Resolve invalid/skipped reasons and run Repair again.',
+            backendCode: 'monitoring_reconcile_failed',
+            backendReason: 'Reconcile reported failure.',
           };
         }
       }
@@ -266,6 +271,14 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
             backendReason: 'Repair reported updates, but no monitored systems were visible after refresh.',
           };
         }
+      }
+
+      if (!failedReason && localSummary?.state === 'no_op_with_reasons') {
+        failedReason = {
+          stage: 'reconcile',
+          backendCode: 'reconcile_no_op_with_reasons',
+          backendReason: 'No monitored systems were changed. Review skipped/invalid target reasons.',
+        };
       }
 
       if (failedReason) {
@@ -302,6 +315,14 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
           : { name: typeof error, message: String(error) };
         console.debug('[monitored-systems] reconcile failed', { stage, error: normalizedError });
       }
+    } finally {
+      if (repairState === 'pending_request' || repairState === 'pending_parse' || repairState === 'pending_refresh') {
+        setRepairState((current) => (
+          current === 'pending_request' || current === 'pending_parse' || current === 'pending_refresh'
+            ? 'failure'
+            : current
+        ));
+      }
     }
   }
 
@@ -316,10 +337,20 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         body: JSON.stringify({ enabled }),
       });
       if (!response.ok) {
-        setMessage('Unable to update system status.');
+        const payload = await response.json().catch(() => ({}));
+        const errorDetail = extractErrorDetail(payload);
+        setMessage(`Unable to update system status.${errorDetail.code ? ` [${errorDetail.code}]` : ''} ${errorDetail.message || 'Unknown backend reason.'}`.trim());
+        await load();
         return;
       }
-      await load();
+      const refreshedSystems = await load();
+      if (Array.isArray(refreshedSystems)) {
+        const authoritative = refreshedSystems.find((row) => row.id === system.id);
+        if (!authoritative || authoritative.is_enabled !== enabled) {
+          setMessage(`Toggle was rolled back by server truth.${enabled ? ' [toggle_enable_conflict]' : ' [toggle_disable_conflict]'}`);
+          return;
+        }
+      }
       setMessage(enabled ? 'Monitoring enabled for this target.' : 'Monitoring disabled for this target.');
     } finally {
       setIsTogglingId(null);
@@ -388,7 +419,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       ) : null}
       {repairState === 'success' && reconcileSummary ? (
         <p className="statusLine" role="status" aria-live="polite">
-          Repair succeeded: {reconcileSummary.created_or_updated} monitored systems created or updated from {reconcileSummary.targets_scanned} targets scanned.
+          Repair {reconcileSummary.state || 'success'} (reconcile id: {reconcileSummary.reconcile_id || 'unknown'}): {reconcileSummary.created_or_updated} monitored systems created or updated from {reconcileSummary.targets_scanned} targets scanned.
         </p>
       ) : null}
       {repairState === 'failure' && repairFailureReason ? (
@@ -408,8 +439,19 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
             Reconcile summary: scanned {reconcileSummary.targets_scanned} targets, created/updated {reconcileSummary.created_or_updated}, repaired IDs{' '}
             {reconcileSummary.repaired_monitored_system_ids.length}
           </p>
+          <p className="tableMeta">State: {reconcileSummary.state || 'unknown'} · Reconcile ID: {reconcileSummary.reconcile_id || lastReconcileId || 'unknown'}</p>
           <p className="tableMeta">{formatReasonCounts('Invalid reasons', reconcileSummary.invalid_reasons)}</p>
           <p className="tableMeta">{formatReasonCounts('Skipped reasons', reconcileSummary.skipped_reasons)}</p>
+          {(reconcileSummary.invalid_target_details ?? []).map((detail) => (
+            <p key={`invalid-${detail.target_id}-${detail.code}`} className="tableMeta">
+              Invalid target {detail.target_id}: [{detail.code}] {detail.reason}
+            </p>
+          ))}
+          {(reconcileSummary.skipped_target_details ?? []).map((detail) => (
+            <p key={`skipped-${detail.target_id}-${detail.code}`} className="tableMeta">
+              Skipped target {detail.target_id || 'n/a'}: [{detail.code}] {detail.reason}
+            </p>
+          ))}
         </div>
       ) : null}
       {systems.map((system) => (
