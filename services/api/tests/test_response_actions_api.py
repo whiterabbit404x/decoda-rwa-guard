@@ -234,6 +234,7 @@ def test_execute_live_unsupported_action_returns_structured_error_without_execut
 
 def test_execute_live_revoke_approval_returns_proposed_state_with_safe_tx_hash_and_history(monkeypatch):
     executed: list[tuple[str, object]] = []
+    audit_events: list[str] = []
 
     class _Result:
         def __init__(self, row=None):
@@ -287,7 +288,7 @@ def test_execute_live_revoke_approval_returns_proposed_state_with_safe_tx_hash_a
             'mode': 'live',
         },
     )
-    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **kwargs: audit_events.append(str(kwargs.get('action'))))
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
     response = pilot.execute_enforcement_action('act-safe', request)
@@ -302,10 +303,12 @@ def test_execute_live_revoke_approval_returns_proposed_state_with_safe_tx_hash_a
     timeline_calls = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
     assert any(params[3] == 'response_action.proposed' for params in timeline_calls)
     assert any('0xsafehash' in str(params[6]) for params in timeline_calls)
+    assert 'enforcement.action.execute' in audit_events
 
 
 def test_execute_live_freeze_wallet_writes_governance_metadata_and_timeline(monkeypatch):
     executed: list[tuple[str, object]] = []
+    audit_events: list[str] = []
 
     class _Result:
         def __init__(self, row=None):
@@ -352,7 +355,7 @@ def test_execute_live_freeze_wallet_writes_governance_metadata_and_timeline(monk
             'policy_effects': ['Wallet frozen'],
         },
     )
-    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **kwargs: audit_events.append(str(kwargs.get('action'))))
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
     response = pilot.execute_enforcement_action('act-governance', request)
@@ -368,6 +371,7 @@ def test_execute_live_freeze_wallet_writes_governance_metadata_and_timeline(monk
     timeline_calls = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
     assert any(params[3] == 'response_action.proposed' for params in timeline_calls)
     assert any('governance_action_id' in str(params[6]) for params in timeline_calls)
+    assert 'enforcement.action.execute' in audit_events
 
 
 def test_execute_live_manual_only_action_returns_manual_required_state(monkeypatch):
