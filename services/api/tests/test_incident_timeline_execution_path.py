@@ -3,6 +3,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+from fastapi import HTTPException
+
 from services.api.app import pilot
 
 
@@ -68,6 +70,30 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
                             'safe_tx_hash': '0xsafehash',
                         }
                     )
+                if action_id == 'act-manual':
+                    return _Result(
+                        {
+                            'id': 'act-manual',
+                            'status': 'pending',
+                            'mode': 'live',
+                            'action_type': 'disable_monitored_system',
+                            'execution_metadata': {},
+                            'incident_id': 'inc-1',
+                            'alert_id': 'alert-1',
+                        }
+                    )
+                if action_id == 'act-unsupported':
+                    return _Result(
+                        {
+                            'id': 'act-unsupported',
+                            'status': 'pending',
+                            'mode': 'live',
+                            'action_type': 'block_transaction',
+                            'execution_metadata': {},
+                            'incident_id': 'inc-1',
+                            'alert_id': 'alert-1',
+                        }
+                    )
             return _Result()
 
         def commit(self):
@@ -92,7 +118,9 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
         lambda action_type, mode=None: {
             'action_type': action_type,
             'supported_modes': ['simulated', 'recommended', 'live'],
-            'live_execution_path': 'safe' if str(action_type) == 'revoke_approval' else 'governance',
+            'live_execution_path': 'safe'
+            if str(action_type) == 'revoke_approval'
+            else ('manual_only' if str(action_type) == 'disable_monitored_system' else ('unsupported' if str(action_type) == 'block_transaction' else 'governance')),
             'reason': None,
             'supports_mode': True,
             'mode': mode,
@@ -118,6 +146,13 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
     )
     pilot.execute_enforcement_action('act-execute-live', request)
     pilot.execute_enforcement_action('act-execute-sim', request)
+    pilot.execute_enforcement_action('act-manual', request)
+    try:
+        pilot.execute_enforcement_action('act-unsupported', request)
+        raise AssertionError('Expected unsupported action execution to raise HTTPException.')
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert exc.detail.get('execution_state') == 'unsupported'
     pilot.rollback_enforcement_action('act-rollback', request)
 
     event_types = [event for event, _ in timeline_events]
@@ -127,6 +162,9 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
         'response_action.created',
         'response_action.proposed',
         'response_action.executed',
+        'response_action.manual_required',
+        'response_action.executed',
+        'response_action.unsupported',
         'response_action.rollback_created',
         'response_action.rollback_completed',
         'response_action.rolled_back',
@@ -141,3 +179,15 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
     assert linked_evidence_event.get('external_references', {}).get('safe_tx_hash') == '0xabc'
     proposed_event = next(metadata for event, metadata in timeline_events if event == 'response_action.proposed')
     assert proposed_event.get('external_references', {}).get('safe_tx_hash') == '0xsafehash'
+    manual_required_event = next(metadata for event, metadata in timeline_events if event == 'response_action.manual_required')
+    assert manual_required_event.get('external_references') == {'safe_tx_hash': None, 'governance_action_id': None, 'attestation_hash': None}
+    manual_execution_event = next(
+        metadata
+        for event, metadata in timeline_events
+        if event == 'response_action.executed' and metadata.get('execution_state') == 'live_manual_required'
+    )
+    assert manual_execution_event.get('status') == 'pending'
+    unsupported_event = next(metadata for event, metadata in timeline_events if event == 'response_action.unsupported')
+    assert unsupported_event.get('execution_state') == 'unsupported'
+    rollback_event = next(metadata for event, metadata in timeline_events if event == 'response_action.rolled_back')
+    assert rollback_event.get('external_references', {}).get('safe_tx_hash') == '0xsafehash'
