@@ -29,6 +29,7 @@ type ErrorDetail = {
   message: string;
   code?: string;
   stage?: string;
+  reason?: string;
 };
 
 function extractErrorDetail(payload: unknown): ErrorDetail {
@@ -55,8 +56,11 @@ function extractErrorDetail(payload: unknown): ErrorDetail {
   const stage = typeof errorObject.stage === 'string'
     ? errorObject.stage.trim() || undefined
     : (typeof value.stage === 'string' ? value.stage.trim() || undefined : undefined);
+  const reason = typeof errorObject.reason === 'string'
+    ? errorObject.reason.trim() || undefined
+    : (typeof value.reason === 'string' ? value.reason.trim() || undefined : undefined);
 
-  return { message, code, stage };
+  return { message, code, stage, reason };
 }
 
 type ReconcileSummary = {
@@ -77,6 +81,7 @@ type RepairFailureReason = {
   stage: 'request' | 'parse' | 'refresh' | 'reconcile';
   backendCode: string | null;
   backendReason: string;
+  backendStage?: string | null;
 };
 
 function formatReasonCounts(label: string, reasons: Record<string, number>): string {
@@ -169,6 +174,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
     let shouldRefreshAfterResponse = false;
     let failedReason: RepairFailureReason | null = null;
     let localSummary: ReconcileSummary | null = null;
+    let didResolveTerminalState = false;
 
     try {
       if (isDev) {
@@ -229,17 +235,14 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         };
         setReconcileSummary(localSummary);
         setLastReconcileId(localSummary.reconcile_id ?? null);
-        const reconciledSystems = Array.isArray(payload?.systems) ? payload.systems : null;
-        if (reconciledSystems) {
-          setSystems(reconciledSystems);
-        }
 
         if (!response.ok) {
           const errorDetail = extractErrorDetail(payload);
           failedReason = {
             stage: 'reconcile',
             backendCode: errorDetail.code ?? null,
-            backendReason: errorDetail.message || 'Reconcile request was rejected by the API.',
+            backendReason: errorDetail.reason || errorDetail.message || 'Reconcile request was rejected by the API.',
+            backendStage: errorDetail.stage ?? null,
           };
         }
 
@@ -284,8 +287,10 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       if (failedReason) {
         setRepairFailureReason(failedReason);
         setRepairState('failure');
+        didResolveTerminalState = true;
       } else {
         setRepairState('success');
+        didResolveTerminalState = true;
       }
     } catch (error) {
       setRepairState('failure');
@@ -308,6 +313,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
           backendReason: 'Repair finished, but refreshing monitored systems failed.',
         });
       }
+      didResolveTerminalState = true;
 
       if (isDev) {
         const normalizedError = error instanceof Error
@@ -316,12 +322,13 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         console.debug('[monitored-systems] reconcile failed', { stage, error: normalizedError });
       }
     } finally {
-      if (repairState === 'pending_request' || repairState === 'pending_parse' || repairState === 'pending_refresh') {
-        setRepairState((current) => (
-          current === 'pending_request' || current === 'pending_parse' || current === 'pending_refresh'
-            ? 'failure'
-            : current
-        ));
+      if (!didResolveTerminalState) {
+        setRepairFailureReason({
+          stage,
+          backendCode: 'repair_terminal_state_timeout',
+          backendReason: 'Repair did not reach a terminal state and was safely failed.',
+        });
+        setRepairState('failure');
       }
     }
   }
@@ -339,7 +346,9 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         const errorDetail = extractErrorDetail(payload);
-        setMessage(`Unable to update system status.${errorDetail.code ? ` [${errorDetail.code}]` : ''} ${errorDetail.message || 'Unknown backend reason.'}`.trim());
+        setMessage(
+          `Unable to update system status.${errorDetail.stage ? ` [stage:${errorDetail.stage}]` : ''}${errorDetail.code ? ` [${errorDetail.code}]` : ''} ${errorDetail.reason || errorDetail.message || 'Unknown backend reason.'}`.trim(),
+        );
         await load();
         return;
       }
@@ -424,7 +433,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
       ) : null}
       {repairState === 'failure' && repairFailureReason ? (
         <p className="statusLine" role="alert" aria-live="assertive">
-          Repair failed during {repairFailureReason.stage}. {repairFailureReason.backendCode ? `Code ${repairFailureReason.backendCode}. ` : ''}
+          Repair failed during {repairFailureReason.backendStage || repairFailureReason.stage}. {repairFailureReason.backendCode ? `Code ${repairFailureReason.backendCode}. ` : ''}
           {repairFailureReason.backendReason}
         </p>
       ) : null}

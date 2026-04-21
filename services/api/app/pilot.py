@@ -95,6 +95,7 @@ _redis_rate_limiter: Any | None = None
 _redis_rate_limiter_lock = threading.Lock()
 _workspace_reconcile_lock = threading.Lock()
 _workspace_reconcile_inflight: dict[str, dict[str, Any]] = {}
+WORKSPACE_RECONCILE_CACHE_SECONDS = 30
 _AUTH_DB_CLASSIFICATIONS = {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'unknown_db_error'}
 _AUTH_DB_ERROR_CODE_BY_CLASSIFICATION = {
     'quota_exceeded': 'AUTH_DB_QUOTA_EXCEEDED',
@@ -3450,7 +3451,14 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         with _workspace_reconcile_lock:
             in_flight = _workspace_reconcile_inflight.get(inflight_key)
             if in_flight:
+                cached_status = str(in_flight.get('status') or 'running')
                 existing_reconcile_id = str(in_flight.get('reconcile_id') or '')
+                if cached_status == 'completed':
+                    cached_response = in_flight.get('response')
+                    completed_at_mono = float(in_flight.get('completed_at_monotonic') or 0.0)
+                    if isinstance(cached_response, dict) and (monotonic() - completed_at_mono) <= WORKSPACE_RECONCILE_CACHE_SECONDS:
+                        return cached_response
+                    _workspace_reconcile_inflight.pop(inflight_key, None)
                 return {
                     'workspace': workspace_context['workspace'],
                     'reconcile_id': existing_reconcile_id or reconcile_id,
@@ -3496,6 +3504,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
             _workspace_reconcile_inflight[inflight_key] = {
                 'reconcile_id': reconcile_id,
                 'started_at': utc_now_iso(),
+                'status': 'running',
             }
         try:
             result = _normalize_reconcile_result(reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id))
@@ -3602,10 +3611,15 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         reconcile_state = 'success'
         if int(result.get('created_or_updated', 0) or 0) <= 0 and unresolved_count > 0:
             reconcile_state = 'no_op_with_reasons'
+        reason_counts = {
+            'invalid': int(sum(int(count or 0) for count in (result.get('invalid_reasons') or {}).values())),
+            'skipped': int(sum(int(count or 0) for count in (result.get('skipped_reasons') or {}).values())),
+        }
         response: dict[str, Any] = {
             'workspace': workspace_context['workspace'],
             'reconcile_id': reconcile_id,
             'state': reconcile_state,
+            'reason_counts': reason_counts,
             'reconcile': result,
             'systems': systems,
             'monitored_systems_count': len(systems),
@@ -3619,9 +3633,18 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                 'created_or_updated': result.get('created_or_updated', 0),
                 'repaired_monitored_system_ids': result.get('repaired_monitored_system_ids', []),
                 'repaired_target_ids': repaired_target_ids,
+                'reason_counts': reason_counts,
                 'runtime_debug_assertions': runtime_debug_assertions,
                 'debug_before': pre_repair_snapshot,
                 'debug_after': post_repair_snapshot,
+            }
+        with _workspace_reconcile_lock:
+            _workspace_reconcile_inflight[inflight_key] = {
+                'reconcile_id': reconcile_id,
+                'started_at': utc_now_iso(),
+                'status': 'completed',
+                'completed_at_monotonic': monotonic(),
+                'response': response,
             }
         return response
 

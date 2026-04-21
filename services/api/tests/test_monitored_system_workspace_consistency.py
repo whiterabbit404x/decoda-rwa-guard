@@ -51,6 +51,13 @@ class _Request:
         self.headers = {'authorization': 'Bearer token', 'x-workspace-id': workspace_id}
 
 
+@pytest.fixture(autouse=True)
+def _reset_reconcile_cache():
+    pilot._workspace_reconcile_inflight.clear()
+    yield
+    pilot._workspace_reconcile_inflight.clear()
+
+
 def test_reconcile_workspace_returns_queryable_rows_and_count_matches(monkeypatch):
     conn = _Conn()
     request = _Request('ws-1')
@@ -284,6 +291,7 @@ def test_reconcile_workspace_returns_success_state_and_reconcile_id(monkeypatch)
 
     assert result['state'] == 'success'
     assert isinstance(result['reconcile_id'], str)
+    assert result['reason_counts'] == {'invalid': 0, 'skipped': 0}
     assert result['reconcile']['created_or_updated'] == 1
 
 
@@ -314,8 +322,49 @@ def test_reconcile_workspace_returns_no_op_with_reasons_when_unresolved(monkeypa
     result = pilot.reconcile_workspace_monitored_systems(request)
 
     assert result['state'] == 'no_op_with_reasons'
+    assert result['reason_counts'] == {'invalid': 1, 'skipped': 0}
     assert result['reconcile']['invalid_target_details'][0]['code'] == 'missing_asset'
     assert result['reconcile']['invalid_target_details'][0]['reason'] == 'target missing asset'
+
+
+def test_reconcile_workspace_returns_cached_result_with_stable_reconcile_id(monkeypatch):
+    conn = _Conn()
+    request = _Request('ws-1')
+    rows = [{'id': 'ms-1', 'workspace_id': 'ws-1', 'target_id': 't-1', 'asset_id': 'a-1'}]
+    call_count = {'reconcile': 0}
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}))
+
+    def _reconcile_once(*_a, **_k):
+        call_count['reconcile'] += 1
+        return {
+            'targets_scanned': 1,
+            'created_or_updated': 1,
+            'invalid_reasons': {},
+            'invalid_target_details': [],
+            'skipped_reasons': {},
+            'skipped_target_details': [],
+            'repaired_monitored_system_ids': ['ms-1'],
+        }
+
+    monkeypatch.setattr(pilot, 'reconcile_enabled_targets_monitored_systems', _reconcile_once)
+    monkeypatch.setattr(pilot, 'list_workspace_monitored_system_rows', lambda *_a, **_k: rows)
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+
+    key = 'ws-1:user-1'
+    pilot._workspace_reconcile_inflight.pop(key, None)
+    try:
+        first = pilot.reconcile_workspace_monitored_systems(request)
+        second = pilot.reconcile_workspace_monitored_systems(request)
+    finally:
+        pilot._workspace_reconcile_inflight.pop(key, None)
+
+    assert call_count['reconcile'] == 1
+    assert first['reconcile_id'] == second['reconcile_id']
+    assert second['state'] == 'success'
 
 
 def test_reconcile_workspace_idempotency_guard_returns_no_op_while_inflight(monkeypatch):
