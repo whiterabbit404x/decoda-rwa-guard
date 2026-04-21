@@ -7886,6 +7886,11 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
             metadata={
                 'alert_id': alert_id,
                 'detection_id': alert.get('detection_id'),
+                'external_references': {
+                    'safe_tx_hash': latest_evidence.get('tx_hash') if latest_evidence is not None else None,
+                    'governance_action_id': None,
+                    'attestation_hash': None,
+                },
                 'evidence_reference': {
                     'evidence_id': str(latest_evidence.get('id') or '') if latest_evidence is not None else None,
                     'tx_hash': latest_evidence.get('tx_hash') if latest_evidence is not None else None,

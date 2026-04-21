@@ -135,7 +135,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
       return;
     }
     const action = await create.json();
-    await fetchIncidentTimeline(selected.id);
+    await refreshSelectedIncidentState(selected.id, selected.source_alert_id);
     const execute = await fetch(`${apiUrl}/response/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
     const executePayload = await execute.json().catch(() => ({}));
     const executionResult = responseActionExecutionMessage(executePayload);

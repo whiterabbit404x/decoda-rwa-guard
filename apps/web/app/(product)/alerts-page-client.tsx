@@ -131,6 +131,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
       return;
     }
     const action = await create.json();
+    await refreshSelectedAlertState(selectedAlert.id);
     await refetchLinkedIncidentTimeline(selectedAlert.incident_id);
     const execute = await fetch(`${apiUrl}/response/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
     const executePayload = await execute.json().catch(() => ({}));
