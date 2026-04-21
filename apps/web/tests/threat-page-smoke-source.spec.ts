@@ -31,7 +31,7 @@ test('evidence drawer keeps summary and raw evidence rendering', () => {
   const chainPanel = appSource('threat-chain-panel.tsx');
 
   expect(threat).toContain('setEvidenceDrawer({');
-  expect(threat).toContain('Open evidence');
+  expect(threat).toContain('Open evidence drawer');
   expect(chainPanel).toContain('Threat chain summary');
   expect(chainPanel).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this chain has no persisted evidence yet.');
   expect(chainPanel).toContain('Link href={step.href} prefetch={false}');

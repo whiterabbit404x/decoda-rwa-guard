@@ -1539,7 +1539,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   className="secondaryCta"
                   onClick={() => void openDetectionEvidence(signal)}
                 >
-                  Open evidence
+                  Open evidence drawer
                 </button>
                 {signal.alertId ? <Link href="/alerts" prefetch={false}>Open alert link</Link> : null}
                 {signal.incidentId ? <Link href="/incidents" prefetch={false}>Open incident link</Link> : null}
@@ -1737,7 +1737,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                           raw: linkedDetection?.raw_evidence_json ?? alert.payload ?? alert.findings ?? null,
                         })}
                       >
-                        Open evidence
+                        Open evidence drawer
                       </button>
                     </div>
                   </div>
@@ -1788,7 +1788,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                     txHash={chainPanelSelection.txHash}
                     blockNumber={chainPanelSelection.blockNumber}
                     detectorKind={chainPanelSelection.detectorKind}
-                    liveLikeMode={monitoringPresentation.evidenceSourceLabel === 'live'}
+                    liveLikeMode={monitoringPresentation.evidenceSourceLabel === 'live' || monitoringPresentation.evidenceSourceLabel === 'hybrid'}
+                    evidenceDrawerLabel="Open evidence drawer"
                     onOpenEvidence={() => {
                       const detection = chainPanelSelection.detectionId ? detections.find((item) => item.id === chainPanelSelection.detectionId) : null;
                       setEvidenceDrawer({

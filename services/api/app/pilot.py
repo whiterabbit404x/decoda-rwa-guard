@@ -7480,8 +7480,14 @@ def list_detections(
             item['detector_kind'] = item.get('chain_detector_kind') or item.get('detector_kind')
             item['evidence_source'] = item.get('last_evidence_source') or item.get('evidence_source')
             item['evidence_origin'] = item.get('last_evidence_origin') or item.get('evidence_origin')
+            item['linked_evidence_count'] = int(item.get('linked_evidence_count') or 0)
+            item['last_evidence_at'] = item.get('last_evidence_at')
+            item['linked_detection_id'] = item.get('id')
+            item['linked_alert_id'] = item.get('linked_alert_id')
+            item['linked_incident_id'] = item.get('linked_incident_id')
+            item['linked_action_id'] = item.get('linked_action_id')
             item['chain_linked_ids'] = {
-                'detection_id': item.get('id'),
+                'detection_id': item.get('linked_detection_id'),
                 'alert_id': item.get('linked_alert_id'),
                 'incident_id': item.get('linked_incident_id'),
                 'action_id': item.get('linked_action_id'),
@@ -7631,10 +7637,20 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
         serialized_alerts: list[dict[str, Any]] = []
         for row in rows:
             item = _json_safe_value(dict(row))
+            item['linked_evidence_count'] = int(item.get('linked_evidence_count') or 0)
+            item['last_evidence_at'] = item.get('last_evidence_at')
+            item['evidence_origin'] = item.get('evidence_origin')
+            item['tx_hash'] = item.get('tx_hash')
+            item['block_number'] = item.get('block_number')
+            item['detector_kind'] = item.get('detector_kind')
+            item['linked_detection_id'] = item.get('detection_id')
+            item['linked_alert_id'] = item.get('id')
+            item['linked_incident_id'] = item.get('incident_id')
+            item['linked_action_id'] = item.get('linked_action_id')
             item['chain_linked_ids'] = {
-                'detection_id': item.get('detection_id'),
-                'alert_id': item.get('id'),
-                'incident_id': item.get('incident_id'),
+                'detection_id': item.get('linked_detection_id'),
+                'alert_id': item.get('linked_alert_id'),
+                'incident_id': item.get('linked_incident_id'),
                 'action_id': item.get('linked_action_id'),
             }
             serialized_alerts.append(item)
@@ -8078,10 +8094,19 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
         serialized_incidents: list[dict[str, Any]] = []
         for row in rows:
             item = _json_safe_value(dict(row))
+            item['linked_evidence_count'] = int(item.get('linked_evidence_count') or 0)
+            item['last_evidence_at'] = item.get('last_evidence_at')
+            item['evidence_origin'] = item.get('evidence_origin')
+            item['tx_hash'] = item.get('tx_hash')
+            item['block_number'] = item.get('block_number')
+            item['detector_kind'] = item.get('detector_kind')
+            item['linked_alert_id'] = item.get('source_alert_id')
+            item['linked_incident_id'] = item.get('id')
+            item['linked_action_id'] = item.get('linked_action_id')
             item['chain_linked_ids'] = {
                 'detection_id': item.get('linked_detection_id'),
-                'alert_id': item.get('source_alert_id'),
-                'incident_id': item.get('id'),
+                'alert_id': item.get('linked_alert_id'),
+                'incident_id': item.get('linked_incident_id'),
                 'action_id': item.get('linked_action_id'),
             }
             serialized_incidents.append(item)

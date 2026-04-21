@@ -148,7 +148,6 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
     setMessage(executionResult.text || `${modeLabel} ${label} could not be executed.`);
   }
   const liveLikeMode = evidenceSourceSummary === 'live' || evidenceSourceSummary === 'hybrid';
-  const noEvidenceLinked = Number(selected?.linked_evidence_count || 0) <= 0;
 
   return (
     <main className="productPage">
@@ -182,6 +181,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
                 blockNumber={selected.block_number || evidence?.block_number}
                 detectorKind={selected.detector_kind}
                 liveLikeMode={liveLikeMode}
+                evidenceDrawerLabel="Open evidence drawer"
                 onOpenEvidence={() => setMessage(selected.source_alert_id ? 'Evidence loaded from linked source alert below.' : 'No linked source alert evidence is available for this incident.')}
               />
               <div className="buttonRow">
@@ -206,7 +206,6 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
               </div>
               {actionMode === 'live' ? <p className="tableMeta">Live constraints: unsupported actions show “Unsupported live action”; manual paths show “Manual-only in live mode”.</p> : null}
               <p className="tableMeta">Response actions: Freeze wallet · Block transaction · Revoke approval · Disable monitored system · Suppress rule · Notify team</p>
-              {liveLikeMode && noEvidenceLinked ? <p className="statusLine">Degraded evidence state: LIVE/HYBRID monitoring is active but this incident has no persisted linked evidence yet.</p> : null}
               <p className="tableMeta">Evidence source {selected.evidence_origin || selected.evidence_source || 'n/a'} · tx {selected.tx_hash || evidence?.tx_hash || 'n/a'} · block {selected.block_number || evidence?.block_number || 'n/a'} · detector {selected.detector_kind || 'n/a'}</p>
               <p className="sectionEyebrow">Merged event timeline</p>
               {timeline.map((item, index) => <p key={`${item.id || index}`}>{item.event_type}: {item.message || ''} · {item.created_at ? new Date(item.created_at).toLocaleString() : 'n/a'}</p>)}

@@ -146,7 +146,6 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
     setMessage(executionResult.text || `${modeLabel} ${label} could not be executed.`);
   }
   const liveLikeMode = evidenceSourceSummary === 'live' || evidenceSourceSummary === 'hybrid';
-  const noEvidenceLinked = Number(selectedAlert?.linked_evidence_count || 0) <= 0;
 
   return (
     <main className="productPage">
@@ -190,6 +189,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
                 blockNumber={selectedAlert.block_number || evidence?.block_number}
                 detectorKind={selectedAlert.detector_kind}
                 liveLikeMode={liveLikeMode}
+                evidenceDrawerLabel="Open evidence drawer"
                 onOpenEvidence={() => evidenceSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
               />
               <div className="buttonRow">
@@ -215,7 +215,6 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
               {actionMode === 'live' ? <p className="tableMeta">Live constraints: unsupported actions show “Unsupported live action”; manual paths show “Manual-only in live mode”.</p> : null}
               <p className="tableMeta">Response actions: Freeze wallet · Block transaction · Revoke approval · Disable monitored system · Suppress rule · Notify team</p>
               <p ref={evidenceSectionRef} className="sectionEyebrow">Evidence timeline</p>
-              {liveLikeMode && noEvidenceLinked ? <p className="statusLine">Degraded evidence state: LIVE/HYBRID monitoring is active but this alert has no persisted linked evidence yet.</p> : null}
               <p className="tableMeta">tx {evidence?.tx_hash || 'n/a'} · block {evidence?.block_number || 'n/a'} · target {evidence?.target_name || 'n/a'}</p>
               <pre>{JSON.stringify(evidence?.raw_payload_excerpt || {}, null, 2)}</pre>
               <p className="muted">Recommended actions: acknowledge if understood, escalate if active risk, suppress only with documented reason.</p>

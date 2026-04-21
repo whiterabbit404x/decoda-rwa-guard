@@ -14,6 +14,7 @@ type ThreatChainPanelProps = {
   blockNumber?: string | number | null;
   detectorKind?: string | null;
   liveLikeMode?: boolean;
+  evidenceDrawerLabel?: string;
   onOpenEvidence: () => void;
 };
 
@@ -36,6 +37,7 @@ export default function ThreatChainPanel({
   blockNumber,
   detectorKind,
   liveLikeMode = false,
+  evidenceDrawerLabel = 'Open evidence drawer',
   onOpenEvidence,
 }: ThreatChainPanelProps) {
   const chainSteps: ChainStep[] = [
@@ -65,7 +67,7 @@ export default function ThreatChainPanel({
       {liveLikeMode && evidenceCount <= 0 ? (
         <p className="statusLine">Degraded evidence state: LIVE/HYBRID monitoring is active but this chain has no persisted evidence yet.</p>
       ) : null}
-      <button type="button" onClick={onOpenEvidence}>Open evidence</button>
+      <button type="button" onClick={onOpenEvidence}>{evidenceDrawerLabel}</button>
     </div>
   );
 }
