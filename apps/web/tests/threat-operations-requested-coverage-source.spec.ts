@@ -46,3 +46,14 @@ test('renders evidence drawer and keeps SIMULATED labels explicit', () => {
   expect(alerts).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this alert has no persisted linked evidence yet.');
   expect(incidents).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this incident has no persisted linked evidence yet.');
 });
+
+test('threat quick actions require linked context selection or explicit unlinked mode', () => {
+  const threat = appSource('threat-operations-panel.tsx');
+
+  expect(threat).not.toContain('incident_id: incidents[0]?.id');
+  expect(threat).not.toContain('alert_id: alerts[0]?.id');
+  expect(threat).toContain('incident_id: selectedThreatActionContext?.incidentId ?? null');
+  expect(threat).toContain('alert_id: selectedThreatActionContext?.alertId ?? null');
+  expect(threat).toContain('UNLINKED ACTION');
+  expect(threat).toContain('No linked alert/incident context available for this action.');
+});
