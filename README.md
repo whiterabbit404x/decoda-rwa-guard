@@ -2,9 +2,32 @@
 
 This repo now supports a reproducible local Phase 1 workflow without Docker as the primary path. The stable Phase 1 risk-engine remains intact, Feature 2 adds the `threat-engine` service for explainable zero-day exploit mitigation and treasury-token market anomaly detection, Feature 3 adds the `compliance-service` for sovereign-grade compliance wrappers, geopatriation controls, and governance actions, and Feature 4 expands the existing `reconciliation-service` into an interoperability and systemic resilience slice for deterministic cross-chain reconciliation, backstop controls, and local incident logging.
 
+## Mode matrix
+
+Choose the operating mode based on your goal. Authenticated/live workflows require Postgres-backed persistence, but that Postgres can be local or hosted (Neon or equivalent).
+
+| Mode | Primary purpose | Data/auth behavior | Commands |
+| --- | --- | --- | --- |
+| SQLite/demo mode | Quick UI and demo-only checks | Demo/fallback behavior only; no Postgres-backed workspace persistence | `python services/api/scripts/migrate.py`<br/>`python services/api/scripts/seed.py` *(optional)*<br/>`python scripts/run_service.py api --reload`<br/>`python -m services.api.app.run_monitoring_worker --worker-name local-monitor-worker --interval-seconds 15 --limit 50`<br/>`cd apps/web && npm run dev` |
+| Local Postgres | Primary real feature development (auth + worker + persistence) | Live/auth workflows persist to local Postgres via `DATABASE_URL` | `python services/api/scripts/migrate.py`<br/>`python services/api/scripts/seed.py --pilot-demo` *(optional)*<br/>`python scripts/run_service.py api --reload`<br/>`python -m services.api.app.run_monitoring_worker --worker-name local-monitor-worker --interval-seconds 15 --limit 50`<br/>`cd apps/web && npm run dev` |
+| Neon/hosted Postgres | Staging/prod validation | Same live/auth behavior, now against hosted Postgres | `python services/api/scripts/migrate.py`<br/>`python services/api/scripts/seed.py --pilot-demo` *(optional)*<br/>`python scripts/run_service.py api --reload`<br/>`python -m services.api.app.run_monitoring_worker --worker-name local-monitor-worker --interval-seconds 15 --limit 50`<br/>`cd apps/web && npm run dev` |
+
+### Switch from local Postgres to Neon validation
+
+Only update environment/deploy settings, then restart/redeploy:
+
+1. Change `DATABASE_URL` from local Postgres to Neon connection string (`sslmode=require`).
+2. Ensure `LIVE_MODE_ENABLED=true` remains set for the API environment.
+3. Keep `AUTH_TOKEN_SECRET` set (no value change required unless rotating secret).
+4. Re-run migrations in the target environment: `python services/api/scripts/migrate.py`.
+5. Optionally re-run pilot seed in the target environment: `python services/api/scripts/seed.py --pilot-demo`.
+6. Restart/redeploy API service.
+7. Restart/redeploy monitoring worker service.
+8. Redeploy/restart web service so it points at the intended API URL for that environment.
+
 ## Public self-serve SaaS mode (Railway + Vercel + Neon)
 
-The repo now supports a production-oriented **public self-serve SaaS mode** alongside the existing local/demo mode. Demo endpoints and UI still work, but authenticated live-mode actions persist workspace-scoped data through `services/api` into Neon Postgres. The backend deployment model remains the same: Railway still runs the existing API Dockerfile, and Vercel still hosts the Next.js frontend.
+The repo now supports a production-oriented **public self-serve SaaS mode** alongside the existing local/demo mode. Demo endpoints and UI still work, while authenticated live-mode actions persist workspace-scoped data through `services/api` into Postgres (local or hosted, including Neon). The backend deployment model remains the same: Railway still runs the existing API Dockerfile, and Vercel still hosts the Next.js frontend.
 
 ### Pilot architecture changes
 
