@@ -121,12 +121,23 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
     pilot.rollback_enforcement_action('act-rollback', request)
 
     event_types = [event for event, _ in timeline_events]
-    assert 'alert.escalated' in event_types
-    assert 'response_action.created' in event_types
-    assert 'response_action.proposed' in event_types
-    assert 'response_action.executed' in event_types
-    assert 'response_action.rolled_back' in event_types
+    expected_order = [
+        'alert.escalated',
+        'evidence.linked',
+        'response_action.created',
+        'response_action.proposed',
+        'response_action.executed',
+        'response_action.rollback_created',
+        'response_action.rollback_completed',
+        'response_action.rolled_back',
+    ]
+    assert event_types == expected_order
 
     escalation_event = next(metadata for event, metadata in timeline_events if event == 'alert.escalated')
     assert escalation_event.get('evidence_reference', {}).get('evidence_id') == 'evidence-1'
     assert escalation_event.get('evidence_reference', {}).get('tx_hash') == '0xabc'
+    linked_evidence_event = next(metadata for event, metadata in timeline_events if event == 'evidence.linked')
+    assert linked_evidence_event.get('evidence_reference', {}).get('evidence_id') == 'evidence-1'
+    assert linked_evidence_event.get('external_references', {}).get('safe_tx_hash') == '0xabc'
+    proposed_event = next(metadata for event, metadata in timeline_events if event == 'response_action.proposed')
+    assert proposed_event.get('external_references', {}).get('safe_tx_hash') == '0xsafehash'
