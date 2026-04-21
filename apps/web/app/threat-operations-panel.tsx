@@ -8,6 +8,7 @@ import { usePilotAuth } from 'app/pilot-auth-context';
 import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, type ResponseActionCapability } from './response-action-capabilities';
 import { hasLiveTelemetry, monitoringHealthyCopyAllowed } from './workspace-monitoring-truth';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
+import ThreatChainPanel from './threat-chain-panel';
 
 type Props = { apiUrl: string };
 const RUNTIME_STATUS_PROXY_PATH = '/api/ops/monitoring/runtime-status';
@@ -65,6 +66,12 @@ type AlertRow = {
   target_id?: string;
   response_action_mode?: string | null;
   linked_action_id?: string | null;
+  linked_evidence_count?: number | null;
+  last_evidence_at?: string | null;
+  evidence_origin?: string | null;
+  tx_hash?: string | null;
+  block_number?: number | null;
+  detector_kind?: string | null;
 };
 
 type IncidentRow = {
@@ -78,6 +85,12 @@ type IncidentRow = {
   response_action_mode?: string | null;
   linked_detection_id?: string | null;
   linked_action_id?: string | null;
+  linked_evidence_count?: number | null;
+  last_evidence_at?: string | null;
+  evidence_origin?: string | null;
+  tx_hash?: string | null;
+  block_number?: number | null;
+  detector_kind?: string | null;
 };
 type ActionHistoryRow = {
   id: string;
@@ -142,6 +155,12 @@ type DetectionRow = {
   linked_alert_id?: string | null;
   linked_incident_id?: string | null;
   linked_action_id?: string | null;
+  linked_evidence_count?: number | null;
+  last_evidence_at?: string | null;
+  tx_hash?: string | null;
+  block_number?: number | null;
+  detector_kind?: string | null;
+  evidence_origin?: string | null;
 };
 
 type ThreatFeedState = 'Live' | 'Historical' | 'Test' | 'Stale' | 'Investigating' | 'Resolved';
@@ -1238,6 +1257,29 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       },
     ];
   }, [actionHistory, alerts, detections, incidents, monitoringRuns]);
+  const chainPanelSelection = useMemo(() => {
+    const latestDetection = detections
+      .slice()
+      .sort((a, b) => new Date(b.detected_at || 0).getTime() - new Date(a.detected_at || 0).getTime())[0] ?? null;
+    const linkedAlert = latestDetection?.linked_alert_id
+      ? alerts.find((item) => item.id === latestDetection.linked_alert_id) ?? null
+      : null;
+    const linkedIncident = linkedAlert?.incident_id
+      ? incidents.find((item) => item.id === linkedAlert.incident_id) ?? null
+      : null;
+    return {
+      detectionId: latestDetection?.id ?? null,
+      alertId: latestDetection?.linked_alert_id ?? linkedAlert?.id ?? null,
+      incidentId: latestDetection?.linked_incident_id ?? linkedAlert?.incident_id ?? linkedIncident?.id ?? null,
+      actionId: latestDetection?.linked_action_id ?? linkedAlert?.linked_action_id ?? linkedIncident?.linked_action_id ?? null,
+      linkedEvidenceCount: latestDetection?.linked_evidence_count ?? linkedAlert?.linked_evidence_count ?? linkedIncident?.linked_evidence_count ?? null,
+      lastEvidenceAt: latestDetection?.last_evidence_at ?? linkedAlert?.last_evidence_at ?? linkedIncident?.last_evidence_at ?? null,
+      evidenceOrigin: latestDetection?.evidence_origin ?? linkedAlert?.evidence_origin ?? linkedIncident?.evidence_origin ?? null,
+      txHash: latestDetection?.tx_hash ?? linkedAlert?.tx_hash ?? linkedIncident?.tx_hash ?? null,
+      blockNumber: latestDetection?.block_number ?? linkedAlert?.block_number ?? linkedIncident?.block_number ?? null,
+      detectorKind: latestDetection?.detector_kind ?? linkedAlert?.detector_kind ?? linkedIncident?.detector_kind ?? null,
+    };
+  }, [alerts, detections, incidents]);
 
   useEffect(() => {
     void fetch(`${apiUrl}/response/action-capabilities`, { headers: authHeaders(), cache: 'no-store' })
@@ -1695,6 +1737,28 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   </div>
                 ))}
                 <div className="stack compactStack">
+                  <ThreatChainPanel
+                    detectionId={chainPanelSelection.detectionId}
+                    alertId={chainPanelSelection.alertId}
+                    incidentId={chainPanelSelection.incidentId}
+                    actionId={chainPanelSelection.actionId}
+                    linkedEvidenceCount={chainPanelSelection.linkedEvidenceCount}
+                    lastEvidenceAt={chainPanelSelection.lastEvidenceAt}
+                    evidenceOrigin={chainPanelSelection.evidenceOrigin}
+                    txHash={chainPanelSelection.txHash}
+                    blockNumber={chainPanelSelection.blockNumber}
+                    detectorKind={chainPanelSelection.detectorKind}
+                    liveLikeMode={monitoringPresentation.evidenceSourceLabel === 'live'}
+                    onOpenEvidence={() => {
+                      const detection = chainPanelSelection.detectionId ? detections.find((item) => item.id === chainPanelSelection.detectionId) : null;
+                      setEvidenceDrawer({
+                        detectionId: chainPanelSelection.detectionId || undefined,
+                        title: detection?.title || 'Threat chain evidence',
+                        summary: detection?.evidence_summary || 'No evidence summary available.',
+                        raw: detection?.raw_evidence_json ?? null,
+                      });
+                    }}
+                  />
                   {threatChainSteps.map((step) => (
                     <div key={step.id} className="overviewListItem">
                       <div>

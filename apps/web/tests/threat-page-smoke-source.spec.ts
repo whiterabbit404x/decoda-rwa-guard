@@ -19,16 +19,22 @@ test('threat page keeps all major operations panels and simulator/live labels', 
   expect(threat).toContain('Evidence source {monitoringPresentation.evidenceSourceLabel}');
 
   expect(threat).toContain('simulatorMode ?');
-  expect(threat).toContain('Simulator evidence');
+  expect(threat).toContain('Simulator/demo evidence (not live)');
   expect(alertsPage).toContain("? 'SIMULATED'");
   expect(incidentsPage).toContain("? 'SIMULATED'");
+  expect(alertsPage).toContain('ThreatChainPanel');
+  expect(incidentsPage).toContain('ThreatChainPanel');
 });
 
 test('evidence drawer keeps summary and raw evidence rendering', () => {
   const threat = appSource('threat-operations-panel.tsx');
+  const chainPanel = appSource('threat-chain-panel.tsx');
 
   expect(threat).toContain('setEvidenceDrawer({');
   expect(threat).toContain('Open evidence');
+  expect(chainPanel).toContain('Threat chain summary');
+  expect(chainPanel).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this chain has no persisted evidence yet.');
+  expect(chainPanel).toContain('Link href={step.href} prefetch={false}');
   expect(threat).toContain('role="dialog" aria-label="Evidence details"');
   expect(threat).toContain('Summary: {evidenceDrawer.summary || \'No evidence summary available.\'}');
   expect(threat).toContain("JSON.stringify(evidenceDrawer.raw ?? { message: 'No raw evidence found.' }, null, 2)");

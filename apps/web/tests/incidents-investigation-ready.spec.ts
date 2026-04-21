@@ -13,9 +13,9 @@ test('incidents workflow supports timeline, evidence language, and incident expo
   const incidentsClient = read('(product)/incidents-page-client.tsx');
 
   expect(incidentsClient).toContain('/incidents/${selectedId}/timeline');
-  expect(incidentsClient).toContain('No incidents');
-  expect(incidentsClient).toContain('No evidence ≠ safe');
-  expect(incidentsClient).toContain('Export incident report');
-  expect(incidentsClient).toContain('/exports/incident-report');
-  expect(incidentsClient).toContain('All workflow statuses');
+  expect(incidentsClient).toContain('Incident queue');
+  expect(incidentsClient).toContain('ThreatChainPanel');
+  expect(incidentsClient).toContain('onOpenEvidence');
+  expect(incidentsClient).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this incident has no persisted linked evidence yet.');
+  expect(incidentsClient).toContain('Chain');
 });

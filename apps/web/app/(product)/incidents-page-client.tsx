@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { usePilotAuth } from '../pilot-auth-context';
 import { actionDisabledReason, actionModeLabel, capabilityMapFromPayload, isActionDisabledInMode, type ResponseActionCapability } from '../response-action-capabilities';
+import ThreatChainPanel from '../threat-chain-panel';
 
 const WORKFLOW_STATUSES = ['open', 'investigating', 'contained', 'resolved', 'reopened'] as const;
 
@@ -166,11 +167,20 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
               <p className="muted">Severity: {selected.severity || 'n/a'} · Owner: {selected.owner_user_id || selected.assignee_user_id || 'unassigned'}</p>
               <p className="muted">Linked alerts: {(selected.linked_alert_ids || []).join(', ') || 'none'}</p>
               <p className="muted">Created: {selected.created_at ? new Date(selected.created_at).toLocaleString() : 'n/a'} · Resolved: {selected.resolved_at ? new Date(selected.resolved_at).toLocaleString() : 'not resolved'}</p>
-              <div className="emptyStatePanel">
-                <h4>Threat chain summary</h4>
-                <p className="tableMeta">Detection: {selected.linked_detection_id || 'n/a'} · Alert: {selected.source_alert_id || 'n/a'} · Incident: {selected.id} · Action: {selected.linked_action_id || 'n/a'}</p>
-                <p className="tableMeta">Last evidence at: {selected.last_evidence_at ? new Date(selected.last_evidence_at).toLocaleString() : 'n/a'} · Incident created: {selected.created_at ? new Date(selected.created_at).toLocaleString() : 'n/a'}</p>
-              </div>
+              <ThreatChainPanel
+                detectionId={selected.linked_detection_id}
+                alertId={selected.source_alert_id}
+                incidentId={selected.id}
+                actionId={selected.linked_action_id}
+                linkedEvidenceCount={selected.linked_evidence_count}
+                lastEvidenceAt={selected.last_evidence_at}
+                evidenceOrigin={selected.evidence_origin || selected.evidence_source}
+                txHash={selected.tx_hash || evidence?.tx_hash}
+                blockNumber={selected.block_number || evidence?.block_number}
+                detectorKind={selected.detector_kind}
+                liveLikeMode={liveLikeMode}
+                onOpenEvidence={() => setMessage(selected.source_alert_id ? 'Evidence loaded from linked source alert below.' : 'No linked source alert evidence is available for this incident.')}
+              />
               <div className="buttonRow">
                 <select value={actionMode} onChange={(event) => setActionMode(event.target.value as 'simulated' | 'recommended' | 'live')}>
                   <option value="simulated">SIMULATED mode</option>
@@ -190,11 +200,10 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
                 <button type="button" disabled={isActionDisabledInMode(actionCapabilities.freeze_wallet, actionMode)} title={actionDisabledReason(actionCapabilities.freeze_wallet, actionMode) || ''} onClick={() => void runSimulatedAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet ({actionExecutionLabel})</button>
                 <button type="button" disabled={isActionDisabledInMode(actionCapabilities.disable_monitored_system, actionMode)} title={actionDisabledReason(actionCapabilities.disable_monitored_system, actionMode) || ''} onClick={() => void runSimulatedAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system ({actionExecutionLabel})</button>
                 <button type="button" disabled={isActionDisabledInMode(actionCapabilities.suppress_rule, actionMode)} title={actionDisabledReason(actionCapabilities.suppress_rule, actionMode) || ''} onClick={() => void runSimulatedAction('suppress_rule', 'Suppress rule')}>Suppress/mute rule ({actionExecutionLabel})</button>
-                <button type="button" onClick={() => setMessage(selected.source_alert_id ? 'Evidence loaded from linked source alert below.' : 'No linked source alert evidence is available for this incident.')}>Open evidence</button>
               </div>
               {actionMode === 'live' ? <p className="tableMeta">Live constraints: unsupported actions show “Unsupported live action”; manual paths show “Manual-only in live mode”.</p> : null}
               <p className="tableMeta">Response actions: Freeze wallet · Block transaction · Revoke approval · Disable monitored system · Suppress rule · Notify team</p>
-              {liveLikeMode && noEvidenceLinked ? <p className="statusLine">Evidence degraded: no linked evidence is currently persisted for this incident in LIVE/HYBRID monitoring mode.</p> : null}
+              {liveLikeMode && noEvidenceLinked ? <p className="statusLine">Degraded evidence state: LIVE/HYBRID monitoring is active but this incident has no persisted linked evidence yet.</p> : null}
               <p className="tableMeta">Evidence source {selected.evidence_origin || selected.evidence_source || 'n/a'} · tx {selected.tx_hash || evidence?.tx_hash || 'n/a'} · block {selected.block_number || evidence?.block_number || 'n/a'} · detector {selected.detector_kind || 'n/a'}</p>
               <p className="sectionEyebrow">Merged event timeline</p>
               {timeline.map((item, index) => <p key={`${item.id || index}`}>{item.event_type}: {item.message || ''} · {item.created_at ? new Date(item.created_at).toLocaleString() : 'n/a'}</p>)}

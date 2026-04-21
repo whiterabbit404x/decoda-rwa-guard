@@ -76,6 +76,15 @@ class _Conn:
                         'raw_evidence_json': {},
                         'monitoring_run_id': 'run-1',
                         'linked_alert_id': 'alert-1',
+                        'linked_incident_id': 'inc-1',
+                        'linked_action_id': 'action-1',
+                        'linked_evidence_count': 2,
+                        'last_evidence_at': '2026-04-18T01:00:00Z',
+                        'last_evidence_source': 'chain-indexer',
+                        'last_evidence_origin': 'live',
+                        'chain_tx_hash': '0xfeed',
+                        'chain_block_number': 12345,
+                        'chain_detector_kind': 'contract-call-anomaly',
                         'created_at': '2026-04-18T00:00:00Z',
                         'updated_at': '2026-04-18T00:00:00Z',
                     }
@@ -108,6 +117,11 @@ def test_list_detections_returns_workspace_rows(monkeypatch):
     assert len(payload['detections']) == 1
     assert payload['detections'][0]['id'] == 'det-1'
     assert payload['detections'][0]['linked_alert_id'] == 'alert-1'
+    assert payload['detections'][0]['linked_evidence_count'] == 2
+    assert payload['detections'][0]['tx_hash'] == '0xfeed'
+    assert payload['detections'][0]['block_number'] == 12345
+    assert payload['detections'][0]['detector_kind'] == 'contract-call-anomaly'
+    assert payload['detections'][0]['chain_linked_ids']['incident_id'] == 'inc-1'
 
 
 def test_get_detection_returns_detail(monkeypatch):

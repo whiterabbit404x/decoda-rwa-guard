@@ -124,9 +124,9 @@ def test_history_actions_endpoint_and_linked_ids_in_payloads(monkeypatch):
             if 'FROM action_history' in normalized:
                 return _Result(rows=[{'id': 'h-1', 'object_type': 'alert', 'object_id': 'alert-1', 'action_type': 'alert.escalated_to_incident'}])
             if 'FROM alerts a' in normalized:
-                return _Result(rows=[{'id': 'alert-1', 'detection_id': 'det-1', 'incident_id': 'inc-1', 'assigned_to': 'user-2', 'evidence_summary': 'summary'}])
+                return _Result(rows=[{'id': 'alert-1', 'detection_id': 'det-1', 'incident_id': 'inc-1', 'assigned_to': 'user-2', 'evidence_summary': 'summary', 'linked_action_id': 'action-1'}])
             if 'FROM incidents i' in normalized:
-                return _Result(rows=[{'id': 'inc-1', 'source_alert_id': 'alert-1', 'status': 'open', 'workflow_status': 'open'}])
+                return _Result(rows=[{'id': 'inc-1', 'source_alert_id': 'alert-1', 'linked_detection_id': 'det-1', 'linked_action_id': 'action-1', 'status': 'open', 'workflow_status': 'open'}])
             return _Result()
 
     @contextmanager
@@ -148,4 +148,6 @@ def test_history_actions_endpoint_and_linked_ids_in_payloads(monkeypatch):
     assert history_response.status_code == 200
     assert history_response.json()['history'][0]['action_type'] == 'alert.escalated_to_incident'
     assert alerts_response.json()['alerts'][0]['incident_id'] == 'inc-1'
+    assert alerts_response.json()['alerts'][0]['chain_linked_ids']['action_id'] == 'action-1'
     assert incidents_response.json()['incidents'][0]['source_alert_id'] == 'alert-1'
+    assert incidents_response.json()['incidents'][0]['chain_linked_ids']['detection_id'] == 'det-1'
