@@ -11,11 +11,12 @@ function read(relativePath: string) {
 
 test('incidents workflow supports timeline, evidence language, and incident export', async () => {
   const incidentsClient = read('(product)/incidents-page-client.tsx');
+  const chainPanel = read('threat-chain-panel.tsx');
 
   expect(incidentsClient).toContain('/incidents/${selectedId}/timeline');
   expect(incidentsClient).toContain('Incident queue');
   expect(incidentsClient).toContain('ThreatChainPanel');
   expect(incidentsClient).toContain('onOpenEvidence');
-  expect(incidentsClient).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this incident has no persisted linked evidence yet.');
+  expect(chainPanel).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this chain has no persisted evidence yet.');
   expect(incidentsClient).toContain('Chain');
 });

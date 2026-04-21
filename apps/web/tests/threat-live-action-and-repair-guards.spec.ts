@@ -53,9 +53,11 @@ test('threat row builder excludes unrelated workspace-global alert and incident 
 test('LIVE/HYBRID empty states use no-evidence degraded copy instead of healthy all-clear wording', () => {
   const alertsPage = read('(product)/alerts-page-client.tsx');
   const incidentsPage = read('(product)/incidents-page-client.tsx');
+  const chainPanel = read('threat-chain-panel.tsx');
 
-  expect(alertsPage).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this alert has no persisted linked evidence yet.');
-  expect(incidentsPage).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this incident has no persisted linked evidence yet.');
+  expect(chainPanel).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this chain has no persisted evidence yet.');
+  expect(alertsPage).not.toContain('this alert has no persisted linked evidence yet');
+  expect(incidentsPage).not.toContain('this incident has no persisted linked evidence yet');
 
   expect(alertsPage.toLowerCase()).not.toContain('all clear');
   expect(incidentsPage.toLowerCase()).not.toContain('all clear');
@@ -89,5 +91,5 @@ test('repair flow exposes deterministic pending/success/failure transitions', ()
   expect(source).toContain('Parsing repair response…');
   expect(source).toContain('Refreshing monitored systems from workspace truth…');
   expect(source).toContain("Repair {reconcileSummary.state || 'success'} (reconcile id: {reconcileSummary.reconcile_id || 'unknown'})");
-  expect(source).toContain('Repair failed during {repairFailureReason.stage}.');
+  expect(source).toContain('Repair failed during {repairFailureReason.backendStage || repairFailureReason.stage}.');
 });

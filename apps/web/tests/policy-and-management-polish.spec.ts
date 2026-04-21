@@ -13,7 +13,7 @@ test('threat operations panel emphasizes monitoring and investigation over manua
   expect(threat).toContain('Recent Detections');
   expect(threat).toContain('Protected systems and telemetry coverage');
   expect(threat).toContain('Response Actions');
-  expect(threat).toContain('Open evidence');
+  expect(threat).toContain('Open evidence drawer');
   expect(threat).not.toContain('Advanced policy configuration (JSON)');
   expect(threat).not.toContain('Run analysis');
   expect(threat).not.toContain('scenario presets');

@@ -35,7 +35,7 @@ test('renders evidence drawer and keeps SIMULATED labels explicit', () => {
   expect(threat).toContain('role="dialog" aria-label="Evidence details"');
   expect(threat).toContain('<p className="sectionEyebrow">Evidence</p>');
   expect(threat).toContain('<strong>SIMULATED</strong> non-live action');
-  expect(chainPanel).toContain('Open evidence');
+  expect(chainPanel).toContain('Open evidence drawer');
   expect(chainPanel).toContain("label: 'Detection'");
   expect(chainPanel).toContain("label: 'Incident'");
 
@@ -43,8 +43,9 @@ test('renders evidence drawer and keeps SIMULATED labels explicit', () => {
   expect(incidents).toContain("? 'SIMULATED'");
   expect(alerts).toContain('Recommended mode (SIMULATED)');
   expect(incidents).toContain('Recommended mode (SIMULATED)');
-  expect(alerts).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this alert has no persisted linked evidence yet.');
-  expect(incidents).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this incident has no persisted linked evidence yet.');
+  expect(chainPanel).toContain('Degraded evidence state: LIVE/HYBRID monitoring is active but this chain has no persisted evidence yet.');
+  expect(alerts).not.toContain('this alert has no persisted linked evidence yet');
+  expect(incidents).not.toContain('this incident has no persisted linked evidence yet');
 });
 
 test('threat quick actions require linked context selection or explicit unlinked mode', () => {
