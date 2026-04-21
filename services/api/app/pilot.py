@@ -180,6 +180,24 @@ def database_url() -> str | None:
     return value or None
 
 
+def resolve_db_backend() -> str:
+    db_url = database_url()
+    if not db_url:
+        return 'sqlite'
+    parsed = urlsplit(db_url)
+    scheme = (parsed.scheme or '').lower()
+    hostname = (parsed.hostname or '').strip().lower()
+    if scheme.startswith('sqlite'):
+        return 'sqlite'
+    if scheme.startswith('postgres'):
+        if hostname in {'localhost', '127.0.0.1', 'docker-local'} or hostname.endswith('.docker-local'):
+            return 'postgres_local'
+        if '.neon.tech' in hostname:
+            return 'postgres_hosted_neon'
+        return 'postgres_hosted_other'
+    return 'sqlite'
+
+
 def runtime_environment_identity() -> dict[str, Any]:
     db_url = database_url()
     db_fingerprint = hashlib.sha256(db_url.encode('utf-8')).hexdigest()[:12] if db_url else 'missing'
@@ -188,6 +206,7 @@ def runtime_environment_identity() -> dict[str, Any]:
         'live_mode_enabled': live_mode_enabled(),
         'railway_environment': os.getenv('RAILWAY_ENVIRONMENT_NAME', '').strip() or None,
         'railway_service': os.getenv('RAILWAY_SERVICE_NAME', '').strip() or None,
+        'database_backend': resolve_db_backend(),
         'database_fingerprint': db_fingerprint,
     }
 
