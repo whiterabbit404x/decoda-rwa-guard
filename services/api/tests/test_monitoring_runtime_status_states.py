@@ -117,6 +117,60 @@ def test_runtime_status_active_with_recent_evidence(monkeypatch):
     assert payload['workspace_monitoring_summary']['field_reason_codes'].get('protected_assets') != ['query_failure']
 
 
+def test_runtime_status_transitions_across_continuous_monitoring_lifecycle(monkeypatch):
+    now = datetime.now(timezone.utc)
+    health_state: dict[str, object] = {
+        'last_heartbeat_at': now.isoformat(),
+        'last_cycle_at': now.isoformat(),
+        'degraded': False,
+        'last_error': None,
+        'source_type': 'polling',
+        'worker_running': True,
+    }
+
+    class _TransitionConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                now_iso = now.isoformat()
+                return _Result(
+                    rows=[
+                        {
+                            'id': 'sys-1',
+                            'workspace_id': 'ws-1',
+                            'asset_id': 'asset-1',
+                            'target_id': 'target-1',
+                            'is_enabled': True,
+                            'runtime_status': 'active',
+                            'last_heartbeat': now_iso,
+                            'last_event_at': now_iso,
+                            'last_coverage_telemetry_at': now_iso,
+                            'monitoring_interval_seconds': 30,
+                            'created_at': now_iso,
+                        },
+                    ]
+                )
+            return super().execute(query, params)
+
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_TransitionConn(None)))
+    monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: dict(health_state))
+
+    idle_payload = monitoring_runner.monitoring_runtime_status()
+    assert idle_payload['status'] == 'Idle'
+    assert idle_payload['runtime_status_summary'] in {'idle', 'healthy', 'live'}
+
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_TransitionConn(now - timedelta(seconds=20))))
+    active_payload = monitoring_runner.monitoring_runtime_status()
+    assert active_payload['status'] == 'Active'
+    assert active_payload['runtime_status_summary'] in {'active', 'healthy', 'live'}
+
+    health_state.update({'degraded': True, 'degraded_reason': 'stale_heartbeat'})
+    degraded_payload = monitoring_runner.monitoring_runtime_status()
+    assert degraded_payload['monitoring_status'] in {'degraded', 'limited'}
+    assert degraded_payload['status'] == 'Degraded'
+
+
 def test_runtime_status_active_live_coverage_promotes_mode_out_of_degraded(monkeypatch):
     now = datetime.now(timezone.utc)
 

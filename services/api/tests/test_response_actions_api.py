@@ -380,6 +380,9 @@ def test_execute_live_freeze_wallet_writes_governance_metadata_and_timeline(monk
     timeline_calls = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
     assert any(params[3] == 'response_action.proposed' for params in timeline_calls)
     assert any('governance_action_id' in str(params[6]) for params in timeline_calls)
+    assert any('gov-123' in str(params[6]) for params in timeline_calls)
+    assert any('attestation_hash' in str(params[6]) for params in timeline_calls)
+    assert any('attest-123' in str(params[6]) for params in timeline_calls)
     assert 'enforcement.action.execute' in audit_events
 
 
