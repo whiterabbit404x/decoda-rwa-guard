@@ -15,6 +15,9 @@ export type WorkspaceMonitoringSummary = {
   active_alerts_count: number;
   active_incidents_count: number;
   evidence_source_summary: 'live' | 'simulator' | 'replay' | 'none';
+  continuity_status?: 'live_continuous' | 'degraded' | 'offline' | 'idle_no_telemetry';
+  continuity_reason_codes?: string[];
+  continuity_signals?: Record<string, unknown>;
   contradiction_flags: string[];
   guard_flags: string[];
   status_reason: string | null;

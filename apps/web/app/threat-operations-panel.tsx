@@ -586,6 +586,7 @@ export function derivePageState(params: {
   summaryStatusReason?: string | null;
   summaryConfigurationReason?: string | null;
   summaryConfigurationReasonCodes?: string[];
+  continuityStatus?: 'live_continuous' | 'degraded' | 'offline' | 'idle_no_telemetry' | null;
 }): PageOperationalState {
   const {
     loadingSnapshot,
@@ -609,6 +610,7 @@ export function derivePageState(params: {
     summaryStatusReason,
     summaryConfigurationReason,
     summaryConfigurationReasonCodes = [],
+    continuityStatus,
   } = params;
   const runtimeQueryFailure = hasRuntimeQueryFailureMarker({
     statusReason,
@@ -633,8 +635,17 @@ export function derivePageState(params: {
   }
   if (!workspaceConfigured) return 'fetch_error';
 
-  if (runtimeStatus === 'offline') {
+  if (continuityStatus === 'offline' || runtimeStatus === 'offline') {
     return 'offline_no_telemetry';
+  }
+  if (continuityStatus === 'idle_no_telemetry') {
+    return 'configured_no_signals';
+  }
+  if (continuityStatus === 'degraded') {
+    return 'degraded_partial';
+  }
+  if (continuityStatus === 'live_continuous') {
+    return liveDetections.length > 0 ? 'healthy_live' : 'configured_no_signals';
   }
 
   if (
@@ -668,18 +679,25 @@ export function formatSystemsPanelWarning(failedEndpoints: SnapshotFailureKey[])
   return failedEndpoints.includes('systems') ? 'Systems list unavailable' : null;
 }
 
-export function pageStatePrimaryCopy(state: PageOperationalState, configurationReason?: string | null): string {
+export function pageStatePrimaryCopy(
+  state: PageOperationalState,
+  configurationReason?: string | null,
+  continuityStatus?: 'live_continuous' | 'degraded' | 'offline' | 'idle_no_telemetry' | null,
+): string {
   if (state === 'healthy_live') {
     return 'Live monitoring is healthy. Telemetry freshness and threat detections reflect current workspace conditions.';
   }
   if (state === 'configured_no_signals') {
-    return 'Monitoring healthy. No active detections right now. Live telemetry remains current across reporting systems.';
+    if (continuityStatus === 'live_continuous') {
+      return 'Telemetry continuity is live and continuous. No active detections are currently open.';
+    }
+    return 'No telemetry continuity is currently proven for this workspace. Active detections are not currently available.';
   }
   if (state === 'unconfigured_workspace') {
     return `Workspace is not configured: ${configurationReasonMessage(configurationReason)} Live threat detection starts only after persisted linkage is valid.`;
   }
   if (state === 'offline_no_telemetry') {
-    return 'Monitoring is offline.';
+    return 'Monitoring continuity is offline with no current telemetry.';
   }
   if (state === 'fetch_error') {
     return 'Backend telemetry/runtime retrieval failed, so monitoring data is temporarily unavailable.';
@@ -687,24 +705,24 @@ export function pageStatePrimaryCopy(state: PageOperationalState, configurationR
   return 'Monitoring is partially degraded. Threat outcomes may be delayed or incomplete.';
 }
 
-function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null }) {
+function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason, continuityStatus }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null; continuityStatus?: 'live_continuous' | 'degraded' | 'offline' | 'idle_no_telemetry' | null }) {
   if (state === 'healthy_live') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason)}</p>;
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus)}</p>;
   }
   if (state === 'configured_no_signals') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason)}</p>;
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus)}</p>;
   }
   if (state === 'unconfigured_workspace') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason)}</p>;
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus)}</p>;
   }
   if (state === 'offline_no_telemetry') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason)} Reason: {reason || 'no active reporting systems'}. Add one monitored system and confirm telemetry flow.</p>;
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus)} Reason: {reason || 'no active reporting systems'}. Add one monitored system and confirm telemetry flow.</p>;
   }
   if (state === 'fetch_error') {
     return (
       <div className="emptyStatePanel">
         <h4>Telemetry retrieval degraded</h4>
-        <p className="muted">{pageStatePrimaryCopy(state, configurationReason)}</p>
+        <p className="muted">{pageStatePrimaryCopy(state, configurationReason, continuityStatus)}</p>
         {reason ? <p className="tableMeta">Backend reason: {reason}</p> : null}
         <p className="tableMeta">Last telemetry: {telemetryLabel} · Last successful poll: {pollLabel}</p>
         <div className="buttonRow">
@@ -1007,6 +1025,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     summaryStatusReason: truth.status_reason,
     summaryConfigurationReason: null,
     summaryConfigurationReasonCodes: [],
+    continuityStatus: truth.continuity_status,
   });
 
   const coverageSummary = `${Math.max(reportingSystems, 0)} / ${Math.max(configuredSystems, 0)}`;
@@ -1318,7 +1337,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Open alerts {openAlerts}</span>
           <span className="ruleChip">Active incidents {activeIncidents}</span>
         </div>
-        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth.status_reason} configurationReason={null} />
+        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth.status_reason} configurationReason={null} continuityStatus={truth.continuity_status} />
         {dbPersistenceOutageActive ? (
           <p className="statusLine">
             Persistence outage active: {dbPersistenceOutageReason}. Simulator/demo rows remain visible but are excluded from live-evidence claims.

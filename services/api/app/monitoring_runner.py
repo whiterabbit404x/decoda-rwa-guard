@@ -47,6 +47,7 @@ from services.api.app.pilot import (
     ensure_monitoring_runtime_schema_capabilities,
     reconcile_enabled_targets_monitored_systems,
     _target_health_payload,
+    evaluate_workspace_monitoring_continuity,
 )
 from services.api.app.threat_payloads import ThreatKind, normalize_threat_payload
 
@@ -4542,6 +4543,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             db_persistence_available=db_persistence_available,
             db_persistence_reason=db_persistence_reason,
         )
+        continuity_evaluation = evaluate_workspace_monitoring_continuity(
+            now=now,
+            workspace_configured=workspace_configured,
+            worker_running=runner_alive,
+            last_heartbeat_at=last_heartbeat,
+            last_event_at=last_telemetry_at,
+            last_detection_at=latest_detection_evaluation_at,
+            heartbeat_ttl_seconds=max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3),
+            telemetry_window_seconds=telemetry_window_seconds,
+            detection_window_seconds=max(900, MONITOR_POLL_INTERVAL_SECONDS * 10),
+        )
+        summary.update(continuity_evaluation)
         summary_freshness_status = str(summary.get('telemetry_freshness') or '').strip().lower()
         summary_confidence_status = str(summary.get('confidence') or '').strip().lower()
         strict_live_healthy_proof = bool(
@@ -4660,6 +4673,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'telemetry_kind': telemetry_kind,
             'last_detection_at': latest_detection_evaluation_at.isoformat() if latest_detection_evaluation_at else None,
             'workspace_monitoring_summary': summary,
+            'continuity_status': summary.get('continuity_status'),
+            'continuity_reason_codes': list(summary.get('continuity_reason_codes') or []),
+            'continuity_signals': dict(summary.get('continuity_signals') or {}),
             'field_reason_codes': {},
             'db_failure_classification': None,
             'db_failure_reason': None,
