@@ -220,3 +220,58 @@ def test_non_billing_health_endpoint_still_works_when_billing_unconfigured(api_m
     payload = response.json()
     assert payload['status'] == 'ok'
     assert payload['billing']['status'] == 'not_configured'
+
+
+def test_run_startup_migrations_enabled_path_supports_local_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
+    from services.api.app import pilot
+
+    class _Conn:
+        pass
+
+    class _Ctx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    ensure_calls: list[object] = []
+
+    monkeypatch.setenv('APP_MODE', 'local')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://pilot:pilot@localhost:5432/decoda')
+    monkeypatch.setenv('RUN_MIGRATIONS_ON_STARTUP', 'true')
+    monkeypatch.setattr(pilot, 'run_migrations', lambda: ['0041_local_monitoring.sql'])
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _Ctx())
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda connection: ensure_calls.append(connection))
+    monkeypatch.setattr(pilot, '_fetch_missing_runtime_schema_columns', lambda connection: {})
+
+    payload = pilot.run_startup_migrations_if_enabled(process_role='api')
+
+    assert payload['enabled'] is True
+    assert payload['ran'] is True
+    assert payload['applied_versions'] == ['0041_local_monitoring.sql']
+    assert ensure_calls
+
+
+def test_validate_runtime_configuration_accepts_local_postgres_without_neon_host_requirement(monkeypatch: pytest.MonkeyPatch) -> None:
+    from services.api.app import pilot
+
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.setenv('APP_MODE', 'local')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://pilot:pilot@db.internal.local:5432/decoda')
+    monkeypatch.setenv('AUTH_TOKEN_SECRET', 'secret')
+    monkeypatch.setenv('SECRET_ENCRYPTION_KEY', 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=')
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('EMAIL_FROM', 'ops@decoda.app')
+    monkeypatch.setenv('EMAIL_RESEND_API_KEY', 're_123')
+    monkeypatch.setenv('REDIS_URL', 'redis://localhost:6379/0')
+    monkeypatch.setenv('BILLING_ENABLED', 'false')
+
+    payload = pilot.validate_runtime_configuration()
+
+    assert payload['checks']['database_backend_postgres']['ok'] is True
+    assert payload['checks']['database_url']['ok'] is True
+    assert payload['errors'] == []
+    assert all('.neon.tech' not in error for error in payload['errors'])

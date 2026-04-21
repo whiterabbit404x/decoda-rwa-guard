@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from services.api.app import pilot
 
 
@@ -110,3 +112,36 @@ def test_pg_connection_passes_hardening_options(monkeypatch) -> None:
         'keepalives_interval': 11,
         'keepalives_count': 4,
     }
+
+
+def test_runtime_mode_config_summary_selects_sqlite_local_postgres_and_neon(monkeypatch) -> None:
+    original_app_mode = os.getenv('APP_MODE')
+
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+
+    monkeypatch.delenv('DATABASE_URL', raising=False)
+    monkeypatch.setenv('APP_MODE', 'demo')
+    sqlite_summary = pilot.runtime_mode_config_summary()
+    assert sqlite_summary['backend_classification'] == 'sqlite'
+    assert sqlite_summary['resolved_app_mode'] == 'demo'
+    assert sqlite_summary['live_mode_enabled'] is False
+    assert sqlite_summary['postgres_required_for_live_mode'] is True
+
+    monkeypatch.setenv('APP_MODE', 'local')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://pilot:pilot@localhost:5432/decoda')
+    local_postgres_summary = pilot.runtime_mode_config_summary()
+    assert local_postgres_summary['backend_classification'] == 'postgres_local'
+    assert local_postgres_summary['resolved_app_mode'] == 'live'
+    assert local_postgres_summary['live_mode_enabled'] is True
+    assert local_postgres_summary['auth_worker_persistence_enabled'] is True
+
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://pilot:pilot@ep-blue-river-123456.us-east-2.aws.neon.tech:5432/decoda')
+    neon_summary = pilot.runtime_mode_config_summary()
+    assert neon_summary['backend_classification'] == 'postgres_hosted_neon'
+    assert neon_summary['live_mode_enabled'] is True
+    assert neon_summary['auth_worker_persistence_enabled'] is True
+
+    if original_app_mode is None:
+        monkeypatch.delenv('APP_MODE', raising=False)
+    else:
+        monkeypatch.setenv('APP_MODE', original_app_mode)
