@@ -72,13 +72,18 @@ def build_realistic_demo_chain(monitoring_bootstrap: dict[str, object]) -> dict[
 def seed() -> None:
     args = parse_args()
     local_state = seed_local_state()
+    print('Seeded local SQLite registry/demo state for dashboard fallback workflows:')
     print(pretty_json(local_state))
+    print('Local SQLite seed complete. This does not modify Postgres pilot/auth data.')
     if args.pilot_demo:
+        print('Running optional Postgres pilot demo seed for monitoring/auth workflows (--pilot-demo).')
         applied = run_migrations()
         if applied:
             print('Applied migrations before seeding live pilot data:')
             for version in applied:
                 print(f'- {version}')
+        else:
+            print('No pending migrations detected before pilot demo seed.')
         print(pretty_json({'pilot_schema_status': pilot_schema_status()}))
         seeded = seed_demo_workspace(args.demo_email, args.demo_password, args.demo_workspace, args.demo_full_name)
         print(pretty_json(seeded))
@@ -92,6 +97,8 @@ def seed() -> None:
                 )
             )
         print(pretty_json({'demo_seed_status': demo_seed_status(args.demo_email)}))
+    else:
+        print('Skipping Postgres pilot demo seed. Re-run with --pilot-demo to seed monitoring/auth demo data.')
 
 
 if __name__ == '__main__':

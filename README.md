@@ -98,7 +98,38 @@ python services/api/scripts/migrate.py
 python services/api/scripts/seed.py --pilot-demo
 ```
 
-The pilot demo seed creates a workspace-scoped demo account in Postgres while preserving the original local SQLite registry seed for demo mode. You can override the seeded credentials with `--demo-email`, `--demo-password`, `--demo-workspace`, and `--demo-full-name`.
+`python services/api/scripts/seed.py` always seeds the local SQLite registry/demo data used by local fallback mode.
+
+`python services/api/scripts/seed.py --pilot-demo` additionally runs the optional Postgres pilot seed for monitoring/auth workflows (workspace + user bootstrap). You can override the seeded credentials with `--demo-email`, `--demo-password`, `--demo-workspace`, and `--demo-full-name`.
+
+### Local happy-path bootstrap (no hosted dependency required)
+
+Use this local sequence when running API + worker + web together:
+
+```bash
+# 1) migrate local Postgres
+python services/api/scripts/migrate.py
+
+# 2) optional: seed Postgres pilot demo data for monitoring/auth workflows
+python services/api/scripts/seed.py --pilot-demo
+
+# 3) run API (terminal A)
+python scripts/run_service.py api --reload
+
+# 4) run monitoring worker (terminal B)
+python -m services.api.app.run_monitoring_worker --worker-name local-monitor-worker --interval-seconds 15 --limit 50
+
+# 5) run web app (terminal C)
+cd apps/web && npm run dev
+```
+
+Optional helper target:
+
+```bash
+make local-bootstrap-happy-path
+```
+
+`RUN_MIGRATIONS_ON_STARTUP` remains explicit opt-in only. Keep it disabled by default so normal startup does not depend on hosted services.
 
 ### Railway deploy / update flow
 

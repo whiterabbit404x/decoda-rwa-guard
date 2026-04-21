@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts local-bootstrap-happy-path
 
 up:
 	docker compose up -d
@@ -87,3 +87,15 @@ validate-feature1-live-artifacts:
 proof-feature1-live:
 	python services/api/scripts/run_feature1_live_proof.py
 	$(MAKE) validate-feature1-live-artifacts
+
+local-bootstrap-happy-path:
+	@echo "Step 1/5: migrate local Postgres"
+	python services/api/scripts/migrate.py
+	@echo "Step 2/5 (optional): seed Postgres pilot demo data for monitoring/auth workflows"
+	@echo "python services/api/scripts/seed.py --pilot-demo"
+	@echo "Step 3/5: run API"
+	@echo "python scripts/run_service.py api --reload"
+	@echo "Step 4/5: run monitoring worker"
+	@echo "python -m services.api.app.run_monitoring_worker --worker-name local-monitor-worker --interval-seconds 15 --limit 50"
+	@echo "Step 5/5: run web app"
+	@echo "cd apps/web && npm run dev"
