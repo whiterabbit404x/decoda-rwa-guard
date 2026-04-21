@@ -14,6 +14,7 @@ test('reconcile pending to success is driven by backend state and reconcile id',
   expect(source).toContain('state: payload?.state,');
   expect(source).toContain('reconcile_id: payload?.reconcile_id ?? null,');
   expect(source).toContain("setLastReconcileId(localSummary.reconcile_id ?? null);");
+  expect(source).not.toContain('setSystems(reconciledSystems);');
   expect(source).toContain("setRepairState('success');");
 });
 
@@ -21,7 +22,8 @@ test('reconcile pending to failure is terminal and surfaces backend code + reaso
   const source = readAppFile('monitored-systems-manager.tsx');
   expect(source).toContain("setRepairState('failure');");
   expect(source).toContain("Code ${repairFailureReason.backendCode}.");
-  expect(source).toContain('Repair failed during {repairFailureReason.stage}.');
+  expect(source).toContain('Repair failed during {repairFailureReason.backendStage || repairFailureReason.stage}.');
+  expect(source).toContain("backendCode: 'repair_terminal_state_timeout'");
 });
 
 test('reconcile pending to no-op-with-reasons maps to failure UX with explicit code', () => {
@@ -39,4 +41,5 @@ test('toggle conflict/rollback behavior re-fetches and applies server truth only
   expect(source).toContain('const authoritative = refreshedSystems.find((row) => row.id === system.id);');
   expect(source).toContain('Toggle was rolled back by server truth.');
   expect(source).toContain('Unable to update system status.');
+  expect(source).toContain('[stage:${errorDetail.stage}]');
 });
