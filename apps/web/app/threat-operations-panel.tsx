@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import type { MonitoringPresentationStatus } from './monitoring-status-presentation';
 import { usePilotAuth } from 'app/pilot-auth-context';
-import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, type ResponseActionCapability } from './response-action-capabilities';
+import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from './response-action-capabilities';
 import { hasLiveTelemetry, monitoringHealthyCopyAllowed } from './workspace-monitoring-truth';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import ThreatChainPanel from './threat-chain-panel';
@@ -1341,12 +1341,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const action = await create.json();
     const execute = await fetch(`${apiUrl}/response/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
     const executePayload = await execute.json().catch(() => ({}));
-    const executionState = String(executePayload?.execution_state || '');
-    if (execute.ok && (executionState === 'simulated_executed' || executionState === 'live_executed')) {
-      setResponseToast(`SIMULATED ${label} executed.`);
+    const executionResult = responseActionExecutionMessage(executePayload);
+    if (execute.ok && executionResult.isSuccess) {
+      setResponseToast(executionResult.text);
       return;
     }
-    setResponseToast(String(executePayload?.reason || `SIMULATED ${label} could not be executed.`));
+    setResponseToast(executionResult.text || `SIMULATED ${label} could not be executed.`);
   }
 
   return (

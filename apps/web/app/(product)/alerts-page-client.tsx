@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePilotAuth } from '../pilot-auth-context';
-import { actionDisabledReason, actionModeLabel, capabilityMapFromPayload, isActionDisabledInMode, type ResponseActionCapability } from '../response-action-capabilities';
+import { actionDisabledReason, actionModeLabel, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from '../response-action-capabilities';
 import ThreatChainPanel from '../threat-chain-panel';
 
 export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
@@ -128,14 +128,14 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
     const action = await create.json();
     const execute = await fetch(`${apiUrl}/response/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
     const executePayload = await execute.json().catch(() => ({}));
-    const executionState = String(executePayload?.execution_state || '');
-    if (execute.ok && (executionState === 'simulated_executed' || executionState === 'live_executed')) {
-      setMessage(`${modeLabel} ${label} executed.`);
+    const executionResult = responseActionExecutionMessage(executePayload);
+    if (execute.ok && executionResult.isSuccess) {
+      setMessage(executionResult.text);
       await refreshSelectedAlertState(selectedAlert.id);
       return;
     }
     await refreshSelectedAlertState(selectedAlert.id);
-    setMessage(String(executePayload?.reason || `${modeLabel} ${label} could not be executed.`));
+    setMessage(executionResult.text || `${modeLabel} ${label} could not be executed.`);
   }
   const liveLikeMode = evidenceSourceSummary === 'live' || evidenceSourceSummary === 'hybrid';
   const noEvidenceLinked = Number(selectedAlert?.linked_evidence_count || 0) <= 0;
