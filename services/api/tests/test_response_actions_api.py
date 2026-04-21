@@ -41,7 +41,19 @@ def test_create_response_action_translates_legacy_payload_and_writes_history(mon
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
 
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
-    payload = {'action_type': 'revoke_erc20_approval', 'dry_run': True, 'params': {'token_contract': '0x1111111111111111111111111111111111111111', 'spender': '0x2222222222222222222222222222222222222222'}}
+    payload = {
+        'action_type': 'revoke_erc20_approval',
+        'dry_run': True,
+        'incident_id': 'inc-1',
+        'alert_id': 'alert-1',
+        'params': {
+            'token_contract': '0x1111111111111111111111111111111111111111',
+            'spender': '0x2222222222222222222222222222222222222222',
+            'safe_tx_hash': '0xseed-safe',
+            'governance_action_id': 'gov-seed-1',
+            'attestation_hash': 'att-seed-1',
+        },
+    }
     response = pilot.create_enforcement_action(payload, request)
 
     assert response['action_type'] == 'revoke_approval'
@@ -54,6 +66,11 @@ def test_create_response_action_translates_legacy_payload_and_writes_history(mon
     history_calls = [params for statement, params in executed if 'INSERT INTO action_history' in statement]
     assert history_calls
     assert any(params[6] == 'response_action.created' for params in history_calls)
+    timeline_calls = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
+    assert any(params[3] == 'response_action.created' for params in timeline_calls)
+    assert any('0xseed-safe' in str(params[6]) for params in timeline_calls)
+    assert any('gov-seed-1' in str(params[6]) for params in timeline_calls)
+    assert any('att-seed-1' in str(params[6]) for params in timeline_calls)
 
 
 def test_execute_response_action_returns_back_compat_dry_run_flag(monkeypatch):
@@ -209,6 +226,9 @@ def test_execute_live_unsupported_action_returns_structured_error_without_execut
         and params[0] == 'failed'
         for statement, params in executed
     )
+    timeline_calls = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
+    assert any(params[3] == 'response_action.unsupported' for params in timeline_calls)
+    assert any('external_references' in str(params[6]) for params in timeline_calls)
     assert not any("SET status = 'executed'" in statement for statement, _ in executed)
 
 
@@ -399,6 +419,8 @@ def test_execute_live_manual_only_action_returns_manual_required_state(monkeypat
     assert response['live_execution_path'] == 'manual_only'
     assert response['reason'] == 'Manual-only in live mode'
     assert any("SET status = 'pending'" in statement and 'execution_metadata' in statement for statement, _ in executed)
+    timeline_calls = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
+    assert any(params[3] == 'response_action.manual_required' for params in timeline_calls)
     assert not any("SET status = 'executed'" in statement for statement, _ in executed)
 
 

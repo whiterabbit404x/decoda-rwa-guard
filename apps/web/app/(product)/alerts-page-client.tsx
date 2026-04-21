@@ -74,6 +74,11 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
     if (evidenceResponse.ok) setEvidence((await evidenceResponse.json()).evidence ?? null);
   }
 
+  async function refetchLinkedIncidentTimeline(incidentId?: string | null) {
+    if (!incidentId) return;
+    await fetch(`${apiUrl}/incidents/${incidentId}/timeline`, { headers: authHeaders(), cache: 'no-store' });
+  }
+
   async function patchAlert(nextStatus: 'acknowledged' | 'resolved' | 'suppressed') {
     if (!selectedAlert) return;
     const response = await fetch(`${apiUrl}/alerts/${selectedAlert.id}`, {
@@ -126,15 +131,18 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
       return;
     }
     const action = await create.json();
+    await refetchLinkedIncidentTimeline(selectedAlert.incident_id);
     const execute = await fetch(`${apiUrl}/response/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
     const executePayload = await execute.json().catch(() => ({}));
     const executionResult = responseActionExecutionMessage(executePayload);
     if (execute.ok && executionResult.isSuccess) {
       setMessage(executionResult.text);
       await refreshSelectedAlertState(selectedAlert.id);
+      await refetchLinkedIncidentTimeline(selectedAlert.incident_id);
       return;
     }
     await refreshSelectedAlertState(selectedAlert.id);
+    await refetchLinkedIncidentTimeline(selectedAlert.incident_id);
     setMessage(executionResult.text || `${modeLabel} ${label} could not be executed.`);
   }
   const liveLikeMode = evidenceSourceSummary === 'live' || evidenceSourceSummary === 'hybrid';

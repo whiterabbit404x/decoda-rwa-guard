@@ -48,9 +48,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
 
   useEffect(() => {
     if (!selectedId) return;
-    void fetch(`${apiUrl}/incidents/${selectedId}/timeline`, { headers: authHeaders(), cache: 'no-store' })
-      .then((response) => response.ok ? response.json() : null)
-      .then((payload) => setTimeline(payload?.timeline ?? []));
+    void fetchIncidentTimeline(selectedId);
   }, [apiUrl, authHeaders, selectedId]);
   useEffect(() => {
     if (!selected?.source_alert_id) {
@@ -69,10 +67,14 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
       .catch(() => setEvidenceSourceSummary('none'));
   }, [apiUrl, authHeaders]);
 
-  async function refreshSelectedIncidentState(incidentId: string, sourceAlertId?: string | null) {
-    await load();
+  async function fetchIncidentTimeline(incidentId: string) {
     const timelineResponse = await fetch(`${apiUrl}/incidents/${incidentId}/timeline`, { headers: authHeaders(), cache: 'no-store' });
     if (timelineResponse.ok) setTimeline((await timelineResponse.json()).timeline ?? []);
+  }
+
+  async function refreshSelectedIncidentState(incidentId: string, sourceAlertId?: string | null) {
+    await load();
+    await fetchIncidentTimeline(incidentId);
     if (sourceAlertId) {
       const evidenceResponse = await fetch(`${apiUrl}/alerts/${sourceAlertId}/evidence`, { headers: authHeaders(), cache: 'no-store' });
       if (evidenceResponse.ok) setEvidence((await evidenceResponse.json()).evidence ?? null);
@@ -133,6 +135,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
       return;
     }
     const action = await create.json();
+    await fetchIncidentTimeline(selected.id);
     const execute = await fetch(`${apiUrl}/response/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
     const executePayload = await execute.json().catch(() => ({}));
     const executionResult = responseActionExecutionMessage(executePayload);

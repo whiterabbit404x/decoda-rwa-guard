@@ -7836,6 +7836,29 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
                 },
             },
         )
+        if latest_evidence is not None:
+            append_incident_timeline_event(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                incident_id=incident_id,
+                event_type='evidence.linked',
+                message='Latest alert evidence linked to incident timeline.',
+                actor_user_id=user['id'],
+                metadata={
+                    'alert_id': alert_id,
+                    'detection_id': alert.get('detection_id'),
+                    'external_references': {
+                        'safe_tx_hash': latest_evidence.get('tx_hash'),
+                        'governance_action_id': None,
+                        'attestation_hash': None,
+                    },
+                    'evidence_reference': {
+                        'evidence_id': str(latest_evidence.get('id') or ''),
+                        'tx_hash': latest_evidence.get('tx_hash'),
+                        'observed_at': latest_evidence.get('observed_at'),
+                    },
+                },
+            )
         connection.commit()
         return {'incident_id': incident_id, 'alert_id': alert_id, 'status': 'open'}
 
@@ -8479,6 +8502,11 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
             execution_metadata['erc20_approve_amount'] = str(amount)
             if params.get('previous_allowance') is not None:
                 execution_metadata['previous_allowance'] = str(params.get('previous_allowance'))
+        external_references = {
+            'safe_tx_hash': params.get('safe_tx_hash'),
+            'governance_action_id': params.get('governance_action_id'),
+            'attestation_hash': params.get('attestation_hash'),
+        }
         connection.execute(
             '''
             INSERT INTO response_actions (
@@ -8535,7 +8563,14 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 event_type='response_action.created',
                 message='Response action created.',
                 actor_user_id=user['id'],
-                metadata={'response_action_id': action_id, 'action_type': action_type, 'mode': mode, 'status': status_value, 'alert_id': alert_id},
+                metadata={
+                    'response_action_id': action_id,
+                    'action_type': action_type,
+                    'mode': mode,
+                    'status': status_value,
+                    'alert_id': alert_id,
+                    'external_references': external_references,
+                },
             )
         if alert_id:
             write_action_history(
@@ -8677,6 +8712,27 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 action_type='response_action.manual_required',
                 details={'mode': action.get('mode'), 'action_type': action.get('action_type')},
             )
+            append_incident_timeline_event(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                incident_id=str(action.get('incident_id') or ''),
+                event_type='response_action.manual_required',
+                message='Response action requires manual execution in selected mode.',
+                actor_user_id=user['id'],
+                metadata={
+                    'response_action_id': action_id,
+                    'action_type': action.get('action_type'),
+                    'mode': action.get('mode'),
+                    'status': next_status,
+                    'execution_state': execution_state,
+                    'alert_id': action.get('alert_id'),
+                    'external_references': {
+                        'safe_tx_hash': metadata.get('safe_tx_hash'),
+                        'governance_action_id': metadata.get('external_governance_action_id'),
+                        'attestation_hash': metadata.get('attestation_hash'),
+                    },
+                },
+            )
         else:
             metadata['execution_mode'] = 'unsupported'
             metadata['execution_state'] = 'unsupported'
@@ -8709,6 +8765,11 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                     'status': 'failed',
                     'execution_state': 'unsupported',
                     'alert_id': action.get('alert_id'),
+                    'external_references': {
+                        'safe_tx_hash': metadata.get('safe_tx_hash'),
+                        'governance_action_id': metadata.get('external_governance_action_id'),
+                        'attestation_hash': metadata.get('attestation_hash'),
+                    },
                 },
             )
             connection.commit()
@@ -8855,6 +8916,27 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
             ),
         )
         connection.execute('UPDATE response_actions SET status = %s, rolled_back_at = NOW() WHERE id = %s', ('canceled', action_id))
+        append_incident_timeline_event(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            incident_id=str(action.get('incident_id') or ''),
+            event_type='response_action.rollback_created',
+            message='Compensating rollback action created.',
+            actor_user_id=user['id'],
+            metadata={
+                'response_action_id': action_id,
+                'compensating_action_id': rollback_id,
+                'compensating_action_type': compensating_type,
+                'action_type': action.get('action_type'),
+                'mode': action.get('mode'),
+                'alert_id': action.get('alert_id'),
+                'external_references': {
+                    'safe_tx_hash': action.get('safe_tx_hash'),
+                    'governance_action_id': metadata.get('external_governance_action_id'),
+                    'attestation_hash': metadata.get('attestation_hash'),
+                },
+            },
+        )
         write_action_history(
             connection,
             workspace_id=workspace_context['workspace_id'],
@@ -8864,6 +8946,27 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
             object_id=action_id,
             action_type='response_action.rolled_back',
             details={'compensating_action_id': rollback_id, 'compensating_action_type': compensating_type},
+        )
+        append_incident_timeline_event(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            incident_id=str(action.get('incident_id') or ''),
+            event_type='response_action.rollback_completed',
+            message='Response action rollback completed with compensating action.',
+            actor_user_id=user['id'],
+            metadata={
+                'response_action_id': action_id,
+                'compensating_action_id': rollback_id,
+                'compensating_action_type': compensating_type,
+                'action_type': action.get('action_type'),
+                'mode': action.get('mode'),
+                'alert_id': action.get('alert_id'),
+                'external_references': {
+                    'safe_tx_hash': action.get('safe_tx_hash'),
+                    'governance_action_id': metadata.get('external_governance_action_id'),
+                    'attestation_hash': metadata.get('attestation_hash'),
+                },
+            },
         )
         append_incident_timeline_event(
             connection,
