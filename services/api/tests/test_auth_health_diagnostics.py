@@ -148,6 +148,32 @@ def test_auth_signin_route_returns_graceful_json_when_auth_db_is_unavailable(api
     }
 
 
+def test_auth_signin_route_supports_generic_postgres_dsn_without_neon_host(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'enforce_auth_rate_limit', lambda request, action: None)
+    monkeypatch.setattr(api_main, 'database_url', lambda: 'postgresql://pilot:pilot@db.internal.local:5432/decoda')
+
+    def _raise_db_unavailable(payload, request):
+        raise HTTPException(
+            status_code=503,
+            detail='Authentication is temporarily unavailable. Please retry in a moment.',
+            headers={
+                'X-Decoda-Error-Code': 'AUTH_BACKEND_UNAVAILABLE',
+                'X-Decoda-DB-Classification': 'db_unavailable',
+            },
+        )
+
+    monkeypatch.setattr(api_main, 'signin_user', _raise_db_unavailable)
+
+    response = client.post('/auth/signin', json={'email': 'demo@decoda.app', 'password': 'PilotDemoPass123!'})
+    payload = response.json()
+
+    assert response.status_code == 503
+    assert payload['code'] == 'AUTH_BACKEND_UNAVAILABLE'
+    assert payload['classification'] == 'db_unavailable'
+    assert '.neon.tech' not in str(payload)
+
+
 def test_health_endpoint_masks_database_url(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
     client = TestClient(api_main.app)
     monkeypatch.setattr(api_main, 'database_url', lambda: 'postgres://user:pass@example.internal:5432/app')

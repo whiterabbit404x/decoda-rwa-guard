@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from services.api.app import monitoring_runner
+from services.api.app import pilot
 from services.api.app import run_monitoring_worker
 
 
@@ -402,6 +403,64 @@ def test_monitoring_cycle_persists_workspace_run_counts(monkeypatch):
     assert update[3] == 3
     assert update[4] == 2
     assert update[5] == 3
+
+
+def test_local_postgres_runtime_enables_monitoring_worker_persistence(monkeypatch):
+    monkeypatch.setenv('APP_MODE', 'local')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://pilot:pilot@localhost:5432/decoda')
+
+    summary = pilot.runtime_mode_config_summary()
+
+    assert summary['configured_app_mode'] == 'local'
+    assert summary['backend_classification'] == 'postgres_local'
+    assert summary['live_mode_enabled'] is True
+    assert summary['auth_worker_persistence_enabled'] is True
+    assert summary['demo_only_mode'] is False
+
+
+def test_monitoring_cycle_keeps_truth_payload_under_local_postgres_mode(monkeypatch):
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'target-1',
+            'name': 'Target 1',
+            'asset_id': 'asset-1',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+    monkeypatch.setenv('APP_MODE', 'local')
+    monkeypatch.setenv('LIVE_MODE_ENABLED', 'true')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://pilot:pilot@localhost:5432/decoda')
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda _connection, target, triggered_by_user_id=None: {
+            'alerts_generated': 0,
+            'incidents_created': 0,
+            'events_ingested': 1,
+            'target_id': target['id'],
+            'status': 'completed',
+            'truth_payload': {'truthfulness_state': 'not_claim_safe', 'evidence_state': 'real'},
+            'runs': ['run-1'],
+        },
+    )
+
+    result = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10, trigger_type='scheduler')
+
+    assert result['live_mode'] is True
+    assert result['runs'][0]['truth_payload']['truthfulness_state'] == 'not_claim_safe'
+    assert result['runs'][0]['truth_payload']['evidence_state'] == 'real'
 
 
 def test_worker_once_mode_runs_single_cycle(monkeypatch):
