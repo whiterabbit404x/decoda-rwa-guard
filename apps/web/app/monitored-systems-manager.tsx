@@ -84,6 +84,11 @@ type RepairFailureReason = {
   backendStage?: string | null;
 };
 
+type ReconcileTransportDebug = {
+  status: number | null;
+  detail: string | null;
+};
+
 function formatReasonCounts(label: string, reasons: Record<string, number>): string {
   const entries = Object.entries(reasons);
   if (!entries.length) {
@@ -119,6 +124,8 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const [lastReconcileId, setLastReconcileId] = useState<string | null>(null);
   const [lastRepairClickAt, setLastRepairClickAt] = useState<string | null>(null);
   const [summary, setSummary] = useState<MonitoringRuntimeStatus['workspace_monitoring_summary'] | null>(null);
+  const [retryPausedReason, setRetryPausedReason] = useState<string | null>(null);
+  const [reconcileTransportDebug, setReconcileTransportDebug] = useState<ReconcileTransportDebug | null>(null);
 
   async function load(options?: { failureMessage?: string; rethrow?: boolean }) {
     if (isDev) {
@@ -168,6 +175,8 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
 
     setMessage('');
     setRepairFailureReason(null);
+    setReconcileTransportDebug(null);
+    setRetryPausedReason(null);
     setRepairState('pending_request');
 
     let stage: 'request' | 'parse' | 'refresh' = 'request';
@@ -207,6 +216,10 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
 
       if (!contentType.toLowerCase().includes('application/json')) {
         const responseText = await response.text();
+        setReconcileTransportDebug({
+          status: response.status,
+          detail: responseText.trim() || null,
+        });
         if (isDev) {
           console.debug('[monitored-systems] reconcile response was not JSON', responseText);
         }
@@ -217,6 +230,11 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         };
       } else {
         const payload = await response.json();
+        const errorDetail = extractErrorDetail(payload);
+        setReconcileTransportDebug({
+          status: response.status,
+          detail: errorDetail.reason || errorDetail.message || null,
+        });
         if (isDev) {
           console.debug('[monitored-systems] reconcile response parsed');
           console.debug('[monitored-systems] reconcile parsed payload', payload);
@@ -237,7 +255,6 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         setLastReconcileId(localSummary.reconcile_id ?? null);
 
         if (!response.ok) {
-          const errorDetail = extractErrorDetail(payload);
           failedReason = {
             stage: 'reconcile',
             code: errorDetail.code || 'reconcile_request_rejected',
@@ -289,6 +306,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
 
       if (failedReason) {
         setRepairFailureReason(failedReason);
+        setRetryPausedReason(failedReason.backendReason);
         setRepairState('failure');
         didResolveTerminalState = true;
       } else {
@@ -308,18 +326,23 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
             ? 'Repair request timed out before the server responded.'
             : 'Repair request failed before the server responded.',
         });
+        setRetryPausedReason(isTimeout
+          ? 'Repair request timed out before the server responded.'
+          : 'Repair request failed before the server responded.');
       } else if (stage === 'parse') {
         setRepairFailureReason({
           stage: 'parse',
           code: isTimeout ? 'repair_parse_timeout' : 'repair_parse_failed',
           backendReason: isTimeout ? 'Repair response timed out while parsing.' : 'Repair response could not be parsed.',
         });
+        setRetryPausedReason(isTimeout ? 'Repair response timed out while parsing.' : 'Repair response could not be parsed.');
       } else {
         setRepairFailureReason({
           stage: 'refresh',
           code: isTimeout ? 'repair_refresh_timeout' : 'repair_refresh_failed',
           backendReason: isTimeout ? 'Repair refresh timed out.' : 'Repair finished, but refreshing monitored systems failed.',
         });
+        setRetryPausedReason(isTimeout ? 'Repair refresh timed out.' : 'Repair finished, but refreshing monitored systems failed.');
       }
       setRepairState('failure');
       didResolveTerminalState = true;
@@ -337,6 +360,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
           code: 'repair_terminal_state_timeout',
           backendReason: 'Repair did not reach a terminal state and was safely failed.',
         });
+        setRetryPausedReason('Repair did not reach a terminal state and was safely failed.');
         setRepairState('failure');
       }
     }
@@ -395,6 +419,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const pollLabel = truth.last_poll_at ? new Date(truth.last_poll_at).toLocaleString() : 'Not available';
   const showLiveTelemetry = hasLiveTelemetry(truth);
   const isRepairPending = repairState === 'pending_request' || repairState === 'pending_parse' || repairState === 'pending_refresh';
+  const isRetryPaused = Boolean(retryPausedReason) && !isRepairPending;
 
   return (
     <section className="dataCard stack compactStack" data-monitored-systems-build={monitoredSystemsClientBuildTag}>
@@ -406,10 +431,15 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         </p>
       ) : null}
       <div className="buttonRow">
-        <button type="button" onClick={() => void runReconcile()} disabled={isRepairPending}>
+        <button type="button" onClick={() => void runReconcile()} disabled={isRepairPending || isRetryPaused} title={isRetryPaused ? 'Resolve backend reconcile reason before retrying.' : undefined}>
           {isRepairPending ? 'Repairing monitored systems…' : 'Repair monitored systems'}
         </button>
       </div>
+      {isRepairPending ? (
+        <p className="tableMeta" role="status" aria-live="polite">
+          If “Repairing monitored systems…” appears stuck for over 20 seconds, hard refresh and reopen /monitored-systems to verify whether changes persisted.
+        </p>
+      ) : null}
       {repairState === 'pending_request' ? (
         <p className="statusLine" role="status" aria-live="polite">
           Sending repair request…
@@ -445,6 +475,21 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
           {repairFailureReason.code ? `Code ${repairFailureReason.code}. ` : ''}
           Repair failed during {repairFailureReason.backendStage || repairFailureReason.stage}.{' '}
           {repairFailureReason.backendReason}
+        </p>
+      ) : null}
+      {retryPausedReason ? (
+        <p className="statusLine" role="alert" aria-live="assertive">
+          Retry loop paused until backend reason is resolved: {retryPausedReason}
+        </p>
+      ) : null}
+      {repairState === 'failure' ? (
+        <p className="tableMeta" role="status" aria-live="polite">
+          After hard refresh, verify /monitored-systems: if data persisted, treat this as a frontend state-sync issue; if data did not persist, treat this as an API reconcile failure.
+        </p>
+      ) : null}
+      {reconcileTransportDebug ? (
+        <p className="tableMeta" role="status" aria-live="polite">
+          Reconcile backend response: status {reconcileTransportDebug.status ?? 'unknown'} · detail {reconcileTransportDebug.detail || 'none'}
         </p>
       ) : null}
       {systems.length === 0 ? (
