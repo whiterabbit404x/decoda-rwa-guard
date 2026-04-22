@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePilotAuth } from '../pilot-auth-context';
 import { actionDisabledReason, actionModeLabel, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from '../response-action-capabilities';
 import ThreatChainPanel from '../threat-chain-panel';
@@ -21,6 +21,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
   const [actionCapabilities, setActionCapabilities] = useState<Record<string, ResponseActionCapability>>({});
   const [evidenceSourceSummary, setEvidenceSourceSummary] = useState('none');
   const [evidence, setEvidence] = useState<any>(null);
+  const evidenceSectionRef = useRef<HTMLParagraphElement | null>(null);
 
   async function load() {
     const params = new URLSearchParams();
@@ -37,6 +38,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
     ? 'SIMULATED'
     : null;
   const actionExecutionLabel = actionModeLabel(actionMode);
+  const linkedEvidenceCount = Number(selected?.linked_evidence_count || 0);
 
   useEffect(() => { void load(); }, [status, owner]);
   useEffect(() => {
@@ -160,6 +162,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
         <div className="twoColumnSection">
           <article className="dataCard">
             <p className="sectionEyebrow">Incident queue</p>
+            {!incidents.length ? <p className="muted">No incidents available for the current filters.</p> : null}
             {incidents.map((incident) => <button key={incident.id} type="button" className="overviewListItem" onClick={() => setSelectedId(incident.id)}><strong>{incident.title || incident.event_type}</strong> · {incident.workflow_status || incident.status}</button>)}
           </article>
           <article className="dataCard">
@@ -170,6 +173,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
               <p className="muted">Linked alerts: {(selected.linked_alert_ids || []).join(', ') || 'none'}</p>
               <p className="muted">Created: {selected.created_at ? new Date(selected.created_at).toLocaleString() : 'n/a'} · Resolved: {selected.resolved_at ? new Date(selected.resolved_at).toLocaleString() : 'not resolved'}</p>
               <ThreatChainPanel
+                chainLinkedIds={selected.chain_linked_ids}
                 detectionId={selected.linked_detection_id}
                 alertId={selected.source_alert_id}
                 incidentId={selected.id}
@@ -182,8 +186,10 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
                 detectorKind={selected.detector_kind}
                 liveLikeMode={liveLikeMode}
                 evidenceDrawerLabel="Open evidence drawer"
-                onOpenEvidence={() => setMessage(selected.source_alert_id ? 'Evidence loaded from linked source alert below.' : 'No linked source alert evidence is available for this incident.')}
+                onOpenEvidence={() => evidenceSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
               />
+              {liveLikeMode && linkedEvidenceCount <= 0 ? <p className="statusLine">LIVE/HYBRID degraded state: no persisted evidence is linked yet. Open the evidence drawer section below for fallback payload context.</p> : null}
+              {!liveLikeMode && linkedEvidenceCount <= 0 ? <p className="muted">No linked evidence is persisted for this incident yet. Open the evidence drawer section below for available payload context.</p> : null}
               <div className="buttonRow">
                 <select value={actionMode} onChange={(event) => setActionMode(event.target.value as 'simulated' | 'recommended' | 'live')}>
                   <option value="simulated">SIMULATED mode</option>
@@ -206,7 +212,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
               </div>
               {actionMode === 'live' ? <p className="tableMeta">Live constraints: unsupported actions show “Unsupported live action”; manual paths show “Manual-only in live mode”.</p> : null}
               <p className="tableMeta">Response actions: Freeze wallet · Block transaction · Revoke approval · Disable monitored system · Suppress rule · Notify team</p>
-              <p className="tableMeta">Evidence source {selected.evidence_origin || selected.evidence_source || 'n/a'} · tx {selected.tx_hash || evidence?.tx_hash || 'n/a'} · block {selected.block_number || evidence?.block_number || 'n/a'} · detector {selected.detector_kind || 'n/a'}</p>
+              <p ref={evidenceSectionRef} className="tableMeta">Evidence source {selected.evidence_origin || selected.evidence_source || 'n/a'} · tx {selected.tx_hash || evidence?.tx_hash || 'n/a'} · block {selected.block_number || evidence?.block_number || 'n/a'} · detector {selected.detector_kind || 'n/a'}</p>
               <p className="sectionEyebrow">Merged event timeline</p>
               {timeline.map((item, index) => <p key={`${item.id || index}`}>{item.event_type}: {item.message || ''} · {item.created_at ? new Date(item.created_at).toLocaleString() : 'n/a'}</p>)}
               <div className="buttonRow">
