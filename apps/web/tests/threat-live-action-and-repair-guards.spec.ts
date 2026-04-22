@@ -101,6 +101,11 @@ test('repair flow exposes deterministic pending/success/failure transitions', ()
   expect(source).toContain('Sending repair request…');
   expect(source).toContain('Parsing repair response…');
   expect(source).toContain('Refreshing monitored systems from workspace truth…');
+  expect(source).toContain('If “Repairing monitored systems…” appears stuck for over 20 seconds, hard refresh and reopen /monitored-systems to verify whether changes persisted.');
   expect(source).toContain("Repair {reconcileSummary.state || 'success'} (reconcile id: {reconcileSummary.reconcile_id || 'unknown'})");
   expect(source).toContain('Repair failed during {repairFailureReason.backendStage || repairFailureReason.stage}.');
+  expect(source).toContain('After hard refresh, verify /monitored-systems: if data persisted, treat this as a frontend state-sync issue; if data did not persist, treat this as an API reconcile failure.');
+  expect(source).toContain('Retry loop paused until backend reason is resolved: {retryPausedReason}');
+  expect(source).toContain("disabled={isRepairPending || isRetryPaused}");
+  expect(source).toContain('Reconcile backend response: status {reconcileTransportDebug.status ?? \'unknown\'} · detail {reconcileTransportDebug.detail || \'none\'}');
 });
