@@ -1522,6 +1522,22 @@ def append_incident_timeline_event(
     )
 
 
+
+
+def _incident_external_references(
+    *,
+    safe_tx_hash: Any = None,
+    governance_action_id: Any = None,
+    attestation: Any = None,
+) -> dict[str, Any]:
+    return {
+        'safe_tx_hash': safe_tx_hash,
+        'governance_action_id': governance_action_id,
+        'attestation': attestation,
+        'attestation_hash': attestation,
+    }
+
+
 def build_user_response(connection: psycopg.Connection, user_id: str) -> dict[str, Any]:
     user = connection.execute(
         '''
@@ -7925,11 +7941,9 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
             metadata={
                 'alert_id': alert_id,
                 'detection_id': alert.get('detection_id'),
-                'external_references': {
-                    'safe_tx_hash': latest_evidence.get('tx_hash') if latest_evidence is not None else None,
-                    'governance_action_id': None,
-                    'attestation_hash': None,
-                },
+                'external_references': _incident_external_references(
+                    safe_tx_hash=latest_evidence.get('tx_hash') if latest_evidence is not None else None,
+                ),
                 'evidence_reference': {
                     'evidence_id': str(latest_evidence.get('id') or '') if latest_evidence is not None else None,
                     'tx_hash': latest_evidence.get('tx_hash') if latest_evidence is not None else None,
@@ -7948,11 +7962,9 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
                 metadata={
                     'alert_id': alert_id,
                     'detection_id': alert.get('detection_id'),
-                    'external_references': {
-                        'safe_tx_hash': latest_evidence.get('tx_hash'),
-                        'governance_action_id': None,
-                        'attestation_hash': None,
-                    },
+                    'external_references': _incident_external_references(
+                        safe_tx_hash=latest_evidence.get('tx_hash'),
+                    ),
                     'evidence_reference': {
                         'evidence_id': str(latest_evidence.get('id') or ''),
                         'tx_hash': latest_evidence.get('tx_hash'),
@@ -8641,11 +8653,11 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
             execution_metadata['erc20_approve_amount'] = str(amount)
             if params.get('previous_allowance') is not None:
                 execution_metadata['previous_allowance'] = str(params.get('previous_allowance'))
-        external_references = {
-            'safe_tx_hash': params.get('safe_tx_hash'),
-            'governance_action_id': params.get('governance_action_id'),
-            'attestation_hash': params.get('attestation_hash'),
-        }
+        external_references = _incident_external_references(
+            safe_tx_hash=params.get('safe_tx_hash'),
+            governance_action_id=params.get('governance_action_id'),
+            attestation=params.get('attestation') or params.get('attestation_hash'),
+        )
         connection.execute(
             '''
             INSERT INTO response_actions (
@@ -8866,11 +8878,11 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                     'status': next_status,
                     'execution_state': execution_state,
                     'alert_id': action.get('alert_id'),
-                    'external_references': {
-                        'safe_tx_hash': metadata.get('safe_tx_hash'),
-                        'governance_action_id': metadata.get('external_governance_action_id'),
-                        'attestation_hash': metadata.get('attestation_hash'),
-                    },
+                    'external_references': _incident_external_references(
+                        safe_tx_hash=metadata.get('safe_tx_hash'),
+                        governance_action_id=metadata.get('external_governance_action_id'),
+                        attestation=metadata.get('attestation') or metadata.get('attestation_hash'),
+                    ),
                 },
             )
         else:
@@ -8905,11 +8917,11 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                     'status': 'failed',
                     'execution_state': 'unsupported',
                     'alert_id': action.get('alert_id'),
-                    'external_references': {
-                        'safe_tx_hash': metadata.get('safe_tx_hash'),
-                        'governance_action_id': metadata.get('external_governance_action_id'),
-                        'attestation_hash': metadata.get('attestation_hash'),
-                    },
+                    'external_references': _incident_external_references(
+                        safe_tx_hash=metadata.get('safe_tx_hash'),
+                        governance_action_id=metadata.get('external_governance_action_id'),
+                        attestation=metadata.get('attestation') or metadata.get('attestation_hash'),
+                    ),
                 },
             )
             connection.commit()
@@ -8950,9 +8962,10 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         governance_action_id = metadata.get('external_governance_action_id') or governance_action.get('action_id')
         if governance_action_id:
             external_references['governance_action_id'] = governance_action_id
-        attestation_hash = metadata.get('attestation_hash') or governance_action.get('attestation_hash')
-        if attestation_hash:
-            external_references['attestation_hash'] = attestation_hash
+        attestation = metadata.get('attestation') or metadata.get('attestation_hash') or governance_action.get('attestation') or governance_action.get('attestation_hash')
+        if attestation:
+            external_references['attestation'] = attestation
+            external_references['attestation_hash'] = attestation
         timeline_event_type = 'response_action.proposed' if execution_state == 'proposed' else 'response_action.executed'
         timeline_message = 'Response action proposed; awaiting external execution.' if execution_state == 'proposed' else 'Response action executed.'
         append_incident_timeline_event(
@@ -9067,11 +9080,11 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
                 'action_type': action.get('action_type'),
                 'mode': action.get('mode'),
                 'alert_id': action.get('alert_id'),
-                'external_references': {
-                    'safe_tx_hash': action.get('safe_tx_hash'),
-                    'governance_action_id': metadata.get('external_governance_action_id'),
-                    'attestation_hash': metadata.get('attestation_hash'),
-                },
+                'external_references': _incident_external_references(
+                    safe_tx_hash=action.get('safe_tx_hash'),
+                    governance_action_id=metadata.get('external_governance_action_id'),
+                    attestation=metadata.get('attestation') or metadata.get('attestation_hash'),
+                ),
             },
         )
         write_action_history(
@@ -9098,11 +9111,11 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
                 'action_type': action.get('action_type'),
                 'mode': action.get('mode'),
                 'alert_id': action.get('alert_id'),
-                'external_references': {
-                    'safe_tx_hash': action.get('safe_tx_hash'),
-                    'governance_action_id': metadata.get('external_governance_action_id'),
-                    'attestation_hash': metadata.get('attestation_hash'),
-                },
+                'external_references': _incident_external_references(
+                    safe_tx_hash=action.get('safe_tx_hash'),
+                    governance_action_id=metadata.get('external_governance_action_id'),
+                    attestation=metadata.get('attestation') or metadata.get('attestation_hash'),
+                ),
             },
         )
         append_incident_timeline_event(
@@ -9119,11 +9132,11 @@ def rollback_enforcement_action(action_id: str, request: Request) -> dict[str, A
                 'action_type': action.get('action_type'),
                 'mode': action.get('mode'),
                 'alert_id': action.get('alert_id'),
-                'external_references': {
-                    'safe_tx_hash': action.get('safe_tx_hash'),
-                    'governance_action_id': metadata.get('external_governance_action_id'),
-                    'attestation_hash': metadata.get('attestation_hash'),
-                },
+                'external_references': _incident_external_references(
+                    safe_tx_hash=action.get('safe_tx_hash'),
+                    governance_action_id=metadata.get('external_governance_action_id'),
+                    attestation=metadata.get('attestation') or metadata.get('attestation_hash'),
+                ),
             },
         )
         log_audit(connection, action='enforcement.action.rollback', entity_type='enforcement_action', entity_id=action_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'compensating_action_id': rollback_id})

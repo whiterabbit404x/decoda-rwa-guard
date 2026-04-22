@@ -88,7 +88,10 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
       body: JSON.stringify({ status: nextStatus }),
     });
     setMessage(response.ok ? `Alert ${nextStatus}.` : `Unable to ${nextStatus} alert.`);
-    if (response.ok) await refreshSelectedAlertState(selectedAlert.id);
+    if (response.ok) {
+      await refreshSelectedAlertState(selectedAlert.id);
+      await refetchLinkedIncidentTimeline(selectedAlert.incident_id);
+    }
   }
 
   async function escalateIncident() {
@@ -102,7 +105,10 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
       }),
     });
     setMessage(response.ok ? 'Open incident (SIMULATED workflow prep) completed.' : 'Unable to open incident.');
-    if (response.ok) await refreshSelectedAlertState(selectedAlert.id);
+    if (response.ok) {
+      await refreshSelectedAlertState(selectedAlert.id);
+      await refetchLinkedIncidentTimeline(selectedAlert.incident_id);
+    }
   }
 
   async function runSimulatedAction(actionType: string, label: string) {
