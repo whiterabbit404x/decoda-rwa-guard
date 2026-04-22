@@ -20,8 +20,12 @@ class _Result:
 
 
 class _Conn:
+    def __init__(self):
+        self.calls: list[str] = []
+
     def execute(self, query, params=None):
         normalized = ' '.join(str(query).split())
+        self.calls.append(normalized)
         if normalized.startswith('SELECT id, workspace_id, monitored_system_id, protected_asset_id, detection_type,') and 'WHERE id =' in normalized:
             return _Result(
                 row={
@@ -56,7 +60,7 @@ class _Conn:
                     'monitoring_run_id': 'run-1',
                 }
             )
-        if normalized.startswith('SELECT id, workspace_id, monitored_system_id, protected_asset_id, detection_type,'):
+        if normalized.startswith('SELECT d.id AS id, d.workspace_id AS workspace_id, d.monitored_system_id AS monitored_system_id, d.protected_asset_id AS protected_asset_id, d.detection_type AS detection_type,'):
             return _Result(
                 rows=[
                     {
@@ -122,6 +126,10 @@ def test_list_detections_returns_workspace_rows(monkeypatch):
     assert payload['detections'][0]['block_number'] == 12345
     assert payload['detections'][0]['detector_kind'] == 'contract-call-anomaly'
     assert payload['detections'][0]['chain_linked_ids']['incident_id'] == 'inc-1'
+    query = next(call for call in connection.calls if call.startswith('SELECT d.id AS id'))
+    assert 'FROM detections d' in query
+    assert 'WHERE d.workspace_id = %s' in query
+    assert 'ORDER BY d.detected_at DESC' in query
 
 
 def test_get_detection_returns_detail(monkeypatch):

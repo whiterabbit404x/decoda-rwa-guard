@@ -16,8 +16,12 @@ class _Result:
 
 
 class _Conn:
+    def __init__(self):
+        self.calls: list[tuple[str, tuple | None]] = []
+
     def execute(self, query, params=None):
         normalized = ' '.join(str(query).split())
+        self.calls.append((normalized, params))
         if 'FROM alerts a' in normalized:
             return _Result(
                 rows=[
@@ -92,6 +96,10 @@ def test_list_alerts_serializes_chain_fields(monkeypatch):
         'incident_id': 'inc-1',
         'action_id': 'action-1',
     }
+    alerts_query = next(statement for statement, _ in connection.calls if 'FROM alerts a' in statement)
+    assert 'e.source_provider AS source_provider' in alerts_query
+    assert 'WHERE a.workspace_id = %s' in alerts_query
+    assert 'ORDER BY a.created_at DESC' in alerts_query
 
 
 def test_list_incidents_serializes_chain_fields(monkeypatch):
@@ -99,7 +107,7 @@ def test_list_incidents_serializes_chain_fields(monkeypatch):
     request = Request({'type': 'http', 'headers': []})
     _bootstrap(monkeypatch, connection)
 
-    payload = pilot.list_incidents(request)
+    payload = pilot.list_incidents(request, status_value='open')
 
     row = payload['incidents'][0]
     assert row['linked_evidence_count'] == 0
@@ -114,3 +122,45 @@ def test_list_incidents_serializes_chain_fields(monkeypatch):
         'incident_id': 'inc-1',
         'action_id': None,
     }
+    incidents_query, incidents_params = next((statement, params) for statement, params in connection.calls if 'FROM incidents i' in statement)
+    assert 'WHERE i.workspace_id = %s' in incidents_query
+    assert 'i.workflow_status = %s::text OR i.status = %s::text' in incidents_query
+    assert incidents_params is not None
+    assert incidents_params[5] == incidents_params[6] == incidents_params[7] == 'open'
+
+
+def test_list_alerts_without_linked_evidence_stays_stable(monkeypatch):
+    class _NoEvidenceConn(_Conn):
+        def execute(self, query, params=None):
+            normalized = ' '.join(str(query).split())
+            self.calls.append((normalized, params))
+            if 'FROM alerts a' in normalized:
+                return _Result(
+                    rows=[
+                        {
+                            'id': 'alert-2',
+                            'detection_id': None,
+                            'incident_id': None,
+                            'linked_action_id': None,
+                            'linked_evidence_count': 0,
+                            'last_evidence_at': None,
+                            'evidence_origin': None,
+                            'tx_hash': None,
+                            'block_number': None,
+                            'detector_kind': None,
+                        }
+                    ]
+                )
+            return _Result()
+
+    connection = _NoEvidenceConn()
+    request = Request({'type': 'http', 'headers': []})
+    _bootstrap(monkeypatch, connection)
+
+    payload = pilot.list_alerts(request, status_value='open')
+
+    row = payload['alerts'][0]
+    assert row['id'] == 'alert-2'
+    assert row['linked_evidence_count'] == 0
+    assert row['last_evidence_at'] is None
+    assert row['evidence_origin'] is None

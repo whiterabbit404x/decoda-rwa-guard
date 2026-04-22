@@ -2480,7 +2480,13 @@ def modules_put_config(module_key: str, payload: dict[str, Any], request: Reques
 
 @app.get('/alerts', summary='List alerts')
 def alerts_list(request: Request, severity: str | None = None, module: str | None = None, target_id: str | None = None, status_value: str | None = None, source: str | None = None) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: list_alerts(request, severity=severity, module=module, target_id=target_id, status_value=status_value, source=source))
+    try:
+        return with_auth_schema_json(lambda: list_alerts(request, severity=severity, module=module, target_id=target_id, status_value=status_value, source=source))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('monitoring_list_failed path=/alerts method=%s error_type=%s error=%s', request.method, exc.__class__.__name__, exc)
+        raise HTTPException(status_code=500, detail='Unable to list alerts at this time.') from None
 
 
 @app.get('/detections', summary='List detections')
@@ -2493,17 +2499,23 @@ def detections_list(
     monitored_system_id: str | None = None,
     protected_asset_id: str | None = None,
 ) -> dict[str, Any]:
-    return with_auth_schema_json(
-        lambda: list_detections(
-            request,
-            limit=limit,
-            severity=severity,
-            status_value=status_value,
-            evidence_source=evidence_source,
-            monitored_system_id=monitored_system_id,
-            protected_asset_id=protected_asset_id,
+    try:
+        return with_auth_schema_json(
+            lambda: list_detections(
+                request,
+                limit=limit,
+                severity=severity,
+                status_value=status_value,
+                evidence_source=evidence_source,
+                monitored_system_id=monitored_system_id,
+                protected_asset_id=protected_asset_id,
+            )
         )
-    )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('monitoring_list_failed path=/detections method=%s error_type=%s error=%s', request.method, exc.__class__.__name__, exc)
+        raise HTTPException(status_code=500, detail='Unable to list detections at this time.') from None
 
 
 @app.get('/detections/{detection_id}', summary='Detection detail')
@@ -2553,7 +2565,13 @@ def alerts_suppressions_create(payload: dict[str, Any], request: Request) -> dic
 
 @app.get('/incidents', summary='List incidents')
 def incidents_list(request: Request, severity: str | None = None, target_id: str | None = None, status_value: str | None = None, assignee_user_id: str | None = None) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: list_incidents(request, severity=severity, target_id=target_id, status_value=status_value, assignee_user_id=assignee_user_id))
+    try:
+        return with_auth_schema_json(lambda: list_incidents(request, severity=severity, target_id=target_id, status_value=status_value, assignee_user_id=assignee_user_id))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error('monitoring_list_failed path=/incidents method=%s error_type=%s error=%s', request.method, exc.__class__.__name__, exc)
+        raise HTTPException(status_code=500, detail='Unable to list incidents at this time.') from None
 
 
 @app.patch('/incidents/{incident_id}', summary='Update incident status/owner')
