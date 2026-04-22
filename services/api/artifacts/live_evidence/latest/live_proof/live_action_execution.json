@@ -1,0 +1,25 @@
+{
+  "action_type": "freeze_wallet",
+  "executed_at": "2026-04-22T14:32:59.583341+00:00",
+  "execution_path": "governance_submission",
+  "external_reference": "gov-fallback-ede86d67ceb8",
+  "governance_response": {
+    "action_id": "gov-fallback-ede86d67ceb8",
+    "action_type": "freeze_wallet",
+    "attestation_hash": "fallback-freeze_wallet-0xddd0000000000000000000000000000000000404",
+    "created_at": "2026-04-22T14:32:59.583327+00:00",
+    "degraded": true,
+    "operator_user_id": "admin-live-proof-1",
+    "policy_effects": [
+      "Fallback governance action freeze_wallet submitted for 0xddd0000000000000000000000000000000000404."
+    ],
+    "reason": "LIVE proof governance submission for freeze_wallet.",
+    "source": "fallback",
+    "status": "submitted",
+    "target_id": "0xddd0000000000000000000000000000000000404",
+    "target_type": "wallet",
+    "target_wallet": "0xddd0000000000000000000000000000000000404",
+    "workspace_id": "ws-live-proof-1"
+  },
+  "status": "submitted"
+}

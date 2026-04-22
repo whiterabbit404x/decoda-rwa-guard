@@ -1,0 +1,19 @@
+[
+  {
+    "at": "2026-04-22T14:32:59.583349+00:00",
+    "event_type": "response_action.proposed",
+    "message": "Response action proposed; awaiting external execution.",
+    "metadata": {
+      "action_type": "freeze_wallet",
+      "alert_id": "alert-1",
+      "execution_state": "proposed",
+      "external_references": {
+        "attestation_hash": "fallback-freeze_wallet-0xddd0000000000000000000000000000000000404",
+        "governance_action_id": "gov-fallback-ede86d67ceb8"
+      },
+      "mode": "live",
+      "response_action_id": "action-live-1",
+      "status": "pending"
+    }
+  }
+]

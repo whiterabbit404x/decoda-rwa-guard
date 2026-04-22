@@ -1,0 +1,10 @@
+{
+  "checked_at": "2026-04-22T14:32:59.583255+00:00",
+  "checks": {
+    "block_number_present": true,
+    "detector_present": true,
+    "origin_present": true,
+    "tx_hash_present": true
+  },
+  "status": "passed"
+}
