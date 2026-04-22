@@ -274,11 +274,18 @@ export function hasLiveTelemetry(truth: WorkspaceMonitoringTruth): boolean {
     && (truth.contradiction_flags ?? []).length === 0;
 }
 
+export function hasRealTelemetryBackedChain(truth: WorkspaceMonitoringTruth): boolean {
+  return hasLiveTelemetry(truth)
+    && truth.active_alerts_count > 0
+    && truth.active_incidents_count > 0;
+}
+
 export function monitoringHealthyCopyAllowed(truth: WorkspaceMonitoringTruth): boolean {
   const monitoringStatus = truth.monitoring_status ?? (truth.runtime_status === 'live' ? 'live' : 'limited');
   return truth.runtime_status === 'live'
     && monitoringStatus === 'live'
     && truth.reporting_systems_count > 0
+    && hasRealTelemetryBackedChain(truth)
     && !truth.db_failure_reason
     && (truth.guard_flags ?? []).length === 0
     && (truth.contradiction_flags ?? []).length === 0;
