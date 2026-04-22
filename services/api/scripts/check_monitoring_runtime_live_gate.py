@@ -34,8 +34,8 @@ def _contains_reason_code(container: object, code: str) -> bool:
     return str(container or '').strip().lower() == code.lower()
 
 
-def _read_runtime_payload(api_url: str, headers: dict[str, str]) -> tuple[int, dict[str, object]]:
-    req = Request(f'{api_url.rstrip("/")}/ops/monitoring/runtime-status', headers=headers)
+def _read_json_payload(api_url: str, path: str, headers: dict[str, str], *, method: str = 'GET') -> tuple[int, dict[str, object]]:
+    req = Request(f"{api_url.rstrip('/')}/{path.lstrip('/')}", headers=headers, method=method)
     with urlopen(req, timeout=20) as resp:  # nosec B310
         status = int(getattr(resp, 'status', 200) or 200)
         payload = json.loads(resp.read().decode('utf-8'))
@@ -72,7 +72,8 @@ def main() -> int:
         headers['X-Workspace-Id'] = workspace_id
 
     try:
-        status_code, payload = _read_runtime_payload(api_url, headers)
+        reconcile_status, reconcile_payload = _read_json_payload(api_url, '/monitoring/systems/reconcile', headers, method='POST')
+        status_code, payload = _read_json_payload(api_url, '/ops/monitoring/runtime-status', headers)
     except HTTPError as exc:
         detail = exc.read().decode('utf-8', errors='replace') if hasattr(exc, 'read') else str(exc)
         print(json.dumps({'ok': False, 'error': 'runtime_status_http_error', 'status_code': exc.code, 'detail': detail}, indent=2))
@@ -91,9 +92,15 @@ def main() -> int:
     monitoring_mode = str(payload.get('monitoring_mode') or summary.get('monitoring_mode') or '').strip().lower()
     runtime_status = str(payload.get('runtime_status') or summary.get('runtime_status') or '').strip().lower()
     evidence_source = str(payload.get('evidence_source') or summary.get('evidence_source') or '').strip().lower()
+    monitoring_status = str(payload.get('monitoring_status') or summary.get('monitoring_status') or '').strip().lower()
+    evidence_source_summary = str(payload.get('evidence_source_summary') or summary.get('evidence_source_summary') or '').strip().lower()
+    telemetry_freshness = str(payload.get('telemetry_freshness') or summary.get('telemetry_freshness') or '').strip().lower()
+    guard_flags = payload.get('guard_flags') if isinstance(payload.get('guard_flags'), list) else summary.get('guard_flags')
+    contradiction_flags = payload.get('contradiction_flags') if isinstance(payload.get('contradiction_flags'), list) else summary.get('contradiction_flags')
+    db_failure_reason = payload.get('db_failure_reason') if payload.get('db_failure_reason') is not None else summary.get('db_failure_reason')
 
-    configured_systems = int((payload.get('configured_systems') if payload.get('configured_systems') is not None else summary.get('configured_systems')) or 0)
-    reporting_systems = int((payload.get('reporting_systems') if payload.get('reporting_systems') is not None else summary.get('reporting_systems')) or 0)
+    configured_systems = int((payload.get('configured_systems') if payload.get('configured_systems') is not None else summary.get('configured_systems') or summary.get('monitored_systems_count')) or 0)
+    reporting_systems = int((payload.get('reporting_systems') if payload.get('reporting_systems') is not None else summary.get('reporting_systems') or summary.get('reporting_systems_count')) or 0)
     valid_protected_assets = int((payload.get('valid_protected_assets') if payload.get('valid_protected_assets') is not None else summary.get('valid_protected_assets')) or 0)
     linked_monitored_systems = int((payload.get('linked_monitored_systems') if payload.get('linked_monitored_systems') is not None else summary.get('linked_monitored_systems')) or 0)
     enabled_configs = int((payload.get('enabled_configs') if payload.get('enabled_configs') is not None else summary.get('enabled_configs')) or 0)
@@ -101,6 +108,12 @@ def main() -> int:
 
     last_telemetry_at = _parse_iso(payload.get('last_telemetry_at') or summary.get('last_telemetry_at'))
     last_coverage_telemetry_at = _parse_iso(payload.get('last_coverage_telemetry_at') or summary.get('last_coverage_telemetry_at'))
+    last_poll_at = _parse_iso(payload.get('last_poll_at') or summary.get('last_poll_at'))
+    last_heartbeat_at = _parse_iso(payload.get('last_heartbeat_at') or summary.get('last_heartbeat_at'))
+
+    reconcile_data = reconcile_payload.get('reconcile') if isinstance(reconcile_payload.get('reconcile'), dict) else reconcile_payload
+    reconciled_rows = int((reconcile_data.get('created_or_updated') if isinstance(reconcile_data, dict) else 0) or 0)
+    persisted_rows = int((reconcile_payload.get('monitored_systems_count') if reconcile_payload.get('monitored_systems_count') is not None else reconcile_payload.get('post_reconcile_monitored_systems_count') or ((reconcile_payload.get('diagnostics') or {}).get('post_reconcile_monitored_systems_count') if isinstance(reconcile_payload.get('diagnostics'), dict) else 0)) or 0)
 
     is_live_claim = monitoring_mode in {'live', 'hybrid'} or evidence_source == 'live' or runtime_status in {'healthy', 'degraded', 'idle'}
     workspace_configured = any(value > 0 for value in (configured_systems, valid_protected_assets, linked_monitored_systems, enabled_configs, valid_link_count))
@@ -112,6 +125,11 @@ def main() -> int:
 
     if status_code != 200:
         failures.append(f'runtime-status returned HTTP {status_code}.')
+    if reconcile_status != 200:
+        failures.append(f'monitoring/systems/reconcile returned HTTP {reconcile_status}.')
+
+    if reconciled_rows <= 0 and persisted_rows <= 0:
+        failures.append('reconcile did not backfill monitored system links or return persisted rows > 0.')
 
     if not workspace_runtime_id or not workspace_slug:
         failures.append('workspace_id/workspace_slug must both be non-null.')
@@ -126,6 +144,12 @@ def main() -> int:
 
     if evidence_source != 'live':
         failures.append(f'evidence_source must be live for pre-demo/pre-release gate (got {evidence_source or "<missing>"}).')
+    if monitoring_status != 'live':
+        failures.append(f'monitoring_status must be live (got {monitoring_status or "<missing>"}).')
+    if evidence_source_summary != 'live':
+        failures.append(f'evidence_source_summary must be live (got {evidence_source_summary or "<missing>"}).')
+    if telemetry_freshness != 'fresh':
+        failures.append(f'telemetry_freshness must be fresh (got {telemetry_freshness or "<missing>"}).')
 
     if is_live_claim and freshness_status == 'unavailable':
         failures.append('freshness_status=unavailable while runtime claims live/hybrid mode.')
@@ -163,6 +187,19 @@ def main() -> int:
                 'last_coverage_telemetry_at is stale '
                 f'({coverage_age_seconds}s old > {max_coverage_staleness_seconds}s window).'
             )
+    if not last_poll_at:
+        failures.append('last_poll_at must be non-null; monitoring worker has not persisted polling timestamp.')
+    if not last_heartbeat_at:
+        failures.append('last_heartbeat_at must be non-null; monitoring worker has not persisted heartbeat timestamp.')
+    if not last_telemetry_at:
+        failures.append('last_telemetry_at must be non-null; telemetry timestamp persistence is required.')
+
+    if isinstance(guard_flags, list) and guard_flags:
+        failures.append(f'guard flags must be empty for live gate (got {guard_flags}).')
+    if isinstance(contradiction_flags, list) and contradiction_flags:
+        failures.append(f'contradiction flags must be empty for live gate (got {contradiction_flags}).')
+    if db_failure_reason:
+        failures.append(f'db_failure_reason must be null for live gate (got {db_failure_reason}).')
 
     if _contains_reason_code(field_reason_codes, 'query_failure') or _contains_reason_code(count_reason_codes, 'query_failure'):
         failures.append('runtime payload includes query_failure markers in reason codes.')
@@ -176,10 +213,15 @@ def main() -> int:
         'api_url': api_url,
         'workspace_id': workspace_runtime_id,
         'workspace_slug': workspace_slug,
+        'reconcile_created_or_updated': reconciled_rows,
+        'reconcile_monitored_systems_count': persisted_rows,
         'monitoring_mode': monitoring_mode or None,
         'runtime_status': runtime_status or None,
+        'monitoring_status': monitoring_status or None,
         'evidence_source': evidence_source or None,
+        'evidence_source_summary': evidence_source_summary or None,
         'freshness_status': freshness_status or None,
+        'telemetry_freshness': telemetry_freshness or None,
         'configured_systems': configured_systems,
         'reporting_systems': reporting_systems,
         'valid_protected_assets': valid_protected_assets,
@@ -188,6 +230,11 @@ def main() -> int:
         'valid_link_count': valid_link_count,
         'last_telemetry_at': last_telemetry_at.isoformat() if last_telemetry_at else None,
         'last_coverage_telemetry_at': last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None,
+        'last_poll_at': last_poll_at.isoformat() if last_poll_at else None,
+        'last_heartbeat_at': last_heartbeat_at.isoformat() if last_heartbeat_at else None,
+        'guard_flags': guard_flags if isinstance(guard_flags, list) else [],
+        'contradiction_flags': contradiction_flags if isinstance(contradiction_flags, list) else [],
+        'db_failure_reason': db_failure_reason,
         'status_reason': status_reason or None,
         'configuration_reason': configuration_reason or None,
         'max_coverage_staleness_seconds': max_coverage_staleness_seconds,
