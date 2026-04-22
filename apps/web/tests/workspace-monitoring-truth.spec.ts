@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import type { MonitoringRuntimeStatus } from '../app/monitoring-status-contract';
 import {
   hasLiveTelemetry,
+  hasRealTelemetryBackedChain,
   monitoringHealthyCopyAllowed,
   resolveWorkspaceMonitoringTruth,
 } from '../app/workspace-monitoring-truth';
@@ -398,5 +399,59 @@ test.describe('workspace monitoring truth guardrails', () => {
       'live_telemetry_verified_without_timestamp',
     ]));
     expect(truth.status_reason).toBe('guard:offline_with_current_telemetry');
+  });
+
+  test('real telemetry-backed chain requires linked alerts and incidents', () => {
+    const noLinkedAnomaly = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      runtime_status: 'live',
+      monitoring_status: 'live',
+      reporting_systems_count: 1,
+      monitored_systems_count: 1,
+      protected_assets_count: 1,
+      telemetry_freshness: 'fresh',
+      confidence: 'high',
+      last_poll_at: '2026-04-15T10:00:00Z',
+      last_heartbeat_at: '2026-04-15T10:00:00Z',
+      last_telemetry_at: '2026-04-15T09:59:30Z',
+      evidence_source_summary: 'live',
+      contradiction_flags: [],
+      guard_flags: [],
+      active_alerts_count: 0,
+      active_incidents_count: 0,
+      status_reason: null,
+    }));
+    expect(hasLiveTelemetry(noLinkedAnomaly)).toBeTruthy();
+    expect(hasRealTelemetryBackedChain(noLinkedAnomaly)).toBeFalsy();
+
+    const linkedAnomaly = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      ...noLinkedAnomaly,
+      active_alerts_count: 1,
+      active_incidents_count: 1,
+    }));
+    expect(hasRealTelemetryBackedChain(linkedAnomaly)).toBeTruthy();
+  });
+
+  test('healthy/live stakeholder copy remains blocked without linked real anomaly evidence', () => {
+    const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      runtime_status: 'live',
+      monitoring_status: 'live',
+      reporting_systems_count: 2,
+      monitored_systems_count: 2,
+      protected_assets_count: 2,
+      telemetry_freshness: 'fresh',
+      confidence: 'high',
+      last_poll_at: '2026-04-15T10:00:00Z',
+      last_heartbeat_at: '2026-04-15T10:00:00Z',
+      last_telemetry_at: '2026-04-15T09:59:30Z',
+      evidence_source_summary: 'live',
+      contradiction_flags: [],
+      guard_flags: [],
+      active_alerts_count: 0,
+      active_incidents_count: 0,
+      status_reason: null,
+    }));
+    expect(monitoringHealthyCopyAllowed(truth)).toBeFalsy();
   });
 });

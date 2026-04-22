@@ -2,10 +2,13 @@
 
 import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
-import { resolveWorkspaceMonitoringTruthFromSummary } from './workspace-monitoring-truth';
+import {
+  hasRealTelemetryBackedChain,
+  resolveWorkspaceMonitoringTruthFromSummary,
+} from './workspace-monitoring-truth';
 
 function runtimeStatusAllowsLive(runtimeStatus: string): boolean {
-  return runtimeStatus === 'healthy';
+  return runtimeStatus === 'healthy' || runtimeStatus === 'live';
 }
 
 function formatTelemetryTimestamp(value: string | null): string {
@@ -21,10 +24,12 @@ export default function MonitoringOverviewPanel() {
   const truth = resolveWorkspaceMonitoringTruthFromSummary(runtime?.workspace_monitoring_summary);
   const presentation = normalizeMonitoringPresentation(truth);
   const telemetryProofTimestamp = truth.last_telemetry_at;
+  const realChainVerified = hasRealTelemetryBackedChain(truth);
   const showLiveWithVerifiedTelemetry = runtimeStatusAllowsLive(truth.runtime_status)
     && truth.telemetry_freshness === 'fresh'
     && truth.reporting_systems_count > 0
-    && Boolean(telemetryProofTimestamp);
+    && Boolean(telemetryProofTimestamp)
+    && realChainVerified;
   const truthCopy = presentation.status === 'offline'
     ? 'Workspace monitoring offline. Fresh telemetry unavailable until connectivity returns.'
     : presentation.status === 'limited coverage'
@@ -34,16 +39,16 @@ export default function MonitoringOverviewPanel() {
         : presentation.status === 'stale'
           ? 'Monitoring data delayed. Await fresh telemetry and event updates.'
           : showLiveWithVerifiedTelemetry
-            ? 'Monitoring is live with verified telemetry for this workspace.'
-            : 'Monitoring is active. Await verified telemetry before making final safety claims.';
+            ? 'Monitoring is live with telemetry-backed detection chain visibility.'
+            : 'No linked real anomaly evidence yet; monitoring continuity is being restored.';
   const telemetryDetail = telemetryProofTimestamp
     ? 'Live telemetry verified.'
     : 'Live telemetry not yet verified.';
   const detectionDetail = (() => {
-    if (!telemetryProofTimestamp) {
-      return 'Detection evidence unavailable.';
+    if (!realChainVerified) {
+      return 'Validate chain visibility for one real item: evidence → detection → alert → incident → response action.';
     }
-    return 'Recent telemetry available.';
+    return 'Detection chain verified from evidence through response action.';
   })();
 
   return (

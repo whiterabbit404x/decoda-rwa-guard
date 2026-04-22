@@ -4,7 +4,12 @@ import { useEffect, useState } from 'react';
 
 import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
 import { usePilotAuth } from './pilot-auth-context';
-import { hasLiveTelemetry, resolveWorkspaceMonitoringTruth, type WorkspaceMonitoringTruth } from './workspace-monitoring-truth';
+import {
+  hasLiveTelemetry,
+  hasRealTelemetryBackedChain,
+  resolveWorkspaceMonitoringTruth,
+  type WorkspaceMonitoringTruth,
+} from './workspace-monitoring-truth';
 const RUNTIME_STATUS_PROXY_PATH = '/api/ops/monitoring/runtime-status';
 
 function formatTruthValue(value: unknown): string {
@@ -23,6 +28,7 @@ function timestampLine(label: string, value: string | null): string {
 }
 
 function summarizeFromTruth(status: ReturnType<typeof normalizeMonitoringPresentation>['status'], truth: WorkspaceMonitoringTruth): string {
+  const realChainVerified = hasRealTelemetryBackedChain(truth);
   if (status === 'offline') {
     return 'Workspace monitoring offline.';
   }
@@ -35,10 +41,10 @@ function summarizeFromTruth(status: ReturnType<typeof normalizeMonitoringPresent
   if (status === 'stale' || truth.telemetry_freshness === 'stale') {
     return 'Monitoring data delayed.';
   }
-  if (hasLiveTelemetry(truth)) {
-    return 'Monitoring state live with verified telemetry.';
+  if (hasLiveTelemetry(truth) && realChainVerified) {
+    return 'Monitoring state live with telemetry-backed detection chain visibility.';
   }
-  return 'Monitoring state active; telemetry verification pending.';
+  return 'No linked real anomaly evidence yet; monitoring continuity is being restored.';
 }
 
 export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: string | null }) {
@@ -80,7 +86,9 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
       <span>Freshness: {formatTruthValue(truth.telemetry_freshness)} · Confidence: {formatTruthValue(truth.confidence)}</span>
       <span>{timestampLine('Last telemetry', truth.last_telemetry_at)}</span>
       <span>
-        {truth.last_telemetry_at ? 'Live telemetry verified.' : 'Live telemetry proof unavailable.'}
+        {hasRealTelemetryBackedChain(truth)
+          ? 'Detection chain verified from evidence through response action.'
+          : 'Validate chain visibility for one real item: evidence → detection → alert → incident → response action.'}
       </span>
       <span>{timestampLine('Last heartbeat', truth.last_heartbeat_at)}</span>
       <span>{timestampLine('Last poll', truth.last_poll_at)}</span>
