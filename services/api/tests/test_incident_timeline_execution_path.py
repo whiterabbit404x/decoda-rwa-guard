@@ -180,7 +180,12 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
     proposed_event = next(metadata for event, metadata in timeline_events if event == 'response_action.proposed')
     assert proposed_event.get('external_references', {}).get('safe_tx_hash') == '0xsafehash'
     manual_required_event = next(metadata for event, metadata in timeline_events if event == 'response_action.manual_required')
-    assert manual_required_event.get('external_references') == {'safe_tx_hash': None, 'governance_action_id': None, 'attestation_hash': None}
+    assert manual_required_event.get('external_references') == {
+        'safe_tx_hash': None,
+        'governance_action_id': None,
+        'attestation': None,
+        'attestation_hash': None,
+    }
     manual_execution_event = next(
         metadata
         for event, metadata in timeline_events
