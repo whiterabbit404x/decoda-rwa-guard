@@ -195,6 +195,11 @@ def test_ops_monitoring_runtime_status_returns_degraded_payload_when_route_raise
     assert payload['monitoring_status'] == 'offline'
     assert payload['error']['code'] == 'runtime_status_route_failed'
     assert payload['workspace_monitoring_summary']['runtime_status'] == 'offline'
+    assert payload['continuity_status'] == 'offline'
+    assert payload['ingestion_freshness'] == 'missing'
+    assert payload['detection_pipeline_freshness'] == 'missing'
+    assert payload['worker_heartbeat_freshness'] == 'missing'
+    assert payload['event_throughput_window'] == 'no_events'
 
 
 def test_ops_monitoring_run_returns_structured_error_for_unexpected_exception(monkeypatch, caplog):
