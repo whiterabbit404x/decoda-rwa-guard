@@ -2279,7 +2279,7 @@ def test_runtime_status_workspace_scoped_success_keeps_identity_and_reports_live
     assert summary['last_telemetry_at'] is not None
 
 
-def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure_reason_codes(monkeypatch):
+def test_runtime_status_partial_query_failure_keeps_workspace_identity_and_structured_reason_codes(monkeypatch):
     now = datetime.now(timezone.utc)
 
     class _SyntaxErrorConn(_Conn):
@@ -2312,32 +2312,17 @@ def test_runtime_status_query_failure_keeps_workspace_identity_and_query_failure
     assert payload['workspace_slug'] == 'prod-ops'
     assert request.state.workspace_id == 'ws-prod'
     assert request.state.workspace_slug == 'prod-ops'
-    assert payload['configuration_reason'] == 'runtime_status_unavailable'
-    assert payload['status_reason'] == 'runtime_status_degraded:database_error'
-    assert payload['monitoring_status'] == 'offline'
-    assert payload['status'] == 'Offline'
-    assert payload['workspace_monitoring_summary']['runtime_status_summary'] == 'offline'
-    assert payload['workspace_monitoring_summary']['evidence_source'] == 'none'
-    assert payload['workspace_monitoring_summary']['reporting_systems'] == 0
-    assert payload['error']['code'] == 'runtime_status_db_error'
-    assert payload['error']['stage'] == 'query'
-    assert payload['error']['type'] == 'SyntaxError'
-    assert payload['error']['stage_detail'] == 'select_live_coverage_receipts'
-    assert 'runtime_status_degraded' in payload['error']['reason_tokens']
-    assert 'database_error' in payload['error']['reason_tokens']
-    assert 'checkpoint_select_live_coverage_receipts' in payload['error']['reason_tokens']
-    assert payload['configuration_reason'] != 'workspace_not_configured'
-    assert payload['field_reason_codes']['protected_assets'] == ['query_failure']
-    assert payload['field_reason_codes']['configured_systems'] == ['query_failure']
-    assert payload['field_reason_codes']['reporting_systems'] == ['query_failure']
-    assert payload['field_reason_codes']['last_poll_at'] == ['query_failure']
-    assert payload['field_reason_codes']['last_heartbeat_at'] == ['query_failure']
-    assert payload['field_reason_codes']['last_telemetry_at'] == ['query_failure']
-    assert payload['configuration_diagnostics']['reason_codes'] == ['runtime_status_unavailable']
-    assert payload['workspace_monitoring_summary']['field_reason_codes']['protected_assets'] == ['query_failure']
-    assert payload['workspace_monitoring_summary']['configuration_reason_codes'] == ['runtime_status_unavailable']
-    assert payload['stale_heartbeat'] is True
-    assert payload['provider_degraded_flag'] is True
+    assert payload['configuration_reason'] != 'runtime_status_unavailable'
+    assert payload['runtime_error_code'] == 'runtime_coverage_query_failed'
+    assert payload['runtime_degraded_reason'] == 'partial_query_failure'
+    assert payload['status_reason'] in {'runtime_status_degraded:partial_query_failure', 'no_fresh_live_coverage_telemetry'}
+    assert 'error' not in payload
+    assert payload['field_reason_codes']['reporting_systems'] == ['optional_table_unavailable']
+    assert payload['field_reason_codes']['last_coverage_telemetry_at'] == ['optional_table_unavailable']
+    assert payload['field_reason_codes']['last_telemetry_at'] == ['optional_table_unavailable']
+    assert payload['workspace_monitoring_summary']['runtime_error_code'] == 'runtime_coverage_query_failed'
+    assert payload['workspace_monitoring_summary']['runtime_degraded_reason'] == 'partial_query_failure'
+    assert payload['workspace_monitoring_summary']['field_reason_codes']['reporting_systems'] == ['optional_table_unavailable']
     assert payload['coverage_receipts_workspace_count'] == 0
     assert payload['coverage_receipts_last_at'] is None
 
@@ -2367,6 +2352,43 @@ def test_runtime_status_query_failure_uses_pre_resolved_workspace_identity_from_
     assert payload['error']['stage_detail'] == 'workspace_context_resolution'
     assert payload['configuration_reason'] == 'runtime_status_unavailable'
     assert payload['workspace_monitoring_summary']['configuration_reason_codes'] == ['runtime_status_unavailable']
+
+
+def test_runtime_status_partial_fallback_avoids_summary_unavailable_reason(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _OptionalSummaryFailureConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM analysis_runs' in q:
+                raise RuntimeError('optional summary probe failed')
+            return super().execute(query, params)
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-prod'}, state=SimpleNamespace())
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda _connection, _request: (
+            {'id': 'user-1'},
+            {'workspace_id': 'ws-prod', 'workspace': {'id': 'ws-prod', 'slug': 'prod-ops'}},
+            True,
+        ),
+    )
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_OptionalSummaryFailureConn(now - timedelta(seconds=20))))
+
+    payload = monitoring_runner.monitoring_runtime_status(request)
+    assert payload['workspace_id'] == 'ws-prod'
+    assert payload['workspace_monitoring_summary']
+    assert payload['runtime_degraded_reason'] == 'partial_query_failure'
+    assert payload['runtime_error_code'] == 'runtime_optional_query_failed'
+    assert payload['configuration_reason'] != 'runtime_status_unavailable'
+    assert 'summary_unavailable' not in str(payload.get('status_reason') or '')
 
 
 def test_runtime_status_workspace_unconfigured_path_uses_configuration_diagnostics(monkeypatch):

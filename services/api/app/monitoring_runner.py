@@ -10,6 +10,7 @@ from time import perf_counter
 from typing import Any
 from fastapi import HTTPException, Request, status
 import psycopg
+from psycopg import errors as psycopg_errors
 
 from services.api.app.activity_providers import (
     ActivityEvent,
@@ -3578,6 +3579,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'configuration_reason': 'runtime_status_unavailable',
             'configuration_reason_codes': ['runtime_status_unavailable'],
             'status_reason': 'runtime_status_error',
+            'runtime_error_code': 'runtime_status_unavailable',
+            'runtime_degraded_reason': 'summary_unavailable',
             'valid_protected_assets': 0,
             'linked_monitored_systems': 0,
             'enabled_configs': 0,
@@ -3665,6 +3668,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             db_failure_reason=db_failure_reason,
         )
         payload['status_reason'] = status_reason
+        payload['runtime_error_code'] = error_code
+        payload['runtime_degraded_reason'] = 'summary_unavailable'
         payload['configuration_reason'] = 'runtime_status_unavailable'
         payload['configuration_reason_codes'] = ['runtime_status_unavailable']
         payload['error'] = {
@@ -3694,6 +3699,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     'configuration_reason': payload['configuration_reason'],
                     'reason_codes': list(payload['configuration_reason_codes']),
                 },
+                'runtime_error_code': payload.get('runtime_error_code'),
+                'runtime_degraded_reason': payload.get('runtime_degraded_reason'),
+                'field_reason_codes': dict(payload.get('field_reason_codes') or {}),
             }
         )
         summary.setdefault(
@@ -3875,6 +3883,51 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         schema_drift_detected = False
         db_persistence_available = True
         db_persistence_reason: str | None = None
+        runtime_error_code: str | None = None
+        runtime_degraded_reason: str | None = None
+        field_reason_codes: dict[str, list[str]] = {}
+
+        def _append_field_reason(field_key: str, reason_code: str) -> None:
+            normalized_field = str(field_key or '').strip()
+            normalized_reason = str(reason_code or '').strip()
+            if not normalized_field or not normalized_reason:
+                return
+            existing = field_reason_codes.setdefault(normalized_field, [])
+            if normalized_reason not in existing:
+                existing.append(normalized_reason)
+
+        def _is_optional_schema_error(exc: Exception) -> bool:
+            if isinstance(exc, (psycopg_errors.UndefinedTable, psycopg_errors.UndefinedColumn)):
+                return True
+            message = str(exc).lower()
+            return 'does not exist' in message and ('column' in message or 'relation' in message or 'table' in message)
+
+        def _record_optional_query_failure(
+            *,
+            exc: Exception,
+            checkpoint_label: str,
+            impacted_fields: list[str],
+            reason_code: str,
+            error_code: str,
+        ) -> None:
+            nonlocal query_failure_detected
+            nonlocal schema_drift_detected
+            nonlocal runtime_error_code
+            nonlocal runtime_degraded_reason
+            query_failure_detected = True
+            if _is_optional_schema_error(exc):
+                schema_drift_detected = True
+            runtime_error_code = error_code
+            runtime_degraded_reason = 'partial_query_failure'
+            for field in impacted_fields:
+                _append_field_reason(field, reason_code)
+            logger.warning(
+                'monitoring_runtime_status_optional_query_failed workspace_id=%s checkpoint=%s reason_code=%s error_type=%s',
+                workspace_id,
+                checkpoint_label,
+                reason_code,
+                type(exc).__name__,
+            )
     
         def _load_runtime_monitored_rows(connection: Any, workspace_scope_id: str | None) -> list[dict[str, Any]]:
             if workspace_scope_id:
@@ -4011,15 +4064,35 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             evidence_workspace_filter = 'WHERE e.workspace_id = %s' if workspace_id else ''
             scoped_params: tuple[Any, ...] = (workspace_id,) if workspace_id else ()
             _mark_query_checkpoint('count_open_alerts')
-            open_alerts = connection.execute(
-                f"SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating') {'AND workspace_id = %s' if workspace_id else ''}",
-                scoped_params,
-            ).fetchone()
+            try:
+                open_alerts = connection.execute(
+                    f"SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating') {'AND workspace_id = %s' if workspace_id else ''}",
+                    scoped_params,
+                ).fetchone()
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='count_open_alerts',
+                    impacted_fields=['active_alerts_count'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                open_alerts = {'c': 0}
             _mark_query_checkpoint('count_open_incidents')
-            open_incidents = connection.execute(
-                f"SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged') {'AND workspace_id = %s' if workspace_id else ''}",
-                scoped_params,
-            ).fetchone()
+            try:
+                open_incidents = connection.execute(
+                    f"SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged') {'AND workspace_id = %s' if workspace_id else ''}",
+                    scoped_params,
+                ).fetchone()
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='count_open_incidents',
+                    impacted_fields=['active_incidents_count'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                open_incidents = {'c': 0}
             _mark_query_checkpoint('count_broken_targets')
             broken_targets = connection.execute(
                 f'''
@@ -4131,10 +4204,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     [str(row.get('id') or '') for row in monitored_rows if row.get('id')],
                 )
             _mark_query_checkpoint('select_latest_evidence')
-            latest_evidence = connection.execute(
-                f"SELECT observed_at, block_number FROM evidence e {evidence_workspace_filter} ORDER BY observed_at DESC LIMIT 1",
-                scoped_params,
-            ).fetchone()
+            try:
+                latest_evidence = connection.execute(
+                    f"SELECT observed_at, block_number FROM evidence e {evidence_workspace_filter} ORDER BY observed_at DESC LIMIT 1",
+                    scoped_params,
+                ).fetchone()
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='select_latest_evidence',
+                    impacted_fields=['last_telemetry_at'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                latest_evidence = None
             latest_detection_eval_query = '''
                 SELECT created_at, response_payload
                 FROM analysis_runs
@@ -4149,10 +4232,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 LIMIT 1
             '''
             _mark_query_checkpoint('select_latest_detection_eval')
-            latest_detection_eval = connection.execute(
-                latest_detection_eval_query,
-                tuple(latest_detection_eval_params),
-            ).fetchone()
+            try:
+                latest_detection_eval = connection.execute(
+                    latest_detection_eval_query,
+                    tuple(latest_detection_eval_params),
+                ).fetchone()
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='select_latest_detection_eval',
+                    impacted_fields=['last_detection_at'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                latest_detection_eval = None
             latest_detection_evaluation_at = _parse_ts((latest_detection_eval or {}).get('created_at'))
             latest_detection_payload = _json_safe_value((latest_detection_eval or {}).get('response_payload') or {}) if latest_detection_eval else None
             supports_receipt_live_coverage_columns = (
@@ -4211,15 +4304,25 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 ORDER BY latest_processed_at DESC
             '''
             _mark_query_checkpoint('select_live_coverage_receipts')
-            if workspace_id:
-                live_coverage_receipt_rows = connection.execute(
-                    live_coverage_receipts_query,
-                    (workspace_id,),
-                ).fetchall()
-            else:
-                live_coverage_receipt_rows = connection.execute(
-                    live_coverage_receipts_query,
-                ).fetchall()
+            try:
+                if workspace_id:
+                    live_coverage_receipt_rows = connection.execute(
+                        live_coverage_receipts_query,
+                        (workspace_id,),
+                    ).fetchall()
+                else:
+                    live_coverage_receipt_rows = connection.execute(
+                        live_coverage_receipts_query,
+                    ).fetchall()
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='select_live_coverage_receipts',
+                    impacted_fields=['reporting_systems', 'last_coverage_telemetry_at', 'last_telemetry_at'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_coverage_query_failed',
+                )
+                live_coverage_receipt_rows = []
             live_coverage_receipts_persisted_count = int((live_coverage_receipt_rows[0] or {}).get('workspace_receipt_count') or 0) if live_coverage_receipt_rows else 0
             for receipt in live_coverage_receipt_rows:
                 processed_at = _parse_ts((receipt or {}).get('latest_processed_at'))
@@ -4551,6 +4654,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 if unsupported_enabled_rows and reporting_systems <= 0
                 else ('no_fresh_live_coverage_telemetry' if reporting_systems <= 0 or not coverage_fresh else None)
             )
+        if workspace_configured and runtime_error_code and not runtime_status_reason:
+            runtime_status_reason = 'runtime_status_degraded:partial_query_failure'
         missing_telemetry_only = bool(
             workspace_configured
             and enabled_system_count > 0
@@ -4594,6 +4699,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             db_persistence_available=db_persistence_available,
             db_persistence_reason=db_persistence_reason,
         )
+        summary['runtime_error_code'] = runtime_error_code
+        summary['runtime_degraded_reason'] = runtime_degraded_reason
+        summary['field_reason_codes'] = dict(field_reason_codes)
         summary['coverage_state'] = {
             'configured_systems': int(enabled_system_count),
             'monitored_systems_count': int(system_count),
@@ -4698,6 +4806,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'open_incidents': int((open_incidents or {}).get('c') or 0),
             'evidence_freshness_seconds': evidence_freshness,
             'degraded_reason': degraded_reason,
+            'runtime_error_code': runtime_error_code,
+            'runtime_degraded_reason': runtime_degraded_reason,
             'recent_evidence_state': str((latest_detection_metadata or {}).get('evidence_state') or latest_detection_payload.get('evidence_state') or 'missing') if isinstance(latest_detection_payload, dict) else 'missing',
             'recent_real_event_count': recent_real_event_count,
             'recent_confidence_basis': str((latest_detection_metadata or {}).get('confidence_basis') or latest_detection_payload.get('confidence_basis') or 'none') if isinstance(latest_detection_payload, dict) else 'none',
@@ -4737,7 +4847,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'continuity_status': summary.get('continuity_status'),
             'continuity_reason_codes': list(summary.get('continuity_reason_codes') or []),
             'continuity_signals': dict(summary.get('continuity_signals') or {}),
-            'field_reason_codes': {},
+            'field_reason_codes': dict(field_reason_codes),
             'db_failure_classification': None,
             'db_failure_reason': None,
         }
