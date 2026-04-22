@@ -21,16 +21,16 @@ test('reconcile pending to success is driven by backend state and reconcile id',
 test('reconcile pending to failure is terminal and surfaces backend code + reason', () => {
   const source = readAppFile('monitored-systems-manager.tsx');
   expect(source).toContain("setRepairState('failure');");
-  expect(source).toContain("Code ${repairFailureReason.backendCode}.");
+  expect(source).toContain("Code ${repairFailureReason.code}.");
   expect(source).toContain('Repair failed during {repairFailureReason.backendStage || repairFailureReason.stage}.');
-  expect(source).toContain("backendCode: 'repair_terminal_state_timeout'");
+  expect(source).toContain("code: 'repair_terminal_state_timeout'");
 });
 
-test('reconcile pending to no-op-with-reasons maps to failure UX with explicit code', () => {
+test('reconcile unresolved reasons map to terminal failure UX with explicit code', () => {
   const source = readAppFile('monitored-systems-manager.tsx');
-  expect(source).toContain("localSummary?.state === 'no_op_with_reasons'");
-  expect(source).toContain("backendCode: 'reconcile_no_op_with_reasons'");
-  expect(source).toContain('No monitored systems were changed. Review skipped/invalid target reasons.');
+  expect(source).toContain('Array.isArray(payload?.unresolved_reasons) && payload.unresolved_reasons.length > 0');
+  expect(source).toContain("'reconcile_unresolved_reasons'");
+  expect(source).toContain('Repair completed with unresolved target reasons.');
   expect(source).toContain('Invalid target {detail.target_id}: [{detail.code}] {detail.reason}');
   expect(source).toContain("Skipped target {detail.target_id || 'n/a'}: [{detail.code}] {detail.reason}");
 });

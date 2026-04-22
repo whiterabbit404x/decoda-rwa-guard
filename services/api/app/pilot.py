@@ -3462,7 +3462,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                 return {
                     'workspace': workspace_context['workspace'],
                     'reconcile_id': existing_reconcile_id or reconcile_id,
-                    'state': 'no_op_with_reasons',
+                    'state': 'failure',
                     'reconcile': _normalize_reconcile_result({
                         'targets_scanned': 0,
                         'created_or_updated': 0,
@@ -3473,6 +3473,11 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                             'reason': f"Reconcile request already in progress with reconcile_id={existing_reconcile_id or 'unknown'}.",
                         }],
                     }),
+                    'unresolved_reasons': [{
+                        'stage': 'reconcile_targets',
+                        'code': 'reconcile_already_in_progress',
+                        'backendReason': f"Reconcile request already in progress with reconcile_id={existing_reconcile_id or 'unknown'}.",
+                    }],
                     'systems': [],
                     'monitored_systems_count': 0,
                 }
@@ -3608,9 +3613,20 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
 
         systems = [_json_safe_value(row) for row in rows]
         unresolved_count = len(result.get('invalid_target_details') or []) + len(result.get('skipped_target_details') or [])
-        reconcile_state = 'success'
-        if int(result.get('created_or_updated', 0) or 0) <= 0 and unresolved_count > 0:
-            reconcile_state = 'no_op_with_reasons'
+        unresolved_reasons: list[dict[str, str]] = []
+        for detail in result.get('invalid_target_details') or []:
+            unresolved_reasons.append({
+                'stage': 'reconcile_targets',
+                'code': str(detail.get('code') or 'invalid_target'),
+                'backendReason': str(detail.get('reason') or 'Invalid target encountered during reconcile.'),
+            })
+        for detail in result.get('skipped_target_details') or []:
+            unresolved_reasons.append({
+                'stage': 'reconcile_targets',
+                'code': str(detail.get('code') or 'skipped_target'),
+                'backendReason': str(detail.get('reason') or 'Target was skipped during reconcile.'),
+            })
+        reconcile_state = 'failure' if int(result.get('created_or_updated', 0) or 0) <= 0 and unresolved_count > 0 else 'success'
         reason_counts = {
             'invalid': int(sum(int(count or 0) for count in (result.get('invalid_reasons') or {}).values())),
             'skipped': int(sum(int(count or 0) for count in (result.get('skipped_reasons') or {}).values())),
@@ -3620,6 +3636,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
             'reconcile_id': reconcile_id,
             'state': reconcile_state,
             'reason_counts': reason_counts,
+            'unresolved_reasons': unresolved_reasons,
             'reconcile': result,
             'systems': systems,
             'monitored_systems_count': len(systems),
