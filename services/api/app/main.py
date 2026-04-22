@@ -1980,6 +1980,14 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         return with_auth_schema_json(lambda: monitoring_runtime_status(request))
     except Exception as exc:
         logger.exception('ops_monitoring_runtime_status_route_failed')
+        fallback_summary = build_workspace_monitoring_summary_fallback(
+            status_reason='runtime_status_route_error',
+            workspace_configured=False,
+            runtime_status='offline',
+            monitoring_status='offline',
+            telemetry_freshness='unavailable',
+            confidence='unavailable',
+        )
         return {
             'monitoring_status': 'offline',
             'status': 'Offline',
@@ -1990,14 +1998,15 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
                 'type': type(exc).__name__,
                 'message': 'Monitoring runtime endpoint degraded due to unexpected route error.',
             },
-            'workspace_monitoring_summary': build_workspace_monitoring_summary_fallback(
-                status_reason='runtime_status_route_error',
-                workspace_configured=False,
-                runtime_status='offline',
-                monitoring_status='offline',
-                telemetry_freshness='unavailable',
-                confidence='unavailable',
-            ),
+            'workspace_monitoring_summary': fallback_summary,
+            'continuity_status': fallback_summary.get('continuity_status'),
+            'continuity_reason_codes': list(fallback_summary.get('continuity_reason_codes') or []),
+            'continuity_signals': dict(fallback_summary.get('continuity_signals') or {}),
+            'ingestion_freshness': fallback_summary.get('ingestion_freshness'),
+            'detection_pipeline_freshness': fallback_summary.get('detection_pipeline_freshness'),
+            'worker_heartbeat_freshness': fallback_summary.get('worker_heartbeat_freshness'),
+            'event_throughput_window': fallback_summary.get('event_throughput_window'),
+            'event_throughput_window_seconds': fallback_summary.get('event_throughput_window_seconds'),
         }
 
 

@@ -334,20 +334,26 @@ def build_workspace_monitoring_summary_fallback(
     status_reason: str,
     workspace_configured: bool = False,
     runtime_status: str = 'offline',
+    monitoring_status: str | None = None,
     telemetry_freshness: str = 'unavailable',
     confidence: str = 'unavailable',
 ) -> dict[str, Any]:
     normalized_runtime = _normalized_runtime_status(runtime_status)
     normalized_freshness = _normalized_telemetry_freshness(telemetry_freshness)
-    summary = {
-        'workspace_configured': bool(workspace_configured),
-        'runtime_status': normalized_runtime,
-        'monitoring_status': _normalized_monitoring_status(
+    normalized_monitoring_status = (
+        monitoring_status
+        if monitoring_status in CANONICAL_MONITORING_STATUS
+        else _normalized_monitoring_status(
             runtime_status=normalized_runtime,
             reporting_systems_count=0,
             telemetry_freshness=normalized_freshness,
             contradiction_flags=[],
-        ),
+        )
+    )
+    summary = {
+        'workspace_configured': bool(workspace_configured),
+        'runtime_status': normalized_runtime,
+        'monitoring_status': normalized_monitoring_status,
         'last_poll_at': None,
         'last_heartbeat_at': None,
         'last_telemetry_at': None,

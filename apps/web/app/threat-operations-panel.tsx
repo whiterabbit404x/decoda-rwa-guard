@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { MonitoringPresentationStatus } from './monitoring-status-presentation';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from './response-action-capabilities';
-import { hasLiveTelemetry, monitoringHealthyCopyAllowed } from './workspace-monitoring-truth';
+import { hasLiveTelemetry } from './workspace-monitoring-truth';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import ThreatChainPanel from './threat-chain-panel';
 
@@ -898,11 +898,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const reportingSystems = truth.reporting_systems_count;
   const monitoringMode = truth.evidence_source_summary;
   const runtimeStatus = String(truth.runtime_status ?? '').toLowerCase();
-  const presentationStatus = canonicalPresentation.status;
+  const continuityLive = truth.continuity_status === 'continuous_live';
+  const presentationStatus = continuityLive ? canonicalPresentation.status : 'degraded';
+  const presentationStatusLabel = continuityLive ? canonicalPresentation.statusLabel : 'DEGRADED';
   const monitoringPresentation = {
     status: presentationStatus,
     tone: monitoringTone(presentationStatus),
-    statusLabel: canonicalPresentation.statusLabel,
+    statusLabel: presentationStatusLabel,
     summary: canonicalPresentation.summary,
     evidenceSourceLabel: String(truth.evidence_source_summary || 'none'),
     lastTelemetryAt: feed.monitoring.lastTelemetryAt,
@@ -911,7 +913,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     telemetryLabel: formatRelativeTime(feed.monitoring.lastTelemetryAt),
     heartbeatLabel: formatRelativeTime(feed.monitoring.lastHeartbeatAt),
     pollLabel: formatRelativeTime(feed.monitoring.lastPollAt),
-    hasLiveTelemetry: hasLiveTelemetry(truth),
+    hasLiveTelemetry: continuityLive && hasLiveTelemetry(truth),
   };
   const showLiveTelemetry = monitoringPresentation.hasLiveTelemetry;
   const dbPersistenceOutageReason = truth.db_failure_reason || null;

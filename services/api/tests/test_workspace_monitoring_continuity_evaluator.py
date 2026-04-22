@@ -43,6 +43,9 @@ def test_continuity_degraded_when_event_freshness_is_stale() -> None:
     )
     assert payload['continuity_status'] == 'degraded'
     assert 'event_ingestion_stale' in payload['continuity_reason_codes']
+    assert payload['ingestion_freshness'] == 'stale'
+    assert payload['detection_pipeline_freshness'] == 'fresh'
+    assert payload['worker_heartbeat_freshness'] == 'fresh'
     assert payload['event_throughput_window'] == 'out_of_window'
 
 
@@ -61,6 +64,9 @@ def test_continuity_offline_when_worker_dead_and_all_signals_offline() -> None:
     )
     assert payload['continuity_status'] == 'offline'
     assert 'worker_not_live' in payload['continuity_reason_codes']
+    assert payload['ingestion_freshness'] == 'offline'
+    assert payload['detection_pipeline_freshness'] == 'offline'
+    assert payload['worker_heartbeat_freshness'] == 'offline'
     assert payload['event_throughput_window'] == 'offline'
 
 
@@ -78,6 +84,9 @@ def test_continuity_idle_no_telemetry_when_no_runtime_timestamps_present() -> No
     )
     assert payload['continuity_status'] == 'idle_no_telemetry'
     assert 'event_ingestion_missing' in payload['continuity_reason_codes']
+    assert payload['ingestion_freshness'] == 'missing'
+    assert payload['detection_pipeline_freshness'] == 'missing'
+    assert payload['worker_heartbeat_freshness'] == 'missing'
     assert payload['event_throughput_window'] == 'no_events'
 
 
