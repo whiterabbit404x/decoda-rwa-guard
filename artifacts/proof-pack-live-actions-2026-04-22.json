@@ -1,0 +1,172 @@
+{
+  "generated_at": "2026-04-22T08:43:49.058209+00:00",
+  "records": [
+    {
+      "case": "revoke_approval_live",
+      "ok": true,
+      "response": {
+        "id": "act-safe-proof",
+        "status": "pending",
+        "safe_tx_hash": "0xproofsafe123",
+        "mode": "live",
+        "execution_state": "proposed",
+        "live_execution_path": "safe",
+        "reason": null,
+        "result_summary": "Safe transaction proposed; awaiting wallet execution.",
+        "dry_run": false,
+        "is_simulated": false
+      },
+      "row_after": {
+        "id": "act-safe-proof",
+        "status": "pending",
+        "mode": "live",
+        "action_type": "revoke_approval",
+        "execution_metadata": {
+          "execution_mode": "safe_proposed",
+          "execution_state": "proposed",
+          "safe_tx_hash": "0xproofsafe123",
+          "proposal_timestamp": "2026-04-22T08:43:49.058656+00:00",
+          "proposal_operator_user_id": "admin-1"
+        },
+        "incident_id": "inc-1",
+        "alert_id": "alert-1",
+        "token_contract": "0x1111111111111111111111111111111111111111",
+        "calldata": "0x095ea7b3",
+        "chain_network": "ethereum",
+        "execution_state": "proposed",
+        "safe_tx_hash": "0xproofsafe123",
+        "result_summary": "Safe transaction proposed; awaiting wallet execution."
+      },
+      "executed": [
+        {
+          "sql": "SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s",
+          "params": [
+            "act-safe-proof",
+            "ws-1"
+          ]
+        },
+        {
+          "sql": "UPDATE response_actions SET status = 'pending', execution_state = %s, safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, executed_at = CASE WHEN 'pending' = 'executed' THEN NOW() ELSE executed_at END, result_summary = COALESCE(result_summary, %s) WHERE id = %s",
+          "params": [
+            "proposed",
+            "0xproofsafe123",
+            "{\"execution_mode\":\"safe_proposed\",\"execution_state\":\"proposed\",\"safe_tx_hash\":\"0xproofsafe123\",\"proposal_timestamp\":\"2026-04-22T08:43:49.058656+00:00\",\"proposal_operator_user_id\":\"admin-1\"}",
+            "Safe transaction proposed; awaiting wallet execution.",
+            "act-safe-proof"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "freeze_wallet_live",
+      "ok": true,
+      "response": {
+        "id": "act-governance-proof",
+        "status": "pending",
+        "safe_tx_hash": null,
+        "mode": "live",
+        "execution_state": "proposed",
+        "live_execution_path": "governance",
+        "reason": null,
+        "result_summary": "Freeze wallet governance action submitted; awaiting governance execution.",
+        "dry_run": false,
+        "is_simulated": false
+      },
+      "row_after": {
+        "id": "act-governance-proof",
+        "status": "pending",
+        "mode": "live",
+        "action_type": "freeze_wallet",
+        "execution_metadata": {
+          "governance_action": {
+            "action_id": "gov-proof-456",
+            "attestation_hash": "att-proof-789",
+            "policy_effects": [
+              "Wallet frozen"
+            ]
+          },
+          "external_governance_action_id": "gov-proof-456",
+          "attestation_hash": "att-proof-789",
+          "policy_effects": [
+            "Wallet frozen"
+          ],
+          "execution_mode": "governance_submitted",
+          "execution_state": "proposed"
+        },
+        "incident_id": "inc-2",
+        "alert_id": "alert-2",
+        "execution_state": "proposed",
+        "result_summary": "Freeze wallet governance action submitted; awaiting governance execution."
+      },
+      "executed": [
+        {
+          "sql": "SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s",
+          "params": [
+            "act-governance-proof",
+            "ws-1"
+          ]
+        },
+        {
+          "sql": "UPDATE response_actions SET status = 'pending', execution_state = %s, safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, executed_at = CASE WHEN 'pending' = 'executed' THEN NOW() ELSE executed_at END, result_summary = COALESCE(result_summary, %s) WHERE id = %s",
+          "params": [
+            "proposed",
+            null,
+            "{\"governance_action\":{\"action_id\":\"gov-proof-456\",\"attestation_hash\":\"att-proof-789\",\"policy_effects\":[\"Wallet frozen\"]},\"external_governance_action_id\":\"gov-proof-456\",\"attestation_hash\":\"att-proof-789\",\"policy_effects\":[\"Wallet frozen\"],\"execution_mode\":\"governance_submitted\",\"execution_state\":\"proposed\"}",
+            "Freeze wallet governance action submitted; awaiting governance execution.",
+            "act-governance-proof"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "block_transaction_live_unsupported",
+      "ok": false,
+      "error": {
+        "status_code": 409,
+        "detail": {
+          "code": "RESPONSE_ACTION_UNSUPPORTED_EXECUTOR",
+          "message": "Unsupported live action",
+          "action_id": "act-unsupported-proof",
+          "action_type": "block_transaction",
+          "live_execution_path": "unsupported",
+          "status": "failed",
+          "execution_state": "unsupported",
+          "reason": "Unsupported live action"
+        }
+      },
+      "row_after": {
+        "id": "act-unsupported-proof",
+        "status": "failed",
+        "mode": "live",
+        "action_type": "block_transaction",
+        "execution_metadata": {
+          "execution_mode": "unsupported",
+          "execution_state": "unsupported"
+        },
+        "incident_id": "inc-3",
+        "alert_id": "alert-3",
+        "execution_state": "unsupported",
+        "result_summary": "Unsupported live action"
+      },
+      "executed": [
+        {
+          "sql": "SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s",
+          "params": [
+            "act-unsupported-proof",
+            "ws-1"
+          ]
+        },
+        {
+          "sql": "UPDATE response_actions SET status = %s, execution_state = %s, execution_metadata = %s::jsonb, result_summary = %s WHERE id = %s",
+          "params": [
+            "failed",
+            "unsupported",
+            "{\"execution_mode\":\"unsupported\",\"execution_state\":\"unsupported\"}",
+            "Unsupported live action",
+            "act-unsupported-proof"
+          ]
+        }
+      ]
+    }
+  ]
+}
