@@ -7394,34 +7394,34 @@ def list_detections(
         max_limit = max(1, min(int(limit or 50), 200))
         rows = connection.execute(
             '''
-            SELECT id,
-                   workspace_id,
-                   monitored_system_id,
-                   protected_asset_id,
-                   detection_type,
-                   severity,
-                   confidence,
-                   title,
-                   evidence_summary,
-                   evidence_source,
-                   source_rule,
-                   status,
-                   detected_at,
-                   raw_evidence_json,
-                   monitoring_run_id,
-                   linked_alert_id,
-                   COALESCE(raw_evidence_json->'observed_evidence'->>'tx_hash', raw_evidence_json->>'tx_hash') AS tx_hash,
+            SELECT d.id AS id,
+                   d.workspace_id AS workspace_id,
+                   d.monitored_system_id AS monitored_system_id,
+                   d.protected_asset_id AS protected_asset_id,
+                   d.detection_type AS detection_type,
+                   d.severity AS severity,
+                   d.confidence AS confidence,
+                   d.title AS title,
+                   d.evidence_summary AS evidence_summary,
+                   d.evidence_source AS evidence_source,
+                   d.source_rule AS source_rule,
+                   d.status AS status,
+                   d.detected_at AS detected_at,
+                   d.raw_evidence_json AS raw_evidence_json,
+                   d.monitoring_run_id AS monitoring_run_id,
+                   d.linked_alert_id AS linked_alert_id,
+                   COALESCE(d.raw_evidence_json->'observed_evidence'->>'tx_hash', d.raw_evidence_json->>'tx_hash') AS tx_hash,
                    COALESCE(
-                       NULLIF(raw_evidence_json->'observed_evidence'->>'block_number', '')::bigint,
-                       NULLIF(raw_evidence_json->>'block_number', '')::bigint
+                       NULLIF(d.raw_evidence_json->'observed_evidence'->>'block_number', '')::bigint,
+                       NULLIF(d.raw_evidence_json->>'block_number', '')::bigint
                    ) AS block_number,
                    COALESCE(
-                       raw_evidence_json->'observed_evidence'->>'detector_kind',
-                       raw_evidence_json->'observed_evidence'->>'detector_family',
-                       raw_evidence_json->>'detector_kind',
-                       raw_evidence_json->>'detector_family'
+                       d.raw_evidence_json->'observed_evidence'->>'detector_kind',
+                       d.raw_evidence_json->'observed_evidence'->>'detector_family',
+                       d.raw_evidence_json->>'detector_kind',
+                       d.raw_evidence_json->>'detector_family'
                    ) AS detector_kind,
-                   COALESCE(raw_evidence_json->'observed_evidence'->>'evidence_origin', evidence_source) AS evidence_origin,
+                   COALESCE(d.raw_evidence_json->'observed_evidence'->>'evidence_origin', d.evidence_source) AS evidence_origin,
                    a.incident_id AS linked_incident_id,
                    ra.id AS linked_action_id,
                    ev_stats.linked_evidence_count,
@@ -7430,33 +7430,33 @@ def list_detections(
                    COALESCE(
                        ev_latest.raw_payload_json->>'evidence_origin',
                        ev_latest.evidence_source,
-                       COALESCE(raw_evidence_json->'observed_evidence'->>'evidence_origin', evidence_source)
+                       COALESCE(d.raw_evidence_json->'observed_evidence'->>'evidence_origin', d.evidence_source)
                    ) AS last_evidence_origin,
-                   COALESCE(ev_latest.tx_hash, COALESCE(raw_evidence_json->'observed_evidence'->>'tx_hash', raw_evidence_json->>'tx_hash')) AS chain_tx_hash,
+                   COALESCE(ev_latest.tx_hash, COALESCE(d.raw_evidence_json->'observed_evidence'->>'tx_hash', d.raw_evidence_json->>'tx_hash')) AS chain_tx_hash,
                    COALESCE(
                        ev_latest.block_number,
-                       NULLIF(raw_evidence_json->'observed_evidence'->>'block_number', '')::bigint,
-                       NULLIF(raw_evidence_json->>'block_number', '')::bigint
+                       NULLIF(d.raw_evidence_json->'observed_evidence'->>'block_number', '')::bigint,
+                       NULLIF(d.raw_evidence_json->>'block_number', '')::bigint
                    ) AS chain_block_number,
                    COALESCE(
                        ev_latest.raw_payload_json->>'detector_kind',
                        ev_latest.raw_payload_json->>'detector_family',
                        COALESCE(
-                           raw_evidence_json->'observed_evidence'->>'detector_kind',
-                           raw_evidence_json->'observed_evidence'->>'detector_family',
-                           raw_evidence_json->>'detector_kind',
-                           raw_evidence_json->>'detector_family'
+                           d.raw_evidence_json->'observed_evidence'->>'detector_kind',
+                           d.raw_evidence_json->'observed_evidence'->>'detector_family',
+                           d.raw_evidence_json->>'detector_kind',
+                           d.raw_evidence_json->>'detector_family'
                        )
                    ) AS chain_detector_kind,
-                   created_at,
-                   updated_at
-            FROM detections
-            LEFT JOIN alerts a ON a.id = detections.linked_alert_id AND a.workspace_id = detections.workspace_id
+                   d.created_at AS created_at,
+                   d.updated_at AS updated_at
+            FROM detections d
+            LEFT JOIN alerts a ON a.id = d.linked_alert_id AND a.workspace_id = d.workspace_id
             LEFT JOIN LATERAL (
                 SELECT COUNT(*)::int AS linked_evidence_count
                 FROM evidence e
-                WHERE e.workspace_id = detections.workspace_id
-                  AND e.alert_id = detections.linked_alert_id
+                WHERE e.workspace_id = d.workspace_id
+                  AND e.alert_id = d.linked_alert_id
             ) ev_stats ON TRUE
             LEFT JOIN LATERAL (
                 SELECT e.observed_at AS last_evidence_at,
@@ -7465,29 +7465,29 @@ def list_detections(
                        e.block_number,
                        e.raw_payload_json
                 FROM evidence e
-                WHERE e.workspace_id = detections.workspace_id
-                  AND e.alert_id = detections.linked_alert_id
+                WHERE e.workspace_id = d.workspace_id
+                  AND e.alert_id = d.linked_alert_id
                 ORDER BY e.observed_at DESC, e.created_at DESC, e.id DESC
                 LIMIT 1
             ) ev_latest ON TRUE
             LEFT JOIN LATERAL (
-                SELECT id
-                FROM response_actions
-                WHERE workspace_id = detections.workspace_id
+                SELECT ra_latest.id AS id
+                FROM response_actions ra_latest
+                WHERE ra_latest.workspace_id = d.workspace_id
                   AND (
-                      (detections.linked_alert_id IS NOT NULL AND alert_id = detections.linked_alert_id)
-                      OR (a.incident_id IS NOT NULL AND incident_id = a.incident_id)
+                      (d.linked_alert_id IS NOT NULL AND ra_latest.alert_id = d.linked_alert_id)
+                      OR (a.incident_id IS NOT NULL AND ra_latest.incident_id = a.incident_id)
                   )
-                ORDER BY created_at DESC
+                ORDER BY ra_latest.created_at DESC
                 LIMIT 1
             ) ra ON TRUE
-            WHERE detections.workspace_id = %s
-              AND (%s::text IS NULL OR detections.severity = %s::text)
-              AND (%s::text IS NULL OR detections.status = %s::text)
-              AND (%s::text IS NULL OR detections.evidence_source = %s::text)
-              AND (%s::uuid IS NULL OR detections.monitored_system_id = %s::uuid)
-              AND (%s::uuid IS NULL OR detections.protected_asset_id = %s::uuid)
-            ORDER BY detected_at DESC
+            WHERE d.workspace_id = %s
+              AND (%s::text IS NULL OR d.severity = %s::text)
+              AND (%s::text IS NULL OR d.status = %s::text)
+              AND (%s::text IS NULL OR d.evidence_source = %s::text)
+              AND (%s::uuid IS NULL OR d.monitored_system_id = %s::uuid)
+              AND (%s::uuid IS NULL OR d.protected_asset_id = %s::uuid)
+            ORDER BY d.detected_at DESC
             LIMIT %s
             ''',
             (
@@ -7640,6 +7640,7 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
             LEFT JOIN LATERAL (
                 SELECT e.observed_at AS last_evidence_at,
                        e.source_provider AS evidence_source,
+                       e.source_provider AS source_provider,
                        e.tx_hash,
                        e.block_number,
                        e.raw_payload_json
@@ -7650,11 +7651,11 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
                 LIMIT 1
             ) ev_latest ON TRUE
             LEFT JOIN LATERAL (
-                SELECT id
-                FROM response_actions
-                WHERE workspace_id = a.workspace_id
-                  AND (alert_id = a.id OR (a.incident_id IS NOT NULL AND incident_id = a.incident_id))
-                ORDER BY created_at DESC
+                SELECT ra_latest.id AS id
+                FROM response_actions ra_latest
+                WHERE ra_latest.workspace_id = a.workspace_id
+                  AND (ra_latest.alert_id = a.id OR (a.incident_id IS NOT NULL AND ra_latest.incident_id = a.incident_id))
+                ORDER BY ra_latest.created_at DESC
                 LIMIT 1
             ) ra ON TRUE
             WHERE a.workspace_id = %s
@@ -8130,11 +8131,11 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
                 LIMIT 1
             ) ev_latest ON TRUE
             LEFT JOIN LATERAL (
-                SELECT id
-                FROM response_actions
-                WHERE workspace_id = i.workspace_id
-                  AND incident_id = i.id
-                ORDER BY created_at DESC
+                SELECT ra_latest.id AS id
+                FROM response_actions ra_latest
+                WHERE ra_latest.workspace_id = i.workspace_id
+                  AND ra_latest.incident_id = i.id
+                ORDER BY ra_latest.created_at DESC
                 LIMIT 1
             ) ra ON TRUE
             WHERE i.workspace_id = %s
