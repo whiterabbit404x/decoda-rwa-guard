@@ -7481,12 +7481,12 @@ def list_detections(
                 ORDER BY created_at DESC
                 LIMIT 1
             ) ra ON TRUE
-            WHERE workspace_id = %s
-              AND (%s::text IS NULL OR severity = %s::text)
-              AND (%s::text IS NULL OR status = %s::text)
-              AND (%s::text IS NULL OR evidence_source = %s::text)
-              AND (%s::uuid IS NULL OR monitored_system_id = %s::uuid)
-              AND (%s::uuid IS NULL OR protected_asset_id = %s::uuid)
+            WHERE detections.workspace_id = %s
+              AND (%s::text IS NULL OR detections.severity = %s::text)
+              AND (%s::text IS NULL OR detections.status = %s::text)
+              AND (%s::text IS NULL OR detections.evidence_source = %s::text)
+              AND (%s::uuid IS NULL OR detections.monitored_system_id = %s::uuid)
+              AND (%s::uuid IS NULL OR detections.protected_asset_id = %s::uuid)
             ORDER BY detected_at DESC
             LIMIT %s
             ''',
@@ -7657,13 +7657,13 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
                 ORDER BY created_at DESC
                 LIMIT 1
             ) ra ON TRUE
-            WHERE workspace_id = %s
-              AND (%s::text IS NULL OR severity = %s::text)
-              AND (%s::text IS NULL OR module_key = %s::text)
-              AND (%s::uuid IS NULL OR target_id = %s::uuid)
-              AND (%s::text IS NULL OR status = %s::text)
-              AND (%s::text IS NULL OR source = %s::text OR source_service = %s::text)
-            ORDER BY created_at DESC
+            WHERE a.workspace_id = %s
+              AND (%s::text IS NULL OR a.severity = %s::text)
+              AND (%s::text IS NULL OR a.module_key = %s::text)
+              AND (%s::uuid IS NULL OR a.target_id = %s::uuid)
+              AND (%s::text IS NULL OR a.status = %s::text)
+              AND (%s::text IS NULL OR a.source = %s::text OR a.source_service = %s::text)
+            ORDER BY a.created_at DESC
             LIMIT 200
             ''',
             (workspace_context['workspace_id'], severity, severity, module, module, target_id, target_id, status_value, status_value, source, source, source),
@@ -8137,12 +8137,12 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
                 ORDER BY created_at DESC
                 LIMIT 1
             ) ra ON TRUE
-            WHERE workspace_id = %s
-              AND (%s::text IS NULL OR severity = %s::text)
-              AND (%s::uuid IS NULL OR target_id = %s::uuid)
-              AND (%s::text IS NULL OR workflow_status = %s::text OR status = %s::text)
-              AND (%s::uuid IS NULL OR assignee_user_id = %s::uuid)
-            ORDER BY created_at DESC
+            WHERE i.workspace_id = %s
+              AND (%s::text IS NULL OR i.severity = %s::text)
+              AND (%s::uuid IS NULL OR i.target_id = %s::uuid)
+              AND (%s::text IS NULL OR i.workflow_status = %s::text OR i.status = %s::text)
+              AND (%s::uuid IS NULL OR i.assignee_user_id = %s::uuid)
+            ORDER BY i.created_at DESC
             LIMIT 200
             ''',
             (workspace_context['workspace_id'], severity, severity, target_id, target_id, status_value, status_value, status_value, assignee_user_id, assignee_user_id),
