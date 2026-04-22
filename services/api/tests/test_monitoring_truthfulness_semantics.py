@@ -281,6 +281,60 @@ def test_process_monitoring_target_persists_live_coverage_without_target_events(
     assert result['live_coverage_telemetry_at'] is not None
 
 
+def test_process_monitoring_target_does_not_promote_last_checked_to_last_event(monkeypatch):
+    class _Conn:
+        def execute(self, query, params=None):
+            normalized = ' '.join(str(query).split())
+            if 'SELECT id, name FROM workspaces' in normalized:
+                return _Result({'id': 'workspace-1', 'name': 'Workspace'})
+            return _Result(None)
+
+    target = {
+        'id': 'target-1',
+        'workspace_id': 'workspace-1',
+        'name': 'Treasury Wallet',
+        'target_type': 'wallet',
+        'chain_network': 'ethereum',
+        'monitoring_checkpoint_at': None,
+        'last_checked_at': datetime.now(timezone.utc),
+        'monitoring_checkpoint_cursor': None,
+        'watcher_last_observed_block': None,
+        'updated_by_user_id': 'user-1',
+        'created_by_user_id': 'user-1',
+    }
+    monkeypatch.setattr(
+        monitoring_runner,
+        'fetch_target_activity_result',
+        lambda *_args, **_kwargs: ActivityProviderResult(
+            mode='live',
+            status='live',
+            evidence_state='REAL_EVIDENCE',
+            truthfulness_state='NOT_CLAIM_SAFE',
+            synthetic=False,
+            provider_name='evm_activity_provider',
+            provider_kind='rpc',
+            evidence_present=True,
+            recent_real_event_count=0,
+            last_real_event_at=None,
+            events=[],
+            latest_block=123,
+            checkpoint='coverage:123',
+            checkpoint_age_seconds=0,
+            degraded_reason=None,
+            error_code=None,
+            source_type='rpc_polling',
+            reason_code='PROVIDER_COVERAGE_VERIFIED',
+            claim_safe=False,
+            detection_outcome='NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
+        ),
+    )
+    monkeypatch.setattr(monitoring_runner, '_persist_live_coverage_telemetry', lambda *_args, **_kwargs: None)
+
+    result = monitoring_runner.process_monitoring_target(_Conn(), target, triggered_by_user_id='user-1')
+    assert result['events_ingested'] == 0
+    assert result['last_event_at'] is None
+
+
 def test_process_monitoring_target_degrades_non_live_provider_source(monkeypatch):
     persisted: dict[str, object] = {'called': False}
 

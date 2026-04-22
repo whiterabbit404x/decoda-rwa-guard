@@ -2120,6 +2120,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     last_alert_at: datetime | None = None
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
     checkpoint_at = checkpoint
+    last_observed_event_at = provider_result.last_real_event_at
     latest_processed_block = int(target.get('watcher_last_observed_block') or 0)
     last_protected_asset_coverage_record: dict[str, Any] = {}
     source_status = (
@@ -2149,6 +2150,8 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             last_status = event_state
         last_run_id = analysis_run_id
         checkpoint_at = event.observed_at
+        if last_observed_event_at is None or event.observed_at > last_observed_event_at:
+            last_observed_event_at = event.observed_at
         checkpoint_cursor = event.cursor
         block_number = event.payload.get('block_number') if isinstance(event.payload, dict) else None
         if block_number is not None:
@@ -2303,7 +2306,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             latest_processed_block,
             source_status,
             degraded_reason,
-            checkpoint_at,
+            last_observed_event_at,
             last_real_event_at,
             last_no_evidence_at,
             last_degraded_at,
@@ -2364,7 +2367,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         'recent_evidence_state': recent_evidence_state,
         'recent_truthfulness_state': recent_truthfulness_state,
         'recent_real_event_count': int(provider_result.recent_real_event_count),
-        'last_event_at': checkpoint_at.isoformat() if checkpoint_at else None,
+        'last_event_at': last_observed_event_at.isoformat() if last_observed_event_at else None,
         'last_real_event_at': last_real_event_at.isoformat() if last_real_event_at else None,
         'live_coverage_telemetry_at': live_coverage_telemetry_at.isoformat() if live_coverage_telemetry_at else None,
         'protected_asset_coverage_record': last_protected_asset_coverage_record,
