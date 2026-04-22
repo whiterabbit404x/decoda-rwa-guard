@@ -1306,8 +1306,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const seen = new Set<string>();
     detections.forEach((detection) => {
       const alertId = detection.linked_alert_id ?? null;
-      const incidentId = detection.linked_incident_id
-        ?? (alertId ? alerts.find((item) => item.id === alertId)?.incident_id ?? null : null);
+      const incidentId = detection.linked_incident_id ?? null;
       if (!alertId && !incidentId) {
         return;
       }
@@ -1323,7 +1322,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       });
     });
     return options;
-  }, [alerts, detections]);
+  }, [detections]);
   const [selectedThreatActionContextId, setSelectedThreatActionContextId] = useState<string>('');
   useEffect(() => {
     setSelectedThreatActionContextId((current) => {
