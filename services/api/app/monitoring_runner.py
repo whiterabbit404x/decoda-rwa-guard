@@ -3696,6 +3696,19 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 },
             }
         )
+        summary.setdefault(
+            'coverage_state',
+            {
+                'configured_systems': 0,
+                'monitored_systems_count': 0,
+                'reporting_systems_count': 0,
+                'protected_assets_count': 0,
+                'telemetry_freshness': str(summary.get('telemetry_freshness') or 'unavailable'),
+                'confidence': str(summary.get('confidence') or 'unavailable'),
+                'evidence_source_summary': str(summary.get('evidence_source_summary') or 'none'),
+            },
+        )
+        summary.setdefault('linked_monitored_system_count', 0)
         if not bool(payload.get('db_persistence_available', True)):
             summary['runtime_status'] = 'degraded'
             summary['monitoring_status'] = 'limited'
@@ -3929,7 +3942,29 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 resolved_workspace_slug = workspace_slug
                 _persist_workspace_context(request, workspace_id=workspace_id, workspace_slug=workspace_slug)
             ensure_pilot_schema(connection)
-            ensure_monitoring_runtime_schema_capabilities(connection)
+            runtime_schema_missing_columns: list[str] = []
+            try:
+                ensure_monitoring_runtime_schema_capabilities(connection)
+            except HTTPException as exc:
+                detail_payload = exc.detail if isinstance(exc.detail, dict) else {}
+                if (
+                    exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+                    and detail_payload.get('code') == 'runtime_schema_incomplete'
+                ):
+                    runtime_schema_missing_columns = [
+                        str(column)
+                        for column in (detail_payload.get('missing_columns') or [])
+                        if str(column).strip()
+                    ]
+                    schema_drift_detected = True
+                    logger.warning(
+                        'monitoring_runtime_status_schema_drift_continue workspace_id=%s workspace_slug=%s missing_columns=%s',
+                        workspace_id,
+                        workspace_slug,
+                        runtime_schema_missing_columns,
+                    )
+                else:
+                    raise
             if request is not None:
                 _mark_query_checkpoint('load_runtime_monitored_rows')
                 monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
@@ -4120,6 +4155,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ).fetchone()
             latest_detection_evaluation_at = _parse_ts((latest_detection_eval or {}).get('created_at'))
             latest_detection_payload = _json_safe_value((latest_detection_eval or {}).get('response_payload') or {}) if latest_detection_eval else None
+            supports_receipt_live_coverage_columns = (
+                'monitoring_event_receipts.evidence_source' not in runtime_schema_missing_columns
+                and 'monitoring_event_receipts.telemetry_kind' not in runtime_schema_missing_columns
+            )
             live_coverage_receipts_query = f'''
                 WITH filtered_receipts AS (
                     SELECT
@@ -4136,11 +4175,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                      AND t.deleted_at IS NULL
                      AND t.enabled = TRUE
                      AND {monitorable_target_types_sql_clause('t.target_type')}
-                    WHERE e.evidence_source = 'live'
-                      AND (
-                        e.telemetry_kind = 'coverage'
-                        OR (e.telemetry_kind = 'target_event' AND e.receipt_kind = 'target_event')
-                      )
+                    WHERE (
+                        (
+                            {'TRUE' if supports_receipt_live_coverage_columns else 'FALSE'}
+                            AND e.evidence_source = 'live'
+                            AND (
+                                e.telemetry_kind = 'coverage'
+                                OR (e.telemetry_kind = 'target_event' AND e.receipt_kind = 'target_event')
+                            )
+                        )
+                        OR (
+                            {'FALSE' if supports_receipt_live_coverage_columns else 'TRUE'}
+                            AND e.receipt_kind = 'coverage'
+                        )
+                    )
                       AND e.processed_at IS NOT NULL
                       AND COALESCE(LOWER(e.ingestion_source), '') NOT IN ('demo', 'simulator', 'replay', 'synthetic', 'fallback')
                       {'AND e.workspace_id = %s' if workspace_id else ''}
@@ -4546,6 +4594,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             db_persistence_available=db_persistence_available,
             db_persistence_reason=db_persistence_reason,
         )
+        summary['coverage_state'] = {
+            'configured_systems': int(enabled_system_count),
+            'monitored_systems_count': int(system_count),
+            'reporting_systems_count': int(reporting_systems),
+            'protected_assets_count': int(protected_assets_count),
+            'telemetry_freshness': str(summary.get('telemetry_freshness') or 'unavailable'),
+            'confidence': str(summary.get('confidence') or 'unavailable'),
+            'evidence_source_summary': str(summary.get('evidence_source_summary') or 'none'),
+        }
+        summary['linked_monitored_system_count'] = int(linked_monitored_system_count)
         continuity_evaluation = evaluate_workspace_monitoring_continuity(
             now=now,
             workspace_configured=workspace_configured,
