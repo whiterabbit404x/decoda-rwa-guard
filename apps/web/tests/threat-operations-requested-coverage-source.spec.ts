@@ -48,17 +48,19 @@ test('renders evidence drawer and keeps SIMULATED labels explicit', () => {
   expect(incidents).not.toContain('this incident has no persisted linked evidence yet');
 });
 
-test('threat quick actions require linked context selection or explicit unlinked mode', () => {
+test('threat quick actions require explicit linked context and block unrelated fallback rows', () => {
   const threat = appSource('threat-operations-panel.tsx');
 
   expect(threat).not.toContain('alerts[0]');
   expect(threat).not.toContain('incidents[0]');
   expect(threat).not.toContain('incident_id: incidents[0]?.id');
   expect(threat).not.toContain('alert_id: alerts[0]?.id');
-  expect(threat).toContain('incident_id: selectedThreatActionContext?.incidentId ?? null');
-  expect(threat).toContain('alert_id: selectedThreatActionContext?.alertId ?? null');
-  expect(threat).toContain('UNLINKED ACTION (manual follow-up required)');
-  expect(threat).toContain('Unlinked action (manual follow-up required)');
-  expect(threat).toContain('Select a linked detection/alert/incident context or keep the action explicitly unlinked.');
-  expect(threat).toContain('No linked alert/incident context available for this action.');
+  expect(threat).toContain('const shouldBlockThreatActionCreation = noLinkedActionContextAvailable || !selectedThreatActionContext;');
+  expect(threat).toContain('if (shouldBlockThreatActionCreation) {');
+  expect(threat).toContain("setResponseToast('No linked alert/incident context available.');");
+  expect(threat).toContain('incident_id: selectedThreatActionContext.incidentId');
+  expect(threat).toContain('alert_id: selectedThreatActionContext.alertId');
+  expect(threat).toContain('<option value="" disabled>Select linked detection/alert/incident context</option>');
+  expect(threat).not.toContain('Unlinked action (manual follow-up required)');
+  expect(threat).toContain('No linked alert/incident context available.');
 });

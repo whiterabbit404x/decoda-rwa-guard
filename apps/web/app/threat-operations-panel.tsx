@@ -1324,19 +1324,20 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     });
     return options;
   }, [alerts, detections]);
-  const [selectedThreatActionContextId, setSelectedThreatActionContextId] = useState<string>('unlinked');
+  const [selectedThreatActionContextId, setSelectedThreatActionContextId] = useState<string>('');
   useEffect(() => {
     setSelectedThreatActionContextId((current) => {
-      if (current === 'unlinked') return 'unlinked';
+      if (!current) return '';
       return threatActionContextOptions.some((option) => option.id === current)
         ? current
-        : 'unlinked';
+        : '';
     });
   }, [threatActionContextOptions]);
   const selectedThreatActionContext = useMemo(() => (
     threatActionContextOptions.find((option) => option.id === selectedThreatActionContextId) ?? null
   ), [selectedThreatActionContextId, threatActionContextOptions]);
   const noLinkedActionContextAvailable = threatActionContextOptions.length === 0;
+  const shouldBlockThreatActionCreation = noLinkedActionContextAvailable || !selectedThreatActionContext;
 
   useEffect(() => {
     void fetch(`${apiUrl}/response/action-capabilities`, { headers: authHeaders(), cache: 'no-store' })
@@ -1379,9 +1380,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }
 
   async function runSimulatedThreatAction(actionType: string, label: string) {
+    if (shouldBlockThreatActionCreation) {
+      setResponseToast('No linked alert/incident context available.');
+      return;
+    }
     const contextLabel = selectedThreatActionContext
       ? `Linked context: ${selectedThreatActionContext.label}`
-      : 'UNLINKED ACTION (manual follow-up required)';
+      : 'No linked alert/incident context available.';
     const create = await fetch(`${apiUrl}/response/actions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -1389,8 +1394,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         action_type: actionType,
         mode: 'simulated',
         status: 'pending',
-        incident_id: selectedThreatActionContext?.incidentId ?? null,
-        alert_id: selectedThreatActionContext?.alertId ?? null,
+        incident_id: selectedThreatActionContext.incidentId,
+        alert_id: selectedThreatActionContext.alertId,
         result_summary: `SIMULATED ${label} created from threat client (${contextLabel})`,
       }),
     });
@@ -1897,24 +1902,24 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <label className="fieldLabel" htmlFor="threat-action-context-select">Launch action context</label>
             <select
               id="threat-action-context-select"
-              value={selectedThreatActionContext ? selectedThreatActionContext.id : 'unlinked'}
+              value={selectedThreatActionContext ? selectedThreatActionContext.id : ''}
               onChange={(event) => setSelectedThreatActionContextId(event.target.value)}
             >
-              <option value="unlinked">Unlinked action (manual follow-up required)</option>
+              <option value="" disabled>Select linked detection/alert/incident context</option>
               {threatActionContextOptions.map((option) => (
                 <option key={option.id} value={option.id}>{option.label}</option>
               ))}
             </select>
-            {noLinkedActionContextAvailable
-              ? <p className="statusLine">No linked alert/incident context available for this action.</p>
-              : <p className="statusLine">Select a linked detection/alert/incident context or keep the action explicitly unlinked.</p>}
+            {shouldBlockThreatActionCreation
+              ? <p className="statusLine">No linked alert/incident context available.</p>
+              : <p className="statusLine">Linked detection/alert/incident context selected for action creation.</p>}
             <div className="buttonRow">
-              <button type="button" disabled={isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('notify_team', 'Execute simulated response')}>Execute simulated response (SIMULATED)</button>
-              <button type="button" disabled={isActionDisabledInMode(actionCapabilities.block_transaction, 'simulated')} title={actionDisabledReason(actionCapabilities.block_transaction, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('block_transaction', 'Block transaction')}>Block transaction (SIMULATED)</button>
-              <button type="button" disabled={isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
-              <button type="button" disabled={isActionDisabledInMode(actionCapabilities.freeze_wallet, 'simulated')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet (SIMULATED)</button>
-              <button type="button" disabled={isActionDisabledInMode(actionCapabilities.disable_monitored_system, 'simulated')} title={actionDisabledReason(actionCapabilities.disable_monitored_system, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system (SIMULATED)</button>
-              <button type="button" disabled={isActionDisabledInMode(actionCapabilities.suppress_rule, 'simulated')} title={actionDisabledReason(actionCapabilities.suppress_rule, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('suppress_rule', 'Suppress/mute rule')}>Suppress/mute rule (SIMULATED)</button>
+              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('notify_team', 'Execute simulated response')}>Execute simulated response (SIMULATED)</button>
+              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.block_transaction, 'simulated')} title={actionDisabledReason(actionCapabilities.block_transaction, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('block_transaction', 'Block transaction')}>Block transaction (SIMULATED)</button>
+              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
+              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'simulated')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet (SIMULATED)</button>
+              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.disable_monitored_system, 'simulated')} title={actionDisabledReason(actionCapabilities.disable_monitored_system, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system (SIMULATED)</button>
+              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.suppress_rule, 'simulated')} title={actionDisabledReason(actionCapabilities.suppress_rule, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('suppress_rule', 'Suppress/mute rule')}>Suppress/mute rule (SIMULATED)</button>
               <Link href="/alerts" prefetch={false}>Review alerts</Link>
               <Link href="/incidents" prefetch={false}>Open incident queue</Link>
               <Link href="/history" prefetch={false}>View workspace history</Link>
