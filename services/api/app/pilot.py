@@ -8446,6 +8446,27 @@ def resolve_response_action_capability(action_type: str, mode: str | None = None
     }
 
 
+def _unsupported_live_action_detail(
+    *,
+    code: str,
+    action_id: str | None,
+    action_type: str,
+    capability: dict[str, Any],
+    reason: str | None = None,
+) -> dict[str, Any]:
+    message = str(reason or capability.get('reason') or 'Unsupported live action')
+    return {
+        'code': code,
+        'message': message,
+        'action_id': action_id,
+        'action_type': action_type,
+        'live_execution_path': capability.get('live_execution_path'),
+        'status': 'failed',
+        'execution_state': 'unsupported',
+        'reason': message,
+    }
+
+
 def list_response_action_capabilities(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -8598,10 +8619,17 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
         mode = _normalize_response_action_mode(payload)
         capability = resolve_response_action_capability(action_type, mode)
         if not capability.get('supports_mode'):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(capability.get('reason') or 'Selected mode is not supported for this action.'),
-            )
+            if mode == 'live':
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=_unsupported_live_action_detail(
+                        code='RESPONSE_ACTION_UNSUPPORTED_CAPABILITY',
+                        action_id=None,
+                        action_type=action_type,
+                        capability=capability,
+                    ),
+                )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Selected mode is not supported for this action.')
         status_value = _normalize_response_action_status(payload.get('status'))
         execution_metadata = {'params': params, 'created_via': 'api'}
         calldata: str | None = None
@@ -8887,16 +8915,13 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             connection.commit()
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    'code': 'RESPONSE_ACTION_UNSUPPORTED_EXECUTOR',
-                    'message': result_summary,
-                    'action_id': action_id,
-                    'action_type': action.get('action_type'),
-                    'live_execution_path': capability.get('live_execution_path'),
-                    'status': 'failed',
-                    'execution_state': 'unsupported',
-                    'reason': result_summary,
-                },
+                detail=_unsupported_live_action_detail(
+                    code='RESPONSE_ACTION_UNSUPPORTED_EXECUTOR',
+                    action_id=action_id,
+                    action_type=str(action.get('action_type') or ''),
+                    capability=capability,
+                    reason=result_summary,
+                ),
             )
         if next_status not in ENFORCEMENT_STATUSES:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Invalid next status for response action execution.')

@@ -127,6 +127,46 @@ def test_execute_response_action_returns_back_compat_dry_run_flag(monkeypatch):
     assert any(params[6] == 'alert.response_action_executed' for params in history_calls)
 
 
+def test_create_live_unsupported_action_returns_structured_422_and_does_not_insert(monkeypatch):
+    executed: list[tuple[str, object]] = []
+
+    class _Result:
+        def fetchone(self):
+            return None
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            executed.append((' '.join(str(statement).split()), params))
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1'}))
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    payload = {'action_type': 'block_transaction', 'mode': 'live', 'status': 'pending'}
+    try:
+        pilot.create_enforcement_action(payload, request)
+        raise AssertionError('Expected HTTPException for unsupported live action creation.')
+    except HTTPException as exc:
+        assert exc.status_code == 422
+        assert exc.detail['code'] == 'RESPONSE_ACTION_UNSUPPORTED_CAPABILITY'
+        assert exc.detail['status'] == 'failed'
+        assert exc.detail['execution_state'] == 'unsupported'
+        assert exc.detail['action_type'] == 'block_transaction'
+        assert exc.detail['reason'] == 'Unsupported live action'
+
+    assert not any('INSERT INTO response_actions' in statement for statement, _ in executed)
+
+
 def test_list_response_actions_returns_supported_fields(monkeypatch):
     class _Result:
         def __init__(self, rows=None):
