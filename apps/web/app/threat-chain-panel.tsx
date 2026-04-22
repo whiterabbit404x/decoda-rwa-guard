@@ -3,6 +3,12 @@
 import Link from 'next/link';
 
 type ThreatChainPanelProps = {
+  chainLinkedIds?: {
+    detection_id?: string | null;
+    alert_id?: string | null;
+    incident_id?: string | null;
+    action_id?: string | null;
+  } | null;
   detectionId?: string | null;
   alertId?: string | null;
   incidentId?: string | null;
@@ -26,6 +32,7 @@ type ChainStep = {
 };
 
 export default function ThreatChainPanel({
+  chainLinkedIds,
   detectionId,
   alertId,
   incidentId,
@@ -40,11 +47,15 @@ export default function ThreatChainPanel({
   evidenceDrawerLabel = 'Open evidence drawer',
   onOpenEvidence,
 }: ThreatChainPanelProps) {
+  const normalizedDetectionId = chainLinkedIds?.detection_id ?? detectionId ?? null;
+  const normalizedAlertId = chainLinkedIds?.alert_id ?? alertId ?? null;
+  const normalizedIncidentId = chainLinkedIds?.incident_id ?? incidentId ?? null;
+  const normalizedActionId = chainLinkedIds?.action_id ?? actionId ?? null;
   const chainSteps: ChainStep[] = [
-    { key: 'detection', label: 'Detection', id: detectionId, href: '/alerts' },
-    { key: 'alert', label: 'Alert', id: alertId, href: '/alerts' },
-    { key: 'incident', label: 'Incident', id: incidentId, href: '/incidents' },
-    { key: 'action', label: 'Action', id: actionId, href: '/history' },
+    { key: 'detection', label: 'Detection', id: normalizedDetectionId, href: '/alerts' },
+    { key: 'alert', label: 'Alert', id: normalizedAlertId, href: '/alerts' },
+    { key: 'incident', label: 'Incident', id: normalizedIncidentId, href: '/incidents' },
+    { key: 'action', label: 'Action', id: normalizedActionId, href: '/history' },
   ];
   const evidenceCount = Number(linkedEvidenceCount || 0);
 
@@ -64,9 +75,8 @@ export default function ThreatChainPanel({
       <p className="tableMeta">
         tx {txHash || 'n/a'} · block {blockNumber || 'n/a'} · detector {detectorKind || 'n/a'}
       </p>
-      {liveLikeMode && evidenceCount <= 0 ? (
-        <p className="statusLine">Degraded evidence state: LIVE/HYBRID monitoring is active but this chain has no persisted evidence yet.</p>
-      ) : null}
+      {liveLikeMode && evidenceCount <= 0 ? <p className="statusLine">Degraded evidence state: LIVE/HYBRID monitoring is active but this chain has no persisted evidence yet.</p> : null}
+      {!liveLikeMode && evidenceCount <= 0 ? <p className="tableMeta">No linked evidence is currently persisted for this chain.</p> : null}
       <button type="button" onClick={onOpenEvidence}>{evidenceDrawerLabel}</button>
     </div>
   );

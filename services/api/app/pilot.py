@@ -7497,6 +7497,7 @@ def list_detections(
             item['detector_kind'] = item.get('chain_detector_kind') or item.get('detector_kind')
             item['evidence_source'] = item.get('last_evidence_source') or item.get('evidence_source')
             item['evidence_origin'] = item.get('last_evidence_origin') or item.get('evidence_origin')
+            item['origin'] = item.get('evidence_origin')
             item['linked_evidence_count'] = int(item.get('linked_evidence_count') or 0)
             item['last_evidence_at'] = item.get('last_evidence_at')
             item['linked_detection_id'] = item.get('id')
@@ -7657,6 +7658,7 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
             item['linked_evidence_count'] = int(item.get('linked_evidence_count') or 0)
             item['last_evidence_at'] = item.get('last_evidence_at')
             item['evidence_origin'] = item.get('evidence_origin')
+            item['origin'] = item.get('evidence_origin')
             item['tx_hash'] = item.get('tx_hash')
             item['block_number'] = item.get('block_number')
             item['detector_kind'] = item.get('detector_kind')
@@ -7686,7 +7688,7 @@ def get_alert(alert_id: str, request: Request) -> dict[str, Any]:
         events = connection.execute('SELECT id, event_type, details, created_at FROM alert_events WHERE alert_id = %s ORDER BY created_at DESC', (alert_id,)).fetchall()
         evidence = connection.execute(
             '''
-            SELECT id, observed_at, event_type, severity, risk_score, summary, tx_hash, block_number, log_index, counterparty, amount_text, source_provider, created_at
+            SELECT id, observed_at, event_type, severity, risk_score, summary, tx_hash, block_number, log_index, counterparty, amount_text, source_provider, raw_payload_json, created_at
             FROM evidence
             WHERE alert_id = %s
             ORDER BY observed_at DESC
@@ -7694,8 +7696,28 @@ def get_alert(alert_id: str, request: Request) -> dict[str, Any]:
             ''',
             (alert_id,),
         ).fetchall()
+        alert_payload = _json_safe_value(dict(row))
+        latest_evidence_payload = _json_safe_value(dict(evidence[0])) if evidence else {}
+        alert_payload['linked_evidence_count'] = len(evidence)
+        alert_payload['last_evidence_at'] = latest_evidence_payload.get('observed_at')
+        alert_payload['evidence_origin'] = latest_evidence_payload.get('source_provider') or alert_payload.get('source')
+        alert_payload['origin'] = alert_payload.get('evidence_origin')
+        alert_payload['tx_hash'] = latest_evidence_payload.get('tx_hash')
+        alert_payload['block_number'] = latest_evidence_payload.get('block_number')
+        latest_raw_payload = latest_evidence_payload.get('raw_payload_json') if isinstance(latest_evidence_payload.get('raw_payload_json'), dict) else {}
+        alert_payload['detector_kind'] = latest_raw_payload.get('detector_kind') or latest_raw_payload.get('detector_family')
+        alert_payload['linked_detection_id'] = alert_payload.get('detection_id')
+        alert_payload['linked_alert_id'] = alert_payload.get('id')
+        alert_payload['linked_incident_id'] = alert_payload.get('incident_id')
+        alert_payload['linked_action_id'] = None
+        alert_payload['chain_linked_ids'] = {
+            'detection_id': alert_payload.get('linked_detection_id'),
+            'alert_id': alert_payload.get('linked_alert_id'),
+            'incident_id': alert_payload.get('linked_incident_id'),
+            'action_id': alert_payload.get('linked_action_id'),
+        }
         return {
-            'alert': _json_safe_value(dict(row)),
+            'alert': alert_payload,
             'events': [_json_safe_value(dict(item)) for item in events],
             'evidence_timeline': [_json_safe_value(dict(item)) for item in evidence],
             'evidence_count': len(evidence),
@@ -8119,6 +8141,7 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
             item['linked_evidence_count'] = int(item.get('linked_evidence_count') or 0)
             item['last_evidence_at'] = item.get('last_evidence_at')
             item['evidence_origin'] = item.get('evidence_origin')
+            item['origin'] = item.get('evidence_origin')
             item['tx_hash'] = item.get('tx_hash')
             item['block_number'] = item.get('block_number')
             item['detector_kind'] = item.get('detector_kind')

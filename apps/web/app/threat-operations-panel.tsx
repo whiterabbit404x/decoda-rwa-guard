@@ -72,6 +72,12 @@ type AlertRow = {
   tx_hash?: string | null;
   block_number?: number | null;
   detector_kind?: string | null;
+  chain_linked_ids?: {
+    detection_id?: string | null;
+    alert_id?: string | null;
+    incident_id?: string | null;
+    action_id?: string | null;
+  } | null;
 };
 
 type IncidentRow = {
@@ -91,6 +97,12 @@ type IncidentRow = {
   tx_hash?: string | null;
   block_number?: number | null;
   detector_kind?: string | null;
+  chain_linked_ids?: {
+    detection_id?: string | null;
+    alert_id?: string | null;
+    incident_id?: string | null;
+    action_id?: string | null;
+  } | null;
 };
 type ActionHistoryRow = {
   id: string;
@@ -161,6 +173,12 @@ type DetectionRow = {
   block_number?: number | null;
   detector_kind?: string | null;
   evidence_origin?: string | null;
+  chain_linked_ids?: {
+    detection_id?: string | null;
+    alert_id?: string | null;
+    incident_id?: string | null;
+    action_id?: string | null;
+  } | null;
 };
 type ThreatActionContextOption = {
   id: string;
@@ -1279,6 +1297,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       txHash: latestDetection?.tx_hash ?? linkedAlert?.tx_hash ?? linkedIncident?.tx_hash ?? null,
       blockNumber: latestDetection?.block_number ?? linkedAlert?.block_number ?? linkedIncident?.block_number ?? null,
       detectorKind: latestDetection?.detector_kind ?? linkedAlert?.detector_kind ?? linkedIncident?.detector_kind ?? null,
+      chainLinkedIds: latestDetection?.chain_linked_ids ?? linkedAlert?.chain_linked_ids ?? linkedIncident?.chain_linked_ids ?? null,
     };
   }, [alerts, detections, incidents]);
 
@@ -1498,7 +1517,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             </h4>
             <p className="muted">
               {pageState === 'configured_no_signals'
-                ? 'Monitoring is configured, but no persisted evidence is currently linked to active detections.'
+                ? (monitoringPresentation.evidenceSourceLabel === 'live' || monitoringPresentation.evidenceSourceLabel === 'hybrid')
+                  ? 'LIVE/HYBRID degraded state: monitoring is configured, but no persisted evidence is linked to active detections yet.'
+                  : 'Monitoring is configured, but no persisted evidence is currently linked to active detections.'
                 : pageState === 'unconfigured_workspace'
                   ? 'Workspace not configured: monitoring setup is incomplete.'
                   : 'No persisted or linked detections are available for display at this time.'}
@@ -1709,7 +1730,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             {!loadingSnapshot && linkedAlertRows.length === 0 ? (
               <div className="emptyStatePanel">
                 <h4>No alerts recorded</h4>
-                <p className="muted">No persisted alerts with linked evidence are currently available in this workspace.</p>
+                <p className="muted">
+                  {(monitoringPresentation.evidenceSourceLabel === 'live' || monitoringPresentation.evidenceSourceLabel === 'hybrid')
+                    ? 'LIVE/HYBRID degraded state: no persisted alerts with linked evidence are currently available in this workspace.'
+                    : 'No persisted alerts with linked evidence are currently available in this workspace.'}
+                </p>
               </div>
             ) : (
               <div className="stack compactStack">
@@ -1759,7 +1784,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             {!loadingSnapshot && incidents.length === 0 ? (
               <div className="emptyStatePanel">
                 <h4>No incidents recorded</h4>
-                <p className="muted">No persisted incidents with linked evidence chain entries are currently available.</p>
+                <p className="muted">
+                  {(monitoringPresentation.evidenceSourceLabel === 'live' || monitoringPresentation.evidenceSourceLabel === 'hybrid')
+                    ? 'LIVE/HYBRID degraded state: no persisted incidents with linked evidence chain entries are currently available.'
+                    : 'No persisted incidents with linked evidence chain entries are currently available.'}
+                </p>
               </div>
             ) : (
               <div className="stack compactStack">
@@ -1779,6 +1808,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 ))}
                 <div className="stack compactStack">
                   <ThreatChainPanel
+                    chainLinkedIds={chainPanelSelection.chainLinkedIds}
                     detectionId={chainPanelSelection.detectionId}
                     alertId={chainPanelSelection.alertId}
                     incidentId={chainPanelSelection.incidentId}

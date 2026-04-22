@@ -54,6 +54,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
     ? 'SIMULATED'
     : null;
   const actionExecutionLabel = actionModeLabel(actionMode);
+  const linkedEvidenceCount = Number(selectedAlert?.linked_evidence_count || 0);
 
   useEffect(() => {
     if (!selectedAlertId) return;
@@ -162,6 +163,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
         <div className="twoColumnSection">
           <article className="dataCard">
             <p className="sectionEyebrow">Alert list</p>
+            {!alerts.length ? <p className="muted">No alerts available for the current filters.</p> : null}
             {alerts.map((alert) => (
               <button key={alert.id} type="button" className="overviewListItem" onClick={() => setSelectedAlertId(alert.id)}>
                 <strong>{alert.title}</strong> · {alert.severity} · {alert.status}
@@ -179,6 +181,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
               <p className="muted">First seen: {selectedAlert.created_at ? new Date(selectedAlert.created_at).toLocaleString() : 'n/a'} · Last seen: {selectedAlert.last_seen_at ? new Date(selectedAlert.last_seen_at).toLocaleString() : 'n/a'}</p>
               <p className="muted">Event count: {selectedAlert.occurrence_count || 1} · Dedup/group key: {selectedAlert.findings?.dedupe_key || selectedAlert.target_id || 'none'}</p>
               <ThreatChainPanel
+                chainLinkedIds={selectedAlert.chain_linked_ids}
                 detectionId={selectedAlert.detection_id}
                 alertId={selectedAlert.id}
                 incidentId={selectedAlert.incident_id}
@@ -193,6 +196,8 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
                 evidenceDrawerLabel="Open evidence drawer"
                 onOpenEvidence={() => evidenceSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
               />
+              {liveLikeMode && linkedEvidenceCount <= 0 ? <p className="statusLine">LIVE/HYBRID degraded state: no persisted evidence is linked yet. Open the evidence drawer below to inspect fallback payload context.</p> : null}
+              {!liveLikeMode && linkedEvidenceCount <= 0 ? <p className="muted">No linked evidence is persisted for this alert yet. Open the evidence drawer below to inspect available payload context.</p> : null}
               <div className="buttonRow">
                 <select value={actionMode} onChange={(event) => setActionMode(event.target.value as 'simulated' | 'recommended' | 'live')}>
                   <option value="simulated">SIMULATED mode</option>
