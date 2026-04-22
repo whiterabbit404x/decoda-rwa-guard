@@ -617,7 +617,7 @@ def test_runtime_status_uses_parameterized_detection_query_and_keeps_idle_system
     assert payload['status'] != 'Offline'
 
 
-def test_runtime_status_query_failure_still_returns_workspace_identity(monkeypatch):
+def test_runtime_status_optional_query_failure_still_returns_workspace_identity(monkeypatch):
     class _QueryFailureConn(_Conn):
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
@@ -661,8 +661,11 @@ def test_runtime_status_query_failure_still_returns_workspace_identity(monkeypat
     payload = response.json()
     assert payload['workspace_id'] == 'ws-legacy'
     assert payload['workspace_slug'] == 'legacy'
-    assert payload['status_reason'] == 'runtime_status_degraded:database_error'
-    assert payload['error']['code'] == 'runtime_status_db_error'
+    assert payload['runtime_error_code'] == 'runtime_optional_query_failed'
+    assert payload['runtime_degraded_reason'] == 'partial_query_failure'
+    assert payload['status_reason'] in {'runtime_status_degraded:partial_query_failure', 'no_fresh_live_coverage_telemetry'}
+    assert payload['field_reason_codes']['active_alerts_count'] == ['optional_table_unavailable']
+    assert 'error' not in payload
     assert captured_requests
     assert getattr(captured_requests[0].state, 'workspace_id', None) == 'ws-legacy'
     assert getattr(captured_requests[0].state, 'workspace_slug', None) == 'legacy'
