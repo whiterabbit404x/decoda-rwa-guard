@@ -1,0 +1,23 @@
+{
+  "alert": {
+    "detection_id": "det-1",
+    "id": "alert-1",
+    "incident_id": "inc-1"
+  },
+  "detection": {
+    "detector_kind": "counterparty-anomaly",
+    "id": "det-1"
+  },
+  "evidence": {
+    "block_number": 123,
+    "detector_kind": "counterparty-anomaly",
+    "id": "evidence-live-1",
+    "origin": "live",
+    "tx_hash": "0xabc"
+  },
+  "incident": {
+    "id": "inc-1",
+    "linked_detection_id": "det-1",
+    "source_alert_id": "alert-1"
+  }
+}
