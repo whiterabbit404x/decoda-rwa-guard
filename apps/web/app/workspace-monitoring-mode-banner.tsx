@@ -42,7 +42,9 @@ function summarizeFromTruth(status: ReturnType<typeof normalizeMonitoringPresent
     return 'Monitoring data delayed.';
   }
   if (hasLiveTelemetry(truth) && realChainVerified) {
-    return 'Monitoring state live with telemetry-backed detection chain visibility.';
+    return truth.active_incidents_count === 0
+      ? 'No active incidents currently'
+      : 'Monitoring state live with telemetry-backed detection chain visibility.';
   }
   return 'No linked real anomaly evidence yet; monitoring continuity is being restored.';
 }
@@ -87,7 +89,9 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
       <span>{timestampLine('Last telemetry', truth.last_telemetry_at)}</span>
       <span>
         {hasRealTelemetryBackedChain(truth)
-          ? 'Detection chain verified from evidence through response action.'
+          ? truth.active_incidents_count === 0
+            ? 'No recent confirmed anomalies yet'
+            : 'Detection chain verified from evidence through response action.'
           : 'Validate chain visibility for one real item: evidence → detection → alert → incident → response action.'}
       </span>
       <span>{timestampLine('Last heartbeat', truth.last_heartbeat_at)}</span>

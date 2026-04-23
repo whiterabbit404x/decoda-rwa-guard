@@ -401,7 +401,7 @@ test.describe('workspace monitoring truth guardrails', () => {
     expect(truth.status_reason).toBe('guard:offline_with_current_telemetry');
   });
 
-  test('real telemetry-backed chain requires linked alerts and incidents', () => {
+  test('real telemetry-backed chain requires continuous live continuity but not incidents', () => {
     const noLinkedAnomaly = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
       workspace_configured: true,
       runtime_status: 'live',
@@ -419,20 +419,22 @@ test.describe('workspace monitoring truth guardrails', () => {
       guard_flags: [],
       active_alerts_count: 0,
       active_incidents_count: 0,
+      continuity_status: 'degraded',
       status_reason: null,
     }));
     expect(hasLiveTelemetry(noLinkedAnomaly)).toBeTruthy();
     expect(hasRealTelemetryBackedChain(noLinkedAnomaly)).toBeFalsy();
 
-    const linkedAnomaly = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+    const continuousLiveNoIncidents = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
       ...noLinkedAnomaly,
-      active_alerts_count: 1,
-      active_incidents_count: 1,
+      continuity_status: 'continuous_live',
+      active_alerts_count: 0,
+      active_incidents_count: 0,
     }));
-    expect(hasRealTelemetryBackedChain(linkedAnomaly)).toBeTruthy();
+    expect(hasRealTelemetryBackedChain(continuousLiveNoIncidents)).toBeTruthy();
   });
 
-  test('healthy/live stakeholder copy remains blocked without linked real anomaly evidence', () => {
+  test('healthy/live stakeholder copy is allowed with verified telemetry and continuous live continuity even without incidents', () => {
     const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
       workspace_configured: true,
       runtime_status: 'live',
@@ -450,8 +452,9 @@ test.describe('workspace monitoring truth guardrails', () => {
       guard_flags: [],
       active_alerts_count: 0,
       active_incidents_count: 0,
+      continuity_status: 'continuous_live',
       status_reason: null,
     }));
-    expect(monitoringHealthyCopyAllowed(truth)).toBeFalsy();
+    expect(monitoringHealthyCopyAllowed(truth)).toBeTruthy();
   });
 });
