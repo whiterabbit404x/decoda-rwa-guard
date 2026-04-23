@@ -1867,8 +1867,22 @@ def authenticate_with_connection(connection: psycopg.Connection, request: Reques
     return build_user_response(connection, user_id)
 
 
+def normalize_workspace_header_value(requested_workspace_id: str | None) -> str | None:
+    raw_value = str(requested_workspace_id or '')
+    candidate = next((token.strip() for token in raw_value.split(',') if token.strip()), '')
+    if not candidate:
+        return None
+    try:
+        return str(uuid.UUID(candidate))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Invalid x-workspace-id header. Provide a valid UUID or a comma-separated list with a valid UUID first.',
+        )
+
+
 def resolve_workspace(connection: psycopg.Connection, user_id: str, requested_workspace_id: str | None = None) -> dict[str, Any]:
-    workspace_id = (requested_workspace_id or '').strip()
+    workspace_id = normalize_workspace_header_value(requested_workspace_id) or ''
     if not workspace_id:
         current = connection.execute('SELECT current_workspace_id FROM users WHERE id = %s', (user_id,)).fetchone()
         workspace_id = str(current['current_workspace_id'] or '') if current else ''
@@ -6247,9 +6261,9 @@ def get_workspace_monitoring_debug(request: Request) -> dict[str, Any]:
 
 def resolve_workspace_context_for_request(connection: psycopg.Connection, request: Request) -> tuple[dict[str, Any], dict[str, Any], bool]:
     user = authenticate_with_connection(connection, request)
-    header_workspace_id = request.headers.get('x-workspace-id')
-    workspace_context = resolve_workspace(connection, user['id'], header_workspace_id)
-    return user, workspace_context, bool((header_workspace_id or '').strip())
+    normalized_workspace_id = normalize_workspace_header_value(request.headers.get('x-workspace-id'))
+    workspace_context = resolve_workspace(connection, user['id'], normalized_workspace_id)
+    return user, workspace_context, bool(normalized_workspace_id)
 
 
 def list_workspace_monitored_system_rows(connection: psycopg.Connection, workspace_id: str) -> list[dict[str, Any]]:
