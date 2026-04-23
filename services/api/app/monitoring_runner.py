@@ -4116,17 +4116,52 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     item['is_enabled'] = monitored_system_row_enabled(item)
                     normalized.append(item)
                 return normalized
-            rows = connection.execute(
-                '''
-                SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, COALESCE(ms.is_enabled, TRUE) AS is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
-                       COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
-                FROM monitored_systems ms
-                LEFT JOIN targets t
-                  ON t.id = ms.target_id
-                 AND t.workspace_id = ms.workspace_id
-                ORDER BY ms.created_at DESC
-                '''
-            ).fetchall()
+            try:
+                rows = connection.execute(
+                    '''
+                    SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, COALESCE(ms.is_enabled, TRUE) AS is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
+                           COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
+                    FROM monitored_systems ms
+                    LEFT JOIN targets t
+                      ON t.id = ms.target_id
+                     AND t.workspace_id = ms.workspace_id
+                    ORDER BY ms.created_at DESC
+                    '''
+                ).fetchall()
+            except Exception as exc:
+                error_text = str(exc).lower()
+                optional_columns = (
+                    'is_enabled',
+                    'runtime_status',
+                    'status',
+                    'last_coverage_telemetry_at',
+                    'freshness_status',
+                    'confidence_status',
+                    'coverage_reason',
+                    'last_error_text',
+                )
+                if not (
+                    'does not exist' in error_text
+                    and 'column' in error_text
+                    and any(column in error_text for column in optional_columns)
+                ):
+                    raise
+                logger.warning(
+                    'monitoring_runtime_status_legacy_schema_fallback checkpoint=load_runtime_monitored_rows workspace_id=%s error_type=%s',
+                    workspace_scope_id,
+                    type(exc).__name__,
+                )
+                rows = connection.execute(
+                    '''
+                    SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, TRUE AS is_enabled, NULL::text AS runtime_status, NULL::text AS status, ms.last_heartbeat, ms.last_event_at, NULL::timestamptz AS last_coverage_telemetry_at, NULL::text AS freshness_status, NULL::text AS confidence_status, NULL::text AS coverage_reason, NULL::text AS last_error_text,
+                           COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
+                    FROM monitored_systems ms
+                    LEFT JOIN targets t
+                      ON t.id = ms.target_id
+                     AND t.workspace_id = ms.workspace_id
+                    ORDER BY ms.created_at DESC
+                    '''
+                ).fetchall()
             normalized: list[dict[str, Any]] = []
             for row in rows:
                 item = dict(row)
@@ -4135,19 +4170,56 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             return normalized
     
         def _load_workspace_monitored_rows_raw(connection: Any, workspace_scope_id: str) -> list[dict[str, Any]]:
-            rows = connection.execute(
-                '''
-                SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, COALESCE(ms.is_enabled, TRUE) AS is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
-                       COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
-                FROM monitored_systems ms
-                LEFT JOIN targets t
-                  ON t.id = ms.target_id
-                 AND t.workspace_id = ms.workspace_id
-                WHERE ms.workspace_id = %s
-                ORDER BY ms.created_at DESC
-                ''',
-                (workspace_scope_id,),
-            ).fetchall()
+            try:
+                rows = connection.execute(
+                    '''
+                    SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, COALESCE(ms.is_enabled, TRUE) AS is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, ms.last_coverage_telemetry_at, ms.freshness_status, ms.confidence_status, ms.coverage_reason, ms.last_error_text,
+                           COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
+                    FROM monitored_systems ms
+                    LEFT JOIN targets t
+                      ON t.id = ms.target_id
+                     AND t.workspace_id = ms.workspace_id
+                    WHERE ms.workspace_id = %s
+                    ORDER BY ms.created_at DESC
+                    ''',
+                    (workspace_scope_id,),
+                ).fetchall()
+            except Exception as exc:
+                error_text = str(exc).lower()
+                optional_columns = (
+                    'is_enabled',
+                    'runtime_status',
+                    'status',
+                    'last_coverage_telemetry_at',
+                    'freshness_status',
+                    'confidence_status',
+                    'coverage_reason',
+                    'last_error_text',
+                )
+                if not (
+                    'does not exist' in error_text
+                    and 'column' in error_text
+                    and any(column in error_text for column in optional_columns)
+                ):
+                    raise
+                logger.warning(
+                    'monitoring_runtime_status_legacy_schema_fallback checkpoint=load_workspace_monitored_rows_raw workspace_id=%s error_type=%s',
+                    workspace_scope_id,
+                    type(exc).__name__,
+                )
+                rows = connection.execute(
+                    '''
+                    SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, TRUE AS is_enabled, NULL::text AS runtime_status, NULL::text AS status, ms.last_heartbeat, ms.last_event_at, NULL::timestamptz AS last_coverage_telemetry_at, NULL::text AS freshness_status, NULL::text AS confidence_status, NULL::text AS coverage_reason, NULL::text AS last_error_text,
+                           COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, ms.created_at, t.target_type
+                    FROM monitored_systems ms
+                    LEFT JOIN targets t
+                      ON t.id = ms.target_id
+                     AND t.workspace_id = ms.workspace_id
+                    WHERE ms.workspace_id = %s
+                    ORDER BY ms.created_at DESC
+                    ''',
+                    (workspace_scope_id,),
+                ).fetchall()
             normalized: list[dict[str, Any]] = []
             for row in rows:
                 item = dict(row)
