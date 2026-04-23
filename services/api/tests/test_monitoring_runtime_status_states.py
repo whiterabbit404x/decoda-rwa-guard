@@ -2473,6 +2473,44 @@ def test_runtime_status_partial_fallback_avoids_summary_unavailable_reason(monke
     assert 'summary_unavailable' not in str(payload.get('status_reason') or '')
 
 
+def test_runtime_status_target_count_query_failure_degrades_without_summary_reset(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _TargetCountFailureConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'LEFT JOIN assets a' in q and 'FROM targets t' in q:
+                raise RuntimeError('transient target count query failure')
+            return super().execute(query, params)
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-prod'}, state=SimpleNamespace())
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'resolve_workspace_context_for_request',
+        lambda _connection, _request: (
+            {'id': 'user-1'},
+            {'workspace_id': 'ws-prod', 'workspace': {'id': 'ws-prod', 'slug': 'prod-ops'}},
+            True,
+        ),
+    )
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_TargetCountFailureConn(now - timedelta(seconds=20))))
+
+    payload = monitoring_runner.monitoring_runtime_status(request)
+    assert payload['workspace_id'] == 'ws-prod'
+    assert payload['runtime_degraded_reason'] == 'partial_query_failure'
+    assert payload['runtime_error_code'] == 'runtime_optional_query_failed'
+    assert payload['configuration_reason'] != 'runtime_status_unavailable'
+    assert payload['workspace_monitoring_summary']['runtime_degraded_reason'] == 'partial_query_failure'
+    assert payload['field_reason_codes']['invalid_enabled_targets'] == ['optional_table_unavailable']
+    assert 'summary_unavailable' not in str(payload.get('status_reason') or '')
+
+
 def test_runtime_status_workspace_unconfigured_path_uses_configuration_diagnostics(monkeypatch):
     now = datetime.now(timezone.utc)
 

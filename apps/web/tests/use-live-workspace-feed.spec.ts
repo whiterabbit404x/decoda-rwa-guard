@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { resolveRuntimeStatus } from '../app/use-live-workspace-feed';
+import { buildWorkspaceScopedHeaders, resolveRuntimeStatus } from '../app/use-live-workspace-feed';
 import type { MonitoringRuntimeStatus } from '../app/monitoring-status-contract';
 
 test.describe('useLiveWorkspaceFeed runtime semantics', () => {
@@ -78,5 +78,14 @@ test.describe('useLiveWorkspaceFeed runtime semantics', () => {
     expect(secondFailedPoll.offline).toBe(true);
     expect(secondFailedPoll.failureStreak).toBe(2);
     expect(secondFailedPoll.nextRuntime?.monitoring_status).toBe('offline');
+  });
+
+  test('pins x-workspace-id header for each poll cycle', async () => {
+    const headers = buildWorkspaceScopedHeaders(
+      () => ({ Authorization: 'Bearer token', 'x-workspace-id': 'ws-old' }),
+      'ws-current',
+    );
+    expect(headers['x-workspace-id']).toBe('ws-current');
+    expect(headers.Authorization).toBe('Bearer token');
   });
 });

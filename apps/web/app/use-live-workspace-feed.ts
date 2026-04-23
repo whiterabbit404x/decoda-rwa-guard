@@ -48,6 +48,18 @@ export function shouldLogLiveWorkspaceFeedDebug(): boolean {
   return process.env.NODE_ENV === 'development';
 }
 
+export function buildWorkspaceScopedHeaders(
+  authHeaders: () => Record<string, string>,
+  workspaceId: string | null | undefined,
+): Record<string, string> {
+  const headers = { ...authHeaders() };
+  const normalizedWorkspaceId = String(workspaceId || '').trim();
+  if (normalizedWorkspaceId) {
+    headers['x-workspace-id'] = normalizedWorkspaceId;
+  }
+  return headers;
+}
+
 type RuntimeStatusResolution = {
   nextRuntime: MonitoringRuntimeStatus | null;
   offline: boolean;
@@ -98,6 +110,11 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
   const startedRef = useRef(false);
   const lastKnownRuntimeRef = useRef<MonitoringRuntimeStatus | null>(null);
   const runtimeFailureStreakRef = useRef(0);
+  const workspaceIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    workspaceIdRef.current = user?.current_workspace?.id ?? null;
+  }, [user?.current_workspace?.id]);
 
   useEffect(() => {
     if (!shouldLogLiveWorkspaceFeedDebug()) {
@@ -129,17 +146,19 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
     }
 
     async function refresh() {
-      if (!active || !isAuthenticated || !user?.current_workspace?.id || document.visibilityState === 'hidden') {
+      const cycleWorkspaceId = workspaceIdRef.current;
+      if (!active || !isAuthenticated || !cycleWorkspaceId || document.visibilityState === 'hidden') {
         return;
       }
       if (startedRef.current) {
         setRefreshing(true);
       }
       try {
+        const cycleHeaders = buildWorkspaceScopedHeaders(authHeaders, cycleWorkspaceId);
         let statusRes: Response | null = null;
         let statusPayload: MonitoringRuntimeStatus | null = null;
         try {
-          statusRes = await fetch(RUNTIME_STATUS_PROXY_PATH, { headers: authHeaders(), cache: 'no-store' });
+          statusRes = await fetch(RUNTIME_STATUS_PROXY_PATH, { headers: cycleHeaders, cache: 'no-store' });
           statusPayload = statusRes.ok ? await statusRes.json() as MonitoringRuntimeStatus : null;
         } catch {
           statusRes = null;
@@ -153,9 +172,9 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
           runtimeFailureStreakRef.current,
         );
         const ancillaryResults = await Promise.allSettled([
-          fetch(`${apiUrl}/pilot/history?limit=20`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/incidents?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/pilot/history?limit=20`, { headers: cycleHeaders, cache: 'no-store' }),
+          fetch(`${apiUrl}/alerts?status_value=open`, { headers: cycleHeaders, cache: 'no-store' }),
+          fetch(`${apiUrl}/incidents?status_value=open`, { headers: cycleHeaders, cache: 'no-store' }),
         ]);
         const historyRes = ancillaryResults[0].status === 'fulfilled' ? ancillaryResults[0].value : null;
         const alertsRes = ancillaryResults[1].status === 'fulfilled' ? ancillaryResults[1].value : null;
@@ -175,7 +194,8 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
         };
         if (shouldLogLiveWorkspaceFeedDebug()) {
           console.debug('useLiveWorkspaceFeed refresh-result', {
-            workspaceId: user?.current_workspace?.id ?? null,
+            workspaceId: cycleWorkspaceId,
+            workspaceHeader: cycleHeaders['x-workspace-id'] ?? null,
             requestPath: RUNTIME_STATUS_PROXY_PATH,
             statusCode: statusRes?.status ?? 'network_error',
             payload: statusPayload,
@@ -191,6 +211,9 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
             ancillaryFailed: !historyRes?.ok || !alertsRes?.ok || !incidentsRes?.ok,
             appliedCounts: nextCounts,
           });
+        }
+        if (workspaceIdRef.current !== cycleWorkspaceId) {
+          return;
         }
         setRuntimeFetchWarning(fetchWarning);
         setRuntimeFetchDegraded(runtimeUnavailable);

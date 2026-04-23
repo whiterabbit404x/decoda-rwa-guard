@@ -4272,69 +4272,109 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 )
                 open_incidents = {'c': 0}
             _mark_query_checkpoint('count_broken_targets')
-            broken_targets = connection.execute(
-                f'''
-                SELECT COUNT(*) AS c
-                FROM targets t
-                LEFT JOIN assets a
-                  ON a.id = t.asset_id
-                 AND a.workspace_id = t.workspace_id
-                 AND a.deleted_at IS NULL
-                WHERE t.deleted_at IS NULL
-                  AND t.enabled = TRUE
-                  AND (t.asset_id IS NULL OR a.id IS NULL)
-                  {target_workspace_filter}
-                ''',
-                scoped_params,
-            ).fetchone()
+            try:
+                broken_targets = connection.execute(
+                    f'''
+                    SELECT COUNT(*) AS c
+                    FROM targets t
+                    LEFT JOIN assets a
+                      ON a.id = t.asset_id
+                     AND a.workspace_id = t.workspace_id
+                     AND a.deleted_at IS NULL
+                    WHERE t.deleted_at IS NULL
+                      AND t.enabled = TRUE
+                      AND (t.asset_id IS NULL OR a.id IS NULL)
+                      {target_workspace_filter}
+                    ''',
+                    scoped_params,
+                ).fetchone()
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='count_broken_targets',
+                    impacted_fields=['invalid_enabled_targets'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                broken_targets = {'c': 0}
             _mark_query_checkpoint('count_raw_enabled_targets')
-            raw_enabled_targets_row = connection.execute(
-                f'''
-                SELECT COUNT(*) AS c
-                FROM targets t
-                WHERE t.deleted_at IS NULL
-                  AND t.enabled = TRUE
-                  {target_workspace_filter}
-                ''',
-                scoped_params,
-            ).fetchone()
+            try:
+                raw_enabled_targets_row = connection.execute(
+                    f'''
+                    SELECT COUNT(*) AS c
+                    FROM targets t
+                    WHERE t.deleted_at IS NULL
+                      AND t.enabled = TRUE
+                      {target_workspace_filter}
+                    ''',
+                    scoped_params,
+                ).fetchone()
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='count_raw_enabled_targets',
+                    impacted_fields=['raw_enabled_targets'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                raw_enabled_targets_row = {'c': 0}
             raw_enabled_targets = int((raw_enabled_targets_row or {}).get('c') or 0)
             _mark_query_checkpoint('count_healthy_enabled_targets')
-            healthy_enabled_targets = connection.execute(
-                f'''
-                SELECT COUNT(*) AS target_count, COUNT(DISTINCT t.asset_id) AS asset_count
-                FROM targets t
-                JOIN assets a
-                  ON a.id = t.asset_id
-                 AND a.workspace_id = t.workspace_id
-                 AND a.deleted_at IS NULL
-                WHERE t.deleted_at IS NULL
-                  AND t.enabled = TRUE
-                  AND t.asset_id IS NOT NULL
-                  AND {monitorable_target_types_sql_clause('t.target_type')}
-                  {target_workspace_filter}
-                ''',
-                scoped_params,
-            ).fetchone()
+            try:
+                healthy_enabled_targets = connection.execute(
+                    f'''
+                    SELECT COUNT(*) AS target_count, COUNT(DISTINCT t.asset_id) AS asset_count
+                    FROM targets t
+                    JOIN assets a
+                      ON a.id = t.asset_id
+                     AND a.workspace_id = t.workspace_id
+                     AND a.deleted_at IS NULL
+                    WHERE t.deleted_at IS NULL
+                      AND t.enabled = TRUE
+                      AND t.asset_id IS NOT NULL
+                      AND {monitorable_target_types_sql_clause('t.target_type')}
+                      {target_workspace_filter}
+                    ''',
+                    scoped_params,
+                ).fetchone()
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='count_healthy_enabled_targets',
+                    impacted_fields=['configured_systems', 'protected_assets'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                healthy_enabled_targets = {'target_count': 0, 'asset_count': 0}
             healthy_enabled_targets_count = int((healthy_enabled_targets or {}).get('target_count') or 0)
             healthy_enabled_assets_count = int((healthy_enabled_targets or {}).get('asset_count') or 0)
             _mark_query_checkpoint('list_healthy_enabled_target_rows')
-            healthy_enabled_target_rows = connection.execute(
-                f'''
-                SELECT t.id, t.asset_id
-                FROM targets t
-                JOIN assets a
-                  ON a.id = t.asset_id
-                 AND a.workspace_id = t.workspace_id
-                 AND a.deleted_at IS NULL
-                WHERE t.deleted_at IS NULL
-                  AND t.enabled = TRUE
-                  AND t.asset_id IS NOT NULL
-                  AND {monitorable_target_types_sql_clause('t.target_type')}
-                  {target_workspace_filter}
-                ''',
-                scoped_params,
-            ).fetchall()
+            try:
+                healthy_enabled_target_rows = connection.execute(
+                    f'''
+                    SELECT t.id, t.asset_id
+                    FROM targets t
+                    JOIN assets a
+                      ON a.id = t.asset_id
+                     AND a.workspace_id = t.workspace_id
+                     AND a.deleted_at IS NULL
+                    WHERE t.deleted_at IS NULL
+                      AND t.enabled = TRUE
+                      AND t.asset_id IS NOT NULL
+                      AND {monitorable_target_types_sql_clause('t.target_type')}
+                      {target_workspace_filter}
+                    ''',
+                    scoped_params,
+                ).fetchall()
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='list_healthy_enabled_target_rows',
+                    impacted_fields=['configured_systems', 'protected_assets'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                healthy_enabled_target_rows = []
             healthy_enabled_target_ids = {str(row.get('id')) for row in healthy_enabled_target_rows if row.get('id')}
             healthy_enabled_target_asset_map = {
                 str(row.get('id')): str(row.get('asset_id'))
@@ -4362,25 +4402,34 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 enabled_monitored_rows_count,
             )
             if healthy_enabled_targets_count > 0 and (enabled_monitored_rows_count < healthy_enabled_targets_count or bool(missing_healthy_target_ids)):
-                reconcile_result = reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
-                logger.info(
-                    'monitoring_runtime_status_reconcile workspace_id=%s healthy_enabled_targets=%s enabled_monitored_rows_before=%s missing_healthy_target_ids=%s created_or_updated=%s created_monitored_systems=%s preserved_monitored_systems=%s removed_monitored_systems=%s',
-                    workspace_id,
-                    healthy_enabled_targets_count,
-                    enabled_monitored_rows_count,
-                    len(missing_healthy_target_ids),
-                    reconcile_result.get('created_or_updated'),
-                    reconcile_result.get('created_monitored_systems'),
-                    reconcile_result.get('preserved_monitored_systems'),
-                    reconcile_result.get('removed_monitored_systems'),
-                )
-                monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
-                logger.info(
-                    'monitoring_runtime_status_data_path workspace_id=%s monitored_rows_after=%s monitored_row_ids_after=%s',
-                    workspace_id,
-                    len(monitored_rows),
-                    [str(row.get('id') or '') for row in monitored_rows if row.get('id')],
-                )
+                try:
+                    reconcile_result = reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
+                    logger.info(
+                        'monitoring_runtime_status_reconcile workspace_id=%s healthy_enabled_targets=%s enabled_monitored_rows_before=%s missing_healthy_target_ids=%s created_or_updated=%s created_monitored_systems=%s preserved_monitored_systems=%s removed_monitored_systems=%s',
+                        workspace_id,
+                        healthy_enabled_targets_count,
+                        enabled_monitored_rows_count,
+                        len(missing_healthy_target_ids),
+                        reconcile_result.get('created_or_updated'),
+                        reconcile_result.get('created_monitored_systems'),
+                        reconcile_result.get('preserved_monitored_systems'),
+                        reconcile_result.get('removed_monitored_systems'),
+                    )
+                    monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
+                    logger.info(
+                        'monitoring_runtime_status_data_path workspace_id=%s monitored_rows_after=%s monitored_row_ids_after=%s',
+                        workspace_id,
+                        len(monitored_rows),
+                        [str(row.get('id') or '') for row in monitored_rows if row.get('id')],
+                    )
+                except Exception as exc:
+                    _record_optional_query_failure(
+                        exc=exc,
+                        checkpoint_label='reconcile_enabled_targets_monitored_systems',
+                        impacted_fields=['configured_systems', 'reporting_systems'],
+                        reason_code='optional_table_unavailable',
+                        error_code='runtime_optional_query_failed',
+                    )
             _mark_query_checkpoint('select_latest_evidence')
             try:
                 latest_evidence = connection.execute(
