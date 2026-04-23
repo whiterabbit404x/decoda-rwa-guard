@@ -3552,6 +3552,7 @@ def production_claim_validator() -> dict[str, Any]:
         and checks['no_fallback_or_synthetic_sources']
     )
     passed = all(checks.values())
+    failed_check_codes = [name for name, ok in checks.items() if not ok]
     if 'unknown_risk_detected' not in locals():
         unknown_risk_detected = recent_truthfulness_state == 'unknown_risk'
     if 'no_evidence_detected' not in locals():
@@ -3580,6 +3581,7 @@ def production_claim_validator() -> dict[str, Any]:
         'unknown_risk_detected': unknown_risk_detected,
         'no_evidence_detected': no_evidence_detected,
         'degraded_window_detected': degraded_window_detected,
+        'reason_codes': failed_check_codes,
     }
 
 
@@ -5006,8 +5008,44 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         elif degraded_mode_reasons:
             mode = 'DEGRADED'
         claim_validator_status = str(claim_validator.get('status') or 'FAIL')
+        claim_validator_checks = claim_validator.get('checks') if isinstance(claim_validator.get('checks'), dict) else {}
+        claim_validator_reason_codes = claim_validator.get('reason_codes') if isinstance(claim_validator.get('reason_codes'), list) else []
+        if not claim_validator_reason_codes:
+            claim_validator_reason_codes = [name for name, ok in claim_validator_checks.items() if not ok]
+        continuity_signals = payload.get('continuity_signals') if isinstance(payload.get('continuity_signals'), dict) else {}
+        no_recent_real_events = int(payload.get('recent_real_event_count') or 0) <= 0
+        freshness_confirmed = (
+            str(payload.get('freshness_status') or payload.get('telemetry_freshness') or '').lower() == 'fresh'
+            and str(continuity_signals.get('event_ingestion_freshness') or '').lower() == 'fresh'
+            and str(continuity_signals.get('detection_pipeline_freshness') or '').lower() == 'fresh'
+        )
+        limited_claim_condition = bool(
+            claim_validator_status == 'FAIL'
+            and no_recent_real_events
+            and str(payload.get('continuity_status') or '').lower() == 'continuous_live'
+            and freshness_confirmed
+            and str(source_of_evidence or '').lower() == 'live'
+        )
+        allowed_limited_reason_codes = {
+            'recent_real_event_count_positive',
+            'evidence_window_recent_real_events',
+            'no_recent_degraded_or_missing',
+        }
+        only_no_recent_event_failures = (
+            bool(claim_validator_reason_codes)
+            and set(str(code) for code in claim_validator_reason_codes).issubset(allowed_limited_reason_codes)
+        )
+        if limited_claim_condition and only_no_recent_event_failures:
+            claim_validator_status = 'LIMITED'
         if claim_validator_status != 'PASS':
             claim_safety_risk_indicators.append(f'claim_validator_{claim_validator_status.lower()}')
+        for reason_code in claim_validator_reason_codes:
+            normalized_reason_code = str(reason_code or '').strip().lower()
+            if normalized_reason_code:
+                claim_safety_risk_indicators.append(f'claim_validator_reason_{normalized_reason_code}')
+        explicit_reason = str(claim_validator.get('reason') or '').strip().lower()
+        if explicit_reason:
+            claim_safety_risk_indicators.append(f"claim_validator_reason_{explicit_reason.replace(':', '_')}")
         payload.update(
             {
                 'mode': mode,
@@ -5019,6 +5057,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'sales_claims_allowed': bool(claim_validator.get('sales_claims_allowed')),
                 'claim_validator_status': claim_validator_status,
                 'claim_safety_risk_indicators': claim_safety_risk_indicators,
+                'claim_validator_reason_codes': claim_validator_reason_codes,
             }
         )
         logger.info(
