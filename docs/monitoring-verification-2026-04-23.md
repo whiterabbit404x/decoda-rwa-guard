@@ -61,3 +61,33 @@ python services/api/scripts/run_feature1_live_proof.py
 ```
 
 This script orchestrates the real event emission and artifact validation chain used by the repo’s Feature 1 live proof flow.
+
+## Follow-up attempt — 2026-04-23 (no-Docker/no-Anvil sandbox)
+
+Additional execution was attempted in this container to satisfy the same four checkpoints using a deterministic local stack:
+
+1. Started a local mock EVM JSON-RPC server on `127.0.0.1:8545` that serves `eth_blockNumber`, `eth_getLogs`, `eth_getTransactionByHash`, and block lookups with one approval anomaly event tied to a treasury wallet.
+2. Started `services/api/tests/fixtures/feature1_live_proof_telemetry_server.py` on `127.0.0.1:8011` for market/oracle observation coverage.
+3. Started API with live-mode env set (`LIVE_MODE_ENABLED=true`, `MONITORING_MODE=live`, `EVM_RPC_URL=http://127.0.0.1:8545`, telemetry URLs configured).
+
+Observed behavior:
+
+- API startup emitted:
+  - `fastapi.exceptions.HTTPException: 503: Postgres required for live pilot mode. Set DATABASE_URL to a Postgres connection string for local live development.`
+- Runtime endpoint remained reachable (`GET /ops/monitoring/runtime-status` returned `200`), but live-pilot protected workflow routes required for this proof chain returned `503`:
+  - `/targets`
+  - `/detections`
+  - `/alerts`
+  - `/incidents`
+- Because those routes are unavailable without Postgres-backed live mode, this environment still cannot complete:
+  - persisted protected-target real-event flow,
+  - persisted detection/alert/incident chain verification,
+  - runtime-status claim-safe gate clearance.
+
+Additional unblock attempt:
+
+- Tried to install local Postgres via apt, but repository access in this sandbox is blocked by proxy `403 Forbidden` responses for Ubuntu package indexes.
+
+Conclusion for this environment:
+
+- The requested checkpoints remain blocked specifically by missing Postgres availability in live mode; Docker/Anvil are no longer the only blocker once this follow-up path is used.
