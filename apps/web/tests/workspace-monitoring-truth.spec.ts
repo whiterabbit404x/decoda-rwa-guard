@@ -456,5 +456,7 @@ test.describe('workspace monitoring truth guardrails', () => {
       status_reason: null,
     }));
     expect(monitoringHealthyCopyAllowed(truth)).toBeTruthy();
+    expect(truth.monitoring_status).toBe('live');
+    expect(truth.runtime_status).toBe('live');
   });
 });
