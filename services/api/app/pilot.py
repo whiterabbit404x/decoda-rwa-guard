@@ -6268,7 +6268,15 @@ def list_workspace_monitored_system_rows(connection: psycopg.Connection, workspa
             (workspace_id,),
         ).fetchall()
     except Exception as exc:
-        if 'last_coverage_telemetry_at' not in str(exc):
+        error_text = str(exc).lower()
+        optional_columns = (
+            'last_coverage_telemetry_at',
+            'last_error_text',
+            'coverage_reason',
+            'freshness_status',
+            'confidence_status',
+        )
+        if not ('does not exist' in error_text and 'column' in error_text and any(column in error_text for column in optional_columns)):
             raise
         logger.warning(
             'list_workspace_monitored_system_rows_legacy_schema_fallback workspace_id=%s error_type=%s',
@@ -6277,8 +6285,8 @@ def list_workspace_monitored_system_rows(connection: psycopg.Connection, workspa
         )
         rows = connection.execute(
             '''
-            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, NULL::timestamptz AS last_coverage_telemetry_at, ms.last_error_text, ms.coverage_reason,
-                   ms.freshness_status, ms.confidence_status, ms.created_at,
+            SELECT ms.id, ms.workspace_id, ms.asset_id, ms.target_id, ms.chain, ms.is_enabled, ms.runtime_status, ms.status, ms.last_heartbeat, ms.last_event_at, NULL::timestamptz AS last_coverage_telemetry_at, NULL::text AS last_error_text, NULL::text AS coverage_reason,
+                   NULL::text AS freshness_status, NULL::text AS confidence_status, ms.created_at,
                    COALESCE(t.monitoring_interval_seconds, 30) AS monitoring_interval_seconds, a.name AS asset_name, t.name AS target_name
             FROM monitored_systems ms
             LEFT JOIN assets a ON a.id = ms.asset_id AND a.workspace_id = ms.workspace_id AND a.deleted_at IS NULL
