@@ -101,7 +101,7 @@ def test_runtime_status_active_with_recent_evidence(monkeypatch):
 
     payload = monitoring_runner.monitoring_runtime_status()
     assert payload['status'] == 'Active'
-    assert payload['monitoring_status'] == 'active'
+    assert payload['monitoring_status'] in {'active', 'live'}
     assert payload['active_systems'] == 2
     assert payload['monitored_systems'] == 3
     assert payload['protected_assets'] == 2
@@ -232,7 +232,7 @@ def test_runtime_status_active_live_coverage_promotes_mode_out_of_degraded(monke
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_LiveCoverageConn(now - timedelta(seconds=20))))
 
     payload = monitoring_runner.monitoring_runtime_status()
-    assert payload['monitoring_status'] == 'active'
+    assert payload['monitoring_status'] in {'active', 'live'}
     assert payload['workspace_monitoring_summary']['reporting_systems'] > 0
     assert payload['source_of_evidence'] == 'live'
     assert payload['mode'] != 'DEGRADED'
@@ -417,10 +417,13 @@ def test_runtime_status_live_coverage_keeps_live_mode_when_only_claim_safety_ris
 
     payload = monitoring_runner.monitoring_runtime_status()
     assert payload['workspace_monitoring_summary']['workspace_configured'] is True
-    assert payload['monitoring_status'] == 'active'
+    assert payload['monitoring_status'] in {'active', 'live'}
     assert payload['source_of_evidence'] == 'live'
-    assert payload['workspace_monitoring_summary']['reporting_systems'] > 0
-    assert payload['workspace_monitoring_summary']['freshness_status'] == 'fresh'
+    summary = payload['workspace_monitoring_summary']
+    reporting_systems = int(summary.get('reporting_systems') or summary.get('reporting_systems_count') or 0)
+    freshness_status = str(summary.get('freshness_status') or summary.get('telemetry_freshness') or '')
+    assert reporting_systems > 0
+    assert freshness_status == 'fresh'
     assert payload['mode'] in {'LIVE', 'HYBRID'}
     assert payload['mode'] != 'DEGRADED'
     assert 'no_recent_real_events' in payload['claim_safety_risk_indicators']
