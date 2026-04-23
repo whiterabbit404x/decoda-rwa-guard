@@ -71,6 +71,9 @@ function normalizeStatus(
   if (monitoringStatus === 'offline') {
     return 'offline';
   }
+  if (truth.continuity_status === 'continuous_live') {
+    return 'live';
+  }
   if (monitoringStatus === 'limited') {
     if (evidence === 'unavailable') {
       return 'degraded';
