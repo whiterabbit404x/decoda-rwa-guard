@@ -2058,6 +2058,73 @@ def _process_single_event(
     }
 
 
+def _persist_detection_evaluation_checkpoint(
+    connection: Any,
+    *,
+    workspace_id: str,
+    user_id: str,
+    target: dict[str, Any],
+    monitoring_run_id: str,
+    monitoring_path: str,
+    provider_result: ActivityProviderResult,
+    events_ingested: int,
+    detections_created: int,
+    alerts_generated: int,
+    incidents_created: int,
+) -> str:
+    if provider_result.status == 'failed':
+        detection_outcome = 'ANALYSIS_FAILED'
+    elif detections_created > 0:
+        detection_outcome = 'DETECTION_CONFIRMED'
+    else:
+        detection_outcome = 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'
+    checkpoint_payload = {
+        'analysis_source': 'monitoring_worker_checkpoint',
+        'analysis_status': 'completed' if provider_result.status != 'failed' else 'analysis_failed',
+        'degraded': provider_result.status in {'degraded', 'failed'},
+        'degraded_reason': provider_result.degraded_reason if provider_result.status in {'degraded', 'failed'} else None,
+        'monitoring_path': monitoring_path,
+        'ingestion_mode': provider_result.mode,
+        'metadata': {
+            'monitoring_analysis_type': 'monitoring_detection_evaluation',
+            'detection_outcome': detection_outcome,
+            'evidence_state': ui_evidence_state(provider_result.evidence_state).lower(),
+            'confidence_basis': (
+                'demo_scenario'
+                if provider_result.synthetic
+                else ('provider_evidence' if events_ingested > 0 else ('provider_coverage' if provider_result.status == 'live' else 'none'))
+            ),
+            'truthfulness_state': ui_truthfulness_state(provider_result.truthfulness_state),
+            'recent_real_event_count': int(provider_result.recent_real_event_count),
+            'monitoring_run_id': monitoring_run_id,
+            'target_id': str(target.get('id') or ''),
+            'status': str(provider_result.status or 'unknown'),
+            'evaluation_completed': True,
+            'no_detections': detections_created == 0,
+            'events_ingested': int(events_ingested),
+            'detections_created': int(detections_created),
+            'alerts_generated': int(alerts_generated),
+            'incidents_created': int(incidents_created),
+        },
+    }
+    return persist_analysis_run(
+        connection,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        analysis_type='monitoring_detection_evaluation',
+        service_name='monitoring-worker',
+        title=f"{target.get('name') or 'Target'} detection evaluation checkpoint",
+        status_value='completed' if provider_result.status != 'failed' else 'failed',
+        request_payload={
+            'target_id': str(target.get('id') or ''),
+            'monitoring_run_id': monitoring_run_id,
+            'provider_status': provider_result.status,
+        },
+        response_payload=checkpoint_payload,
+        request=None,
+    )
+
+
 def process_monitoring_target(connection: Any, target: dict[str, Any], *, triggered_by_user_id: str | None = None) -> dict[str, Any]:
     workspace_row = connection.execute('SELECT id, name FROM workspaces WHERE id = %s', (target['workspace_id'],)).fetchone() or {'id': target['workspace_id'], 'name': 'Workspace'}
     workspace = _json_safe_value(dict(workspace_row))
@@ -2114,6 +2181,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
 
     alerts_generated = 0
     incidents_created = 0
+    detections_created = 0
     monitored_systems_updated = 0
     run_ids: list[str] = []
     last_status = 'no_real_data' if provider_result.status == 'no_evidence' else str(provider_result.status or 'no_real_data')
@@ -2166,6 +2234,8 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             last_alert_at = utc_now()
         if processed.get('incident_id'):
             incidents_created += 1
+        if processed.get('detection_id'):
+            detections_created += 1
         coverage_record = processed.get('protected_asset_coverage_record')
         if isinstance(coverage_record, dict) and coverage_record:
             last_protected_asset_coverage_record = coverage_record
@@ -2348,6 +2418,19 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         chain=chain,
         last_processed_block=latest_processed_block,
     )
+    _persist_detection_evaluation_checkpoint(
+        connection,
+        workspace_id=str(target['workspace_id']),
+        user_id=user_id,
+        target=target,
+        monitoring_run_id=monitoring_run_id,
+        monitoring_path=monitoring_path,
+        provider_result=provider_result,
+        events_ingested=len(events),
+        detections_created=detections_created,
+        alerts_generated=alerts_generated,
+        incidents_created=incidents_created,
+    )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, incidents_created)
     WORKER_STATE['metrics']['live_events_ingested'] += len(events)
     return {
@@ -2357,6 +2440,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         'runs': run_ids,
         'alerts_generated': alerts_generated,
         'incidents_created': incidents_created,
+        'detections_created': detections_created,
         'events_ingested': len(events),
         'status': last_status,
         'latest_processed_block': latest_processed_block,
@@ -2780,7 +2864,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     if asset_id:
                         workspace_assets_checked[workspace_id].add(asset_id)
                     result_events_ingested = int(result.get('events_ingested', 0))
-                    workspace_detections_created[workspace_id] += result_events_ingested
+                    workspace_detections_created[workspace_id] += int(result.get('detections_created', 0))
                     workspace_alerts_created[workspace_id] += int(result.get('alerts_generated', 0))
                     workspace_telemetry_seen[workspace_id] += result_events_ingested
                 live_targets_checked += 1 if is_monitorable_target_type(target.get('target_type')) else 0
@@ -3869,6 +3953,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         monitored_rows: list[dict[str, Any]] = []
         listed_monitored_rows: list[dict[str, Any]] = []
         latest_detection_evaluation_at = None
+        latest_detection_at = None
         latest_detection_payload: dict[str, Any] | None = None
         healthy_enabled_targets_count = 0
         healthy_enabled_assets_count = 0
@@ -4248,6 +4333,34 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 latest_detection_eval = None
             latest_detection_evaluation_at = _parse_ts((latest_detection_eval or {}).get('created_at'))
             latest_detection_payload = _json_safe_value((latest_detection_eval or {}).get('response_payload') or {}) if latest_detection_eval else None
+            latest_detection_query = '''
+                SELECT detected_at
+                FROM detections
+            '''
+            latest_detection_params: list[Any] = []
+            if workspace_id:
+                latest_detection_query += ' WHERE workspace_id = %s'
+                latest_detection_params.append(workspace_id)
+            latest_detection_query += '''
+                ORDER BY detected_at DESC
+                LIMIT 1
+            '''
+            _mark_query_checkpoint('select_latest_detection')
+            try:
+                latest_detection_row = connection.execute(
+                    latest_detection_query,
+                    tuple(latest_detection_params),
+                ).fetchone()
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='select_latest_detection',
+                    impacted_fields=['last_detection_at'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                latest_detection_row = None
+            latest_detection_at = _parse_ts((latest_detection_row or {}).get('detected_at'))
             supports_receipt_live_coverage_columns = (
                 'monitoring_event_receipts.evidence_source' not in runtime_schema_missing_columns
                 and 'monitoring_event_receipts.telemetry_kind' not in runtime_schema_missing_columns
@@ -4463,6 +4576,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             and detection_eval_freshness is not None
             and detection_eval_freshness <= max(900, MONITOR_POLL_INTERVAL_SECONDS * 10)
         )
+        detection_pipeline_checkpoint_at = latest_detection_at or latest_detection_evaluation_at
         runner_alive = bool(health.get('worker_running')) or not stale_heartbeat
         has_monitorable_targets = healthy_enabled_targets_count > 0
         has_any_monitored_rows = len(monitored_rows) > 0
@@ -4685,7 +4799,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             last_telemetry_at=last_telemetry_at,
             last_coverage_telemetry_at=last_coverage_telemetry_at,
             telemetry_kind=telemetry_kind,
-            last_detection_at=latest_detection_evaluation_at,
+            last_detection_at=detection_pipeline_checkpoint_at,
             evidence_source=evidence_source,
             status_reason=runtime_status_reason,
             configuration_reason=configuration_reason,
@@ -4718,7 +4832,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             worker_running=runner_alive,
             last_heartbeat_at=last_heartbeat,
             last_event_at=last_telemetry_at,
-            last_detection_at=latest_detection_evaluation_at,
+            last_detection_at=detection_pipeline_checkpoint_at,
             heartbeat_ttl_seconds=max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3),
             telemetry_window_seconds=telemetry_window_seconds,
             detection_window_seconds=max(900, MONITOR_POLL_INTERVAL_SECONDS * 10),
@@ -4842,7 +4956,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'stale_heartbeat': stale_heartbeat,
             'provider_degraded_flag': provider_degraded_or_unreachable,
             'telemetry_kind': telemetry_kind,
-            'last_detection_at': latest_detection_evaluation_at.isoformat() if latest_detection_evaluation_at else None,
+            'last_detection_at': latest_detection_at.isoformat() if latest_detection_at else None,
             'workspace_monitoring_summary': summary,
             'continuity_status': summary.get('continuity_status'),
             'continuity_reason_codes': list(summary.get('continuity_reason_codes') or []),
