@@ -741,6 +741,19 @@ export function pageStatePrimaryCopy(
   return 'Monitoring is partially degraded. Threat outcomes may be delayed or incomplete.';
 }
 
+function noIncidentsCopy(
+  monitoringPresentationStatus: MonitoringPresentation['status'],
+  continuityStatus?: 'continuous_live' | 'degraded' | 'offline' | 'idle_no_telemetry' | null,
+): string {
+  if (continuityStatus === 'continuous_live') {
+    return 'No incidents yet. LIVE continuity is healthy and no open incidents are currently recorded.';
+  }
+  if (monitoringPresentationStatus === 'live' || monitoringPresentationStatus === 'hybrid') {
+    return 'LIVE/HYBRID degraded state: no persisted incidents with linked evidence chain entries are currently available.';
+  }
+  return 'No persisted incidents with linked evidence chain entries are currently available.';
+}
+
 function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason, continuityStatus }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null; continuityStatus?: 'continuous_live' | 'degraded' | 'offline' | 'idle_no_telemetry' | null }) {
   if (state === 'healthy_live') {
     return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus)}</p>;
@@ -1787,12 +1800,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             {loadingSnapshot ? <p className="muted">Loading incidents…</p> : null}
             {!loadingSnapshot && incidents.length === 0 ? (
               <div className="emptyStatePanel">
-                <h4>No incidents recorded</h4>
-                <p className="muted">
-                  {(monitoringPresentation.evidenceSourceLabel === 'live' || monitoringPresentation.evidenceSourceLabel === 'hybrid')
-                    ? 'LIVE/HYBRID degraded state: no persisted incidents with linked evidence chain entries are currently available.'
-                    : 'No persisted incidents with linked evidence chain entries are currently available.'}
-                </p>
+                <h4>No incidents yet</h4>
+                <p className="muted">{noIncidentsCopy(monitoringPresentation.status, truth.continuity_status)}</p>
               </div>
             ) : (
               <div className="stack compactStack">

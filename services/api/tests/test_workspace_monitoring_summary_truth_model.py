@@ -124,6 +124,15 @@ def test_status_reason_uses_deterministic_hard_guard_priority() -> None:
     assert summary['status_reason'] == 'guard:offline_with_current_telemetry'
 
 
+def test_continuity_and_guard_flags_can_coexist_without_false_offline_transition() -> None:
+    summary = _build_summary(
+        runtime_status='offline',
+    )
+    assert summary['continuity_status'] == 'idle_no_telemetry'
+    assert 'offline_with_current_telemetry' in summary['guard_flags']
+    assert summary['status_reason'] == 'guard:offline_with_current_telemetry'
+
+
 def test_db_outage_forces_non_live_and_unavailable_confidence() -> None:
     summary = _build_summary(
         runtime_status='live',

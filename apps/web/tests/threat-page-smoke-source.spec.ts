@@ -50,3 +50,12 @@ test('dashboard and threat page share the same workspace monitoring truth object
   expect(threat).toContain('const truth = feed.monitoring.truth;');
   expect(threat).toContain('const canonicalPresentation = feed.monitoring.presentation;');
 });
+
+test('threat page empty incidents state keeps live continuity semantics', () => {
+  const threat = appSource('threat-operations-panel.tsx');
+
+  expect(threat).toContain('<h4>No incidents yet</h4>');
+  expect(threat).toContain('noIncidentsCopy(monitoringPresentation.status, truth.continuity_status)');
+  expect(threat).toContain("continuityStatus === 'continuous_live'");
+  expect(threat).toContain('No incidents yet. LIVE continuity is healthy and no open incidents are currently recorded.');
+});
