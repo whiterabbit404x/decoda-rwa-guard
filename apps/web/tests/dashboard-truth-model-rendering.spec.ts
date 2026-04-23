@@ -165,7 +165,7 @@ test.describe('dashboard truth-model rendering rules', () => {
     const presentation = normalizeMonitoringPresentation(truth);
     const safeSummary = resolveSafeMonitoringSummary(summary);
 
-    expect(truth.contradiction_flags).toContain('healthy_without_reporting_systems');
+    expect(truth.contradiction_flags).toContain('live_monitoring_without_reporting_systems');
     expect(truth.contradiction_flags).toContain('poll_without_telemetry_timestamp');
     expect(presentation.status).toBe('degraded');
     expect(safeSummary).toBe('Telemetry currently unavailable.');

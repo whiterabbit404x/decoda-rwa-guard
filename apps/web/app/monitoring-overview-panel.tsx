@@ -39,7 +39,9 @@ export default function MonitoringOverviewPanel() {
         : presentation.status === 'stale'
           ? 'Monitoring data delayed. Await fresh telemetry and event updates.'
           : showLiveWithVerifiedTelemetry
-            ? 'Monitoring is live with telemetry-backed detection chain visibility.'
+            ? truth.active_incidents_count === 0
+              ? 'No active incidents currently'
+              : 'Monitoring is live with telemetry-backed detection chain visibility.'
             : 'No linked real anomaly evidence yet; monitoring continuity is being restored.';
   const telemetryDetail = telemetryProofTimestamp
     ? 'Live telemetry verified.'
@@ -47,6 +49,9 @@ export default function MonitoringOverviewPanel() {
   const detectionDetail = (() => {
     if (!realChainVerified) {
       return 'Validate chain visibility for one real item: evidence → detection → alert → incident → response action.';
+    }
+    if (truth.active_incidents_count === 0) {
+      return 'No recent confirmed anomalies yet';
     }
     return 'Detection chain verified from evidence through response action.';
   })();
