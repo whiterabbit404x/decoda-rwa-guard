@@ -251,6 +251,48 @@ def test_monitoring_cycle_updates_health_with_null_error_message(monkeypatch):
     assert summary['live_mode'] is True
     assert connection.last_worker_state_update_params[0] is None
     assert connection.last_worker_state_update_params[4] is None
+
+
+def test_monitoring_cycle_counts_coverage_telemetry_when_events_zero(monkeypatch):
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'target-1',
+            'name': 'Target 1',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda _connection, _target, triggered_by_user_id=None: {
+            'alerts_generated': 0,
+            'incidents_created': 0,
+            'detections_created': 0,
+            'events_ingested': 0,
+            'telemetry_records_seen': 2,
+            'status': 'no_real_data',
+            'latest_processed_block': 100,
+        },
+    )
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+
+    assert summary['checked'] == 1
+    assert connection.monitoring_run_updates
+    update_params = connection.monitoring_run_updates[-1]
+    assert update_params[5] == 2
     assert len(connection.monitored_system_updates) == 1
     assert connection.monitored_system_updates[0][0] == 'idle'
     assert connection.monitored_system_updates[0][1] == 'active'
