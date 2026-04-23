@@ -429,6 +429,82 @@ def test_runtime_status_live_coverage_keeps_live_mode_when_only_claim_safety_ris
     assert 'no_recent_real_events' in payload['claim_safety_risk_indicators']
 
 
+def test_runtime_status_marks_no_recent_real_events_as_limited_claim(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _LiveCoverageNoRecentEventsConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                now_iso = now.isoformat()
+                telemetry_iso = (now - timedelta(seconds=20)).isoformat()
+                return _Result(
+                    rows=[
+                        {
+                            'id': 'sys-1',
+                            'workspace_id': 'ws-1',
+                            'asset_id': 'asset-1',
+                            'target_id': 'target-1',
+                            'is_enabled': True,
+                            'runtime_status': 'active',
+                            'last_heartbeat': now_iso,
+                            'last_event_at': telemetry_iso,
+                            'last_coverage_telemetry_at': telemetry_iso,
+                            'monitoring_interval_seconds': 30,
+                            'created_at': now_iso,
+                        },
+                    ]
+                )
+            if 'FROM analysis_runs' in q:
+                return _Result(
+                    {
+                        'created_at': now,
+                        'response_payload': {'metadata': {'recent_real_event_count': 0, 'evidence_state': 'real'}},
+                    }
+                )
+            return super().execute(query, params)
+
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_LiveCoverageNoRecentEventsConn(now - timedelta(seconds=20))))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'operational_mode': 'LIVE',
+            'mode': 'live',
+            'last_heartbeat_at': now.isoformat(),
+            'last_cycle_at': now.isoformat(),
+            'degraded': False,
+            'last_error': None,
+            'source_type': 'polling',
+            'worker_running': True,
+        },
+    )
+    monkeypatch.setattr(
+        monitoring_runner,
+        'production_claim_validator',
+        lambda: {
+            'checks': {
+                'recent_real_event_count_positive': False,
+                'evidence_window_recent_real_events': False,
+                'no_recent_degraded_or_missing': False,
+            },
+            'reason_codes': ['recent_real_event_count_positive', 'evidence_window_recent_real_events', 'no_recent_degraded_or_missing'],
+            'sales_claims_allowed': False,
+            'status': 'FAIL',
+            'recent_truthfulness_state': 'not_claim_safe',
+        },
+    )
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    assert payload['continuity_status'] == 'continuous_live'
+    assert payload['source_of_evidence'] == 'live'
+    assert payload['claim_validator_status'] == 'LIMITED'
+    assert 'no_recent_real_events' in payload['claim_safety_risk_indicators']
+    assert 'claim_validator_limited' in payload['claim_safety_risk_indicators']
+    assert 'claim_validator_reason_recent_real_event_count_positive' in payload['claim_safety_risk_indicators']
+
+
 def test_runtime_status_counts_protected_assets_from_enabled_systems_not_only_active(monkeypatch):
     now = datetime.now(timezone.utc)
 
