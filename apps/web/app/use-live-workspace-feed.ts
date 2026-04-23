@@ -49,15 +49,10 @@ export function shouldLogLiveWorkspaceFeedDebug(): boolean {
 }
 
 export function buildWorkspaceScopedHeaders(
-  authHeaders: () => Record<string, string>,
+  authHeaders: (workspaceIdOverride?: string | null) => Record<string, string>,
   workspaceId: string | null | undefined,
 ): Record<string, string> {
-  const headers = { ...authHeaders() };
-  const normalizedWorkspaceId = String(workspaceId || '').trim();
-  if (normalizedWorkspaceId) {
-    headers['x-workspace-id'] = normalizedWorkspaceId;
-  }
-  return headers;
+  return { ...authHeaders(workspaceId ?? null) };
 }
 
 type RuntimeStatusResolution = {

@@ -1,5 +1,6 @@
 import { normalizeApiBaseUrl } from 'app/api-config';
 import { getRuntimeConfig } from 'app/runtime-config';
+import { normalizeWorkspaceHeaderValue } from 'app/workspace-header';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -116,7 +117,7 @@ export async function GET(request: Request) {
   if (authorization) {
     headers.set('Authorization', authorization);
   }
-  const workspaceId = request.headers.get('x-workspace-id');
+  const workspaceId = normalizeWorkspaceHeaderValue(request.headers.get('x-workspace-id'));
   if (workspaceId) {
     headers.set('X-Workspace-Id', workspaceId);
   }

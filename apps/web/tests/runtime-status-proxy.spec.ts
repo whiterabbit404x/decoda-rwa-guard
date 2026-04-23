@@ -62,11 +62,12 @@ test.describe('same-origin runtime-status proxy route', () => {
         const headers = new Headers(init?.headers);
         expect(headers.get('Accept')).toBe('application/json');
         expect(headers.get('Authorization')).toBe('Bearer web-token');
-        expect(headers.get('X-Workspace-Id')).toBe('workspace-123');
+        expect(headers.get('X-Workspace-Id')).toBe('11111111-1111-4111-8111-111111111111');
+        expect(headers.get('X-Workspace-Id')?.split(',')).toHaveLength(1);
         expect(headers.get('X-CSRF-Token')).toBe('csrf-123');
         expect(headers.get('Cookie')).toContain('decoda_session=abc123');
 
-        return new Response(JSON.stringify({ workspace_id: 'workspace-123', mode: 'live' }), {
+        return new Response(JSON.stringify({ workspace_id: '11111111-1111-4111-8111-111111111111', mode: 'live' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -75,7 +76,7 @@ test.describe('same-origin runtime-status proxy route', () => {
           method: 'GET',
           headers: {
             Authorization: 'Bearer web-token',
-            'X-Workspace-Id': 'workspace-123',
+            'X-Workspace-Id': '11111111-1111-4111-8111-111111111111, 22222222-2222-4222-8222-222222222222',
             'X-CSRF-Token': 'csrf-123',
             Cookie: 'decoda_session=abc123; theme=dark',
           },
@@ -84,7 +85,7 @@ test.describe('same-origin runtime-status proxy route', () => {
         expect(response.status).toBe(200);
         expect(response.headers.get('Cache-Control')).toBe('no-store');
         expect(response.headers.get('Vary')).toBe('Authorization, X-Workspace-Id, X-CSRF-Token, Cookie');
-        await expect(response.json()).resolves.toEqual({ workspace_id: 'workspace-123', mode: 'live' });
+        await expect(response.json()).resolves.toEqual({ workspace_id: '11111111-1111-4111-8111-111111111111', mode: 'live' });
       });
     });
   });

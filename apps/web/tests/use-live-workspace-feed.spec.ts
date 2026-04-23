@@ -82,10 +82,10 @@ test.describe('useLiveWorkspaceFeed runtime semantics', () => {
 
   test('pins x-workspace-id header for each poll cycle', async () => {
     const headers = buildWorkspaceScopedHeaders(
-      () => ({ Authorization: 'Bearer token', 'x-workspace-id': 'ws-old' }),
-      'ws-current',
+      (workspaceIdOverride) => ({ Authorization: 'Bearer token', 'X-Workspace-Id': workspaceIdOverride ?? '' }),
+      '11111111-1111-4111-8111-111111111111',
     );
-    expect(headers['x-workspace-id']).toBe('ws-current');
+    expect(headers['X-Workspace-Id']).toBe('11111111-1111-4111-8111-111111111111');
     expect(headers.Authorization).toBe('Bearer token');
   });
 });
