@@ -936,6 +936,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const showLiveTelemetry = monitoringPresentation.hasLiveTelemetry;
   const dbPersistenceOutageReason = truth.db_failure_reason || null;
   const dbPersistenceOutageActive = Boolean(dbPersistenceOutageReason);
+  const claimValidatorWarningCount = (truth.guard_flags?.length ?? 0) + (truth.contradiction_flags?.length ?? 0) + (systemsPanelWarning ? 1 : 0);
   const telemetryLabel = monitoringPresentation.telemetryLabel;
   const coverageTelemetryAt = monitoringPresentation.lastTelemetryAt;
   const hasTelemetryTimestamp = Boolean(coverageTelemetryAt);
@@ -1173,6 +1174,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : `last known score from ${detectionEvalLabel}; current telemetry unavailable`;
 
   const detectionsToRender = pageState === 'healthy_live' ? categorizedDetections.live : categorizedDetections.historical;
+  const recentRealEventCount = categorizedDetections.live.length;
   const linkedAlertRows = alerts.slice(0, 10).map((alert) => {
     const linkedDetection = detections.find((item) => item.linked_alert_id === alert.id) ?? null;
     return { alert, linkedDetection };
@@ -1441,7 +1443,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           {!workspaceConfigured ? <span className="ruleChip">Workspace not configured</span> : null}
           {systemsPanelWarning ? <span className="statusBadge statusBadge-attention">{systemsPanelWarning}</span> : null}
           <span className="ruleChip">Open alerts {openAlerts}</span>
-          <span className="ruleChip">Active incidents {activeIncidents}</span>
+          <span className="ruleChip">Incident count {activeIncidents}</span>
+          <span className="ruleChip">Recent real-event count {recentRealEventCount}</span>
+          <span className="ruleChip">Claim validator warnings {claimValidatorWarningCount}</span>
         </div>
         <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth.status_reason} configurationReason={null} continuityStatus={truth.continuity_status} />
         {dbPersistenceOutageActive ? (
@@ -1514,7 +1518,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <div className="emptyStatePanel">
             <h4>
               {pageState === 'configured_no_signals'
-                ? 'No evidence-linked threat signals'
+                ? 'No evidence-linked detections yet'
                 : pageState === 'unconfigured_workspace'
                   ? 'No monitored systems configured'
                   : 'No detections available'}
@@ -1787,7 +1791,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             {loadingSnapshot ? <p className="muted">Loading incidents…</p> : null}
             {!loadingSnapshot && incidents.length === 0 ? (
               <div className="emptyStatePanel">
-                <h4>No incidents recorded</h4>
+                <h4>No evidence-linked incidents yet</h4>
                 <p className="muted">
                   {(monitoringPresentation.evidenceSourceLabel === 'live' || monitoringPresentation.evidenceSourceLabel === 'hybrid')
                     ? 'LIVE/HYBRID degraded state: no persisted incidents with linked evidence chain entries are currently available.'

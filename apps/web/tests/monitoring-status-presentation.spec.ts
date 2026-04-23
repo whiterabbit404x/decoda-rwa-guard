@@ -163,6 +163,16 @@ test.describe('monitoring status presentation adapter', () => {
     expect(value.summary).toContain('No recent detections.');
   });
 
+  test('maps continuous live continuity to LIVE even when incident count is zero', async () => {
+    const value = normalizeMonitoringPresentation(makeTruth({
+      monitoring_status: 'limited',
+      continuity_status: 'continuous_live',
+      active_incidents_count: 0,
+    }));
+    expect(value.status).toBe('live');
+    expect(value.statusLabel).toBe('LIVE');
+  });
+
   test('contradictions always force guarded fallback presentation copy', async () => {
     const value = normalizeMonitoringPresentation(makeTruth({
       contradiction_flags: ['offline_with_current_telemetry'],

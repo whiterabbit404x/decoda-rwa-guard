@@ -24,6 +24,9 @@ test('renders threat operations panels for runs detections alerts incidents and 
   expect(threat).toContain('Alerts');
   expect(threat).toContain('Incidents');
   expect(threat).toContain('Response Actions');
+  expect(threat).toContain('Incident count');
+  expect(threat).toContain('Recent real-event count');
+  expect(threat).toContain('Claim validator warnings');
 });
 
 test('renders evidence drawer and keeps SIMULATED labels explicit', () => {
