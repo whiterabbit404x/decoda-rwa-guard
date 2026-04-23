@@ -412,6 +412,54 @@ def _persist_evidence(
     return evidence_id
 
 
+def _persist_no_threat_evaluation_marker(
+    connection: Any,
+    *,
+    workspace_id: str,
+    target: dict[str, Any],
+    observed_at: datetime | None,
+    monitoring_run_id: str,
+    events_ingested: int,
+    telemetry_records_seen: int,
+) -> str:
+    marker_payload = {
+        'telemetry_kind': 'evaluation',
+        'proof_kind': 'monitoring_evaluation_no_threat',
+        'observation_type': 'monitoring_evaluation_no_threat',
+        'monitoring_run_id': monitoring_run_id,
+        'events_ingested': int(events_ingested),
+        'telemetry_records_seen': int(telemetry_records_seen),
+        'target_id': str(target.get('id') or ''),
+    }
+    marker_id = str(uuid.uuid4())
+    marker_observed_at = observed_at or utc_now()
+    connection.execute(
+        '''
+        INSERT INTO evidence (
+            id, workspace_id, asset_id, target_id, alert_id, chain, block_number, tx_hash, log_index, event_type,
+            monitored_system_id, severity, risk_score, summary, counterparty, amount_text, token_address, contract_address, source_provider,
+            raw_payload_json, observed_at, created_at
+        )
+        VALUES (%s, %s, %s, %s, NULL, %s, NULL, NULL, NULL, %s, %s, 'low', NULL, %s, NULL, NULL, NULL, %s, %s, %s::jsonb, %s, NOW())
+        ''',
+        (
+            marker_id,
+            workspace_id,
+            target.get('asset_id'),
+            target.get('id'),
+            target.get('chain_network'),
+            'monitoring_evaluation_no_threat',
+            target.get('monitored_system_id'),
+            'Monitoring evaluation completed with no anomaly detections from current telemetry.',
+            target.get('contract_identifier') or target.get('wallet_address'),
+            'monitoring-worker',
+            _json_dumps(marker_payload),
+            marker_observed_at,
+        ),
+    )
+    return marker_id
+
+
 def _load_checkpoint(connection: Any, *, workspace_id: str, monitored_system_id: str | None, chain: str, fallback_block: int) -> int:
     row = connection.execute(
         '''
@@ -2182,6 +2230,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     alerts_generated = 0
     incidents_created = 0
     detections_created = 0
+    evaluated_no_threat_marker_id: str | None = None
     monitored_systems_updated = 0
     run_ids: list[str] = []
     last_status = 'no_real_data' if provider_result.status == 'no_evidence' else str(provider_result.status or 'no_real_data')
@@ -2322,6 +2371,17 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         checkpoint_cursor,
         latest_processed_block,
     )
+    telemetry_records_seen = len(events) + (1 if coverage_persisted else 0)
+    if telemetry_records_seen > 0 and detections_created == 0 and provider_result.status in {'live', 'no_evidence', 'degraded'}:
+        evaluated_no_threat_marker_id = _persist_no_threat_evaluation_marker(
+            connection,
+            workspace_id=str(target['workspace_id']),
+            target=target,
+            observed_at=live_coverage_telemetry_at or checkpoint_at or last_observed_event_at,
+            monitoring_run_id=monitoring_run_id,
+            events_ingested=len(events),
+            telemetry_records_seen=telemetry_records_seen,
+        )
 
     recent_evidence_state = ui_evidence_state(provider_result.evidence_state)
     recent_truthfulness_state = ui_truthfulness_state(provider_result.truthfulness_state)
@@ -2431,6 +2491,32 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         alerts_generated=alerts_generated,
         incidents_created=incidents_created,
     )
+    stale_open_alerts_closed = 0
+    if provider_result.mode in {'live', 'hybrid'} and live_source_eligible and provider_result.status in {'live', 'no_evidence'}:
+        stale_open_alerts_closed = int(
+            connection.execute(
+                '''
+                UPDATE alerts
+                SET status = 'resolved',
+                    resolution_note = %s,
+                    resolved_at = NOW(),
+                    updated_at = NOW()
+                WHERE workspace_id = %s::uuid
+                  AND target_id = %s::uuid
+                  AND status IN ('open', 'acknowledged', 'investigating')
+                  AND (
+                        last_seen_at IS NULL
+                        OR last_seen_at < NOW() - INTERVAL '30 seconds'
+                  )
+                ''',
+                (
+                    'Auto-resolved by monitoring worker: no current evidence-linked threat signal in latest evaluation.',
+                    str(target['workspace_id']),
+                    str(target['id']),
+                ),
+            ).rowcount
+            or 0
+        )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, incidents_created)
     WORKER_STATE['metrics']['live_events_ingested'] += len(events)
     return {
@@ -2442,6 +2528,9 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         'incidents_created': incidents_created,
         'detections_created': detections_created,
         'events_ingested': len(events),
+        'telemetry_records_seen': telemetry_records_seen,
+        'evaluated_no_threat_marker_id': evaluated_no_threat_marker_id,
+        'stale_open_alerts_closed': stale_open_alerts_closed,
         'status': last_status,
         'latest_processed_block': latest_processed_block,
         'source_status': source_status,
@@ -2864,9 +2953,10 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     if asset_id:
                         workspace_assets_checked[workspace_id].add(asset_id)
                     result_events_ingested = int(result.get('events_ingested', 0))
+                    result_telemetry_records_seen = int(result.get('telemetry_records_seen', result_events_ingested))
                     workspace_detections_created[workspace_id] += int(result.get('detections_created', 0))
                     workspace_alerts_created[workspace_id] += int(result.get('alerts_generated', 0))
-                    workspace_telemetry_seen[workspace_id] += result_events_ingested
+                    workspace_telemetry_seen[workspace_id] += result_telemetry_records_seen
                 live_targets_checked += 1 if is_monitorable_target_type(target.get('target_type')) else 0
                 events_ingested += int(result.get('events_ingested', 0))
                 incidents_created += int(result.get('incidents_created', 0))
@@ -3159,6 +3249,7 @@ def run_monitoring_once(target_id: str, request: Request) -> dict[str, Any]:
         try:
             result = process_monitoring_target(connection, target, triggered_by_user_id=str(user['id']))
             events_ingested = int(result.get('events_ingested', 0))
+            telemetry_records_seen = int(result.get('telemetry_records_seen', events_ingested))
             connection.execute(
                 '''
                 UPDATE monitoring_runs
@@ -3175,9 +3266,9 @@ def run_monitoring_once(target_id: str, request: Request) -> dict[str, Any]:
                 ''',
                 (
                     1 if target.get('asset_id') else 0,
-                    events_ingested,
+                    int(result.get('detections_created', 0)),
                     int(result.get('alerts_generated', 0)),
-                    events_ingested,
+                    telemetry_records_seen,
                     f'target_id={target_id};status=completed',
                     run_id,
                     workspace_id,
