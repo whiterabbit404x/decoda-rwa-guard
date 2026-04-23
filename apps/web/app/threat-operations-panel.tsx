@@ -742,13 +742,13 @@ export function pageStatePrimaryCopy(
 }
 
 function noIncidentsCopy(
-  monitoringPresentationStatus: MonitoringPresentation['status'],
+  evidenceSourceLabel: string,
   continuityStatus?: 'continuous_live' | 'degraded' | 'offline' | 'idle_no_telemetry' | null,
 ): string {
   if (continuityStatus === 'continuous_live') {
     return 'No incidents yet. LIVE continuity is healthy and no open incidents are currently recorded.';
   }
-  if (monitoringPresentationStatus === 'live' || monitoringPresentationStatus === 'hybrid') {
+  if (evidenceSourceLabel === 'live' || evidenceSourceLabel === 'hybrid') {
     return 'LIVE/HYBRID degraded state: no persisted incidents with linked evidence chain entries are currently available.';
   }
   return 'No persisted incidents with linked evidence chain entries are currently available.';
@@ -1801,7 +1801,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             {!loadingSnapshot && incidents.length === 0 ? (
               <div className="emptyStatePanel">
                 <h4>No incidents yet</h4>
-                <p className="muted">{noIncidentsCopy(monitoringPresentation.status, truth.continuity_status)}</p>
+                <p className="muted">{noIncidentsCopy(monitoringPresentation.evidenceSourceLabel, truth.continuity_status)}</p>
               </div>
             ) : (
               <div className="stack compactStack">
