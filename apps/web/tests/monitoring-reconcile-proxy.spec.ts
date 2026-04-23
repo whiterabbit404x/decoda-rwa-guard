@@ -59,7 +59,7 @@ test.describe('same-origin monitoring reconcile proxy', () => {
 
         const headers = new Headers(init?.headers);
         expect(headers.get('Authorization')).toBe('Bearer web-token');
-        expect(headers.get('X-Workspace-Id')).toBe('workspace-123');
+        expect(headers.get('X-Workspace-Id')).toBe('11111111-1111-4111-8111-111111111111');
         expect(headers.get('X-CSRF-Token')).toBe('csrf-123');
         expect(init?.body).toBe(JSON.stringify({ dry_run: true }));
 
@@ -72,7 +72,7 @@ test.describe('same-origin monitoring reconcile proxy', () => {
           method: 'POST',
           headers: {
             Authorization: 'Bearer web-token',
-            'X-Workspace-Id': 'workspace-123',
+            'X-Workspace-Id': '11111111-1111-4111-8111-111111111111, 22222222-2222-4222-8222-222222222222',
             'X-CSRF-Token': 'csrf-123',
             'Content-Type': 'application/json',
           },

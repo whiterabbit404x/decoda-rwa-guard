@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 import { normalizeApiBaseUrl } from '../../../api-config';
 import { getRuntimeConfig } from '../../../runtime-config';
+import { normalizeWorkspaceHeaderValue } from '../../../workspace-header';
 
 const SESSION_COOKIE_NAME = 'decoda_session';
 const CSRF_COOKIE_NAME = 'decoda_csrf';
@@ -191,7 +192,7 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
     headers.set('Content-Type', 'application/json');
   }
 
-  const xWorkspaceId = request.headers.get('x-workspace-id');
+  const xWorkspaceId = normalizeWorkspaceHeaderValue(request.headers.get('x-workspace-id'));
   if (xWorkspaceId) {
     headers.set('X-Workspace-Id', xWorkspaceId);
   }

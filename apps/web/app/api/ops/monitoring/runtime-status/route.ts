@@ -1,5 +1,6 @@
 import { normalizeApiBaseUrl } from 'app/api-config';
 import { getRuntimeConfig } from 'app/runtime-config';
+import { normalizeWorkspaceHeaderValue } from 'app/workspace-header';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -24,9 +25,17 @@ function buildForwardHeaders(request: Request) {
 
   FORWARDED_HEADERS.forEach((name) => {
     const value = request.headers.get(name);
-    if (value !== null) {
-      headers.set(name, value);
+    if (value === null) {
+      return;
     }
+    if (name === 'x-workspace-id') {
+      const workspaceId = normalizeWorkspaceHeaderValue(value);
+      if (workspaceId) {
+        headers.set(name, workspaceId);
+      }
+      return;
+    }
+    headers.set(name, value);
   });
 
   return headers;

@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import { classifyAuthResponseError, classifyAuthTransportError } from './auth-diagnostics';
+import { normalizeWorkspaceHeaderValue } from './workspace-header';
 import type { RuntimeConfig } from './runtime-config-schema';
 
 const UNLOADED_RUNTIME_CONFIG: RuntimeConfig = {
@@ -74,7 +75,7 @@ type PilotAuthContextValue = {
   refreshUser: () => Promise<PilotUser | null>;
   createWorkspace: (name: string) => Promise<PilotUser>;
   selectWorkspace: (workspaceId: string) => Promise<PilotUser>;
-  authHeaders: () => Record<string, string>;
+  authHeaders: (workspaceIdOverride?: string | null) => Record<string, string>;
   setError: (value: string | null) => void;
 };
 
@@ -195,15 +196,16 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     return runtimeConfig.apiUrl;
   }, [configLoading, runtimeConfig.apiUrl, runtimeConfig.diagnostic]);
 
-  const authHeaders = useCallback(() => {
+  const authHeaders = useCallback((workspaceIdOverride?: string | null) => {
     const token = accessToken || readStoredAccessToken();
     const headers: Record<string, string> = {};
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }
-    const workspaceId = user?.current_workspace?.id || user?.current_workspace_id || null;
-    if (workspaceId) {
-      headers['X-Workspace-Id'] = workspaceId;
+    const workspaceId = workspaceIdOverride ?? user?.current_workspace?.id ?? user?.current_workspace_id ?? null;
+    const normalizedWorkspaceId = normalizeWorkspaceHeaderValue(workspaceId);
+    if (normalizedWorkspaceId) {
+      headers['X-Workspace-Id'] = normalizedWorkspaceId;
     }
     if (csrfToken) {
       headers['X-CSRF-Token'] = csrfToken;
