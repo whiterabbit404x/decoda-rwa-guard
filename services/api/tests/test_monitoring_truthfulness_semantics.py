@@ -218,6 +218,7 @@ def test_process_monitoring_target_preserves_failed_state(monkeypatch):
 
 def test_process_monitoring_target_persists_live_coverage_without_target_events(monkeypatch):
     persisted: dict[str, object] = {'called': False}
+    checkpoint_runs: list[dict[str, object]] = []
 
     class _Conn:
         def execute(self, query, params=None):
@@ -271,14 +272,25 @@ def test_process_monitoring_target_persists_live_coverage_without_target_events(
         persisted['called'] = True
 
     monkeypatch.setattr(monitoring_runner, '_persist_live_coverage_telemetry', _persist)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'persist_analysis_run',
+        lambda _connection, **kwargs: checkpoint_runs.append(kwargs) or 'analysis-run-checkpoint',
+    )
 
     result = monitoring_runner.process_monitoring_target(_Conn(), target, triggered_by_user_id='user-1')
     assert persisted['called'] is True
     assert result['events_ingested'] == 0
+    assert result['detections_created'] == 0
     assert result['source_status'] == 'active'
     assert result['degraded_reason'] is None
     assert result['status'] == 'no_real_data'
     assert result['live_coverage_telemetry_at'] is not None
+    assert any(str(run.get('analysis_type')) == 'monitoring_detection_evaluation' for run in checkpoint_runs)
+    assert any(
+        (run.get('response_payload') or {}).get('metadata', {}).get('no_detections') is True
+        for run in checkpoint_runs
+    )
 
 
 def test_process_monitoring_target_does_not_promote_last_checked_to_last_event(monkeypatch):

@@ -383,6 +383,7 @@ def test_monitoring_cycle_persists_workspace_run_counts(monkeypatch):
         lambda _connection, target, triggered_by_user_id=None: {
             'alerts_generated': 2,
             'incidents_created': 1,
+            'detections_created': 1,
             'events_ingested': 3,
             'target_id': target['id'],
             'runs': ['run-1'],
@@ -400,7 +401,7 @@ def test_monitoring_cycle_persists_workspace_run_counts(monkeypatch):
     assert update[0] == 'completed'
     assert update[1] == 1
     assert update[2] == 1
-    assert update[3] == 3
+    assert update[3] == 1
     assert update[4] == 2
     assert update[5] == 3
 
