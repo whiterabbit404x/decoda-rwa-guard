@@ -50,10 +50,12 @@ from services.api.app.pilot import (
     get_team_seats,
     enforce_auth_rate_limit,
     ensure_pilot_schema,
+    ensure_monitoring_proof_chain,
     list_user_workspaces,
     live_mode_enabled,
     log_audit,
     maybe_insert_alert,
+    normalize_workspace_header_value,
     parse_csv_env,
     pilot_schema_status,
     persist_analysis_run,
@@ -2018,6 +2020,14 @@ def ops_monitoring_runtime_debug(request: Request) -> dict[str, Any]:
 @app.get('/ops/monitoring/evidence', summary='Latest monitoring evidence stream')
 def ops_monitoring_evidence(request: Request, limit: int = 50) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_monitoring_evidence(request, limit=limit))
+
+
+@app.post('/ops/monitoring/proof-chain/ensure', summary='Ensure monitoring proof-chain records for current workspace')
+def ops_monitoring_proof_chain_ensure(request: Request) -> dict[str, Any]:
+    workspace_id = normalize_workspace_header_value(request.headers.get('x-workspace-id'))
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail='x-workspace-id header is required')
+    return with_auth_schema_json(lambda: ensure_monitoring_proof_chain(workspace_id, request))
 
 
 @app.get('/ops/monitoring/heartbeats', summary='Latest monitoring heartbeat rows')
