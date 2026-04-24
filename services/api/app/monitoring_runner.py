@@ -102,8 +102,66 @@ RUNTIME_STATUS_ALERT_BREACH_HISTORY: dict[str, dict[str, deque[bool]]] = default
 )
 
 RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED = os.getenv('RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+MONITORING_COVERAGE_ONLY_WARNING_SECONDS = max(
+    60,
+    int(float(os.getenv('MONITORING_COVERAGE_ONLY_WARNING_MINUTES', '30')) * 60),
+)
 _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT: datetime | None = None
 _LAST_MONITORING_DUE_SELECTION_BACKFILL_AT: dict[str, datetime] = {}
+_WORKSPACE_COVERAGE_ONLY_STREAK: dict[str, dict[str, Any]] = {}
+
+
+def _workspace_coverage_only_state(
+    *,
+    workspace_id: str,
+    cycle_at: datetime,
+    provider_reachable: bool,
+    coverage_heartbeat_updates: int,
+    real_events_detected: int,
+) -> dict[str, Any]:
+    workspace_key = str(workspace_id or '').strip()
+    if not workspace_key:
+        return {
+            'state': None,
+            'active': False,
+            'cycle_count': 0,
+            'duration_seconds': 0,
+            'threshold_seconds': MONITORING_COVERAGE_ONLY_WARNING_SECONDS,
+        }
+    condition_met = bool(provider_reachable and int(coverage_heartbeat_updates) > 0 and int(real_events_detected) <= 0)
+    existing = _WORKSPACE_COVERAGE_ONLY_STREAK.get(workspace_key)
+    if condition_met:
+        if isinstance(existing, dict):
+            first_seen_at = _parse_ts(existing.get('first_seen_at')) or cycle_at
+            cycle_count = int(existing.get('cycle_count') or 0) + 1
+        else:
+            first_seen_at = cycle_at
+            cycle_count = 1
+        duration_seconds = max(0, int((cycle_at - first_seen_at).total_seconds()))
+        active = duration_seconds >= MONITORING_COVERAGE_ONLY_WARNING_SECONDS and cycle_count > 1
+        next_state = {
+            'first_seen_at': first_seen_at.isoformat(),
+            'last_cycle_at': cycle_at.isoformat(),
+            'cycle_count': cycle_count,
+            'duration_seconds': duration_seconds,
+            'threshold_seconds': MONITORING_COVERAGE_ONLY_WARNING_SECONDS,
+            'active': active,
+            'state': 'coverage_only_persistent_no_evidence' if active else None,
+        }
+        _WORKSPACE_COVERAGE_ONLY_STREAK[workspace_key] = next_state
+        return dict(next_state)
+
+    if workspace_key in _WORKSPACE_COVERAGE_ONLY_STREAK:
+        _WORKSPACE_COVERAGE_ONLY_STREAK.pop(workspace_key, None)
+    return {
+        'first_seen_at': None,
+        'last_cycle_at': cycle_at.isoformat(),
+        'cycle_count': 0,
+        'duration_seconds': 0,
+        'threshold_seconds': MONITORING_COVERAGE_ONLY_WARNING_SECONDS,
+        'active': False,
+        'state': None,
+    }
 
 
 def _provider_source_is_live(source_type: Any) -> bool:
@@ -2778,6 +2836,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         workspace_detections_created: dict[str, int] = defaultdict(int)
         workspace_alerts_created: dict[str, int] = defaultdict(int)
         workspace_telemetry_seen: dict[str, int] = defaultdict(int)
+        workspace_real_events_detected: dict[str, int] = defaultdict(int)
+        workspace_coverage_heartbeat_updates: dict[str, int] = defaultdict(int)
+        workspace_provider_reachable_cycles: dict[str, int] = defaultdict(int)
         workspace_errors: dict[str, str] = {}
         connection.execute(
             '''
@@ -3167,6 +3228,12 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     workspace_detections_created[workspace_id] += int(result.get('detections_created', 0))
                     workspace_alerts_created[workspace_id] += int(result.get('alerts_generated', 0))
                     workspace_telemetry_seen[workspace_id] += result_telemetry_records_seen
+                    workspace_real_events_detected[workspace_id] += int(result.get('real_events_detected', result.get('real_event_count', 0)) or 0)
+                    workspace_coverage_heartbeat_updates[workspace_id] += int(result.get('coverage_heartbeat_updates', result.get('coverage_heartbeat_count', 0)) or 0)
+                    provider_status = str(result.get('provider_status') or '').strip().lower()
+                    source_status = str(result.get('source_status') or '').strip().lower()
+                    if provider_status in {'live', 'no_evidence', 'degraded'} and source_status in {'live', 'no_evidence'}:
+                        workspace_provider_reachable_cycles[workspace_id] += 1
                 live_targets_checked += 1 if is_monitorable_target_type(target.get('target_type')) else 0
                 events_ingested += int(result.get('events_ingested', 0))
                 real_events_detected += int(result.get('real_events_detected', result.get('real_event_count', 0)))
@@ -3224,6 +3291,23 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 ),
             )
         if checked > 0:
+            for workspace_id in sorted(workspace_systems_checked.keys()):
+                warning_state = _workspace_coverage_only_state(
+                    workspace_id=workspace_id,
+                    cycle_at=cycle_started_at,
+                    provider_reachable=int(workspace_provider_reachable_cycles.get(workspace_id, 0)) > 0,
+                    coverage_heartbeat_updates=int(workspace_coverage_heartbeat_updates.get(workspace_id, 0)),
+                    real_events_detected=int(workspace_real_events_detected.get(workspace_id, 0)),
+                )
+                if warning_state.get('active'):
+                    logger.warning(
+                        'monitoring_workspace_no_evidence_persistent workspace_id=%s state=%s cycle_count=%s duration_seconds=%s threshold_seconds=%s',
+                        workspace_id,
+                        warning_state.get('state'),
+                        warning_state.get('cycle_count'),
+                        warning_state.get('duration_seconds'),
+                        warning_state.get('threshold_seconds'),
+                    )
             for workspace_id in sorted(cycle_workspace_ids):
                 active_alerts_row = connection.execute(
                     """
@@ -5399,6 +5483,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             )
         monitoring_mode_raw = str(health.get('mode') or '').strip().lower()
         degraded_signal = provider_degraded_or_unreachable
+        coverage_only_warning = dict(_WORKSPACE_COVERAGE_ONLY_STREAK.get(str(workspace_id), {}))
+        coverage_only_warning_state = str(coverage_only_warning.get('state') or '').strip()
+        coverage_only_warning_active = bool(coverage_only_warning.get('active') and coverage_only_warning_state == 'coverage_only_persistent_no_evidence')
         if not workspace_configured:
             logger.info(
                 'monitoring_runtime_status_branch workspace_id=%s workspace_slug=%s branch=offline_unconfigured configuration_reason=%s',
@@ -5438,6 +5525,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 if unsupported_enabled_rows and reporting_systems <= 0
                 else ('no_fresh_live_coverage_telemetry' if reporting_systems <= 0 or not coverage_fresh else None)
             )
+        if workspace_configured and coverage_only_warning_active:
+            runtime_status_summary = 'degraded'
+            runtime_status_reason = 'coverage_only_persistent_no_evidence'
         if workspace_configured and runtime_error_code and not runtime_status_reason:
             runtime_status_reason = 'runtime_status_degraded:partial_query_failure'
         missing_telemetry_only = bool(
@@ -5486,6 +5576,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         summary['runtime_error_code'] = runtime_error_code
         summary['runtime_degraded_reason'] = runtime_degraded_reason
         summary['field_reason_codes'] = dict(field_reason_codes)
+        summary['coverage_only_warning'] = {
+            'state': coverage_only_warning_state or None,
+            'active': coverage_only_warning_active,
+            'cycle_count': int(coverage_only_warning.get('cycle_count') or 0),
+            'duration_seconds': int(coverage_only_warning.get('duration_seconds') or 0),
+            'threshold_seconds': int(coverage_only_warning.get('threshold_seconds') or MONITORING_COVERAGE_ONLY_WARNING_SECONDS),
+            'first_seen_at': coverage_only_warning.get('first_seen_at'),
+            'last_cycle_at': coverage_only_warning.get('last_cycle_at'),
+        }
         summary['coverage_state'] = {
             'configured_systems': int(enabled_system_count),
             'monitored_systems_count': int(system_count),
@@ -5508,6 +5607,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             detection_window_seconds=max(900, MONITOR_POLL_INTERVAL_SECONDS * 10),
         )
         summary.update(continuity_evaluation)
+        if coverage_only_warning_active:
+            continuity_reason_codes = list(summary.get('continuity_reason_codes') or [])
+            if 'coverage_only_persistent_no_evidence' not in continuity_reason_codes:
+                continuity_reason_codes.append('coverage_only_persistent_no_evidence')
+            summary['continuity_reason_codes'] = continuity_reason_codes
         summary_freshness_status = str(summary.get('telemetry_freshness') or '').strip().lower()
         summary_confidence_status = str(summary.get('confidence') or '').strip().lower()
         strict_live_healthy_proof = bool(
@@ -5637,6 +5741,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'continuity_reason_codes': list(summary.get('continuity_reason_codes') or []),
             'continuity_signals': dict(summary.get('continuity_signals') or {}),
             'field_reason_codes': dict(field_reason_codes),
+            'coverage_only_warning': dict(summary.get('coverage_only_warning') or {}),
             'db_failure_classification': None,
             'db_failure_reason': None,
         }
@@ -5676,6 +5781,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             degraded_mode_reasons.append('runtime_status_degraded')
         if int(payload.get('real_event_count') or payload.get('recent_real_event_count') or 0) <= 0:
             claim_safety_risk_indicators.append('no_recent_real_events')
+        if coverage_only_warning_active:
+            claim_safety_risk_indicators.append('coverage_only_persistent_no_evidence')
         if runtime_status_summary in {'healthy', 'idle'} and active_live_coverage and not degraded_mode_reasons:
             mode = live_coverage_mode
         elif degraded_mode_reasons:
@@ -5710,6 +5817,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         )
         if limited_claim_condition and only_no_recent_event_failures:
             claim_validator_status = 'LIMITED'
+        if coverage_only_warning_active:
+            claim_validator_status = 'FAIL'
         if claim_validator_status != 'PASS':
             claim_safety_risk_indicators.append(f'claim_validator_{claim_validator_status.lower()}')
         for reason_code in claim_validator_reason_codes:
