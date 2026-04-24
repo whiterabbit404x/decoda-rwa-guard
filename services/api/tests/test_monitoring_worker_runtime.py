@@ -406,6 +406,10 @@ def test_monitoring_cycle_all_targets_not_due_reports_checked_zero(monkeypatch, 
     assert any(
         'monitoring cycle summary worker=test-worker' in message
         and 'due=0 checked=0' in message
+        and 'backfill_attempted=0' in message
+        and 'backfill_evaluated=1' in message
+        and 'backfill_executed=0' in message
+        and 'backfill_blocked_not_yet_due=1' in message
         and 'oldest_not_due_age_seconds=' in message
         for message in caplog.messages
     )
@@ -557,7 +561,11 @@ def test_monitoring_cycle_does_not_backfill_when_oldest_target_is_not_yet_due(mo
     assert summary['checked'] == 0
     assert len(connection.monitoring_run_inserts) == 0
     assert any(
-        'backfill_blocked_not_yet_due=1' in message and 'backfill_allowed=0' in message
+        'cycle_state=backfill_evaluated_blocked' in message
+        and 'backfill_attempted=0' in message
+        and 'backfill_evaluated=1' in message
+        and 'backfill_executed=0' in message
+        and 'backfill_blocked_not_yet_due=1' in message
         for message in caplog.messages
     )
 
@@ -592,6 +600,9 @@ def test_monitoring_cycle_summary_reports_consistent_due_counts_when_backfill_is
     assert any(
         'base_due_count=0 effective_due_count=0 due=0 checked=0' in message
         and 'skipped_not_due=1' in message
+        and 'backfill_attempted=0' in message
+        and 'backfill_evaluated=1' in message
+        and 'backfill_executed=0' in message
         and 'backfill_blocked_not_yet_due=1' in message
         for message in caplog.messages
     )
