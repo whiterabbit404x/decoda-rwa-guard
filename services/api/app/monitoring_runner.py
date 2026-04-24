@@ -2864,7 +2864,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         due_selection_workspace_snapshot: dict[str, list[dict[str, Any]]] = defaultdict(list)
         should_consider_backfill = False
         backfill_attempted = 0
-        backfill_allowed_count = 0
+        backfill_evaluated = 0
+        backfill_executed = 0
         backfill_blocked_not_yet_due = 0
         backfill_blocked_by_cooldown = 0
         backfill_blocked_missing_candidate = 0
@@ -3000,27 +3001,35 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             no_due_targets
             and workspace_live_mode
         )
+        has_backfill_candidate = bool(
+            fallback_target_id
+            and fallback_system_id
+            and fallback_workspace_id
+        )
         if should_consider_backfill:
-            backfill_attempted = 1
-            if not fallback_is_due:
-                backfill_blocked_not_yet_due = 1
-            elif not cooldown_elapsed:
-                backfill_blocked_by_cooldown = 1
-            else:
-                backfill_allowed = bool(
-                    fallback_target_id
-                    and fallback_system_id
-                    and fallback_workspace_id
-                )
-                if backfill_allowed:
+            if has_backfill_candidate:
+                backfill_evaluated = 1
+                if not fallback_is_due:
+                    backfill_attempted = 0
+                    backfill_blocked_not_yet_due = 1
+                elif not cooldown_elapsed:
+                    backfill_attempted = 1
+                    backfill_blocked_by_cooldown = 1
+                else:
+                    backfill_attempted = 1
                     due_target_ids.append(fallback_target_id)
                     due_system_ids[fallback_target_id] = fallback_system_id
                     _LAST_MONITORING_DUE_SELECTION_BACKFILL_AT[fallback_workspace_id] = now
-                    backfill_allowed_count = 1
-                else:
-                    backfill_blocked_missing_candidate = 1
+                    backfill_executed = 1
+            else:
+                backfill_attempted = 0
+                backfill_evaluated = 0
+                backfill_executed = 0
+                backfill_blocked_missing_candidate = 1
         else:
             backfill_attempted = 0
+            backfill_evaluated = 0
+            backfill_executed = 0
             backfill_blocked_not_yet_due = 0
             backfill_blocked_by_cooldown = 0
             backfill_blocked_missing_candidate = 0
@@ -3031,7 +3040,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             if skipped_not_due_oldest_checked_at is not None
             else None
         )
-        if backfill_allowed_count > 0 and fallback_target_id in skipped_not_due_target_ids:
+        if backfill_executed > 0 and fallback_target_id in skipped_not_due_target_ids:
             effective_skipped_not_due = max(0, skipped_not_due - 1)
         due_targets = []
         if due_target_ids:
@@ -3301,15 +3310,17 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     backfill_cycle_state = 'normal_due_cycle'
     if due_count == 0 and not should_consider_backfill:
         backfill_cycle_state = 'normal_no_due_cycle'
-    elif should_consider_backfill and backfill_allowed_count <= 0:
-        backfill_cycle_state = 'backfill_considered_cycle'
-    elif backfill_allowed_count > 0:
+    elif backfill_executed > 0:
         backfill_cycle_state = 'backfill_executed_cycle'
+    elif backfill_evaluated > 0:
+        backfill_cycle_state = 'backfill_evaluated_blocked'
+    elif due_count == 0:
+        backfill_cycle_state = 'normal_no_due_cycle'
     logger.info(
         'monitoring cycle summary worker=%s cycle_state=%s total_candidate_targets=%s base_due_count=%s '
         'effective_due_count=%s due=%s checked=%s '
         'skipped_disabled=%s skipped_inactive=%s skipped_missing_workspace=%s skipped_not_due=%s '
-        'oldest_not_due_age_seconds=%s skipped_null_handling=%s interval_capped_targets=%s backfill_attempted=%s backfill_allowed=%s '
+        'oldest_not_due_age_seconds=%s skipped_null_handling=%s interval_capped_targets=%s backfill_attempted=%s backfill_evaluated=%s backfill_executed=%s '
         'backfill_blocked_not_yet_due=%s backfill_blocked_by_cooldown=%s backfill_blocked_missing_candidate=%s '
         'live_targets=%s real_events=%s coverage_heartbeat_updates=%s alerts=%s incidents=%s monitored_systems_updated=%s duration_ms=%s',
         worker_name,
@@ -3327,9 +3338,10 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         skipped_null_handling if 'skipped_null_handling' in locals() else 0,
         interval_capped_targets if 'interval_capped_targets' in locals() else 0,
         backfill_attempted if 'backfill_attempted' in locals() else 0,
-        backfill_allowed_count if 'backfill_allowed_count' in locals() else 0,
-        backfill_blocked_not_yet_due if 'backfill_blocked_not_yet_due' in locals() else 0,
-        backfill_blocked_by_cooldown if 'backfill_blocked_by_cooldown' in locals() else 0,
+        backfill_evaluated if 'backfill_evaluated' in locals() else 0,
+        backfill_executed if 'backfill_executed' in locals() else 0,
+        backfill_blocked_not_yet_due if ('backfill_evaluated' in locals() and backfill_evaluated > 0) else 0,
+        backfill_blocked_by_cooldown if ('backfill_evaluated' in locals() and backfill_evaluated > 0) else 0,
         backfill_blocked_missing_candidate if 'backfill_blocked_missing_candidate' in locals() else 0,
         live_targets_checked,
         real_events_detected,
