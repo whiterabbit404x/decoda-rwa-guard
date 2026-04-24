@@ -2684,6 +2684,394 @@ def _demo_monitoring_bootstrap_allowed() -> bool:
     return app_env not in {'prod', 'production'}
 
 
+def _monitoring_proof_chain_correlation_id(*, workspace_id: str, monitored_system_id: str, date_bucket: str) -> str:
+    seed = f'{workspace_id}:{monitored_system_id}:monitoring-proof-chain:{date_bucket}'
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
+def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -> dict[str, Any]:
+    require_live_mode()
+    normalized_workspace_id = normalize_workspace_header_value(workspace_id)
+    if not normalized_workspace_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='x-workspace-id header is required.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request_context)
+        workspace_context = resolve_workspace(connection, user['id'], normalized_workspace_id)
+        if workspace_context['workspace_id'] != normalized_workspace_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Workspace scope mismatch.')
+
+        correlation_date_bucket = utc_now().strftime('%Y-%m-%d')
+        workspace_id_value = workspace_context['workspace_id']
+        source_tag = 'monitoring_proof_chain.ensure'
+
+        asset_identifier = f'proof-chain-{workspace_id_value}'
+        asset_row = connection.execute(
+            '''
+            SELECT id
+            FROM assets
+            WHERE workspace_id = %s
+              AND deleted_at IS NULL
+              AND normalized_identifier = %s
+            ORDER BY created_at ASC
+            LIMIT 1
+            ''',
+            (workspace_id_value, asset_identifier),
+        ).fetchone()
+        if asset_row is None:
+            asset_id = str(uuid.uuid4())
+            connection.execute(
+                '''
+                INSERT INTO assets (
+                    id, workspace_id, name, description, asset_type, chain_network, identifier, asset_class, risk_tier, owner_team, notes, enabled,
+                    normalized_identifier, verification_status, verification_summary, verification_checked_at, created_by_user_id, updated_by_user_id
+                )
+                VALUES (
+                    %s, %s, 'Monitoring Proof Chain Asset', 'Protected asset used for proof-chain continuity checks.',
+                    'wallet', 'ethereum-mainnet', %s, 'rwa', 'medium', 'security',
+                    %s, TRUE, %s, 'verified', %s::jsonb, NOW(), %s, %s
+                )
+                ''',
+                (
+                    asset_id,
+                    workspace_id_value,
+                    asset_identifier,
+                    f'proof_chain_source={source_tag}',
+                    asset_identifier,
+                    _json_dumps({'source': source_tag}),
+                    user['id'],
+                    user['id'],
+                ),
+            )
+        else:
+            asset_id = str(asset_row['id'])
+
+        target_name = 'Monitoring Proof Chain Target'
+        target_row = connection.execute(
+            '''
+            SELECT id
+            FROM targets
+            WHERE workspace_id = %s
+              AND deleted_at IS NULL
+              AND name = %s
+            ORDER BY created_at ASC
+            LIMIT 1
+            ''',
+            (workspace_id_value, target_name),
+        ).fetchone()
+        if target_row is None:
+            target_id = str(uuid.uuid4())
+            connection.execute(
+                '''
+                INSERT INTO targets (
+                    id, workspace_id, name, target_type, chain_network, wallet_address, asset_type, owner_notes, severity_preference,
+                    enabled, asset_id, monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold,
+                    auto_create_alerts, auto_create_incidents, notification_channels, monitored_by_workspace_id, is_active,
+                    created_by_user_id, updated_by_user_id
+                )
+                VALUES (
+                    %s, %s, %s, 'wallet', 'ethereum-mainnet', '0x00000000000000000000000000000000000000ac', 'wallet',
+                    %s, 'medium', TRUE, %s::uuid, TRUE, 'poll', 60, 'high', TRUE, TRUE, %s::jsonb, %s, TRUE, %s, %s
+                )
+                ''',
+                (
+                    target_id,
+                    workspace_id_value,
+                    target_name,
+                    f'proof_chain_source={source_tag}',
+                    asset_id,
+                    _json_dumps(['email']),
+                    workspace_id_value,
+                    user['id'],
+                    user['id'],
+                ),
+            )
+        else:
+            target_id = str(target_row['id'])
+            connection.execute(
+                '''
+                UPDATE targets
+                SET enabled = TRUE,
+                    monitoring_enabled = TRUE,
+                    is_active = TRUE,
+                    asset_id = %s::uuid,
+                    updated_by_user_id = %s,
+                    updated_at = NOW()
+                WHERE id = %s::uuid
+                ''',
+                (asset_id, user['id'], target_id),
+            )
+
+        monitor_bridge = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id_value, require_enabled=False)
+        monitored_system_id = str(monitor_bridge.get('monitored_system_id') or '')
+        if monitor_bridge.get('status') != 'ok' or not monitored_system_id:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='Unable to ensure monitored system for proof-chain.')
+
+        correlation_id = _monitoring_proof_chain_correlation_id(
+            workspace_id=workspace_id_value,
+            monitored_system_id=monitored_system_id,
+            date_bucket=correlation_date_bucket,
+        )
+        now_value = utc_now()
+        run_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:monitoring_run'))
+        detection_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:detection'))
+        detection_evidence_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:detection_evidence'))
+        alert_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:alert'))
+        incident_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:incident'))
+        response_action_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:response_action'))
+        telemetry_event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:telemetry_event'))
+
+        connection.execute(
+            '''
+            INSERT INTO monitoring_runs (
+                id, workspace_id, started_at, completed_at, status, trigger_type, systems_checked_count, assets_checked_count,
+                detections_created_count, alerts_created_count, telemetry_records_seen_count, notes
+            ) VALUES (
+                %s, %s, %s, %s, 'completed', 'manual', 1, 1, 1, 1, 1, %s
+            )
+            ON CONFLICT (id)
+            DO UPDATE SET
+                completed_at = EXCLUDED.completed_at,
+                status = EXCLUDED.status,
+                systems_checked_count = GREATEST(monitoring_runs.systems_checked_count, 1),
+                assets_checked_count = GREATEST(monitoring_runs.assets_checked_count, 1),
+                detections_created_count = GREATEST(monitoring_runs.detections_created_count, 1),
+                alerts_created_count = GREATEST(monitoring_runs.alerts_created_count, 1),
+                telemetry_records_seen_count = GREATEST(monitoring_runs.telemetry_records_seen_count, 1),
+                notes = EXCLUDED.notes
+            ''',
+            (run_id, workspace_id_value, now_value, now_value, f'{source_tag} correlation_id={correlation_id}'),
+        )
+
+        live_row = connection.execute(
+            '''
+            SELECT id, observed_at
+            FROM evidence
+            WHERE workspace_id = %s
+              AND monitored_system_id = %s::uuid
+              AND source_provider = 'live'
+              AND observed_at >= (NOW() - INTERVAL '1 day')
+            ORDER BY observed_at DESC, created_at DESC
+            LIMIT 1
+            ''',
+            (workspace_id_value, monitored_system_id),
+        ).fetchone()
+        evidence_source = 'live' if live_row is not None else 'simulator'
+        telemetry_reason = 'live_telemetry_reused' if live_row is not None else 'live_telemetry_unavailable_using_simulator'
+        telemetry_observed_at = live_row.get('observed_at') if live_row else now_value
+        tx_hash = f'0x{hashlib.sha256(f"{correlation_id}:telemetry".encode("utf-8")).hexdigest()[:64]}'
+
+        connection.execute(
+            '''
+            INSERT INTO evidence (
+                id, workspace_id, asset_id, target_id, alert_id, chain, block_number, tx_hash, log_index, event_type,
+                monitored_system_id, severity, risk_score, summary, source_provider, raw_payload_json, observed_at, created_at
+            ) VALUES (
+                %s, %s, %s::uuid, %s::uuid, %s::uuid, 'ethereum-mainnet', 1, %s, 0, 'monitoring_proof_chain_event',
+                %s::uuid, 'high', 0.9, %s, %s, %s::jsonb, %s, NOW()
+            )
+            ON CONFLICT (id)
+            DO UPDATE SET
+                alert_id = EXCLUDED.alert_id,
+                source_provider = EXCLUDED.source_provider,
+                summary = EXCLUDED.summary,
+                raw_payload_json = EXCLUDED.raw_payload_json,
+                observed_at = EXCLUDED.observed_at
+            ''',
+            (
+                telemetry_event_id,
+                workspace_id_value,
+                asset_id,
+                target_id,
+                alert_id,
+                tx_hash,
+                monitored_system_id,
+                f'Monitoring proof-chain telemetry ({evidence_source}).',
+                evidence_source,
+                _json_dumps({'metadata': {'correlation_id': correlation_id, 'proof_chain_type': 'monitoring', 'evidence_origin': evidence_source, 'reason': telemetry_reason}}),
+                telemetry_observed_at,
+            ),
+        )
+
+        connection.execute(
+            '''
+            INSERT INTO detections (
+                id, workspace_id, monitored_system_id, protected_asset_id, detection_type, severity, confidence, title, evidence_summary,
+                evidence_source, source_rule, status, detected_at, raw_evidence_json, monitoring_run_id, linked_alert_id, created_at, updated_at
+            ) VALUES (
+                %s, %s, %s::uuid, %s::uuid, 'monitoring_proof_chain', 'high', 0.9, %s, %s,
+                %s, 'monitoring.proof_chain.ensure', 'open', %s, %s::jsonb, %s::uuid, %s::uuid, NOW(), NOW()
+            )
+            ON CONFLICT (id)
+            DO UPDATE SET
+                evidence_source = EXCLUDED.evidence_source,
+                evidence_summary = EXCLUDED.evidence_summary,
+                raw_evidence_json = EXCLUDED.raw_evidence_json,
+                monitoring_run_id = EXCLUDED.monitoring_run_id,
+                linked_alert_id = EXCLUDED.linked_alert_id,
+                updated_at = NOW()
+            ''',
+            (
+                detection_id,
+                workspace_id_value,
+                monitored_system_id,
+                asset_id,
+                'Monitoring Proof Chain Detection',
+                f'Monitoring proof-chain detection linked to telemetry source={evidence_source}.',
+                evidence_source,
+                now_value,
+                _json_dumps({'correlation_id': correlation_id, 'proof_chain_type': 'monitoring', 'evidence_origin': evidence_source, 'production_claim_eligible': evidence_source == 'live'}),
+                run_id,
+                alert_id,
+            ),
+        )
+
+        connection.execute(
+            '''
+            INSERT INTO detection_evidence (
+                id, workspace_id, detection_id, evidence_type, evidence_summary, source, raw_reference, raw_payload_json, created_at
+            ) VALUES (
+                %s, %s, %s::uuid, 'monitoring_proof_chain', %s, %s, %s, %s::jsonb, NOW()
+            )
+            ON CONFLICT (id)
+            DO UPDATE SET
+                evidence_summary = EXCLUDED.evidence_summary,
+                source = EXCLUDED.source,
+                raw_reference = EXCLUDED.raw_reference,
+                raw_payload_json = EXCLUDED.raw_payload_json
+            ''',
+            (
+                detection_evidence_id,
+                workspace_id_value,
+                detection_id,
+                f'Detection evidence for monitoring proof-chain correlation={correlation_id}.',
+                evidence_source,
+                f'proof-chain://monitoring/{correlation_id}',
+                _json_dumps({'correlation_id': correlation_id, 'proof_chain_type': 'monitoring', 'evidence_origin': evidence_source}),
+            ),
+        )
+
+        connection.execute(
+            '''
+            INSERT INTO alerts (
+                id, workspace_id, user_id, analysis_run_id, alert_type, title, severity, status, source_service, summary, payload, created_at, detection_id,
+                target_id, module_key, source
+            ) VALUES (
+                %s, %s, %s, NULL, 'monitoring_proof_chain', %s, 'high', 'open', %s, %s, %s::jsonb, NOW(), %s::uuid, %s::uuid, 'monitoring', %s
+            )
+            ON CONFLICT (id)
+            DO UPDATE SET
+                detection_id = EXCLUDED.detection_id,
+                target_id = EXCLUDED.target_id,
+                source_service = EXCLUDED.source_service,
+                summary = EXCLUDED.summary,
+                payload = EXCLUDED.payload,
+                source = EXCLUDED.source,
+                updated_at = NOW()
+            ''',
+            (
+                alert_id,
+                workspace_id_value,
+                user['id'],
+                'Monitoring Proof Chain Alert',
+                source_tag,
+                f'Alert linked to monitoring proof-chain ({evidence_source}).',
+                _json_dumps({'correlation_id': correlation_id, 'proof_chain_type': 'monitoring', 'evidence_source': evidence_source}),
+                detection_id,
+                target_id,
+                evidence_source,
+            ),
+        )
+
+        connection.execute(
+            'UPDATE detections SET linked_alert_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid',
+            (alert_id, detection_id),
+        )
+
+        connection.execute(
+            '''
+            INSERT INTO incidents (
+                id, workspace_id, user_id, analysis_run_id, target_id, event_type, title, severity, status, workflow_status, summary,
+                linked_alert_ids, timeline, payload, created_at, updated_at
+            ) VALUES (
+                %s, %s, %s, NULL, %s::uuid, 'incident.monitoring_proof_chain', 'Monitoring Proof Chain Incident', 'high',
+                'open', 'open', %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW(), NOW()
+            )
+            ON CONFLICT (id)
+            DO UPDATE SET
+                summary = EXCLUDED.summary,
+                linked_alert_ids = EXCLUDED.linked_alert_ids,
+                payload = EXCLUDED.payload,
+                updated_at = NOW()
+            ''',
+            (
+                incident_id,
+                workspace_id_value,
+                user['id'],
+                target_id,
+                f'Incident linked to monitoring proof-chain ({evidence_source}).',
+                _json_dumps([alert_id]),
+                _json_dumps([{'event': 'incident.created_from_alert', 'at': now_value.isoformat(), 'alert_id': alert_id}]),
+                _json_dumps({'correlation_id': correlation_id, 'proof_chain_type': 'monitoring', 'evidence_source': evidence_source}),
+            ),
+        )
+
+        connection.execute(
+            'UPDATE alerts SET incident_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid',
+            (incident_id, alert_id),
+        )
+
+        response_mode = 'simulated' if evidence_source != 'live' else 'live_enforcement'
+        response_status = 'executed' if evidence_source == 'live' else 'pending'
+        connection.execute(
+            '''
+            INSERT INTO response_actions (
+                id, workspace_id, incident_id, alert_id, action_type, mode, status, result_summary, execution_metadata, created_by_user_id, approved_by_user_id, created_at
+            ) VALUES (
+                %s, %s, %s::uuid, %s::uuid, 'notify_team', %s, %s, %s, %s::jsonb, %s, %s, NOW()
+            )
+            ON CONFLICT (id)
+            DO UPDATE SET
+                mode = EXCLUDED.mode,
+                status = EXCLUDED.status,
+                result_summary = EXCLUDED.result_summary,
+                execution_metadata = EXCLUDED.execution_metadata
+            ''',
+            (
+                response_action_id,
+                workspace_id_value,
+                incident_id,
+                alert_id,
+                response_mode,
+                response_status,
+                f'Response action for monitoring proof-chain ({evidence_source}).',
+                _json_dumps({'correlation_id': correlation_id, 'proof_chain_type': 'monitoring', 'evidence_source': evidence_source, 'production_label': 'live' if evidence_source == 'live' else 'simulator'}),
+                user['id'],
+                user['id'],
+            ),
+        )
+
+        status_value = 'complete' if evidence_source == 'live' else 'degraded'
+        reason = 'live_monitoring_chain_available' if evidence_source == 'live' else 'simulator_fallback_prevents_live_production_label'
+        connection.commit()
+        return {
+            'workspace_id': workspace_id_value,
+            'protected_asset_id': asset_id,
+            'monitored_system_id': monitored_system_id,
+            'monitoring_run_id': run_id,
+            'telemetry_event_id': telemetry_event_id,
+            'detection_id': detection_id,
+            'detection_evidence_id': detection_evidence_id,
+            'alert_id': alert_id,
+            'incident_id': incident_id,
+            'response_action_id': response_action_id,
+            'evidence_source': evidence_source,
+            'correlation_id': correlation_id,
+            'status': status_value,
+            'reason': reason,
+        }
+
+
 def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: str) -> dict[str, Any]:
     if not _demo_monitoring_bootstrap_allowed():
         return {'bootstrapped': False, 'reason': 'production_runtime'}
