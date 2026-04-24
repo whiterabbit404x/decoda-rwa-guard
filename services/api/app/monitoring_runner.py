@@ -2264,7 +2264,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     evaluated_no_threat_marker_id: str | None = None
     monitored_systems_updated = 0
     run_ids: list[str] = []
-    last_status = 'no_real_data' if provider_result.status == 'no_evidence' else str(provider_result.status or 'no_real_data')
+    last_status = 'no_evidence' if provider_result.status == 'no_evidence' else str(provider_result.status or 'no_evidence')
     last_run_id: str | None = None
     last_alert_at: datetime | None = None
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
@@ -2328,11 +2328,11 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         elif provider_result.status == 'no_evidence':
             source_status = 'no_evidence'
             degraded_reason = provider_result.degraded_reason or 'no_live_events_observed'
-            last_status = 'no_real_data'
+            last_status = 'no_evidence'
         elif provider_result.status == 'live':
             source_status = 'active'
             degraded_reason = None
-            last_status = 'no_real_data'
+            last_status = 'no_evidence'
         else:
             source_status = 'degraded'
             degraded_reason = provider_result.degraded_reason or 'monitoring_degraded'
