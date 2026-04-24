@@ -320,7 +320,7 @@ def evaluate_workspace_monitoring_continuity(
         continuity_status = 'idle_no_telemetry'
     elif all_offline_or_missing and worker_liveness != 'live':
         continuity_status = 'offline'
-    elif worker_liveness == 'live' and heartbeat_state == 'fresh' and event_state == 'missing' and detection_state == 'missing':
+    elif worker_liveness == 'live' and heartbeat_state == 'fresh' and event_state == 'missing' and detection_state in {'missing', 'fresh'}:
         continuity_status = 'continuous_no_evidence'
     elif worker_liveness == 'live' and heartbeat_state == 'fresh' and event_state == 'fresh' and detection_state == 'fresh':
         continuity_status = 'continuous_live'

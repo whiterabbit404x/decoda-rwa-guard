@@ -497,12 +497,12 @@ def test_runtime_status_marks_no_recent_real_events_as_limited_claim(monkeypatch
     )
 
     payload = monitoring_runner.monitoring_runtime_status()
-    assert payload['continuity_status'] == 'continuous_live'
+    assert payload['continuity_status'] == 'continuous_no_evidence'
     assert payload['source_of_evidence'] == 'live'
     assert payload['mode'] == 'LIVE'
-    assert payload['claim_validator_status'] == 'LIMITED'
+    assert payload['claim_validator_status'] == 'FAIL'
     assert 'no_recent_real_events' in payload['claim_safety_risk_indicators']
-    assert 'claim_validator_limited' in payload['claim_safety_risk_indicators']
+    assert 'claim_validator_fail' in payload['claim_safety_risk_indicators']
     assert 'claim_validator_reason_recent_real_event_count_positive' in payload['claim_safety_risk_indicators']
 
 

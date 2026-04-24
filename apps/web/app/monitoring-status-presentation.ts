@@ -68,10 +68,16 @@ function normalizeStatus(
   if ((truth.contradiction_flags ?? []).length > 0) {
     return 'limited coverage';
   }
+  if (truth.continuity_status === 'continuous_no_evidence') {
+    return 'limited coverage';
+  }
   if (monitoringStatus === 'offline') {
     return 'offline';
   }
   if (monitoringStatus === 'limited') {
+    if (truth.continuity_status === 'continuous_no_evidence') {
+      return 'limited coverage';
+    }
     const liveCoverageVerified = (
       truth.evidence_source_summary === 'live'
       && truth.reporting_systems_count > 0
@@ -152,6 +158,9 @@ function detectionSummary(truth: WorkspaceMonitoringTruth): string {
   const coverageTelemetryAt = coverageTelemetryTimestamp(truth);
   if (!coverageTelemetryAt) {
     return '';
+  }
+  if (truth.continuity_status === 'continuous_no_evidence') {
+    return ' Coverage telemetry is fresh, but no real event evidence has been observed yet.';
   }
   return ' No recent detections.';
 }
