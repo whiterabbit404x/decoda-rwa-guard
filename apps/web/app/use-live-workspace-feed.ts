@@ -140,7 +140,7 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
       }
     }
 
-    async function refresh() {
+    async function refresh(forceRefresh = false) {
       const cycleWorkspaceId = workspaceIdRef.current;
       if (!active || !isAuthenticated || !cycleWorkspaceId || document.visibilityState === 'hidden') {
         return;
@@ -150,7 +150,7 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
       }
       try {
         const cycleHeaders = buildWorkspaceScopedHeaders(authHeaders, cycleWorkspaceId);
-        const statusPayload = await fetchRuntimeStatusDeduped(cycleHeaders);
+        const statusPayload = await fetchRuntimeStatusDeduped(cycleHeaders, { forceRefresh });
         const runtimeUnavailable = !statusPayload;
         const { nextRuntime, fetchWarning, failureStreak } = resolveRuntimeStatus(
           statusPayload,
@@ -185,6 +185,7 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
             workspaceHeader: cycleHeaders['x-workspace-id'] ?? null,
             requestPath: '/api/ops/monitoring/runtime-status',
             statusCode: statusPayload ? 200 : 'network_error',
+            forcedRefresh: forceRefresh,
             payload: statusPayload,
             monitoring_status: statusPayload?.monitoring_status ?? null,
             reporting_systems: statusPayload?.workspace_monitoring_summary?.reporting_systems_count ?? null,
@@ -236,10 +237,15 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
         void refresh();
       }
     };
+    const onManualRefresh = () => {
+      void refresh(true);
+    };
     document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('pilot-history-refresh', onManualRefresh as EventListener);
     return () => {
       active = false;
       document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('pilot-history-refresh', onManualRefresh as EventListener);
       if (timer) clearTimeout(timer);
     };
   }, [apiUrl, authHeaders, intervalMs, isAuthenticated, user?.current_workspace?.id]);

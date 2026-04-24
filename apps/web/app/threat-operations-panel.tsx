@@ -12,8 +12,9 @@ import ThreatChainPanel from './threat-chain-panel';
 
 type Props = { apiUrl: string };
 const MONITORING_SYSTEMS_PROXY_PATH = '/api/monitoring/systems';
-const THREAT_PAGE_POLL_VISIBLE_MS = 60000;
-const THREAT_PAGE_POLL_HIDDEN_MS = 90000;
+// Temporary backoff while runtime-status latency is elevated; re-evaluate when p95 is back under threshold.
+const THREAT_PAGE_POLL_VISIBLE_MS = 45000;
+const THREAT_PAGE_POLL_HIDDEN_MS = 60000;
 
 type TargetRow = {
   id: string;
