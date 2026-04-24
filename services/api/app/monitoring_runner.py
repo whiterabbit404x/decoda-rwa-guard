@@ -2186,6 +2186,7 @@ def _persist_detection_evaluation_checkpoint(
             ),
             'truthfulness_state': ui_truthfulness_state(provider_result.truthfulness_state),
             'recent_real_event_count': int(provider_result.recent_real_event_count),
+            'last_real_event_at': provider_result.last_real_event_at.isoformat() if provider_result.last_real_event_at else None,
             'monitoring_run_id': monitoring_run_id,
             'target_id': str(target.get('id') or ''),
             'status': str(provider_result.status or 'unknown'),
@@ -2361,6 +2362,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     live_coverage_telemetry_at: datetime | None = None
     coverage_persisted = False
     coverage_skip_reason: str | None = None
+    status_reason_code: str | None = None
     if (
         provider_result.mode in {'live', 'hybrid'}
         and provider_result.status == 'live'
@@ -2415,8 +2417,11 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     )
     real_event_count = len(events)
     coverage_heartbeat_count = 1 if coverage_persisted else 0
+    coverage_only_no_events = coverage_heartbeat_count > 0 and real_event_count <= 0
+    if coverage_only_no_events:
+        status_reason_code = 'coverage_only_no_events'
     telemetry_records_seen = real_event_count + coverage_heartbeat_count
-    if telemetry_records_seen > 0 and detections_created == 0 and provider_result.status in {'live', 'no_evidence', 'degraded'}:
+    if real_event_count > 0 and detections_created == 0 and provider_result.status in {'live', 'no_evidence', 'degraded'}:
         evaluated_no_threat_marker_id = _persist_no_threat_evaluation_marker(
             connection,
             workspace_id=str(target['workspace_id']),
@@ -2572,12 +2577,15 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         'incidents_created': incidents_created,
         'detections_created': detections_created,
         'events_ingested': real_event_count,
+        'real_events_detected': real_event_count,
         'real_event_count': real_event_count,
+        'coverage_heartbeat_updates': coverage_heartbeat_count,
         'coverage_heartbeat_count': coverage_heartbeat_count,
         'telemetry_records_seen': telemetry_records_seen,
         'evaluated_no_threat_marker_id': evaluated_no_threat_marker_id,
         'stale_open_alerts_closed': stale_open_alerts_closed,
         'status': last_status,
+        'status_reason_code': status_reason_code,
         'latest_processed_block': latest_processed_block,
         'source_status': source_status,
         'degraded_reason': degraded_reason,
@@ -2753,6 +2761,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     alerts_generated = 0
     live_targets_checked = 0
     events_ingested = 0
+    real_events_detected = 0
+    coverage_heartbeat_updates = 0
     incidents_created = 0
     monitored_systems_updated = 0
     runs: list[dict[str, Any]] = []
@@ -3077,6 +3087,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     workspace_telemetry_seen[workspace_id] += result_telemetry_records_seen
                 live_targets_checked += 1 if is_monitorable_target_type(target.get('target_type')) else 0
                 events_ingested += int(result.get('events_ingested', 0))
+                real_events_detected += int(result.get('real_events_detected', result.get('real_event_count', 0)))
+                coverage_heartbeat_updates += int(result.get('coverage_heartbeat_updates', result.get('coverage_heartbeat_count', 0)))
                 incidents_created += int(result.get('incidents_created', 0))
                 runs.append(result)
                 checked += 1
@@ -3235,7 +3247,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         'skipped_disabled=%s skipped_inactive=%s skipped_missing_workspace=%s skipped_not_due=%s '
         'skipped_null_handling=%s interval_capped_targets=%s backfill_attempted=%s backfill_allowed=%s '
         'backfill_blocked_by_age=%s backfill_blocked_by_cooldown=%s backfill_blocked_missing_candidate=%s '
-        'live_targets=%s events=%s alerts=%s incidents=%s monitored_systems_updated=%s duration_ms=%s',
+        'live_targets=%s real_events=%s coverage_heartbeat_updates=%s alerts=%s incidents=%s monitored_systems_updated=%s duration_ms=%s',
         worker_name,
         backfill_cycle_state,
         len(candidate_systems) if 'candidate_systems' in locals() else 0,
@@ -3255,7 +3267,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         backfill_blocked_by_cooldown if 'backfill_blocked_by_cooldown' in locals() else 0,
         backfill_blocked_missing_candidate if 'backfill_blocked_missing_candidate' in locals() else 0,
         live_targets_checked,
-        events_ingested,
+        real_events_detected,
+        coverage_heartbeat_updates,
         alerts_generated,
         incidents_created,
         monitored_systems_updated,
@@ -3266,7 +3279,21 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     for workspace_id in cycle_workspace_ids:
         RUNTIME_STATUS_WORKSPACE_CACHE.pop(f'workspace:{workspace_id}', None)
         RUNTIME_STATUS_SUMMARY_CACHE.pop(f'workspace:{workspace_id}', None)
-    return {'due_targets': due_count, 'checked': checked, 'live_targets_checked': live_targets_checked, 'events_ingested': events_ingested, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'cycle_duration_ms': cycle_duration_ms, 'runs': runs, 'live_mode': True, 'ingestion_mode': ingestion_runtime.get('source'), 'degraded': bool(ingestion_runtime.get('degraded'))}
+    return {
+        'due_targets': due_count,
+        'checked': checked,
+        'live_targets_checked': live_targets_checked,
+        'events_ingested': events_ingested,
+        'real_events_detected': real_events_detected,
+        'coverage_heartbeat_updates': coverage_heartbeat_updates,
+        'alerts_generated': alerts_generated,
+        'incidents_created': incidents_created,
+        'cycle_duration_ms': cycle_duration_ms,
+        'runs': runs,
+        'live_mode': True,
+        'ingestion_mode': ingestion_runtime.get('source'),
+        'degraded': bool(ingestion_runtime.get('degraded')),
+    }
 
 
 def list_monitoring_targets(request: Request) -> dict[str, Any]:
@@ -5141,6 +5168,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             recent_real_event_count = int(recent_real_event_count_raw or 0)
         except Exception:
             recent_real_event_count = 0
+        recent_last_real_event_at = _parse_ts(
+            (latest_detection_metadata or {}).get('last_real_event_at')
+            if isinstance(latest_detection_metadata, dict)
+            else None
+        )
         last_poll_at = _parse_ts(health.get('last_cycle_at') or health.get('updated_at') or health.get('last_heartbeat_at'))
         telemetry_candidates: list[tuple[datetime, str]] = []
         coverage_telemetry_candidates: list[datetime] = []
@@ -5196,6 +5228,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if coverage_heartbeat_count > 0 and real_event_count <= 0
             else raw_recent_evidence_state
         )
+        recent_evidence_reason_code = 'coverage_only_no_events' if coverage_heartbeat_count > 0 and real_event_count <= 0 else None
         logger.info(
             'monitoring_reporting_systems workspace_id=%s reporting_systems=%s status_reason=%s',
             workspace_id,
@@ -5377,7 +5410,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             workspace_configured=workspace_configured,
             worker_running=runner_alive,
             last_heartbeat_at=last_heartbeat,
-            last_event_at=last_telemetry_at,
+            last_event_at=recent_last_real_event_at,
             last_detection_at=detection_pipeline_checkpoint_at,
             heartbeat_ttl_seconds=max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3),
             telemetry_window_seconds=telemetry_window_seconds,
@@ -5469,8 +5502,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'runtime_error_code': runtime_error_code,
             'runtime_degraded_reason': runtime_degraded_reason,
             'recent_evidence_state': effective_recent_evidence_state,
+            'recent_evidence_reason_code': recent_evidence_reason_code,
             'recent_real_event_count': real_event_count,
             'real_event_count': real_event_count,
+            'real_events_detected': real_event_count,
+            'coverage_heartbeat_updates': coverage_heartbeat_count,
             'coverage_heartbeat_count': coverage_heartbeat_count,
             'recent_confidence_basis': str((latest_detection_metadata or {}).get('confidence_basis') or latest_detection_payload.get('confidence_basis') or 'none') if isinstance(latest_detection_payload, dict) else 'none',
             'last_real_event_at': (latest_detection_metadata or {}).get('last_real_event_at') if isinstance(latest_detection_metadata, dict) else None,

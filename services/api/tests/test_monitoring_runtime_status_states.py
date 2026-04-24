@@ -2077,8 +2077,12 @@ def test_runtime_status_marks_heartbeat_only_as_no_evidence(monkeypatch):
 
     payload = monitoring_runner.monitoring_runtime_status()
     assert payload['coverage_heartbeat_count'] > 0
+    assert payload['coverage_heartbeat_updates'] > 0
     assert payload['real_event_count'] == 0
+    assert payload['real_events_detected'] == 0
     assert payload['recent_evidence_state'] == 'no_evidence'
+    assert payload['recent_evidence_reason_code'] == 'coverage_only_no_events'
+    assert payload['continuity_signals']['event_ingestion_freshness'] == 'missing'
 
 
 def test_derive_system_runtime_state_marks_unsupported_target_type_explicitly():
