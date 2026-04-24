@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from services.api.app import monitoring_runner
@@ -370,7 +370,7 @@ def test_monitoring_cycle_backfills_oldest_target_when_all_targets_are_within_in
             'enabled': True,
             'is_active': True,
             'workspace_exists_id': 'ws-1',
-            'last_checked_at': now,
+            'last_checked_at': now - timedelta(minutes=3),
             'monitoring_interval_seconds': 3600,
             'created_at': now,
         }
