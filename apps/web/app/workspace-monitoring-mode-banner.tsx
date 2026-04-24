@@ -4,13 +4,13 @@ import { useEffect, useState } from 'react';
 
 import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
 import { usePilotAuth } from './pilot-auth-context';
+import { fetchRuntimeStatusDeduped } from './runtime-status-client';
 import {
   hasLiveTelemetry,
   hasRealTelemetryBackedChain,
   resolveWorkspaceMonitoringTruth,
   type WorkspaceMonitoringTruth,
 } from './workspace-monitoring-truth';
-const RUNTIME_STATUS_PROXY_PATH = '/api/ops/monitoring/runtime-status';
 
 function formatTruthValue(value: unknown): string {
   const normalized = String(value ?? '').trim();
@@ -59,12 +59,11 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl }: { apiUrl: stri
     }
     const load = async () => {
       try {
-        const response = await fetch(RUNTIME_STATUS_PROXY_PATH, { headers: authHeaders(), cache: 'no-store' });
-        if (!response.ok) {
+        const payload = await fetchRuntimeStatusDeduped(authHeaders());
+        if (!payload) {
           setTruth(resolveWorkspaceMonitoringTruth(null));
           return;
         }
-        const payload = await response.json();
         setTruth(resolveWorkspaceMonitoringTruth(payload));
       } catch {
         setTruth(resolveWorkspaceMonitoringTruth(null));
