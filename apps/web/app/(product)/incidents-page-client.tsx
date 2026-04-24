@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePilotAuth } from '../pilot-auth-context';
 import { actionDisabledReason, actionModeLabel, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from '../response-action-capabilities';
+import { fetchRuntimeStatusDeduped } from '../runtime-status-client';
 import ThreatChainPanel from '../threat-chain-panel';
 
 const WORKFLOW_STATUSES = ['open', 'investigating', 'contained', 'resolved', 'reopened'] as const;
@@ -63,11 +64,10 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
       .catch(() => setEvidence(null));
   }, [apiUrl, authHeaders, selected?.source_alert_id]);
   useEffect(() => {
-    void fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' })
-      .then((response) => response.ok ? response.json() : null)
+    void fetchRuntimeStatusDeduped(authHeaders())
       .then((payload) => setEvidenceSourceSummary(String(payload?.workspace_monitoring_summary?.evidence_source_summary || 'none').toLowerCase()))
       .catch(() => setEvidenceSourceSummary('none'));
-  }, [apiUrl, authHeaders]);
+  }, [authHeaders]);
 
   async function fetchIncidentTimeline(incidentId: string) {
     const timelineResponse = await fetch(`${apiUrl}/incidents/${incidentId}/timeline`, { headers: authHeaders(), cache: 'no-store' });

@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { normalizeMonitoringMode, runtimeStatusModeFromMonitoringStatus, type MonitoringRuntimeStatus } from './monitoring-status-contract';
 import { normalizeMonitoringPresentation, type MonitoringPresentation } from './monitoring-status-presentation';
 import { usePilotAuth } from './pilot-auth-context';
+import { fetchRuntimeStatusDeduped } from './runtime-status-client';
 import { resolveWorkspaceMonitoringTruth, type WorkspaceMonitoringTruth } from './workspace-monitoring-truth';
 
 type LiveWorkspaceCounts = {
@@ -42,7 +43,6 @@ const DEFAULT_COUNTS: LiveWorkspaceCounts = {
   openIncidents: 0,
   historyRecords: 0,
 };
-const RUNTIME_STATUS_PROXY_PATH = '/api/ops/monitoring/runtime-status';
 
 export function shouldLogLiveWorkspaceFeedDebug(): boolean {
   return process.env.NODE_ENV === 'development';
@@ -150,19 +150,11 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
       }
       try {
         const cycleHeaders = buildWorkspaceScopedHeaders(authHeaders, cycleWorkspaceId);
-        let statusRes: Response | null = null;
-        let statusPayload: MonitoringRuntimeStatus | null = null;
-        try {
-          statusRes = await fetch(RUNTIME_STATUS_PROXY_PATH, { headers: cycleHeaders, cache: 'no-store' });
-          statusPayload = statusRes.ok ? await statusRes.json() as MonitoringRuntimeStatus : null;
-        } catch {
-          statusRes = null;
-          statusPayload = null;
-        }
-        const runtimeUnavailable = !statusRes || !statusRes.ok;
+        const statusPayload = await fetchRuntimeStatusDeduped(cycleHeaders);
+        const runtimeUnavailable = !statusPayload;
         const { nextRuntime, fetchWarning, failureStreak } = resolveRuntimeStatus(
           statusPayload,
-          Boolean(statusRes?.ok),
+          Boolean(statusPayload),
           lastKnownRuntimeRef.current,
           runtimeFailureStreakRef.current,
         );
@@ -191,8 +183,8 @@ export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
           console.debug('useLiveWorkspaceFeed refresh-result', {
             workspaceId: cycleWorkspaceId,
             workspaceHeader: cycleHeaders['x-workspace-id'] ?? null,
-            requestPath: RUNTIME_STATUS_PROXY_PATH,
-            statusCode: statusRes?.status ?? 'network_error',
+            requestPath: '/api/ops/monitoring/runtime-status',
+            statusCode: statusPayload ? 200 : 'network_error',
             payload: statusPayload,
             monitoring_status: statusPayload?.monitoring_status ?? null,
             reporting_systems: statusPayload?.workspace_monitoring_summary?.reporting_systems_count ?? null,

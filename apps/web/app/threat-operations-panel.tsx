@@ -11,8 +11,9 @@ import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import ThreatChainPanel from './threat-chain-panel';
 
 type Props = { apiUrl: string };
-const RUNTIME_STATUS_PROXY_PATH = '/api/ops/monitoring/runtime-status';
 const MONITORING_SYSTEMS_PROXY_PATH = '/api/monitoring/systems';
+const THREAT_PAGE_POLL_VISIBLE_MS = 60000;
+const THREAT_PAGE_POLL_HIDDEN_MS = 90000;
 
 type TargetRow = {
   id: string;
@@ -787,7 +788,7 @@ function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurati
 
 export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const { authHeaders, isAuthenticated, user } = usePilotAuth();
-  const feed = useLiveWorkspaceFeed();
+  const feed = useLiveWorkspaceFeed(THREAT_PAGE_POLL_VISIBLE_MS);
   const [loadingSnapshot, setLoadingSnapshot] = useState(true);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [systemsPanelWarning, setSystemsPanelWarning] = useState<string | null>(null);
@@ -888,7 +889,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     }
 
     function nextDelay() {
-      return document.visibilityState === 'hidden' ? 60000 : 20000;
+      return document.visibilityState === 'hidden' ? THREAT_PAGE_POLL_HIDDEN_MS : THREAT_PAGE_POLL_VISIBLE_MS;
     }
 
     function schedule() {
@@ -1435,6 +1436,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <h2>{user?.current_workspace?.name ?? 'Workspace monitoring console'}</h2>
           </div>
           <div className="monitoringHeaderActions">
+            <button
+              type="button"
+              className="secondaryCta"
+              onClick={() => window.dispatchEvent(new Event('pilot-history-refresh'))}
+            >
+              Refresh now
+            </button>
             <Link href="/alerts" prefetch={false} className="secondaryCta">Review alerts</Link>
             <Link href="/incidents" prefetch={false} className="secondaryCta">Open incident queue</Link>
             <Link href="/monitored-systems" prefetch={false} className="secondaryCta">Manage monitored systems</Link>
