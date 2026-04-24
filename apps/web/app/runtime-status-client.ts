@@ -3,7 +3,8 @@
 import type { MonitoringRuntimeStatus } from './monitoring-status-contract';
 
 const RUNTIME_STATUS_PROXY_PATH = '/api/ops/monitoring/runtime-status';
-const RUNTIME_STATUS_FRESHNESS_MS = 10_000;
+// Keep runtime-status hot-path polling light while backend latency regression is being remediated.
+const RUNTIME_STATUS_FRESHNESS_MS = 60_000;
 
 const inflightByWorkspace = new Map<string, Promise<MonitoringRuntimeStatus | null>>();
 const recentByWorkspace = new Map<string, { payload: MonitoringRuntimeStatus | null; fetchedAt: number }>();
