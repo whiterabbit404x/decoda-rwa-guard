@@ -93,7 +93,7 @@ export function resolveRuntimeStatus(
   return { nextRuntime, offline, degraded, fetchWarning: false, failureStreak: 0 };
 }
 
-export function useLiveWorkspaceFeed(intervalMs = 15000): LiveWorkspaceFeed {
+export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
   const { apiUrl, authHeaders, isAuthenticated, user } = usePilotAuth();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
