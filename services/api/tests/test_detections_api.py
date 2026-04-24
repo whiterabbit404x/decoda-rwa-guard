@@ -49,13 +49,17 @@ class _Conn:
                     'updated_at': '2026-04-18T00:00:00Z',
                 }
             )
-        if normalized.startswith('SELECT id, workspace_id, evidence_summary, raw_evidence_json, linked_alert_id, monitoring_run_id FROM detections'):
+        if normalized.startswith('SELECT d.id, d.workspace_id, COALESCE(de_latest.evidence_summary, d.evidence_summary) AS evidence_summary'):
             return _Result(
                 row={
                     'id': 'det-1',
                     'workspace_id': 'ws-1',
                     'evidence_summary': 'Counterparty rule triggered.',
                     'raw_evidence_json': {'event': {'tx_hash': '0xabc'}},
+                    'raw_reference': 'trace://abc',
+                    'evidence_type': 'transfer_event',
+                    'evidence_source': 'simulator',
+                    'detection_evidence_created_at': '2026-04-18T00:05:00Z',
                     'linked_alert_id': 'alert-1',
                     'monitoring_run_id': 'run-1',
                 }
@@ -73,7 +77,10 @@ class _Conn:
                         'confidence': 0.92,
                         'title': 'Matched risky transfer',
                         'evidence_summary': 'Counterparty rule triggered.',
-                        'evidence_source': 'live',
+                        'evidence_source': 'simulator',
+                        'raw_reference': 'trace://abc',
+                        'evidence_type': 'transfer_event',
+                        'detection_evidence_created_at': '2026-04-18T00:05:00Z',
                         'source_rule': 'counterparty_allowlist_violation',
                         'status': 'open',
                         'detected_at': '2026-04-18T00:00:00Z',
@@ -85,7 +92,7 @@ class _Conn:
                         'linked_evidence_count': 2,
                         'last_evidence_at': '2026-04-18T01:00:00Z',
                         'last_evidence_source': 'chain-indexer',
-                        'last_evidence_origin': 'live',
+                        'last_evidence_origin': 'simulator',
                         'chain_tx_hash': '0xfeed',
                         'chain_block_number': 12345,
                         'chain_detector_kind': 'contract-call-anomaly',
@@ -126,8 +133,11 @@ def test_list_detections_returns_workspace_rows(monkeypatch):
     assert payload['detections'][0]['block_number'] == 12345
     assert payload['detections'][0]['detector_kind'] == 'contract-call-anomaly'
     assert payload['detections'][0]['chain_linked_ids']['incident_id'] == 'inc-1'
+    assert payload['detections'][0]['evidence_source'] == 'simulator'
+    assert payload['detections'][0]['evidence_origin_label'] == 'SIMULATED EVIDENCE'
     query = next(call for call in connection.calls if call.startswith('SELECT d.id AS id'))
     assert 'FROM detections d' in query
+    assert 'FROM detection_evidence de' in query
     assert 'WHERE d.workspace_id = %s' in query
     assert 'ORDER BY d.detected_at DESC' in query
 
@@ -171,3 +181,6 @@ def test_get_detection_evidence_returns_persisted_payload(monkeypatch):
     assert payload['detection_id'] == 'det-1'
     assert payload['linked_alert_id'] == 'alert-1'
     assert payload['raw_evidence_json']['event']['tx_hash'] == '0xabc'
+    assert payload['raw_reference'] == 'trace://abc'
+    assert payload['evidence_source'] == 'simulator'
+    assert payload['evidence_origin_label'] == 'SIMULATED EVIDENCE'
