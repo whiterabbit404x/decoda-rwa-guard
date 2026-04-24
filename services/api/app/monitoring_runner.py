@@ -2868,6 +2868,11 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         skipped_missing_workspace = 0
         skipped_not_due = 0
         skipped_null_handling = 0
+        interval_capped_targets = 0
+        max_effective_monitoring_interval_seconds = max(
+            30,
+            int(os.getenv('MAX_EFFECTIVE_MONITORING_INTERVAL_SECONDS', '120')),
+        )
         due_target_ids: list[Any] = []
         due_system_ids: dict[str, str] = {}
         for row in candidate_systems:
@@ -2896,6 +2901,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     except (TypeError, ValueError):
                         skipped_null_handling += 1
                         interval_seconds = 30
+                if interval_seconds > max_effective_monitoring_interval_seconds:
+                    interval_seconds = max_effective_monitoring_interval_seconds
+                    interval_capped_targets += 1
                 if last_checked_at <= now - timedelta(seconds=interval_seconds):
                     due_target_ids.append(system['target_id'])
                     due_system_ids[str(system['target_id'])] = str(system['monitored_system_id'])
@@ -2905,13 +2913,14 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 break
         logger.info(
             'monitoring due selection total_candidate_targets=%s skipped_disabled=%s skipped_inactive=%s '
-            'skipped_missing_workspace=%s skipped_not_due=%s skipped_null_handling=%s due_target_ids=%s',
+            'skipped_missing_workspace=%s skipped_not_due=%s skipped_null_handling=%s interval_capped_targets=%s due_target_ids=%s',
             len(candidate_systems),
             skipped_disabled,
             skipped_inactive,
             skipped_missing_workspace,
             skipped_not_due,
             skipped_null_handling,
+            interval_capped_targets,
             [str(target_id) for target_id in due_target_ids],
         )
         due_targets = []
