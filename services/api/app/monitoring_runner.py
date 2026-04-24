@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import uuid
 from collections import defaultdict, deque
@@ -2864,7 +2865,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         should_consider_backfill = False
         backfill_attempted = 0
         backfill_allowed_count = 0
-        backfill_blocked_by_age = 0
+        backfill_blocked_not_yet_due = 0
         backfill_blocked_by_cooldown = 0
         backfill_blocked_missing_candidate = 0
         due_target_ids: list[Any] = []
@@ -2901,7 +2902,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 if last_checked_at is not None
                 else now
             )
-            due_in_seconds = max(0, int((next_due_at - now).total_seconds()))
+            seconds_until_due = (next_due_at - now).total_seconds()
+            due_in_seconds = 0 if seconds_until_due <= 0 else int(math.ceil(seconds_until_due))
             workspace_id = str(system.get('workspace_id') or '').strip()
             if workspace_id:
                 due_selection_workspace_snapshot[workspace_id].append(
@@ -2963,6 +2965,24 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         fallback_target_id = str((oldest_candidate or {}).get('target_id') or '').strip()
         fallback_system_id = str((oldest_candidate or {}).get('monitored_system_id') or '').strip()
         fallback_workspace_id = str((oldest_candidate or {}).get('workspace_id') or '').strip()
+        fallback_interval_raw = (oldest_candidate or {}).get('monitoring_interval_seconds')
+        fallback_interval_seconds = 30
+        if fallback_interval_raw is not None:
+            try:
+                fallback_interval_seconds = max(30, int(fallback_interval_raw))
+            except (TypeError, ValueError):
+                fallback_interval_seconds = 30
+        fallback_next_due_at = (
+            oldest_checked_at + timedelta(seconds=fallback_interval_seconds)
+            if oldest_checked_at is not None
+            else None
+        )
+        fallback_due_in_seconds = (
+            int((fallback_next_due_at - now).total_seconds())
+            if fallback_next_due_at is not None
+            else None
+        )
+        fallback_is_due = bool(fallback_next_due_at is not None and now >= fallback_next_due_at)
         oldest_age_seconds = (
             max(0, int((now - oldest_checked_at).total_seconds()))
             if oldest_checked_at is not None
@@ -2974,36 +2994,34 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             last_backfill_at is None
             or int((now - last_backfill_at).total_seconds()) >= backfill_cooldown_seconds
         )
-        oldest_target_age_exceeds_threshold = bool(
-            oldest_age_seconds is not None
-            and oldest_age_seconds >= MONITORING_DUE_SELECTION_BACKFILL_MIN_AGE_SECONDS
-        )
         no_due_targets = not due_target_ids
         workspace_live_mode = live_mode_enabled()
-        no_recent_backfill = cooldown_elapsed
         should_consider_backfill = bool(
             no_due_targets
-            and oldest_target_age_exceeds_threshold
             and workspace_live_mode
-            and no_recent_backfill
         )
         if should_consider_backfill:
             backfill_attempted = 1
-            backfill_allowed = bool(
-                fallback_target_id
-                and fallback_system_id
-                and fallback_workspace_id
-            )
-            if backfill_allowed:
-                due_target_ids.append(fallback_target_id)
-                due_system_ids[fallback_target_id] = fallback_system_id
-                _LAST_MONITORING_DUE_SELECTION_BACKFILL_AT[fallback_workspace_id] = now
-                backfill_allowed_count = 1
+            if not fallback_is_due:
+                backfill_blocked_not_yet_due = 1
+            elif not cooldown_elapsed:
+                backfill_blocked_by_cooldown = 1
             else:
-                backfill_blocked_missing_candidate = 1
+                backfill_allowed = bool(
+                    fallback_target_id
+                    and fallback_system_id
+                    and fallback_workspace_id
+                )
+                if backfill_allowed:
+                    due_target_ids.append(fallback_target_id)
+                    due_system_ids[fallback_target_id] = fallback_system_id
+                    _LAST_MONITORING_DUE_SELECTION_BACKFILL_AT[fallback_workspace_id] = now
+                    backfill_allowed_count = 1
+                else:
+                    backfill_blocked_missing_candidate = 1
         else:
             backfill_attempted = 0
-            backfill_blocked_by_age = 0
+            backfill_blocked_not_yet_due = 0
             backfill_blocked_by_cooldown = 0
             backfill_blocked_missing_candidate = 0
         effective_due_count = len(due_target_ids)
@@ -3292,7 +3310,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         'effective_due_count=%s due=%s checked=%s '
         'skipped_disabled=%s skipped_inactive=%s skipped_missing_workspace=%s skipped_not_due=%s '
         'oldest_not_due_age_seconds=%s skipped_null_handling=%s interval_capped_targets=%s backfill_attempted=%s backfill_allowed=%s '
-        'backfill_blocked_by_age=%s backfill_blocked_by_cooldown=%s backfill_blocked_missing_candidate=%s '
+        'backfill_blocked_not_yet_due=%s backfill_blocked_by_cooldown=%s backfill_blocked_missing_candidate=%s '
         'live_targets=%s real_events=%s coverage_heartbeat_updates=%s alerts=%s incidents=%s monitored_systems_updated=%s duration_ms=%s',
         worker_name,
         backfill_cycle_state,
@@ -3310,7 +3328,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         interval_capped_targets if 'interval_capped_targets' in locals() else 0,
         backfill_attempted if 'backfill_attempted' in locals() else 0,
         backfill_allowed_count if 'backfill_allowed_count' in locals() else 0,
-        backfill_blocked_by_age if 'backfill_blocked_by_age' in locals() else 0,
+        backfill_blocked_not_yet_due if 'backfill_blocked_not_yet_due' in locals() else 0,
         backfill_blocked_by_cooldown if 'backfill_blocked_by_cooldown' in locals() else 0,
         backfill_blocked_missing_candidate if 'backfill_blocked_missing_candidate' in locals() else 0,
         live_targets_checked,
