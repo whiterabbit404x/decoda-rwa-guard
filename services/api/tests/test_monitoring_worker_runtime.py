@@ -899,10 +899,31 @@ def test_worker_once_mode_runs_single_cycle(monkeypatch):
     assert calls == [('test-worker', 5, 'scheduler')]
 
 
+def test_compute_next_sleep_seconds_uses_due_horizon_for_no_op_cycle():
+    next_sleep_seconds = run_monitoring_worker._compute_next_sleep_seconds(
+        worker_interval_seconds=60,
+        effective_due_count=0,
+        soonest_due_in_seconds=28,
+    )
+
+    assert next_sleep_seconds == 28
+
+
+def test_compute_next_sleep_seconds_caps_liveness_cadence():
+    next_sleep_seconds = run_monitoring_worker._compute_next_sleep_seconds(
+        worker_interval_seconds=120,
+        effective_due_count=3,
+        soonest_due_in_seconds=200,
+    )
+
+    assert next_sleep_seconds == 30
+
+
 def test_due_target_selection_query_keeps_monitoring_filters() -> None:
     source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
     assert 'total_candidate_targets=%s' in source
     assert 'skipped_null_handling=%s' in source
+    assert 'soonest_due_in_seconds=%s next_sleep_seconds=%s' in source
     assert 'last_checked_at is None' in source
     assert 'FOR UPDATE SKIP LOCKED' in source
     assert 'status = CASE WHEN CAST(%s AS text) IS NULL THEN \'idle\' ELSE \'error\' END' in source

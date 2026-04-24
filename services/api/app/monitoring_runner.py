@@ -3331,6 +3331,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         'skipped_disabled=%s skipped_inactive=%s skipped_missing_workspace=%s skipped_not_due=%s '
         'oldest_not_due_age_seconds=%s skipped_null_handling=%s interval_capped_targets=%s backfill_attempted=%s backfill_evaluated=%s backfill_executed=%s '
         'backfill_blocked_not_yet_due=%s backfill_blocked_by_cooldown=%s backfill_blocked_missing_candidate=%s '
+        'soonest_due_in_seconds=%s next_sleep_seconds=%s '
         'live_targets=%s real_events=%s coverage_heartbeat_updates=%s alerts=%s incidents=%s monitored_systems_updated=%s duration_ms=%s',
         worker_name,
         backfill_cycle_state,
@@ -3352,6 +3353,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         backfill_blocked_not_yet_due if ('backfill_evaluated' in locals() and backfill_evaluated > 0) else 0,
         backfill_blocked_by_cooldown if ('backfill_evaluated' in locals() and backfill_evaluated > 0) else 0,
         backfill_blocked_missing_candidate if 'backfill_blocked_missing_candidate' in locals() else 0,
+        soonest_due_in_seconds if 'soonest_due_in_seconds' in locals() else None,
+        None,
         live_targets_checked,
         real_events_detected,
         coverage_heartbeat_updates,
@@ -3377,6 +3380,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         'cycle_duration_ms': cycle_duration_ms,
         'runs': runs,
         'live_mode': True,
+        'effective_due_count': effective_due_count if 'effective_due_count' in locals() else due_count,
+        'soonest_due_in_seconds': soonest_due_in_seconds,
         'ingestion_mode': ingestion_runtime.get('source'),
         'degraded': bool(ingestion_runtime.get('degraded')),
     }
