@@ -2848,6 +2848,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         skipped_not_due = 0
         skipped_null_handling = 0
         interval_capped_targets = 0
+        should_consider_backfill = False
         backfill_attempted = 0
         backfill_allowed_count = 0
         backfill_blocked_by_age = 0
@@ -2895,69 +2896,69 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     skipped_not_due += 1
             if len(due_target_ids) >= max_targets:
                 break
-        if not due_target_ids and skipped_not_due > 0:
+        oldest_candidate: dict[str, Any] | None = None
+        oldest_checked_at: datetime | None = None
+        for row in candidate_systems:
+            system = dict(row)
+            if (
+                not bool(system.get('monitored_system_enabled'))
+                or not bool(system.get('monitoring_enabled'))
+                or not bool(system.get('enabled'))
+                or not bool(system.get('is_active'))
+            ):
+                continue
+            parsed_checked = _parse_ts(system.get('last_checked_at'))
+            if parsed_checked is None:
+                continue
+            if oldest_checked_at is None or parsed_checked < oldest_checked_at:
+                oldest_checked_at = parsed_checked
+                oldest_candidate = system
+        fallback_target_id = str((oldest_candidate or {}).get('target_id') or '').strip()
+        fallback_system_id = str((oldest_candidate or {}).get('monitored_system_id') or '').strip()
+        fallback_workspace_id = str((oldest_candidate or {}).get('workspace_id') or '').strip()
+        oldest_age_seconds = (
+            max(0, int((now - oldest_checked_at).total_seconds()))
+            if oldest_checked_at is not None
+            else None
+        )
+        backfill_cooldown_seconds = MONITORING_DUE_SELECTION_BACKFILL_COOLDOWN_SECONDS
+        last_backfill_at = _LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.get(fallback_workspace_id)
+        cooldown_elapsed = (
+            last_backfill_at is None
+            or int((now - last_backfill_at).total_seconds()) >= backfill_cooldown_seconds
+        )
+        oldest_target_age_exceeds_threshold = bool(
+            oldest_age_seconds is not None
+            and oldest_age_seconds >= MONITORING_DUE_SELECTION_BACKFILL_MIN_AGE_SECONDS
+        )
+        no_due_targets = not due_target_ids
+        workspace_live_mode = live_mode_enabled()
+        no_recent_backfill = cooldown_elapsed
+        should_consider_backfill = bool(
+            no_due_targets
+            and oldest_target_age_exceeds_threshold
+            and workspace_live_mode
+            and no_recent_backfill
+        )
+        if should_consider_backfill:
             backfill_attempted = 1
-            oldest_candidate: dict[str, Any] | None = None
-            oldest_checked_at: datetime | None = None
-            oldest_required_age_seconds = 0
-            for row in candidate_systems:
-                system = dict(row)
-                if (
-                    not bool(system.get('monitored_system_enabled'))
-                    or not bool(system.get('monitoring_enabled'))
-                    or not bool(system.get('enabled'))
-                    or not bool(system.get('is_active'))
-                ):
-                    continue
-                parsed_checked = _parse_ts(system.get('last_checked_at'))
-                if parsed_checked is None:
-                    continue
-                interval_raw = system.get('monitoring_interval_seconds')
-                try:
-                    interval_seconds = max(30, int(interval_raw)) if interval_raw is not None else 30
-                except (TypeError, ValueError):
-                    interval_seconds = 30
-                effective_interval_seconds = min(interval_seconds, max_effective_monitoring_interval_seconds)
-                required_age_seconds = MONITORING_DUE_SELECTION_BACKFILL_MIN_AGE_SECONDS
-                if oldest_checked_at is None or parsed_checked < oldest_checked_at:
-                    oldest_checked_at = parsed_checked
-                    oldest_candidate = system
-                    oldest_required_age_seconds = required_age_seconds
-            fallback_target_id = str((oldest_candidate or {}).get('target_id') or '').strip()
-            fallback_system_id = str((oldest_candidate or {}).get('monitored_system_id') or '').strip()
-            fallback_workspace_id = str((oldest_candidate or {}).get('workspace_id') or '').strip()
-            oldest_age_seconds = (
-                max(0, int((now - oldest_checked_at).total_seconds()))
-                if oldest_checked_at is not None
-                else None
-            )
-            backfill_cooldown_seconds = MONITORING_DUE_SELECTION_BACKFILL_COOLDOWN_SECONDS
-            last_backfill_at = _LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.get(fallback_workspace_id)
-            cooldown_elapsed = (
-                last_backfill_at is None
-                or int((now - last_backfill_at).total_seconds()) >= backfill_cooldown_seconds
-            )
-            age_threshold_met = (
-                oldest_age_seconds is not None and oldest_age_seconds >= oldest_required_age_seconds
-            )
             backfill_allowed = bool(
                 fallback_target_id
                 and fallback_system_id
                 and fallback_workspace_id
-                and age_threshold_met
-                and cooldown_elapsed
             )
             if backfill_allowed:
                 due_target_ids.append(fallback_target_id)
                 due_system_ids[fallback_target_id] = fallback_system_id
                 _LAST_MONITORING_DUE_SELECTION_BACKFILL_AT[fallback_workspace_id] = now
                 backfill_allowed_count = 1
-            elif not fallback_target_id or not fallback_system_id or not fallback_workspace_id:
+            else:
                 backfill_blocked_missing_candidate = 1
-            elif not age_threshold_met:
-                backfill_blocked_by_age = 1
-            elif not cooldown_elapsed:
-                backfill_blocked_by_cooldown = 1
+        else:
+            backfill_attempted = 0
+            backfill_blocked_by_age = 0
+            backfill_blocked_by_cooldown = 0
+            backfill_blocked_missing_candidate = 0
         due_targets = []
         if due_target_ids:
             due_target_id_set = {str(item) for item in due_target_ids}
@@ -3221,13 +3222,21 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         }
     )
     cycle_duration_ms = int((utc_now() - cycle_started_at).total_seconds() * 1000)
+    backfill_cycle_state = 'normal_due_cycle'
+    if due_count == 0 and not should_consider_backfill:
+        backfill_cycle_state = 'normal_no_due_cycle'
+    elif should_consider_backfill and backfill_allowed_count <= 0:
+        backfill_cycle_state = 'backfill_considered_cycle'
+    elif backfill_allowed_count > 0:
+        backfill_cycle_state = 'backfill_executed_cycle'
     logger.info(
-        'monitoring cycle summary worker=%s total_candidate_targets=%s due=%s checked=%s '
+        'monitoring cycle summary worker=%s cycle_state=%s total_candidate_targets=%s due=%s checked=%s '
         'skipped_disabled=%s skipped_inactive=%s skipped_missing_workspace=%s skipped_not_due=%s '
         'skipped_null_handling=%s interval_capped_targets=%s backfill_attempted=%s backfill_allowed=%s '
         'backfill_blocked_by_age=%s backfill_blocked_by_cooldown=%s backfill_blocked_missing_candidate=%s '
         'live_targets=%s events=%s alerts=%s incidents=%s monitored_systems_updated=%s duration_ms=%s',
         worker_name,
+        backfill_cycle_state,
         len(candidate_systems) if 'candidate_systems' in locals() else 0,
         due_count,
         checked,
