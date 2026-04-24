@@ -4913,6 +4913,26 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             row for row in monitored_rows
             if monitored_system_row_enabled(row) and (not _row_tracks_valid_monitorable_target(row))
         ]
+        enabled_monitoring_intervals: list[int] = []
+        for row in enabled_rows:
+            try:
+                interval_seconds = int(row.get('monitoring_interval_seconds') or MONITOR_POLL_INTERVAL_SECONDS)
+            except Exception:
+                interval_seconds = MONITOR_POLL_INTERVAL_SECONDS
+            if interval_seconds > 0:
+                enabled_monitoring_intervals.append(interval_seconds)
+        if enabled_monitoring_intervals:
+            max_enabled_interval_seconds = max(enabled_monitoring_intervals)
+            telemetry_window_seconds = max(
+                telemetry_window_seconds,
+                max_enabled_interval_seconds + max(MONITOR_POLL_INTERVAL_SECONDS * 4, 60),
+            )
+            logger.info(
+                'monitoring_runtime_telemetry_window workspace_id=%s telemetry_window_seconds=%s max_enabled_interval_seconds=%s',
+                workspace_id,
+                telemetry_window_seconds,
+                max_enabled_interval_seconds,
+            )
         active_rows = [row for row in enabled_rows_all if str(row.get('runtime_status') or '').strip().lower() in {'healthy', 'active'}]
         enabled_asset_rows = [row for row in enabled_rows_all if row.get('asset_id')]
         enabled_system_count = max(len(enabled_rows_all), healthy_enabled_targets_count)
