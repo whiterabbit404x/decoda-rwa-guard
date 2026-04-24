@@ -22,7 +22,7 @@ export type WorkspaceMonitoringTruth = {
   active_alerts_count: number;
   active_incidents_count: number;
   evidence_source_summary: 'live' | 'simulator' | 'replay' | 'none';
-  continuity_status: 'continuous_live' | 'degraded' | 'offline' | 'idle_no_telemetry';
+  continuity_status: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry';
   continuity_reason_codes: string[];
   status_reason: string | null;
   db_failure_classification?: string | null;
@@ -192,6 +192,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   const normalizedContradictionFlags = [...new Set(synthesizedFlags)].sort();
   const continuityStatusValue = asTrimmedString((summary as Record<string, unknown>).continuity_status);
   const continuityStatus = continuityStatusValue === 'continuous_live'
+    || continuityStatusValue === 'continuous_no_evidence'
     || continuityStatusValue === 'degraded'
     || continuityStatusValue === 'offline'
     || continuityStatusValue === 'idle_no_telemetry'

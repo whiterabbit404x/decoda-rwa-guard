@@ -459,4 +459,30 @@ test.describe('workspace monitoring truth guardrails', () => {
     expect(truth.monitoring_status).toBe('live');
     expect(truth.runtime_status).toBe('live');
   });
+
+  test('continuous no-evidence continuity never maps to healthy/live stakeholder claim copy', () => {
+    const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      runtime_status: 'live',
+      monitoring_status: 'live',
+      reporting_systems_count: 2,
+      monitored_systems_count: 2,
+      protected_assets_count: 2,
+      telemetry_freshness: 'fresh',
+      confidence: 'high',
+      last_poll_at: '2026-04-15T10:00:00Z',
+      last_heartbeat_at: '2026-04-15T10:00:00Z',
+      last_telemetry_at: '2026-04-15T09:59:30Z',
+      evidence_source_summary: 'live',
+      contradiction_flags: [],
+      guard_flags: [],
+      active_alerts_count: 0,
+      active_incidents_count: 0,
+      continuity_status: 'continuous_no_evidence',
+      status_reason: null,
+    }));
+    expect(hasLiveTelemetry(truth)).toBeTruthy();
+    expect(hasRealTelemetryBackedChain(truth)).toBeFalsy();
+    expect(monitoringHealthyCopyAllowed(truth)).toBeFalsy();
+  });
 });

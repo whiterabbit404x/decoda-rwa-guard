@@ -9,7 +9,7 @@ CANONICAL_MONITORING_STATUS = {'live', 'limited', 'offline'}
 CANONICAL_TELEMETRY_FRESHNESS = {'fresh', 'stale', 'unavailable'}
 CANONICAL_CONFIDENCE = {'high', 'medium', 'low', 'unavailable'}
 CANONICAL_EVIDENCE_SOURCE = {'live', 'simulator', 'replay', 'none'}
-CANONICAL_CONTINUITY_STATUS = {'continuous_live', 'degraded', 'offline', 'idle_no_telemetry'}
+CANONICAL_CONTINUITY_STATUS = {'continuous_live', 'continuous_no_evidence', 'degraded', 'offline', 'idle_no_telemetry'}
 CANONICAL_SUMMARY_KEYS = (
     'workspace_configured',
     'runtime_status',
