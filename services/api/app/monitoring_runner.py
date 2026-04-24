@@ -59,6 +59,10 @@ ALERT_DEDUPE_WINDOW_SECONDS = int(
 WORKER_HEARTBEAT_TTL_SECONDS = int(os.getenv('MONITORING_WORKER_HEARTBEAT_TTL_SECONDS', '180'))
 MONITOR_POLL_INTERVAL_SECONDS = int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30'))
 MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS = max(15, int(os.getenv('MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS', '60')))
+MONITORING_DUE_SELECTION_BACKFILL_COOLDOWN_SECONDS = max(
+    120,
+    int(os.getenv('MONITORING_DUE_SELECTION_BACKFILL_COOLDOWN_SECONDS', '180')),
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +98,7 @@ RUNTIME_STATUS_ALERT_BREACH_HISTORY: dict[str, dict[str, deque[bool]]] = default
 
 RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED = os.getenv('RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
 _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT: datetime | None = None
+_LAST_MONITORING_DUE_SELECTION_BACKFILL_AT: dict[str, datetime] = {}
 
 
 def _provider_source_is_live(source_type: Any) -> bool:
@@ -2914,6 +2919,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         if not due_target_ids and skipped_not_due > 0:
             oldest_candidate: dict[str, Any] | None = None
             oldest_checked_at: datetime | None = None
+            oldest_required_age_seconds = 0
             for row in candidate_systems:
                 system = dict(row)
                 if (
@@ -2926,18 +2932,56 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 parsed_checked = _parse_ts(system.get('last_checked_at'))
                 if parsed_checked is None:
                     continue
+                interval_raw = system.get('monitoring_interval_seconds')
+                try:
+                    interval_seconds = max(30, int(interval_raw)) if interval_raw is not None else 30
+                except (TypeError, ValueError):
+                    interval_seconds = 30
+                effective_interval_seconds = min(interval_seconds, max_effective_monitoring_interval_seconds)
+                required_age_seconds = max(60, effective_interval_seconds)
                 if oldest_checked_at is None or parsed_checked < oldest_checked_at:
                     oldest_checked_at = parsed_checked
                     oldest_candidate = system
+                    oldest_required_age_seconds = required_age_seconds
             fallback_target_id = str((oldest_candidate or {}).get('target_id') or '').strip()
             fallback_system_id = str((oldest_candidate or {}).get('monitored_system_id') or '').strip()
-            if fallback_target_id and fallback_system_id:
+            fallback_workspace_id = str((oldest_candidate or {}).get('workspace_id') or '').strip()
+            oldest_age_seconds = (
+                max(0, int((now - oldest_checked_at).total_seconds()))
+                if oldest_checked_at is not None
+                else None
+            )
+            backfill_cooldown_seconds = MONITORING_DUE_SELECTION_BACKFILL_COOLDOWN_SECONDS
+            last_backfill_at = _LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.get(fallback_workspace_id)
+            cooldown_elapsed = (
+                last_backfill_at is None
+                or int((now - last_backfill_at).total_seconds()) >= backfill_cooldown_seconds
+            )
+            age_threshold_met = (
+                oldest_age_seconds is not None and oldest_age_seconds >= oldest_required_age_seconds
+            )
+            backfill_allowed = bool(
+                fallback_target_id
+                and fallback_system_id
+                and fallback_workspace_id
+                and age_threshold_met
+                and cooldown_elapsed
+            )
+            if backfill_allowed:
                 due_target_ids.append(fallback_target_id)
                 due_system_ids[fallback_target_id] = fallback_system_id
+                _LAST_MONITORING_DUE_SELECTION_BACKFILL_AT[fallback_workspace_id] = now
             logger.info(
-                'monitoring_due_selection_backfill workspace_target_id=%s reason=all_targets_within_interval oldest_last_checked_at=%s',
+                'monitoring_due_selection_backfill workspace_id=%s workspace_target_id=%s reason=all_targets_within_interval '
+                'oldest_last_checked_at=%s oldest_age_seconds=%s required_age_seconds=%s backfill_cooldown_seconds=%s '
+                'backfill_allowed=%s',
+                fallback_workspace_id or None,
                 fallback_target_id or None,
                 oldest_checked_at.isoformat() if oldest_checked_at else None,
+                oldest_age_seconds,
+                oldest_required_age_seconds,
+                backfill_cooldown_seconds,
+                backfill_allowed,
             )
         logger.info(
             'monitoring due selection total_candidate_targets=%s skipped_disabled=%s skipped_inactive=%s '
