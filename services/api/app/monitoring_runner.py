@@ -94,7 +94,6 @@ RUNTIME_STATUS_ALERT_BREACH_HISTORY: dict[str, dict[str, deque[bool]]] = default
 
 RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED = os.getenv('RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
 _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT: datetime | None = None
-_LAST_DUE_SELECTION_BACKFILL_AT: datetime | None = None
 
 
 def _provider_source_is_live(source_type: Any) -> bool:
@@ -2934,10 +2933,10 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             fallback_system_id = str((oldest_candidate or {}).get('monitored_system_id') or '').strip()
             backfill_window_seconds = max(60, MONITOR_POLL_INTERVAL_SECONDS * 4)
             oldest_age_seconds = int((now - oldest_checked_at).total_seconds()) if oldest_checked_at else None
-            global _LAST_DUE_SELECTION_BACKFILL_AT
+            last_due_selection_backfill_at = getattr(run_monitoring_cycle, '_last_due_selection_backfill_at', None)
             recently_backfilled = bool(
-                _LAST_DUE_SELECTION_BACKFILL_AT
-                and int((now - _LAST_DUE_SELECTION_BACKFILL_AT).total_seconds()) < backfill_window_seconds
+                last_due_selection_backfill_at
+                and int((now - last_due_selection_backfill_at).total_seconds()) < backfill_window_seconds
             )
             should_backfill = bool(
                 fallback_target_id
@@ -2949,7 +2948,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             if should_backfill:
                 due_target_ids.append(fallback_target_id)
                 due_system_ids[fallback_target_id] = fallback_system_id
-                _LAST_DUE_SELECTION_BACKFILL_AT = now
+                setattr(run_monitoring_cycle, '_last_due_selection_backfill_at', now)
             logger.info(
                 'monitoring_due_selection_backfill workspace_target_id=%s reason=all_targets_within_interval oldest_last_checked_at=%s oldest_age_seconds=%s backfill_window_seconds=%s should_backfill=%s',
                 fallback_target_id or None,
