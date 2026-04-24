@@ -19,6 +19,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _compute_next_sleep_seconds(
+    *,
+    worker_interval_seconds: float,
+    effective_due_count: int,
+    soonest_due_in_seconds: int | None,
+    max_sleep_seconds: float = 30.0,
+) -> float:
+    base_sleep_seconds = max(1.0, float(worker_interval_seconds))
+    next_sleep_seconds = base_sleep_seconds
+    sleep_override_seconds: float | None = None
+    if soonest_due_in_seconds is not None:
+        sleep_override_seconds = min(
+            base_sleep_seconds,
+            max(1.0, float(soonest_due_in_seconds)),
+        )
+    if effective_due_count == 0 and sleep_override_seconds is not None:
+        next_sleep_seconds = sleep_override_seconds
+    return min(max_sleep_seconds, next_sleep_seconds)
+
+
 def main() -> int:
     logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO').upper(), format='%(asctime)s %(levelname)s %(name)s %(message)s')
     logger = logging.getLogger(__name__)
@@ -51,19 +71,35 @@ def main() -> int:
     while True:
         try:
             summary = run_monitoring_cycle(worker_name=args.worker_name, limit=args.limit, trigger_type='scheduler')
+            effective_due_count = int(summary.get('effective_due_count', summary.get('due_targets', 0)) or 0)
+            soonest_due_in_seconds = summary.get('soonest_due_in_seconds')
+            if soonest_due_in_seconds is not None:
+                try:
+                    soonest_due_in_seconds = int(soonest_due_in_seconds)
+                except (TypeError, ValueError):
+                    soonest_due_in_seconds = None
+            next_sleep_seconds = _compute_next_sleep_seconds(
+                worker_interval_seconds=args.interval_seconds,
+                effective_due_count=effective_due_count,
+                soonest_due_in_seconds=soonest_due_in_seconds,
+            )
             logger.info(
-                'monitoring cycle summary due=%s checked=%s alerts=%s live_mode=%s',
+                'monitoring cycle summary due=%s effective_due_count=%s checked=%s alerts=%s live_mode=%s soonest_due_in_seconds=%s next_sleep_seconds=%s',
                 summary.get('due_targets', 0),
+                effective_due_count,
                 summary.get('checked', 0),
                 summary.get('alerts_generated', 0),
                 summary.get('live_mode', False),
+                soonest_due_in_seconds,
+                next_sleep_seconds,
             )
         except Exception:
             logger.exception('monitoring worker cycle error')
+            next_sleep_seconds = min(30.0, max(1.0, float(args.interval_seconds)))
         if args.once:
             logger.info('monitoring worker exiting after one cycle')
             return 0
-        time.sleep(max(1.0, args.interval_seconds))
+        time.sleep(next_sleep_seconds)
 
 
 if __name__ == '__main__':
