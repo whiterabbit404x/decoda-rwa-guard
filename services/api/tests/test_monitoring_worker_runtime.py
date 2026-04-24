@@ -362,7 +362,7 @@ def test_monitoring_cycle_without_due_targets_reports_zero_updates(monkeypatch):
     assert connection.last_worker_state_update_params[3] == 0
 
 
-def test_monitoring_cycle_all_targets_not_due_reports_checked_zero(monkeypatch):
+def test_monitoring_cycle_all_targets_not_due_reports_checked_zero(monkeypatch, caplog):
     now = datetime.now(timezone.utc)
     due_targets = [
         {
@@ -389,11 +389,26 @@ def test_monitoring_cycle_all_targets_not_due_reports_checked_zero(monkeypatch):
         lambda *_args, **_kwargs: processed.__setitem__('count', processed['count'] + 1),
     )
 
-    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+    with caplog.at_level('INFO'):
+        summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
     assert summary['due_targets'] == 0
     assert summary['checked'] == 0
     assert processed['count'] == 0
     assert len(connection.monitoring_run_inserts) == 0
+    assert any(
+        'monitoring due-selection snapshot worker=test-worker workspace_id=ws-1' in message
+        and 'last_checked_at' in message
+        and 'effective_interval_seconds' in message
+        and 'next_due_at' in message
+        and 'due_in_seconds' in message
+        for message in caplog.messages
+    )
+    assert any(
+        'monitoring cycle summary worker=test-worker' in message
+        and 'due=0 checked=0' in message
+        and 'oldest_not_due_age_seconds=' in message
+        for message in caplog.messages
+    )
 
 
 def test_monitoring_cycle_uses_configured_large_interval_without_forced_cap(monkeypatch):
@@ -434,6 +449,82 @@ def test_monitoring_cycle_uses_configured_large_interval_without_forced_cap(monk
     assert summary['due_targets'] == 0
     assert summary['checked'] == 0
     assert processed['count'] == 0
+    monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.pop('ws-1', None)
+
+
+def test_monitoring_cycle_due_selection_snapshot_limits_to_three_targets(monkeypatch, caplog):
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'target-1',
+            'name': 'Target 1',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': now - timedelta(seconds=10),
+            'monitoring_interval_seconds': 3600,
+            'created_at': now,
+        },
+        {
+            'id': 'target-2',
+            'name': 'Target 2',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': now - timedelta(seconds=20),
+            'monitoring_interval_seconds': 3600,
+            'created_at': now,
+        },
+        {
+            'id': 'target-3',
+            'name': 'Target 3',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': now - timedelta(seconds=30),
+            'monitoring_interval_seconds': 3600,
+            'created_at': now,
+        },
+        {
+            'id': 'target-4',
+            'name': 'Target 4',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': now - timedelta(seconds=40),
+            'monitoring_interval_seconds': 3600,
+            'created_at': now,
+        },
+    ]
+    connection = _FakeConnection(due_targets)
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'MONITORING_DUE_SELECTION_BACKFILL_COOLDOWN_SECONDS',
+        3600,
+    )
+    monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT['ws-1'] = now
+
+    with caplog.at_level('INFO'):
+        summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10, trigger_type='scheduler')
+
+    assert summary['due_targets'] == 0
+    snapshot_message = next(
+        message
+        for message in caplog.messages
+        if 'monitoring due-selection snapshot worker=test-worker workspace_id=ws-1' in message
+    )
+    assert 'target-4' in snapshot_message
+    assert 'target-3' in snapshot_message
+    assert 'target-2' in snapshot_message
+    assert 'target-1' not in snapshot_message
     monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.pop('ws-1', None)
 
 

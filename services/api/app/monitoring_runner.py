@@ -2857,8 +2857,10 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         skipped_missing_workspace = 0
         skipped_not_due = 0
         skipped_not_due_target_ids: set[str] = set()
+        skipped_not_due_oldest_checked_at: datetime | None = None
         skipped_null_handling = 0
         interval_capped_targets = 0
+        due_selection_workspace_snapshot: dict[str, list[dict[str, Any]]] = defaultdict(list)
         should_consider_backfill = False
         backfill_attempted = 0
         backfill_allowed_count = 0
@@ -2879,29 +2881,68 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 skipped_inactive += 1
                 continue
             last_checked_at = _parse_ts(system.get('last_checked_at'))
+            interval_raw = system.get('monitoring_interval_seconds')
+            interval_seconds = 30
+            if interval_raw is None:
+                if last_checked_at is not None:
+                    skipped_null_handling += 1
+            else:
+                try:
+                    parsed_interval_seconds = int(interval_raw)
+                    if parsed_interval_seconds < 30:
+                        interval_capped_targets += 1
+                    interval_seconds = max(30, parsed_interval_seconds)
+                except (TypeError, ValueError):
+                    if last_checked_at is not None:
+                        skipped_null_handling += 1
+                    interval_seconds = 30
+            next_due_at = (
+                last_checked_at + timedelta(seconds=interval_seconds)
+                if last_checked_at is not None
+                else now
+            )
+            due_in_seconds = max(0, int((next_due_at - now).total_seconds()))
+            workspace_id = str(system.get('workspace_id') or '').strip()
+            if workspace_id:
+                due_selection_workspace_snapshot[workspace_id].append(
+                    {
+                        'target_id': str(system.get('target_id') or ''),
+                        'last_checked_at': last_checked_at.isoformat() if last_checked_at else None,
+                        'effective_interval_seconds': interval_seconds,
+                        'next_due_at': next_due_at.isoformat(),
+                        'due_in_seconds': due_in_seconds,
+                    }
+                )
             if last_checked_at is None:
                 due_target_ids.append(system['target_id'])
                 due_system_ids[str(system['target_id'])] = str(system['monitored_system_id'])
             else:
-                interval_raw = system.get('monitoring_interval_seconds')
-                if interval_raw is None:
-                    skipped_null_handling += 1
-                    interval_seconds = 30
-                else:
-                    try:
-                        interval_seconds = max(30, int(interval_raw))
-                    except (TypeError, ValueError):
-                        skipped_null_handling += 1
-                        interval_seconds = 30
                 if last_checked_at <= now - timedelta(seconds=interval_seconds):
                     due_target_ids.append(system['target_id'])
                     due_system_ids[str(system['target_id'])] = str(system['monitored_system_id'])
                 else:
                     skipped_not_due += 1
                     skipped_not_due_target_ids.add(str(system.get('target_id') or '').strip())
+                    if (
+                        skipped_not_due_oldest_checked_at is None
+                        or last_checked_at < skipped_not_due_oldest_checked_at
+                    ):
+                        skipped_not_due_oldest_checked_at = last_checked_at
             if len(due_target_ids) >= max_targets:
                 break
         base_due_count = len(due_target_ids)
+        for workspace_id, entries in sorted(due_selection_workspace_snapshot.items()):
+            soonest_entries = sorted(
+                entries,
+                key=lambda item: item.get('next_due_at') or '',
+            )[:3]
+            logger.info(
+                'monitoring due-selection snapshot worker=%s workspace_id=%s total_candidates=%s soonest_next_due_targets=%s',
+                worker_name,
+                workspace_id,
+                len(entries),
+                _json_dumps(soonest_entries),
+            )
         oldest_candidate: dict[str, Any] | None = None
         oldest_checked_at: datetime | None = None
         for row in candidate_systems:
@@ -2967,6 +3008,11 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             backfill_blocked_missing_candidate = 0
         effective_due_count = len(due_target_ids)
         effective_skipped_not_due = skipped_not_due
+        oldest_not_due_age_seconds = (
+            max(0, int((now - skipped_not_due_oldest_checked_at).total_seconds()))
+            if skipped_not_due_oldest_checked_at is not None
+            else None
+        )
         if backfill_allowed_count > 0 and fallback_target_id in skipped_not_due_target_ids:
             effective_skipped_not_due = max(0, skipped_not_due - 1)
         due_targets = []
@@ -3245,7 +3291,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         'monitoring cycle summary worker=%s cycle_state=%s total_candidate_targets=%s base_due_count=%s '
         'effective_due_count=%s due=%s checked=%s '
         'skipped_disabled=%s skipped_inactive=%s skipped_missing_workspace=%s skipped_not_due=%s '
-        'skipped_null_handling=%s interval_capped_targets=%s backfill_attempted=%s backfill_allowed=%s '
+        'oldest_not_due_age_seconds=%s skipped_null_handling=%s interval_capped_targets=%s backfill_attempted=%s backfill_allowed=%s '
         'backfill_blocked_by_age=%s backfill_blocked_by_cooldown=%s backfill_blocked_missing_candidate=%s '
         'live_targets=%s real_events=%s coverage_heartbeat_updates=%s alerts=%s incidents=%s monitored_systems_updated=%s duration_ms=%s',
         worker_name,
@@ -3259,6 +3305,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         skipped_inactive if 'skipped_inactive' in locals() else 0,
         skipped_missing_workspace if 'skipped_missing_workspace' in locals() else 0,
         effective_skipped_not_due if 'effective_skipped_not_due' in locals() else 0,
+        oldest_not_due_age_seconds if 'oldest_not_due_age_seconds' in locals() else None,
         skipped_null_handling if 'skipped_null_handling' in locals() else 0,
         interval_capped_targets if 'interval_capped_targets' in locals() else 0,
         backfill_attempted if 'backfill_attempted' in locals() else 0,
