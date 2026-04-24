@@ -43,6 +43,16 @@ const DEFAULT_COUNTS: LiveWorkspaceCounts = {
   openIncidents: 0,
   historyRecords: 0,
 };
+const FEED_REQUEST_FRESHNESS_MS = 60_000;
+type WorkspaceFeedSnapshot = {
+  statusPayload: MonitoringRuntimeStatus | null;
+  historyCount: number;
+  openAlerts: number;
+  openIncidents: number;
+  fetchedAt: number;
+};
+const inflightFeedSnapshotByWorkspace = new Map<string, Promise<WorkspaceFeedSnapshot>>();
+const recentFeedSnapshotByWorkspace = new Map<string, WorkspaceFeedSnapshot>();
 
 export function shouldLogLiveWorkspaceFeedDebug(): boolean {
   return process.env.NODE_ENV === 'development';
@@ -53,6 +63,10 @@ export function buildWorkspaceScopedHeaders(
   workspaceId: string | null | undefined,
 ): Record<string, string> {
   return { ...authHeaders(workspaceId ?? null) };
+}
+
+function workspaceSnapshotCacheKey(headers: Record<string, string>): string {
+  return String(headers['x-workspace-id'] ?? headers['X-Workspace-Id'] ?? 'default');
 }
 
 type RuntimeStatusResolution = {
@@ -140,24 +154,23 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
       }
     }
 
-    async function refresh(forceRefresh = false) {
-      const cycleWorkspaceId = workspaceIdRef.current;
-      if (!active || !isAuthenticated || !cycleWorkspaceId || document.visibilityState === 'hidden') {
-        return;
+    async function fetchWorkspaceSnapshot(
+      cycleHeaders: Record<string, string>,
+      forceRefresh = false,
+    ): Promise<WorkspaceFeedSnapshot> {
+      const cacheKey = workspaceSnapshotCacheKey(cycleHeaders);
+      if (!forceRefresh) {
+        const cached = recentFeedSnapshotByWorkspace.get(cacheKey);
+        if (cached && (Date.now() - cached.fetchedAt) <= FEED_REQUEST_FRESHNESS_MS) {
+          return cached;
+        }
       }
-      if (startedRef.current) {
-        setRefreshing(true);
+      const inflight = inflightFeedSnapshotByWorkspace.get(cacheKey);
+      if (inflight) {
+        return await inflight;
       }
-      try {
-        const cycleHeaders = buildWorkspaceScopedHeaders(authHeaders, cycleWorkspaceId);
+      const request = (async (): Promise<WorkspaceFeedSnapshot> => {
         const statusPayload = await fetchRuntimeStatusDeduped(cycleHeaders, { forceRefresh });
-        const runtimeUnavailable = !statusPayload;
-        const { nextRuntime, fetchWarning, failureStreak } = resolveRuntimeStatus(
-          statusPayload,
-          Boolean(statusPayload),
-          lastKnownRuntimeRef.current,
-          runtimeFailureStreakRef.current,
-        );
         const ancillaryResults = await Promise.allSettled([
           fetch(`${apiUrl}/pilot/history?limit=20`, { headers: cycleHeaders, cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: cycleHeaders, cache: 'no-store' }),
@@ -170,14 +183,50 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
         const alertsPayload = await safeJson(alertsRes);
         const incidentsPayload = await safeJson(incidentsRes);
         const historyCount = Number(historyPayload?.counts?.analysis_runs ?? (historyPayload.analysis_runs ?? []).length ?? 0);
+        const snapshot: WorkspaceFeedSnapshot = {
+          statusPayload,
+          historyCount,
+          openAlerts: Array.isArray(alertsPayload?.alerts) ? alertsPayload.alerts.length : 0,
+          openIncidents: Array.isArray(incidentsPayload?.incidents) ? incidentsPayload.incidents.length : 0,
+          fetchedAt: Date.now(),
+        };
+        recentFeedSnapshotByWorkspace.set(cacheKey, snapshot);
+        return snapshot;
+      })()
+        .finally(() => {
+          inflightFeedSnapshotByWorkspace.delete(cacheKey);
+        });
+      inflightFeedSnapshotByWorkspace.set(cacheKey, request);
+      return await request;
+    }
+
+    async function refresh(forceRefresh = false) {
+      const cycleWorkspaceId = workspaceIdRef.current;
+      if (!active || !isAuthenticated || !cycleWorkspaceId || document.visibilityState === 'hidden') {
+        return;
+      }
+      if (startedRef.current) {
+        setRefreshing(true);
+      }
+      try {
+        const cycleHeaders = buildWorkspaceScopedHeaders(authHeaders, cycleWorkspaceId);
+        const snapshot = await fetchWorkspaceSnapshot(cycleHeaders, forceRefresh);
+        const statusPayload = snapshot.statusPayload;
+        const runtimeUnavailable = !statusPayload;
+        const { nextRuntime, fetchWarning, failureStreak } = resolveRuntimeStatus(
+          statusPayload,
+          Boolean(statusPayload),
+          lastKnownRuntimeRef.current,
+          runtimeFailureStreakRef.current,
+        );
         const truth = nextRuntime?.workspace_monitoring_summary;
         const nextCounts: LiveWorkspaceCounts = {
           protectedAssets: Number(truth?.protected_assets_count ?? 0),
           monitoredSystems: Number(truth?.monitored_systems_count ?? 0),
           activeSystems: Number(truth?.reporting_systems_count ?? 0),
-          openAlerts: (alertsPayload.alerts ?? []).length,
-          openIncidents: (incidentsPayload.incidents ?? []).length,
-          historyRecords: historyCount,
+          openAlerts: snapshot.openAlerts,
+          openIncidents: snapshot.openIncidents,
+          historyRecords: snapshot.historyCount,
         };
         if (shouldLogLiveWorkspaceFeedDebug()) {
           console.debug('useLiveWorkspaceFeed refresh-result', {
@@ -196,7 +245,6 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
             runtimeFetchWarning: fetchWarning,
             runtimeFetchDegraded: runtimeUnavailable,
             runtimeFailureStreak: failureStreak,
-            ancillaryFailed: !historyRes?.ok || !alertsRes?.ok || !incidentsRes?.ok,
             appliedCounts: nextCounts,
           });
         }
