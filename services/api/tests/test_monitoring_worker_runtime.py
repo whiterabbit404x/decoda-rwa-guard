@@ -380,7 +380,6 @@ def test_monitoring_cycle_backfills_oldest_target_when_all_targets_are_within_in
     monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
     monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
-    monkeypatch.setattr(monitoring_runner.run_monitoring_cycle, '_last_due_selection_backfill_at', None, raising=False)
 
     summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10, trigger_type='scheduler')
 

@@ -2931,31 +2931,13 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     oldest_candidate = system
             fallback_target_id = str((oldest_candidate or {}).get('target_id') or '').strip()
             fallback_system_id = str((oldest_candidate or {}).get('monitored_system_id') or '').strip()
-            backfill_window_seconds = max(60, MONITOR_POLL_INTERVAL_SECONDS * 4)
-            oldest_age_seconds = int((now - oldest_checked_at).total_seconds()) if oldest_checked_at else None
-            last_due_selection_backfill_at = getattr(run_monitoring_cycle, '_last_due_selection_backfill_at', None)
-            recently_backfilled = bool(
-                last_due_selection_backfill_at
-                and int((now - last_due_selection_backfill_at).total_seconds()) < backfill_window_seconds
-            )
-            should_backfill = bool(
-                fallback_target_id
-                and fallback_system_id
-                and oldest_age_seconds is not None
-                and oldest_age_seconds >= backfill_window_seconds
-                and not recently_backfilled
-            )
-            if should_backfill:
+            if fallback_target_id and fallback_system_id:
                 due_target_ids.append(fallback_target_id)
                 due_system_ids[fallback_target_id] = fallback_system_id
-                setattr(run_monitoring_cycle, '_last_due_selection_backfill_at', now)
             logger.info(
-                'monitoring_due_selection_backfill workspace_target_id=%s reason=all_targets_within_interval oldest_last_checked_at=%s oldest_age_seconds=%s backfill_window_seconds=%s should_backfill=%s',
+                'monitoring_due_selection_backfill workspace_target_id=%s reason=all_targets_within_interval oldest_last_checked_at=%s',
                 fallback_target_id or None,
                 oldest_checked_at.isoformat() if oldest_checked_at else None,
-                oldest_age_seconds,
-                backfill_window_seconds,
-                should_backfill,
             )
         logger.info(
             'monitoring due selection total_candidate_targets=%s skipped_disabled=%s skipped_inactive=%s '
