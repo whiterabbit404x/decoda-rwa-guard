@@ -110,6 +110,26 @@ def test_continuity_continuous_no_evidence_when_polling_is_live_without_events()
     assert payload['event_throughput_window'] == 'no_events'
 
 
+def test_continuity_preserves_no_evidence_when_only_coverage_writes_exist() -> None:
+    now = _now()
+    payload = evaluate_workspace_monitoring_continuity(
+        now=now,
+        workspace_configured=True,
+        worker_running=True,
+        last_heartbeat_at=now - timedelta(seconds=10),
+        last_event_at=None,
+        last_detection_at=now - timedelta(seconds=30),
+        heartbeat_ttl_seconds=180,
+        telemetry_window_seconds=120,
+        detection_window_seconds=300,
+    )
+    assert payload['continuity_status'] == 'continuous_no_evidence'
+    assert payload['ingestion_freshness'] == 'missing'
+    assert payload['detection_pipeline_freshness'] == 'fresh'
+    assert payload['worker_heartbeat_freshness'] == 'fresh'
+    assert payload['event_throughput_window'] == 'no_events'
+
+
 def test_continuity_boundary_transition_fresh_to_stale_to_offline() -> None:
     now = _now()
     common = {

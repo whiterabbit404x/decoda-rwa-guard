@@ -25,6 +25,7 @@ function makeTruth(partial: Partial<WorkspaceMonitoringTruth>): WorkspaceMonitor
     db_failure_classification: null,
     db_failure_reason: null,
     contradiction_flags: [],
+    continuity_status: 'continuous_live',
     ...partial,
   };
 }
@@ -113,9 +114,10 @@ test.describe('monitoring status presentation adapter', () => {
     expect(value.summary).toContain('Telemetry freshness unavailable.');
   });
 
-  test('treats fresh coverage telemetry as live even without detections', async () => {
+  test('keeps fresh coverage + zero-event continuity in limited coverage state', async () => {
     const value = normalizeMonitoringPresentation(makeTruth({
       monitoring_status: 'limited',
+      continuity_status: 'continuous_no_evidence',
       telemetry_kind: 'coverage',
       last_telemetry_at: null,
       last_coverage_telemetry_at: '2026-04-13T10:00:00Z',
@@ -126,9 +128,9 @@ test.describe('monitoring status presentation adapter', () => {
       reporting_systems_count: 2,
       runtime_status: 'live',
     }));
-    expect(value.status).toBe('live');
-    expect(value.summary).toContain('Live telemetry verified.');
-    expect(value.summary).toContain('No recent detections.');
+    expect(value.status).toBe('limited coverage');
+    expect(value.summary).toContain('Coverage telemetry is fresh, but no real event evidence has been observed yet.');
+    expect(value.summary).not.toContain('Monitoring state live with verified telemetry.');
   });
 
   test('uses coverage telemetry timestamp label even when target-event telemetry is absent', async () => {
