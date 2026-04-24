@@ -632,7 +632,7 @@ export function derivePageState(params: {
   summaryStatusReason?: string | null;
   summaryConfigurationReason?: string | null;
   summaryConfigurationReasonCodes?: string[];
-  continuityStatus?: 'continuous_live' | 'degraded' | 'offline' | 'idle_no_telemetry' | null;
+  continuityStatus?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null;
 }): PageOperationalState {
   const {
     loadingSnapshot,
@@ -687,6 +687,9 @@ export function derivePageState(params: {
   if (continuityStatus === 'idle_no_telemetry') {
     return 'configured_no_signals';
   }
+  if (continuityStatus === 'continuous_no_evidence') {
+    return 'configured_no_signals';
+  }
   if (continuityStatus === 'degraded') {
     return 'degraded_partial';
   }
@@ -720,12 +723,15 @@ export function formatSystemsPanelWarning(failedEndpoints: SnapshotFailureKey[])
 export function pageStatePrimaryCopy(
   state: PageOperationalState,
   configurationReason?: string | null,
-  continuityStatus?: 'continuous_live' | 'degraded' | 'offline' | 'idle_no_telemetry' | null,
+  continuityStatus?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null,
 ): string {
   if (state === 'healthy_live') {
     return 'Live monitoring is healthy. Telemetry freshness and threat detections reflect current workspace conditions.';
   }
   if (state === 'configured_no_signals') {
+    if (continuityStatus === 'continuous_no_evidence') {
+      return 'Live polling active. No recent anomaly evidence.';
+    }
     if (continuityStatus === 'continuous_live') {
       return 'Telemetry continuity is live and continuous. No active detections are currently open.';
     }
@@ -745,8 +751,11 @@ export function pageStatePrimaryCopy(
 
 function noIncidentsCopy(
   evidenceSourceLabel: string,
-  continuityStatus?: 'continuous_live' | 'degraded' | 'offline' | 'idle_no_telemetry' | null,
+  continuityStatus?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null,
 ): string {
+  if (continuityStatus === 'continuous_no_evidence') {
+    return 'Live polling active. No recent anomaly evidence.';
+  }
   if (continuityStatus === 'continuous_live') {
     return 'No incidents yet. LIVE continuity is healthy and no open incidents are currently recorded.';
   }
@@ -756,7 +765,7 @@ function noIncidentsCopy(
   return 'No persisted incidents with linked evidence chain entries are currently available.';
 }
 
-function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason, continuityStatus }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null; continuityStatus?: 'continuous_live' | 'degraded' | 'offline' | 'idle_no_telemetry' | null }) {
+function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason, continuityStatus }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null; continuityStatus?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null }) {
   if (state === 'healthy_live') {
     return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus)}</p>;
   }

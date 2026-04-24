@@ -55,8 +55,11 @@ test('LIVE/HYBRID no-evidence wording stays degraded and does not imply healthy 
   const chainPanel = read('threat-chain-panel.tsx').toLowerCase();
   const alertsPage = read('(product)/alerts-page-client.tsx').toLowerCase();
   const incidentsPage = read('(product)/incidents-page-client.tsx').toLowerCase();
+  const threatOperationsPanel = read('threat-operations-panel.tsx').toLowerCase();
 
   expect(chainPanel).toContain('degraded evidence state: live/hybrid monitoring is active but this chain has no persisted evidence yet.');
+  expect(threatOperationsPanel).toContain('live polling active. no recent anomaly evidence.');
+  expect(threatOperationsPanel).not.toContain('live polling active. telemetry continuity is healthy');
   expect(alertsPage).not.toContain('all clear');
   expect(incidentsPage).not.toContain('all clear');
   expect(alertsPage).not.toContain('healthy');
