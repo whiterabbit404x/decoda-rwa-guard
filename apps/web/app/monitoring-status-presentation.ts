@@ -72,6 +72,15 @@ function normalizeStatus(
     return 'offline';
   }
   if (monitoringStatus === 'limited') {
+    const liveCoverageVerified = (
+      truth.evidence_source_summary === 'live'
+      && truth.reporting_systems_count > 0
+      && truth.telemetry_freshness === 'fresh'
+      && truth.confidence === 'high'
+    );
+    if (liveCoverageVerified && runtimeStatus === 'live') {
+      return 'live';
+    }
     if (evidence === 'unavailable') {
       return 'degraded';
     }
