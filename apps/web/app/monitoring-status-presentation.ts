@@ -75,9 +75,6 @@ function normalizeStatus(
     return 'offline';
   }
   if (monitoringStatus === 'limited') {
-    if (truth.continuity_status === 'continuous_no_evidence') {
-      return 'limited coverage';
-    }
     const liveCoverageVerified = (
       truth.evidence_source_summary === 'live'
       && truth.reporting_systems_count > 0
