@@ -59,7 +59,6 @@ ALERT_DEDUPE_WINDOW_SECONDS = int(
 WORKER_HEARTBEAT_TTL_SECONDS = int(os.getenv('MONITORING_WORKER_HEARTBEAT_TTL_SECONDS', '180'))
 MONITOR_POLL_INTERVAL_SECONDS = int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30'))
 MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS = max(15, int(os.getenv('MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS', '60')))
-MAX_EFFECTIVE_MONITORING_INTERVAL_SECONDS = max(30, int(os.getenv('MAX_EFFECTIVE_MONITORING_INTERVAL_SECONDS', '120')))
 
 logger = logging.getLogger(__name__)
 
@@ -2870,6 +2869,10 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         skipped_not_due = 0
         skipped_null_handling = 0
         interval_capped_targets = 0
+        max_effective_monitoring_interval_seconds = max(
+            30,
+            int(os.getenv('MAX_EFFECTIVE_MONITORING_INTERVAL_SECONDS', '120')),
+        )
         due_target_ids: list[Any] = []
         due_system_ids: dict[str, str] = {}
         for row in candidate_systems:
@@ -2898,8 +2901,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     except (TypeError, ValueError):
                         skipped_null_handling += 1
                         interval_seconds = 30
-                if interval_seconds > MAX_EFFECTIVE_MONITORING_INTERVAL_SECONDS:
-                    interval_seconds = MAX_EFFECTIVE_MONITORING_INTERVAL_SECONDS
+                if interval_seconds > max_effective_monitoring_interval_seconds:
+                    interval_seconds = max_effective_monitoring_interval_seconds
                     interval_capped_targets += 1
                 if last_checked_at <= now - timedelta(seconds=interval_seconds):
                     due_target_ids.append(system['target_id'])
