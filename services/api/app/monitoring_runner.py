@@ -606,8 +606,10 @@ def _derive_system_runtime_state(result: dict[str, Any], *, is_enabled: bool) ->
         if unsupported_target_type:
             return 'degraded', 'stale', 'low', 'unsupported_target_type_for_live_coverage'
         return 'degraded', 'stale', 'low', degraded_reason or 'no_evidence'
-    if events_ingested > 0 or recent_real_event_count > 0 or result.get('live_coverage_telemetry_at'):
+    if events_ingested > 0 or recent_real_event_count > 0:
         return 'healthy', 'fresh', 'high', None
+    if result.get('live_coverage_telemetry_at'):
+        return 'degraded', 'fresh', 'low', 'no_evidence'
     return 'idle', 'stale', 'medium', 'no_events_detected_yet'
 
 
@@ -2407,7 +2409,9 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         checkpoint_cursor,
         latest_processed_block,
     )
-    telemetry_records_seen = len(events) + (1 if coverage_persisted else 0)
+    real_event_count = len(events)
+    coverage_heartbeat_count = 1 if coverage_persisted else 0
+    telemetry_records_seen = real_event_count + coverage_heartbeat_count
     if telemetry_records_seen > 0 and detections_created == 0 and provider_result.status in {'live', 'no_evidence', 'degraded'}:
         evaluated_no_threat_marker_id = _persist_no_threat_evaluation_marker(
             connection,
@@ -2415,7 +2419,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             target=target,
             observed_at=live_coverage_telemetry_at or checkpoint_at or last_observed_event_at,
             monitoring_run_id=monitoring_run_id,
-            events_ingested=len(events),
+            events_ingested=real_event_count,
             telemetry_records_seen=telemetry_records_seen,
         )
 
@@ -2481,7 +2485,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             last_synthetic_event_at,
             recent_evidence_state,
             recent_truthfulness_state,
-            int(provider_result.recent_real_event_count),
+            int(provider_result.recent_real_event_count or real_event_count),
             recent_confidence_basis,
             target['id'],
             target['workspace_id'],
@@ -2522,7 +2526,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         monitoring_run_id=monitoring_run_id,
         monitoring_path=monitoring_path,
         provider_result=provider_result,
-        events_ingested=len(events),
+        events_ingested=real_event_count,
         detections_created=detections_created,
         alerts_generated=alerts_generated,
         incidents_created=incidents_created,
@@ -2554,7 +2558,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             or 0
         )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, incidents_created)
-    WORKER_STATE['metrics']['live_events_ingested'] += len(events)
+    WORKER_STATE['metrics']['live_events_ingested'] += real_event_count
     return {
         'target_id': str(target['id']),
         'target_type': str(target.get('target_type') or ''),
@@ -2563,7 +2567,9 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         'alerts_generated': alerts_generated,
         'incidents_created': incidents_created,
         'detections_created': detections_created,
-        'events_ingested': len(events),
+        'events_ingested': real_event_count,
+        'real_event_count': real_event_count,
+        'coverage_heartbeat_count': coverage_heartbeat_count,
         'telemetry_records_seen': telemetry_records_seen,
         'evaluated_no_threat_marker_id': evaluated_no_threat_marker_id,
         'stale_open_alerts_closed': stale_open_alerts_closed,
@@ -2576,7 +2582,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         'synthetic': provider_result.synthetic,
         'recent_evidence_state': recent_evidence_state,
         'recent_truthfulness_state': recent_truthfulness_state,
-        'recent_real_event_count': int(provider_result.recent_real_event_count),
+        'recent_real_event_count': int(provider_result.recent_real_event_count or real_event_count),
         'last_event_at': last_observed_event_at.isoformat() if last_observed_event_at else None,
         'last_real_event_at': last_real_event_at.isoformat() if last_real_event_at else None,
         'live_coverage_telemetry_at': live_coverage_telemetry_at.isoformat() if live_coverage_telemetry_at else None,
@@ -5160,6 +5166,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 continue
             if int((now - latest_system_coverage_telemetry).total_seconds()) <= telemetry_window_seconds:
                 reporting_systems += 1
+        coverage_heartbeat_count = int(reporting_systems)
+        real_event_count = int(recent_real_event_count)
+        raw_recent_evidence_state = (
+            str((latest_detection_metadata or {}).get('evidence_state') or latest_detection_payload.get('evidence_state') or 'missing')
+            if isinstance(latest_detection_payload, dict)
+            else 'missing'
+        )
+        effective_recent_evidence_state = (
+            'no_evidence'
+            if coverage_heartbeat_count > 0 and real_event_count <= 0
+            else raw_recent_evidence_state
+        )
         logger.info(
             'monitoring_reporting_systems workspace_id=%s reporting_systems=%s status_reason=%s',
             workspace_id,
@@ -5406,7 +5424,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'enabled_systems': enabled_system_count,
             'active_systems': active_system_count,
             'last_heartbeat': last_heartbeat.isoformat() if last_heartbeat else None,
-            'telemetry_available': bool(telemetry_countable or recent_real_event_count > 0 or monitoring_status == 'active'),
+            'telemetry_available': bool(telemetry_countable or real_event_count > 0 or monitoring_status == 'active'),
             'status': runtime_status,
             'provider_mode': health.get('source_type') or health.get('ingestion_mode') or 'polling',
             'last_successful_ingest': evidence_at.isoformat() if evidence_at else None,
@@ -5432,8 +5450,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'degraded_reason': degraded_reason,
             'runtime_error_code': runtime_error_code,
             'runtime_degraded_reason': runtime_degraded_reason,
-            'recent_evidence_state': str((latest_detection_metadata or {}).get('evidence_state') or latest_detection_payload.get('evidence_state') or 'missing') if isinstance(latest_detection_payload, dict) else 'missing',
-            'recent_real_event_count': recent_real_event_count,
+            'recent_evidence_state': effective_recent_evidence_state,
+            'recent_real_event_count': real_event_count,
+            'real_event_count': real_event_count,
+            'coverage_heartbeat_count': coverage_heartbeat_count,
             'recent_confidence_basis': str((latest_detection_metadata or {}).get('confidence_basis') or latest_detection_payload.get('confidence_basis') or 'none') if isinstance(latest_detection_payload, dict) else 'none',
             'last_real_event_at': (latest_detection_metadata or {}).get('last_real_event_at') if isinstance(latest_detection_metadata, dict) else None,
             'freshness_status': summary['telemetry_freshness'],
@@ -5509,7 +5529,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             degraded_mode_reasons.append('provider_degraded_or_unreachable')
         if monitoring_status == 'degraded' or runtime_status_summary == 'degraded':
             degraded_mode_reasons.append('runtime_status_degraded')
-        if int(payload.get('recent_real_event_count') or 0) <= 0:
+        if int(payload.get('real_event_count') or payload.get('recent_real_event_count') or 0) <= 0:
             claim_safety_risk_indicators.append('no_recent_real_events')
         if runtime_status_summary in {'healthy', 'idle'} and active_live_coverage and not degraded_mode_reasons:
             mode = live_coverage_mode
@@ -5521,7 +5541,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         if not claim_validator_reason_codes:
             claim_validator_reason_codes = [name for name, ok in claim_validator_checks.items() if not ok]
         continuity_signals = payload.get('continuity_signals') if isinstance(payload.get('continuity_signals'), dict) else {}
-        no_recent_real_events = int(payload.get('recent_real_event_count') or 0) <= 0
+        no_recent_real_events = int(payload.get('real_event_count') or payload.get('recent_real_event_count') or 0) <= 0
         freshness_confirmed = (
             str(payload.get('freshness_status') or payload.get('telemetry_freshness') or '').lower() == 'fresh'
             and str(continuity_signals.get('event_ingestion_freshness') or '').lower() == 'fresh'
