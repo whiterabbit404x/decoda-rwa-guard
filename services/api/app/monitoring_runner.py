@@ -58,6 +58,7 @@ ALERT_DEDUPE_WINDOW_SECONDS = int(
 )
 WORKER_HEARTBEAT_TTL_SECONDS = int(os.getenv('MONITORING_WORKER_HEARTBEAT_TTL_SECONDS', '180'))
 MONITOR_POLL_INTERVAL_SECONDS = int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30'))
+MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS = max(15, int(os.getenv('MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS', '60')))
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ RUNTIME_STATUS_ALERT_BREACH_HISTORY: dict[str, dict[str, deque[bool]]] = default
 )
 
 RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED = os.getenv('RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+_LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT: datetime | None = None
 
 
 def _provider_source_is_live(source_type: Any) -> bool:
@@ -2833,20 +2835,33 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 ''',
                 (run_id, workspace_id, trigger_type, f'worker_name={worker_name}'),
             )
-        connection.execute(
-            '''
-            UPDATE monitored_systems ms
-            SET last_heartbeat = NOW()
-            FROM targets t
-            WHERE t.id = ms.target_id
-              AND t.deleted_at IS NULL
-              AND COALESCE(ms.is_enabled, TRUE) = TRUE
-              AND t.monitoring_enabled = TRUE
-              AND t.enabled = TRUE
-              AND t.is_active = TRUE
-            '''
-        )
         now = utc_now()
+        global _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT
+        should_touch_monitored_heartbeats = (
+            _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT is None
+            or int((now - _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT).total_seconds()) >= MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS
+        )
+        if should_touch_monitored_heartbeats:
+            connection.execute(
+                '''
+                UPDATE monitored_systems ms
+                SET last_heartbeat = NOW()
+                FROM targets t
+                WHERE t.id = ms.target_id
+                  AND t.deleted_at IS NULL
+                  AND COALESCE(ms.is_enabled, TRUE) = TRUE
+                  AND t.monitoring_enabled = TRUE
+                  AND t.enabled = TRUE
+                  AND t.is_active = TRUE
+                '''
+            )
+            _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT = now
+        else:
+            logger.debug(
+                'monitoring_cycle_skip_heartbeat_touch worker=%s cadence_seconds=%s',
+                worker_name,
+                MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS,
+            )
         max_targets = max(1, min(limit, 200))
         skipped_disabled = 0
         skipped_inactive = 0
