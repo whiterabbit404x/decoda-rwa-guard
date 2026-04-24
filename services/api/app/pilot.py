@@ -139,6 +139,15 @@ def utc_now_iso() -> str:
     return utc_now().isoformat()
 
 
+def detection_evidence_origin_label(source: str | None) -> str | None:
+    normalized = str(source or '').strip().lower()
+    if normalized == 'simulator':
+        return 'SIMULATED EVIDENCE'
+    if normalized == 'live':
+        return 'LIVE EVIDENCE'
+    return None
+
+
 def parse_csv_env(name: str, defaults: list[str]) -> list[str]:
     raw = os.getenv(name, '')
     values = [item.strip() for item in re.split(r'[\n,]', raw) if item.strip()]
@@ -7426,26 +7435,46 @@ def list_detections(
                    d.severity AS severity,
                    d.confidence AS confidence,
                    d.title AS title,
-                   d.evidence_summary AS evidence_summary,
-                   d.evidence_source AS evidence_source,
+                   COALESCE(de_latest.evidence_summary, d.evidence_summary) AS evidence_summary,
+                   COALESCE(de_latest.source, d.evidence_source) AS evidence_source,
                    d.source_rule AS source_rule,
                    d.status AS status,
                    d.detected_at AS detected_at,
-                   d.raw_evidence_json AS raw_evidence_json,
+                   COALESCE(de_latest.raw_payload_json, d.raw_evidence_json) AS raw_evidence_json,
+                   de_latest.raw_reference AS raw_reference,
+                   de_latest.evidence_type AS evidence_type,
+                   de_latest.created_at AS detection_evidence_created_at,
                    d.monitoring_run_id AS monitoring_run_id,
                    d.linked_alert_id AS linked_alert_id,
-                   COALESCE(d.raw_evidence_json->'observed_evidence'->>'tx_hash', d.raw_evidence_json->>'tx_hash') AS tx_hash,
                    COALESCE(
+                       de_latest.raw_payload_json->'observed_evidence'->>'tx_hash',
+                       de_latest.raw_payload_json->>'tx_hash',
+                       d.raw_evidence_json->'observed_evidence'->>'tx_hash',
+                       d.raw_evidence_json->>'tx_hash'
+                   ) AS tx_hash,
+                   COALESCE(
+                       NULLIF(de_latest.raw_payload_json->'observed_evidence'->>'block_number', '')::bigint,
+                       NULLIF(de_latest.raw_payload_json->>'block_number', '')::bigint,
                        NULLIF(d.raw_evidence_json->'observed_evidence'->>'block_number', '')::bigint,
                        NULLIF(d.raw_evidence_json->>'block_number', '')::bigint
                    ) AS block_number,
                    COALESCE(
+                       de_latest.raw_payload_json->'observed_evidence'->>'detector_kind',
+                       de_latest.raw_payload_json->'observed_evidence'->>'detector_family',
+                       de_latest.raw_payload_json->>'detector_kind',
+                       de_latest.raw_payload_json->>'detector_family',
                        d.raw_evidence_json->'observed_evidence'->>'detector_kind',
                        d.raw_evidence_json->'observed_evidence'->>'detector_family',
                        d.raw_evidence_json->>'detector_kind',
                        d.raw_evidence_json->>'detector_family'
                    ) AS detector_kind,
-                   COALESCE(d.raw_evidence_json->'observed_evidence'->>'evidence_origin', d.evidence_source) AS evidence_origin,
+                   COALESCE(
+                       de_latest.raw_payload_json->'observed_evidence'->>'evidence_origin',
+                       de_latest.raw_payload_json->>'evidence_origin',
+                       de_latest.source,
+                       d.raw_evidence_json->'observed_evidence'->>'evidence_origin',
+                       d.evidence_source
+                   ) AS evidence_origin,
                    a.incident_id AS linked_incident_id,
                    ra.id AS linked_action_id,
                    ev_stats.linked_evidence_count,
@@ -7454,11 +7483,25 @@ def list_detections(
                    COALESCE(
                        ev_latest.raw_payload_json->>'evidence_origin',
                        ev_latest.evidence_source,
-                       COALESCE(d.raw_evidence_json->'observed_evidence'->>'evidence_origin', d.evidence_source)
+                       COALESCE(
+                           de_latest.raw_payload_json->'observed_evidence'->>'evidence_origin',
+                           de_latest.raw_payload_json->>'evidence_origin',
+                           de_latest.source,
+                           d.raw_evidence_json->'observed_evidence'->>'evidence_origin',
+                           d.evidence_source
+                       )
                    ) AS last_evidence_origin,
-                   COALESCE(ev_latest.tx_hash, COALESCE(d.raw_evidence_json->'observed_evidence'->>'tx_hash', d.raw_evidence_json->>'tx_hash')) AS chain_tx_hash,
+                   COALESCE(
+                       ev_latest.tx_hash,
+                       de_latest.raw_payload_json->'observed_evidence'->>'tx_hash',
+                       de_latest.raw_payload_json->>'tx_hash',
+                       d.raw_evidence_json->'observed_evidence'->>'tx_hash',
+                       d.raw_evidence_json->>'tx_hash'
+                   ) AS chain_tx_hash,
                    COALESCE(
                        ev_latest.block_number,
+                       NULLIF(de_latest.raw_payload_json->'observed_evidence'->>'block_number', '')::bigint,
+                       NULLIF(de_latest.raw_payload_json->>'block_number', '')::bigint,
                        NULLIF(d.raw_evidence_json->'observed_evidence'->>'block_number', '')::bigint,
                        NULLIF(d.raw_evidence_json->>'block_number', '')::bigint
                    ) AS chain_block_number,
@@ -7466,6 +7509,10 @@ def list_detections(
                        ev_latest.raw_payload_json->>'detector_kind',
                        ev_latest.raw_payload_json->>'detector_family',
                        COALESCE(
+                           de_latest.raw_payload_json->'observed_evidence'->>'detector_kind',
+                           de_latest.raw_payload_json->'observed_evidence'->>'detector_family',
+                           de_latest.raw_payload_json->>'detector_kind',
+                           de_latest.raw_payload_json->>'detector_family',
                            d.raw_evidence_json->'observed_evidence'->>'detector_kind',
                            d.raw_evidence_json->'observed_evidence'->>'detector_family',
                            d.raw_evidence_json->>'detector_kind',
@@ -7476,6 +7523,19 @@ def list_detections(
                    d.updated_at AS updated_at
             FROM detections d
             LEFT JOIN alerts a ON a.id = d.linked_alert_id AND a.workspace_id = d.workspace_id
+            LEFT JOIN LATERAL (
+                SELECT de.evidence_type,
+                       de.evidence_summary,
+                       de.source,
+                       de.raw_reference,
+                       de.raw_payload_json,
+                       de.created_at
+                FROM detection_evidence de
+                WHERE de.workspace_id = d.workspace_id
+                  AND de.detection_id = d.id
+                ORDER BY de.created_at DESC, de.id DESC
+                LIMIT 1
+            ) de_latest ON TRUE
             LEFT JOIN LATERAL (
                 SELECT COUNT(*)::int AS linked_evidence_count
                 FROM evidence e
@@ -7508,7 +7568,7 @@ def list_detections(
             WHERE d.workspace_id = %s
               AND (%s::text IS NULL OR d.severity = %s::text)
               AND (%s::text IS NULL OR d.status = %s::text)
-              AND (%s::text IS NULL OR d.evidence_source = %s::text)
+              AND (%s::text IS NULL OR COALESCE(de_latest.source, d.evidence_source) = %s::text)
               AND (%s::uuid IS NULL OR d.monitored_system_id = %s::uuid)
               AND (%s::uuid IS NULL OR d.protected_asset_id = %s::uuid)
             ORDER BY d.detected_at DESC
@@ -7535,8 +7595,9 @@ def list_detections(
             item['tx_hash'] = item.get('chain_tx_hash') or item.get('tx_hash')
             item['block_number'] = item.get('chain_block_number') or item.get('block_number')
             item['detector_kind'] = item.get('chain_detector_kind') or item.get('detector_kind')
-            item['evidence_source'] = item.get('last_evidence_source') or item.get('evidence_source')
-            item['evidence_origin'] = item.get('last_evidence_origin') or item.get('evidence_origin')
+            item['evidence_source'] = item.get('evidence_source') or item.get('last_evidence_source')
+            item['evidence_origin'] = item.get('evidence_origin') or item.get('last_evidence_origin')
+            item['evidence_origin_label'] = detection_evidence_origin_label(item.get('evidence_source') or item.get('evidence_origin'))
             item['origin'] = item.get('evidence_origin')
             item['linked_evidence_count'] = int(item.get('linked_evidence_count') or 0)
             item['last_evidence_at'] = item.get('last_evidence_at')
@@ -7598,14 +7659,31 @@ def get_detection_evidence(detection_id: str, request: Request) -> dict[str, Any
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         row = connection.execute(
             '''
-            SELECT id,
-                   workspace_id,
-                   evidence_summary,
-                   raw_evidence_json,
-                   linked_alert_id,
-                   monitoring_run_id
-            FROM detections
-            WHERE id = %s::uuid AND workspace_id = %s
+            SELECT d.id,
+                   d.workspace_id,
+                   COALESCE(de_latest.evidence_summary, d.evidence_summary) AS evidence_summary,
+                   COALESCE(de_latest.raw_payload_json, d.raw_evidence_json) AS raw_evidence_json,
+                   de_latest.raw_reference AS raw_reference,
+                   de_latest.evidence_type AS evidence_type,
+                   COALESCE(de_latest.source, d.evidence_source) AS evidence_source,
+                   de_latest.created_at AS detection_evidence_created_at,
+                   d.linked_alert_id,
+                   d.monitoring_run_id
+            FROM detections d
+            LEFT JOIN LATERAL (
+                SELECT de.evidence_type,
+                       de.evidence_summary,
+                       de.source,
+                       de.raw_reference,
+                       de.raw_payload_json,
+                       de.created_at
+                FROM detection_evidence de
+                WHERE de.workspace_id = d.workspace_id
+                  AND de.detection_id = d.id
+                ORDER BY de.created_at DESC, de.id DESC
+                LIMIT 1
+            ) de_latest ON TRUE
+            WHERE d.id = %s::uuid AND d.workspace_id = %s
             ''',
             (detection_id, workspace_context['workspace_id']),
         ).fetchone()
@@ -7616,6 +7694,11 @@ def get_detection_evidence(detection_id: str, request: Request) -> dict[str, Any
             'detection_id': detection.get('id'),
             'summary': detection.get('evidence_summary'),
             'raw_evidence_json': detection.get('raw_evidence_json') or {},
+            'raw_reference': detection.get('raw_reference'),
+            'evidence_type': detection.get('evidence_type'),
+            'evidence_source': detection.get('evidence_source'),
+            'evidence_origin_label': detection_evidence_origin_label(detection.get('evidence_source')),
+            'detection_evidence_created_at': detection.get('detection_evidence_created_at'),
             'linked_alert_id': detection.get('linked_alert_id'),
             'monitoring_run_id': detection.get('monitoring_run_id'),
         }
