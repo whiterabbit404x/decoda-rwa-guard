@@ -476,6 +476,45 @@ def test_monitoring_cycle_backfills_oldest_target_when_all_targets_are_within_in
     assert update[5] == 0
 
 
+def test_monitoring_cycle_summary_reports_consistent_due_counts_when_backfill_promotes_target(monkeypatch, caplog):
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'not-due-target',
+            'name': 'Not Due Target',
+            'asset_id': 'asset-1',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': now - timedelta(seconds=90),
+            'monitoring_interval_seconds': 3600,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'MONITORING_DUE_SELECTION_BACKFILL_MIN_AGE_SECONDS',
+        30,
+    )
+    monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.pop('ws-1', None)
+
+    with caplog.at_level('INFO'):
+        summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10, trigger_type='scheduler')
+
+    assert summary['due_targets'] == 1
+    assert any(
+        'base_due_count=0 effective_due_count=1 due=1 checked=1' in message and 'skipped_not_due=0' in message
+        for message in caplog.messages
+    )
+    monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.pop('ws-1', None)
+
+
 def test_monitoring_cycle_reports_zero_interval_capped_targets(monkeypatch, caplog):
     now = datetime.now(timezone.utc)
     due_targets = [
