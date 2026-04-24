@@ -65,6 +65,7 @@ const HARD_GUARD_FLAGS = new Set([
   'live_monitoring_without_reporting_systems',
   'live_telemetry_verified_without_timestamp',
   'idle_runtime_with_active_monitoring_claim',
+  'coverage_only_persistent_no_evidence',
 ]);
 const HARD_GUARD_PRIORITY = [
   'offline_with_current_telemetry',
@@ -72,6 +73,7 @@ const HARD_GUARD_PRIORITY = [
   'live_monitoring_without_reporting_systems',
   'live_telemetry_verified_without_timestamp',
   'idle_runtime_with_active_monitoring_claim',
+  'coverage_only_persistent_no_evidence',
 ] as const;
 
 function asTrimmedString(value: unknown): string | null {
@@ -189,7 +191,6 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
         || persistedEnabledConfigCount <= 0
         || validTargetSystemLinkCount <= 0),
   );
-  const normalizedContradictionFlags = [...new Set(synthesizedFlags)].sort();
   const continuityStatusValue = asTrimmedString((summary as Record<string, unknown>).continuity_status);
   const continuityStatus = continuityStatusValue === 'continuous_live'
     || continuityStatusValue === 'continuous_no_evidence'
@@ -203,6 +204,10 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
         .map((value) => asTrimmedString(value))
         .filter((value): value is string => Boolean(value))
     : [];
+  if (continuityReasonCodes.includes('coverage_only_persistent_no_evidence')) {
+    appendFlag(synthesizedFlags, 'coverage_only_persistent_no_evidence', true);
+  }
+  const normalizedContradictionFlags = [...new Set(synthesizedFlags)].sort();
   const declaredGuardFlags = Array.isArray(summary.guard_flags)
     ? (summary.guard_flags as unknown[])
         .map((value) => asTrimmedString(value))

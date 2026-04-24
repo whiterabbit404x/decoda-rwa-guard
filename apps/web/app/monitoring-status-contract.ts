@@ -28,6 +28,15 @@ export type WorkspaceMonitoringSummary = {
   status_reason: string | null;
   db_failure_classification?: string | null;
   db_failure_reason?: string | null;
+  coverage_only_warning?: {
+    state?: 'coverage_only_persistent_no_evidence' | string | null;
+    active?: boolean;
+    cycle_count?: number;
+    duration_seconds?: number;
+    threshold_seconds?: number;
+    first_seen_at?: string | null;
+    last_cycle_at?: string | null;
+  };
 };
 
 export type MonitoringRuntimeStatus = {
@@ -107,6 +116,7 @@ export type MonitoringRuntimeStatus = {
   guard_flags?: string[];
   db_failure_classification?: string | null;
   db_failure_reason?: string | null;
+  coverage_only_warning?: WorkspaceMonitoringSummary['coverage_only_warning'];
 };
 
 export function runtimeStatusModeFromMonitoringStatus(value: MonitoringRuntimeStatus['monitoring_status']): MonitoringMode {

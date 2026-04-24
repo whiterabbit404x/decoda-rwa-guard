@@ -485,4 +485,31 @@ test.describe('workspace monitoring truth guardrails', () => {
     expect(hasRealTelemetryBackedChain(truth)).toBeFalsy();
     expect(monitoringHealthyCopyAllowed(truth)).toBeFalsy();
   });
+
+  test('persistent coverage-only no-evidence warning is treated as a degraded trust signal', () => {
+    const truth = resolveWorkspaceMonitoringTruth(runtimeWithSummary({
+      workspace_configured: true,
+      runtime_status: 'degraded',
+      monitoring_status: 'limited',
+      reporting_systems_count: 2,
+      monitored_systems_count: 2,
+      protected_assets_count: 2,
+      telemetry_freshness: 'fresh',
+      confidence: 'low',
+      last_poll_at: '2026-04-15T10:00:00Z',
+      last_heartbeat_at: '2026-04-15T10:00:00Z',
+      last_telemetry_at: '2026-04-15T09:59:30Z',
+      evidence_source_summary: 'live',
+      contradiction_flags: [],
+      guard_flags: [],
+      active_alerts_count: 0,
+      active_incidents_count: 0,
+      continuity_status: 'continuous_live',
+      continuity_reason_codes: ['coverage_only_persistent_no_evidence'],
+      status_reason: 'coverage_only_persistent_no_evidence',
+    }));
+    expect(truth.contradiction_flags).toContain('coverage_only_persistent_no_evidence');
+    expect(truth.guard_flags).toContain('coverage_only_persistent_no_evidence');
+    expect(monitoringHealthyCopyAllowed(truth)).toBeFalsy();
+  });
 });

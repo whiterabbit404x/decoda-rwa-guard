@@ -973,3 +973,82 @@ def test_monitor_checkpoint_upsert_and_load():
         fallback_block=12,
     )
     assert loaded == 145
+
+
+def test_workspace_coverage_only_warning_not_triggered_on_fresh_startup(monkeypatch):
+    monkeypatch.setattr(monitoring_runner, 'MONITORING_COVERAGE_ONLY_WARNING_SECONDS', 20 * 60)
+    monitoring_runner._WORKSPACE_COVERAGE_ONLY_STREAK.clear()
+    now = datetime(2026, 4, 24, 12, 0, tzinfo=timezone.utc)
+
+    state = monitoring_runner._workspace_coverage_only_state(
+        workspace_id='ws-1',
+        cycle_at=now,
+        provider_reachable=True,
+        coverage_heartbeat_updates=1,
+        real_events_detected=0,
+    )
+
+    assert state['active'] is False
+    assert state['state'] is None
+    assert state['cycle_count'] == 1
+    assert state['duration_seconds'] == 0
+
+
+def test_workspace_coverage_only_warning_triggers_after_sustained_no_evidence(monkeypatch):
+    monkeypatch.setattr(monitoring_runner, 'MONITORING_COVERAGE_ONLY_WARNING_SECONDS', 20 * 60)
+    monitoring_runner._WORKSPACE_COVERAGE_ONLY_STREAK.clear()
+    first_cycle = datetime(2026, 4, 24, 12, 0, tzinfo=timezone.utc)
+    later_cycle = first_cycle + timedelta(minutes=21)
+
+    monitoring_runner._workspace_coverage_only_state(
+        workspace_id='ws-1',
+        cycle_at=first_cycle,
+        provider_reachable=True,
+        coverage_heartbeat_updates=2,
+        real_events_detected=0,
+    )
+    state = monitoring_runner._workspace_coverage_only_state(
+        workspace_id='ws-1',
+        cycle_at=later_cycle,
+        provider_reachable=True,
+        coverage_heartbeat_updates=2,
+        real_events_detected=0,
+    )
+
+    assert state['active'] is True
+    assert state['state'] == 'coverage_only_persistent_no_evidence'
+    assert state['cycle_count'] == 2
+    assert state['duration_seconds'] >= 20 * 60
+
+
+def test_workspace_coverage_only_warning_resets_on_first_real_event(monkeypatch):
+    monkeypatch.setattr(monitoring_runner, 'MONITORING_COVERAGE_ONLY_WARNING_SECONDS', 20 * 60)
+    monitoring_runner._WORKSPACE_COVERAGE_ONLY_STREAK.clear()
+    first_cycle = datetime(2026, 4, 24, 12, 0, tzinfo=timezone.utc)
+
+    monitoring_runner._workspace_coverage_only_state(
+        workspace_id='ws-1',
+        cycle_at=first_cycle,
+        provider_reachable=True,
+        coverage_heartbeat_updates=1,
+        real_events_detected=0,
+    )
+    monitoring_runner._workspace_coverage_only_state(
+        workspace_id='ws-1',
+        cycle_at=first_cycle + timedelta(minutes=21),
+        provider_reachable=True,
+        coverage_heartbeat_updates=1,
+        real_events_detected=0,
+    )
+    reset_state = monitoring_runner._workspace_coverage_only_state(
+        workspace_id='ws-1',
+        cycle_at=first_cycle + timedelta(minutes=22),
+        provider_reachable=True,
+        coverage_heartbeat_updates=1,
+        real_events_detected=1,
+    )
+
+    assert reset_state['active'] is False
+    assert reset_state['state'] is None
+    assert reset_state['cycle_count'] == 0
+    assert 'ws-1' not in monitoring_runner._WORKSPACE_COVERAGE_ONLY_STREAK
