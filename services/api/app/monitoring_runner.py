@@ -63,6 +63,10 @@ MONITORING_DUE_SELECTION_BACKFILL_COOLDOWN_SECONDS = max(
     120,
     int(os.getenv('MONITORING_DUE_SELECTION_BACKFILL_COOLDOWN_SECONDS', '180')),
 )
+MONITORING_DUE_SELECTION_BACKFILL_MIN_AGE_SECONDS = max(
+    30,
+    int(os.getenv('MONITORING_DUE_SELECTION_BACKFILL_MIN_AGE_SECONDS', '60')),
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2806,46 +2810,10 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             ''',
         ).fetchall()
         cycle_workspace_ids: set[str] = set()
-        monitored_workspace_rows = connection.execute(
-            '''
-            SELECT DISTINCT workspace_id
-            FROM targets
-            WHERE deleted_at IS NULL
-              AND monitoring_enabled = TRUE
-              AND enabled = TRUE
-              AND is_active = TRUE
-            '''
-        ).fetchall()
-        for row in monitored_workspace_rows:
-            workspace_id = str((dict(row)).get('workspace_id') or '').strip()
-            if workspace_id:
-                cycle_workspace_ids.add(workspace_id)
         for row in candidate_systems:
             workspace_id = str((dict(row)).get('workspace_id') or '').strip()
             if workspace_id:
                 cycle_workspace_ids.add(workspace_id)
-        for workspace_id in sorted(cycle_workspace_ids):
-            run_id = str(uuid.uuid4())
-            workspace_run_ids[workspace_id] = run_id
-            connection.execute(
-                '''
-                INSERT INTO monitoring_runs (
-                    id,
-                    workspace_id,
-                    started_at,
-                    status,
-                    trigger_type,
-                    systems_checked_count,
-                    assets_checked_count,
-                    detections_created_count,
-                    alerts_created_count,
-                    telemetry_records_seen_count,
-                    notes
-                )
-                VALUES (%s::uuid, %s::uuid, NOW(), 'running', %s, 0, 0, 0, 0, 0, %s)
-                ''',
-                (run_id, workspace_id, trigger_type, f'worker_name={worker_name}'),
-            )
         now = utc_now()
         global _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT
         should_touch_monitored_heartbeats = (
@@ -2880,6 +2848,11 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         skipped_not_due = 0
         skipped_null_handling = 0
         interval_capped_targets = 0
+        backfill_attempted = 0
+        backfill_allowed_count = 0
+        backfill_blocked_by_age = 0
+        backfill_blocked_by_cooldown = 0
+        backfill_blocked_missing_candidate = 0
         max_effective_monitoring_interval_seconds = max(
             30,
             int(os.getenv('MAX_EFFECTIVE_MONITORING_INTERVAL_SECONDS', '120')),
@@ -2923,6 +2896,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             if len(due_target_ids) >= max_targets:
                 break
         if not due_target_ids and skipped_not_due > 0:
+            backfill_attempted = 1
             oldest_candidate: dict[str, Any] | None = None
             oldest_checked_at: datetime | None = None
             oldest_required_age_seconds = 0
@@ -2944,7 +2918,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 except (TypeError, ValueError):
                     interval_seconds = 30
                 effective_interval_seconds = min(interval_seconds, max_effective_monitoring_interval_seconds)
-                required_age_seconds = max(60, effective_interval_seconds)
+                required_age_seconds = MONITORING_DUE_SELECTION_BACKFILL_MIN_AGE_SECONDS
                 if oldest_checked_at is None or parsed_checked < oldest_checked_at:
                     oldest_checked_at = parsed_checked
                     oldest_candidate = system
@@ -2977,32 +2951,45 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 due_target_ids.append(fallback_target_id)
                 due_system_ids[fallback_target_id] = fallback_system_id
                 _LAST_MONITORING_DUE_SELECTION_BACKFILL_AT[fallback_workspace_id] = now
-            logger.info(
-                'monitoring_due_selection_backfill workspace_id=%s workspace_target_id=%s reason=all_targets_within_interval '
-                'oldest_last_checked_at=%s oldest_age_seconds=%s required_age_seconds=%s backfill_cooldown_seconds=%s '
-                'backfill_allowed=%s',
-                fallback_workspace_id or None,
-                fallback_target_id or None,
-                oldest_checked_at.isoformat() if oldest_checked_at else None,
-                oldest_age_seconds,
-                oldest_required_age_seconds,
-                backfill_cooldown_seconds,
-                backfill_allowed,
-            )
-        logger.info(
-            'monitoring due selection total_candidate_targets=%s skipped_disabled=%s skipped_inactive=%s '
-            'skipped_missing_workspace=%s skipped_not_due=%s skipped_null_handling=%s interval_capped_targets=%s due_target_ids=%s',
-            len(candidate_systems),
-            skipped_disabled,
-            skipped_inactive,
-            skipped_missing_workspace,
-            skipped_not_due,
-            skipped_null_handling,
-            interval_capped_targets,
-            [str(target_id) for target_id in due_target_ids],
-        )
+                backfill_allowed_count = 1
+            elif not fallback_target_id or not fallback_system_id or not fallback_workspace_id:
+                backfill_blocked_missing_candidate = 1
+            elif not age_threshold_met:
+                backfill_blocked_by_age = 1
+            elif not cooldown_elapsed:
+                backfill_blocked_by_cooldown = 1
         due_targets = []
         if due_target_ids:
+            due_target_id_set = {str(item) for item in due_target_ids}
+            due_workspace_ids: set[str] = set()
+            for row in candidate_systems:
+                system = dict(row)
+                target_id = str(system.get('target_id') or '').strip()
+                workspace_id = str(system.get('workspace_id') or '').strip()
+                if target_id in due_target_id_set and workspace_id:
+                    due_workspace_ids.add(workspace_id)
+            for workspace_id in sorted(due_workspace_ids):
+                run_id = str(uuid.uuid4())
+                workspace_run_ids[workspace_id] = run_id
+                connection.execute(
+                    '''
+                    INSERT INTO monitoring_runs (
+                        id,
+                        workspace_id,
+                        started_at,
+                        status,
+                        trigger_type,
+                        systems_checked_count,
+                        assets_checked_count,
+                        detections_created_count,
+                        alerts_created_count,
+                        telemetry_records_seen_count,
+                        notes
+                    )
+                    VALUES (%s::uuid, %s::uuid, NOW(), 'running', %s, 0, 0, 0, 0, 0, %s)
+                    ''',
+                    (run_id, workspace_id, trigger_type, f'worker_name={worker_name}'),
+                )
             due_targets = connection.execute(
                 '''
                 SELECT id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
@@ -3021,7 +3008,6 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         else:
             due_targets = []
         due_count = len(due_targets)
-        logger.info('due targets: %s', due_count)
         for row in due_targets:
             target = dict(row)
             target['monitored_system_id'] = due_system_ids.get(str(target['id']))
@@ -3142,51 +3128,52 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     workspace_id,
                 ),
             )
-        for workspace_id in sorted(cycle_workspace_ids):
-            active_alerts_row = connection.execute(
-                """
-                SELECT COUNT(*) AS c
-                FROM alerts
-                WHERE workspace_id = %s::uuid
-                  AND status IN ('open', 'acknowledged', 'investigating')
-                """,
-                (workspace_id,),
-            ).fetchone()
-            active_incidents_row = connection.execute(
-                """
-                SELECT COUNT(*) AS c
-                FROM incidents
-                WHERE workspace_id = %s::uuid
-                  AND status IN ('open', 'acknowledged')
-                """,
-                (workspace_id,),
-            ).fetchone()
-            connection.execute(
-                """
-                INSERT INTO monitoring_workspace_runtime_summary (
-                    workspace_id,
-                    active_alerts_count,
-                    active_incidents_count,
-                    updated_at
+        if checked > 0:
+            for workspace_id in sorted(cycle_workspace_ids):
+                active_alerts_row = connection.execute(
+                    """
+                    SELECT COUNT(*) AS c
+                    FROM alerts
+                    WHERE workspace_id = %s::uuid
+                      AND status IN ('open', 'acknowledged', 'investigating')
+                    """,
+                    (workspace_id,),
+                ).fetchone()
+                active_incidents_row = connection.execute(
+                    """
+                    SELECT COUNT(*) AS c
+                    FROM incidents
+                    WHERE workspace_id = %s::uuid
+                      AND status IN ('open', 'acknowledged')
+                    """,
+                    (workspace_id,),
+                ).fetchone()
+                connection.execute(
+                    """
+                    INSERT INTO monitoring_workspace_runtime_summary (
+                        workspace_id,
+                        active_alerts_count,
+                        active_incidents_count,
+                        updated_at
+                    )
+                    VALUES (
+                        %s::uuid,
+                        CAST(%s AS integer),
+                        CAST(%s AS integer),
+                        NOW()
+                    )
+                    ON CONFLICT (workspace_id)
+                    DO UPDATE SET
+                        active_alerts_count = EXCLUDED.active_alerts_count,
+                        active_incidents_count = EXCLUDED.active_incidents_count,
+                        updated_at = NOW()
+                    """,
+                    (
+                        workspace_id,
+                        int((active_alerts_row or {}).get('c') or 0),
+                        int((active_incidents_row or {}).get('c') or 0),
+                    ),
                 )
-                VALUES (
-                    %s::uuid,
-                    CAST(%s AS integer),
-                    CAST(%s AS integer),
-                    NOW()
-                )
-                ON CONFLICT (workspace_id)
-                DO UPDATE SET
-                    active_alerts_count = EXCLUDED.active_alerts_count,
-                    active_incidents_count = EXCLUDED.active_incidents_count,
-                    updated_at = NOW()
-                """,
-                (
-                    workspace_id,
-                    int((active_alerts_row or {}).get('c') or 0),
-                    int((active_incidents_row or {}).get('c') or 0),
-                ),
-            )
         connection.execute(
             '''
             UPDATE monitoring_worker_state
@@ -3222,14 +3209,6 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             ),
         )
         connection.commit()
-    logger.info(
-        'monitoring_cycle_updates worker=%s checked=%s monitored_systems_updated=%s alerts_generated=%s incidents_created=%s',
-        worker_name,
-        checked,
-        monitored_systems_updated,
-        alerts_generated,
-        incidents_created,
-    )
     WORKER_STATE.update(
         {
             'worker_name': worker_name,
@@ -3242,7 +3221,34 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         }
     )
     cycle_duration_ms = int((utc_now() - cycle_started_at).total_seconds() * 1000)
-    logger.info('monitoring cycle finished worker=%s due=%s checked=%s live_targets=%s events=%s alerts=%s incidents=%s duration_ms=%s', worker_name, due_count, checked, live_targets_checked, events_ingested, alerts_generated, incidents_created, cycle_duration_ms)
+    logger.info(
+        'monitoring cycle summary worker=%s total_candidate_targets=%s due=%s checked=%s '
+        'skipped_disabled=%s skipped_inactive=%s skipped_missing_workspace=%s skipped_not_due=%s '
+        'skipped_null_handling=%s interval_capped_targets=%s backfill_attempted=%s backfill_allowed=%s '
+        'backfill_blocked_by_age=%s backfill_blocked_by_cooldown=%s backfill_blocked_missing_candidate=%s '
+        'live_targets=%s events=%s alerts=%s incidents=%s monitored_systems_updated=%s duration_ms=%s',
+        worker_name,
+        len(candidate_systems) if 'candidate_systems' in locals() else 0,
+        due_count,
+        checked,
+        skipped_disabled if 'skipped_disabled' in locals() else 0,
+        skipped_inactive if 'skipped_inactive' in locals() else 0,
+        skipped_missing_workspace if 'skipped_missing_workspace' in locals() else 0,
+        skipped_not_due if 'skipped_not_due' in locals() else 0,
+        skipped_null_handling if 'skipped_null_handling' in locals() else 0,
+        interval_capped_targets if 'interval_capped_targets' in locals() else 0,
+        backfill_attempted if 'backfill_attempted' in locals() else 0,
+        backfill_allowed_count if 'backfill_allowed_count' in locals() else 0,
+        backfill_blocked_by_age if 'backfill_blocked_by_age' in locals() else 0,
+        backfill_blocked_by_cooldown if 'backfill_blocked_by_cooldown' in locals() else 0,
+        backfill_blocked_missing_candidate if 'backfill_blocked_missing_candidate' in locals() else 0,
+        live_targets_checked,
+        events_ingested,
+        alerts_generated,
+        incidents_created,
+        monitored_systems_updated,
+        cycle_duration_ms,
+    )
     WORKER_STATE['ingestion_mode'] = ingestion_runtime.get('source')
     WORKER_STATE['degraded'] = bool(ingestion_runtime.get('degraded'))
     for workspace_id in cycle_workspace_ids:
