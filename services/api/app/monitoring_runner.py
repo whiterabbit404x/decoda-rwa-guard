@@ -2873,9 +2873,6 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             30,
             int(os.getenv('MAX_EFFECTIVE_MONITORING_INTERVAL_SECONDS', '120')),
         )
-        oldest_not_due_target_id: str | None = None
-        oldest_not_due_system_id: str | None = None
-        oldest_not_due_checked_at: datetime | None = None
         due_target_ids: list[Any] = []
         due_system_ids: dict[str, str] = {}
         for row in candidate_systems:
@@ -2912,23 +2909,35 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     due_system_ids[str(system['target_id'])] = str(system['monitored_system_id'])
                 else:
                     skipped_not_due += 1
-                    candidate_target_id = str(system.get('target_id') or '').strip()
-                    candidate_system_id = str(system.get('monitored_system_id') or '').strip()
-                    if candidate_target_id and candidate_system_id and (
-                        oldest_not_due_checked_at is None or last_checked_at < oldest_not_due_checked_at
-                    ):
-                        oldest_not_due_target_id = candidate_target_id
-                        oldest_not_due_system_id = candidate_system_id
-                        oldest_not_due_checked_at = last_checked_at
             if len(due_target_ids) >= max_targets:
                 break
-        if not due_target_ids and oldest_not_due_target_id and oldest_not_due_system_id:
-            due_target_ids.append(oldest_not_due_target_id)
-            due_system_ids[oldest_not_due_target_id] = oldest_not_due_system_id
+        if not due_target_ids and skipped_not_due > 0:
+            oldest_candidate: dict[str, Any] | None = None
+            oldest_checked_at: datetime | None = None
+            for row in candidate_systems:
+                system = dict(row)
+                if (
+                    not bool(system.get('monitored_system_enabled'))
+                    or not bool(system.get('monitoring_enabled'))
+                    or not bool(system.get('enabled'))
+                    or not bool(system.get('is_active'))
+                ):
+                    continue
+                parsed_checked = _parse_ts(system.get('last_checked_at'))
+                if parsed_checked is None:
+                    continue
+                if oldest_checked_at is None or parsed_checked < oldest_checked_at:
+                    oldest_checked_at = parsed_checked
+                    oldest_candidate = system
+            fallback_target_id = str((oldest_candidate or {}).get('target_id') or '').strip()
+            fallback_system_id = str((oldest_candidate or {}).get('monitored_system_id') or '').strip()
+            if fallback_target_id and fallback_system_id:
+                due_target_ids.append(fallback_target_id)
+                due_system_ids[fallback_target_id] = fallback_system_id
             logger.info(
                 'monitoring_due_selection_backfill workspace_target_id=%s reason=all_targets_within_interval oldest_last_checked_at=%s',
-                oldest_not_due_target_id,
-                oldest_not_due_checked_at.isoformat() if oldest_not_due_checked_at else None,
+                fallback_target_id or None,
+                oldest_checked_at.isoformat() if oldest_checked_at else None,
             )
         logger.info(
             'monitoring due selection total_candidate_targets=%s skipped_disabled=%s skipped_inactive=%s '
