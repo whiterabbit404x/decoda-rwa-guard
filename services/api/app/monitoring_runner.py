@@ -2862,6 +2862,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         skipped_null_handling = 0
         interval_capped_targets = 0
         due_selection_workspace_snapshot: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        soonest_next_due_at: datetime | None = None
+        soonest_due_in_seconds: int | None = None
         should_consider_backfill = False
         backfill_attempted = 0
         backfill_evaluated = 0
@@ -2905,6 +2907,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             )
             seconds_until_due = (next_due_at - now).total_seconds()
             due_in_seconds = 0 if seconds_until_due <= 0 else int(math.ceil(seconds_until_due))
+            if soonest_next_due_at is None or next_due_at < soonest_next_due_at:
+                soonest_next_due_at = next_due_at
+                soonest_due_in_seconds = due_in_seconds
             workspace_id = str(system.get('workspace_id') or '').strip()
             if workspace_id:
                 due_selection_workspace_snapshot[workspace_id].append(
@@ -2946,6 +2951,12 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 len(entries),
                 _json_dumps(soonest_entries),
             )
+        logger.info(
+            'monitoring due-selection horizon worker=%s soonest_next_due_at=%s soonest_due_in_seconds=%s',
+            worker_name,
+            soonest_next_due_at.isoformat() if soonest_next_due_at else None,
+            soonest_due_in_seconds,
+        )
         oldest_candidate: dict[str, Any] | None = None
         oldest_checked_at: datetime | None = None
         for row in candidate_systems:
@@ -2979,7 +2990,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             else None
         )
         fallback_due_in_seconds = (
-            int((fallback_next_due_at - now).total_seconds())
+            int(math.ceil((fallback_next_due_at - now).total_seconds()))
             if fallback_next_due_at is not None
             else None
         )
@@ -3000,6 +3011,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         should_consider_backfill = bool(
             no_due_targets
             and workspace_live_mode
+            and fallback_is_due
         )
         has_backfill_candidate = bool(
             fallback_target_id
@@ -3009,10 +3021,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         if should_consider_backfill:
             if has_backfill_candidate:
                 backfill_evaluated = 1
-                if not fallback_is_due:
-                    backfill_attempted = 0
-                    backfill_blocked_not_yet_due = 1
-                elif not cooldown_elapsed:
+                if not cooldown_elapsed:
                     backfill_attempted = 1
                     backfill_blocked_by_cooldown = 1
                 else:

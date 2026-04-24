@@ -407,9 +407,9 @@ def test_monitoring_cycle_all_targets_not_due_reports_checked_zero(monkeypatch, 
         'monitoring cycle summary worker=test-worker' in message
         and 'due=0 checked=0' in message
         and 'backfill_attempted=0' in message
-        and 'backfill_evaluated=1' in message
+        and 'backfill_evaluated=0' in message
         and 'backfill_executed=0' in message
-        and 'backfill_blocked_not_yet_due=1' in message
+        and 'backfill_blocked_not_yet_due=0' in message
         and 'oldest_not_due_age_seconds=' in message
         for message in caplog.messages
     )
@@ -532,7 +532,7 @@ def test_monitoring_cycle_due_selection_snapshot_limits_to_three_targets(monkeyp
     monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.pop('ws-1', None)
 
 
-def test_monitoring_cycle_does_not_backfill_when_oldest_target_is_not_yet_due(monkeypatch, caplog):
+def test_monitoring_cycle_does_not_backfill_when_due_in_seconds_is_positive(monkeypatch, caplog):
     now = datetime.now(timezone.utc)
     due_targets = [
         {
@@ -561,11 +561,25 @@ def test_monitoring_cycle_does_not_backfill_when_oldest_target_is_not_yet_due(mo
     assert summary['checked'] == 0
     assert len(connection.monitoring_run_inserts) == 0
     assert any(
-        'cycle_state=backfill_evaluated_blocked' in message
+        'monitoring due-selection snapshot worker=test-worker workspace_id=ws-1' in message
+        and '"due_in_seconds":' in message
+        for message in caplog.messages
+    )
+    horizon_message = next(
+        message
+        for message in caplog.messages
+        if 'monitoring due-selection horizon worker=test-worker' in message
+    )
+    assert 'soonest_next_due_at=' in horizon_message
+    assert 'soonest_due_in_seconds=' in horizon_message
+    soonest_due_in_seconds = int(horizon_message.split('soonest_due_in_seconds=')[1])
+    assert soonest_due_in_seconds > 0
+    assert any(
+        'cycle_state=normal_no_due_cycle' in message
         and 'backfill_attempted=0' in message
-        and 'backfill_evaluated=1' in message
+        and 'backfill_evaluated=0' in message
         and 'backfill_executed=0' in message
-        and 'backfill_blocked_not_yet_due=1' in message
+        and 'backfill_blocked_not_yet_due=0' in message
         for message in caplog.messages
     )
 
@@ -601,9 +615,9 @@ def test_monitoring_cycle_summary_reports_consistent_due_counts_when_backfill_is
         'base_due_count=0 effective_due_count=0 due=0 checked=0' in message
         and 'skipped_not_due=1' in message
         and 'backfill_attempted=0' in message
-        and 'backfill_evaluated=1' in message
+        and 'backfill_evaluated=0' in message
         and 'backfill_executed=0' in message
-        and 'backfill_blocked_not_yet_due=1' in message
+        and 'backfill_blocked_not_yet_due=0' in message
         for message in caplog.messages
     )
     monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.pop('ws-1', None)
