@@ -72,9 +72,12 @@ PREREQUISITE_COUNTER_KEYS: tuple[str, ...] = (
 NON_LIVE_PROVIDER_SOURCE_TYPES: set[str] = {'demo', 'simulator', 'replay', 'unknown'}
 RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS = int(os.getenv('RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS', os.getenv('PROXY_TIMEOUT_SECONDS', '30')))
 RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES = int(os.getenv('RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES', '200'))
+RUNTIME_STATUS_CACHE_TTL_SECONDS = max(1, int(os.getenv('RUNTIME_STATUS_CACHE_TTL_SECONDS', '10')))
+RUNTIME_STATUS_PRECOMPUTED_COUNTERS_MAX_AGE_SECONDS = max(1, int(os.getenv('RUNTIME_STATUS_PRECOMPUTED_COUNTERS_MAX_AGE_SECONDS', '60')))
 RUNTIME_STATUS_QUERY_PROFILE_HISTORY: dict[str, deque[float]] = defaultdict(
     lambda: deque(maxlen=max(RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES, 20))
 )
+RUNTIME_STATUS_WORKSPACE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def _provider_source_is_live(source_type: Any) -> bool:
@@ -3011,6 +3014,51 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     workspace_id,
                 ),
             )
+        for workspace_id in sorted(cycle_workspace_ids):
+            active_alerts_row = connection.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM alerts
+                WHERE workspace_id = %s::uuid
+                  AND status IN ('open', 'acknowledged', 'investigating')
+                """,
+                (workspace_id,),
+            ).fetchone()
+            active_incidents_row = connection.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM incidents
+                WHERE workspace_id = %s::uuid
+                  AND status IN ('open', 'acknowledged')
+                """,
+                (workspace_id,),
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO monitoring_workspace_runtime_summary (
+                    workspace_id,
+                    active_alerts_count,
+                    active_incidents_count,
+                    updated_at
+                )
+                VALUES (
+                    %s::uuid,
+                    CAST(%s AS integer),
+                    CAST(%s AS integer),
+                    NOW()
+                )
+                ON CONFLICT (workspace_id)
+                DO UPDATE SET
+                    active_alerts_count = EXCLUDED.active_alerts_count,
+                    active_incidents_count = EXCLUDED.active_incidents_count,
+                    updated_at = NOW()
+                """,
+                (
+                    workspace_id,
+                    int((active_alerts_row or {}).get('c') or 0),
+                    int((active_incidents_row or {}).get('c') or 0),
+                ),
+            )
         connection.execute(
             '''
             UPDATE monitoring_worker_state
@@ -3069,6 +3117,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     logger.info('monitoring cycle finished worker=%s due=%s checked=%s live_targets=%s events=%s alerts=%s incidents=%s duration_ms=%s', worker_name, due_count, checked, live_targets_checked, events_ingested, alerts_generated, incidents_created, cycle_duration_ms)
     WORKER_STATE['ingestion_mode'] = ingestion_runtime.get('source')
     WORKER_STATE['degraded'] = bool(ingestion_runtime.get('degraded'))
+    for workspace_id in cycle_workspace_ids:
+        RUNTIME_STATUS_WORKSPACE_CACHE.pop(f'workspace:{workspace_id}', None)
     return {'due_targets': due_count, 'checked': checked, 'live_targets_checked': live_targets_checked, 'events_ingested': events_ingested, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'cycle_duration_ms': cycle_duration_ms, 'runs': runs, 'live_mode': True, 'ingestion_mode': ingestion_runtime.get('source'), 'degraded': bool(ingestion_runtime.get('degraded'))}
 
 
@@ -3680,6 +3730,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     last_query_checkpoint = 'not_started'
     resolved_workspace_id: str | None = None
     resolved_workspace_slug: str | None = None
+    cache_key: str | None = None
+
+    if request is not None:
+        try:
+            header_workspace_id = str(request.headers.get('x-workspace-id') or '').strip()
+            if header_workspace_id:
+                cache_key = f'workspace:{header_workspace_id}'
+                cached = RUNTIME_STATUS_WORKSPACE_CACHE.get(cache_key)
+                if cached:
+                    cached_at, cached_payload = cached
+                    if (perf_counter() - cached_at) <= RUNTIME_STATUS_CACHE_TTL_SECONDS:
+                        return dict(cached_payload)
+        except Exception:
+            cache_key = None
 
     def _persist_workspace_context(
         req: Request | None,
@@ -4313,36 +4377,62 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             target_workspace_filter = 'AND t.workspace_id = %s' if workspace_id else ''
             evidence_workspace_filter = 'WHERE e.workspace_id = %s' if workspace_id else ''
             scoped_params: tuple[Any, ...] = (workspace_id,) if workspace_id else ()
+            precomputed_active_counts: dict[str, Any] | None = None
+            if workspace_id:
+                try:
+                    _mark_query_checkpoint('load_workspace_runtime_summary')
+                    precomputed_row = connection.execute(
+                        '''
+                        SELECT active_alerts_count, active_incidents_count, updated_at
+                        FROM monitoring_workspace_runtime_summary
+                        WHERE workspace_id = %s::uuid
+                        ''',
+                        (workspace_id,),
+                    ).fetchone()
+                    precomputed_active_counts = dict(precomputed_row) if precomputed_row else None
+                except Exception:
+                    precomputed_active_counts = None
             _mark_query_checkpoint('count_open_alerts')
-            try:
-                open_alerts = connection.execute(
-                    f"SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating') {'AND workspace_id = %s' if workspace_id else ''}",
-                    scoped_params,
-                ).fetchone()
-            except Exception as exc:
-                _record_optional_query_failure(
-                    exc=exc,
-                    checkpoint_label='count_open_alerts',
-                    impacted_fields=['active_alerts_count'],
-                    reason_code='optional_table_unavailable',
-                    error_code='runtime_optional_query_failed',
-                )
-                open_alerts = {'c': 0}
+            use_precomputed_active_counts = False
+            if precomputed_active_counts:
+                precomputed_updated_at = _parse_ts(precomputed_active_counts.get('updated_at'))
+                if precomputed_updated_at and int((now - precomputed_updated_at).total_seconds()) <= RUNTIME_STATUS_PRECOMPUTED_COUNTERS_MAX_AGE_SECONDS:
+                    use_precomputed_active_counts = True
+            if use_precomputed_active_counts:
+                open_alerts = {'c': int(precomputed_active_counts.get('active_alerts_count') or 0)}
+            else:
+                try:
+                    open_alerts = connection.execute(
+                        f"SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating') {'AND workspace_id = %s' if workspace_id else ''}",
+                        scoped_params,
+                    ).fetchone()
+                except Exception as exc:
+                    _record_optional_query_failure(
+                        exc=exc,
+                        checkpoint_label='count_open_alerts',
+                        impacted_fields=['active_alerts_count'],
+                        reason_code='optional_table_unavailable',
+                        error_code='runtime_optional_query_failed',
+                    )
+                    open_alerts = {'c': 0}
             _mark_query_checkpoint('count_open_incidents')
-            try:
-                open_incidents = connection.execute(
-                    f"SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged') {'AND workspace_id = %s' if workspace_id else ''}",
-                    scoped_params,
-                ).fetchone()
-            except Exception as exc:
-                _record_optional_query_failure(
-                    exc=exc,
-                    checkpoint_label='count_open_incidents',
-                    impacted_fields=['active_incidents_count'],
-                    reason_code='optional_table_unavailable',
-                    error_code='runtime_optional_query_failed',
-                )
-                open_incidents = {'c': 0}
+            if use_precomputed_active_counts:
+                open_incidents = {'c': int(precomputed_active_counts.get('active_incidents_count') or 0)}
+            else:
+                try:
+                    open_incidents = connection.execute(
+                        f"SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged') {'AND workspace_id = %s' if workspace_id else ''}",
+                        scoped_params,
+                    ).fetchone()
+                except Exception as exc:
+                    _record_optional_query_failure(
+                        exc=exc,
+                        checkpoint_label='count_open_incidents',
+                        impacted_fields=['active_incidents_count'],
+                        reason_code='optional_table_unavailable',
+                        error_code='runtime_optional_query_failed',
+                    )
+                    open_incidents = {'c': 0}
             _mark_query_checkpoint('count_broken_targets')
             try:
                 broken_targets = connection.execute(
@@ -4672,6 +4762,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         RUNTIME_STATUS_QUERY_PROFILE_HISTORY['total_runtime_status_query'].append(query_total_duration_ms)
         proxy_timeout_ms = max(RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS, 1) * 1000
         query_p95_ms = _percentile(list(RUNTIME_STATUS_QUERY_PROFILE_HISTORY['total_runtime_status_query']), 95)
+        query_p99_ms = _percentile(list(RUNTIME_STATUS_QUERY_PROFILE_HISTORY['total_runtime_status_query']), 99)
         slow_checkpoint_summary: list[dict[str, Any]] = []
         for checkpoint in sorted(set(completed_checkpoints), key=lambda label: checkpoint_durations_ms.get(label, 0.0), reverse=True)[:5]:
             checkpoint_history = list(RUNTIME_STATUS_QUERY_PROFILE_HISTORY[checkpoint])
@@ -4691,6 +4782,25 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             len(completed_checkpoints),
             slow_checkpoint_summary,
         )
+        if slow_checkpoint_summary:
+            logger.info(
+                'monitoring_runtime_status_top_slow_queries workspace_id=%s top_2=%s',
+                workspace_id,
+                slow_checkpoint_summary[:2],
+            )
+        if query_p95_ms is not None and query_p95_ms >= 10_000:
+            logger.warning(
+                'monitoring_runtime_status_latency_regression workspace_id=%s p95_total_ms=%s threshold_ms=10000',
+                workspace_id,
+                round(query_p95_ms, 2),
+            )
+        if query_p99_ms is not None and query_p99_ms >= proxy_timeout_ms:
+            logger.warning(
+                'monitoring_runtime_status_query_profile_timeout_risk_p99 workspace_id=%s p99_total_ms=%s proxy_timeout_ms=%s',
+                workspace_id,
+                round(query_p99_ms, 2),
+                proxy_timeout_ms,
+            )
         if query_p95_ms is not None and query_p95_ms >= proxy_timeout_ms:
             logger.warning(
                 'monitoring_runtime_status_query_profile_timeout_risk workspace_id=%s p95_total_ms=%s proxy_timeout_ms=%s',
@@ -5328,7 +5438,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         return _normalize_monitoring_runtime_contract(payload)
 
     try:
-        return _monitoring_runtime_status_impl()
+        payload = _monitoring_runtime_status_impl()
+        if cache_key:
+            RUNTIME_STATUS_WORKSPACE_CACHE[cache_key] = (perf_counter(), dict(payload))
+        return payload
     except HTTPException as exc:
         detail_payload = exc.detail if isinstance(exc.detail, dict) else {}
         if (
