@@ -2911,6 +2911,34 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     skipped_not_due += 1
             if len(due_target_ids) >= max_targets:
                 break
+        if not due_target_ids and skipped_not_due > 0:
+            oldest_candidate: dict[str, Any] | None = None
+            oldest_checked_at: datetime | None = None
+            for row in candidate_systems:
+                system = dict(row)
+                if (
+                    not bool(system.get('monitored_system_enabled'))
+                    or not bool(system.get('monitoring_enabled'))
+                    or not bool(system.get('enabled'))
+                    or not bool(system.get('is_active'))
+                ):
+                    continue
+                parsed_checked = _parse_ts(system.get('last_checked_at'))
+                if parsed_checked is None:
+                    continue
+                if oldest_checked_at is None or parsed_checked < oldest_checked_at:
+                    oldest_checked_at = parsed_checked
+                    oldest_candidate = system
+            fallback_target_id = str((oldest_candidate or {}).get('target_id') or '').strip()
+            fallback_system_id = str((oldest_candidate or {}).get('monitored_system_id') or '').strip()
+            if fallback_target_id and fallback_system_id:
+                due_target_ids.append(fallback_target_id)
+                due_system_ids[fallback_target_id] = fallback_system_id
+            logger.info(
+                'monitoring_due_selection_backfill workspace_target_id=%s reason=all_targets_within_interval oldest_last_checked_at=%s',
+                fallback_target_id or None,
+                oldest_checked_at.isoformat() if oldest_checked_at else None,
+            )
         logger.info(
             'monitoring due selection total_candidate_targets=%s skipped_disabled=%s skipped_inactive=%s '
             'skipped_missing_workspace=%s skipped_not_due=%s skipped_null_handling=%s interval_capped_targets=%s due_target_ids=%s',
