@@ -73,11 +73,23 @@ NON_LIVE_PROVIDER_SOURCE_TYPES: set[str] = {'demo', 'simulator', 'replay', 'unkn
 RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS = int(os.getenv('RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS', os.getenv('PROXY_TIMEOUT_SECONDS', '30')))
 RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES = int(os.getenv('RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES', '200'))
 RUNTIME_STATUS_CACHE_TTL_SECONDS = max(1, int(os.getenv('RUNTIME_STATUS_CACHE_TTL_SECONDS', '15')))
+RUNTIME_STATUS_SUMMARY_CACHE_TTL_SECONDS = max(1, int(os.getenv('RUNTIME_STATUS_SUMMARY_CACHE_TTL_SECONDS', '12')))
 RUNTIME_STATUS_PRECOMPUTED_COUNTERS_MAX_AGE_SECONDS = max(1, int(os.getenv('RUNTIME_STATUS_PRECOMPUTED_COUNTERS_MAX_AGE_SECONDS', '60')))
+RUNTIME_STATUS_P95_ALERT_THRESHOLD_MS = max(1, int(os.getenv('RUNTIME_STATUS_P95_ALERT_THRESHOLD_MS', '10000')))
+RUNTIME_STATUS_P99_ALERT_THRESHOLD_MS = max(1, int(os.getenv('RUNTIME_STATUS_P99_ALERT_THRESHOLD_MS', str(max(RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS, 1) * 1000))))
+RUNTIME_STATUS_ALERT_WINDOW_SAMPLES = max(1, int(os.getenv('RUNTIME_STATUS_ALERT_WINDOW_SAMPLES', '6')))
+RUNTIME_STATUS_ALERT_REQUIRED_BREACHES = max(1, int(os.getenv('RUNTIME_STATUS_ALERT_REQUIRED_BREACHES', '4')))
 RUNTIME_STATUS_QUERY_PROFILE_HISTORY: dict[str, deque[float]] = defaultdict(
     lambda: deque(maxlen=max(RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES, 20))
 )
 RUNTIME_STATUS_WORKSPACE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+RUNTIME_STATUS_SUMMARY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+RUNTIME_STATUS_ALERT_BREACH_HISTORY: dict[str, dict[str, deque[bool]]] = defaultdict(
+    lambda: {
+        'p95': deque(maxlen=max(RUNTIME_STATUS_ALERT_WINDOW_SAMPLES, 1)),
+        'p99': deque(maxlen=max(RUNTIME_STATUS_ALERT_WINDOW_SAMPLES, 1)),
+    }
+)
 
 RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED = os.getenv('RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
 
@@ -253,6 +265,18 @@ def _percentile(values: list[float], percentile: float) -> float | None:
         return ordered[lower]
     weight = rank - lower
     return ordered[lower] + ((ordered[upper] - ordered[lower]) * weight)
+
+
+def _latency_alert_state(*, workspace_key: str, metric: str, breached: bool) -> tuple[bool, int, int]:
+    history = RUNTIME_STATUS_ALERT_BREACH_HISTORY[workspace_key][metric]
+    history.append(bool(breached))
+    breach_count = sum(1 for item in history if item)
+    total_samples = len(history)
+    sustained = (
+        total_samples >= RUNTIME_STATUS_ALERT_WINDOW_SAMPLES
+        and breach_count >= min(RUNTIME_STATUS_ALERT_REQUIRED_BREACHES, RUNTIME_STATUS_ALERT_WINDOW_SAMPLES)
+    )
+    return sustained, breach_count, total_samples
 
 
 def _compute_mttd_seconds(*, observed_at: datetime, detected_at: datetime) -> int:
@@ -3121,6 +3145,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     WORKER_STATE['degraded'] = bool(ingestion_runtime.get('degraded'))
     for workspace_id in cycle_workspace_ids:
         RUNTIME_STATUS_WORKSPACE_CACHE.pop(f'workspace:{workspace_id}', None)
+        RUNTIME_STATUS_SUMMARY_CACHE.pop(f'workspace:{workspace_id}', None)
     return {'due_targets': due_count, 'checked': checked, 'live_targets_checked': live_targets_checked, 'events_ingested': events_ingested, 'alerts_generated': alerts_generated, 'incidents_created': incidents_created, 'cycle_duration_ms': cycle_duration_ms, 'runs': runs, 'live_mode': True, 'ingestion_mode': ingestion_runtime.get('source'), 'degraded': bool(ingestion_runtime.get('degraded'))}
 
 
@@ -4473,84 +4498,79 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     error_code='runtime_optional_query_failed',
                 )
                 broken_targets = {'c': 0}
-            _mark_query_checkpoint('count_raw_enabled_targets')
-            try:
-                raw_enabled_targets_row = connection.execute(
-                    f'''
-                    SELECT COUNT(*) AS c
-                    FROM targets t
-                    WHERE t.deleted_at IS NULL
-                      AND t.enabled = TRUE
-                      {target_workspace_filter}
-                    ''',
-                    scoped_params,
-                ).fetchone()
-            except Exception as exc:
-                _record_optional_query_failure(
-                    exc=exc,
-                    checkpoint_label='count_raw_enabled_targets',
-                    impacted_fields=['raw_enabled_targets'],
-                    reason_code='optional_table_unavailable',
-                    error_code='runtime_optional_query_failed',
+            summary_cache_key = f'workspace:{workspace_id}' if workspace_id else 'workspace:global'
+            cached_workspace_summary = RUNTIME_STATUS_SUMMARY_CACHE.get(summary_cache_key)
+            summary_cache_valid = False
+            if cached_workspace_summary:
+                cached_at, _cached_payload = cached_workspace_summary
+                summary_cache_valid = (perf_counter() - cached_at) <= RUNTIME_STATUS_SUMMARY_CACHE_TTL_SECONDS
+            raw_enabled_targets = 0
+            healthy_enabled_target_rows: list[dict[str, Any]] = []
+            if summary_cache_valid:
+                cached_payload = dict(cached_workspace_summary[1])
+                raw_enabled_targets = int(cached_payload.get('raw_enabled_targets') or 0)
+                healthy_enabled_target_rows = list(cached_payload.get('healthy_enabled_target_rows') or [])
+            else:
+                _mark_query_checkpoint('count_raw_enabled_targets')
+                try:
+                    raw_enabled_targets_row = connection.execute(
+                        f'''
+                        SELECT COUNT(*) AS c
+                        FROM targets t
+                        WHERE t.deleted_at IS NULL
+                          AND t.enabled = TRUE
+                          {target_workspace_filter}
+                        ''',
+                        scoped_params,
+                    ).fetchone()
+                except Exception as exc:
+                    _record_optional_query_failure(
+                        exc=exc,
+                        checkpoint_label='count_raw_enabled_targets',
+                        impacted_fields=['raw_enabled_targets'],
+                        reason_code='optional_table_unavailable',
+                        error_code='runtime_optional_query_failed',
+                    )
+                    raw_enabled_targets_row = {'c': 0}
+                raw_enabled_targets = int((raw_enabled_targets_row or {}).get('c') or 0)
+                _mark_query_checkpoint('list_healthy_enabled_target_rows')
+                try:
+                    healthy_enabled_target_rows = connection.execute(
+                        f'''
+                        SELECT t.id, t.asset_id
+                        FROM targets t
+                        JOIN assets a
+                          ON a.id = t.asset_id
+                         AND a.workspace_id = t.workspace_id
+                         AND a.deleted_at IS NULL
+                        WHERE t.deleted_at IS NULL
+                          AND t.enabled = TRUE
+                          AND t.asset_id IS NOT NULL
+                          AND {monitorable_target_types_sql_clause('t.target_type')}
+                          {target_workspace_filter}
+                        ''',
+                        scoped_params,
+                    ).fetchall()
+                except Exception as exc:
+                    _record_optional_query_failure(
+                        exc=exc,
+                        checkpoint_label='list_healthy_enabled_target_rows',
+                        impacted_fields=['configured_systems', 'protected_assets'],
+                        reason_code='optional_table_unavailable',
+                        error_code='runtime_optional_query_failed',
+                    )
+                    healthy_enabled_target_rows = []
+                RUNTIME_STATUS_SUMMARY_CACHE[summary_cache_key] = (
+                    perf_counter(),
+                    {
+                        'raw_enabled_targets': raw_enabled_targets,
+                        'healthy_enabled_target_rows': list(healthy_enabled_target_rows),
+                    },
                 )
-                raw_enabled_targets_row = {'c': 0}
-            raw_enabled_targets = int((raw_enabled_targets_row or {}).get('c') or 0)
-            _mark_query_checkpoint('count_healthy_enabled_targets')
-            try:
-                healthy_enabled_targets = connection.execute(
-                    f'''
-                    SELECT COUNT(*) AS target_count, COUNT(DISTINCT t.asset_id) AS asset_count
-                    FROM targets t
-                    JOIN assets a
-                      ON a.id = t.asset_id
-                     AND a.workspace_id = t.workspace_id
-                     AND a.deleted_at IS NULL
-                    WHERE t.deleted_at IS NULL
-                      AND t.enabled = TRUE
-                      AND t.asset_id IS NOT NULL
-                      AND {monitorable_target_types_sql_clause('t.target_type')}
-                      {target_workspace_filter}
-                    ''',
-                    scoped_params,
-                ).fetchone()
-            except Exception as exc:
-                _record_optional_query_failure(
-                    exc=exc,
-                    checkpoint_label='count_healthy_enabled_targets',
-                    impacted_fields=['configured_systems', 'protected_assets'],
-                    reason_code='optional_table_unavailable',
-                    error_code='runtime_optional_query_failed',
-                )
-                healthy_enabled_targets = {'target_count': 0, 'asset_count': 0}
-            healthy_enabled_targets_count = int((healthy_enabled_targets or {}).get('target_count') or 0)
-            healthy_enabled_assets_count = int((healthy_enabled_targets or {}).get('asset_count') or 0)
-            _mark_query_checkpoint('list_healthy_enabled_target_rows')
-            try:
-                healthy_enabled_target_rows = connection.execute(
-                    f'''
-                    SELECT t.id, t.asset_id
-                    FROM targets t
-                    JOIN assets a
-                      ON a.id = t.asset_id
-                     AND a.workspace_id = t.workspace_id
-                     AND a.deleted_at IS NULL
-                    WHERE t.deleted_at IS NULL
-                      AND t.enabled = TRUE
-                      AND t.asset_id IS NOT NULL
-                      AND {monitorable_target_types_sql_clause('t.target_type')}
-                      {target_workspace_filter}
-                    ''',
-                    scoped_params,
-                ).fetchall()
-            except Exception as exc:
-                _record_optional_query_failure(
-                    exc=exc,
-                    checkpoint_label='list_healthy_enabled_target_rows',
-                    impacted_fields=['configured_systems', 'protected_assets'],
-                    reason_code='optional_table_unavailable',
-                    error_code='runtime_optional_query_failed',
-                )
-                healthy_enabled_target_rows = []
+            healthy_enabled_targets_count = len(healthy_enabled_target_rows)
+            healthy_enabled_assets_count = len(
+                {str(row.get('asset_id')) for row in healthy_enabled_target_rows if row.get('asset_id')}
+            )
             healthy_enabled_target_ids = {str(row.get('id')) for row in healthy_enabled_target_rows if row.get('id')}
             healthy_enabled_target_asset_map = {
                 str(row.get('id')): str(row.get('asset_id'))
@@ -4788,10 +4808,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 }
             )
         logger.info(
-            'monitoring_runtime_status_query_profile workspace_id=%s total_ms=%s p95_total_ms=%s proxy_timeout_ms=%s checkpoint_count=%s slowest_checkpoints=%s',
+            'monitoring_runtime_status_query_profile workspace_id=%s total_ms=%s p95_total_ms=%s p99_total_ms=%s proxy_timeout_ms=%s checkpoint_count=%s slowest_checkpoints=%s',
             workspace_id,
             round(query_total_duration_ms, 2),
             round(query_p95_ms, 2) if query_p95_ms is not None else None,
+            round(query_p99_ms, 2) if query_p99_ms is not None else None,
             proxy_timeout_ms,
             len(completed_checkpoints),
             slow_checkpoint_summary,
@@ -4802,25 +4823,60 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 workspace_id,
                 slow_checkpoint_summary[:2],
             )
-        if query_p95_ms is not None and query_p95_ms >= 10_000:
+        workspace_latency_key = str(workspace_id or '__global__')
+        p95_sustained = False
+        p99_sustained = False
+        p95_breach_count = 0
+        p99_breach_count = 0
+        p95_samples = 0
+        p99_samples = 0
+        if query_p95_ms is not None:
+            p95_sustained, p95_breach_count, p95_samples = _latency_alert_state(
+                workspace_key=workspace_latency_key,
+                metric='p95',
+                breached=query_p95_ms >= RUNTIME_STATUS_P95_ALERT_THRESHOLD_MS,
+            )
+        if query_p99_ms is not None:
+            p99_sustained, p99_breach_count, p99_samples = _latency_alert_state(
+                workspace_key=workspace_latency_key,
+                metric='p99',
+                breached=query_p99_ms >= RUNTIME_STATUS_P99_ALERT_THRESHOLD_MS,
+            )
+        if query_p95_ms is not None and p95_sustained:
             logger.warning(
-                'monitoring_runtime_status_latency_regression workspace_id=%s p95_total_ms=%s threshold_ms=10000',
+                'monitoring_runtime_status_latency_regression_sustained workspace_id=%s p95_total_ms=%s threshold_ms=%s breaches=%s/%s',
                 workspace_id,
                 round(query_p95_ms, 2),
+                RUNTIME_STATUS_P95_ALERT_THRESHOLD_MS,
+                p95_breach_count,
+                p95_samples,
             )
-        if query_p99_ms is not None and query_p99_ms >= proxy_timeout_ms:
+        if query_p99_ms is not None and p99_sustained:
             logger.warning(
-                'monitoring_runtime_status_query_profile_timeout_risk_p99 workspace_id=%s p99_total_ms=%s proxy_timeout_ms=%s',
+                'monitoring_runtime_status_latency_regression_sustained_p99 workspace_id=%s p99_total_ms=%s threshold_ms=%s breaches=%s/%s',
+                workspace_id,
+                round(query_p99_ms, 2),
+                RUNTIME_STATUS_P99_ALERT_THRESHOLD_MS,
+                p99_breach_count,
+                p99_samples,
+            )
+        if query_p99_ms is not None and query_p99_ms >= proxy_timeout_ms and p99_sustained:
+            logger.warning(
+                'monitoring_runtime_status_query_profile_timeout_risk_p99_sustained workspace_id=%s p99_total_ms=%s proxy_timeout_ms=%s breaches=%s/%s',
                 workspace_id,
                 round(query_p99_ms, 2),
                 proxy_timeout_ms,
+                p99_breach_count,
+                p99_samples,
             )
-        if query_p95_ms is not None and query_p95_ms >= proxy_timeout_ms:
+        if query_p95_ms is not None and query_p95_ms >= proxy_timeout_ms and p95_sustained:
             logger.warning(
-                'monitoring_runtime_status_query_profile_timeout_risk workspace_id=%s p95_total_ms=%s proxy_timeout_ms=%s',
+                'monitoring_runtime_status_query_profile_timeout_risk_sustained workspace_id=%s p95_total_ms=%s proxy_timeout_ms=%s breaches=%s/%s',
                 workspace_id,
                 round(query_p95_ms, 2),
                 proxy_timeout_ms,
+                p95_breach_count,
+                p95_samples,
             )
         expected_monitored_row_fields = {
             'id',
