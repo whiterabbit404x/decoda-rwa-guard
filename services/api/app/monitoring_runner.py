@@ -58,6 +58,7 @@ ALERT_DEDUPE_WINDOW_SECONDS = int(
 )
 WORKER_HEARTBEAT_TTL_SECONDS = int(os.getenv('MONITORING_WORKER_HEARTBEAT_TTL_SECONDS', '180'))
 MONITOR_POLL_INTERVAL_SECONDS = int(os.getenv('MONITOR_POLL_INTERVAL_SECONDS', '30'))
+MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS = max(15, int(os.getenv('MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS', '60')))
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ RUNTIME_STATUS_ALERT_BREACH_HISTORY: dict[str, dict[str, deque[bool]]] = default
 )
 
 RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED = os.getenv('RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+_LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT: datetime | None = None
 
 
 def _provider_source_is_live(source_type: Any) -> bool:
@@ -2262,7 +2264,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     evaluated_no_threat_marker_id: str | None = None
     monitored_systems_updated = 0
     run_ids: list[str] = []
-    last_status = 'no_real_data' if provider_result.status == 'no_evidence' else str(provider_result.status or 'no_real_data')
+    last_status = 'no_evidence' if provider_result.status == 'no_evidence' else str(provider_result.status or 'no_evidence')
     last_run_id: str | None = None
     last_alert_at: datetime | None = None
     checkpoint_cursor = target.get('monitoring_checkpoint_cursor')
@@ -2326,11 +2328,11 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         elif provider_result.status == 'no_evidence':
             source_status = 'no_evidence'
             degraded_reason = provider_result.degraded_reason or 'no_live_events_observed'
-            last_status = 'no_real_data'
+            last_status = 'no_evidence'
         elif provider_result.status == 'live':
             source_status = 'active'
             degraded_reason = None
-            last_status = 'no_real_data'
+            last_status = 'no_evidence'
         else:
             source_status = 'degraded'
             degraded_reason = provider_result.degraded_reason or 'monitoring_degraded'
@@ -2833,20 +2835,33 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 ''',
                 (run_id, workspace_id, trigger_type, f'worker_name={worker_name}'),
             )
-        connection.execute(
-            '''
-            UPDATE monitored_systems ms
-            SET last_heartbeat = NOW()
-            FROM targets t
-            WHERE t.id = ms.target_id
-              AND t.deleted_at IS NULL
-              AND COALESCE(ms.is_enabled, TRUE) = TRUE
-              AND t.monitoring_enabled = TRUE
-              AND t.enabled = TRUE
-              AND t.is_active = TRUE
-            '''
-        )
         now = utc_now()
+        global _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT
+        should_touch_monitored_heartbeats = (
+            _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT is None
+            or int((now - _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT).total_seconds()) >= MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS
+        )
+        if should_touch_monitored_heartbeats:
+            connection.execute(
+                '''
+                UPDATE monitored_systems ms
+                SET last_heartbeat = NOW()
+                FROM targets t
+                WHERE t.id = ms.target_id
+                  AND t.deleted_at IS NULL
+                  AND COALESCE(ms.is_enabled, TRUE) = TRUE
+                  AND t.monitoring_enabled = TRUE
+                  AND t.enabled = TRUE
+                  AND t.is_active = TRUE
+                '''
+            )
+            _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT = now
+        else:
+            logger.debug(
+                'monitoring_cycle_skip_heartbeat_touch worker=%s cadence_seconds=%s',
+                worker_name,
+                MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS,
+            )
         max_targets = max(1, min(limit, 200))
         skipped_disabled = 0
         skipped_inactive = 0
@@ -4913,6 +4928,26 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             row for row in monitored_rows
             if monitored_system_row_enabled(row) and (not _row_tracks_valid_monitorable_target(row))
         ]
+        enabled_monitoring_intervals: list[int] = []
+        for row in enabled_rows:
+            try:
+                interval_seconds = int(row.get('monitoring_interval_seconds') or MONITOR_POLL_INTERVAL_SECONDS)
+            except Exception:
+                interval_seconds = MONITOR_POLL_INTERVAL_SECONDS
+            if interval_seconds > 0:
+                enabled_monitoring_intervals.append(interval_seconds)
+        if enabled_monitoring_intervals:
+            max_enabled_interval_seconds = max(enabled_monitoring_intervals)
+            telemetry_window_seconds = max(
+                telemetry_window_seconds,
+                max_enabled_interval_seconds + max(MONITOR_POLL_INTERVAL_SECONDS * 4, 60),
+            )
+            logger.info(
+                'monitoring_runtime_telemetry_window workspace_id=%s telemetry_window_seconds=%s max_enabled_interval_seconds=%s',
+                workspace_id,
+                telemetry_window_seconds,
+                max_enabled_interval_seconds,
+            )
         active_rows = [row for row in enabled_rows_all if str(row.get('runtime_status') or '').strip().lower() in {'healthy', 'active'}]
         enabled_asset_rows = [row for row in enabled_rows_all if row.get('asset_id')]
         enabled_system_count = max(len(enabled_rows_all), healthy_enabled_targets_count)

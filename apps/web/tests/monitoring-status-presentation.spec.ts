@@ -115,11 +115,16 @@ test.describe('monitoring status presentation adapter', () => {
 
   test('treats fresh coverage telemetry as live even without detections', async () => {
     const value = normalizeMonitoringPresentation(makeTruth({
+      monitoring_status: 'limited',
       telemetry_kind: 'coverage',
       last_telemetry_at: null,
       last_coverage_telemetry_at: '2026-04-13T10:00:00Z',
       last_detection_at: null,
-      confidence: 'medium',
+      confidence: 'high',
+      telemetry_freshness: 'fresh',
+      evidence_source_summary: 'live',
+      reporting_systems_count: 2,
+      runtime_status: 'live',
     }));
     expect(value.status).toBe('live');
     expect(value.summary).toContain('Live telemetry verified.');
