@@ -2846,6 +2846,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         skipped_inactive = 0
         skipped_missing_workspace = 0
         skipped_not_due = 0
+        skipped_not_due_target_ids: set[str] = set()
         skipped_null_handling = 0
         interval_capped_targets = 0
         should_consider_backfill = False
@@ -2887,8 +2888,10 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     due_system_ids[str(system['target_id'])] = str(system['monitored_system_id'])
                 else:
                     skipped_not_due += 1
+                    skipped_not_due_target_ids.add(str(system.get('target_id') or '').strip())
             if len(due_target_ids) >= max_targets:
                 break
+        base_due_count = len(due_target_ids)
         oldest_candidate: dict[str, Any] | None = None
         oldest_checked_at: datetime | None = None
         for row in candidate_systems:
@@ -2952,6 +2955,10 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             backfill_blocked_by_age = 0
             backfill_blocked_by_cooldown = 0
             backfill_blocked_missing_candidate = 0
+        effective_due_count = len(due_target_ids)
+        effective_skipped_not_due = skipped_not_due
+        if backfill_allowed_count > 0 and fallback_target_id in skipped_not_due_target_ids:
+            effective_skipped_not_due = max(0, skipped_not_due - 1)
         due_targets = []
         if due_target_ids:
             due_target_id_set = {str(item) for item in due_target_ids}
@@ -3223,7 +3230,8 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     elif backfill_allowed_count > 0:
         backfill_cycle_state = 'backfill_executed_cycle'
     logger.info(
-        'monitoring cycle summary worker=%s cycle_state=%s total_candidate_targets=%s due=%s checked=%s '
+        'monitoring cycle summary worker=%s cycle_state=%s total_candidate_targets=%s base_due_count=%s '
+        'effective_due_count=%s due=%s checked=%s '
         'skipped_disabled=%s skipped_inactive=%s skipped_missing_workspace=%s skipped_not_due=%s '
         'skipped_null_handling=%s interval_capped_targets=%s backfill_attempted=%s backfill_allowed=%s '
         'backfill_blocked_by_age=%s backfill_blocked_by_cooldown=%s backfill_blocked_missing_candidate=%s '
@@ -3231,12 +3239,14 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         worker_name,
         backfill_cycle_state,
         len(candidate_systems) if 'candidate_systems' in locals() else 0,
-        due_count,
+        base_due_count if 'base_due_count' in locals() else 0,
+        effective_due_count if 'effective_due_count' in locals() else due_count,
+        effective_due_count if 'effective_due_count' in locals() else due_count,
         checked,
         skipped_disabled if 'skipped_disabled' in locals() else 0,
         skipped_inactive if 'skipped_inactive' in locals() else 0,
         skipped_missing_workspace if 'skipped_missing_workspace' in locals() else 0,
-        skipped_not_due if 'skipped_not_due' in locals() else 0,
+        effective_skipped_not_due if 'effective_skipped_not_due' in locals() else 0,
         skipped_null_handling if 'skipped_null_handling' in locals() else 0,
         interval_capped_targets if 'interval_capped_targets' in locals() else 0,
         backfill_attempted if 'backfill_attempted' in locals() else 0,
