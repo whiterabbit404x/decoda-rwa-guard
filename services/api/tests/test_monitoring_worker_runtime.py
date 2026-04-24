@@ -67,8 +67,11 @@ class _FakeConnection:
         if 'LEFT JOIN workspaces AS workspace' in normalized:
             return _Result(rows=self.due_targets)
         if 'FROM targets' in normalized and 'FOR UPDATE SKIP LOCKED' in normalized:
+            due_ids = {str(item) for item in (params[0] or [])} if params else set()
             rows = []
             for target in self.due_targets:
+                if due_ids and str(target.get('id')) not in due_ids:
+                    continue
                 row = dict(target)
                 row.setdefault('workspace_id', target.get('workspace_exists_id') or 'ws-1')
                 rows.append(row)
@@ -359,6 +362,40 @@ def test_monitoring_cycle_without_due_targets_reports_zero_updates(monkeypatch):
     assert connection.last_worker_state_update_params[3] == 0
 
 
+def test_monitoring_cycle_all_targets_not_due_reports_checked_zero(monkeypatch):
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'not-due-target',
+            'name': 'Not Due Target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': now,
+            'monitoring_interval_seconds': 3600,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+    processed = {'count': 0}
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda *_args, **_kwargs: processed.__setitem__('count', processed['count'] + 1),
+    )
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+    assert summary['due_targets'] == 0
+    assert summary['checked'] == 0
+    assert processed['count'] == 0
+    assert len(connection.monitoring_run_inserts) == 0
+
+
 def test_monitoring_cycle_backfills_oldest_target_when_all_targets_are_within_interval(monkeypatch):
     now = datetime.now(timezone.utc)
     due_targets = [
@@ -370,7 +407,7 @@ def test_monitoring_cycle_backfills_oldest_target_when_all_targets_are_within_in
             'enabled': True,
             'is_active': True,
             'workspace_exists_id': 'ws-1',
-            'last_checked_at': now - timedelta(minutes=3),
+            'last_checked_at': now - timedelta(seconds=90),
             'monitoring_interval_seconds': 3600,
             'created_at': now,
         }
@@ -396,6 +433,82 @@ def test_monitoring_cycle_backfills_oldest_target_when_all_targets_are_within_in
     assert update[3] == 0
     assert update[4] == 0
     assert update[5] == 0
+
+
+def test_monitoring_cycle_does_not_backfill_until_cooldown_satisfied(monkeypatch):
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'not-due-target',
+            'name': 'Not Due Target',
+            'asset_id': 'asset-1',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': now - timedelta(seconds=90),
+            'monitoring_interval_seconds': 3600,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'MONITORING_DUE_SELECTION_BACKFILL_COOLDOWN_SECONDS',
+        3600,
+    )
+    monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT['ws-1'] = now
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10, trigger_type='scheduler')
+
+    assert summary['due_targets'] == 0
+    assert summary['checked'] == 0
+    assert len(connection.monitoring_run_inserts) == 0
+    assert len(connection.monitoring_run_updates) == 0
+    monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.pop('ws-1', None)
+
+
+def test_monitoring_cycle_backfill_triggers_once_when_threshold_met(monkeypatch):
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'not-due-target',
+            'name': 'Not Due Target',
+            'asset_id': 'asset-1',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': now - timedelta(seconds=90),
+            'monitoring_interval_seconds': 3600,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'MONITORING_DUE_SELECTION_BACKFILL_COOLDOWN_SECONDS',
+        3600,
+    )
+    monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.pop('ws-1', None)
+
+    first = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10, trigger_type='scheduler')
+    second = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10, trigger_type='scheduler')
+
+    assert first['due_targets'] == 1
+    assert first['checked'] == 1
+    assert second['due_targets'] == 0
+    assert second['checked'] == 0
+    assert len(connection.monitoring_run_inserts) == 1
+    monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.pop('ws-1', None)
 
 
 def test_monitoring_cycle_persists_workspace_run_counts(monkeypatch):
