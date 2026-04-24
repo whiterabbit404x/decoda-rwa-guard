@@ -71,10 +71,21 @@ def _healthy_payload() -> dict[str, object]:
     }
 
 
-def _install_reconcile_then_runtime(monkeypatch: pytest.MonkeyPatch, *, reconcile_payload: dict[str, object], runtime_payload: dict[str, object]) -> None:
+def _install_reconcile_then_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    reconcile_payload: dict[str, object],
+    runtime_payload: dict[str, object],
+    detections_payload: dict[str, object] | None = None,
+    alerts_payload: dict[str, object] | None = None,
+    incidents_payload: dict[str, object] | None = None,
+) -> None:
     responses = iter([
         _FakeResponse(reconcile_payload),
         _FakeResponse(runtime_payload),
+        _FakeResponse(detections_payload or {'detections': [{'id': 'det-1', 'linked_evidence_count': 1, 'chain_tx_hash': '0xabc'}]}),
+        _FakeResponse(alerts_payload or {'alerts': [{'id': 'alert-1', 'severity': 'high', 'status': 'open', 'incident_id': 'inc-1'}]}),
+        _FakeResponse(incidents_payload or {'incidents': [{'id': 'inc-1'}]}),
     ])
     monkeypatch.setattr(check_monitoring_runtime_live_gate, 'urlopen', lambda *_a, **_k: next(responses))
 
@@ -134,6 +145,9 @@ def test_runtime_live_gate_fails_on_required_degraded_and_unavailable_conditions
         monkeypatch,
         reconcile_payload={'reconcile': {'created_or_updated': 0}, 'monitored_systems_count': 0},
         runtime_payload=runtime_payload,
+        detections_payload={'detections': []},
+        alerts_payload={'alerts': []},
+        incidents_payload={'incidents': []},
     )
 
     code = check_monitoring_runtime_live_gate.main()
@@ -154,6 +168,7 @@ def test_runtime_live_gate_fails_on_required_degraded_and_unavailable_conditions
     assert 'guard flags must be empty' in failures
     assert 'contradiction flags must be empty' in failures
     assert 'db_failure_reason must be null' in failures
+    assert 'detections must be non-empty' in failures
 
 
 def test_runtime_live_gate_fails_when_coverage_telemetry_is_stale(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -200,6 +215,9 @@ def test_runtime_live_gate_transitions_same_workspace_from_unconfigured_to_live_
     first_responses = iter([
         _FakeResponse({'reconcile': {'created_or_updated': 0}, 'monitored_systems_count': 0}),
         _FakeResponse(first_runtime),
+        _FakeResponse({'detections': [{'id': 'det-first', 'linked_evidence_count': 1, 'chain_tx_hash': '0x111'}]}),
+        _FakeResponse({'alerts': [{'id': 'alert-first', 'severity': 'high', 'status': 'open', 'incident_id': 'inc-first'}]}),
+        _FakeResponse({'incidents': [{'id': 'inc-first'}]}),
     ])
     monkeypatch.setattr(check_monitoring_runtime_live_gate, 'urlopen', lambda *_a, **_k: next(first_responses))
     first_code = check_monitoring_runtime_live_gate.main()
@@ -209,6 +227,9 @@ def test_runtime_live_gate_transitions_same_workspace_from_unconfigured_to_live_
     second_responses = iter([
         _FakeResponse({'reconcile': {'created_or_updated': 2}, 'monitored_systems_count': 2}),
         _FakeResponse(second_runtime),
+        _FakeResponse({'detections': [{'id': 'det-second', 'linked_evidence_count': 1, 'chain_tx_hash': '0x222'}]}),
+        _FakeResponse({'alerts': [{'id': 'alert-second', 'severity': 'high', 'status': 'open', 'incident_id': 'inc-second'}]}),
+        _FakeResponse({'incidents': [{'id': 'inc-second'}]}),
     ])
     monkeypatch.setattr(check_monitoring_runtime_live_gate, 'urlopen', lambda *_a, **_k: next(second_responses))
     second_code = check_monitoring_runtime_live_gate.main()
@@ -218,3 +239,22 @@ def test_runtime_live_gate_transitions_same_workspace_from_unconfigured_to_live_
     assert final_payload['ok'] is True
     assert final_payload['workspace_id'] == 'ws-shared'
     assert final_payload['monitoring_status'] == 'live'
+
+
+def test_runtime_live_gate_fails_when_escalation_alerts_have_no_incident_workflow(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    _install_reconcile_then_runtime(
+        monkeypatch,
+        reconcile_payload={'reconcile': {'created_or_updated': 2}, 'monitored_systems_count': 2},
+        runtime_payload=_healthy_payload(),
+        detections_payload={'detections': [{'id': 'det-1', 'linked_evidence_count': 1, 'chain_tx_hash': '0xabc'}]},
+        alerts_payload={'alerts': [{'id': 'alert-1', 'severity': 'critical', 'status': 'open', 'incident_id': None}]},
+        incidents_payload={'incidents': []},
+    )
+
+    code = check_monitoring_runtime_live_gate.main()
+    assert code == 2
+
+    body = json.loads(capsys.readouterr().out)
+    assert body['ok'] is False
+    failures = '\n'.join(body['failures'])
+    assert 'incident workflow must be populated when escalation is required; high/critical open alerts are missing linked incidents.' in failures

@@ -72,12 +72,14 @@ PREREQUISITE_COUNTER_KEYS: tuple[str, ...] = (
 NON_LIVE_PROVIDER_SOURCE_TYPES: set[str] = {'demo', 'simulator', 'replay', 'unknown'}
 RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS = int(os.getenv('RUNTIME_STATUS_PROXY_TIMEOUT_SECONDS', os.getenv('PROXY_TIMEOUT_SECONDS', '30')))
 RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES = int(os.getenv('RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES', '200'))
-RUNTIME_STATUS_CACHE_TTL_SECONDS = max(1, int(os.getenv('RUNTIME_STATUS_CACHE_TTL_SECONDS', '10')))
+RUNTIME_STATUS_CACHE_TTL_SECONDS = max(1, int(os.getenv('RUNTIME_STATUS_CACHE_TTL_SECONDS', '15')))
 RUNTIME_STATUS_PRECOMPUTED_COUNTERS_MAX_AGE_SECONDS = max(1, int(os.getenv('RUNTIME_STATUS_PRECOMPUTED_COUNTERS_MAX_AGE_SECONDS', '60')))
 RUNTIME_STATUS_QUERY_PROFILE_HISTORY: dict[str, deque[float]] = defaultdict(
     lambda: deque(maxlen=max(RUNTIME_STATUS_QUERY_PROFILE_MAX_SAMPLES, 20))
 )
 RUNTIME_STATUS_WORKSPACE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED = os.getenv('RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def _provider_source_is_live(source_type: Any) -> bool:
@@ -3735,13 +3737,24 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     if request is not None:
         try:
             header_workspace_id = str(request.headers.get('x-workspace-id') or '').strip()
+            header_workspace_slug = str(request.headers.get('x-workspace-slug') or '').strip()
+            cache_lookup_keys = []
+            if header_workspace_id:
+                cache_lookup_keys.append(f'workspace:{header_workspace_id}')
+            if header_workspace_slug:
+                cache_lookup_keys.append(f'workspace_slug:{header_workspace_slug}')
+            for candidate_key in cache_lookup_keys:
+                cached = RUNTIME_STATUS_WORKSPACE_CACHE.get(candidate_key)
+                if not cached:
+                    continue
+                cached_at, cached_payload = cached
+                if (perf_counter() - cached_at) <= RUNTIME_STATUS_CACHE_TTL_SECONDS:
+                    cache_key = candidate_key
+                    return dict(cached_payload)
             if header_workspace_id:
                 cache_key = f'workspace:{header_workspace_id}'
-                cached = RUNTIME_STATUS_WORKSPACE_CACHE.get(cache_key)
-                if cached:
-                    cached_at, cached_payload = cached
-                    if (perf_counter() - cached_at) <= RUNTIME_STATUS_CACHE_TTL_SECONDS:
-                        return dict(cached_payload)
+            elif header_workspace_slug:
+                cache_key = f'workspace_slug:{header_workspace_slug}'
         except Exception:
             cache_key = None
 
@@ -4335,28 +4348,6 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if request is not None:
                 _mark_query_checkpoint('load_runtime_monitored_rows')
                 monitored_rows = _load_runtime_monitored_rows(connection, workspace_id)
-                try:
-                    _mark_query_checkpoint('load_workspace_monitored_rows_raw')
-                    raw_workspace_rows = _load_workspace_monitored_rows_raw(connection, workspace_id)
-                except Exception:
-                    query_failure_detected = True
-                    logger.exception('monitoring_runtime_status_raw_rows_load_failed workspace_id=%s', workspace_id)
-                    raw_workspace_rows = []
-                if len(monitored_rows) == 0 and len(raw_workspace_rows) > 0:
-                    monitored_rows = raw_workspace_rows
-                    logger.warning(
-                        'monitoring_runtime_status_workspace_rows_recovered_from_raw workspace_id=%s raw_rows=%s raw_row_ids=%s',
-                        workspace_id,
-                        len(raw_workspace_rows),
-                        [str((row or {}).get('id') or '') for row in raw_workspace_rows if (row or {}).get('id')],
-                    )
-                try:
-                    _mark_query_checkpoint('list_workspace_monitored_system_rows')
-                    listed_monitored_rows = list_workspace_monitored_system_rows(connection, workspace_id)
-                except Exception:
-                    query_failure_detected = True
-                    logger.exception('monitoring_runtime_status_list_rows_load_failed workspace_id=%s', workspace_id)
-                    listed_monitored_rows = []
                 logger.info(
                     'monitoring_runtime_status_workspace_resolution workspace_id=%s workspace_slug=%s workspace_header_present=%s user_id=%s',
                     workspace_id,
@@ -4364,16 +4355,39 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     workspace_header_present,
                     user_id,
                 )
-                logger.info(
-                    'monitoring_runtime_status_workspace_rows workspace_id=%s list_route_rows=%s list_route_row_ids=%s list_route_rows_detail=%s runtime_rows=%s runtime_row_ids=%s runtime_rows_detail=%s',
-                    workspace_id,
-                    len(listed_monitored_rows),
-                    [str((row or {}).get('id') or '') for row in listed_monitored_rows if (row or {}).get('id')],
-                    listed_monitored_rows,
-                    len(monitored_rows),
-                    [str((row or {}).get('id') or '') for row in monitored_rows if (row or {}).get('id')],
-                    monitored_rows,
-                )
+                if RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED:
+                    try:
+                        _mark_query_checkpoint('load_workspace_monitored_rows_raw')
+                        raw_workspace_rows = _load_workspace_monitored_rows_raw(connection, workspace_id)
+                    except Exception:
+                        query_failure_detected = True
+                        logger.exception('monitoring_runtime_status_raw_rows_load_failed workspace_id=%s', workspace_id)
+                        raw_workspace_rows = []
+                    if len(monitored_rows) == 0 and len(raw_workspace_rows) > 0:
+                        monitored_rows = raw_workspace_rows
+                        logger.warning(
+                            'monitoring_runtime_status_workspace_rows_recovered_from_raw workspace_id=%s raw_rows=%s raw_row_ids=%s',
+                            workspace_id,
+                            len(raw_workspace_rows),
+                            [str((row or {}).get('id') or '') for row in raw_workspace_rows if (row or {}).get('id')],
+                        )
+                    try:
+                        _mark_query_checkpoint('list_workspace_monitored_system_rows')
+                        listed_monitored_rows = list_workspace_monitored_system_rows(connection, workspace_id)
+                    except Exception:
+                        query_failure_detected = True
+                        logger.exception('monitoring_runtime_status_list_rows_load_failed workspace_id=%s', workspace_id)
+                        listed_monitored_rows = []
+                    logger.info(
+                        'monitoring_runtime_status_workspace_rows workspace_id=%s list_route_rows=%s list_route_row_ids=%s list_route_rows_detail=%s runtime_rows=%s runtime_row_ids=%s runtime_rows_detail=%s',
+                        workspace_id,
+                        len(listed_monitored_rows),
+                        [str((row or {}).get('id') or '') for row in listed_monitored_rows if (row or {}).get('id')],
+                        listed_monitored_rows,
+                        len(monitored_rows),
+                        [str((row or {}).get('id') or '') for row in monitored_rows if (row or {}).get('id')],
+                        monitored_rows,
+                    )
             target_workspace_filter = 'AND t.workspace_id = %s' if workspace_id else ''
             evidence_workspace_filter = 'WHERE e.workspace_id = %s' if workspace_id else ''
             scoped_params: tuple[Any, ...] = (workspace_id,) if workspace_id else ()
@@ -5439,8 +5453,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
 
     try:
         payload = _monitoring_runtime_status_impl()
+        cache_started_at = perf_counter()
+        cache_keys_to_store: set[str] = set()
         if cache_key:
-            RUNTIME_STATUS_WORKSPACE_CACHE[cache_key] = (perf_counter(), dict(payload))
+            cache_keys_to_store.add(cache_key)
+        resolved_cache_workspace_id = str(payload.get('workspace_id') or resolved_workspace_id or '').strip()
+        resolved_cache_workspace_slug = str(payload.get('workspace_slug') or resolved_workspace_slug or '').strip()
+        if resolved_cache_workspace_id:
+            cache_keys_to_store.add(f'workspace:{resolved_cache_workspace_id}')
+        if resolved_cache_workspace_slug:
+            cache_keys_to_store.add(f'workspace_slug:{resolved_cache_workspace_slug}')
+        for resolved_cache_key in cache_keys_to_store:
+            RUNTIME_STATUS_WORKSPACE_CACHE[resolved_cache_key] = (cache_started_at, dict(payload))
         return payload
     except HTTPException as exc:
         detail_payload = exc.detail if isinstance(exc.detail, dict) else {}

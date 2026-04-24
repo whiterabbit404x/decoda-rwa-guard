@@ -74,6 +74,9 @@ def main() -> int:
     try:
         reconcile_status, reconcile_payload = _read_json_payload(api_url, '/monitoring/systems/reconcile', headers, method='POST')
         status_code, payload = _read_json_payload(api_url, '/ops/monitoring/runtime-status', headers)
+        detections_status, detections_payload = _read_json_payload(api_url, '/detections?limit=50', headers)
+        alerts_status, alerts_payload = _read_json_payload(api_url, '/alerts?status_value=open', headers)
+        incidents_status, incidents_payload = _read_json_payload(api_url, '/incidents?status_value=open', headers)
     except HTTPError as exc:
         detail = exc.read().decode('utf-8', errors='replace') if hasattr(exc, 'read') else str(exc)
         print(json.dumps({'ok': False, 'error': 'runtime_status_http_error', 'status_code': exc.code, 'detail': detail}, indent=2))
@@ -98,6 +101,8 @@ def main() -> int:
     guard_flags = payload.get('guard_flags') if isinstance(payload.get('guard_flags'), list) else summary.get('guard_flags')
     contradiction_flags = payload.get('contradiction_flags') if isinstance(payload.get('contradiction_flags'), list) else summary.get('contradiction_flags')
     db_failure_reason = payload.get('db_failure_reason') if payload.get('db_failure_reason') is not None else summary.get('db_failure_reason')
+    runtime_degraded_reason = str(payload.get('runtime_degraded_reason') or summary.get('runtime_degraded_reason') or '').strip().lower()
+    dependency_fallback_reason = str(payload.get('fallback_reason') or summary.get('fallback_reason') or '').strip().lower()
 
     configured_systems = int((payload.get('configured_systems') if payload.get('configured_systems') is not None else summary.get('configured_systems') or summary.get('monitored_systems_count')) or 0)
     reporting_systems = int((payload.get('reporting_systems') if payload.get('reporting_systems') is not None else summary.get('reporting_systems') or summary.get('reporting_systems_count')) or 0)
@@ -120,6 +125,9 @@ def main() -> int:
 
     field_reason_codes = payload.get('field_reason_codes') if isinstance(payload.get('field_reason_codes'), dict) else summary.get('field_reason_codes')
     count_reason_codes = payload.get('count_reason_codes') if isinstance(payload.get('count_reason_codes'), dict) else summary.get('count_reason_codes')
+    detections = detections_payload.get('detections') if isinstance(detections_payload.get('detections'), list) else []
+    alerts = alerts_payload.get('alerts') if isinstance(alerts_payload.get('alerts'), list) else []
+    incidents = incidents_payload.get('incidents') if isinstance(incidents_payload.get('incidents'), list) else []
 
     failures: list[str] = []
 
@@ -127,6 +135,12 @@ def main() -> int:
         failures.append(f'runtime-status returned HTTP {status_code}.')
     if reconcile_status != 200:
         failures.append(f'monitoring/systems/reconcile returned HTTP {reconcile_status}.')
+    if detections_status != 200:
+        failures.append(f'detections returned HTTP {detections_status}.')
+    if alerts_status != 200:
+        failures.append(f'alerts returned HTTP {alerts_status}.')
+    if incidents_status != 200:
+        failures.append(f'incidents returned HTTP {incidents_status}.')
 
     if reconciled_rows <= 0 and persisted_rows <= 0:
         failures.append('reconcile did not backfill monitored system links or return persisted rows > 0.')
@@ -200,12 +214,47 @@ def main() -> int:
         failures.append(f'contradiction flags must be empty for live gate (got {contradiction_flags}).')
     if db_failure_reason:
         failures.append(f'db_failure_reason must be null for live gate (got {db_failure_reason}).')
+    if runtime_degraded_reason and 'fallback' in runtime_degraded_reason:
+        failures.append(f'runtime_degraded_reason indicates fallback behavior: {runtime_degraded_reason}.')
+    if dependency_fallback_reason:
+        failures.append(f'fallback_reason must be empty in runtime payload (got {dependency_fallback_reason}).')
 
     if _contains_reason_code(field_reason_codes, 'query_failure') or _contains_reason_code(count_reason_codes, 'query_failure'):
         failures.append('runtime payload includes query_failure markers in reason codes.')
 
     if _contains_reason_code(field_reason_codes, 'schema_drift') or _contains_reason_code(count_reason_codes, 'schema_drift'):
         failures.append('runtime payload includes schema_drift markers, indicating runtime query mismatch.')
+
+    if not detections:
+        failures.append('detections must be non-empty; no persisted detection records were returned.')
+
+    evidence_linked_detection_count = 0
+    for detection in detections:
+        if not isinstance(detection, dict):
+            continue
+        linked_evidence_count = int(detection.get('linked_evidence_count') or 0)
+        chain_tx_hash = str(detection.get('chain_tx_hash') or detection.get('tx_hash') or '').strip()
+        last_evidence_at = str(detection.get('last_evidence_at') or '').strip()
+        if linked_evidence_count > 0 or bool(chain_tx_hash) or bool(last_evidence_at):
+            evidence_linked_detection_count += 1
+    if detections and evidence_linked_detection_count <= 0:
+        failures.append('evidence-linked records must be present; detections were returned without linked evidence metadata.')
+
+    escalation_candidate_alerts = [
+        alert for alert in alerts
+        if isinstance(alert, dict)
+        and str(alert.get('severity') or '').strip().lower() in {'high', 'critical'}
+        and str(alert.get('status') or '').strip().lower() in {'open', 'acknowledged', 'investigating'}
+    ]
+    escalation_linked_incident_count = sum(
+        1
+        for alert in escalation_candidate_alerts
+        if str(alert.get('incident_id') or alert.get('linked_incident_id') or '').strip()
+    )
+    if escalation_candidate_alerts and escalation_linked_incident_count <= 0:
+        failures.append('incident workflow must be populated when escalation is required; high/critical open alerts are missing linked incidents.')
+    if escalation_candidate_alerts and not incidents:
+        failures.append('incident workflow must be populated when escalation is required; incidents list is empty while high/critical open alerts exist.')
 
     ok = len(failures) == 0
     result = {
@@ -235,9 +284,17 @@ def main() -> int:
         'guard_flags': guard_flags if isinstance(guard_flags, list) else [],
         'contradiction_flags': contradiction_flags if isinstance(contradiction_flags, list) else [],
         'db_failure_reason': db_failure_reason,
+        'runtime_degraded_reason': runtime_degraded_reason or None,
+        'fallback_reason': dependency_fallback_reason or None,
         'status_reason': status_reason or None,
         'configuration_reason': configuration_reason or None,
         'max_coverage_staleness_seconds': max_coverage_staleness_seconds,
+        'detections_count': len(detections),
+        'alerts_count': len(alerts),
+        'incidents_count': len(incidents),
+        'evidence_linked_detection_count': evidence_linked_detection_count,
+        'escalation_candidate_alert_count': len(escalation_candidate_alerts),
+        'escalation_linked_incident_count': escalation_linked_incident_count,
         'failures': failures,
     }
     if evidence_output_path:
