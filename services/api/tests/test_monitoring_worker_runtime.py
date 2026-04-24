@@ -396,6 +396,47 @@ def test_monitoring_cycle_all_targets_not_due_reports_checked_zero(monkeypatch):
     assert len(connection.monitoring_run_inserts) == 0
 
 
+def test_monitoring_cycle_uses_configured_large_interval_without_forced_cap(monkeypatch):
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'large-interval-target',
+            'name': 'Large Interval Target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': now - timedelta(seconds=300),
+            'monitoring_interval_seconds': 3600,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+    processed = {'count': 0}
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'MONITORING_DUE_SELECTION_BACKFILL_COOLDOWN_SECONDS',
+        3600,
+    )
+    monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT['ws-1'] = now
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda *_args, **_kwargs: processed.__setitem__('count', processed['count'] + 1),
+    )
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10, trigger_type='scheduler')
+
+    assert summary['due_targets'] == 0
+    assert summary['checked'] == 0
+    assert processed['count'] == 0
+    monitoring_runner._LAST_MONITORING_DUE_SELECTION_BACKFILL_AT.pop('ws-1', None)
+
+
 def test_monitoring_cycle_backfills_oldest_target_when_all_targets_are_within_interval(monkeypatch):
     now = datetime.now(timezone.utc)
     due_targets = [
@@ -433,6 +474,34 @@ def test_monitoring_cycle_backfills_oldest_target_when_all_targets_are_within_in
     assert update[3] == 0
     assert update[4] == 0
     assert update[5] == 0
+
+
+def test_monitoring_cycle_reports_zero_interval_capped_targets(monkeypatch, caplog):
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'not-due-target',
+            'name': 'Not Due Target',
+            'asset_id': 'asset-1',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': now - timedelta(seconds=90),
+            'monitoring_interval_seconds': 3600,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+
+    with caplog.at_level('INFO'):
+        monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10, trigger_type='scheduler')
+
+    assert any('interval_capped_targets=0' in message for message in caplog.messages)
 
 
 def test_monitoring_cycle_does_not_backfill_until_cooldown_satisfied(monkeypatch):

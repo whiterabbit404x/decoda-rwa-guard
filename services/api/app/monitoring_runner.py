@@ -2854,10 +2854,6 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         backfill_blocked_by_age = 0
         backfill_blocked_by_cooldown = 0
         backfill_blocked_missing_candidate = 0
-        max_effective_monitoring_interval_seconds = max(
-            30,
-            int(os.getenv('MAX_EFFECTIVE_MONITORING_INTERVAL_SECONDS', '120')),
-        )
         due_target_ids: list[Any] = []
         due_system_ids: dict[str, str] = {}
         for row in candidate_systems:
@@ -2886,9 +2882,6 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     except (TypeError, ValueError):
                         skipped_null_handling += 1
                         interval_seconds = 30
-                if interval_seconds > max_effective_monitoring_interval_seconds:
-                    interval_seconds = max_effective_monitoring_interval_seconds
-                    interval_capped_targets += 1
                 if last_checked_at <= now - timedelta(seconds=interval_seconds):
                     due_target_ids.append(system['target_id'])
                     due_system_ids[str(system['target_id'])] = str(system['monitored_system_id'])
