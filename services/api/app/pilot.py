@@ -2684,8 +2684,19 @@ def _demo_monitoring_bootstrap_allowed() -> bool:
     return app_env not in {'prod', 'production'}
 
 
+def _monitoring_proof_chain_idempotency_key(
+    *,
+    workspace_id: str,
+    monitored_system_id: str,
+    proof_chain_type: str,
+    date_bucket: str,
+) -> str:
+    seed = f'{workspace_id}:{monitored_system_id}:{proof_chain_type}:{date_bucket}'
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
 def _monitoring_proof_chain_correlation_id(*, workspace_id: str, monitored_system_id: str, date_bucket: str) -> str:
-    seed = f'{workspace_id}:{monitored_system_id}:monitoring-proof-chain:{date_bucket}'
+    seed = f'{workspace_id}:{monitored_system_id}:monitoring:{date_bucket}'
     return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
 
 
@@ -2928,6 +2939,7 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Workspace scope mismatch.')
 
         correlation_date_bucket = utc_now().strftime('%Y-%m-%d')
+        proof_chain_type = 'monitoring'
         workspace_id_value = workspace_context['workspace_id']
         source_tag = 'monitoring_proof_chain.ensure'
 
@@ -3033,19 +3045,37 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
         if monitor_bridge.get('status') != 'ok' or not monitored_system_id:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='Unable to ensure monitored system for proof-chain.')
 
+        idempotency_key = _monitoring_proof_chain_idempotency_key(
+            workspace_id=workspace_id_value,
+            monitored_system_id=monitored_system_id,
+            proof_chain_type=proof_chain_type,
+            date_bucket=correlation_date_bucket,
+        )
         correlation_id = _monitoring_proof_chain_correlation_id(
             workspace_id=workspace_id_value,
             monitored_system_id=monitored_system_id,
             date_bucket=correlation_date_bucket,
         )
         now_value = utc_now()
-        run_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:monitoring_run'))
-        detection_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:detection'))
-        detection_evidence_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:detection_evidence'))
-        alert_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:alert'))
-        incident_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:incident'))
-        response_action_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:response_action'))
-        telemetry_event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{correlation_id}:telemetry_event'))
+        run_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{idempotency_key}:monitoring_run'))
+        detection_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{idempotency_key}:detection'))
+        detection_evidence_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{idempotency_key}:detection_evidence'))
+        alert_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{idempotency_key}:alert'))
+        incident_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{idempotency_key}:incident'))
+        response_action_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{idempotency_key}:response_action'))
+        telemetry_event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{idempotency_key}:telemetry_event'))
+        chain_preexisting = (
+            connection.execute(
+                '''
+                SELECT id
+                FROM monitoring_runs
+                WHERE workspace_id = %s
+                  AND id = %s::uuid
+                ''',
+                (workspace_id_value, run_id),
+            ).fetchone()
+            is not None
+        )
 
         connection.execute(
             '''
@@ -3083,9 +3113,11 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
             (workspace_id_value, monitored_system_id),
         ).fetchone()
         evidence_source = 'live' if live_row is not None else 'simulator'
-        telemetry_reason = 'live_telemetry_reused' if live_row is not None else 'live_telemetry_unavailable_using_simulator'
+        telemetry_reason = 'live_telemetry_reused' if live_row is not None else 'simulated_telemetry_fallback'
         telemetry_observed_at = live_row.get('observed_at') if live_row else now_value
         tx_hash = f'0x{hashlib.sha256(f"{correlation_id}:telemetry".encode("utf-8")).hexdigest()[:64]}'
+        evidence_label = detection_evidence_origin_label(evidence_source)
+        simulated_chain = evidence_source != 'live'
 
         connection.execute(
             '''
@@ -3114,7 +3146,19 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
                 monitored_system_id,
                 f'Monitoring proof-chain telemetry ({evidence_source}).',
                 evidence_source,
-                _json_dumps({'metadata': {'correlation_id': correlation_id, 'proof_chain_type': 'monitoring', 'evidence_origin': evidence_source, 'reason': telemetry_reason}}),
+                _json_dumps(
+                    {
+                        'metadata': {
+                            'correlation_id': correlation_id,
+                            'proof_chain_type': proof_chain_type,
+                            'idempotency_key': idempotency_key,
+                            'evidence_origin': evidence_source,
+                            'evidence_label': evidence_label,
+                            'simulated': simulated_chain,
+                            'reason': telemetry_reason,
+                        }
+                    }
+                ),
                 telemetry_observed_at,
             ),
         )
@@ -3146,7 +3190,17 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
                 f'Monitoring proof-chain detection linked to telemetry source={evidence_source}.',
                 evidence_source,
                 now_value,
-                _json_dumps({'correlation_id': correlation_id, 'proof_chain_type': 'monitoring', 'evidence_origin': evidence_source, 'production_claim_eligible': evidence_source == 'live'}),
+                _json_dumps(
+                    {
+                        'correlation_id': correlation_id,
+                        'proof_chain_type': proof_chain_type,
+                        'idempotency_key': idempotency_key,
+                        'evidence_origin': evidence_source,
+                        'evidence_label': evidence_label,
+                        'simulated': simulated_chain,
+                        'production_claim_eligible': evidence_source == 'live',
+                    }
+                ),
                 run_id,
                 alert_id,
             ),
@@ -3170,10 +3224,19 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
                 detection_evidence_id,
                 workspace_id_value,
                 detection_id,
-                f'Detection evidence for monitoring proof-chain correlation={correlation_id}.',
+                f'Detection evidence for monitoring proof-chain correlation={correlation_id} ({evidence_label}).',
                 evidence_source,
                 f'proof-chain://monitoring/{correlation_id}',
-                _json_dumps({'correlation_id': correlation_id, 'proof_chain_type': 'monitoring', 'evidence_origin': evidence_source}),
+                _json_dumps(
+                    {
+                        'correlation_id': correlation_id,
+                        'proof_chain_type': proof_chain_type,
+                        'idempotency_key': idempotency_key,
+                        'evidence_origin': evidence_source,
+                        'evidence_label': evidence_label,
+                        'simulated': simulated_chain,
+                    }
+                ),
             ),
         )
 
@@ -3201,8 +3264,17 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
                 user['id'],
                 'Monitoring Proof Chain Alert',
                 source_tag,
-                f'Alert linked to monitoring proof-chain ({evidence_source}).',
-                _json_dumps({'correlation_id': correlation_id, 'proof_chain_type': 'monitoring', 'evidence_source': evidence_source}),
+                f'Alert linked to monitoring proof-chain ({evidence_label}).',
+                _json_dumps(
+                    {
+                        'correlation_id': correlation_id,
+                        'proof_chain_type': proof_chain_type,
+                        'idempotency_key': idempotency_key,
+                        'evidence_source': evidence_source,
+                        'evidence_label': evidence_label,
+                        'simulated': simulated_chain,
+                    }
+                ),
                 detection_id,
                 target_id,
                 evidence_source,
@@ -3235,10 +3307,19 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
                 workspace_id_value,
                 user['id'],
                 target_id,
-                f'Incident linked to monitoring proof-chain ({evidence_source}).',
+                f'Incident linked to monitoring proof-chain ({evidence_label}).',
                 _json_dumps([alert_id]),
                 _json_dumps([{'event': 'incident.created_from_alert', 'at': now_value.isoformat(), 'alert_id': alert_id}]),
-                _json_dumps({'correlation_id': correlation_id, 'proof_chain_type': 'monitoring', 'evidence_source': evidence_source}),
+                _json_dumps(
+                    {
+                        'correlation_id': correlation_id,
+                        'proof_chain_type': proof_chain_type,
+                        'idempotency_key': idempotency_key,
+                        'evidence_source': evidence_source,
+                        'evidence_label': evidence_label,
+                        'simulated': simulated_chain,
+                    }
+                ),
             ),
         )
 
@@ -3270,18 +3351,32 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
                 alert_id,
                 response_mode,
                 response_status,
-                f'Response action for monitoring proof-chain ({evidence_source}).',
-                _json_dumps({'correlation_id': correlation_id, 'proof_chain_type': 'monitoring', 'evidence_source': evidence_source, 'production_label': 'live' if evidence_source == 'live' else 'simulator'}),
+                f'Response action for monitoring proof-chain ({evidence_label}).',
+                _json_dumps(
+                    {
+                        'correlation_id': correlation_id,
+                        'proof_chain_type': proof_chain_type,
+                        'idempotency_key': idempotency_key,
+                        'evidence_source': evidence_source,
+                        'evidence_label': evidence_label,
+                        'simulated': simulated_chain,
+                        'production_label': 'live' if evidence_source == 'live' else 'simulator',
+                    }
+                ),
                 user['id'],
                 user['id'],
             ),
         )
 
         status_value = 'complete' if evidence_source == 'live' else 'degraded'
-        reason = 'live_monitoring_chain_available' if evidence_source == 'live' else 'simulator_fallback_prevents_live_production_label'
+        base_reason = 'live_monitoring_chain_available' if evidence_source == 'live' else 'simulated_chain_not_live_evidence'
+        reason = f'{base_reason}_reused' if chain_preexisting else f'{base_reason}_created'
         connection.commit()
         return {
             'workspace_id': workspace_id_value,
+            'proof_chain_type': proof_chain_type,
+            'date_bucket': correlation_date_bucket,
+            'idempotency_key': idempotency_key,
             'protected_asset_id': asset_id,
             'monitored_system_id': monitored_system_id,
             'monitoring_run_id': run_id,
@@ -3292,9 +3387,12 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
             'incident_id': incident_id,
             'response_action_id': response_action_id,
             'evidence_source': evidence_source,
+            'evidence_label': evidence_label,
+            'simulated': simulated_chain,
             'correlation_id': correlation_id,
             'status': status_value,
             'reason': reason,
+            'result': 'reused' if chain_preexisting else 'created',
         }
 
 
