@@ -90,7 +90,8 @@ def test_ensure_monitoring_proof_chain_first_call_persists_all_linked_records(mo
     payload = pilot.ensure_monitoring_proof_chain(workspace_id, _request_context(workspace_id))
 
     assert payload['status'] == 'degraded'
-    assert payload['reason'] == 'simulated_chain_not_live_evidence_created'
+    assert payload['completion_status'] == 'degraded'
+    assert payload['reason'] == 'simulated_chain_explicitly_labeled_not_live_created'
     assert payload['evidence_source'] == 'simulator'
     assert payload['simulated'] is True
     assert payload['result'] == 'created'
@@ -127,6 +128,7 @@ def test_ensure_monitoring_proof_chain_second_call_reuses_chain_ids_via_idempote
     assert first['response_action_id'] == second['response_action_id']
     assert first['idempotency_key'] == second['idempotency_key']
     assert second['result'] == 'reused'
-    assert second['reason'] == 'simulated_chain_not_live_evidence_reused'
+    assert second['completion_status'] == 'degraded'
+    assert second['reason'] == 'simulated_chain_explicitly_labeled_not_live_reused'
     assert all(len(ids) == 1 for ids in connection.persisted_ids.values())
     assert connection.commit_calls == 2

@@ -2028,7 +2028,26 @@ def ops_monitoring_proof_chain_ensure(request: Request) -> dict[str, Any]:
     workspace_id = normalize_workspace_header_value(request.headers.get('x-workspace-id'))
     if not workspace_id:
         raise HTTPException(status_code=400, detail='x-workspace-id header is required')
-    return with_auth_schema_json(lambda: ensure_monitoring_proof_chain(workspace_id, request))
+    def _handler() -> dict[str, Any]:
+        payload = ensure_monitoring_proof_chain(workspace_id, request)
+        chain_ids = {
+            'monitoring_run_id': payload.get('monitoring_run_id'),
+            'telemetry_event_id': payload.get('telemetry_event_id'),
+            'detection_id': payload.get('detection_id'),
+            'detection_evidence_id': payload.get('detection_evidence_id'),
+            'alert_id': payload.get('alert_id'),
+            'incident_id': payload.get('incident_id'),
+            'response_action_id': payload.get('response_action_id'),
+        }
+        return {
+            **payload,
+            'chain_ids': chain_ids,
+            'completion_status': payload.get('completion_status') or payload.get('status'),
+            'reason': payload.get('reason'),
+            'evidence_source': payload.get('evidence_source'),
+        }
+
+    return with_auth_schema_json(_handler)
 
 
 @app.get('/ops/monitoring/investigation-timeline', summary='Linked monitoring proof-chain investigation timeline')

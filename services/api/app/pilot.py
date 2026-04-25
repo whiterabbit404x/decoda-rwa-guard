@@ -3123,14 +3123,15 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
             '''
             INSERT INTO evidence (
                 id, workspace_id, asset_id, target_id, alert_id, chain, block_number, tx_hash, log_index, event_type,
-                monitored_system_id, severity, risk_score, summary, source_provider, raw_payload_json, observed_at, created_at
+                monitored_system_id, monitoring_run_id, severity, risk_score, summary, source_provider, raw_payload_json, observed_at, created_at
             ) VALUES (
                 %s, %s, %s::uuid, %s::uuid, %s::uuid, 'ethereum-mainnet', 1, %s, 0, 'monitoring_proof_chain_event',
-                %s::uuid, 'high', 0.9, %s, %s, %s::jsonb, %s, NOW()
+                %s::uuid, %s::uuid, 'high', 0.9, %s, %s, %s::jsonb, %s, NOW()
             )
             ON CONFLICT (id)
             DO UPDATE SET
                 alert_id = EXCLUDED.alert_id,
+                monitoring_run_id = EXCLUDED.monitoring_run_id,
                 source_provider = EXCLUDED.source_provider,
                 summary = EXCLUDED.summary,
                 raw_payload_json = EXCLUDED.raw_payload_json,
@@ -3144,6 +3145,7 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
                 alert_id,
                 tx_hash,
                 monitored_system_id,
+                run_id,
                 f'Monitoring proof-chain telemetry ({evidence_source}).',
                 evidence_source,
                 _json_dumps(
@@ -3368,8 +3370,8 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
             ),
         )
 
-        status_value = 'complete' if evidence_source == 'live' else 'degraded'
-        base_reason = 'live_monitoring_chain_available' if evidence_source == 'live' else 'simulated_chain_not_live_evidence'
+        completion_status = 'complete' if evidence_source == 'live' else 'degraded'
+        base_reason = 'live_monitoring_chain_available' if evidence_source == 'live' else 'simulated_chain_explicitly_labeled_not_live'
         reason = f'{base_reason}_reused' if chain_preexisting else f'{base_reason}_created'
         connection.commit()
         return {
@@ -3390,7 +3392,8 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
             'evidence_label': evidence_label,
             'simulated': simulated_chain,
             'correlation_id': correlation_id,
-            'status': status_value,
+            'completion_status': completion_status,
+            'status': completion_status,
             'reason': reason,
             'result': 'reused' if chain_preexisting else 'created',
         }
