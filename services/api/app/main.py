@@ -51,6 +51,7 @@ from services.api.app.pilot import (
     enforce_auth_rate_limit,
     ensure_pilot_schema,
     ensure_monitoring_proof_chain,
+    get_monitoring_investigation_timeline,
     list_user_workspaces,
     live_mode_enabled,
     log_audit,
@@ -2028,6 +2029,11 @@ def ops_monitoring_proof_chain_ensure(request: Request) -> dict[str, Any]:
     if not workspace_id:
         raise HTTPException(status_code=400, detail='x-workspace-id header is required')
     return with_auth_schema_json(lambda: ensure_monitoring_proof_chain(workspace_id, request))
+
+
+@app.get('/ops/monitoring/investigation-timeline', summary='Linked monitoring proof-chain investigation timeline')
+def ops_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_monitoring_investigation_timeline(request))
 
 
 @app.get('/ops/monitoring/heartbeats', summary='Latest monitoring heartbeat rows')
