@@ -2689,6 +2689,232 @@ def _monitoring_proof_chain_correlation_id(*, workspace_id: str, monitored_syste
     return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
 
 
+PROOF_CHAIN_TIMELINE_LINK_ORDER = {
+    'monitoring_run': 10,
+    'telemetry_event': 20,
+    'detection': 30,
+    'detection_evidence': 40,
+    'alert': 50,
+    'incident': 60,
+    'response_action': 70,
+}
+
+
+def _timeline_evidence_source_label(value: str | None) -> str:
+    return 'live' if str(value or '').strip().lower() == 'live' else 'simulator'
+
+
+def get_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    workspace_id = normalize_workspace_header_value(request.headers.get('x-workspace-id'))
+    if not workspace_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='x-workspace-id header is required.')
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], workspace_id)
+        workspace_id_value = workspace_context['workspace_id']
+
+        anchor = connection.execute(
+            '''
+            SELECT d.id AS detection_id,
+                   d.monitoring_run_id,
+                   d.linked_alert_id,
+                   d.evidence_source,
+                   d.detected_at,
+                   d.raw_evidence_json,
+                   a.incident_id,
+                   ra.id AS response_action_id
+            FROM detections d
+            LEFT JOIN alerts a ON a.id = d.linked_alert_id AND a.workspace_id = d.workspace_id
+            LEFT JOIN LATERAL (
+                SELECT id
+                FROM response_actions
+                WHERE workspace_id = d.workspace_id
+                  AND (alert_id = d.linked_alert_id OR incident_id = a.incident_id)
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) ra ON TRUE
+            WHERE d.workspace_id = %s
+              AND d.detection_type = 'monitoring_proof_chain'
+              AND d.source_rule = 'monitoring.proof_chain.ensure'
+            ORDER BY d.detected_at DESC, d.created_at DESC
+            LIMIT 1
+            ''',
+            (workspace_id_value,),
+        ).fetchone()
+
+        if anchor is None:
+            return {
+                'ok': True,
+                'workspace_id': workspace_id_value,
+                'proof_chain_status': 'incomplete',
+                'correlation_id': None,
+                'items': [],
+                'missing': ['monitoring_run', 'telemetry_event', 'detection', 'detection_evidence', 'alert', 'incident', 'response_action'],
+            }
+
+        correlation_id = None
+        raw_evidence = anchor.get('raw_evidence_json')
+        if isinstance(raw_evidence, dict):
+            correlation_id = str(raw_evidence.get('correlation_id') or '').strip() or None
+
+        detection_id = str(anchor.get('detection_id') or '')
+        monitoring_run_id = str(anchor.get('monitoring_run_id') or '')
+        alert_id = str(anchor.get('linked_alert_id') or '')
+        incident_id = str(anchor.get('incident_id') or '')
+        response_action_id = str(anchor.get('response_action_id') or '')
+
+        timeline_rows = connection.execute(
+            '''
+            WITH selected_monitoring_run AS (
+                SELECT id::text AS item_id,
+                       started_at AS item_timestamp,
+                       'monitoring_run'::text AS link_name,
+                       'monitoring_runs'::text AS table_name,
+                       NULL::text AS evidence_source
+                FROM monitoring_runs
+                WHERE workspace_id = %s
+                  AND id = %s::uuid
+            ),
+            selected_telemetry_event AS (
+                SELECT id::text AS item_id,
+                       observed_at AS item_timestamp,
+                       'telemetry_event'::text AS link_name,
+                       'evidence'::text AS table_name,
+                       source_provider AS evidence_source
+                FROM evidence
+                WHERE workspace_id = %s
+                  AND id = (
+                    SELECT id
+                    FROM evidence
+                    WHERE workspace_id = %s
+                      AND alert_id = %s::uuid
+                    ORDER BY observed_at DESC, created_at DESC
+                    LIMIT 1
+                  )::uuid
+            ),
+            selected_detection AS (
+                SELECT id::text AS item_id,
+                       detected_at AS item_timestamp,
+                       'detection'::text AS link_name,
+                       'detections'::text AS table_name,
+                       evidence_source
+                FROM detections
+                WHERE workspace_id = %s
+                  AND id = %s::uuid
+            ),
+            selected_detection_evidence AS (
+                SELECT id::text AS item_id,
+                       created_at AS item_timestamp,
+                       'detection_evidence'::text AS link_name,
+                       'detection_evidence'::text AS table_name,
+                       source AS evidence_source
+                FROM detection_evidence
+                WHERE workspace_id = %s
+                  AND detection_id = %s::uuid
+                ORDER BY created_at DESC
+                LIMIT 1
+            ),
+            selected_alert AS (
+                SELECT id::text AS item_id,
+                       created_at AS item_timestamp,
+                       'alert'::text AS link_name,
+                       'alerts'::text AS table_name,
+                       source AS evidence_source
+                FROM alerts
+                WHERE workspace_id = %s
+                  AND id = %s::uuid
+            ),
+            selected_incident AS (
+                SELECT id::text AS item_id,
+                       created_at AS item_timestamp,
+                       'incident'::text AS link_name,
+                       'incidents'::text AS table_name,
+                       (payload ->> 'evidence_source')::text AS evidence_source
+                FROM incidents
+                WHERE workspace_id = %s
+                  AND id = %s::uuid
+            ),
+            selected_response_action AS (
+                SELECT id::text AS item_id,
+                       created_at AS item_timestamp,
+                       'response_action'::text AS link_name,
+                       'response_actions'::text AS table_name,
+                       (execution_metadata ->> 'evidence_source')::text AS evidence_source
+                FROM response_actions
+                WHERE workspace_id = %s
+                  AND id = %s::uuid
+            )
+            SELECT item_id, item_timestamp, link_name, table_name, evidence_source
+            FROM selected_monitoring_run
+            UNION ALL
+            SELECT item_id, item_timestamp, link_name, table_name, evidence_source FROM selected_telemetry_event
+            UNION ALL
+            SELECT item_id, item_timestamp, link_name, table_name, evidence_source FROM selected_detection
+            UNION ALL
+            SELECT item_id, item_timestamp, link_name, table_name, evidence_source FROM selected_detection_evidence
+            UNION ALL
+            SELECT item_id, item_timestamp, link_name, table_name, evidence_source FROM selected_alert
+            UNION ALL
+            SELECT item_id, item_timestamp, link_name, table_name, evidence_source FROM selected_incident
+            UNION ALL
+            SELECT item_id, item_timestamp, link_name, table_name, evidence_source FROM selected_response_action
+            ''',
+            (
+                workspace_id_value,
+                monitoring_run_id,
+                workspace_id_value,
+                workspace_id_value,
+                alert_id,
+                workspace_id_value,
+                detection_id,
+                workspace_id_value,
+                detection_id,
+                workspace_id_value,
+                alert_id,
+                workspace_id_value,
+                incident_id,
+                workspace_id_value,
+                response_action_id,
+            ),
+        ).fetchall()
+
+        missing: list[str] = []
+        found_links = {str(item.get('link_name') or '') for item in timeline_rows}
+        for link_name in PROOF_CHAIN_TIMELINE_LINK_ORDER:
+            if link_name not in found_links:
+                missing.append(link_name)
+
+        items = sorted(
+            [
+                {
+                    'id': str(row.get('item_id') or ''),
+                    'timestamp': row.get('item_timestamp'),
+                    'link_name': str(row.get('link_name') or ''),
+                    'table_name': str(row.get('table_name') or ''),
+                    'evidence_source': _timeline_evidence_source_label(row.get('evidence_source')),
+                }
+                for row in timeline_rows
+            ],
+            key=lambda item: (
+                item.get('timestamp') or datetime.min.replace(tzinfo=timezone.utc),
+                PROOF_CHAIN_TIMELINE_LINK_ORDER.get(str(item.get('link_name') or ''), 999),
+            ),
+        )
+
+        payload: dict[str, Any] = {
+            'ok': True,
+            'workspace_id': workspace_id_value,
+            'proof_chain_status': 'complete' if not missing else 'incomplete',
+            'correlation_id': correlation_id,
+            'items': [_json_safe_value(item) for item in items],
+        }
+        if missing:
+            payload['missing'] = missing
+        return payload
+
+
 def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -> dict[str, Any]:
     require_live_mode()
     normalized_workspace_id = normalize_workspace_header_value(workspace_id)
