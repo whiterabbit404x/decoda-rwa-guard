@@ -5565,18 +5565,57 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         )
         chain_open_alerts_count = int((open_alerts or {}).get('c') or 0)
         chain_open_incidents_count = int((open_incidents or {}).get('c') or 0)
-        proof_chain_status = (
-            'incomplete'
-            if (
-                raw_open_alerts_count > chain_open_alerts_count
-                or raw_open_incidents_count > chain_open_incidents_count
+        _mark_query_checkpoint('select_proof_chain_last_detection')
+        try:
+            linked_detection_row = connection.execute(
+                f'''
+                SELECT MAX(d.detected_at) AS detected_at
+                FROM alerts a
+                JOIN detections d
+                  ON d.id = a.detection_id
+                 AND d.workspace_id = a.workspace_id
+                WHERE a.status IN ('open','acknowledged','investigating')
+                  AND EXISTS (
+                      SELECT 1
+                      FROM detection_evidence de
+                      WHERE de.workspace_id = d.workspace_id
+                        AND de.detection_id = d.id
+                  )
+                  {'AND a.workspace_id = %s' if workspace_id else ''}
+                ''',
+                scoped_params,
+            ).fetchone()
+        except Exception as exc:
+            _record_optional_query_failure(
+                exc=exc,
+                checkpoint_label='select_proof_chain_last_detection',
+                impacted_fields=['last_detection_at'],
+                reason_code='optional_table_unavailable',
+                error_code='runtime_optional_query_failed',
             )
-            else 'complete'
-        )
+            linked_detection_row = None
+        linked_detection_row_payload = linked_detection_row if isinstance(linked_detection_row, dict) else {}
+        linked_detection_timestamp_reported = 'detected_at' in linked_detection_row_payload
+        linked_last_detection_at = _parse_ts(linked_detection_row_payload.get('detected_at'))
+        if linked_last_detection_at is not None:
+            latest_detection_at = linked_last_detection_at
+        proof_chain_missing_reason_codes: list[str] = []
+        if raw_open_alerts_count > chain_open_alerts_count:
+            proof_chain_missing_reason_codes.append('alerts_without_detection_evidence')
+        if raw_open_incidents_count > chain_open_incidents_count:
+            proof_chain_missing_reason_codes.append('incidents_without_proof_chain_alert')
+        if chain_open_alerts_count > 0 and linked_detection_timestamp_reported and latest_detection_at is None:
+            proof_chain_missing_reason_codes.append('missing_linked_detection_timestamp')
+        proof_chain_status = 'incomplete' if proof_chain_missing_reason_codes else 'complete'
         proof_chain_correlation_id = str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
-                f'monitoring-proof-chain:{workspace_id or "global"}:{now.date().isoformat()}:{chain_open_alerts_count}:{chain_open_incidents_count}',
+                (
+                    f'monitoring-proof-chain:{workspace_id or "global"}:{now.date().isoformat()}:'
+                    f'{chain_open_alerts_count}:{chain_open_incidents_count}:'
+                    f'{latest_detection_at.isoformat() if latest_detection_at else "none"}:'
+                    f'{",".join(sorted(proof_chain_missing_reason_codes)) or "ok"}'
+                ),
             )
         )
         coverage_fresh = bool(
@@ -5697,14 +5736,24 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         if workspace_configured and reporting_systems <= 0:
             runtime_status_summary = 'degraded'
             runtime_status_reason = 'no_reporting_systems'
+            if 'no_reporting_systems' not in proof_chain_missing_reason_codes:
+                proof_chain_missing_reason_codes.append('no_reporting_systems')
         if workspace_configured and last_telemetry_at is None:
             if runtime_status_summary == 'healthy':
                 runtime_status_summary = 'degraded'
             runtime_status_reason = runtime_status_reason or 'telemetry_timestamp_unavailable'
+            if 'telemetry_timestamp_unavailable' not in proof_chain_missing_reason_codes:
+                proof_chain_missing_reason_codes.append('telemetry_timestamp_unavailable')
         if workspace_configured and open_alerts_without_evidence_count > 0:
             proof_chain_status = 'incomplete'
             runtime_status_summary = 'degraded'
             runtime_status_reason = 'alerts_without_detection_evidence'
+            if 'alerts_without_detection_evidence' not in proof_chain_missing_reason_codes:
+                proof_chain_missing_reason_codes.append('alerts_without_detection_evidence')
+        if workspace_configured and proof_chain_missing_reason_codes:
+            runtime_status_summary = 'degraded'
+            if not runtime_status_reason:
+                runtime_status_reason = proof_chain_missing_reason_codes[0]
         if proof_chain_status == 'complete' and detection_pipeline_checkpoint_at is None and latest_detection_at is not None:
             detection_pipeline_checkpoint_at = latest_detection_at
         if workspace_configured and coverage_only_warning_active:
@@ -5803,6 +5852,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ('healthy_without_reporting_systems', runtime_status_summary == 'healthy' and reporting_systems <= 0),
             ('telemetry_current_with_null_timestamp', coverage_fresh and last_telemetry_at is None),
             ('open_alerts_without_detection_evidence', open_alerts_without_evidence_count > 0),
+            ('proof_chain_link_missing', bool(proof_chain_missing_reason_codes)),
             ('incident_without_alert', incidents_without_alert_count > 0),
             ('response_action_without_incident', response_actions_without_incident_count > 0),
         )
