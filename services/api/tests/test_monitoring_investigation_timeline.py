@@ -141,3 +141,57 @@ def test_get_monitoring_investigation_timeline_requires_workspace_header(monkeyp
 
     assert exc.value.status_code == 400
     assert exc.value.detail == 'x-workspace-id header is required.'
+
+
+class _CompleteTimelineConnection:
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'FROM detections d' in normalized and 'detection_type = \'monitoring_proof_chain\'' in normalized:
+            return _FakeResult(
+                {
+                    'detection_id': 'det-9',
+                    'monitoring_run_id': 'run-9',
+                    'linked_alert_id': 'alert-9',
+                    'evidence_source': 'live',
+                    'detected_at': datetime(2026, 4, 25, 12, 0, tzinfo=timezone.utc),
+                    'raw_evidence_json': {'correlation_id': 'corr-9'},
+                    'incident_id': 'inc-9',
+                    'response_action_id': 'act-9',
+                }
+            )
+        if 'WITH selected_monitoring_run AS (' in normalized:
+            return _FakeResult(
+                [
+                    {'item_id': 'run-9', 'item_timestamp': datetime(2026, 4, 25, 11, 55, tzinfo=timezone.utc), 'link_name': 'monitoring_run', 'table_name': 'monitoring_runs', 'evidence_source': None},
+                    {'item_id': 'ev-9', 'item_timestamp': datetime(2026, 4, 25, 11, 58, tzinfo=timezone.utc), 'link_name': 'telemetry_event', 'table_name': 'evidence', 'evidence_source': 'live'},
+                    {'item_id': 'det-9', 'item_timestamp': datetime(2026, 4, 25, 12, 0, tzinfo=timezone.utc), 'link_name': 'detection', 'table_name': 'detections', 'evidence_source': 'live'},
+                    {'item_id': 'de-9', 'item_timestamp': datetime(2026, 4, 25, 12, 0, tzinfo=timezone.utc), 'link_name': 'detection_evidence', 'table_name': 'detection_evidence', 'evidence_source': 'live'},
+                    {'item_id': 'alert-9', 'item_timestamp': datetime(2026, 4, 25, 12, 1, tzinfo=timezone.utc), 'link_name': 'alert', 'table_name': 'alerts', 'evidence_source': 'live'},
+                    {'item_id': 'inc-9', 'item_timestamp': datetime(2026, 4, 25, 12, 2, tzinfo=timezone.utc), 'link_name': 'incident', 'table_name': 'incidents', 'evidence_source': 'live'},
+                    {'item_id': 'act-9', 'item_timestamp': datetime(2026, 4, 25, 12, 3, tzinfo=timezone.utc), 'link_name': 'response_action', 'table_name': 'response_actions', 'evidence_source': 'live'},
+                ]
+            )
+        raise AssertionError(f'unexpected query: {query} / {params}')
+
+
+def test_get_monitoring_investigation_timeline_complete_chain_has_no_missing_links(monkeypatch):
+    workspace_id = '11111111-1111-1111-1111-111111111111'
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _FakePgContext(_CompleteTimelineConnection()))
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda connection: None)
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda connection, request: {'id': 'user-1'})
+    monkeypatch.setattr(pilot, 'resolve_workspace', lambda connection, user_id, workspace_id: {'workspace_id': workspace_id})
+
+    payload = pilot.get_monitoring_investigation_timeline(_request(workspace_id))
+
+    assert payload['proof_chain_status'] == 'complete'
+    assert payload.get('missing', []) == []
+    assert [item['link_name'] for item in payload['items']] == [
+        'monitoring_run',
+        'telemetry_event',
+        'detection',
+        'detection_evidence',
+        'alert',
+        'incident',
+        'response_action',
+    ]
