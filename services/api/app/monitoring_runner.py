@@ -4208,6 +4208,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'coverage_receipts_workspace_count': 0,
             'stale_heartbeat': True,
             'provider_degraded_flag': True,
+            'proof_chain_status': 'unavailable',
+            'proof_chain_correlation_id': None,
             'evidence_source': 'none',
             'confidence_status': 'degraded',
             'runtime_status_summary': 'offline',
@@ -4221,6 +4223,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 telemetry_freshness='unavailable',
                 confidence='unavailable',
             ),
+            'contradiction_flags': [],
             'configuration_diagnostics': {
                 'valid_protected_assets': 0,
                 'linked_monitored_systems': 0,
@@ -4459,6 +4462,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 },
                 'configuration_reason': summary.get('configuration_reason'),
                 'configuration_reason_codes': list(summary.get('configuration_reason_codes') or []),
+                'proof_chain_status': 'unavailable',
+                'proof_chain_correlation_id': None,
+                'contradiction_flags': list(summary.get('contradiction_flags') or []),
                 'workspace_monitoring_summary': summary,
             }
             payload.update(payload['workspace_monitoring_summary'])
@@ -4759,41 +4765,176 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 precomputed_updated_at = _parse_ts(precomputed_active_counts.get('updated_at'))
                 if precomputed_updated_at and int((now - precomputed_updated_at).total_seconds()) <= RUNTIME_STATUS_PRECOMPUTED_COUNTERS_MAX_AGE_SECONDS:
                     use_precomputed_active_counts = True
+            raw_open_alerts_count = 0
+            open_alerts_without_evidence_count = 0
             if use_precomputed_active_counts:
-                open_alerts = {'c': int(precomputed_active_counts.get('active_alerts_count') or 0)}
+                raw_open_alerts_count = int(precomputed_active_counts.get('active_alerts_count') or 0)
             else:
                 try:
-                    open_alerts = connection.execute(
+                    raw_open_alerts_row = connection.execute(
                         f"SELECT COUNT(*) AS c FROM alerts WHERE status IN ('open','acknowledged','investigating') {'AND workspace_id = %s' if workspace_id else ''}",
                         scoped_params,
                     ).fetchone()
+                    raw_open_alerts_count = int((raw_open_alerts_row or {}).get('c') or 0)
                 except Exception as exc:
                     _record_optional_query_failure(
                         exc=exc,
-                        checkpoint_label='count_open_alerts',
+                        checkpoint_label='count_open_alerts_raw',
                         impacted_fields=['active_alerts_count'],
                         reason_code='optional_table_unavailable',
                         error_code='runtime_optional_query_failed',
                     )
-                    open_alerts = {'c': 0}
-            _mark_query_checkpoint('count_open_incidents')
+                    raw_open_alerts_count = 0
+            try:
+                open_alerts = connection.execute(
+                    f'''
+                    SELECT COUNT(*) AS c
+                    FROM alerts a
+                    JOIN detections d
+                      ON d.id = a.detection_id
+                     AND d.workspace_id = a.workspace_id
+                    WHERE a.status IN ('open','acknowledged','investigating')
+                      AND EXISTS (
+                          SELECT 1
+                          FROM detection_evidence de
+                          WHERE de.workspace_id = d.workspace_id
+                            AND de.detection_id = d.id
+                      )
+                      {'AND a.workspace_id = %s' if workspace_id else ''}
+                    ''',
+                    scoped_params,
+                ).fetchone()
+                open_alerts_without_evidence_count = max(raw_open_alerts_count - int((open_alerts or {}).get('c') or 0), 0)
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='count_open_alerts',
+                    impacted_fields=['active_alerts_count'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                open_alerts = {'c': 0}
+                open_alerts_without_evidence_count = int(raw_open_alerts_count)
+            _mark_query_checkpoint('count_open_incidents_raw')
+            raw_open_incidents_count = 0
             if use_precomputed_active_counts:
-                open_incidents = {'c': int(precomputed_active_counts.get('active_incidents_count') or 0)}
+                raw_open_incidents_count = int(precomputed_active_counts.get('active_incidents_count') or 0)
             else:
                 try:
-                    open_incidents = connection.execute(
+                    raw_open_incidents_row = connection.execute(
                         f"SELECT COUNT(*) AS c FROM incidents WHERE status IN ('open','acknowledged') {'AND workspace_id = %s' if workspace_id else ''}",
                         scoped_params,
                     ).fetchone()
+                    raw_open_incidents_count = int((raw_open_incidents_row or {}).get('c') or 0)
                 except Exception as exc:
                     _record_optional_query_failure(
                         exc=exc,
-                        checkpoint_label='count_open_incidents',
+                        checkpoint_label='count_open_incidents_raw',
                         impacted_fields=['active_incidents_count'],
                         reason_code='optional_table_unavailable',
                         error_code='runtime_optional_query_failed',
                     )
-                    open_incidents = {'c': 0}
+                    raw_open_incidents_count = 0
+            _mark_query_checkpoint('count_open_incidents')
+            try:
+                open_incidents = connection.execute(
+                    f'''
+                    WITH proof_chain_alerts AS (
+                        SELECT a.id, a.incident_id
+                        FROM alerts a
+                        JOIN detections d
+                          ON d.id = a.detection_id
+                         AND d.workspace_id = a.workspace_id
+                        WHERE a.status IN ('open','acknowledged','investigating')
+                          AND EXISTS (
+                              SELECT 1
+                              FROM detection_evidence de
+                              WHERE de.workspace_id = d.workspace_id
+                                AND de.detection_id = d.id
+                          )
+                          {'AND a.workspace_id = %s' if workspace_id else ''}
+                    )
+                    SELECT COUNT(DISTINCT i.id) AS c
+                    FROM incidents i
+                    WHERE i.status IN ('open','acknowledged')
+                      AND (
+                          EXISTS (
+                              SELECT 1
+                              FROM proof_chain_alerts pca
+                              WHERE pca.incident_id = i.id
+                          )
+                          OR EXISTS (
+                              SELECT 1
+                              FROM proof_chain_alerts pca
+                              WHERE i.source_alert_id = pca.id
+                          )
+                      )
+                      {'AND i.workspace_id = %s' if workspace_id else ''}
+                    ''',
+                    scoped_params + scoped_params if workspace_id else (),
+                ).fetchone()
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='count_open_incidents',
+                    impacted_fields=['active_incidents_count'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                open_incidents = {'c': 0}
+            _mark_query_checkpoint('count_incidents_without_alerts')
+            incidents_without_alert_count = 0
+            try:
+                incident_without_alert_row = connection.execute(
+                    f'''
+                    SELECT COUNT(*) AS c
+                    FROM incidents i
+                    WHERE i.status IN ('open','acknowledged')
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM alerts a
+                          WHERE a.workspace_id = i.workspace_id
+                            AND (
+                                a.incident_id = i.id
+                                OR i.source_alert_id = a.id
+                            )
+                      )
+                      {'AND i.workspace_id = %s' if workspace_id else ''}
+                    ''',
+                    scoped_params,
+                ).fetchone()
+                incidents_without_alert_count = int((incident_without_alert_row or {}).get('c') or 0)
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='count_incidents_without_alerts',
+                    impacted_fields=['active_incidents_count'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                incidents_without_alert_count = 0
+            _mark_query_checkpoint('count_response_actions_without_incident')
+            response_actions_without_incident_count = 0
+            try:
+                response_action_row = connection.execute(
+                    f'''
+                    SELECT COUNT(*) AS c
+                    FROM response_actions ra
+                    WHERE ra.incident_id IS NULL
+                      {'AND ra.workspace_id = %s' if workspace_id else ''}
+                    ''',
+                    scoped_params,
+                ).fetchone()
+                response_actions_without_incident_count = int((response_action_row or {}).get('c') or 0)
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='count_response_actions_without_incident',
+                    impacted_fields=['active_incidents_count'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                response_actions_without_incident_count = 0
             _mark_query_checkpoint('count_broken_targets')
             try:
                 broken_targets = connection.execute(
@@ -5410,6 +5551,22 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             reporting_systems,
             f'fresh_coverage_window_{telemetry_window_seconds}s',
         )
+        chain_open_alerts_count = int((open_alerts or {}).get('c') or 0)
+        chain_open_incidents_count = int((open_incidents or {}).get('c') or 0)
+        proof_chain_status = (
+            'incomplete'
+            if (
+                raw_open_alerts_count > chain_open_alerts_count
+                or raw_open_incidents_count > chain_open_incidents_count
+            )
+            else 'complete'
+        )
+        proof_chain_correlation_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f'monitoring-proof-chain:{workspace_id or "global"}:{now.date().isoformat()}:{chain_open_alerts_count}:{chain_open_incidents_count}',
+            )
+        )
         coverage_fresh = bool(
             last_coverage_telemetry_at is not None
             and int((now - last_coverage_telemetry_at).total_seconds()) <= telemetry_window_seconds
@@ -5525,6 +5682,19 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 if unsupported_enabled_rows and reporting_systems <= 0
                 else ('no_fresh_live_coverage_telemetry' if reporting_systems <= 0 or not coverage_fresh else None)
             )
+        if workspace_configured and reporting_systems <= 0:
+            runtime_status_summary = 'degraded'
+            runtime_status_reason = 'no_reporting_systems'
+        if workspace_configured and last_telemetry_at is None:
+            if runtime_status_summary == 'healthy':
+                runtime_status_summary = 'degraded'
+            runtime_status_reason = runtime_status_reason or 'telemetry_timestamp_unavailable'
+        if workspace_configured and raw_open_alerts_count > 0 and chain_open_alerts_count <= 0:
+            proof_chain_status = 'incomplete'
+            runtime_status_summary = 'degraded'
+            runtime_status_reason = 'alerts_without_detection_evidence'
+        if proof_chain_status == 'complete' and detection_pipeline_checkpoint_at is None and latest_detection_at is not None:
+            detection_pipeline_checkpoint_at = latest_detection_at
         if workspace_configured and coverage_only_warning_active:
             runtime_status_summary = 'degraded'
             runtime_status_reason = 'coverage_only_persistent_no_evidence'
@@ -5594,6 +5764,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'confidence': str(summary.get('confidence') or 'unavailable'),
             'evidence_source_summary': str(summary.get('evidence_source_summary') or 'none'),
         }
+        if last_telemetry_at is None:
+            summary['telemetry_freshness'] = 'unavailable'
+            summary['coverage_state']['telemetry_freshness'] = 'unavailable'
         summary['linked_monitored_system_count'] = int(linked_monitored_system_count)
         continuity_evaluation = evaluate_workspace_monitoring_continuity(
             now=now,
@@ -5612,6 +5785,23 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if 'coverage_only_persistent_no_evidence' not in continuity_reason_codes:
                 continuity_reason_codes.append('coverage_only_persistent_no_evidence')
             summary['continuity_reason_codes'] = continuity_reason_codes
+        contradiction_flags = sorted(
+            set(summary.get('contradiction_flags') or []).union(
+                {
+                    flag
+                    for flag, condition in (
+                        ('offline_with_live_telemetry', runtime_status_summary == 'offline' and evidence_source == 'live'),
+                        ('healthy_without_reporting_systems', runtime_status_summary == 'healthy' and reporting_systems <= 0),
+                        ('telemetry_current_with_null_timestamp', coverage_fresh and last_telemetry_at is None),
+                        ('open_alerts_without_detection_evidence', raw_open_alerts_count > chain_open_alerts_count),
+                        ('incident_without_alert', incidents_without_alert_count > 0),
+                        ('response_action_without_incident', response_actions_without_incident_count > 0),
+                    )
+                    if condition
+                }
+            )
+        )
+        summary['contradiction_flags'] = contradiction_flags
         summary_freshness_status = str(summary.get('telemetry_freshness') or '').strip().lower()
         summary_confidence_status = str(summary.get('confidence') or '').strip().lower()
         strict_live_healthy_proof = bool(
@@ -5692,6 +5882,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'valid_target_system_links': valid_target_system_links,
             'active_alerts': int((open_alerts or {}).get('c') or 0),
             'open_incidents': int((open_incidents or {}).get('c') or 0),
+            'raw_open_alerts': int(raw_open_alerts_count),
+            'raw_open_incidents': int(raw_open_incidents_count),
+            'open_alerts_without_detection_evidence': int(open_alerts_without_evidence_count),
             'evidence_freshness_seconds': evidence_freshness,
             'degraded_reason': degraded_reason,
             'runtime_error_code': runtime_error_code,
@@ -5736,6 +5929,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'provider_degraded_flag': provider_degraded_or_unreachable,
             'telemetry_kind': telemetry_kind,
             'last_detection_at': latest_detection_at.isoformat() if latest_detection_at else None,
+            'proof_chain_status': proof_chain_status,
+            'proof_chain_correlation_id': proof_chain_correlation_id,
+            'contradiction_flags': list(summary.get('contradiction_flags') or []),
             'workspace_monitoring_summary': summary,
             'continuity_status': summary.get('continuity_status'),
             'continuity_reason_codes': list(summary.get('continuity_reason_codes') or []),
