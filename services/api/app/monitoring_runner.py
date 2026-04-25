@@ -231,6 +231,17 @@ def _normalize_monitoring_runtime_contract(payload: dict[str, Any]) -> dict[str,
         field_reason_codes = {}
     field_reason_codes = dict(field_reason_codes)
 
+    required_runtime_fields = {
+        'proof_chain_status': 'unavailable',
+        'proof_chain_correlation_id': None,
+        'evidence_source': 'none',
+        'status_reason': normalized.get('status_reason'),
+        'contradiction_flags': [],
+    }
+    for field_name, default_value in required_runtime_fields.items():
+        if field_name not in normalized:
+            normalized[field_name] = default_value
+
     passthrough_summary_keys = (
         'workspace_configured',
         'status_reason',
@@ -4313,6 +4324,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             {
                 'configured_systems': 0,
                 'monitored_systems_count': 0,
+                'reporting_systems': 0,
                 'reporting_systems_count': 0,
                 'protected_assets_count': 0,
                 'telemetry_freshness': str(summary.get('telemetry_freshness') or 'unavailable'),
@@ -5398,10 +5410,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             )
         active_rows = [row for row in enabled_rows_all if str(row.get('runtime_status') or '').strip().lower() in {'healthy', 'active'}]
         enabled_asset_rows = [row for row in enabled_rows_all if row.get('asset_id')]
-        enabled_system_count = max(len(enabled_rows_all), healthy_enabled_targets_count)
-        active_system_count = len(active_rows)
-        system_count = max(len(monitored_rows), healthy_enabled_targets_count)
-        protected_assets_count = max(len({str(row.get('asset_id') or '') for row in enabled_asset_rows}), healthy_enabled_assets_count)
+        enabled_system_count = len(enabled_rows)
+        active_system_count = len([row for row in active_rows if _row_tracks_valid_monitorable_target(row)])
+        system_count = len(enabled_rows)
+        protected_assets_count = len({str(row.get('asset_id') or '') for row in enabled_asset_rows if _row_tracks_valid_monitorable_target(row)})
         linked_monitored_system_count = sum(1 for row in monitored_rows if monitored_system_row_enabled(row) and str(row.get('target_id') or '') in healthy_enabled_target_ids)
         def _row_has_valid_target_asset_link(row: dict[str, Any]) -> bool:
             target_id = str(row.get('target_id') or '')
@@ -5689,7 +5701,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if runtime_status_summary == 'healthy':
                 runtime_status_summary = 'degraded'
             runtime_status_reason = runtime_status_reason or 'telemetry_timestamp_unavailable'
-        if workspace_configured and raw_open_alerts_count > 0 and chain_open_alerts_count <= 0:
+        if workspace_configured and open_alerts_without_evidence_count > 0:
             proof_chain_status = 'incomplete'
             runtime_status_summary = 'degraded'
             runtime_status_reason = 'alerts_without_detection_evidence'
@@ -5758,6 +5770,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         summary['coverage_state'] = {
             'configured_systems': int(enabled_system_count),
             'monitored_systems_count': int(system_count),
+            'reporting_systems': int(reporting_systems),
             'reporting_systems_count': int(reporting_systems),
             'protected_assets_count': int(protected_assets_count),
             'telemetry_freshness': str(summary.get('telemetry_freshness') or 'unavailable'),
@@ -5785,22 +5798,21 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if 'coverage_only_persistent_no_evidence' not in continuity_reason_codes:
                 continuity_reason_codes.append('coverage_only_persistent_no_evidence')
             summary['continuity_reason_codes'] = continuity_reason_codes
-        contradiction_flags = sorted(
-            set(summary.get('contradiction_flags') or []).union(
-                {
-                    flag
-                    for flag, condition in (
-                        ('offline_with_live_telemetry', runtime_status_summary == 'offline' and evidence_source == 'live'),
-                        ('healthy_without_reporting_systems', runtime_status_summary == 'healthy' and reporting_systems <= 0),
-                        ('telemetry_current_with_null_timestamp', coverage_fresh and last_telemetry_at is None),
-                        ('open_alerts_without_detection_evidence', raw_open_alerts_count > chain_open_alerts_count),
-                        ('incident_without_alert', incidents_without_alert_count > 0),
-                        ('response_action_without_incident', response_actions_without_incident_count > 0),
-                    )
-                    if condition
-                }
-            )
+        contradiction_conditions = (
+            ('offline_with_live_telemetry', runtime_status_summary == 'offline' and evidence_source == 'live'),
+            ('healthy_without_reporting_systems', runtime_status_summary == 'healthy' and reporting_systems <= 0),
+            ('telemetry_current_with_null_timestamp', coverage_fresh and last_telemetry_at is None),
+            ('open_alerts_without_detection_evidence', open_alerts_without_evidence_count > 0),
+            ('incident_without_alert', incidents_without_alert_count > 0),
+            ('response_action_without_incident', response_actions_without_incident_count > 0),
         )
+        runtime_contradiction_flags = [flag for flag, condition in contradiction_conditions if condition]
+        inherited_contradiction_flags = [
+            str(flag)
+            for flag in (summary.get('contradiction_flags') or [])
+            if str(flag).strip()
+        ]
+        contradiction_flags = sorted(set(inherited_contradiction_flags + runtime_contradiction_flags))
         summary['contradiction_flags'] = contradiction_flags
         summary_freshness_status = str(summary.get('telemetry_freshness') or '').strip().lower()
         summary_confidence_status = str(summary.get('confidence') or '').strip().lower()
