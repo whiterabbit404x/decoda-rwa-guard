@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import type { MonitoringPresentationStatus } from './monitoring-status-presentation';
+import type { MonitoringInvestigationTimeline, MonitoringRuntimeStatus } from './monitoring-status-contract';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from './response-action-capabilities';
 import { hasLiveTelemetry } from './workspace-monitoring-truth';
@@ -199,7 +200,7 @@ export type PageOperationalState =
   | 'unconfigured_workspace'
   | 'fetch_error';
 
-type SnapshotFailureKey = 'targets' | 'systems' | 'alerts' | 'incidents' | 'evidence' | 'runs' | 'detections' | 'actions';
+type SnapshotFailureKey = 'targets' | 'systems' | 'alerts' | 'incidents' | 'evidence' | 'runs' | 'detections' | 'actions' | 'runtime-status' | 'investigation-timeline';
 
 const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
   'no_valid_protected_assets',
@@ -813,6 +814,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [evidenceDrawer, setEvidenceDrawer] = useState<EvidenceDrawerState | null>(null);
   const [responseToast, setResponseToast] = useState<string | null>(null);
   const [actionCapabilities, setActionCapabilities] = useState<Record<string, ResponseActionCapability>>({});
+  const [runtimeStatusSnapshot, setRuntimeStatusSnapshot] = useState<MonitoringRuntimeStatus | null>(null);
+  const [investigationTimeline, setInvestigationTimeline] = useState<MonitoringInvestigationTimeline | null>(null);
+  const [ensuringProofChain, setEnsuringProofChain] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -823,7 +827,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         return;
       }
       try {
-        const [targetsResult, systemsResult, alertsResult, incidentsResult, evidenceResult, runsResult, detectionsResult, actionsResult] = await Promise.allSettled([
+        const [targetsResult, systemsResult, alertsResult, incidentsResult, evidenceResult, runsResult, detectionsResult, actionsResult, runtimeStatusResult, investigationTimelineResult] = await Promise.allSettled([
           fetch(`${apiUrl}/monitoring/targets`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(MONITORING_SYSTEMS_PROXY_PATH, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
@@ -832,6 +836,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           fetch(`${apiUrl}/monitoring/runs?limit=12`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/detections?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/history/actions?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/ops/monitoring/investigation-timeline`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         if (!active) return;
         const responseEntries: [SnapshotFailureKey, PromiseSettledResult<Response>][] = [
@@ -843,6 +849,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ['runs', runsResult],
           ['detections', detectionsResult],
           ['actions', actionsResult],
+          ['runtime-status', runtimeStatusResult],
+          ['investigation-timeline', investigationTimelineResult],
         ];
         const failedEndpoints = responseEntries
           .filter(([, result]) => !(result.status === 'fulfilled' && result.value.ok))
@@ -850,7 +858,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const responses = responseEntries.map(([, result]) => (
           result.status === 'fulfilled' && result.value.ok ? result.value : null
         ));
-        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, evidenceResponse, runsResponse, detectionsResponse, actionsResponse] = responses;
+        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, evidenceResponse, runsResponse, detectionsResponse, actionsResponse, runtimeStatusResponse, investigationTimelineResponse] = responses;
         const targetsPayload = targetsResponse ? await targetsResponse.json().catch(() => ({})) : {};
         const systemsPayload = systemsResponse ? await systemsResponse.json().catch(() => ({})) : {};
         const alertsPayload = alertsResponse ? await alertsResponse.json().catch(() => ({})) : {};
@@ -859,6 +867,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const runsPayload = runsResponse ? await runsResponse.json().catch(() => ({})) : {};
         const detectionsPayload = detectionsResponse ? await detectionsResponse.json().catch(() => ({})) : {};
         const actionsPayload = actionsResponse ? await actionsResponse.json().catch(() => ({})) : {};
+        const runtimeStatusPayload = runtimeStatusResponse ? await runtimeStatusResponse.json().catch(() => ({})) : {};
+        const investigationTimelinePayload = investigationTimelineResponse ? await investigationTimelineResponse.json().catch(() => ({})) : {};
 
         if (targetsResponse) {
           setTargets((targetsPayload?.targets ?? []) as TargetRow[]);
@@ -883,6 +893,16 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         }
         if (actionsResponse) {
           setActionHistory((actionsPayload?.history ?? []) as ActionHistoryRow[]);
+        }
+        if (runtimeStatusResponse) {
+          setRuntimeStatusSnapshot(runtimeStatusPayload as MonitoringRuntimeStatus);
+        }
+        if (investigationTimelineResponse) {
+          setInvestigationTimeline({
+            ...investigationTimelinePayload,
+            items: Array.isArray(investigationTimelinePayload?.items) ? investigationTimelinePayload.items : [],
+            missing: Array.isArray(investigationTimelinePayload?.missing) ? investigationTimelinePayload.missing : [],
+          } as MonitoringInvestigationTimeline);
         }
         setSystemsPanelWarning(formatSystemsPanelWarning(failedEndpoints));
         setSnapshotError(formatSnapshotErrorMessage(failedEndpoints));
@@ -929,17 +949,18 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     };
   }, [apiUrl, authHeaders, isAuthenticated, user?.current_workspace?.id]);
 
-  const openAlerts = alerts.length;
-  const activeIncidents = incidents.length;
+  const runtimeSummary = runtimeStatusSnapshot?.workspace_monitoring_summary;
+  const openAlerts = Number(runtimeStatusSnapshot?.open_alerts ?? runtimeSummary?.active_alerts_count ?? alerts.length);
+  const activeIncidents = Number(runtimeStatusSnapshot?.active_incidents ?? runtimeSummary?.active_incidents_count ?? incidents.length);
   const truth = feed.monitoring.truth;
   const canonicalPresentation = feed.monitoring.presentation;
   const simulatorMode = truth.evidence_source_summary === 'simulator';
-  const protectedAssetCount = Number(truth.protected_assets_count ?? feed.counts.protectedAssets);
+  const protectedAssetCount = Number(runtimeStatusSnapshot?.protected_assets_count ?? truth.protected_assets_count ?? feed.counts.protectedAssets);
   const workspaceConfigured = truth.workspace_configured;
-  const configuredSystems = truth.monitored_systems_count;
-  const reportingSystems = truth.reporting_systems_count;
+  const configuredSystems = Number(runtimeStatusSnapshot?.monitored_systems_count ?? truth.monitored_systems_count);
+  const reportingSystems = Number(runtimeStatusSnapshot?.reporting_systems ?? truth.reporting_systems_count);
   const monitoringMode = truth.evidence_source_summary;
-  const runtimeStatus = String(truth.runtime_status ?? '').toLowerCase();
+  const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? truth.runtime_status ?? '').toLowerCase();
   const continuityLive = truth.continuity_status === 'continuous_live';
   const presentationStatus = continuityLive ? canonicalPresentation.status : 'degraded';
   const presentationStatusLabel = continuityLive ? canonicalPresentation.statusLabel : 'DEGRADED';
@@ -1077,18 +1098,27 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     runtimeStatus,
     monitoredSystems: feed.counts.monitoredSystems,
     hasLiveTelemetry: showLiveTelemetry,
-    statusReason: truth.status_reason,
+    statusReason: runtimeStatusSnapshot?.status_reason ?? truth.status_reason,
     configurationReason: null,
     configurationReasonCodes: [],
     runtimeMonitoringStatus: truth.monitoring_status,
     runtimeErrorCode: null,
     runtimeDegradedReason: null,
     fieldReasonCodes: null,
-    summaryStatusReason: truth.status_reason,
+    summaryStatusReason: runtimeStatusSnapshot?.status_reason ?? truth.status_reason,
     summaryConfigurationReason: null,
     summaryConfigurationReasonCodes: [],
     continuityStatus: truth.continuity_status,
   });
+
+  const runtimeReason = String(runtimeStatusSnapshot?.status_reason ?? truth.status_reason ?? 'not_reported');
+  const proofChainStatus = String(runtimeStatusSnapshot?.proof_chain_status ?? investigationTimeline?.proof_chain_status ?? 'incomplete');
+  const timelineItems = Array.isArray(investigationTimeline?.items) ? investigationTimeline.items : [];
+  const missingTimelineLinks = Array.isArray(investigationTimeline?.missing) ? investigationTimeline.missing : [];
+  const timelineLinkNames = new Set(timelineItems.map((item) => String(item.link_name || '')));
+  const hasDetectionTimelineLink = timelineLinkNames.has('detection');
+  const hasEvidenceTimelineLink = timelineLinkNames.has('telemetry_event') || timelineLinkNames.has('detection_evidence');
+  const showEvidenceLinkedSignals = hasDetectionTimelineLink && hasEvidenceTimelineLink;
 
   const coverageSummary = `${Math.max(reportingSystems, 0)} / ${Math.max(configuredSystems, 0)}`;
   const hasCoverageFromRuntime = workspaceConfigured && (protectedAssetCount > 0 || configuredSystems > 0);
@@ -1369,6 +1399,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       .catch(() => setActionCapabilities({}));
   }, [apiUrl, authHeaders]);
 
+  function responseActionModeLabel(value: unknown): string {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (normalized === 'live') return 'LIVE';
+    if (normalized === 'recommended') return 'RECOMMENDED';
+    if (normalized === 'simulated') return 'SIMULATED';
+    return 'SIMULATED';
+  }
+
   async function openDetectionEvidence(signal: DetectionItem) {
     const detectionId = signal.id.replace('detection-', '');
     const fallback = detections.find((item) => item.id === detectionId) ?? null;
@@ -1429,12 +1467,52 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const action = await create.json();
     const execute = await fetch(`${apiUrl}/response/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
     const executePayload = await execute.json().catch(() => ({}));
+    const backendMode = String(executePayload?.mode || executePayload?.requested_mode || 'simulated');
+    const modeLabel = responseActionModeLabel(backendMode);
     const executionResult = responseActionExecutionMessage(executePayload);
     if (execute.ok && executionResult.isSuccess) {
-      setResponseToast(executionResult.text);
+      if (modeLabel === 'LIVE') {
+        setResponseToast('LIVE action executed.');
+      } else if (modeLabel === 'RECOMMENDED') {
+        setResponseToast('RECOMMENDED action recorded (simulated path).');
+      } else {
+        setResponseToast('SIMULATED action completed.');
+      }
       return;
     }
-    setResponseToast(executionResult.text || `SIMULATED ${label} could not be executed.`);
+    setResponseToast(executionResult.text || `${modeLabel} ${label} could not be completed.`);
+  }
+
+  async function ensureSimulatorProofChain() {
+    setEnsuringProofChain(true);
+    try {
+      const ensureResponse = await fetch(`${apiUrl}/ops/monitoring/proof-chain/ensure`, { method: 'POST', headers: authHeaders() });
+      if (!ensureResponse.ok) {
+        setResponseToast('Failed to generate simulator proof chain.');
+        return;
+      }
+      const [runtimeStatusResponse, investigationTimelineResponse] = await Promise.all([
+        fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' }),
+        fetch(`${apiUrl}/ops/monitoring/investigation-timeline`, { headers: authHeaders(), cache: 'no-store' }),
+      ]);
+      if (runtimeStatusResponse.ok) {
+        const runtimePayload = await runtimeStatusResponse.json().catch(() => ({}));
+        setRuntimeStatusSnapshot(runtimePayload as MonitoringRuntimeStatus);
+      }
+      if (investigationTimelineResponse.ok) {
+        const timelinePayload = await investigationTimelineResponse.json().catch(() => ({}));
+        setInvestigationTimeline({
+          ...timelinePayload,
+          items: Array.isArray(timelinePayload?.items) ? timelinePayload.items : [],
+          missing: Array.isArray(timelinePayload?.missing) ? timelinePayload.missing : [],
+        } as MonitoringInvestigationTimeline);
+      }
+      setResponseToast('Simulator proof chain generated and monitoring status refreshed.');
+    } catch {
+      setResponseToast('Failed to generate simulator proof chain.');
+    } finally {
+      setEnsuringProofChain(false);
+    }
   }
 
   return (
@@ -1474,7 +1552,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Open alerts {openAlerts}</span>
           <span className="ruleChip">Active incidents {activeIncidents}</span>
         </div>
-        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={truth.status_reason} configurationReason={null} continuityStatus={truth.continuity_status} />
+        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={runtimeReason} configurationReason={null} continuityStatus={truth.continuity_status} />
         {dbPersistenceOutageActive ? (
           <p className="statusLine">
             Persistence outage active: {dbPersistenceOutageReason}. Simulator/demo rows remain visible but are excluded from live-evidence claims.
@@ -1491,7 +1569,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         <article className="dataCard kpiCard">
           <p className="sectionEyebrow">Monitoring Status</p>
           <p className="kpiValue">{monitoringPresentation.statusLabel}</p>
-          <p className="tableMeta">{monitoringPresentation.summary}</p>
+          <p className="tableMeta">{runtimeReason}</p>
         </article>
         <article className="dataCard kpiCard">
           <p className="sectionEyebrow">Telemetry Freshness</p>
@@ -1523,6 +1601,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <p className="kpiValue">{coverageSummary}</p>
           <p className="tableMeta">Systems reporting telemetry.</p>
         </article>
+        <article className="dataCard kpiCard">
+          <p className="sectionEyebrow">Proof Chain Status</p>
+          <p className="kpiValue">{proofChainStatus.toUpperCase()}</p>
+          <p className="tableMeta">Missing links: {missingTimelineLinks.length === 0 ? 'none' : missingTimelineLinks.join(', ')}</p>
+        </article>
       </section>
 
       <article className="dataCard">
@@ -1541,7 +1624,23 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Category: Actions</span>
         </div>
         {loadingSnapshot ? <p className="muted">Loading detection records…</p> : null}
-        {!loadingSnapshot && detectionsToRender.length === 0 ? (
+        {!loadingSnapshot && !showEvidenceLinkedSignals ? (
+          <div className="emptyStatePanel">
+            <h4>No evidence-linked threat signals</h4>
+            <p className="muted">missing[] links: [{missingTimelineLinks.join(', ')}]</p>
+            <div className="buttonRow">
+              <button
+                type="button"
+                className="secondaryCta"
+                onClick={() => void ensureSimulatorProofChain()}
+                disabled={ensuringProofChain}
+              >
+                {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {!loadingSnapshot && showEvidenceLinkedSignals && detectionsToRender.length === 0 ? (
           <div className="emptyStatePanel">
             <h4>
               {pageState === 'configured_no_signals'
@@ -1566,6 +1665,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             </div>
           </div>
         ) : null}
+        {showEvidenceLinkedSignals ? (
         <div className="stack compactStack">
           {detectionsToRender.map((signal) => (
             <div key={signal.id} className="overviewListItem signalRow">
@@ -1606,6 +1706,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             </div>
           ))}
         </div>
+        ) : null}
       </article>
 
       <section className="twoColumnSection monitoringLowerGrid">
@@ -1727,7 +1828,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                       <th>Systems</th>
                       <th>Assets</th>
                       <th>Detections</th>
-                      <th>Alerts</th>
+                      <th>Alerts created in this cycle</th>
                       <th>Telemetry</th>
                       <th>Notes</th>
                     </tr>
@@ -1885,7 +1986,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                     const entryAlertId = typeof entry.details_json?.alert_id === 'string' ? entry.details_json.alert_id : null;
                     const entryIncidentId = typeof entry.details_json?.incident_id === 'string' ? entry.details_json.incident_id : null;
                     const entryMode = typeof entry.details_json?.mode === 'string' ? entry.details_json.mode : null;
-                    const showSimulatedLabel = entryMode !== null && entryMode !== 'live';
+                    const modeLabel = responseActionModeLabel(entryMode);
+                    const showModeLabel = modeLabel !== 'LIVE';
                     const href = entry.object_type === 'alert' || entryAlertId ? '/alerts' : entry.object_type === 'incident' || entryIncidentId ? '/incidents' : '/history';
                     return (
                       <div key={entry.id} className="overviewListItem">
@@ -1894,7 +1996,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                           <p className="tableMeta">
                             object {String(entry.object_type || 'unknown')}:{String(entry.object_id || 'n/a')} · actor {String(entry.actor_type || 'system')}
                           </p>
-                          {showSimulatedLabel ? <p className="tableMeta"><strong>SIMULATED</strong> non-live action</p> : null}
+                          {showModeLabel ? <p className="tableMeta"><strong>{modeLabel}</strong> action</p> : null}
                           <p className="tableMeta">{formatAbsoluteTime(entry.timestamp)}</p>
                         </div>
                         <Link href={href} prefetch={false}>Open</Link>
@@ -1940,7 +2042,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               ? <p className="statusLine">No linked alert/incident context available.</p>
               : <p className="statusLine">Linked detection/alert/incident context selected for action creation.</p>}
             <div className="buttonRow">
-              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('notify_team', 'Execute simulated response')}>Execute simulated response (SIMULATED)</button>
+              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('notify_team', 'Run simulated response')}>Run simulated response (SIMULATED)</button>
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.block_transaction, 'simulated')} title={actionDisabledReason(actionCapabilities.block_transaction, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('block_transaction', 'Block transaction')}>Block transaction (SIMULATED)</button>
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'simulated')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet (SIMULATED)</button>

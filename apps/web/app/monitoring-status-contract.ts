@@ -117,6 +117,36 @@ export type MonitoringRuntimeStatus = {
   db_failure_classification?: string | null;
   db_failure_reason?: string | null;
   coverage_only_warning?: WorkspaceMonitoringSummary['coverage_only_warning'];
+  open_alerts?: number;
+  active_incidents?: number;
+  proof_chain_status?: 'complete' | 'incomplete' | string;
+  proof_chain_missing?: string[];
+};
+
+export type MonitoringTimelineLinkName =
+  | 'monitoring_run'
+  | 'telemetry_event'
+  | 'detection'
+  | 'detection_evidence'
+  | 'alert'
+  | 'incident'
+  | 'response_action';
+
+export type MonitoringInvestigationTimelineItem = {
+  id: string;
+  timestamp?: string | null;
+  link_name: MonitoringTimelineLinkName | string;
+  table_name?: string;
+  evidence_source?: 'live' | 'simulator' | string;
+};
+
+export type MonitoringInvestigationTimeline = {
+  ok?: boolean;
+  workspace_id?: string;
+  proof_chain_status: 'complete' | 'incomplete' | string;
+  correlation_id?: string | null;
+  items: MonitoringInvestigationTimelineItem[];
+  missing?: string[];
 };
 
 export function runtimeStatusModeFromMonitoringStatus(value: MonitoringRuntimeStatus['monitoring_status']): MonitoringMode {
