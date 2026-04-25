@@ -2700,14 +2700,17 @@ def _monitoring_proof_chain_correlation_id(*, workspace_id: str, monitored_syste
     return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
 
 
+PROOF_CHAIN_TIMELINE_LINK_SEQUENCE = [
+    'telemetry',
+    'detection',
+    'evidence',
+    'alert',
+    'incident',
+    'response_action',
+]
 PROOF_CHAIN_TIMELINE_LINK_ORDER = {
-    'monitoring_run': 10,
-    'telemetry_event': 20,
-    'detection': 30,
-    'detection_evidence': 40,
-    'alert': 50,
-    'incident': 60,
-    'response_action': 70,
+    link_name: index
+    for index, link_name in enumerate(PROOF_CHAIN_TIMELINE_LINK_SEQUENCE, start=10)
 }
 
 
@@ -2729,7 +2732,6 @@ def get_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
         anchor = connection.execute(
             '''
             SELECT d.id AS detection_id,
-                   d.monitoring_run_id,
                    d.linked_alert_id,
                    d.evidence_source,
                    d.detected_at,
@@ -2762,7 +2764,7 @@ def get_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
                 'proof_chain_status': 'incomplete',
                 'correlation_id': None,
                 'items': [],
-                'missing': ['monitoring_run', 'telemetry_event', 'detection', 'detection_evidence', 'alert', 'incident', 'response_action'],
+                'missing': PROOF_CHAIN_TIMELINE_LINK_SEQUENCE.copy(),
             }
 
         correlation_id = None
@@ -2771,27 +2773,16 @@ def get_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
             correlation_id = str(raw_evidence.get('correlation_id') or '').strip() or None
 
         detection_id = str(anchor.get('detection_id') or '')
-        monitoring_run_id = str(anchor.get('monitoring_run_id') or '')
         alert_id = str(anchor.get('linked_alert_id') or '')
         incident_id = str(anchor.get('incident_id') or '')
         response_action_id = str(anchor.get('response_action_id') or '')
 
         timeline_rows = connection.execute(
             '''
-            WITH selected_monitoring_run AS (
-                SELECT id::text AS item_id,
-                       started_at AS item_timestamp,
-                       'monitoring_run'::text AS link_name,
-                       'monitoring_runs'::text AS table_name,
-                       NULL::text AS evidence_source
-                FROM monitoring_runs
-                WHERE workspace_id = %s
-                  AND id = %s::uuid
-            ),
-            selected_telemetry_event AS (
+            WITH selected_telemetry AS (
                 SELECT id::text AS item_id,
                        observed_at AS item_timestamp,
-                       'telemetry_event'::text AS link_name,
+                       'telemetry'::text AS link_name,
                        'evidence'::text AS table_name,
                        source_provider AS evidence_source
                 FROM evidence
@@ -2813,17 +2804,17 @@ def get_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
                        evidence_source
                 FROM detections
                 WHERE workspace_id = %s
-                  AND id = %s::uuid
+                  AND id = NULLIF(%s, '')::uuid
             ),
-            selected_detection_evidence AS (
+            selected_evidence AS (
                 SELECT id::text AS item_id,
                        created_at AS item_timestamp,
-                       'detection_evidence'::text AS link_name,
+                       'evidence'::text AS link_name,
                        'detection_evidence'::text AS table_name,
                        source AS evidence_source
                 FROM detection_evidence
                 WHERE workspace_id = %s
-                  AND detection_id = %s::uuid
+                  AND detection_id = NULLIF(%s, '')::uuid
                 ORDER BY created_at DESC
                 LIMIT 1
             ),
@@ -2835,7 +2826,7 @@ def get_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
                        source AS evidence_source
                 FROM alerts
                 WHERE workspace_id = %s
-                  AND id = %s::uuid
+                  AND id = NULLIF(%s, '')::uuid
             ),
             selected_incident AS (
                 SELECT id::text AS item_id,
@@ -2845,7 +2836,7 @@ def get_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
                        (payload ->> 'evidence_source')::text AS evidence_source
                 FROM incidents
                 WHERE workspace_id = %s
-                  AND id = %s::uuid
+                  AND id = NULLIF(%s, '')::uuid
             ),
             selected_response_action AS (
                 SELECT id::text AS item_id,
@@ -2855,16 +2846,14 @@ def get_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
                        (execution_metadata ->> 'evidence_source')::text AS evidence_source
                 FROM response_actions
                 WHERE workspace_id = %s
-                  AND id = %s::uuid
+                  AND id = NULLIF(%s, '')::uuid
             )
             SELECT item_id, item_timestamp, link_name, table_name, evidence_source
-            FROM selected_monitoring_run
-            UNION ALL
-            SELECT item_id, item_timestamp, link_name, table_name, evidence_source FROM selected_telemetry_event
+            FROM selected_telemetry
             UNION ALL
             SELECT item_id, item_timestamp, link_name, table_name, evidence_source FROM selected_detection
             UNION ALL
-            SELECT item_id, item_timestamp, link_name, table_name, evidence_source FROM selected_detection_evidence
+            SELECT item_id, item_timestamp, link_name, table_name, evidence_source FROM selected_evidence
             UNION ALL
             SELECT item_id, item_timestamp, link_name, table_name, evidence_source FROM selected_alert
             UNION ALL
@@ -2873,8 +2862,6 @@ def get_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
             SELECT item_id, item_timestamp, link_name, table_name, evidence_source FROM selected_response_action
             ''',
             (
-                workspace_id_value,
-                monitoring_run_id,
                 workspace_id_value,
                 workspace_id_value,
                 alert_id,
@@ -2893,7 +2880,7 @@ def get_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
 
         missing: list[str] = []
         found_links = {str(item.get('link_name') or '') for item in timeline_rows}
-        for link_name in PROOF_CHAIN_TIMELINE_LINK_ORDER:
+        for link_name in PROOF_CHAIN_TIMELINE_LINK_SEQUENCE:
             if link_name not in found_links:
                 missing.append(link_name)
 

@@ -35,7 +35,7 @@ class _TimelineConnection:
                     'response_action_id': 'act-1',
                 }
             )
-        if 'WITH selected_monitoring_run AS (' in normalized:
+        if 'WITH selected_telemetry AS (' in normalized:
             return _FakeResult(
                 [
                     {
@@ -44,13 +44,6 @@ class _TimelineConnection:
                         'link_name': 'alert',
                         'table_name': 'alerts',
                         'evidence_source': 'simulator',
-                    },
-                    {
-                        'item_id': 'run-1',
-                        'item_timestamp': datetime(2026, 4, 25, 9, 0, tzinfo=timezone.utc),
-                        'link_name': 'monitoring_run',
-                        'table_name': 'monitoring_runs',
-                        'evidence_source': None,
                     },
                     {
                         'item_id': 'det-1',
@@ -62,7 +55,7 @@ class _TimelineConnection:
                     {
                         'item_id': 'ev-1',
                         'item_timestamp': datetime(2026, 4, 25, 9, 5, tzinfo=timezone.utc),
-                        'link_name': 'telemetry_event',
+                        'link_name': 'telemetry',
                         'table_name': 'evidence',
                         'evidence_source': 'simulator_runtime',
                     },
@@ -111,11 +104,10 @@ def test_get_monitoring_investigation_timeline_returns_ordered_items_and_missing
     assert payload['workspace_id'] == workspace_id
     assert payload['proof_chain_status'] == 'incomplete'
     assert payload['correlation_id'] == 'corr-1'
-    assert [item['link_name'] for item in payload['items']] == ['monitoring_run', 'telemetry_event', 'detection', 'alert']
+    assert [item['link_name'] for item in payload['items']] == ['telemetry', 'detection', 'alert']
     assert payload['items'][0]['evidence_source'] == 'simulator'
-    assert payload['items'][1]['evidence_source'] == 'simulator'
-    assert payload['items'][2]['evidence_source'] == 'live'
-    assert payload['missing'] == ['detection_evidence', 'incident', 'response_action']
+    assert payload['items'][1]['evidence_source'] == 'live'
+    assert payload['missing'] == ['evidence', 'incident', 'response_action']
 
 
 def test_get_monitoring_investigation_timeline_returns_all_links_missing_when_anchor_absent(monkeypatch):
@@ -130,7 +122,7 @@ def test_get_monitoring_investigation_timeline_returns_all_links_missing_when_an
 
     assert payload['proof_chain_status'] == 'incomplete'
     assert payload['items'] == []
-    assert payload['missing'] == ['monitoring_run', 'telemetry_event', 'detection', 'detection_evidence', 'alert', 'incident', 'response_action']
+    assert payload['missing'] == ['telemetry', 'detection', 'evidence', 'alert', 'incident', 'response_action']
 
 
 def test_get_monitoring_investigation_timeline_requires_workspace_header(monkeypatch):
@@ -159,13 +151,12 @@ class _CompleteTimelineConnection:
                     'response_action_id': 'act-9',
                 }
             )
-        if 'WITH selected_monitoring_run AS (' in normalized:
+        if 'WITH selected_telemetry AS (' in normalized:
             return _FakeResult(
                 [
-                    {'item_id': 'run-9', 'item_timestamp': datetime(2026, 4, 25, 11, 55, tzinfo=timezone.utc), 'link_name': 'monitoring_run', 'table_name': 'monitoring_runs', 'evidence_source': None},
-                    {'item_id': 'ev-9', 'item_timestamp': datetime(2026, 4, 25, 11, 58, tzinfo=timezone.utc), 'link_name': 'telemetry_event', 'table_name': 'evidence', 'evidence_source': 'live'},
+                    {'item_id': 'ev-9', 'item_timestamp': datetime(2026, 4, 25, 11, 58, tzinfo=timezone.utc), 'link_name': 'telemetry', 'table_name': 'evidence', 'evidence_source': 'live'},
                     {'item_id': 'det-9', 'item_timestamp': datetime(2026, 4, 25, 12, 0, tzinfo=timezone.utc), 'link_name': 'detection', 'table_name': 'detections', 'evidence_source': 'live'},
-                    {'item_id': 'de-9', 'item_timestamp': datetime(2026, 4, 25, 12, 0, tzinfo=timezone.utc), 'link_name': 'detection_evidence', 'table_name': 'detection_evidence', 'evidence_source': 'live'},
+                    {'item_id': 'de-9', 'item_timestamp': datetime(2026, 4, 25, 12, 0, tzinfo=timezone.utc), 'link_name': 'evidence', 'table_name': 'detection_evidence', 'evidence_source': 'live'},
                     {'item_id': 'alert-9', 'item_timestamp': datetime(2026, 4, 25, 12, 1, tzinfo=timezone.utc), 'link_name': 'alert', 'table_name': 'alerts', 'evidence_source': 'live'},
                     {'item_id': 'inc-9', 'item_timestamp': datetime(2026, 4, 25, 12, 2, tzinfo=timezone.utc), 'link_name': 'incident', 'table_name': 'incidents', 'evidence_source': 'live'},
                     {'item_id': 'act-9', 'item_timestamp': datetime(2026, 4, 25, 12, 3, tzinfo=timezone.utc), 'link_name': 'response_action', 'table_name': 'response_actions', 'evidence_source': 'live'},
@@ -187,10 +178,9 @@ def test_get_monitoring_investigation_timeline_complete_chain_has_no_missing_lin
     assert payload['proof_chain_status'] == 'complete'
     assert payload.get('missing', []) == []
     assert [item['link_name'] for item in payload['items']] == [
-        'monitoring_run',
-        'telemetry_event',
+        'telemetry',
         'detection',
-        'detection_evidence',
+        'evidence',
         'alert',
         'incident',
         'response_action',
