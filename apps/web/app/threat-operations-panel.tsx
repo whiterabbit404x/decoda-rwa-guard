@@ -7,7 +7,6 @@ import type { MonitoringPresentationStatus } from './monitoring-status-presentat
 import type { MonitoringInvestigationTimeline, MonitoringRuntimeStatus } from './monitoring-status-contract';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from './response-action-capabilities';
-import { hasLiveTelemetry } from './workspace-monitoring-truth';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import ThreatChainPanel from './threat-chain-panel';
 
@@ -295,14 +294,6 @@ type DetectionItem = {
   actionId?: string | null;
 };
 
-type TimelineItem = {
-  id: string;
-  timestamp: string;
-  category: 'Telemetry Event' | 'Detection' | 'Alert' | 'Incident' | 'Action';
-  description: string;
-  href: string;
-};
-
 type ThreatChainStep = {
   id: string;
   label: string;
@@ -412,11 +403,18 @@ function stateTone(state: ThreatFeedState) {
   return 'offline';
 }
 
-function categoryTone(category: TimelineItem['category']) {
-  if (category === 'Alert' || category === 'Incident') return 'attention';
-  if (category === 'Detection') return 'high';
-  if (category === 'Action') return 'healthy';
+function timelineLinkTone(linkName: string) {
+  if (linkName === 'alert' || linkName === 'incident') return 'attention';
+  if (linkName === 'detection' || linkName === 'detection_evidence') return 'high';
+  if (linkName === 'response_action') return 'healthy';
   return 'low';
+}
+
+function timelineLinkHref(linkName: string): string {
+  if (linkName === 'alert' || linkName === 'detection') return '/alerts';
+  if (linkName === 'incident') return '/incidents';
+  if (linkName === 'response_action' || linkName === 'monitoring_run') return '/history';
+  return '/threat';
 }
 
 function displayIdentifier(target: TargetRow): string {
@@ -950,33 +948,50 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }, [apiUrl, authHeaders, isAuthenticated, user?.current_workspace?.id]);
 
   const runtimeSummary = runtimeStatusSnapshot?.workspace_monitoring_summary;
-  const openAlerts = Number(runtimeStatusSnapshot?.open_alerts ?? runtimeSummary?.active_alerts_count ?? alerts.length);
-  const activeIncidents = Number(runtimeStatusSnapshot?.active_incidents ?? runtimeSummary?.active_incidents_count ?? incidents.length);
+  const openAlerts = Number(runtimeStatusSnapshot?.open_alerts ?? runtimeSummary?.active_alerts_count ?? 0);
+  const activeIncidents = Number(runtimeStatusSnapshot?.active_incidents ?? runtimeSummary?.active_incidents_count ?? 0);
   const truth = feed.monitoring.truth;
   const canonicalPresentation = feed.monitoring.presentation;
-  const simulatorMode = truth.evidence_source_summary === 'simulator';
-  const protectedAssetCount = Number(runtimeStatusSnapshot?.protected_assets_count ?? truth.protected_assets_count ?? feed.counts.protectedAssets);
-  const workspaceConfigured = truth.workspace_configured;
-  const configuredSystems = Number(runtimeStatusSnapshot?.monitored_systems_count ?? truth.monitored_systems_count);
-  const reportingSystems = Number(runtimeStatusSnapshot?.reporting_systems ?? truth.reporting_systems_count);
-  const monitoringMode = truth.evidence_source_summary;
-  const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? truth.runtime_status ?? '').toLowerCase();
-  const continuityLive = truth.continuity_status === 'continuous_live';
-  const presentationStatus = continuityLive ? canonicalPresentation.status : 'degraded';
-  const presentationStatusLabel = continuityLive ? canonicalPresentation.statusLabel : 'DEGRADED';
+  const runtimeEvidenceSource = String(
+    runtimeStatusSnapshot?.evidence_source
+    ?? runtimeStatusSnapshot?.monitoring_mode
+    ?? runtimeSummary?.evidence_source_summary
+    ?? 'none',
+  ).toLowerCase();
+  const simulatorMode = runtimeEvidenceSource === 'simulator';
+  const protectedAssetCount = Number(runtimeStatusSnapshot?.protected_assets_count ?? runtimeSummary?.protected_assets_count ?? 0);
+  const workspaceConfigured = Boolean(runtimeStatusSnapshot?.workspace_configured ?? runtimeSummary?.workspace_configured ?? false);
+  const configuredSystems = Number(runtimeStatusSnapshot?.monitored_systems_count ?? runtimeSummary?.monitored_systems_count ?? 0);
+  const reportingSystems = Number(runtimeStatusSnapshot?.reporting_systems ?? runtimeSummary?.reporting_systems_count ?? 0);
+  const monitoringMode = runtimeEvidenceSource;
+  const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? runtimeSummary?.runtime_status ?? '').toLowerCase();
+  const continuityLive = runtimeStatus === 'live';
+  const presentationStatus: MonitoringPresentationStatus = runtimeStatus === 'live'
+    ? 'live'
+    : runtimeStatus === 'offline'
+      ? 'offline'
+      : 'degraded';
+  const presentationStatusLabel = presentationStatus === 'live'
+    ? 'LIVE'
+    : presentationStatus === 'offline'
+      ? 'OFFLINE'
+      : 'DEGRADED';
   const monitoringPresentation = {
     status: presentationStatus,
     tone: monitoringTone(presentationStatus),
     statusLabel: presentationStatusLabel,
     summary: canonicalPresentation.summary,
-    evidenceSourceLabel: String(truth.evidence_source_summary || 'none'),
-    lastTelemetryAt: feed.monitoring.lastTelemetryAt,
-    lastHeartbeatAt: feed.monitoring.lastHeartbeatAt,
-    lastPollAt: feed.monitoring.lastPollAt,
-    telemetryLabel: formatRelativeTime(feed.monitoring.lastTelemetryAt),
-    heartbeatLabel: formatRelativeTime(feed.monitoring.lastHeartbeatAt),
-    pollLabel: formatRelativeTime(feed.monitoring.lastPollAt),
-    hasLiveTelemetry: continuityLive && hasLiveTelemetry(truth),
+    evidenceSourceLabel: runtimeEvidenceSource,
+    lastTelemetryAt: runtimeStatusSnapshot?.last_telemetry_at ?? runtimeSummary?.last_telemetry_at ?? null,
+    lastHeartbeatAt: runtimeStatusSnapshot?.last_heartbeat_at ?? runtimeSummary?.last_heartbeat_at ?? null,
+    lastPollAt: runtimeStatusSnapshot?.last_poll_at ?? runtimeSummary?.last_poll_at ?? null,
+    telemetryLabel: formatRelativeTime(runtimeStatusSnapshot?.last_telemetry_at ?? runtimeSummary?.last_telemetry_at ?? null),
+    heartbeatLabel: formatRelativeTime(runtimeStatusSnapshot?.last_heartbeat_at ?? runtimeSummary?.last_heartbeat_at ?? null),
+    pollLabel: formatRelativeTime(runtimeStatusSnapshot?.last_poll_at ?? runtimeSummary?.last_poll_at ?? null),
+    hasLiveTelemetry: continuityLive
+      && String(runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable') === 'fresh'
+      && reportingSystems > 0
+      && runtimeEvidenceSource === 'live',
   };
   const showLiveTelemetry = monitoringPresentation.hasLiveTelemetry;
   const dbPersistenceOutageReason = truth.db_failure_reason || null;
@@ -986,7 +1001,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const hasTelemetryTimestamp = Boolean(coverageTelemetryAt);
   const telemetryDisplayLabel = formatRelativeTime(coverageTelemetryAt);
   const pollLabel = monitoringPresentation.pollLabel;
-  const detectionEvalLabel = formatRelativeTime(truth.last_detection_at ?? monitoringPresentation.lastTelemetryAt);
+  const detectionEvalLabel = formatRelativeTime(runtimeStatusSnapshot?.last_detection_at ?? monitoringPresentation.lastTelemetryAt);
 
   const targetById = useMemo(() => {
     return new Map(targets.map((target) => [target.id, target] as const));
@@ -1092,26 +1107,26 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     targets,
     liveDetections: categorizedDetections.live,
     workspaceConfigured,
-    freshnessStatus: truth.telemetry_freshness,
-    monitoringStatus: truth.monitoring_status,
+    freshnessStatus: runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable',
+    monitoringStatus: runtimeStatusSnapshot?.monitoring_status ?? runtimeSummary?.monitoring_status ?? 'offline',
     reportingSystems,
     runtimeStatus,
-    monitoredSystems: feed.counts.monitoredSystems,
+    monitoredSystems: configuredSystems,
     hasLiveTelemetry: showLiveTelemetry,
-    statusReason: runtimeStatusSnapshot?.status_reason ?? truth.status_reason,
+    statusReason: runtimeStatusSnapshot?.status_reason ?? runtimeSummary?.status_reason ?? null,
     configurationReason: null,
     configurationReasonCodes: [],
-    runtimeMonitoringStatus: truth.monitoring_status,
+    runtimeMonitoringStatus: runtimeStatusSnapshot?.monitoring_status ?? runtimeSummary?.monitoring_status ?? 'offline',
     runtimeErrorCode: null,
     runtimeDegradedReason: null,
     fieldReasonCodes: null,
-    summaryStatusReason: runtimeStatusSnapshot?.status_reason ?? truth.status_reason,
+    summaryStatusReason: runtimeStatusSnapshot?.status_reason ?? runtimeSummary?.status_reason ?? null,
     summaryConfigurationReason: null,
     summaryConfigurationReasonCodes: [],
-    continuityStatus: truth.continuity_status,
+    continuityStatus: runtimeSummary?.continuity_status ?? null,
   });
 
-  const runtimeReason = String(runtimeStatusSnapshot?.status_reason ?? truth.status_reason ?? 'not_reported');
+  const runtimeReason = String(runtimeStatusSnapshot?.status_reason ?? runtimeSummary?.status_reason ?? 'not_reported');
   const proofChainStatus = String(runtimeStatusSnapshot?.proof_chain_status ?? investigationTimeline?.proof_chain_status ?? 'incomplete');
   const timelineItems = Array.isArray(investigationTimeline?.items) ? investigationTimeline.items : [];
   const missingTimelineLinks = Array.isArray(investigationTimeline?.missing) ? investigationTimeline.missing : [];
@@ -1130,7 +1145,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     ? 'Workspace not configured: monitoring setup is incomplete.'
     : monitoringPresentation.status === 'offline'
     ? 'Runtime reports coverage, but telemetry is currently offline.'
-    : monitoringPresentation.status === 'degraded' || monitoringPresentation.status === 'stale' || monitoringPresentation.status === 'limited coverage'
+    : monitoringPresentation.status === 'degraded'
       ? 'Runtime reports partial or stale telemetry. Detailed protected system rows are still syncing.'
       : 'Runtime reports healthy coverage. Detailed protected system rows are still syncing.';
   const targetCoverageRows = useMemo(() => {
@@ -1231,48 +1246,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const linkedDetection = detections.find((item) => item.linked_alert_id === alert.id) ?? null;
     return { alert, linkedDetection };
   });
-  const incidentTimelineItems = useMemo<TimelineItem[]>(() => {
-    const telemetryItems: TimelineItem[] = [{
-      id: `telemetry-${monitoringPresentation.lastTelemetryAt ?? 'none'}`,
-      timestamp: monitoringPresentation.lastTelemetryAt ?? new Date(0).toISOString(),
-      category: 'Telemetry Event',
-      description: hasTelemetryTimestamp
-        ? `Latest telemetry seen ${telemetryDisplayLabel}.`
-        : 'No current telemetry timestamp available.',
-      href: '/threat',
-    }];
-    const detectionItems = detections.slice(0, 4).map((item) => ({
-      id: `incident-detection-${item.id}`,
-      timestamp: item.detected_at || new Date(0).toISOString(),
-      category: 'Detection' as const,
-      description: item.title || item.evidence_summary || 'Detection matched a monitoring rule.',
-      href: '/alerts',
-    }));
-    const alertItems = alerts.slice(0, 4).map((item) => ({
-      id: `incident-alert-${item.id}`,
-      timestamp: item.created_at || new Date(0).toISOString(),
-      category: 'Alert' as const,
-      description: item.title || 'Alert created',
-      href: '/alerts',
-    }));
-    const incidentItems = incidents.slice(0, 4).map((item) => ({
-      id: `incident-row-${item.id}`,
-      timestamp: item.created_at || new Date(0).toISOString(),
-      category: 'Incident' as const,
-      description: item.title || item.event_type || 'Incident opened',
-      href: '/incidents',
-    }));
-    const actionItems = monitoringRuns.slice(0, 4).map((item) => ({
-      id: `incident-action-${item.id}`,
-      timestamp: item.completed_at || item.started_at || new Date(0).toISOString(),
-      category: 'Action' as const,
-      description: `Monitoring run ${String(item.trigger_type || 'unknown')} (${String(item.status || 'unknown')})`,
-      href: '/history',
-    }));
-    return [...telemetryItems, ...detectionItems, ...alertItems, ...incidentItems, ...actionItems]
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-      .slice(0, 10);
-  }, [alerts, detections, hasTelemetryTimestamp, incidents, monitoringPresentation.lastTelemetryAt, monitoringRuns, telemetryDisplayLabel]);
+  const investigationTimelineItems = useMemo(() => (
+    timelineItems.slice().sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime())
+  ), [timelineItems]);
   const threatChainSteps = useMemo<ThreatChainStep[]>(() => {
     const recentDetection = detections
       .slice()
@@ -1559,7 +1535,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           </p>
         ) : null}
         <p className="tableMeta">
-          Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {pollLabel} · Last heartbeat: {monitoringPresentation.heartbeatLabel} · Runtime freshness: {String(truth.telemetry_freshness || 'unavailable')} · Runtime confidence: {String(truth.confidence || 'unavailable')}
+          Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {pollLabel} · Last heartbeat: {monitoringPresentation.heartbeatLabel} · Runtime freshness: {String(runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeSummary?.confidence ?? runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
         </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
@@ -2006,18 +1982,26 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   {actionHistory.length === 0 ? <p className="muted">No workflow action history has been recorded yet.</p> : null}
                 </div>
                 <div className="stack compactStack">
-                  {incidentTimelineItems.map((item) => (
-                    <div key={item.id} className="overviewListItem">
-                      <div>
-                        <p>{item.description}</p>
-                        <p className="tableMeta">
-                          <span className={`statusBadge statusBadge-${categoryTone(item.category)}`}>{item.category}</span>{' '}
-                          {formatAbsoluteTime(item.timestamp)}
-                        </p>
+                  {investigationTimelineItems.length === 0 ? (
+                    <p className="muted">No investigation timeline records yet. Missing links: {missingTimelineLinks.length === 0 ? 'none' : missingTimelineLinks.join(', ')}.</p>
+                  ) : null}
+                  {investigationTimelineItems.map((item) => {
+                    const linkName = String(item.link_name || 'unknown');
+                    const sourceLabel = String(item.evidence_source || 'simulator');
+                    return (
+                      <div key={item.id} className="overviewListItem">
+                        <div>
+                          <p>{linkName.replaceAll('_', ' ')}</p>
+                          <p className="tableMeta">id {item.id} · table {String(item.table_name || 'unknown')} · evidence {sourceLabel}</p>
+                          <p className="tableMeta">
+                            <span className={`statusBadge statusBadge-${timelineLinkTone(linkName)}`}>{linkName}</span>{' '}
+                            {formatAbsoluteTime(item.timestamp)}
+                          </p>
+                        </div>
+                        <Link href={timelineLinkHref(linkName)} prefetch={false}>Open</Link>
                       </div>
-                      <Link href={item.href} prefetch={false}>Open</Link>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
