@@ -9475,6 +9475,8 @@ LEGACY_ACTION_TYPE_ALIASES = {
     'compensating_reapprove_erc20_approval': 'revoke_approval',
 }
 ENFORCEMENT_STATUSES = {'pending', 'executed', 'failed', 'canceled'}
+LIVE_ACTION_APPROVER_ROLES = {'owner', 'admin'}
+LIVE_ACTION_STEP_UP_MAX_AGE_SECONDS = 15 * 60
 
 
 def _normalize_eth_address(value: str | None, *, field: str) -> str | None:
@@ -9660,6 +9662,32 @@ def _safe_signer_key() -> str:
     return read_encrypted_env('SAFE_SIGNER_KEY', aad='safe-signer-key') or read_encrypted_env('SAFE_SIGNER_KEY_ENCRYPTED', aad='safe-signer-key')
 
 
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+
+
+def _require_live_action_step_up_auth(request: Request, *, user: dict[str, Any]) -> dict[str, Any]:
+    mfa_enabled = bool(user.get('mfa_enabled'))
+    if not mfa_enabled:
+        return {'required': False, 'verified': False, 'reason': 'mfa_not_enabled'}
+    verified_header = str(request.headers.get('x-step-up-verified') or '').strip().lower()
+    step_up_at = _parse_iso_datetime(request.headers.get('x-step-up-authenticated-at'))
+    if verified_header in {'1', 'true', 'yes'} and step_up_at is not None:
+        age_seconds = max(0, int((utc_now() - step_up_at).total_seconds()))
+        if age_seconds <= LIVE_ACTION_STEP_UP_MAX_AGE_SECONDS:
+            return {'required': True, 'verified': True, 'age_seconds': age_seconds}
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail='Step-up authentication is required for live action execution. Provide x-step-up-verified=true and a recent x-step-up-authenticated-at timestamp.',
+    )
+
+
 def _propose_safe_transaction(action_id: str, *, to: str, data: str, chain_network: str | None = None) -> str:
     service_url = os.getenv('SAFE_TX_SERVICE_URL', '').strip().rstrip('/')
     safe_wallet = _normalize_eth_address(os.getenv('SAFE_WALLET_ADDRESS', '').strip(), field='SAFE_WALLET_ADDRESS')
@@ -9687,15 +9715,24 @@ def _propose_safe_transaction(action_id: str, *, to: str, data: str, chain_netwo
         headers={'Content-Type': 'application/json'},
         method='POST',
     )
+    status_code = 0
     try:
         with urlopen(request, timeout=10) as response:
+            status_code = int(getattr(response, 'status', 0) or 0)
             data = json.loads(response.read().decode('utf-8')) if response.readable() else {}
     except (HTTPError, URLError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f'Safe transaction proposal failed: {exc}') from exc
     safe_tx_hash = str(data.get('safeTxHash') or data.get('safe_tx_hash') or data.get('contractTransactionHash') or '').strip()
     if not safe_tx_hash:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Safe transaction proposal did not return safeTxHash.')
-    return safe_tx_hash
+    return _json_safe_value(
+        {
+            'safe_tx_hash': safe_tx_hash,
+            'external_request_id': str(data.get('requestId') or data.get('request_id') or data.get('id') or '').strip() or None,
+            'response_code': status_code or None,
+            'provider_response': data,
+        }
+    )
 
 
 def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -9729,7 +9766,16 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 )
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Selected mode is not supported for this action.')
         status_value = _normalize_response_action_status(payload.get('status'))
-        execution_metadata = {'params': params, 'created_via': 'api'}
+        execution_metadata = {
+            'params': params,
+            'created_via': 'api',
+            'evidence_source': 'live' if mode == 'live' else 'simulator',
+            'chain_linked_ids': {
+                'incident_id': incident_id,
+                'alert_id': alert_id,
+            },
+        }
+        execution_artifacts = {'provider': {'receipts': []}}
         calldata: str | None = None
         if action_type == 'revoke_approval':
             if not token_contract or not spender:
@@ -9749,9 +9795,9 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
             INSERT INTO response_actions (
                 id, workspace_id, incident_id, alert_id, action_type, mode, status, result_summary, operator_notes,
                 chain_network, target_wallet, token_contract, spender, calldata,
-                execution_state, execution_metadata, created_by_user_id
+                execution_state, execution_metadata, execution_artifacts, provider_receipts, created_by_user_id
             )
-            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s)
             ''',
             (
                 action_id,
@@ -9770,6 +9816,8 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 calldata,
                 'proposed' if mode == 'live' else 'simulated_executed',
                 _json_dumps(execution_metadata),
+                _json_dumps(execution_artifacts),
+                _json_dumps([]),
                 user['id'],
             ),
         )
@@ -9894,25 +9942,53 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         action = _json_safe_value(dict(row))
         safe_tx_hash = None
         metadata = action.get('execution_metadata') if isinstance(action.get('execution_metadata'), dict) else {}
+        artifacts = action.get('execution_artifacts') if isinstance(action.get('execution_artifacts'), dict) else {}
+        provider_receipts = action.get('provider_receipts') if isinstance(action.get('provider_receipts'), list) else []
+        mode = str(action.get('mode') or 'simulated')
+        if mode == 'live':
+            if _normalize_workspace_role(str(workspace_context.get('role') or '')) not in LIVE_ACTION_APPROVER_ROLES:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Owner or admin role is required for live action execution.')
+            if not action.get('approved_by_user_id'):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Live action requires explicit approval before execution.')
+            metadata['step_up'] = _require_live_action_step_up_auth(request, user=user)
         capability = resolve_response_action_capability(str(action.get('action_type') or ''), str(action.get('mode') or ''))
         execution_state = 'simulated_executed'
         next_status = 'executed'
         result_summary = 'Action executed in simulation mode.'
-        if str(action.get('mode') or 'simulated') != 'live':
+        if mode != 'live':
             metadata['execution_mode'] = 'simulated'
         elif capability.get('live_execution_path') == 'safe':
-            safe_tx_hash = _propose_safe_transaction(
+            safe_response = _propose_safe_transaction(
                 action_id,
                 to=str(action.get('token_contract') or ''),
                 data=str(action.get('calldata') or ''),
                 chain_network=str(action.get('chain_network') or ''),
             )
+            safe_tx_hash = str(safe_response.get('safe_tx_hash') or '').strip() or None
             logger.info('enforcement_proposed_safe_tx action_id=%s safe_tx_hash=%s', action_id, safe_tx_hash)
             metadata['execution_mode'] = 'safe_proposed'
             metadata['execution_state'] = 'proposed'
             metadata['safe_tx_hash'] = safe_tx_hash
             metadata['proposal_timestamp'] = utc_now_iso()
             metadata['proposal_operator_user_id'] = user['id']
+            artifacts = {
+                **artifacts,
+                'provider': {
+                    'kind': 'safe',
+                    'safe_tx_hash': safe_response.get('safe_tx_hash'),
+                    'external_request_id': safe_response.get('external_request_id'),
+                    'response_code': safe_response.get('response_code'),
+                },
+            }
+            provider_receipts.append(
+                {
+                    'provider': 'safe',
+                    'tx_hash': safe_response.get('safe_tx_hash'),
+                    'external_request_id': safe_response.get('external_request_id'),
+                    'response_code': safe_response.get('response_code'),
+                    'received_at': utc_now_iso(),
+                }
+            )
             execution_state = 'proposed'
             next_status = 'pending'
             result_summary = 'Safe transaction proposed; awaiting wallet execution.'
@@ -9923,6 +9999,24 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 metadata['external_governance_action_id'] = governance_response.get('action_id')
                 metadata['attestation_hash'] = governance_response.get('attestation_hash')
                 metadata['policy_effects'] = governance_response.get('policy_effects') or []
+                artifacts = {
+                    **artifacts,
+                    'provider': {
+                        'kind': 'governance',
+                        'external_request_id': governance_response.get('action_id'),
+                        'response_code': 200,
+                        'payload': governance_response,
+                    },
+                }
+                provider_receipts.append(
+                    {
+                        'provider': 'governance',
+                        'tx_hash': governance_response.get('tx_hash'),
+                        'external_request_id': governance_response.get('action_id'),
+                        'response_code': 200,
+                        'received_at': utc_now_iso(),
+                    }
+                )
                 metadata['execution_mode'] = 'governance_submitted'
                 metadata['execution_state'] = 'proposed'
                 execution_state = 'proposed'
@@ -9976,8 +10070,8 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             metadata['execution_state'] = 'unsupported'
             result_summary = str(capability.get('reason') or 'Unsupported live action')
             connection.execute(
-                'UPDATE response_actions SET status = %s, execution_state = %s, execution_metadata = %s::jsonb, result_summary = %s WHERE id = %s',
-                ('failed', 'unsupported', _json_dumps(metadata), result_summary, action_id),
+                'UPDATE response_actions SET status = %s, execution_state = %s, execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, result_summary = %s WHERE id = %s',
+                ('failed', 'unsupported', _json_dumps(metadata), _json_dumps(artifacts), _json_dumps(provider_receipts), result_summary, action_id),
             )
             write_action_history(
                 connection,
@@ -10026,10 +10120,10 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         connection.execute(
             f"""
             UPDATE response_actions
-            SET status = '{next_status}', execution_state = %s, safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, executed_at = CASE WHEN '{next_status}' = 'executed' THEN NOW() ELSE executed_at END, result_summary = COALESCE(result_summary, %s)
+            SET status = '{next_status}', execution_state = %s, safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, executed_at = CASE WHEN '{next_status}' = 'executed' THEN NOW() ELSE executed_at END, result_summary = COALESCE(result_summary, %s)
             WHERE id = %s
             """,
-            (execution_state, safe_tx_hash, _json_dumps(metadata), result_summary, action_id),
+            (execution_state, safe_tx_hash, _json_dumps(metadata), _json_dumps(artifacts), _json_dumps(provider_receipts), result_summary, action_id),
         )
         write_action_history(
             connection,
@@ -10248,6 +10342,7 @@ def list_enforcement_actions(
         rows = connection.execute(
             '''
             SELECT id, action_type, mode, status, execution_state, result_summary, operator_notes, created_at, executed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, execution_metadata
+                 , execution_artifacts, provider_receipts
             FROM response_actions
             WHERE workspace_id = %s
               AND (%s::uuid IS NULL OR incident_id = %s::uuid)

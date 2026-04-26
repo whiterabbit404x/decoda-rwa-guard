@@ -34,7 +34,7 @@ test('renders evidence drawer and keeps SIMULATED labels explicit', () => {
 
   expect(threat).toContain('role="dialog" aria-label="Evidence details"');
   expect(threat).toContain('<p className="sectionEyebrow">Evidence</p>');
-  expect(threat).toContain('<strong>SIMULATED</strong> non-live action');
+  expect(threat).toContain('<span className="ruleChip">SIMULATED</span>');
   expect(chainPanel).toContain('Open evidence drawer');
   expect(chainPanel).toContain("label: 'Detection'");
   expect(chainPanel).toContain("label: 'Incident'");
@@ -58,9 +58,14 @@ test('threat quick actions require explicit linked context and block unrelated f
   expect(threat).toContain('const shouldBlockThreatActionCreation = noLinkedActionContextAvailable || !selectedThreatActionContext;');
   expect(threat).toContain('if (shouldBlockThreatActionCreation) {');
   expect(threat).toContain("setResponseToast('No linked alert/incident context available.');");
+  expect(threat).toContain("if (mode === 'live' && !selectedThreatActionContext?.incidentId) {");
+  expect(threat).toContain("setResponseToast('LIVE actions require linked incident context.');");
   expect(threat).toContain('incident_id: selectedThreatActionContext.incidentId');
   expect(threat).toContain('alert_id: selectedThreatActionContext.alertId');
   expect(threat).toContain('<option value="" disabled>Select linked detection/alert/incident context</option>');
+  expect(threat).toContain('role="dialog" aria-label="Confirm live action"');
+  expect(threat).toContain('LIVE action confirmation');
+  expect(threat).toContain('Confirm LIVE action');
   expect(threat).not.toContain('Unlinked action (manual follow-up required)');
   expect(threat).toContain('No linked alert/incident context available.');
 });
