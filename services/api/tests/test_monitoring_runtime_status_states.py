@@ -117,6 +117,60 @@ def test_runtime_status_active_with_recent_evidence(monkeypatch):
     assert payload['workspace_monitoring_summary']['field_reason_codes'].get('protected_assets') != ['query_failure']
 
 
+def test_runtime_status_forces_degraded_when_live_continuity_slo_fails(monkeypatch):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {
+            'last_heartbeat_at': now.isoformat(),
+            'last_cycle_at': now.isoformat(),
+            'degraded': False,
+            'last_error': None,
+            'source_type': 'polling',
+            'worker_running': True,
+        },
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_Conn(None)))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'evaluate_workspace_monitoring_continuity',
+        lambda **_kwargs: {
+            'continuity_status': 'degraded',
+            'continuity_reason_codes': ['event_ingestion_stale'],
+            'continuity_slo_pass': False,
+            'heartbeat_age_seconds': 10,
+            'telemetry_age_seconds': 900,
+            'event_ingestion_age_seconds': 900,
+            'detection_age_seconds': 900,
+            'detection_eval_age_seconds': 900,
+            'heartbeat_threshold_seconds': 180,
+            'telemetry_threshold_seconds': 300,
+            'detection_threshold_seconds': 300,
+            'thresholds_seconds': {'heartbeat': 180, 'event_ingestion': 300, 'detection_eval': 300},
+            'required_thresholds_seconds': {'heartbeat': 180, 'event_ingestion': 300, 'detection_eval': 300},
+            'continuity_signals': {},
+            'ingestion_freshness': 'stale',
+            'detection_pipeline_freshness': 'stale',
+            'worker_heartbeat_freshness': 'fresh',
+            'event_throughput_window': 'out_of_window',
+            'event_throughput_window_seconds': 300,
+        },
+    )
+
+    payload = monitoring_runner.monitoring_runtime_status()
+
+    assert payload['monitoring_status'] in {'degraded', 'limited'}
+    assert payload['runtime_status_summary'] == 'degraded'
+    assert payload['workspace_monitoring_summary']['runtime_status'] == 'degraded'
+    assert payload['workspace_monitoring_summary']['monitoring_status'] == 'limited'
+    assert payload['workspace_monitoring_summary']['continuity_slo_pass'] is False
+    assert payload['continuity_slo']['pass'] is False
+    assert payload['continuity_slo']['detection_age_seconds'] == 900
+    assert payload['continuity_slo']['detection_threshold_seconds'] == 300
+
+
 def test_runtime_status_transitions_across_continuous_monitoring_lifecycle(monkeypatch):
     now = datetime.now(timezone.utc)
     health_state: dict[str, object] = {

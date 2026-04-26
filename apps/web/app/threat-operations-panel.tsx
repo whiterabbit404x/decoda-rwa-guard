@@ -286,22 +286,27 @@ function formatSloDuration(value: number | null): string {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
-export function evaluateContinuitySlo(summary?: MonitoringRuntimeStatus['workspace_monitoring_summary'] | null): ContinuitySloEvaluation {
+export function evaluateContinuitySlo(
+  summary?: MonitoringRuntimeStatus['workspace_monitoring_summary'] | null,
+  continuitySloPayload?: MonitoringRuntimeStatus['continuity_slo'] | null,
+): ContinuitySloEvaluation {
   const thresholds: {
     heartbeat?: number;
     telemetry?: number;
     event_ingestion?: number;
     detection_eval?: number;
   } = {
+    ...(continuitySloPayload?.required_thresholds_seconds ?? {}),
+    ...(continuitySloPayload?.thresholds_seconds ?? {}),
     ...(summary?.required_thresholds_seconds ?? {}),
     ...(summary?.thresholds_seconds ?? {}),
   };
-  const normalizedTopLevelPass = summary?.continuity_slo_pass === true;
+  const normalizedTopLevelPass = continuitySloPayload?.pass === true || summary?.continuity_slo_pass === true;
   const baseDimensions: ContinuitySloDimension[] = [
     {
       key: 'heartbeat',
       label: 'Worker heartbeat',
-      ageSeconds: summary?.heartbeat_age_seconds ?? null,
+      ageSeconds: continuitySloPayload?.heartbeat_age_seconds ?? summary?.heartbeat_age_seconds ?? null,
       thresholdSeconds: typeof thresholds.heartbeat === 'number' ? thresholds.heartbeat : null,
       pass: false,
       reason: null,
@@ -309,7 +314,7 @@ export function evaluateContinuitySlo(summary?: MonitoringRuntimeStatus['workspa
     {
       key: 'telemetry',
       label: 'Telemetry ingestion',
-      ageSeconds: summary?.telemetry_age_seconds ?? summary?.event_ingestion_age_seconds ?? null,
+      ageSeconds: continuitySloPayload?.telemetry_age_seconds ?? summary?.telemetry_age_seconds ?? summary?.event_ingestion_age_seconds ?? null,
       thresholdSeconds: typeof thresholds.telemetry === 'number'
         ? thresholds.telemetry
         : (typeof thresholds.event_ingestion === 'number' ? thresholds.event_ingestion : null),
@@ -319,7 +324,11 @@ export function evaluateContinuitySlo(summary?: MonitoringRuntimeStatus['workspa
     {
       key: 'detection_eval',
       label: 'Detection evaluation',
-      ageSeconds: summary?.detection_eval_age_seconds ?? null,
+      ageSeconds: continuitySloPayload?.detection_age_seconds
+        ?? continuitySloPayload?.detection_eval_age_seconds
+        ?? summary?.detection_age_seconds
+        ?? summary?.detection_eval_age_seconds
+        ?? null,
       thresholdSeconds: typeof thresholds.detection_eval === 'number' ? thresholds.detection_eval : null,
       pass: false,
       reason: null,
@@ -1314,7 +1323,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const telemetryDisplayLabel = formatRelativeTime(coverageTelemetryAt);
   const pollLabel = monitoringPresentation.pollLabel;
   const detectionEvalLabel = formatRelativeTime(runtimeStatusSnapshot?.last_detection_at ?? monitoringPresentation.lastTelemetryAt);
-  const continuitySlo = evaluateContinuitySlo(runtimeSummary);
+  const continuitySlo = evaluateContinuitySlo(runtimeSummary, runtimeStatusSnapshot?.continuity_slo);
   const telemetryState = deriveSnapshotFreshnessState(monitoringPresentation.lastTelemetryAt, TELEMETRY_STALE_MS);
   const pollState = deriveSnapshotFreshnessState(monitoringPresentation.lastPollAt, POLL_STALE_MS);
   const heartbeatState = deriveSnapshotFreshnessState(monitoringPresentation.lastHeartbeatAt, HEARTBEAT_STALE_MS);
@@ -2198,6 +2207,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             {continuitySlo.pass
               ? 'SLO PASS: heartbeat, telemetry, and detection checks are within thresholds.'
               : `SLO FAIL: ${continuitySloFailureReasons(continuitySlo)}`}
+          </p>
+          <p className="tableMeta">
+            Continuity decision: <strong>{continuitySlo.statusLabel}</strong>{' '}
+            {continuitySlo.pass ? 'because all monitored dimensions are within SLO bounds.' : `because ${continuitySloFailureReasons(continuitySlo)}.`}
           </p>
           <ul className="tableMeta">
             {continuitySlo.dimensions.map((dimension) => (
