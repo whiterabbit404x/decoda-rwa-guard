@@ -16,6 +16,7 @@ class _Conn:
         self.broken_links: list[dict[str, str]] = []
         self.mismatched_links: list[dict[str, str]] = []
         self.valid_link_rows = [{'id': 'ms-1', 'target_id': 't-1', 'asset_id': 'a-1'}]
+        self.latest_run: dict[str, str] | None = None
 
     def commit(self):
         self.commits += 1
@@ -30,6 +31,10 @@ class _Conn:
             return _Rows(self.mismatched_links)
         if 'SELECT ms.id, ms.target_id, ms.asset_id FROM monitored_systems ms JOIN targets t' in normalized and 'ms.asset_id = t.asset_id' in normalized:
             return _Rows(self.valid_link_rows)
+        if 'FROM workspaces' in normalized and 'FOR UPDATE' in normalized:
+            return _Rows([{'id': 'ws-1'}])
+        if 'FROM monitoring_reconcile_runs' in normalized:
+            return _Rows([self.latest_run] if self.latest_run else [])
         return _Rows([])
 
 
@@ -39,6 +44,9 @@ class _Rows:
 
     def fetchall(self):
         return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
 
 
 @contextmanager
@@ -336,7 +344,7 @@ def test_reconcile_workspace_returns_failure_with_unresolved_reasons(monkeypatch
     assert result['reconcile']['invalid_target_details'][0]['reason'] == 'target missing asset'
 
 
-def test_reconcile_workspace_returns_cached_result_with_stable_reconcile_id(monkeypatch):
+def test_reconcile_workspace_repeated_calls_return_stable_terminal_state(monkeypatch):
     conn = _Conn()
     request = _Request('ws-1')
     rows = [{'id': 'ms-1', 'workspace_id': 'ws-1', 'target_id': 't-1', 'asset_id': 'a-1'}]
@@ -363,35 +371,32 @@ def test_reconcile_workspace_returns_cached_result_with_stable_reconcile_id(monk
     monkeypatch.setattr(pilot, 'list_workspace_monitored_system_rows', lambda *_a, **_k: rows)
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
 
-    key = 'ws-1:user-1'
-    pilot._workspace_reconcile_inflight.pop(key, None)
-    try:
-        first = pilot.reconcile_workspace_monitored_systems(request)
-        second = pilot.reconcile_workspace_monitored_systems(request)
-    finally:
-        pilot._workspace_reconcile_inflight.pop(key, None)
+    first = pilot.reconcile_workspace_monitored_systems(request)
+    second = pilot.reconcile_workspace_monitored_systems(request)
 
-    assert call_count['reconcile'] == 1
-    assert first['reconcile_id'] == second['reconcile_id']
+    assert call_count['reconcile'] == 2
+    assert first['reconcile']['created_or_updated'] == second['reconcile']['created_or_updated'] == 1
     assert second['state'] == 'success'
 
 
 def test_reconcile_workspace_idempotency_guard_returns_no_op_while_inflight(monkeypatch):
     conn = _Conn()
     request = _Request('ws-1')
-    key = 'ws-1:user-1'
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
     monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}))
 
-    pilot._workspace_reconcile_inflight[key] = {'reconcile_id': 'rid-existing'}
-    try:
-        result = pilot.reconcile_workspace_monitored_systems(request)
-    finally:
-        pilot._workspace_reconcile_inflight.pop(key, None)
+    conn.latest_run = {
+        'id': 'rid-existing',
+        'status': 'running',
+        'counts': {},
+        'reason_codes': [],
+        'affected_systems': [],
+    }
+    result = pilot.reconcile_workspace_monitored_systems(request)
 
-    assert result['state'] == 'failure'
+    assert result['state'] == 'running'
     assert result['reconcile_id'] == 'rid-existing'
-    assert result['unresolved_reasons'][0]['stage'] == 'reconcile_targets'
-    assert result['reconcile']['skipped_target_details'][0]['code'] == 'reconcile_already_in_progress'
+    assert result['unresolved_reasons'] == []
+    assert result['job']['status'] == 'running'
