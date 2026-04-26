@@ -23,6 +23,19 @@ import {
 } from './dashboard-data';
 import { toDashboardBadgeState } from './dashboard-status-presentation';
 
+const ENTERPRISE_GATE_LABELS: Record<string, string> = {
+  continuity_slo_pass: 'Continuity SLO pass',
+  linked_evidence_freshness: 'Linked evidence freshness',
+  open_proof_chain_gaps: 'Proof-chain gaps closed',
+  live_action_capability_available: 'Live action capability available',
+};
+const ENTERPRISE_GATE_REMEDIATION_LINKS: Record<string, string> = {
+  continuity_slo_pass: '/threat#continuity-slo',
+  linked_evidence_freshness: '/threat#telemetry-freshness',
+  open_proof_chain_gaps: '/threat#proof-chain-status',
+  live_action_capability_available: '/threat#response-actions',
+};
+
 function mapMonitoringStatusToBadgeState(status: MonitoringPresentationStatus): CustomerStatusBadgeState {
   switch (status) {
     case 'limited coverage':
@@ -84,6 +97,16 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
   const openAlerts = monitoringTruth.active_alerts_count;
   const openIncidents = monitoringTruth.active_incidents_count;
   const systemMessage = monitoringTruth.status_reason ?? safeMonitoringSummary;
+  const enterpriseReadyPass = Boolean(
+    liveFeed?.runtimeStatus?.enterprise_ready_pass
+    ?? data.workspaceMonitoringSummary?.enterprise_ready_pass
+    ?? false,
+  );
+  const failedEnterpriseChecks = Array.isArray(liveFeed?.runtimeStatus?.failed_checks)
+    ? liveFeed?.runtimeStatus?.failed_checks
+    : Array.isArray(data.workspaceMonitoringSummary?.failed_checks)
+      ? data.workspaceMonitoringSummary.failed_checks
+      : [];
 
   return (
     <main className="container productPage">
@@ -109,7 +132,22 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           <p><strong>Reporting/monitored/protected:</strong> {monitoringTruth.reporting_systems_count} / {monitoringTruth.monitored_systems_count} / {monitoringTruth.protected_assets_count}</p>
           <p><strong>Open alerts:</strong> {openAlerts} · <strong>Open incidents:</strong> {openIncidents}</p>
           <p><strong>Monitoring summary:</strong> {safeMonitoringSummary}</p>
+          <p><strong>Enterprise-ready claims:</strong> {enterpriseReadyPass ? 'Allowed' : 'Blocked by readiness gate'}</p>
           <p><strong>System message:</strong> {systemMessage}</p>
+          {!enterpriseReadyPass ? (
+            <p>
+              <strong>Readiness remediation:</strong>{' '}
+              {failedEnterpriseChecks.map((check, index) => (
+                <span key={check}>
+                  {index > 0 ? ', ' : ''}
+                  <a href={ENTERPRISE_GATE_REMEDIATION_LINKS[check] ?? '/threat'}>
+                    {ENTERPRISE_GATE_LABELS[check] ?? check}
+                  </a>
+                </span>
+              ))}
+              .
+            </p>
+          ) : null}
           {liveFeed ? (
             <p>
               <strong>Workspace feed:</strong> {monitoringPresentation.statusLabel} · {safeMonitoringSummary} · {lastTelemetryLabel}. {lastHeartbeatLabel}. {lastPollLabel}.

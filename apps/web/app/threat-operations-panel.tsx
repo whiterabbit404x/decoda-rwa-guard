@@ -14,6 +14,18 @@ type Props = { apiUrl: string };
 // Temporary backoff while runtime-status latency is elevated; re-evaluate when p95 is back under threshold.
 const THREAT_PAGE_POLL_VISIBLE_MS = 45000;
 const THREAT_PAGE_POLL_HIDDEN_MS = 60000;
+const ENTERPRISE_GATE_LABELS: Record<string, string> = {
+  continuity_slo_pass: 'Continuity SLO pass',
+  linked_evidence_freshness: 'Linked evidence freshness',
+  open_proof_chain_gaps: 'Proof-chain gaps closed',
+  live_action_capability_available: 'Live action capability available',
+};
+const ENTERPRISE_GATE_REMEDIATION_LINKS: Record<string, string> = {
+  continuity_slo_pass: '/threat#continuity-slo',
+  linked_evidence_freshness: '/threat#telemetry-freshness',
+  open_proof_chain_gaps: '/threat#proof-chain-status',
+  live_action_capability_available: '/threat#response-actions',
+};
 
 type TargetRow = {
   id: string;
@@ -1224,6 +1236,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }, [apiUrl, authHeaders, isAuthenticated, user?.current_workspace?.id]);
 
   const runtimeSummary = runtimeStatusSnapshot?.workspace_monitoring_summary;
+  const enterpriseReadyPass = Boolean(runtimeStatusSnapshot?.enterprise_ready_pass ?? runtimeSummary?.enterprise_ready_pass ?? false);
+  const failedEnterpriseChecks = Array.isArray(runtimeStatusSnapshot?.failed_checks)
+    ? runtimeStatusSnapshot.failed_checks
+    : Array.isArray(runtimeSummary?.failed_checks)
+      ? runtimeSummary.failed_checks
+      : [];
   const openAlerts = Number(runtimeStatusSnapshot?.open_alerts ?? runtimeSummary?.active_alerts_count ?? 0);
   const activeIncidents = Number(runtimeStatusSnapshot?.active_incidents ?? runtimeSummary?.active_incidents_count ?? 0);
   const truth = feed.monitoring.truth;
@@ -2118,6 +2136,26 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           Data provenance ({monitoringViewModel.provenanceLabel}): {monitoringViewModel.provenanceExplanation} /ops/monitoring/runtime-status ({snapshotFailedEndpoints.includes('runtime-status') ? 'stale snapshot' : 'live'}) · /ops/monitoring/investigation-timeline ({snapshotFailedEndpoints.includes('investigation-timeline') ? 'stale snapshot' : 'live'}) · Last successful runtime refresh: {formatAbsoluteTime(runtimeStatusSnapshot?.last_poll_at ?? runtimeSummary?.last_poll_at ?? runtimeStatusSnapshot?.last_telemetry_at ?? runtimeSummary?.last_telemetry_at ?? null)} · Last successful timeline refresh: {formatAbsoluteTime((investigationTimeline as Record<string, any> | null)?.generated_at ?? (investigationTimeline as Record<string, any> | null)?.created_at ?? null)}
         </p>
         <PageStateBanner viewModel={monitoringViewModel} />
+        <article className="dataCard">
+          <p className="sectionEyebrow">Enterprise readiness gate</p>
+          <p className="kpiValue">{enterpriseReadyPass ? 'PASS' : 'FAIL'}</p>
+          <p className="tableMeta">
+            {enterpriseReadyPass
+              ? 'Enterprise-readiness checks passed. Live claims can be shown.'
+              : 'Enterprise-readiness checks failed. Enterprise-ready copy is hidden until all checks pass.'}
+          </p>
+          {!enterpriseReadyPass ? (
+            <ul className="tableMeta">
+              {failedEnterpriseChecks.map((check) => (
+                <li key={check}>
+                  {ENTERPRISE_GATE_LABELS[check] ?? check}
+                  {' — '}
+                  <Link href={ENTERPRISE_GATE_REMEDIATION_LINKS[check] ?? '/threat'} prefetch={false}>Open remediation</Link>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </article>
         {latestReconcileJob ? (
           <p className="tableMeta">
             {latestReconcileJob.status === 'running' ? 'Repairing monitored systems…' : 'Reconcile status'} {latestReconcileJob.status} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Affected systems {(latestReconcileJob.affected_systems ?? []).length} · Result {latestReconcileJob.reason_code || 'none'}
@@ -2153,7 +2191,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       </article>
 
       <section className="monitoringKpiGrid" aria-label="Monitoring KPIs">
-        <article className="dataCard kpiCard">
+        <article id="continuity-slo" className="dataCard kpiCard">
           <p className="sectionEyebrow">Continuity SLO</p>
           <p className="kpiValue">{continuitySlo.statusLabel}</p>
           <p className="tableMeta">
@@ -2175,7 +2213,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <p className="kpiValue">{monitoringPresentation.statusLabel}</p>
           <p className="tableMeta">{runtimeReason}</p>
         </article>
-        <article className="dataCard kpiCard">
+        <article id="telemetry-freshness" className="dataCard kpiCard">
           <p className="sectionEyebrow">Telemetry Freshness</p>
           <p className="kpiValue">{hasTelemetryTimestamp ? telemetryDisplayLabel : 'Unavailable'}</p>
           <p className="tableMeta">Detection evaluation {detectionEvalLabel}. Polling and heartbeat timestamps never count as telemetry.</p>
@@ -2205,7 +2243,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <p className="kpiValue">{coverageSummary}</p>
           <p className="tableMeta">Systems reporting telemetry.</p>
         </article>
-        <article className="dataCard kpiCard">
+        <article id="proof-chain-status" className="dataCard kpiCard">
           <p className="sectionEyebrow">Proof Chain Status</p>
           <p className="kpiValue">{proofChainStatus.toUpperCase()}</p>
           <p className="tableMeta">Missing links: {missingTimelineLinks.length === 0 ? 'none' : missingTimelineLinks.join(', ')}</p>
@@ -2407,7 +2445,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
 
         <div className="stack compactStack">
-          <article className="dataCard">
+          <article id="response-actions" className="dataCard">
             <div className="listHeader">
               <div>
                 <p className="sectionEyebrow">Recent Monitoring Runs</p>
@@ -2459,7 +2497,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             )}
           </article>
 
-          <article className="dataCard">
+          <article id="response-actions" className="dataCard">
             <div className="listHeader">
               <div>
                 <p className="sectionEyebrow">Alerts</p>
@@ -2633,7 +2671,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             )}
           </article>
 
-          <article className="dataCard">
+          <article id="response-actions" className="dataCard">
             <p className="sectionEyebrow">Response Actions</p>
             <h3>Operational actions</h3>
             <p className="muted">Use investigation and escalation workflows to restore healthy monitoring and resolve risk. Modes are labeled as SIMULATED, RECOMMENDED, or LIVE; live execution requires real integration and is never implied by simulator flows.</p>

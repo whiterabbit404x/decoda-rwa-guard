@@ -55,6 +55,8 @@ export type WorkspaceMonitoringSummary = {
     first_seen_at?: string | null;
     last_cycle_at?: string | null;
   };
+  enterprise_ready_pass?: boolean;
+  failed_checks?: string[];
 };
 
 export type MonitoringRuntimeStatus = {
@@ -142,6 +144,9 @@ export type MonitoringRuntimeStatus = {
   active_incidents?: number;
   proof_chain_status?: 'complete' | 'incomplete' | string;
   proof_chain_missing?: string[];
+  enterprise_ready_pass?: boolean;
+  failed_checks?: string[];
+  remediation_links?: Record<string, string>;
 };
 
 export type MonitoringTimelineLinkName =

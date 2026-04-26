@@ -50,6 +50,7 @@ from services.api.app.pilot import (
     reconcile_enabled_targets_monitored_systems,
     _target_health_payload,
     evaluate_workspace_monitoring_continuity,
+    resolve_response_action_capability,
 )
 from services.api.app.threat_payloads import ThreatKind, normalize_threat_payload
 
@@ -109,6 +110,54 @@ MONITORING_COVERAGE_ONLY_WARNING_SECONDS = max(
 _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT: datetime | None = None
 _LAST_MONITORING_DUE_SELECTION_BACKFILL_AT: dict[str, datetime] = {}
 _WORKSPACE_COVERAGE_ONLY_STREAK: dict[str, dict[str, Any]] = {}
+
+ENTERPRISE_READY_REMEDIATION_LINKS: dict[str, str] = {
+    'continuity_slo_pass': '/threat#continuity-slo',
+    'linked_evidence_freshness': '/threat#telemetry-freshness',
+    'open_proof_chain_gaps': '/threat#proof-chain-status',
+    'live_action_capability_available': '/threat#response-actions',
+}
+
+
+def _evaluate_enterprise_ready_gate(
+    *,
+    continuity_slo_pass: bool,
+    telemetry_freshness: Any,
+    ingestion_freshness: Any,
+    detection_pipeline_freshness: Any,
+    proof_chain_status: Any,
+    proof_chain_missing_reason_codes: list[str] | None,
+    active_incidents_count: int,
+) -> dict[str, Any]:
+    fresh_states = {'fresh', 'in_window'}
+    live_action_capability_available = bool(active_incidents_count > 0)
+    try:
+        capability = resolve_response_action_capability('freeze_wallet', 'live')
+        live_action_capability_available = bool(live_action_capability_available and capability.get('supports_mode'))
+    except Exception:
+        live_action_capability_available = False
+    checks: list[tuple[str, bool]] = [
+        ('continuity_slo_pass', bool(continuity_slo_pass)),
+        (
+            'linked_evidence_freshness',
+            str(telemetry_freshness or '').strip().lower() in fresh_states
+            and str(ingestion_freshness or '').strip().lower() in fresh_states
+            and str(detection_pipeline_freshness or '').strip().lower() in fresh_states,
+        ),
+        (
+            'open_proof_chain_gaps',
+            str(proof_chain_status or '').strip().lower() == 'complete'
+            and not [str(code) for code in (proof_chain_missing_reason_codes or []) if str(code).strip()],
+        ),
+        ('live_action_capability_available', live_action_capability_available),
+    ]
+    failed_checks = [name for name, passed in checks if not passed]
+    return {
+        'enterprise_ready_pass': len(failed_checks) == 0,
+        'failed_checks': failed_checks,
+        'check_results': [{'name': name, 'pass': passed, 'remediation_url': ENTERPRISE_READY_REMEDIATION_LINKS.get(name)} for name, passed in checks],
+        'remediation_links': {name: ENTERPRISE_READY_REMEDIATION_LINKS[name] for name in failed_checks if name in ENTERPRISE_READY_REMEDIATION_LINKS},
+    }
 
 
 def _workspace_coverage_only_state(
@@ -237,6 +286,8 @@ def _normalize_monitoring_runtime_contract(payload: dict[str, Any]) -> dict[str,
         'evidence_source': 'none',
         'status_reason': normalized.get('status_reason'),
         'contradiction_flags': [],
+        'enterprise_ready_pass': False,
+        'failed_checks': [],
     }
     for field_name, default_value in required_runtime_fields.items():
         if field_name not in normalized:
@@ -4486,6 +4537,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'contradiction_flags': list(summary.get('contradiction_flags') or []),
                 'workspace_monitoring_summary': summary,
             }
+            enterprise_ready_gate = _evaluate_enterprise_ready_gate(
+                continuity_slo_pass=bool(summary.get('continuity_slo_pass') is True),
+                telemetry_freshness=summary.get('telemetry_freshness'),
+                ingestion_freshness=summary.get('ingestion_freshness'),
+                detection_pipeline_freshness=summary.get('detection_pipeline_freshness'),
+                proof_chain_status='unavailable',
+                proof_chain_missing_reason_codes=[],
+                active_incidents_count=int(summary.get('active_incidents_count') or 0),
+            )
+            payload.update(enterprise_ready_gate)
             payload.update(payload['workspace_monitoring_summary'])
             return _normalize_monitoring_runtime_contract(payload)
         workspace_id: str | None = None
@@ -6124,6 +6185,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'claim_validator_reason_codes': claim_validator_reason_codes,
             }
         )
+        enterprise_ready_gate = _evaluate_enterprise_ready_gate(
+            continuity_slo_pass=bool(summary.get('continuity_slo_pass') is True),
+            telemetry_freshness=summary.get('telemetry_freshness'),
+            ingestion_freshness=summary.get('ingestion_freshness'),
+            detection_pipeline_freshness=summary.get('detection_pipeline_freshness'),
+            proof_chain_status=proof_chain_status,
+            proof_chain_missing_reason_codes=proof_chain_missing_reason_codes,
+            active_incidents_count=int(payload.get('active_incidents') or summary.get('active_incidents_count') or 0),
+        )
+        payload.update(enterprise_ready_gate)
         logger.info(
             'monitoring_runtime_status_summary workspace_id=%s healthy_enabled_targets=%s monitored_rows=%s enabled_rows=%s protected_assets=%s monitoring_status=%s systems_with_recent_heartbeat=%s status_inputs=%s',
             workspace_id,
