@@ -26,6 +26,8 @@ export type WorkspaceMonitoringSummary = {
   contradiction_flags: string[];
   guard_flags: string[];
   status_reason: string | null;
+  configuration_reason?: string | null;
+  configuration_reason_codes?: string[];
   db_failure_classification?: string | null;
   db_failure_reason?: string | null;
   coverage_only_warning?: {
@@ -112,6 +114,8 @@ export type MonitoringRuntimeStatus = {
   last_detection_at?: string | null;
   evidence_source?: 'live' | 'simulator' | 'replay' | 'none';
   status_reason?: string | null;
+  configuration_reason?: string | null;
+  configuration_reason_codes?: string[];
   contradiction_flags?: string[];
   guard_flags?: string[];
   db_failure_classification?: string | null;

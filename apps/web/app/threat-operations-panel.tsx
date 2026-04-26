@@ -924,6 +924,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const workspaceConfigured = Boolean(runtimeStatusSnapshot?.workspace_configured ?? runtimeSummary?.workspace_configured ?? false);
   const configuredSystems = Number(runtimeStatusSnapshot?.monitored_systems_count ?? runtimeSummary?.monitored_systems_count ?? 0);
   const reportingSystems = Number(runtimeStatusSnapshot?.reporting_systems ?? runtimeSummary?.reporting_systems_count ?? 0);
+  const summaryConfigurationReason = runtimeSummary?.configuration_reason ?? null;
+  const summaryConfigurationReasonCodes = Array.isArray(runtimeSummary?.configuration_reason_codes)
+    ? runtimeSummary.configuration_reason_codes
+    : [];
+  const configurationReason = runtimeStatusSnapshot?.configuration_reason ?? summaryConfigurationReason;
+  const configurationReasonCodes = Array.isArray(runtimeStatusSnapshot?.configuration_reason_codes)
+    ? runtimeStatusSnapshot.configuration_reason_codes
+    : summaryConfigurationReasonCodes;
   const monitoringMode = runtimeEvidenceSource;
   const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? runtimeSummary?.runtime_status ?? '').toLowerCase();
   const continuityLive = runtimeStatus === 'live';
@@ -1075,15 +1083,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     monitoredSystems: configuredSystems,
     hasLiveTelemetry: showLiveTelemetry,
     statusReason: runtimeStatusSnapshot?.status_reason ?? runtimeSummary?.status_reason ?? null,
-    configurationReason: null,
-    configurationReasonCodes: [],
+    configurationReason,
+    configurationReasonCodes,
     runtimeMonitoringStatus: runtimeStatusSnapshot?.monitoring_status ?? runtimeSummary?.monitoring_status ?? 'offline',
     runtimeErrorCode: null,
     runtimeDegradedReason: null,
     fieldReasonCodes: null,
     summaryStatusReason: runtimeStatusSnapshot?.status_reason ?? runtimeSummary?.status_reason ?? null,
-    summaryConfigurationReason: null,
-    summaryConfigurationReasonCodes: [],
+    summaryConfigurationReason,
+    summaryConfigurationReasonCodes,
     continuityStatus: runtimeSummary?.continuity_status ?? null,
   });
 
@@ -1506,7 +1514,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Open alerts {openAlerts}</span>
           <span className="ruleChip">Active incidents {activeIncidents}</span>
         </div>
-        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={runtimeReason} configurationReason={null} continuityStatus={truth.continuity_status} />
+        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={runtimeReason} configurationReason={configurationReason} continuityStatus={truth.continuity_status} />
         {dbPersistenceOutageActive ? (
           <p className="statusLine">
             Persistence outage active: {dbPersistenceOutageReason}. Simulator/demo rows remain visible but are excluded from live-evidence claims.
