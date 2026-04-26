@@ -245,7 +245,15 @@ function formatSloDuration(value: number | null): string {
 }
 
 export function evaluateContinuitySlo(summary?: MonitoringRuntimeStatus['workspace_monitoring_summary'] | null): ContinuitySloEvaluation {
-  const thresholds = summary?.thresholds_seconds ?? summary?.required_thresholds_seconds ?? {};
+  const thresholds: {
+    heartbeat?: number;
+    telemetry?: number;
+    event_ingestion?: number;
+    detection_eval?: number;
+  } = {
+    ...(summary?.required_thresholds_seconds ?? {}),
+    ...(summary?.thresholds_seconds ?? {}),
+  };
   const normalizedTopLevelPass = summary?.continuity_slo_pass === true;
   const baseDimensions: ContinuitySloDimension[] = [
     {

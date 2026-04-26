@@ -125,6 +125,7 @@ export type MonitoringRuntimeStatus = {
   last_telemetry_at?: string | null;
   last_coverage_telemetry_at?: string | null;
   telemetry_kind?: 'coverage' | 'target_event' | null;
+  refreshed_at?: string | null;
   last_poll_at?: string | null;
   poll_freshness_status?: 'fresh' | 'stale' | 'unavailable';
   last_detection_at?: string | null;
