@@ -18,6 +18,7 @@ def test_monitoring_reconcile_route_returns_200_for_success(monkeypatch):
         'reconcile_workspace_monitored_systems',
         lambda _request: {
             'workspace': {'id': 'ws-1'},
+            'job': {'id': 'run-1', 'status': 'completed', 'counts': {'targets_scanned': 1, 'created_or_updated': 1}, 'reason_codes': []},
             'reconcile': {'targets_scanned': 1, 'created_or_updated': 1},
             'systems': [{'id': 'ms-1'}],
             'monitored_systems_count': 1,
@@ -28,8 +29,23 @@ def test_monitoring_reconcile_route_returns_200_for_success(monkeypatch):
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload['job']['status'] == 'completed'
     assert payload['reconcile']['created_or_updated'] == 1
     assert payload['monitored_systems_count'] == 1
+
+
+def test_monitoring_reconcile_latest_route_returns_latest_job(monkeypatch):
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        api_main,
+        'get_latest_workspace_reconcile_run',
+        lambda _request: {'workspace': {'id': 'ws-1'}, 'job': {'id': 'run-2', 'status': 'failed', 'reason_code': 'missing_asset'}},
+    )
+
+    response = client.get('/monitoring/systems/reconcile/latest')
+
+    assert response.status_code == 200
+    assert response.json()['job']['status'] == 'failed'
 
 
 def test_monitoring_reconcile_route_returns_structured_error_for_unexpected_exception(monkeypatch, caplog):
@@ -47,6 +63,8 @@ def test_monitoring_reconcile_route_returns_structured_error_for_unexpected_exce
     assert response.status_code == 500
     assert response.json() == {
         'code': 'monitoring_reconcile_failed',
+        'state': 'failure',
+        'reconcile_id': None,
         'detail': 'Unexpected backend error during monitored systems reconcile.',
         'stage': 'reconcile_workspace_monitored_systems',
         'debug_error_type': 'RuntimeError',

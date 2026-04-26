@@ -89,12 +89,13 @@ def test_reconcile_workspace_returns_queryable_rows_and_count_matches(monkeypatc
 
 def test_list_and_reconcile_resolve_the_same_workspace(monkeypatch):
     conn = _Conn()
-    request = _Request('ws-7')
+    workspace_id = '00000000-0000-0000-0000-000000000007'
+    request = _Request(workspace_id)
     resolved_workspace_headers: list[str | None] = []
 
     def fake_resolve_workspace(_connection, _user_id, requested_workspace_id=None):
         resolved_workspace_headers.append(requested_workspace_id)
-        return {'workspace_id': 'ws-7', 'role': 'owner', 'workspace': {'id': 'ws-7', 'name': 'Workspace 7', 'slug': 'workspace-7'}}
+        return {'workspace_id': workspace_id, 'role': 'owner', 'workspace': {'id': workspace_id, 'name': 'Workspace 7', 'slug': 'workspace-7'}}
 
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
@@ -108,8 +109,8 @@ def test_list_and_reconcile_resolve_the_same_workspace(monkeypatch):
     listed = pilot.list_monitored_systems(request)
     repaired = pilot.reconcile_workspace_monitored_systems(request)
 
-    assert listed['workspace']['id'] == repaired['workspace']['id'] == 'ws-7'
-    assert resolved_workspace_headers == ['ws-7', 'ws-7']
+    assert listed['workspace']['id'] == repaired['workspace']['id'] == workspace_id
+    assert resolved_workspace_headers == [workspace_id, workspace_id]
 
 
 def test_reconcile_workspace_returns_structured_error_when_audit_log_fails(monkeypatch, caplog: pytest.LogCaptureFixture):
@@ -204,15 +205,16 @@ def test_reconcile_workspace_returns_structured_error_when_list_rows_fails(monke
 
 def test_get_monitored_systems_remains_queryable_after_reconcile(monkeypatch):
     conn = _Conn()
-    request = _Request('ws-9')
-    rows = [{'id': 'ms-9', 'workspace_id': 'ws-9', 'target_id': 't-9', 'asset_id': 'a-9'}]
+    workspace_id = '00000000-0000-0000-0000-000000000009'
+    request = _Request(workspace_id)
+    rows = [{'id': 'ms-9', 'workspace_id': workspace_id, 'target_id': 't-9', 'asset_id': 'a-9'}]
 
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-9'}, {'workspace_id': 'ws-9', 'workspace': {'id': 'ws-9'}}))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-9'}, {'workspace_id': workspace_id, 'workspace': {'id': workspace_id}}))
     monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda *_a, **_k: {'id': 'user-9'})
-    monkeypatch.setattr(pilot, 'resolve_workspace', lambda *_a, **_k: {'workspace_id': 'ws-9', 'workspace': {'id': 'ws-9'}, 'role': 'owner'})
+    monkeypatch.setattr(pilot, 'resolve_workspace', lambda *_a, **_k: {'workspace_id': workspace_id, 'workspace': {'id': workspace_id}, 'role': 'owner'})
     monkeypatch.setattr(pilot, 'reconcile_enabled_targets_monitored_systems', lambda *_a, **_k: {'targets_scanned': 1, 'created_or_updated': 1})
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
     monkeypatch.setattr(pilot, 'list_workspace_monitored_system_rows', lambda *_a, **_k: rows)
@@ -291,6 +293,8 @@ def test_reconcile_workspace_returns_success_state_and_reconcile_id(monkeypatch)
 
     assert result['state'] == 'success'
     assert isinstance(result['reconcile_id'], str)
+    assert result['job']['status'] == 'completed'
+    assert result['job']['counts']['targets_scanned'] == 1
     assert result['reason_counts'] == {'invalid': 0, 'skipped': 0}
     assert result['reconcile']['created_or_updated'] == 1
 
@@ -322,6 +326,8 @@ def test_reconcile_workspace_returns_failure_with_unresolved_reasons(monkeypatch
     result = pilot.reconcile_workspace_monitored_systems(request)
 
     assert result['state'] == 'failure'
+    assert result['job']['status'] == 'failed'
+    assert result['job']['reason_code'] == 'missing_asset'
     assert result['reason_counts'] == {'invalid': 1, 'skipped': 0}
     assert result['unresolved_reasons'][0]['stage'] == 'reconcile_targets'
     assert result['unresolved_reasons'][0]['code'] == 'missing_asset'
