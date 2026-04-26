@@ -22,6 +22,7 @@ export type WorkspaceMonitoringSummary = {
   heartbeat_age_seconds?: number | null;
   telemetry_age_seconds?: number | null;
   event_ingestion_age_seconds?: number | null;
+  detection_age_seconds?: number | null;
   detection_eval_age_seconds?: number | null;
   thresholds_seconds?: {
     heartbeat?: number;
