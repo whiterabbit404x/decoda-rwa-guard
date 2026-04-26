@@ -220,6 +220,36 @@ def test_ops_monitoring_runtime_status_returns_degraded_payload_when_route_raise
     assert payload['event_throughput_window'] == 'no_events'
 
 
+def test_ops_monitoring_runtime_status_exposes_continuity_contract_fields_unmodified(monkeypatch):
+    runtime_payload = {
+        'monitoring_status': 'limited',
+        'continuity_slo_pass': False,
+        'heartbeat_age_seconds': 181,
+        'telemetry_age_seconds': 121,
+        'detection_eval_age_seconds': 301,
+        'thresholds_seconds': {'heartbeat': 180, 'telemetry': 120, 'detection_eval': 300},
+        'workspace_monitoring_summary': {
+            'continuity_slo_pass': False,
+            'heartbeat_age_seconds': 181,
+            'telemetry_age_seconds': 121,
+            'detection_eval_age_seconds': 301,
+            'thresholds_seconds': {'heartbeat': 180, 'telemetry': 120, 'detection_eval': 300},
+        },
+    }
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: runtime_payload)
+
+    response = client.get('/ops/monitoring/runtime-status')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['continuity_slo_pass'] is False
+    assert payload['heartbeat_age_seconds'] == 181
+    assert payload['telemetry_age_seconds'] == 121
+    assert payload['detection_eval_age_seconds'] == 301
+    assert payload['thresholds_seconds'] == {'heartbeat': 180, 'telemetry': 120, 'detection_eval': 300}
+
+
 def test_ops_monitoring_run_returns_structured_error_for_unexpected_exception(monkeypatch, caplog):
     monkeypatch.setenv('APP_ENV', 'development')
     monkeypatch.setattr(

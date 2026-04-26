@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { evaluateContinuitySlo } from '../app/threat-operations-panel';
+import { evaluateContinuitySlo, pageStatePrimaryCopy } from '../app/threat-operations-panel';
 
 test('continuity SLO passes when all dimensions are within thresholds', () => {
   const result = evaluateContinuitySlo({
@@ -23,11 +23,11 @@ test('continuity SLO passes when all dimensions are within thresholds', () => {
     status_reason: null,
     continuity_slo_pass: true,
     heartbeat_age_seconds: 120,
-    event_ingestion_age_seconds: 90,
+    telemetry_age_seconds: 90,
     detection_eval_age_seconds: 240,
-    required_thresholds_seconds: {
+    thresholds_seconds: {
       heartbeat: 180,
-      event_ingestion: 120,
+      telemetry: 120,
       detection_eval: 300,
     },
   });
@@ -58,11 +58,11 @@ test('continuity SLO fails when controlled timestamp ages breach thresholds', ()
     status_reason: 'runtime_status_degraded:timestamp_stale',
     continuity_slo_pass: false,
     heartbeat_age_seconds: 181,
-    event_ingestion_age_seconds: 121,
+    telemetry_age_seconds: 121,
     detection_eval_age_seconds: 301,
-    required_thresholds_seconds: {
+    thresholds_seconds: {
       heartbeat: 180,
-      event_ingestion: 120,
+      telemetry: 120,
       detection_eval: 300,
     },
   });
@@ -75,4 +75,40 @@ test('continuity SLO fails when controlled timestamp ages breach thresholds', ()
     '2m 1s exceeds 2m',
     '5m 1s exceeds 5m',
   ]);
+});
+
+test('configured-no-signals copy explicitly reports SLO FAIL reasons', () => {
+  const continuity = evaluateContinuitySlo({
+    workspace_configured: true,
+    runtime_status: 'degraded',
+    monitoring_status: 'limited',
+    last_poll_at: null,
+    last_heartbeat_at: null,
+    last_telemetry_at: null,
+    telemetry_freshness: 'stale',
+    confidence: 'low',
+    reporting_systems_count: 1,
+    monitored_systems_count: 1,
+    protected_assets_count: 1,
+    active_alerts_count: 0,
+    active_incidents_count: 0,
+    evidence_source_summary: 'live',
+    contradiction_flags: [],
+    guard_flags: [],
+    status_reason: 'runtime_status_degraded:continuity_slo_failed:heartbeat_stale',
+    continuity_slo_pass: false,
+    heartbeat_age_seconds: 181,
+    telemetry_age_seconds: 121,
+    detection_eval_age_seconds: 301,
+    thresholds_seconds: {
+      heartbeat: 180,
+      telemetry: 120,
+      detection_eval: 300,
+    },
+  });
+  const copy = pageStatePrimaryCopy('configured_no_signals', null, 'continuous_no_evidence', continuity);
+  expect(copy).toContain('Continuity SLO FAIL.');
+  expect(copy).toContain('Worker heartbeat');
+  expect(copy).toContain('Telemetry ingestion');
+  expect(copy).toContain('Detection evaluation');
 });

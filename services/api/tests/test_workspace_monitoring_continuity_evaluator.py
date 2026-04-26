@@ -28,8 +28,14 @@ def test_continuity_continuous_live_at_freshness_boundary() -> None:
     assert payload['event_throughput_window'] == 'in_window'
     assert payload['continuity_slo_pass'] is True
     assert payload['heartbeat_age_seconds'] == 180
+    assert payload['telemetry_age_seconds'] == 120
     assert payload['event_ingestion_age_seconds'] == 120
     assert payload['detection_eval_age_seconds'] == 300
+    assert payload['thresholds_seconds'] == {
+        'heartbeat': 180,
+        'event_ingestion': 120,
+        'detection_eval': 300,
+    }
     assert payload['required_thresholds_seconds'] == {
         'heartbeat': 180,
         'event_ingestion': 120,
@@ -58,6 +64,7 @@ def test_continuity_degraded_when_event_freshness_is_stale() -> None:
     assert payload['event_throughput_window'] == 'out_of_window'
     assert payload['continuity_slo_pass'] is False
     assert payload['heartbeat_age_seconds'] == 60
+    assert payload['telemetry_age_seconds'] == 121
     assert payload['event_ingestion_age_seconds'] == 121
     assert payload['detection_eval_age_seconds'] == 30
 
@@ -175,3 +182,48 @@ def test_continuity_boundary_transition_fresh_to_stale_to_offline() -> None:
     assert stale['event_throughput_window'] == 'out_of_window'
     assert offline['ingestion_freshness'] == 'offline'
     assert offline['event_throughput_window'] == 'offline'
+
+
+def test_continuity_transition_contract_live_stale_offline_and_degraded() -> None:
+    now = _now()
+    common = {
+        'now': now,
+        'workspace_configured': True,
+        'heartbeat_ttl_seconds': 180,
+        'telemetry_window_seconds': 120,
+        'detection_window_seconds': 300,
+    }
+    live = evaluate_workspace_monitoring_continuity(
+        worker_running=True,
+        last_heartbeat_at=now - timedelta(seconds=30),
+        last_event_at=now - timedelta(seconds=60),
+        last_detection_at=now - timedelta(seconds=90),
+        **common,
+    )
+    stale = evaluate_workspace_monitoring_continuity(
+        worker_running=True,
+        last_heartbeat_at=now - timedelta(seconds=30),
+        last_event_at=now - timedelta(seconds=121),
+        last_detection_at=now - timedelta(seconds=90),
+        **common,
+    )
+    offline = evaluate_workspace_monitoring_continuity(
+        worker_running=False,
+        last_heartbeat_at=now - timedelta(seconds=601),
+        last_event_at=now - timedelta(seconds=361),
+        last_detection_at=now - timedelta(seconds=901),
+        **common,
+    )
+    degraded = evaluate_workspace_monitoring_continuity(
+        worker_running=False,
+        last_heartbeat_at=now - timedelta(seconds=20),
+        last_event_at=now - timedelta(seconds=40),
+        last_detection_at=now - timedelta(seconds=100),
+        **common,
+    )
+    assert live['continuity_status'] == 'continuous_live'
+    assert live['continuity_slo_pass'] is True
+    assert stale['continuity_status'] == 'degraded'
+    assert stale['continuity_slo_pass'] is False
+    assert offline['continuity_status'] == 'offline'
+    assert degraded['continuity_status'] == 'degraded'
