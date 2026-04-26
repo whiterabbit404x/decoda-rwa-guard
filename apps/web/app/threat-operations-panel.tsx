@@ -538,6 +538,12 @@ function isRealEvidence(evidence: EvidenceRow | null, detection: DetectionRow | 
   return !['simulator', 'synthetic', 'demo', 'fallback', 'test', 'lab', 'replay'].some((flag) => source.includes(flag));
 }
 
+function isSimulatorEvidenceMode(value: unknown): boolean {
+  const source = normalizeLookup(value);
+  if (!source) return false;
+  return ['simulator', 'synthetic', 'demo', 'fallback', 'test', 'lab', 'replay'].some((flag) => source.includes(flag));
+}
+
 function severityFromLinked(params: LinkedCoverageResolution): string | null {
   const severities = [params.latestIncident?.severity, params.latestAlert?.severity, params.latestDetection?.severity];
   return severities.find((value) => normalizeLookup(value)) ?? null;
@@ -919,7 +925,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     ?? runtimeSummary?.evidence_source_summary
     ?? 'none',
   ).toLowerCase();
-  const simulatorMode = runtimeEvidenceSource === 'simulator';
+  const simulatorMode = isSimulatorEvidenceMode(runtimeEvidenceSource);
+  const simulatorProofChainCapability = Boolean(
+    (runtimeStatusSnapshot as { can_generate_simulator_proof_chain?: boolean } | null)?.can_generate_simulator_proof_chain
+    ?? (runtimeStatusSnapshot as { capabilities?: { can_generate_simulator_proof_chain?: boolean } } | null)?.capabilities?.can_generate_simulator_proof_chain,
+  );
+  const canGenerateSimulatorProofChain = simulatorMode || simulatorProofChainCapability;
+  const simulatorProofChainUnavailableCopy = 'Simulator-only action unavailable in live mode';
   const protectedAssetCount = Number(runtimeStatusSnapshot?.protected_assets_count ?? runtimeSummary?.protected_assets_count ?? 0);
   const workspaceConfigured = Boolean(runtimeStatusSnapshot?.workspace_configured ?? runtimeSummary?.workspace_configured ?? false);
   const configuredSystems = Number(runtimeStatusSnapshot?.monitored_systems_count ?? runtimeSummary?.monitored_systems_count ?? 0);
@@ -1438,6 +1450,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }
 
   async function ensureSimulatorProofChain() {
+    if (!canGenerateSimulatorProofChain) {
+      setResponseToast(simulatorProofChainUnavailableCopy);
+      return;
+    }
     setEnsuringProofChain(true);
     try {
       const ensureResponse = await fetch(`${apiUrl}/ops/monitoring/proof-chain/ensure`, { method: 'POST', headers: authHeaders() });
@@ -1488,8 +1504,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <button
               type="button"
               className="secondaryCta"
-              disabled={ensuringProofChain}
+              disabled={ensuringProofChain || !canGenerateSimulatorProofChain}
               onClick={() => void ensureSimulatorProofChain()}
+              title={!canGenerateSimulatorProofChain ? simulatorProofChainUnavailableCopy : ''}
             >
               {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
             </button>
@@ -1520,6 +1537,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             Persistence outage active: {dbPersistenceOutageReason}. Simulator/demo rows remain visible but are excluded from live-evidence claims.
           </p>
         ) : null}
+        {!canGenerateSimulatorProofChain ? <p className="statusLine">{simulatorProofChainUnavailableCopy}</p> : null}
         <p className="tableMeta">
           Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {pollLabel} · Last heartbeat: {monitoringPresentation.heartbeatLabel} · Runtime freshness: {String(runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeSummary?.confidence ?? runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
         </p>
@@ -1595,7 +1613,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 type="button"
                 className="secondaryCta"
                 onClick={() => void ensureSimulatorProofChain()}
-                disabled={ensuringProofChain}
+                disabled={ensuringProofChain || !canGenerateSimulatorProofChain}
+                title={!canGenerateSimulatorProofChain ? simulatorProofChainUnavailableCopy : ''}
               >
                 {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
               </button>
@@ -2009,7 +2028,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               ? <p className="statusLine">No linked alert/incident context available.</p>
               : <p className="statusLine">Linked detection/alert/incident context selected for action creation.</p>}
             <div className="buttonRow">
-              <button type="button" className="secondaryCta" disabled={ensuringProofChain} onClick={() => void ensureSimulatorProofChain()}>
+              <button
+                type="button"
+                className="secondaryCta"
+                disabled={ensuringProofChain || !canGenerateSimulatorProofChain}
+                title={!canGenerateSimulatorProofChain ? simulatorProofChainUnavailableCopy : ''}
+                onClick={() => void ensureSimulatorProofChain()}
+              >
                 {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
               </button>
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('notify_team', 'Run simulated response')}>Run simulated response (SIMULATED)</button>
