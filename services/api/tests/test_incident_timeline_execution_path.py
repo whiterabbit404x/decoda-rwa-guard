@@ -42,6 +42,7 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
                             'token_contract': '0x1111111111111111111111111111111111111111',
                             'calldata': '0x095ea7b3',
                             'chain_network': 'ethereum',
+                            'approved_by_user_id': 'admin-2',
                         }
                     )
                 if action_id == 'act-execute-sim':
@@ -68,6 +69,7 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
                             'alert_id': 'alert-1',
                             'spender': '0x2222222222222222222222222222222222222222',
                             'safe_tx_hash': '0xsafehash',
+                            'approved_by_user_id': 'admin-2',
                         }
                     )
                 if action_id == 'act-manual':
@@ -80,6 +82,7 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
                             'execution_metadata': {},
                             'incident_id': 'inc-1',
                             'alert_id': 'alert-1',
+                            'approved_by_user_id': 'admin-2',
                         }
                     )
                 if action_id == 'act-unsupported':
@@ -92,6 +95,7 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
                             'execution_metadata': {},
                             'incident_id': 'inc-1',
                             'alert_id': 'alert-1',
+                            'approved_by_user_id': 'admin-2',
                         }
                     )
             return _Result()
@@ -109,9 +113,13 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
-    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1'}))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1', 'role': 'admin'}))
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
-    monkeypatch.setattr(pilot, '_propose_safe_transaction', lambda *_a, **_k: '0xsafehash')
+    monkeypatch.setattr(
+        pilot,
+        '_propose_safe_transaction',
+        lambda *_a, **_k: {'safe_tx_hash': '0xsafehash', 'external_request_id': 'safe-request-1', 'response_code': 201},
+    )
     monkeypatch.setattr(
         pilot,
         'resolve_response_action_capability',
@@ -196,3 +204,59 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
     assert unsupported_event.get('execution_state') == 'unsupported'
     rollback_event = next(metadata for event, metadata in timeline_events if event == 'response_action.rolled_back')
     assert rollback_event.get('external_references', {}).get('safe_tx_hash') == '0xsafehash'
+
+
+def test_audit_chain_detection_alert_incident_action_ids_remain_linked(monkeypatch):
+    timeline_events: list[tuple[str, dict]] = []
+
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result(
+                    {
+                        'id': 'act-sim',
+                        'status': 'pending',
+                        'mode': 'simulated',
+                        'action_type': 'notify_team',
+                        'execution_metadata': {},
+                        'execution_artifacts': {},
+                        'provider_receipts': [],
+                        'incident_id': 'inc-1',
+                        'alert_id': 'alert-1',
+                        'approved_by_user_id': 'admin-2',
+                    }
+                )
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    def _capture_timeline(_connection, *, workspace_id, incident_id, event_type, message, actor_user_id, metadata=None):
+        timeline_events.append((event_type, metadata or {}))
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+    monkeypatch.setattr(pilot, 'append_incident_timeline_event', _capture_timeline)
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    pilot.execute_enforcement_action('act-sim', request)
+
+    executed_event = next(metadata for event, metadata in timeline_events if event == 'response_action.executed')
+    assert executed_event['response_action_id'] == 'act-sim'
+    assert executed_event['alert_id'] == 'alert-1'
+    assert executed_event['status'] == 'executed'
