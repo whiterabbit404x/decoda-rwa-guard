@@ -174,6 +174,8 @@ def test_runtime_status_proof_chain_alerts_without_evidence_sets_degraded_reason
     assert payload['proof_chain_status'] == 'incomplete'
     assert payload['status_reason'] == 'alerts_without_detection_evidence'
     assert payload['workspace_monitoring_summary']['status_reason'] == 'alerts_without_detection_evidence'
+    assert 'open_alerts_without_detection_evidence' in payload['contradiction_flags']
+    assert 'open_alerts_without_detection_evidence' in payload['workspace_monitoring_summary']['contradiction_flags']
 
 
 def test_runtime_status_proof_chain_impossible_states_emit_contradiction_flags(monkeypatch):
