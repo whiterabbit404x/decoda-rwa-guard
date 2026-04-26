@@ -246,7 +246,7 @@ function formatSloDuration(value: number | null): string {
 export function evaluateContinuitySlo(summary?: MonitoringRuntimeStatus['workspace_monitoring_summary'] | null): ContinuitySloEvaluation {
   const thresholds = summary?.required_thresholds_seconds ?? {};
   const normalizedTopLevelPass = summary?.continuity_slo_pass === true;
-  const dimensions: ContinuitySloDimension[] = [
+  const baseDimensions: ContinuitySloDimension[] = [
     {
       key: 'heartbeat',
       label: 'Worker heartbeat',
@@ -271,7 +271,8 @@ export function evaluateContinuitySlo(summary?: MonitoringRuntimeStatus['workspa
       pass: false,
       reason: null,
     },
-  ].map((dimension) => {
+  ];
+  const dimensions: ContinuitySloDimension[] = baseDimensions.map((dimension): ContinuitySloDimension => {
     if (dimension.ageSeconds === null) {
       return { ...dimension, pass: false, reason: 'timestamp missing' };
     }
