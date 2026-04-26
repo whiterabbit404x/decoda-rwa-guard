@@ -11,7 +11,6 @@ import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import ThreatChainPanel from './threat-chain-panel';
 
 type Props = { apiUrl: string };
-const MONITORING_SYSTEMS_PROXY_PATH = '/api/monitoring/systems';
 // Temporary backoff while runtime-status latency is elevated; re-evaluate when p95 is back under threshold.
 const THREAT_PAGE_POLL_VISIBLE_MS = 45000;
 const THREAT_PAGE_POLL_HIDDEN_MS = 60000;
@@ -199,7 +198,7 @@ export type PageOperationalState =
   | 'unconfigured_workspace'
   | 'fetch_error';
 
-type SnapshotFailureKey = 'targets' | 'systems' | 'alerts' | 'incidents' | 'evidence' | 'runs' | 'detections' | 'actions' | 'runtime-status' | 'investigation-timeline';
+type SnapshotFailureKey = 'runtime-status' | 'investigation-timeline';
 
 const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
   'no_valid_protected_assets',
@@ -716,7 +715,13 @@ function formatSnapshotErrorMessage(failedEndpoints: SnapshotFailureKey[]): stri
 }
 
 export function formatSystemsPanelWarning(failedEndpoints: SnapshotFailureKey[]): string | null {
-  return failedEndpoints.includes('systems') ? 'Systems list unavailable' : null;
+  if (failedEndpoints.includes('runtime-status')) {
+    return 'Runtime status unavailable';
+  }
+  if (failedEndpoints.includes('investigation-timeline')) {
+    return 'Investigation timeline unavailable';
+  }
+  return null;
 }
 
 export function pageStatePrimaryCopy(
@@ -746,22 +751,6 @@ export function pageStatePrimaryCopy(
     return 'Backend telemetry/runtime retrieval failed, so monitoring data is temporarily unavailable.';
   }
   return 'Monitoring is partially degraded. Threat outcomes may be delayed or incomplete.';
-}
-
-function noIncidentsCopy(
-  evidenceSourceLabel: string,
-  continuityStatus?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null,
-): string {
-  if (continuityStatus === 'continuous_no_evidence') {
-    return 'Live polling active. No recent anomaly evidence.';
-  }
-  if (continuityStatus === 'continuous_live') {
-    return 'No incidents yet. LIVE continuity is healthy and no open incidents are currently recorded.';
-  }
-  if (evidenceSourceLabel === 'live' || evidenceSourceLabel === 'hybrid') {
-    return 'LIVE/HYBRID degraded state: no persisted incidents with linked evidence chain entries are currently available.';
-  }
-  return 'No persisted incidents with linked evidence chain entries are currently available.';
 }
 
 function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason, continuityStatus }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null; continuityStatus?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null }) {
@@ -825,28 +814,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         return;
       }
       try {
-        const [targetsResult, systemsResult, alertsResult, incidentsResult, evidenceResult, runsResult, detectionsResult, actionsResult, runtimeStatusResult, investigationTimelineResult] = await Promise.allSettled([
-          fetch(`${apiUrl}/monitoring/targets`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(MONITORING_SYSTEMS_PROXY_PATH, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/alerts?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/incidents?status_value=open`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/monitoring/runs?limit=12`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/detections?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/history/actions?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
+        const [runtimeStatusResult, investigationTimelineResult] = await Promise.allSettled([
           fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/ops/monitoring/investigation-timeline`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         if (!active) return;
         const responseEntries: [SnapshotFailureKey, PromiseSettledResult<Response>][] = [
-          ['targets', targetsResult],
-          ['systems', systemsResult],
-          ['alerts', alertsResult],
-          ['incidents', incidentsResult],
-          ['evidence', evidenceResult],
-          ['runs', runsResult],
-          ['detections', detectionsResult],
-          ['actions', actionsResult],
           ['runtime-status', runtimeStatusResult],
           ['investigation-timeline', investigationTimelineResult],
         ];
@@ -856,42 +829,19 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const responses = responseEntries.map(([, result]) => (
           result.status === 'fulfilled' && result.value.ok ? result.value : null
         ));
-        const [targetsResponse, systemsResponse, alertsResponse, incidentsResponse, evidenceResponse, runsResponse, detectionsResponse, actionsResponse, runtimeStatusResponse, investigationTimelineResponse] = responses;
-        const targetsPayload = targetsResponse ? await targetsResponse.json().catch(() => ({})) : {};
-        const systemsPayload = systemsResponse ? await systemsResponse.json().catch(() => ({})) : {};
-        const alertsPayload = alertsResponse ? await alertsResponse.json().catch(() => ({})) : {};
-        const incidentsPayload = incidentsResponse ? await incidentsResponse.json().catch(() => ({})) : {};
-        const evidencePayload = evidenceResponse ? await evidenceResponse.json().catch(() => ({})) : {};
-        const runsPayload = runsResponse ? await runsResponse.json().catch(() => ({})) : {};
-        const detectionsPayload = detectionsResponse ? await detectionsResponse.json().catch(() => ({})) : {};
-        const actionsPayload = actionsResponse ? await actionsResponse.json().catch(() => ({})) : {};
+        const [runtimeStatusResponse, investigationTimelineResponse] = responses;
         const runtimeStatusPayload = runtimeStatusResponse ? await runtimeStatusResponse.json().catch(() => ({})) : {};
         const investigationTimelinePayload = investigationTimelineResponse ? await investigationTimelineResponse.json().catch(() => ({})) : {};
 
-        if (targetsResponse) {
-          setTargets((targetsPayload?.targets ?? []) as TargetRow[]);
-        }
-        if (systemsResponse) {
-          setMonitoredSystems((systemsPayload?.systems ?? []) as MonitoredSystemRow[]);
-        }
-        if (alertsResponse) {
-          setAlerts((alertsPayload?.alerts ?? []) as AlertRow[]);
-        }
-        if (incidentsResponse) {
-          setIncidents((incidentsPayload?.incidents ?? []) as IncidentRow[]);
-        }
-        if (evidenceResponse) {
-          setEvidence((evidencePayload?.evidence ?? []) as EvidenceRow[]);
-        }
-        if (runsResponse) {
-          setMonitoringRuns((runsPayload?.runs ?? []) as MonitoringRunRow[]);
-        }
-        if (detectionsResponse) {
-          setDetections((detectionsPayload?.detections ?? []) as DetectionRow[]);
-        }
-        if (actionsResponse) {
-          setActionHistory((actionsPayload?.history ?? []) as ActionHistoryRow[]);
-        }
+        // Runtime-status + investigation-timeline are the canonical monitoring sources for this panel.
+        setTargets([]);
+        setMonitoredSystems([]);
+        setAlerts([]);
+        setIncidents([]);
+        setEvidence([]);
+        setMonitoringRuns([]);
+        setDetections([]);
+        setActionHistory([]);
         if (runtimeStatusResponse) {
           setRuntimeStatusSnapshot(runtimeStatusPayload as MonitoringRuntimeStatus);
         }
@@ -1231,11 +1181,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     });
   }, [coverageIndexes, monitoredSystems]);
   const latestRiskScore = useMemo(() => {
-    if (alerts.some((item) => severityClass(item.severity) === 'critical')) return { value: 92, tier: 'High' };
-    if (alerts.some((item) => severityClass(item.severity) === 'high')) return { value: 78, tier: 'Elevated' };
-    if (alerts.length > 0 || incidents.length > 0) return { value: 62, tier: 'Guarded' };
-    return { value: 28, tier: 'Low' };
-  }, [alerts, incidents]);
+    if (activeIncidents > 0) return { value: 'High', tier: `${activeIncidents} active incident${activeIncidents === 1 ? '' : 's'}` };
+    if (openAlerts > 0) return { value: 'Elevated', tier: `${openAlerts} open alert${openAlerts === 1 ? '' : 's'}` };
+    if (runtimeStatus === 'live') return { value: 'Low', tier: 'No active alerts or incidents' };
+    if (runtimeStatus === 'degraded') return { value: 'Guarded', tier: 'Runtime degraded; investigate telemetry continuity' };
+    if (runtimeStatus === 'offline') return { value: 'Unknown', tier: 'Runtime offline; live risk score unavailable' };
+    return { value: 'Unknown', tier: 'Awaiting runtime signal' };
+  }, [activeIncidents, openAlerts, runtimeStatus]);
 
   const riskFreshness = pageState === 'healthy_live' || (pageState === 'configured_no_signals' && reportingSystems > 0)
     ? `last evaluated ${detectionEvalLabel} across ${Math.max(configuredSystems, 0)} monitored systems`
@@ -1383,6 +1335,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     return 'SIMULATED';
   }
 
+  function responseActionModeDetail(value: unknown): string {
+    const mode = responseActionModeLabel(value);
+    if (mode === 'LIVE') return 'LIVE (integration required; not executed from simulator mode)';
+    if (mode === 'RECOMMENDED') return 'RECOMMENDED (approval/manual execution required)';
+    return 'SIMULATED (no live execution)';
+  }
+
   async function openDetectionEvidence(signal: DetectionItem) {
     const detectionId = signal.id.replace('detection-', '');
     const fallback = detections.find((item) => item.id === detectionId) ?? null;
@@ -1448,11 +1407,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const executionResult = responseActionExecutionMessage(executePayload);
     if (execute.ok && executionResult.isSuccess) {
       if (modeLabel === 'LIVE') {
-        setResponseToast('LIVE action executed.');
+        setResponseToast('LIVE mode was returned by backend, but this panel only executes simulated actions. No live action was executed.');
       } else if (modeLabel === 'RECOMMENDED') {
-        setResponseToast('RECOMMENDED action recorded (simulated path).');
+        setResponseToast('RECOMMENDED action recorded. Manual/live follow-up is still required.');
       } else {
-        setResponseToast('SIMULATED action completed.');
+        setResponseToast('SIMULATED action completed (no live execution).');
       }
       return;
     }
@@ -1506,6 +1465,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               onClick={() => window.dispatchEvent(new Event('pilot-history-refresh'))}
             >
               Refresh now
+            </button>
+            <button
+              type="button"
+              className="secondaryCta"
+              disabled={ensuringProofChain}
+              onClick={() => void ensureSimulatorProofChain()}
+            >
+              {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
             </button>
             <Link href="/alerts" prefetch={false} className="secondaryCta">Review alerts</Link>
             <Link href="/incidents" prefetch={false} className="secondaryCta">Open incident queue</Link>
@@ -1569,8 +1536,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
         <article className="dataCard kpiCard">
           <p className="sectionEyebrow">Latest Risk Score</p>
-          <p className="kpiValue">{latestRiskScore.value} / {latestRiskScore.tier}</p>
-          <p className="tableMeta">{riskFreshness}</p>
+          <p className="kpiValue">{latestRiskScore.value}</p>
+          <p className="tableMeta">{latestRiskScore.tier} · {riskFreshness}</p>
         </article>
         <article className="dataCard kpiCard">
           <p className="sectionEyebrow">Coverage State</p>
@@ -1789,8 +1756,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             {loadingSnapshot ? <p className="muted">Loading recent monitoring runs…</p> : null}
             {!loadingSnapshot && monitoringRuns.length === 0 ? (
               <div className="emptyStatePanel">
-                <h4>No monitoring runs recorded yet</h4>
-                <p className="muted">Run monitoring once or wait for the scheduler to persist the next workspace cycle.</p>
+                <h4>Monitoring run details not loaded in this panel</h4>
+                <p className="muted">This view is runtime-status driven. Open history for detailed run records.</p>
               </div>
             ) : (
               <div className="tableWrap">
@@ -1841,11 +1808,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             {loadingSnapshot ? <p className="muted">Loading alerts…</p> : null}
             {!loadingSnapshot && linkedAlertRows.length === 0 ? (
               <div className="emptyStatePanel">
-                <h4>No alerts recorded</h4>
+                <h4>Alert details not loaded in this panel</h4>
                 <p className="muted">
-                  {(monitoringPresentation.evidenceSourceLabel === 'live' || monitoringPresentation.evidenceSourceLabel === 'hybrid')
-                    ? 'LIVE/HYBRID degraded state: no persisted alerts with linked evidence are currently available in this workspace.'
-                    : 'No persisted alerts with linked evidence are currently available in this workspace.'}
+                  Runtime status reports {openAlerts} open alert{openAlerts === 1 ? '' : 's'}. Open the alert queue to inspect full records.
                 </p>
               </div>
             ) : (
@@ -1895,8 +1860,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             {loadingSnapshot ? <p className="muted">Loading incidents…</p> : null}
             {!loadingSnapshot && incidents.length === 0 ? (
               <div className="emptyStatePanel">
-                <h4>No incidents yet</h4>
-                <p className="muted">{noIncidentsCopy(monitoringPresentation.evidenceSourceLabel, truth.continuity_status)}</p>
+                <h4>Incident details not loaded in this panel</h4>
+                <p className="muted">Runtime status reports {activeIncidents} active incident{activeIncidents === 1 ? '' : 's'}. Open the incident queue for full timeline records.</p>
               </div>
             ) : (
               <div className="stack compactStack">
@@ -1962,8 +1927,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                     const entryAlertId = typeof entry.details_json?.alert_id === 'string' ? entry.details_json.alert_id : null;
                     const entryIncidentId = typeof entry.details_json?.incident_id === 'string' ? entry.details_json.incident_id : null;
                     const entryMode = typeof entry.details_json?.mode === 'string' ? entry.details_json.mode : null;
-                    const modeLabel = responseActionModeLabel(entryMode);
-                    const showModeLabel = modeLabel !== 'LIVE';
+                    const modeLabel = responseActionModeDetail(entryMode);
                     const href = entry.object_type === 'alert' || entryAlertId ? '/alerts' : entry.object_type === 'incident' || entryIncidentId ? '/incidents' : '/history';
                     return (
                       <div key={entry.id} className="overviewListItem">
@@ -1972,18 +1936,18 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                           <p className="tableMeta">
                             object {String(entry.object_type || 'unknown')}:{String(entry.object_id || 'n/a')} · actor {String(entry.actor_type || 'system')}
                           </p>
-                          {showModeLabel ? <p className="tableMeta"><strong>{modeLabel}</strong> action</p> : null}
+                          <p className="tableMeta"><strong>Mode:</strong> {modeLabel}</p>
                           <p className="tableMeta">{formatAbsoluteTime(entry.timestamp)}</p>
                         </div>
                         <Link href={href} prefetch={false}>Open</Link>
                       </div>
                     );
                   })}
-                  {actionHistory.length === 0 ? <p className="muted">No workflow action history has been recorded yet.</p> : null}
+                  {actionHistory.length === 0 ? <p className="muted">Workflow action detail rows are not loaded in this runtime-status view. Open history for complete records.</p> : null}
                 </div>
                 <div className="stack compactStack">
                   {investigationTimelineItems.length === 0 ? (
-                    <p className="muted">No investigation timeline records yet. Missing links: {missingTimelineLinks.length === 0 ? 'none' : missingTimelineLinks.join(', ')}.</p>
+                    <p className="muted">No investigation timeline records currently returned. Missing links: {missingTimelineLinks.length === 0 ? 'none' : missingTimelineLinks.join(', ')}.</p>
                   ) : null}
                   {investigationTimelineItems.map((item) => {
                     const linkName = String(item.link_name || 'unknown');
@@ -2010,7 +1974,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <article className="dataCard">
             <p className="sectionEyebrow">Response Actions</p>
             <h3>Operational actions</h3>
-            <p className="muted">Use investigation and escalation workflows to restore healthy monitoring and resolve risk. Non-live actions are visibly marked SIMULATED.</p>
+            <p className="muted">Use investigation and escalation workflows to restore healthy monitoring and resolve risk. Modes are labeled as SIMULATED, RECOMMENDED, or LIVE; live execution requires real integration and is never implied by simulator flows.</p>
             <label className="fieldLabel" htmlFor="threat-action-context-select">Launch action context</label>
             <select
               id="threat-action-context-select"
@@ -2026,6 +1990,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               ? <p className="statusLine">No linked alert/incident context available.</p>
               : <p className="statusLine">Linked detection/alert/incident context selected for action creation.</p>}
             <div className="buttonRow">
+              <button type="button" className="secondaryCta" disabled={ensuringProofChain} onClick={() => void ensureSimulatorProofChain()}>
+                {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
+              </button>
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('notify_team', 'Run simulated response')}>Run simulated response (SIMULATED)</button>
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.block_transaction, 'simulated')} title={actionDisabledReason(actionCapabilities.block_transaction, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('block_transaction', 'Block transaction')}>Block transaction (SIMULATED)</button>
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
