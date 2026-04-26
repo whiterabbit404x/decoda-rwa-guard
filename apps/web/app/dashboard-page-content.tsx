@@ -98,12 +98,12 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
   const openIncidents = monitoringTruth.active_incidents_count;
   const systemMessage = monitoringTruth.status_reason ?? safeMonitoringSummary;
   const enterpriseReadyPass = Boolean(
-    liveFeed?.monitoring.status?.enterprise_ready_pass
+    liveFeed?.runtimeStatus?.enterprise_ready_pass
     ?? data.workspaceMonitoringSummary?.enterprise_ready_pass
     ?? false,
   );
-  const failedEnterpriseChecks = Array.isArray(liveFeed?.monitoring.status?.failed_checks)
-    ? liveFeed?.monitoring.status?.failed_checks
+  const failedEnterpriseChecks = Array.isArray(liveFeed?.runtimeStatus?.failed_checks)
+    ? liveFeed?.runtimeStatus?.failed_checks
     : Array.isArray(data.workspaceMonitoringSummary?.failed_checks)
       ? data.workspaceMonitoringSummary.failed_checks
       : [];
