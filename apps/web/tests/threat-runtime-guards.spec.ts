@@ -366,7 +366,7 @@ test.describe('threat runtime guards', () => {
     expect(state).toBe('degraded_partial');
   });
 
-  test('partial snapshot failure does not force offline state while runtime is live', async () => {
+  test('partial snapshot failure maps to fetch error while runtime is otherwise live', async () => {
     const state = derivePageState({
       loadingSnapshot: false,
       snapshotError: true,
@@ -388,12 +388,12 @@ test.describe('threat runtime guards', () => {
       summaryConfigurationReasonCodes: [],
     });
 
-    expect(state).toBe('configured_no_signals');
+    expect(state).toBe('fetch_error');
     expect(state).not.toBe('offline_no_telemetry');
-    expect(state).not.toBe('fetch_error');
+    expect(pageStatePrimaryCopy(state, null)).toContain('Backend telemetry/runtime retrieval failed');
   });
 
-  test('runtime healthy with systems endpoint failure stays LIVE and shows systems warning badge copy', async () => {
+  test('runtime healthy with snapshot endpoint failure shows fetch-error banner copy', async () => {
     const state = derivePageState({
       loadingSnapshot: false,
       snapshotError: true,
@@ -415,7 +415,8 @@ test.describe('threat runtime guards', () => {
       summaryConfigurationReasonCodes: [],
     });
 
-    expect(state).toBe('configured_no_signals');
-    expect(formatSystemsPanelWarning(['systems'])).toBe('Systems list unavailable');
+    expect(state).toBe('fetch_error');
+    expect(pageStatePrimaryCopy(state, null)).toContain('Backend telemetry/runtime retrieval failed');
+    expect(formatSystemsPanelWarning(['runtime-status'])).toBe('Runtime status unavailable');
   });
 });
