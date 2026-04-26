@@ -674,14 +674,25 @@ export function derivePageState(params: {
     return 'fetch_error';
   }
 
+  // State precedence:
+  // 1) runtime query failure payloads (backend/runtime endpoint is unhealthy)
+  // 2) explicit structural misconfiguration (workspace unconfigured by design)
+  // 3) explicit offline continuity/runtime status (no telemetry continuity)
+  // 4) snapshot endpoint fetch failure (runtime/investigation snapshot unavailable)
+  // 5) continuity + runtime derived operational states
   if (!workspaceConfigured && structuralUnconfiguredReason && !runtimeQueryFailure) {
     return 'unconfigured_workspace';
   }
-  if (!workspaceConfigured) return 'fetch_error';
 
   if (continuityStatus === 'offline' || runtimeStatus === 'offline') {
     return 'offline_no_telemetry';
   }
+
+  if (snapshotError) {
+    return 'fetch_error';
+  }
+
+  if (!workspaceConfigured) return 'fetch_error';
   if (continuityStatus === 'idle_no_telemetry') {
     return 'configured_no_signals';
   }
