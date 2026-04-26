@@ -60,6 +60,19 @@ export type WorkspaceMonitoringSummary = {
 };
 
 export type MonitoringRuntimeStatus = {
+  continuity_slo?: {
+    pass?: boolean;
+    heartbeat_age_seconds?: number | null;
+    telemetry_age_seconds?: number | null;
+    detection_age_seconds?: number | null;
+    detection_eval_age_seconds?: number | null;
+    heartbeat_threshold_seconds?: number | null;
+    telemetry_threshold_seconds?: number | null;
+    detection_threshold_seconds?: number | null;
+    thresholds_seconds?: WorkspaceMonitoringSummary['thresholds_seconds'];
+    required_thresholds_seconds?: WorkspaceMonitoringSummary['required_thresholds_seconds'];
+    reason_codes?: string[];
+  };
   error?: {
     code?: string;
     type?: string;

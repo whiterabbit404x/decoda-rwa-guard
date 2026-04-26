@@ -112,3 +112,35 @@ test('configured-no-signals copy explicitly reports SLO FAIL reasons', () => {
   expect(copy).toContain('Telemetry ingestion');
   expect(copy).toContain('Detection evaluation');
 });
+
+test('continuity SLO evaluator reads runtime continuity payload for stale/offline transitions', () => {
+  const stale = evaluateContinuitySlo(
+    undefined,
+    {
+      pass: false,
+      heartbeat_age_seconds: 181,
+      telemetry_age_seconds: 121,
+      detection_age_seconds: 301,
+      thresholds_seconds: { heartbeat: 180, telemetry: 120, detection_eval: 300 },
+    },
+  );
+  const offline = evaluateContinuitySlo(
+    undefined,
+    {
+      pass: false,
+      heartbeat_age_seconds: null,
+      telemetry_age_seconds: null,
+      detection_age_seconds: null,
+      thresholds_seconds: { heartbeat: 180, telemetry: 120, detection_eval: 300 },
+    },
+  );
+
+  expect(stale.statusLabel).toBe('FAIL');
+  expect(stale.dimensions.map((dimension) => dimension.pass)).toEqual([false, false, false]);
+  expect(offline.statusLabel).toBe('FAIL');
+  expect(offline.dimensions.map((dimension) => dimension.reason)).toEqual([
+    'timestamp missing',
+    'timestamp missing',
+    'timestamp missing',
+  ]);
+});

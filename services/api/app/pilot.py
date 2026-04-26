@@ -380,7 +380,11 @@ def evaluate_workspace_monitoring_continuity(
         'heartbeat_age_seconds': heartbeat_age_seconds,
         'telemetry_age_seconds': event_age_seconds,
         'event_ingestion_age_seconds': event_age_seconds,
+        'detection_age_seconds': detection_age_seconds,
         'detection_eval_age_seconds': detection_age_seconds,
+        'heartbeat_threshold_seconds': normalized_heartbeat_ttl_seconds,
+        'telemetry_threshold_seconds': normalized_telemetry_window_seconds,
+        'detection_threshold_seconds': normalized_detection_window_seconds,
         'thresholds_seconds': required_thresholds_seconds,
         'required_thresholds_seconds': required_thresholds_seconds,
         'continuity_signals': {
