@@ -193,6 +193,41 @@ test.describe('threat runtime guards', () => {
     expect(pageStatePrimaryCopy(state, payload.configuration_reason)).toContain('Workspace is not configured');
   });
 
+  test('treats structural configuration reason codes emitted by backend as unconfigured workspace', async () => {
+    const structuralReasonCodes = [
+      'no_valid_protected_assets',
+      'no_linked_monitored_systems',
+      'no_persisted_enabled_monitoring_config',
+      'target_system_linkage_invalid',
+    ];
+
+    structuralReasonCodes.forEach((reasonCode) => {
+      const state = derivePageState({
+        loadingSnapshot: false,
+        snapshotError: false,
+        targets: [],
+        liveDetections: [],
+        workspaceConfigured: false,
+        freshnessStatus: 'unavailable',
+        contradictionFlags: [],
+        reportingSystems: 0,
+        runtimeStatus: 'idle',
+        monitoredSystems: 0,
+        hasLiveTelemetry: false,
+        statusReason: `workspace_configuration_invalid:${reasonCode}`,
+        configurationReason: reasonCode,
+        configurationReasonCodes: [reasonCode],
+        runtimeMonitoringStatus: 'limited',
+        summaryStatusReason: `workspace_configuration_invalid:${reasonCode}`,
+        summaryConfigurationReason: reasonCode,
+        summaryConfigurationReasonCodes: [reasonCode],
+      });
+
+      expect(state).toBe('unconfigured_workspace');
+      expect(pageStatePrimaryCopy(state, reasonCode)).toContain('Workspace is not configured');
+    });
+  });
+
   test('treats missing workspace identifiers with query-failure payload as fetch error', async () => {
     const payload: MonitoringRuntimeStatus = {
       workspace_slug: null,
