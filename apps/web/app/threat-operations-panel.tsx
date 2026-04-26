@@ -215,6 +215,35 @@ type ReconcileJobSnapshot = {
   completed_at?: string | null;
 };
 
+type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale snapshot' | 'partial endpoint failure';
+
+type MonitoringViewModel = {
+  presentationStatus: MonitoringPresentationStatus;
+  presentationStatusLabel: string;
+  presentationTone: 'healthy' | 'offline' | 'attention';
+  pageState: PageOperationalState;
+  continuitySlo: ContinuitySloEvaluation;
+  telemetryLabel: string;
+  pollLabel: string;
+  heartbeatLabel: string;
+  telemetryState: SnapshotFreshnessState;
+  pollState: SnapshotFreshnessState;
+  heartbeatState: SnapshotFreshnessState;
+  provenanceLabel: MonitoringProvenanceLabel;
+  provenanceExplanation: string;
+  runtimeReason: string;
+  configurationReason: string | null;
+  continuityStatus: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null;
+  evidenceSourceLabel: string;
+  protectedAssetCount: number;
+  configuredSystems: number;
+  reportingSystems: number;
+  evidenceCount: number;
+  openAlerts: number;
+  activeIncidents: number;
+  headerStatusChips: Array<{ label: string; tone: 'chip' | 'status'; className?: string }>;
+};
+
 const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
   'no_valid_protected_assets',
   'no_linked_monitored_systems',
@@ -518,7 +547,7 @@ function coverageTone(status: ReturnType<typeof normalizeCoverageStatus>) {
   return 'offline';
 }
 
-function monitoringTone(status: MonitoringPresentationStatus) {
+function monitoringTone(status: MonitoringPresentationStatus): 'healthy' | 'offline' | 'attention' {
   if (status === 'live') return 'healthy';
   if (status === 'offline') return 'offline';
   return 'attention';
@@ -902,24 +931,46 @@ export function pageStatePrimaryCopy(
   return 'Monitoring is partially degraded. Threat outcomes may be delayed or incomplete.';
 }
 
-function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason, continuityStatus, continuitySlo }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null; continuityStatus?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null; continuitySlo?: ContinuitySloEvaluation }) {
+function PageStateBanner({ viewModel }: { viewModel: MonitoringViewModel }) {
+  const {
+    state,
+    telemetryLabel,
+    pollLabel,
+    reason,
+    configurationReason,
+    continuityStatus,
+    continuitySlo,
+    provenanceLabel,
+    provenanceExplanation,
+  } = {
+    state: viewModel.pageState,
+    telemetryLabel: viewModel.telemetryLabel,
+    pollLabel: viewModel.pollLabel,
+    reason: viewModel.runtimeReason,
+    configurationReason: viewModel.configurationReason,
+    continuityStatus: viewModel.continuityStatus,
+    continuitySlo: viewModel.continuitySlo,
+    provenanceLabel: viewModel.provenanceLabel,
+    provenanceExplanation: viewModel.provenanceExplanation,
+  };
   if (state === 'healthy_live') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)}</p>;
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)} Provenance: {provenanceLabel}.</p>;
   }
   if (state === 'configured_no_signals') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)}</p>;
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)} Provenance: {provenanceLabel}.</p>;
   }
   if (state === 'unconfigured_workspace') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)}</p>;
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)} Provenance: {provenanceLabel}.</p>;
   }
   if (state === 'offline_no_telemetry') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)} Reason: {reason || 'no active reporting systems'}. Add one monitored system and confirm telemetry flow.</p>;
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)} Reason: {reason || 'no active reporting systems'}. Provenance: {provenanceLabel}. Add one monitored system and confirm telemetry flow.</p>;
   }
   if (state === 'fetch_error') {
     return (
       <div className="emptyStatePanel">
         <h4>Telemetry retrieval degraded</h4>
         <p className="muted">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)}</p>
+        <p className="tableMeta">Provenance: {provenanceLabel} · {provenanceExplanation}</p>
         {reason ? <p className="tableMeta">Backend reason: {reason}</p> : null}
         <p className="tableMeta">Last telemetry: {telemetryLabel} · Last successful poll: {pollLabel}</p>
         <div className="buttonRow">
@@ -930,7 +981,7 @@ function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurati
       </div>
     );
   }
-  return <p className="explanation">Monitoring is partially degraded. Threat outcomes may be delayed or incomplete.</p>;
+  return <p className="explanation">Monitoring is partially degraded. Threat outcomes may be delayed or incomplete. Provenance: {provenanceLabel}.</p>;
 }
 
 export default function ThreatOperationsPanel({ apiUrl }: Props) {
@@ -1396,13 +1447,29 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : monitoringPresentation.status === 'degraded'
       ? 'Runtime reports partial or stale telemetry. Detailed protected system rows are still syncing.'
       : 'Runtime reports healthy coverage. Detailed protected system rows are still syncing.';
-  const headerStatusChips = useMemo(() => {
-    const chips: Array<{ label: string; tone: 'chip' | 'status'; className?: string }> = [
+  const monitoringViewModel = useMemo<MonitoringViewModel>(() => {
+    const derivedProvenanceLabel: MonitoringProvenanceLabel = snapshotFailedEndpoints.length > 0
+      ? 'partial endpoint failure'
+      : (telemetryState === 'stale' || pollState === 'stale' || heartbeatState === 'stale')
+        ? 'stale snapshot'
+        : (pageState === 'degraded_partial' || monitoringPresentation.status === 'degraded')
+          ? 'degraded'
+          : 'live';
+    const provenanceExplanation = derivedProvenanceLabel === 'partial endpoint failure'
+      ? `Monitoring snapshot fallback is active because ${snapshotFailedEndpoints.join(', ')} failed in the most recent refresh.`
+      : derivedProvenanceLabel === 'stale snapshot'
+        ? 'Runtime snapshot is visible, but at least one freshness timestamp is stale.'
+        : derivedProvenanceLabel === 'degraded'
+          ? 'Runtime and continuity contract report degraded monitoring health.'
+          : 'Runtime and continuity contract confirm live monitoring health.';
+
+    const headerStatusChips: MonitoringViewModel['headerStatusChips'] = [
       { label: monitoringPresentation.statusLabel, tone: 'status', className: `statusBadge statusBadge-${monitoringPresentation.tone}` },
       { label: `Operational state ${formatOperationalStateLabel(pageState)}`, tone: 'chip' },
       { label: `Telemetry ${telemetryState}`, tone: 'chip' },
       { label: `Poll ${pollState}`, tone: 'chip' },
       { label: `Heartbeat ${heartbeatState}`, tone: 'chip' },
+      { label: `Provenance ${derivedProvenanceLabel}`, tone: 'status', className: 'statusBadge statusBadge-attention' },
       { label: `Evidence source ${monitoringPresentation.evidenceSourceLabel}`, tone: 'chip' },
       { label: `Protected assets ${protectedAssetCount}`, tone: 'chip' },
       { label: `Monitored systems ${configuredSystems}`, tone: 'chip' },
@@ -1412,51 +1479,86 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       { label: `Active incidents ${activeIncidents}`, tone: 'chip' },
     ];
     if (monitoringMode === 'simulator' || simulatorMode) {
-      chips.push({ label: 'SIMULATOR MODE', tone: 'status', className: 'statusBadge statusBadge-attention' });
+      headerStatusChips.push({ label: 'SIMULATOR MODE', tone: 'status', className: 'statusBadge statusBadge-attention' });
     }
     if (!workspaceConfigured) {
-      chips.push({ label: 'Workspace not configured', tone: 'chip' });
+      headerStatusChips.push({ label: 'Workspace not configured', tone: 'chip' });
     }
     if (latestReconcileJob) {
-      chips.push({
+      headerStatusChips.push({
         label: `Reconcile ${latestReconcileJob.status.toUpperCase()}`,
         tone: 'status',
         className: `statusBadge statusBadge-${reconcileStatusBadgeTone(latestReconcileJob.status)}`,
       });
     }
     if (systemsPanelWarning) {
-      chips.push({ label: systemsPanelWarning, tone: 'status', className: 'statusBadge statusBadge-attention' });
+      headerStatusChips.push({ label: systemsPanelWarning, tone: 'status', className: 'statusBadge statusBadge-attention' });
     }
     if (snapshotStaleCollections.length > 0) {
-      chips.push({
+      headerStatusChips.push({
         label: `Stale collections ${snapshotStaleCollections.join(', ')}`,
         tone: 'status',
         className: 'statusBadge statusBadge-attention',
       });
     }
-    return chips;
+
+    return {
+      presentationStatus: monitoringPresentation.status,
+      presentationStatusLabel: monitoringPresentation.statusLabel,
+      presentationTone: monitoringPresentation.tone,
+      pageState,
+      continuitySlo,
+      telemetryLabel,
+      pollLabel,
+      heartbeatLabel: monitoringPresentation.heartbeatLabel,
+      telemetryState,
+      pollState,
+      heartbeatState,
+      provenanceLabel: derivedProvenanceLabel,
+      provenanceExplanation,
+      runtimeReason,
+      configurationReason,
+      continuityStatus: runtimeSummary?.continuity_status ?? null,
+      evidenceSourceLabel: monitoringPresentation.evidenceSourceLabel,
+      protectedAssetCount,
+      configuredSystems,
+      reportingSystems,
+      evidenceCount: evidence.length,
+      openAlerts,
+      activeIncidents,
+      headerStatusChips,
+    };
   }, [
     activeIncidents,
     configuredSystems,
+    continuitySlo,
     evidence.length,
     heartbeatState,
-    latestReconcileJob,
-    monitoringMode,
     monitoringPresentation.evidenceSourceLabel,
+    monitoringPresentation.heartbeatLabel,
+    monitoringPresentation.status,
     monitoringPresentation.statusLabel,
     monitoringPresentation.tone,
     openAlerts,
     pageState,
+    pollLabel,
     pollState,
     protectedAssetCount,
     reportingSystems,
+    runtimeReason,
+    runtimeSummary?.continuity_status,
+    latestReconcileJob,
+    monitoringMode,
     simulatorMode,
     snapshotFailedEndpoints,
     snapshotStaleCollections,
     systemsPanelWarning,
+    telemetryLabel,
     telemetryState,
     workspaceConfigured,
+    configurationReason,
   ]);
+  const headerStatusChips = monitoringViewModel.headerStatusChips;
   const targetCoverageRows = useMemo(() => {
     return targets.slice(0, 10).map((target) => {
       const coverage = normalizeCoverageStatus(target);
@@ -1680,6 +1782,112 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   ), [selectedThreatActionContextId, threatActionContextOptions]);
   const noLinkedActionContextAvailable = threatActionContextOptions.length === 0;
   const shouldBlockThreatActionCreation = noLinkedActionContextAvailable || !selectedThreatActionContext;
+  const actionUnavailableMessages = useMemo<Array<{
+    key: string;
+    action: string;
+    reason: string;
+    nextStepLabel: string;
+    nextStepHref: string;
+  }>>(() => {
+    const messages: Array<{
+      key: string;
+      action: string;
+      reason: string;
+      nextStepLabel: string;
+      nextStepHref: string;
+    }> = [];
+    const registerDisabledAction = (
+      key: string,
+      action: string,
+      disabled: boolean,
+      reason: string | null | undefined,
+      nextStepLabel: string,
+      nextStepHref: string,
+    ) => {
+      if (!disabled) return;
+      messages.push({
+        key,
+        action,
+        reason: (reason || 'Unavailable due to current monitoring state').trim(),
+        nextStepLabel,
+        nextStepHref,
+      });
+    };
+    registerDisabledAction(
+      'repair-proof-chain',
+      'Generate simulator proof chain',
+      ensuringProofChain || !canGenerateSimulatorProofChain,
+      !canGenerateSimulatorProofChain ? simulatorProofChainUnavailableCopy : null,
+      'Inspect integration health',
+      '/integrations',
+    );
+    registerDisabledAction(
+      'sim-notify-team',
+      'Run simulated response',
+      shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated'),
+      shouldBlockThreatActionCreation ? 'No linked alert/incident context is selected.' : actionDisabledReason(actionCapabilities.notify_team, 'simulated'),
+      'Review alerts',
+      '/alerts',
+    );
+    registerDisabledAction(
+      'sim-revoke-approval',
+      'Revoke approval',
+      shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated'),
+      shouldBlockThreatActionCreation ? 'No linked alert/incident context is selected.' : actionDisabledReason(actionCapabilities.revoke_approval, 'simulated'),
+      'Review alerts',
+      '/alerts',
+    );
+    registerDisabledAction(
+      'rec-freeze-wallet',
+      'Freeze wallet (RECOMMENDED)',
+      shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'recommended'),
+      shouldBlockThreatActionCreation ? 'No linked alert/incident context is selected.' : actionDisabledReason(actionCapabilities.freeze_wallet, 'recommended'),
+      'Open incident queue',
+      '/incidents',
+    );
+    registerDisabledAction(
+      'rec-disable-monitored-system',
+      'Disable monitored system (RECOMMENDED)',
+      shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.disable_monitored_system, 'recommended'),
+      shouldBlockThreatActionCreation ? 'No linked alert/incident context is selected.' : actionDisabledReason(actionCapabilities.disable_monitored_system, 'recommended'),
+      'Manage monitored systems',
+      '/monitored-systems',
+    );
+    const missingIncidentContextReason = selectedThreatActionContext && !selectedThreatActionContext.incidentId
+      ? 'Selected context has no incident link.'
+      : null;
+    registerDisabledAction(
+      'live-freeze-wallet',
+      'Freeze wallet (LIVE)',
+      shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'live'),
+      shouldBlockThreatActionCreation
+        ? 'No linked alert/incident context is selected.'
+        : (missingIncidentContextReason ?? actionDisabledReason(actionCapabilities.freeze_wallet, 'live')),
+      'Open incident queue',
+      '/incidents',
+    );
+    registerDisabledAction(
+      'live-revoke-approval',
+      'Revoke approval (LIVE)',
+      shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.revoke_approval, 'live'),
+      shouldBlockThreatActionCreation
+        ? 'No linked alert/incident context is selected.'
+        : (missingIncidentContextReason ?? actionDisabledReason(actionCapabilities.revoke_approval, 'live')),
+      'Open incident queue',
+      '/incidents',
+    );
+    return messages;
+  }, [
+    actionCapabilities.disable_monitored_system,
+    actionCapabilities.freeze_wallet,
+    actionCapabilities.notify_team,
+    actionCapabilities.revoke_approval,
+    canGenerateSimulatorProofChain,
+    ensuringProofChain,
+    selectedThreatActionContext,
+    shouldBlockThreatActionCreation,
+    simulatorProofChainUnavailableCopy,
+  ]);
 
   useEffect(() => {
     void fetch(`${apiUrl}/response/action-capabilities`, { headers: authHeaders(), cache: 'no-store' })
@@ -1907,9 +2115,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ))}
         </div>
         <p className="tableMeta">
-          Data provenance: /ops/monitoring/runtime-status ({snapshotFailedEndpoints.includes('runtime-status') ? 'fallback stale snapshot' : 'live refresh'}) · /ops/monitoring/investigation-timeline ({snapshotFailedEndpoints.includes('investigation-timeline') ? 'fallback stale snapshot' : 'live refresh'}) · Last successful runtime refresh: {formatAbsoluteTime(runtimeStatusSnapshot?.last_poll_at ?? runtimeSummary?.last_poll_at ?? runtimeStatusSnapshot?.last_telemetry_at ?? runtimeSummary?.last_telemetry_at ?? null)} · Last successful timeline refresh: {formatAbsoluteTime((investigationTimeline as Record<string, any> | null)?.generated_at ?? (investigationTimeline as Record<string, any> | null)?.created_at ?? null)}
+          Data provenance ({monitoringViewModel.provenanceLabel}): {monitoringViewModel.provenanceExplanation} /ops/monitoring/runtime-status ({snapshotFailedEndpoints.includes('runtime-status') ? 'stale snapshot' : 'live'}) · /ops/monitoring/investigation-timeline ({snapshotFailedEndpoints.includes('investigation-timeline') ? 'stale snapshot' : 'live'}) · Last successful runtime refresh: {formatAbsoluteTime(runtimeStatusSnapshot?.last_poll_at ?? runtimeSummary?.last_poll_at ?? runtimeStatusSnapshot?.last_telemetry_at ?? runtimeSummary?.last_telemetry_at ?? null)} · Last successful timeline refresh: {formatAbsoluteTime((investigationTimeline as Record<string, any> | null)?.generated_at ?? (investigationTimeline as Record<string, any> | null)?.created_at ?? null)}
         </p>
-        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={runtimeReason} configurationReason={configurationReason} continuityStatus={truth.continuity_status} continuitySlo={continuitySlo} />
+        <PageStateBanner viewModel={monitoringViewModel} />
         {latestReconcileJob ? (
           <p className="tableMeta">
             {latestReconcileJob.status === 'running' ? 'Repairing monitored systems…' : 'Reconcile status'} {latestReconcileJob.status} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Affected systems {(latestReconcileJob.affected_systems ?? []).length} · Result {latestReconcileJob.reason_code || 'none'}
@@ -1938,7 +2146,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         ) : null}
         {!canGenerateSimulatorProofChain ? <p className="statusLine">{simulatorProofChainUnavailableCopy}</p> : null}
         <p className="tableMeta">
-          Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {pollLabel} · Last heartbeat: {monitoringPresentation.heartbeatLabel} · Runtime freshness: {String(runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeSummary?.confidence ?? runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
+          Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {monitoringViewModel.pollLabel} · Last heartbeat: {monitoringViewModel.heartbeatLabel} · Runtime freshness: {String(runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeSummary?.confidence ?? runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
         </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
@@ -2444,6 +2652,16 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               ? <p className="statusLine">No linked alert/incident context available.</p>
               : <p className="statusLine">Linked detection/alert/incident context selected for action creation.</p>}
             {selectedThreatActionContext && !selectedThreatActionContext.incidentId ? <p className="statusLine">Selected context has no incident link. LIVE action workflow is blocked until an incident is linked.</p> : null}
+            {actionUnavailableMessages.length > 0 ? (
+              <div className="stack compactStack" aria-label="Action availability guidance">
+                {actionUnavailableMessages.map((message) => (
+                  <p key={message.key} className="tableMeta">
+                    {message.action} unavailable: {message.reason}. Next step:{' '}
+                    <Link href={message.nextStepHref} prefetch={false}>{message.nextStepLabel}</Link>
+                  </p>
+                ))}
+              </div>
+            ) : null}
             <div className="buttonRow">
               <button
                 type="button"
