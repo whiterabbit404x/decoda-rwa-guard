@@ -454,4 +454,85 @@ test.describe('threat runtime guards', () => {
     expect(pageStatePrimaryCopy(state, null)).toContain('Backend telemetry/runtime retrieval failed');
     expect(formatSystemsPanelWarning(['runtime-status'])).toBe('Runtime status unavailable');
   });
+
+  test('runtime endpoint failure marker takes precedence and renders fetch-error copy', async () => {
+    const state = derivePageState({
+      loadingSnapshot: false,
+      snapshotError: false,
+      targets: [],
+      liveDetections: [],
+      workspaceConfigured: false,
+      freshnessStatus: 'unavailable',
+      monitoringStatus: 'limited',
+      reportingSystems: 0,
+      runtimeStatus: 'failed',
+      monitoredSystems: 0,
+      hasLiveTelemetry: false,
+      statusReason: 'runtime_status_degraded:database_error',
+      configurationReason: 'runtime_status_unavailable',
+      configurationReasonCodes: ['runtime_status_unavailable'],
+      runtimeErrorCode: 'runtime_status_db_error',
+      runtimeMonitoringStatus: 'error',
+      summaryStatusReason: null,
+      summaryConfigurationReason: null,
+      summaryConfigurationReasonCodes: [],
+    });
+
+    expect(state).toBe('fetch_error');
+    expect(pageStatePrimaryCopy(state, 'runtime_status_unavailable')).toContain('Backend telemetry/runtime retrieval failed');
+  });
+
+  test('structural configuration reasons map to unconfigured workspace copy', async () => {
+    const state = derivePageState({
+      loadingSnapshot: false,
+      snapshotError: false,
+      targets: [],
+      liveDetections: [],
+      workspaceConfigured: true,
+      freshnessStatus: 'unavailable',
+      monitoringStatus: 'live',
+      reportingSystems: 0,
+      runtimeStatus: 'live',
+      monitoredSystems: 0,
+      hasLiveTelemetry: false,
+      statusReason: null,
+      configurationReason: null,
+      configurationReasonCodes: [],
+      runtimeMonitoringStatus: 'active',
+      summaryStatusReason: 'workspace_configuration_invalid:no_valid_protected_assets',
+      summaryConfigurationReason: 'no_valid_protected_assets',
+      summaryConfigurationReasonCodes: ['no_valid_protected_assets'],
+      continuityStatus: 'continuous_live',
+    });
+
+    expect(state).toBe('unconfigured_workspace');
+    expect(pageStatePrimaryCopy(state, 'no_valid_protected_assets')).toContain('Workspace is not configured');
+  });
+
+  test('continuity live without detections returns configured-no-signals copy', async () => {
+    const state = derivePageState({
+      loadingSnapshot: false,
+      snapshotError: false,
+      targets: [],
+      liveDetections: [],
+      workspaceConfigured: true,
+      freshnessStatus: 'fresh',
+      monitoringStatus: 'live',
+      reportingSystems: 2,
+      runtimeStatus: 'live',
+      monitoredSystems: 2,
+      hasLiveTelemetry: true,
+      statusReason: null,
+      configurationReason: null,
+      configurationReasonCodes: [],
+      runtimeMonitoringStatus: 'active',
+      summaryStatusReason: null,
+      summaryConfigurationReason: null,
+      summaryConfigurationReasonCodes: [],
+      continuityStatus: 'continuous_live',
+    });
+
+    expect(state).toBe('configured_no_signals');
+    expect(pageStatePrimaryCopy(state, null, 'continuous_live')).toContain('Telemetry continuity is live and continuous');
+  });
 });
