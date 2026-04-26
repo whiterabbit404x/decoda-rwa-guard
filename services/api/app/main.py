@@ -80,6 +80,7 @@ from services.api.app.pilot import (
     run_background_jobs,
     reconcile_monitored_systems_for_enabled_targets,
     reconcile_workspace_monitored_systems,
+    get_latest_workspace_reconcile_run,
     get_workspace_subscription,
     list_workspace_members,
     list_webhook_deliveries,
@@ -2369,6 +2370,11 @@ def monitoring_systems_reconcile(request: Request) -> Any:
             payload['debug_error_type'] = type(exc).__name__
             payload['debug_error_message'] = str(exc)
         return JSONResponse(payload, status_code=500)
+
+
+@app.get('/monitoring/systems/reconcile/latest', summary='Latest monitored systems reconcile status')
+def monitoring_systems_reconcile_latest(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_latest_workspace_reconcile_run(request))
 
 
 @app.get('/monitoring/workspace-debug', summary='Workspace monitoring source-of-truth debug snapshot')

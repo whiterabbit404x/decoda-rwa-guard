@@ -199,6 +199,19 @@ export type PageOperationalState =
   | 'fetch_error';
 
 type SnapshotFailureKey = 'runtime-status' | 'investigation-timeline';
+type ReconcileJobStatus = 'queued' | 'running' | 'completed' | 'failed';
+type ReconcileJobSnapshot = {
+  id: string;
+  status: ReconcileJobStatus;
+  counts?: Record<string, number>;
+  reason_codes?: string[];
+  reason_code?: string | null;
+  reason_detail?: string | null;
+  affected_systems?: string[];
+  last_event_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+};
 
 const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
   'no_valid_protected_assets',
@@ -320,7 +333,7 @@ function configurationReasonMessage(reason: string | null | undefined): string {
     case 'no_persisted_enabled_monitoring_config':
       return 'No persisted enabled monitoring configuration exists yet.';
     case 'target_system_linkage_invalid':
-      return 'Target/system linkage is invalid and must be repaired.';
+      return 'Target/system linkage is invalid. Run monitored systems reconcile and verify the reconcile status badge reaches COMPLETED.';
     default:
       return 'Configuration is partial. Complete persisted asset, system, and linkage setup.';
   }
@@ -344,6 +357,12 @@ function formatAbsoluteTime(value?: string | null): string {
   if (!value) return 'Not available';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? 'Not available' : date.toLocaleString();
+}
+
+function reconcileStatusBadgeTone(status?: ReconcileJobStatus | null): 'healthy' | 'attention' | 'offline' {
+  if (status === 'completed') return 'healthy';
+  if (status === 'running' || status === 'queued') return 'attention';
+  return 'offline';
 }
 
 export function formatOperationalStateLabel(value: unknown): string {
@@ -821,6 +840,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [actionCapabilities, setActionCapabilities] = useState<Record<string, ResponseActionCapability>>({});
   const [runtimeStatusSnapshot, setRuntimeStatusSnapshot] = useState<MonitoringRuntimeStatus | null>(null);
   const [investigationTimeline, setInvestigationTimeline] = useState<MonitoringInvestigationTimeline | null>(null);
+  const [latestReconcileJob, setLatestReconcileJob] = useState<ReconcileJobSnapshot | null>(null);
   const [ensuringProofChain, setEnsuringProofChain] = useState(false);
 
   useEffect(() => {
@@ -856,6 +876,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           evidenceResult,
           historyResult,
           monitoringRunsResult,
+          reconcileLatestResult,
         ] = await Promise.allSettled([
           fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/ops/monitoring/investigation-timeline`, { headers: authHeaders(), cache: 'no-store' }),
@@ -865,6 +886,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/history/actions?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/monitoring/runs?limit=20`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/monitoring/systems/reconcile/latest`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         if (!active) return;
         const responseEntries: [SnapshotFailureKey, PromiseSettledResult<Response>][] = [
@@ -889,6 +911,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const evidenceResponse = evidenceResult.status === 'fulfilled' && evidenceResult.value.ok ? evidenceResult.value : null;
         const historyResponse = historyResult.status === 'fulfilled' && historyResult.value.ok ? historyResult.value : null;
         const monitoringRunsResponse = monitoringRunsResult.status === 'fulfilled' && monitoringRunsResult.value.ok ? monitoringRunsResult.value : null;
+        const reconcileLatestResponse = reconcileLatestResult.status === 'fulfilled' && reconcileLatestResult.value.ok ? reconcileLatestResult.value : null;
         const [
           detectionsPayload,
           alertsPayload,
@@ -896,6 +919,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           evidencePayload,
           historyPayload,
           monitoringRunsPayload,
+          reconcileLatestPayload,
         ] = await Promise.all([
           safeJson(detectionsResponse),
           safeJson(alertsResponse),
@@ -903,6 +927,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           safeJson(evidenceResponse),
           safeJson(historyResponse),
           safeJson(monitoringRunsResponse),
+          safeJson(reconcileLatestResponse),
         ]);
 
         // Runtime-status + investigation-timeline are the canonical monitoring sources for this panel.
@@ -914,6 +939,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         setEvidence(payloadRows<EvidenceRow>(evidencePayload, 'evidence'));
         setActionHistory(payloadRows<ActionHistoryRow>(historyPayload, 'history'));
         setMonitoringRuns(payloadRows<MonitoringRunRow>(monitoringRunsPayload, 'runs'));
+        const reconcileJob = reconcileLatestPayload?.job;
+        setLatestReconcileJob(reconcileJob && typeof reconcileJob === 'object' ? reconcileJob as ReconcileJobSnapshot : null);
         if (runtimeStatusResponse) {
           setRuntimeStatusSnapshot(runtimeStatusPayload as MonitoringRuntimeStatus);
         }
@@ -1586,11 +1613,27 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Reporting systems {reportingSystems}</span>
           <span className="ruleChip">Evidence records {evidence.length}</span>
           {!workspaceConfigured ? <span className="ruleChip">Workspace not configured</span> : null}
+          {latestReconcileJob ? (
+            <span className={`statusBadge statusBadge-${reconcileStatusBadgeTone(latestReconcileJob.status)}`}>
+              Reconcile {latestReconcileJob.status.toUpperCase()}
+            </span>
+          ) : null}
           {systemsPanelWarning ? <span className="statusBadge statusBadge-attention">{systemsPanelWarning}</span> : null}
           <span className="ruleChip">Open alerts {openAlerts}</span>
           <span className="ruleChip">Active incidents {activeIncidents}</span>
         </div>
         <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={runtimeReason} configurationReason={runtimeConfigurationReason} continuityStatus={truth.continuity_status} />
+        {latestReconcileJob ? (
+          <p className="tableMeta">
+            Reconcile status {latestReconcileJob.status} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Affected systems {(latestReconcileJob.affected_systems ?? []).length} · Result {latestReconcileJob.reason_code || 'none'}
+          </p>
+        ) : null}
+        {latestReconcileJob ? (
+          <p className="tableMeta">
+            Reconcile progress: scanned {Number(latestReconcileJob.counts?.targets_scanned ?? 0)} targets, updated {Number(latestReconcileJob.counts?.created_or_updated ?? 0)}, invalid {Number(latestReconcileJob.counts?.invalid_targets ?? 0)}, skipped {Number(latestReconcileJob.counts?.skipped_targets ?? 0)}.
+            {(latestReconcileJob.reason_codes ?? []).length > 0 ? ` Reason codes: ${(latestReconcileJob.reason_codes ?? []).join(', ')}` : ''}
+          </p>
+        ) : null}
         {dbPersistenceOutageActive ? (
           <p className="statusLine">
             Persistence outage active: {dbPersistenceOutageReason}. Simulator/demo rows remain visible but are excluded from live-evidence claims.
