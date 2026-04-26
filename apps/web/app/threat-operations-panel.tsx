@@ -199,6 +199,7 @@ export type PageOperationalState =
   | 'fetch_error';
 
 type SnapshotFailureKey = 'runtime-status' | 'investigation-timeline';
+type SnapshotCollectionKey = 'detections' | 'alerts' | 'incidents' | 'evidence' | 'history' | 'monitoring-runs';
 type SnapshotFreshnessState = 'fresh' | 'stale' | 'unavailable';
 type ReconcileJobStatus = 'queued' | 'running' | 'completed' | 'failed';
 type ReconcileJobSnapshot = {
@@ -952,6 +953,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [runtimeStatusSnapshot, setRuntimeStatusSnapshot] = useState<MonitoringRuntimeStatus | null>(null);
   const [investigationTimeline, setInvestigationTimeline] = useState<MonitoringInvestigationTimeline | null>(null);
   const [snapshotFailedEndpoints, setSnapshotFailedEndpoints] = useState<SnapshotFailureKey[]>([]);
+  const [snapshotStaleCollections, setSnapshotStaleCollections] = useState<SnapshotCollectionKey[]>([]);
   const [latestReconcileJob, setLatestReconcileJob] = useState<ReconcileJobSnapshot | null>(null);
   const [activeReconcileId, setActiveReconcileId] = useState<string | null>(null);
   const [ensuringProofChain, setEnsuringProofChain] = useState(false);
@@ -1004,6 +1006,28 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
       function payloadRows<T>(payload: any, key: string): T[] {
         return Array.isArray(payload?.[key]) ? payload[key] as T[] : [];
+      }
+
+      function updateCollection<T>({
+        key,
+        result,
+        payload,
+        payloadKey,
+        setter,
+        stale,
+      }: {
+        key: SnapshotCollectionKey;
+        result: PromiseSettledResult<Response>;
+        payload: any;
+        payloadKey: string;
+        setter: (rows: T[]) => void;
+        stale: SnapshotCollectionKey[];
+      }) {
+        if (result.status === 'fulfilled' && result.value.ok) {
+          setter(payloadRows<T>(payload, payloadKey));
+          return;
+        }
+        stale.push(key);
       }
 
       try {
@@ -1075,15 +1099,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           safeJson(activeReconcileStatusResponse),
         ]);
 
-        // Runtime-status + investigation-timeline are the canonical monitoring sources for this panel.
-        setTargets([]);
-        setMonitoredSystems([]);
-        setDetections(payloadRows<DetectionRow>(detectionsPayload, 'detections'));
-        setAlerts(payloadRows<AlertRow>(alertsPayload, 'alerts'));
-        setIncidents(payloadRows<IncidentRow>(incidentsPayload, 'incidents'));
-        setEvidence(payloadRows<EvidenceRow>(evidencePayload, 'evidence'));
-        setActionHistory(payloadRows<ActionHistoryRow>(historyPayload, 'history'));
-        setMonitoringRuns(payloadRows<MonitoringRunRow>(monitoringRunsPayload, 'runs'));
+        // Runtime-status + investigation-timeline are canonical; collection APIs are refreshed in parallel and kept stale-safe.
+        const staleCollections: SnapshotCollectionKey[] = [];
+        updateCollection<DetectionRow>({ key: 'detections', result: detectionsResult, payload: detectionsPayload, payloadKey: 'detections', setter: setDetections, stale: staleCollections });
+        updateCollection<AlertRow>({ key: 'alerts', result: alertsResult, payload: alertsPayload, payloadKey: 'alerts', setter: setAlerts, stale: staleCollections });
+        updateCollection<IncidentRow>({ key: 'incidents', result: incidentsResult, payload: incidentsPayload, payloadKey: 'incidents', setter: setIncidents, stale: staleCollections });
+        updateCollection<EvidenceRow>({ key: 'evidence', result: evidenceResult, payload: evidencePayload, payloadKey: 'evidence', setter: setEvidence, stale: staleCollections });
+        updateCollection<ActionHistoryRow>({ key: 'history', result: historyResult, payload: historyPayload, payloadKey: 'history', setter: setActionHistory, stale: staleCollections });
+        updateCollection<MonitoringRunRow>({ key: 'monitoring-runs', result: monitoringRunsResult, payload: monitoringRunsPayload, payloadKey: 'runs', setter: setMonitoringRuns, stale: staleCollections });
+        setSnapshotStaleCollections(staleCollections);
         const activeJob = activeReconcileStatusPayload?.job;
         const reconcileJob = activeJob && typeof activeJob === 'object' ? activeJob : reconcileLatestPayload?.job;
         setLatestReconcileJob(reconcileJob && typeof reconcileJob === 'object' ? reconcileJob as ReconcileJobSnapshot : null);
@@ -1108,6 +1132,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           setSnapshotError('Monitoring snapshot refresh failed');
           setSystemsPanelWarning('Systems list unavailable');
           setSnapshotFailedEndpoints(['runtime-status', 'investigation-timeline']);
+          setSnapshotStaleCollections(['detections', 'alerts', 'incidents', 'evidence', 'history', 'monitoring-runs']);
         }
       } finally {
         if (active) {
@@ -1402,6 +1427,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     if (systemsPanelWarning) {
       chips.push({ label: systemsPanelWarning, tone: 'status', className: 'statusBadge statusBadge-attention' });
     }
+    if (snapshotStaleCollections.length > 0) {
+      chips.push({
+        label: `Stale collections ${snapshotStaleCollections.join(', ')}`,
+        tone: 'status',
+        className: 'statusBadge statusBadge-attention',
+      });
+    }
     return chips;
   }, [
     activeIncidents,
@@ -1420,6 +1452,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     reportingSystems,
     simulatorMode,
     snapshotFailedEndpoints,
+    snapshotStaleCollections,
     systemsPanelWarning,
     telemetryState,
     workspaceConfigured,
@@ -1595,11 +1628,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       ? incidents.find((item) => item.id === linkedAlert.incident_id) ?? null
       : null;
     return {
-      detectionId: latestDetection?.id ?? null,
-      alertId: latestDetection?.linked_alert_id ?? linkedAlert?.id ?? null,
-      incidentId: latestDetection?.linked_incident_id ?? linkedAlert?.incident_id ?? linkedIncident?.id ?? null,
-      actionId: latestDetection?.linked_action_id ?? linkedAlert?.linked_action_id ?? linkedIncident?.linked_action_id ?? null,
-      linkedEvidenceCount: latestDetection?.linked_evidence_count ?? linkedAlert?.linked_evidence_count ?? linkedIncident?.linked_evidence_count ?? null,
+      detectionId: latestDetection?.chain_linked_ids?.detection_id ?? latestDetection?.id ?? linkedAlert?.chain_linked_ids?.detection_id ?? linkedIncident?.chain_linked_ids?.detection_id ?? null,
+      alertId: latestDetection?.chain_linked_ids?.alert_id ?? latestDetection?.linked_alert_id ?? linkedAlert?.chain_linked_ids?.alert_id ?? linkedAlert?.id ?? linkedIncident?.chain_linked_ids?.alert_id ?? null,
+      incidentId: latestDetection?.chain_linked_ids?.incident_id ?? latestDetection?.linked_incident_id ?? linkedAlert?.chain_linked_ids?.incident_id ?? linkedAlert?.incident_id ?? linkedIncident?.chain_linked_ids?.incident_id ?? linkedIncident?.id ?? null,
+      actionId: latestDetection?.chain_linked_ids?.action_id ?? latestDetection?.linked_action_id ?? linkedAlert?.chain_linked_ids?.action_id ?? linkedAlert?.linked_action_id ?? linkedIncident?.chain_linked_ids?.action_id ?? linkedIncident?.linked_action_id ?? null,
+      linkedEvidenceCount: latestDetection?.linked_evidence_count ?? linkedAlert?.linked_evidence_count ?? linkedIncident?.linked_evidence_count ?? (latestDetection ? (coverageIndexes.evidenceByDetectionId.get(normalizeLookup(latestDetection.id))?.length ?? 0) : null),
       lastEvidenceAt: latestDetection?.last_evidence_at ?? linkedAlert?.last_evidence_at ?? linkedIncident?.last_evidence_at ?? null,
       evidenceOrigin: latestDetection?.evidence_origin ?? linkedAlert?.evidence_origin ?? linkedIncident?.evidence_origin ?? null,
       txHash: latestDetection?.tx_hash ?? linkedAlert?.tx_hash ?? linkedIncident?.tx_hash ?? null,
@@ -1607,7 +1640,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       detectorKind: latestDetection?.detector_kind ?? linkedAlert?.detector_kind ?? linkedIncident?.detector_kind ?? null,
       chainLinkedIds: latestDetection?.chain_linked_ids ?? linkedAlert?.chain_linked_ids ?? linkedIncident?.chain_linked_ids ?? null,
     };
-  }, [alerts, detections, incidents]);
+  }, [alerts, coverageIndexes.evidenceByDetectionId, detections, incidents]);
 
   const threatActionContextOptions = useMemo<ThreatActionContextOption[]>(() => {
     const options: ThreatActionContextOption[] = [];
@@ -2247,7 +2280,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                       <p className="tableMeta">
                         Linked detection: {linkedDetection?.title || linkedDetection?.id || 'Not linked'} · severity {severityLabel(alert.severity)}
                       </p>
-                      <p className="tableMeta">Chain: detection {alert.detection_id || linkedDetection?.id || 'n/a'} · alert {alert.id} · incident {alert.incident_id || 'n/a'} · action {alert.linked_action_id || 'n/a'}</p>
+                      <p className="tableMeta">Chain: detection {alert.chain_linked_ids?.detection_id || alert.detection_id || linkedDetection?.chain_linked_ids?.detection_id || linkedDetection?.id || 'n/a'} · alert {alert.chain_linked_ids?.alert_id || alert.id} · incident {alert.chain_linked_ids?.incident_id || alert.incident_id || 'n/a'} · action {alert.chain_linked_ids?.action_id || alert.linked_action_id || 'n/a'} · evidence {Number(alert.linked_evidence_count ?? linkedDetection?.linked_evidence_count ?? 0)}</p>
                     </div>
                     <div className="signalActions">
                       <Link href="/alerts" prefetch={false}>Open</Link>
@@ -2294,7 +2327,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                         <span className="statusBadge statusBadge-low">Audit</span>{' '}
                         {formatAbsoluteTime(incident.created_at)}
                       </p>
-                      <p className="tableMeta">Chain: detection {incident.linked_detection_id || 'n/a'} · alert {incident.source_alert_id || 'n/a'} · incident {incident.id} · action {incident.linked_action_id || 'n/a'}</p>
+                      <p className="tableMeta">Chain: detection {incident.chain_linked_ids?.detection_id || incident.linked_detection_id || 'n/a'} · alert {incident.chain_linked_ids?.alert_id || incident.source_alert_id || 'n/a'} · incident {incident.chain_linked_ids?.incident_id || incident.id} · action {incident.chain_linked_ids?.action_id || incident.linked_action_id || 'n/a'} · evidence {Number(incident.linked_evidence_count ?? 0)}</p>
                     </div>
                     <Link href="/incidents" prefetch={false}>Open</Link>
                   </div>

@@ -2826,6 +2826,18 @@ def get_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
         alert_id = str(anchor.get('linked_alert_id') or '')
         incident_id = str(anchor.get('incident_id') or '')
         response_action_id = str(anchor.get('response_action_id') or '')
+        linked_evidence_count = 0
+        if detection_id:
+            evidence_count_row = connection.execute(
+                '''
+                SELECT COUNT(*)::int AS linked_evidence_count
+                FROM detection_evidence
+                WHERE workspace_id = %s
+                  AND detection_id = %s::uuid
+                ''',
+                (workspace_id_value, detection_id),
+            ).fetchone()
+            linked_evidence_count = int((evidence_count_row or {}).get('linked_evidence_count') or 0)
 
         timeline_rows = connection.execute(
             '''
@@ -2956,6 +2968,13 @@ def get_monitoring_investigation_timeline(request: Request) -> dict[str, Any]:
             'workspace_id': workspace_id_value,
             'proof_chain_status': 'complete' if not missing else 'incomplete',
             'correlation_id': correlation_id,
+            'linked_evidence_count': linked_evidence_count,
+            'chain_linked_ids': {
+                'detection_id': detection_id or None,
+                'alert_id': alert_id or None,
+                'incident_id': incident_id or None,
+                'action_id': response_action_id or None,
+            },
             'items': [_json_safe_value(item) for item in items],
         }
         if missing:
