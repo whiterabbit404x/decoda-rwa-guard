@@ -105,6 +105,8 @@ def test_get_monitoring_investigation_timeline_returns_ordered_items_and_missing
     assert payload['proof_chain_status'] == 'incomplete'
     assert payload['correlation_id'] == 'corr-1'
     assert [item['link_name'] for item in payload['items']] == ['telemetry', 'detection', 'alert']
+    timestamps = [item['timestamp'] for item in payload['items']]
+    assert timestamps == sorted(timestamps)
     assert payload['items'][0]['evidence_source'] == 'simulator'
     assert payload['items'][1]['evidence_source'] == 'live'
     assert payload['missing'] == ['evidence', 'incident', 'response_action']

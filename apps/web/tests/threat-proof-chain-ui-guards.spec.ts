@@ -57,3 +57,35 @@ test('contradictions block healthy copy claims', () => {
   expect(monitoringHealthyCopyAllowed(truth)).toBe(false);
   expect(truth.contradiction_flags).toContain('open_alerts_without_detection_evidence');
 });
+
+test('regression guard keeps healthy copy blocked when contradictory alert counts appear', () => {
+  const payload: MonitoringRuntimeStatus = {
+    workspace_monitoring_summary: {
+      workspace_configured: true,
+      monitoring_mode: 'live',
+      runtime_status: 'healthy',
+      monitoring_status: 'live',
+      configured_systems: 2,
+      reporting_systems: 2,
+      protected_assets: 2,
+      coverage_state: { configured_systems: 2, reporting_systems: 2, protected_assets: 2 },
+      freshness_status: 'fresh',
+      confidence_status: 'high',
+      last_heartbeat_at: '2026-04-25T10:00:00.000Z',
+      last_telemetry_at: '2026-04-25T10:00:00.000Z',
+      last_poll_at: '2026-04-25T10:00:00.000Z',
+      last_detection_at: null,
+      evidence_source: 'live',
+      evidence_source_summary: 'live',
+      continuity_status: 'continuous_live',
+      contradiction_flags: ['open_alerts_without_detection_evidence', 'incident_without_alert'],
+    },
+  } as MonitoringRuntimeStatus;
+
+  const truth = resolveWorkspaceMonitoringTruth(payload);
+
+  expect(truth.contradiction_flags).toEqual(
+    expect.arrayContaining(['open_alerts_without_detection_evidence', 'incident_without_alert']),
+  );
+  expect(monitoringHealthyCopyAllowed(truth)).toBe(false);
+});

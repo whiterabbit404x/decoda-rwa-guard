@@ -97,6 +97,15 @@ def test_ensure_monitoring_proof_chain_first_call_persists_all_linked_records(mo
     assert payload['result'] == 'created'
     assert payload['proof_chain_type'] == 'monitoring'
     assert payload['idempotency_key']
+    assert set(connection.persisted_ids.keys()) == {
+        'monitoring_runs',
+        'evidence',
+        'detections',
+        'detection_evidence',
+        'alerts',
+        'incidents',
+        'response_actions',
+    }
     assert all(len(ids) == 1 for ids in connection.persisted_ids.values())
     assert connection.commit_calls == 1
 
