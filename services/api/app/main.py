@@ -51,6 +51,7 @@ from services.api.app.pilot import (
     enforce_auth_rate_limit,
     ensure_pilot_schema,
     ensure_monitoring_proof_chain,
+    runtime_allows_simulator_proof_chain,
     get_monitoring_investigation_timeline,
     list_user_workspaces,
     live_mode_enabled,
@@ -2029,6 +2030,9 @@ def ops_monitoring_proof_chain_ensure(request: Request) -> dict[str, Any]:
     if not workspace_id:
         raise HTTPException(status_code=400, detail='x-workspace-id header is required')
     def _handler() -> dict[str, Any]:
+        runtime_status = monitoring_runtime_status(request)
+        if not runtime_allows_simulator_proof_chain(runtime_status):
+            raise HTTPException(status_code=409, detail='Simulator-only action unavailable in live mode')
         payload = ensure_monitoring_proof_chain(workspace_id, request)
         chain_ids = {
             'monitoring_run_id': payload.get('monitoring_run_id'),

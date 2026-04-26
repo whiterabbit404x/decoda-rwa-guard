@@ -148,6 +148,30 @@ def detection_evidence_origin_label(source: str | None) -> str | None:
     return None
 
 
+SIMULATOR_EVIDENCE_MODE_FLAGS = ('simulator', 'synthetic', 'demo', 'fallback', 'test', 'lab', 'replay')
+
+
+def runtime_allows_simulator_proof_chain(runtime_status_payload: dict[str, Any] | None) -> bool:
+    if env_flag('ALLOW_SIMULATOR_PROOF_CHAIN_IN_LIVE_MODE', default=False):
+        return True
+    payload = runtime_status_payload or {}
+    direct_capability = payload.get('can_generate_simulator_proof_chain')
+    nested_capability = (payload.get('capabilities') or {}).get('can_generate_simulator_proof_chain')
+    if direct_capability is True or nested_capability is True:
+        return True
+
+    summary = payload.get('workspace_monitoring_summary') or {}
+    evidence_mode_candidates = [
+        payload.get('evidence_source'),
+        payload.get('monitoring_mode'),
+        payload.get('source_of_evidence'),
+        summary.get('evidence_source_summary'),
+        summary.get('monitoring_mode'),
+    ]
+    normalized_candidates = [str(value or '').strip().lower() for value in evidence_mode_candidates if str(value or '').strip()]
+    return any(any(flag in candidate for flag in SIMULATOR_EVIDENCE_MODE_FLAGS) for candidate in normalized_candidates)
+
+
 def parse_csv_env(name: str, defaults: list[str]) -> list[str]:
     raw = os.getenv(name, '')
     values = [item.strip() for item in re.split(r'[\n,]', raw) if item.strip()]
