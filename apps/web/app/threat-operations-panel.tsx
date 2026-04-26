@@ -674,28 +674,29 @@ export function derivePageState(params: {
     summaryConfigurationReason,
     summaryConfigurationReasonCodes,
   });
-  const structuralUnconfiguredReason = STRUCTURAL_CONFIGURATION_REASON_CODES.has(String(configurationReason ?? '').toLowerCase());
+  const structuralReasonValues = [configurationReason, summaryConfigurationReason]
+    .map((value) => String(value ?? '').toLowerCase())
+    .filter((value) => value.length > 0);
+  const structuralReasonCodeValues = [...configurationReasonCodes, ...summaryConfigurationReasonCodes]
+    .map((value) => String(value ?? '').toLowerCase())
+    .filter((value) => value.length > 0);
+  const structuralUnconfiguredReason = [...structuralReasonValues, ...structuralReasonCodeValues]
+    .some((value) => STRUCTURAL_CONFIGURATION_REASON_CODES.has(value));
 
   if (runtimeQueryFailure) {
     return 'fetch_error';
   }
 
-  // State precedence:
-  // 1) runtime query failure payloads (backend/runtime endpoint is unhealthy)
-  // 2) explicit structural misconfiguration (workspace unconfigured by design)
-  // 3) explicit offline continuity/runtime status (no telemetry continuity)
-  // 4) snapshot endpoint fetch failure (runtime/investigation snapshot unavailable)
-  // 5) continuity + runtime derived operational states
-  if (!workspaceConfigured && structuralUnconfiguredReason && !runtimeQueryFailure) {
+  if (snapshotError) {
+    return 'fetch_error';
+  }
+
+  if (structuralUnconfiguredReason) {
     return 'unconfigured_workspace';
   }
 
   if (continuityStatus === 'offline' || runtimeStatus === 'offline') {
     return 'offline_no_telemetry';
-  }
-
-  if (snapshotError) {
-    return 'fetch_error';
   }
 
   if (!workspaceConfigured) return 'fetch_error';
@@ -994,9 +995,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const summaryConfigurationReasonCodes = Array.isArray(runtimeSummary?.configuration_reason_codes)
     ? runtimeSummary.configuration_reason_codes
     : [];
-  const configurationReason = runtimeStatusSnapshot?.configuration_reason ?? summaryConfigurationReason;
-  const configurationReasonCodes = Array.isArray(runtimeStatusSnapshot?.configuration_reason_codes)
+  const runtimeConfigurationReason = runtimeStatusSnapshot?.configuration_reason ?? null;
+  const runtimeConfigurationReasonCodes = Array.isArray(runtimeStatusSnapshot?.configuration_reason_codes)
     ? runtimeStatusSnapshot.configuration_reason_codes
+    : [];
+  const configurationReason = runtimeConfigurationReason ?? summaryConfigurationReason;
+  const configurationReasonCodes = runtimeConfigurationReasonCodes.length > 0
+    ? runtimeConfigurationReasonCodes
     : summaryConfigurationReasonCodes;
   const monitoringMode = runtimeEvidenceSource;
   const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? runtimeSummary?.runtime_status ?? '').toLowerCase();
@@ -1149,8 +1154,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     monitoredSystems: configuredSystems,
     hasLiveTelemetry: showLiveTelemetry,
     statusReason: runtimeStatusSnapshot?.status_reason ?? runtimeSummary?.status_reason ?? null,
-    configurationReason,
-    configurationReasonCodes,
+    configurationReason: runtimeConfigurationReason,
+    configurationReasonCodes: runtimeConfigurationReasonCodes,
     runtimeMonitoringStatus: runtimeStatusSnapshot?.monitoring_status ?? runtimeSummary?.monitoring_status ?? 'offline',
     runtimeErrorCode: null,
     runtimeDegradedReason: null,
@@ -1585,7 +1590,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <span className="ruleChip">Open alerts {openAlerts}</span>
           <span className="ruleChip">Active incidents {activeIncidents}</span>
         </div>
-        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={runtimeReason} configurationReason={configurationReason} continuityStatus={truth.continuity_status} />
+        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={runtimeReason} configurationReason={runtimeConfigurationReason} continuityStatus={truth.continuity_status} />
         {dbPersistenceOutageActive ? (
           <p className="statusLine">
             Persistence outage active: {dbPersistenceOutageReason}. Simulator/demo rows remain visible but are excluded from live-evidence claims.
