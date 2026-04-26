@@ -382,6 +382,22 @@ def test_reconcile_enabled_targets_is_idempotent_for_existing_rows():
     assert conn.monitored_systems['target-monitoring-disabled']['id'] == 'ms-target-monitoring-disabled'
 
 
+def test_reconcile_repeated_runs_do_not_flap_enabled_or_disabled_runtime_states():
+    conn = _Conn()
+    pilot.reconcile_enabled_targets_monitored_systems(conn)
+    baseline_enabled = bool(conn.monitored_systems['target-valid'].get('is_enabled', True))
+    baseline_disabled = bool(conn.monitored_systems['target-monitoring-disabled'].get('is_enabled', True))
+    baseline_disabled_runtime_status = str(conn.monitored_systems['target-monitoring-disabled']['runtime_status'])
+    baseline_disabled_status = str(conn.monitored_systems['target-monitoring-disabled']['status'])
+
+    for _ in range(3):
+        pilot.reconcile_enabled_targets_monitored_systems(conn)
+        assert bool(conn.monitored_systems['target-valid'].get('is_enabled', True)) is baseline_enabled
+        assert bool(conn.monitored_systems['target-monitoring-disabled'].get('is_enabled', True)) is baseline_disabled
+        assert str(conn.monitored_systems['target-monitoring-disabled']['runtime_status']) == baseline_disabled_runtime_status
+        assert str(conn.monitored_systems['target-monitoring-disabled']['status']) == baseline_disabled_status
+
+
 def test_reconcile_repairs_healthy_targets_after_broken_target_is_disabled():
     conn = _Conn()
     conn.targets['target-missing-asset']['enabled'] = False

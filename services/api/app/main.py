@@ -83,6 +83,7 @@ from services.api.app.pilot import (
     get_latest_workspace_reconcile_run,
     get_workspace_reconcile_status,
     get_latest_workspace_reconcile_result,
+    get_workspace_reconcile_events,
     get_workspace_subscription,
     list_workspace_members,
     list_webhook_deliveries,
@@ -2452,6 +2453,11 @@ def monitoring_systems_reconcile_latest(request: Request) -> dict[str, Any]:
 @app.get('/monitoring/systems/reconcile/{reconcile_id}', summary='Get monitored systems reconcile job status')
 def monitoring_systems_reconcile_status(reconcile_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_workspace_reconcile_status(request, reconcile_id))
+
+
+@app.get('/monitoring/systems/reconcile/{reconcile_id}/events', summary='Get monitored systems reconcile job events')
+def monitoring_systems_reconcile_events(reconcile_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_workspace_reconcile_events(request, reconcile_id))
 
 
 @app.get('/monitoring/systems/reconcile/latest/result', summary='Get latest monitored systems reconcile result summary')
