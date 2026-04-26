@@ -539,7 +539,7 @@ function isRealEvidence(evidence: EvidenceRow | null, detection: DetectionRow | 
 }
 
 function isSimulatorEvidenceMode(value: unknown): boolean {
-  const source = normalizeLookup(value);
+  const source = normalizeLookup(String(value ?? ''));
   if (!source) return false;
   return ['simulator', 'synthetic', 'demo', 'fallback', 'test', 'lab', 'replay'].some((flag) => source.includes(flag));
 }
