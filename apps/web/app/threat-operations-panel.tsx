@@ -1502,6 +1502,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     return options;
   }, [detections]);
   const [selectedThreatActionContextId, setSelectedThreatActionContextId] = useState<string>('');
+  const [liveActionConfirm, setLiveActionConfirm] = useState<{ actionType: string; label: string } | null>(null);
   useEffect(() => {
     setSelectedThreatActionContextId((current) => {
       if (!current) return '';
@@ -1612,6 +1613,51 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       return;
     }
     setResponseToast(executionResult.text || `${modeLabel} ${label} could not be completed.`);
+  }
+
+  async function runThreatAction(actionType: string, label: string, mode: 'simulated' | 'recommended' | 'live') {
+    if (shouldBlockThreatActionCreation) {
+      setResponseToast('No linked alert/incident context available.');
+      return;
+    }
+    if (mode === 'live' && !selectedThreatActionContext?.incidentId) {
+      setResponseToast('LIVE actions require linked incident context.');
+      return;
+    }
+    if (mode === 'simulated') {
+      await runSimulatedThreatAction(actionType, label);
+      return;
+    }
+    const create = await fetch(`${apiUrl}/response/actions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        action_type: actionType,
+        mode,
+        status: 'pending',
+        incident_id: selectedThreatActionContext?.incidentId,
+        alert_id: selectedThreatActionContext?.alertId,
+        result_summary: `${mode.toUpperCase()} ${label} created from threat operations panel`,
+      }),
+    });
+    if (!create.ok) {
+      setResponseToast(`${mode.toUpperCase()} ${label} failed to create.`);
+      return;
+    }
+    const action = await create.json();
+    if (mode === 'live') {
+      const approve = await fetch(`${apiUrl}/response/actions/${action.id}/approve`, { method: 'POST', headers: authHeaders() });
+      if (!approve.ok) {
+        setResponseToast('LIVE action approval failed.');
+        return;
+      }
+      const execute = await fetch(`${apiUrl}/response/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
+      const executePayload = await execute.json().catch(() => ({}));
+      const executionResult = responseActionExecutionMessage(executePayload);
+      setResponseToast(execute.ok && executionResult.isSuccess ? 'LIVE action submitted through enterprise workflow.' : (executionResult.text || 'LIVE action execution failed.'));
+      return;
+    }
+    setResponseToast('RECOMMENDED action recorded. Approval and live execution workflow required.');
   }
 
   async function ensureSimulatorProofChain() {
@@ -2225,6 +2271,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             {shouldBlockThreatActionCreation
               ? <p className="statusLine">No linked alert/incident context available.</p>
               : <p className="statusLine">Linked detection/alert/incident context selected for action creation.</p>}
+            {selectedThreatActionContext && !selectedThreatActionContext.incidentId ? <p className="statusLine">Selected context has no incident link. LIVE action workflow is blocked until an incident is linked.</p> : null}
             <div className="buttonRow">
               <button
                 type="button"
@@ -2235,12 +2282,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               >
                 {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
               </button>
-              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('notify_team', 'Run simulated response')}>Run simulated response (SIMULATED)</button>
-              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.block_transaction, 'simulated')} title={actionDisabledReason(actionCapabilities.block_transaction, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('block_transaction', 'Block transaction')}>Block transaction (SIMULATED)</button>
-              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('revoke_approval', 'Revoke approval')}>Revoke approval (SIMULATED)</button>
-              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'simulated')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('freeze_wallet', 'Freeze wallet')}>Freeze wallet (SIMULATED)</button>
-              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.disable_monitored_system, 'simulated')} title={actionDisabledReason(actionCapabilities.disable_monitored_system, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('disable_monitored_system', 'Disable monitored system')}>Disable monitored system (SIMULATED)</button>
-              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.suppress_rule, 'simulated')} title={actionDisabledReason(actionCapabilities.suppress_rule, 'simulated') || ''} onClick={() => void runSimulatedThreatAction('suppress_rule', 'Suppress/mute rule')}>Suppress/mute rule (SIMULATED)</button>
+              <span className="ruleChip">SIMULATED</span>
+              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runThreatAction('notify_team', 'Run simulated response', 'simulated')}>Run simulated response</button>
+              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'simulated') || ''} onClick={() => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated')}>Revoke approval</button>
+              <span className="ruleChip">RECOMMENDED</span>
+              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'recommended')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'recommended') || ''} onClick={() => void runThreatAction('freeze_wallet', 'Freeze wallet', 'recommended')}>Freeze wallet (RECOMMENDED)</button>
+              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.disable_monitored_system, 'recommended')} title={actionDisabledReason(actionCapabilities.disable_monitored_system, 'recommended') || ''} onClick={() => void runThreatAction('disable_monitored_system', 'Disable monitored system', 'recommended')}>Disable monitored system (RECOMMENDED)</button>
+              <span className="ruleChip">LIVE</span>
+              <button type="button" disabled={shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'live')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'live') || ''} onClick={() => setLiveActionConfirm({ actionType: 'freeze_wallet', label: 'Freeze wallet' })}>Freeze wallet (LIVE)</button>
+              <button type="button" disabled={shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.revoke_approval, 'live')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'live') || ''} onClick={() => setLiveActionConfirm({ actionType: 'revoke_approval', label: 'Revoke approval' })}>Revoke approval (LIVE)</button>
               <Link href="/alerts" prefetch={false}>Review alerts</Link>
               <Link href="/incidents" prefetch={false}>Open incident queue</Link>
               <Link href="/history" prefetch={false}>View workspace history</Link>
@@ -2265,6 +2315,21 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <pre className="tableMeta" style={{ whiteSpace: 'pre-wrap', overflowX: 'auto' }}>
             {JSON.stringify(evidenceDrawer.raw ?? { message: 'No raw evidence found.' }, null, 2)}
           </pre>
+        </article>
+      ) : null}
+      {liveActionConfirm ? (
+        <article className="dataCard" role="dialog" aria-label="Confirm live action">
+          <p className="sectionEyebrow">LIVE action confirmation</p>
+          <h3>{liveActionConfirm.label}</h3>
+          <p className="muted">This will use enterprise approval + execution workflow and requires linked incident context.</p>
+          <p className="tableMeta">Incident context: {selectedThreatActionContext?.incidentId || 'missing'}</p>
+          <div className="buttonRow">
+            <button type="button" className="secondaryCta" onClick={() => setLiveActionConfirm(null)}>Cancel</button>
+            <button type="button" disabled={!selectedThreatActionContext?.incidentId} onClick={() => {
+              void runThreatAction(liveActionConfirm.actionType, liveActionConfirm.label, 'live');
+              setLiveActionConfirm(null);
+            }}>Confirm LIVE action</button>
+          </div>
         </article>
       ) : null}
     </section>
