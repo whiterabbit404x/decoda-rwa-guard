@@ -953,7 +953,35 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [investigationTimeline, setInvestigationTimeline] = useState<MonitoringInvestigationTimeline | null>(null);
   const [snapshotFailedEndpoints, setSnapshotFailedEndpoints] = useState<SnapshotFailureKey[]>([]);
   const [latestReconcileJob, setLatestReconcileJob] = useState<ReconcileJobSnapshot | null>(null);
+  const [activeReconcileId, setActiveReconcileId] = useState<string | null>(null);
   const [ensuringProofChain, setEnsuringProofChain] = useState(false);
+  const reconcileStateStorageKey = useMemo(
+    () => (user?.current_workspace?.id ? `pilot.reconcile.active.${user.current_workspace.id}` : null),
+    [user?.current_workspace?.id],
+  );
+
+  useEffect(() => {
+    if (!reconcileStateStorageKey) return;
+    try {
+      const cached = window.localStorage.getItem(reconcileStateStorageKey);
+      setActiveReconcileId(cached || null);
+    } catch {
+      setActiveReconcileId(null);
+    }
+  }, [reconcileStateStorageKey]);
+
+  useEffect(() => {
+    if (!reconcileStateStorageKey) return;
+    try {
+      if (activeReconcileId) {
+        window.localStorage.setItem(reconcileStateStorageKey, activeReconcileId);
+      } else {
+        window.localStorage.removeItem(reconcileStateStorageKey);
+      }
+    } catch {
+      // Best effort storage only.
+    }
+  }, [activeReconcileId, reconcileStateStorageKey]);
 
   useEffect(() => {
     let active = true;
@@ -989,6 +1017,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           historyResult,
           monitoringRunsResult,
           reconcileLatestResult,
+          activeReconcileStatusResult,
         ] = await Promise.allSettled([
           fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/ops/monitoring/investigation-timeline`, { headers: authHeaders(), cache: 'no-store' }),
@@ -999,6 +1028,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           fetch(`${apiUrl}/history/actions?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/monitoring/runs?limit=20`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/monitoring/systems/reconcile/latest`, { headers: authHeaders(), cache: 'no-store' }),
+          activeReconcileId ? fetch(`${apiUrl}/monitoring/systems/reconcile/${encodeURIComponent(activeReconcileId)}`, { headers: authHeaders(), cache: 'no-store' }) : Promise.resolve(new Response('{}', { status: 204 })),
         ]);
         if (!active) return;
         const responseEntries: [SnapshotFailureKey, PromiseSettledResult<Response>][] = [
@@ -1024,6 +1054,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const historyResponse = historyResult.status === 'fulfilled' && historyResult.value.ok ? historyResult.value : null;
         const monitoringRunsResponse = monitoringRunsResult.status === 'fulfilled' && monitoringRunsResult.value.ok ? monitoringRunsResult.value : null;
         const reconcileLatestResponse = reconcileLatestResult.status === 'fulfilled' && reconcileLatestResult.value.ok ? reconcileLatestResult.value : null;
+        const activeReconcileStatusResponse = activeReconcileStatusResult.status === 'fulfilled' && activeReconcileStatusResult.value.ok ? activeReconcileStatusResult.value : null;
         const [
           detectionsPayload,
           alertsPayload,
@@ -1032,6 +1063,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           historyPayload,
           monitoringRunsPayload,
           reconcileLatestPayload,
+          activeReconcileStatusPayload,
         ] = await Promise.all([
           safeJson(detectionsResponse),
           safeJson(alertsResponse),
@@ -1040,6 +1072,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           safeJson(historyResponse),
           safeJson(monitoringRunsResponse),
           safeJson(reconcileLatestResponse),
+          safeJson(activeReconcileStatusResponse),
         ]);
 
         // Runtime-status + investigation-timeline are the canonical monitoring sources for this panel.
@@ -1051,8 +1084,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         setEvidence(payloadRows<EvidenceRow>(evidencePayload, 'evidence'));
         setActionHistory(payloadRows<ActionHistoryRow>(historyPayload, 'history'));
         setMonitoringRuns(payloadRows<MonitoringRunRow>(monitoringRunsPayload, 'runs'));
-        const reconcileJob = reconcileLatestPayload?.job;
+        const activeJob = activeReconcileStatusPayload?.job;
+        const reconcileJob = activeJob && typeof activeJob === 'object' ? activeJob : reconcileLatestPayload?.job;
         setLatestReconcileJob(reconcileJob && typeof reconcileJob === 'object' ? reconcileJob as ReconcileJobSnapshot : null);
+        const nextReconcileId = (reconcileJob?.id && typeof reconcileJob.id === 'string') ? reconcileJob.id : null;
+        const terminal = reconcileJob?.status === 'completed' || reconcileJob?.status === 'failed';
+        setActiveReconcileId(terminal ? null : nextReconcileId);
         if (runtimeStatusResponse) {
           setRuntimeStatusSnapshot(runtimeStatusPayload as MonitoringRuntimeStatus);
         }
@@ -1789,6 +1826,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     }
   }
 
+  const reconcileTimeoutExceeded = useMemo(() => {
+    if (!latestReconcileJob?.started_at || latestReconcileJob.status !== 'running') return false;
+    const started = Date.parse(latestReconcileJob.started_at);
+    return Number.isFinite(started) && (Date.now() - started) > 120000;
+  }, [latestReconcileJob?.started_at, latestReconcileJob?.status]);
+
   return (
     <section className="stack monitoringConsoleStack">
       <article className="dataCard monitoringHeaderCard">
@@ -1835,13 +1878,23 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={runtimeReason} configurationReason={configurationReason} continuityStatus={truth.continuity_status} continuitySlo={continuitySlo} />
         {latestReconcileJob ? (
           <p className="tableMeta">
-            Reconcile status {latestReconcileJob.status} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Affected systems {(latestReconcileJob.affected_systems ?? []).length} · Result {latestReconcileJob.reason_code || 'none'}
+            {latestReconcileJob.status === 'running' ? 'Repairing monitored systems…' : 'Reconcile status'} {latestReconcileJob.status} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Affected systems {(latestReconcileJob.affected_systems ?? []).length} · Result {latestReconcileJob.reason_code || 'none'}
           </p>
         ) : null}
         {latestReconcileJob ? (
           <p className="tableMeta">
             Reconcile progress: scanned {Number(latestReconcileJob.counts?.targets_scanned ?? 0)} targets, updated {Number(latestReconcileJob.counts?.created_or_updated ?? 0)}, invalid {Number(latestReconcileJob.counts?.invalid_targets ?? 0)}, skipped {Number(latestReconcileJob.counts?.skipped_targets ?? 0)}.
             {(latestReconcileJob.reason_codes ?? []).length > 0 ? ` Reason codes: ${(latestReconcileJob.reason_codes ?? []).join(', ')}` : ''}
+          </p>
+        ) : null}
+        {latestReconcileJob?.status === 'failed' ? (
+          <p className="statusLine">
+            Reconcile failed: {latestReconcileJob.reason_detail || 'No backend detail returned.'} {(latestReconcileJob.reason_codes ?? []).length > 0 ? `Reason codes: ${(latestReconcileJob.reason_codes ?? []).join(', ')}.` : ''}
+          </p>
+        ) : null}
+        {reconcileTimeoutExceeded ? (
+          <p className="statusLine">
+            Reconcile is still running after 120 seconds. Keep this page open to continue polling job status, or open monitored systems to confirm persisted state.
           </p>
         ) : null}
         {dbPersistenceOutageActive ? (
