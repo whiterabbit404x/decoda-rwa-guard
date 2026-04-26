@@ -360,9 +360,27 @@ def evaluate_workspace_monitoring_continuity(
     else:
         continuity_status = 'degraded'
 
+    required_thresholds_seconds = {
+        'heartbeat': normalized_heartbeat_ttl_seconds,
+        'event_ingestion': normalized_telemetry_window_seconds,
+        'detection_eval': normalized_detection_window_seconds,
+    }
+    continuity_slo_pass = bool(
+        workspace_configured
+        and worker_liveness == 'live'
+        and heartbeat_state == 'fresh'
+        and event_state == 'fresh'
+        and detection_state == 'fresh'
+    )
+
     return {
         'continuity_status': continuity_status if continuity_status in CONTINUITY_STATUS_VALUES else 'degraded',
         'continuity_reason_codes': continuity_reason_codes,
+        'continuity_slo_pass': continuity_slo_pass,
+        'heartbeat_age_seconds': heartbeat_age_seconds,
+        'event_ingestion_age_seconds': event_age_seconds,
+        'detection_eval_age_seconds': detection_age_seconds,
+        'required_thresholds_seconds': required_thresholds_seconds,
         'continuity_signals': {
             'worker_liveness': worker_liveness,
             'heartbeat_freshness': heartbeat_state,
@@ -371,6 +389,10 @@ def evaluate_workspace_monitoring_continuity(
             'heartbeat_age_seconds': heartbeat_age_seconds,
             'event_age_seconds': event_age_seconds,
             'detection_age_seconds': detection_age_seconds,
+            'event_ingestion_age_seconds': event_age_seconds,
+            'detection_eval_age_seconds': detection_age_seconds,
+            'required_thresholds_seconds': required_thresholds_seconds,
+            'continuity_slo_pass': continuity_slo_pass,
             'event_throughput_window': event_throughput_window,
             'event_throughput_window_seconds': normalized_telemetry_window_seconds,
         },

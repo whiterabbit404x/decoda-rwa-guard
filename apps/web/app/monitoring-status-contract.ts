@@ -18,6 +18,15 @@ export type WorkspaceMonitoringSummary = {
   continuity_status?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry';
   continuity_reason_codes?: string[];
   continuity_signals?: Record<string, unknown>;
+  continuity_slo_pass?: boolean;
+  heartbeat_age_seconds?: number | null;
+  event_ingestion_age_seconds?: number | null;
+  detection_eval_age_seconds?: number | null;
+  required_thresholds_seconds?: {
+    heartbeat?: number;
+    event_ingestion?: number;
+    detection_eval?: number;
+  };
   ingestion_freshness?: 'fresh' | 'stale' | 'offline' | 'missing';
   detection_pipeline_freshness?: 'fresh' | 'stale' | 'offline' | 'missing';
   worker_heartbeat_freshness?: 'fresh' | 'stale' | 'offline' | 'missing';

@@ -533,6 +533,6 @@ test.describe('threat runtime guards', () => {
     });
 
     expect(state).toBe('configured_no_signals');
-    expect(pageStatePrimaryCopy(state, null, 'continuous_live')).toContain('Telemetry continuity is live and continuous');
+    expect(pageStatePrimaryCopy(state, null, 'continuous_live')).toContain('Continuous live monitoring proven');
   });
 });
