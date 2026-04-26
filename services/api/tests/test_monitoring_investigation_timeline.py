@@ -61,6 +61,8 @@ class _TimelineConnection:
                     },
                 ]
             )
+        if 'FROM detection_evidence' in normalized and 'linked_evidence_count' in normalized:
+            return _FakeResult({'linked_evidence_count': 3})
         raise AssertionError(f'unexpected query: {query} / {params}')
 
 
@@ -104,6 +106,13 @@ def test_get_monitoring_investigation_timeline_returns_ordered_items_and_missing
     assert payload['workspace_id'] == workspace_id
     assert payload['proof_chain_status'] == 'incomplete'
     assert payload['correlation_id'] == 'corr-1'
+    assert payload['linked_evidence_count'] == 3
+    assert payload['chain_linked_ids'] == {
+        'detection_id': 'det-1',
+        'alert_id': 'alert-1',
+        'incident_id': 'inc-1',
+        'action_id': 'act-1',
+    }
     assert [item['link_name'] for item in payload['items']] == ['telemetry', 'detection', 'alert']
     timestamps = [item['timestamp'] for item in payload['items']]
     assert timestamps == sorted(timestamps)
@@ -164,6 +173,8 @@ class _CompleteTimelineConnection:
                     {'item_id': 'act-9', 'item_timestamp': datetime(2026, 4, 25, 12, 3, tzinfo=timezone.utc), 'link_name': 'response_action', 'table_name': 'response_actions', 'evidence_source': 'live'},
                 ]
             )
+        if 'FROM detection_evidence' in normalized and 'linked_evidence_count' in normalized:
+            return _FakeResult({'linked_evidence_count': 7})
         raise AssertionError(f'unexpected query: {query} / {params}')
 
 
@@ -178,6 +189,13 @@ def test_get_monitoring_investigation_timeline_complete_chain_has_no_missing_lin
     payload = pilot.get_monitoring_investigation_timeline(_request(workspace_id))
 
     assert payload['proof_chain_status'] == 'complete'
+    assert payload['linked_evidence_count'] == 7
+    assert payload['chain_linked_ids'] == {
+        'detection_id': 'det-9',
+        'alert_id': 'alert-9',
+        'incident_id': 'inc-9',
+        'action_id': 'act-9',
+    }
     assert payload.get('missing', []) == []
     assert [item['link_name'] for item in payload['items']] == [
         'telemetry',
