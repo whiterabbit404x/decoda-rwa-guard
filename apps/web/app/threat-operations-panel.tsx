@@ -830,10 +830,40 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       if (!active || !isAuthenticated || !user?.current_workspace?.id) {
         return;
       }
+      async function safeJson(response: Response | null): Promise<any> {
+        if (!response?.ok) {
+          return {};
+        }
+        try {
+          return await response.json();
+        } catch {
+          return {};
+        }
+      }
+
+      function payloadRows<T>(payload: any, key: string): T[] {
+        return Array.isArray(payload?.[key]) ? payload[key] as T[] : [];
+      }
+
       try {
-        const [runtimeStatusResult, investigationTimelineResult] = await Promise.allSettled([
+        const [
+          runtimeStatusResult,
+          investigationTimelineResult,
+          detectionsResult,
+          alertsResult,
+          incidentsResult,
+          evidenceResult,
+          historyResult,
+          monitoringRunsResult,
+        ] = await Promise.allSettled([
           fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/ops/monitoring/investigation-timeline`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/detections?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/alerts?status_value=open&limit=50`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/incidents?status_value=open&limit=50`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/history/actions?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/monitoring/runs?limit=20`, { headers: authHeaders(), cache: 'no-store' }),
         ]);
         if (!active) return;
         const responseEntries: [SnapshotFailureKey, PromiseSettledResult<Response>][] = [
@@ -847,18 +877,42 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           result.status === 'fulfilled' && result.value.ok ? result.value : null
         ));
         const [runtimeStatusResponse, investigationTimelineResponse] = responses;
-        const runtimeStatusPayload = runtimeStatusResponse ? await runtimeStatusResponse.json().catch(() => ({})) : {};
-        const investigationTimelinePayload = investigationTimelineResponse ? await investigationTimelineResponse.json().catch(() => ({})) : {};
+        const [runtimeStatusPayload, investigationTimelinePayload] = await Promise.all([
+          safeJson(runtimeStatusResponse),
+          safeJson(investigationTimelineResponse),
+        ]);
+
+        const detectionsResponse = detectionsResult.status === 'fulfilled' && detectionsResult.value.ok ? detectionsResult.value : null;
+        const alertsResponse = alertsResult.status === 'fulfilled' && alertsResult.value.ok ? alertsResult.value : null;
+        const incidentsResponse = incidentsResult.status === 'fulfilled' && incidentsResult.value.ok ? incidentsResult.value : null;
+        const evidenceResponse = evidenceResult.status === 'fulfilled' && evidenceResult.value.ok ? evidenceResult.value : null;
+        const historyResponse = historyResult.status === 'fulfilled' && historyResult.value.ok ? historyResult.value : null;
+        const monitoringRunsResponse = monitoringRunsResult.status === 'fulfilled' && monitoringRunsResult.value.ok ? monitoringRunsResult.value : null;
+        const [
+          detectionsPayload,
+          alertsPayload,
+          incidentsPayload,
+          evidencePayload,
+          historyPayload,
+          monitoringRunsPayload,
+        ] = await Promise.all([
+          safeJson(detectionsResponse),
+          safeJson(alertsResponse),
+          safeJson(incidentsResponse),
+          safeJson(evidenceResponse),
+          safeJson(historyResponse),
+          safeJson(monitoringRunsResponse),
+        ]);
 
         // Runtime-status + investigation-timeline are the canonical monitoring sources for this panel.
         setTargets([]);
         setMonitoredSystems([]);
-        setAlerts([]);
-        setIncidents([]);
-        setEvidence([]);
-        setMonitoringRuns([]);
-        setDetections([]);
-        setActionHistory([]);
+        setDetections(payloadRows<DetectionRow>(detectionsPayload, 'detections'));
+        setAlerts(payloadRows<AlertRow>(alertsPayload, 'alerts'));
+        setIncidents(payloadRows<IncidentRow>(incidentsPayload, 'incidents'));
+        setEvidence(payloadRows<EvidenceRow>(evidencePayload, 'evidence'));
+        setActionHistory(payloadRows<ActionHistoryRow>(historyPayload, 'history'));
+        setMonitoringRuns(payloadRows<MonitoringRunRow>(monitoringRunsPayload, 'runs'));
         if (runtimeStatusResponse) {
           setRuntimeStatusSnapshot(runtimeStatusPayload as MonitoringRuntimeStatus);
         }

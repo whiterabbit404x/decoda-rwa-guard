@@ -26,14 +26,16 @@ test('threat page source renders persisted detections with linked alerts, incide
   expect(threat).toContain('fetch(`${apiUrl}/detections/${detectionId}/evidence`');
   expect(threat).toContain('const targetById = useMemo(() => {');
   expect(threat).toContain('const monitoredSystemById = useMemo(() => {');
-  expect(threat).toContain('const evidenceSourceLabel = item.evidence_source === \'simulator\' ? \'simulator\' : \'live\';');
-  expect(threat).toContain('fetch(`${apiUrl}/alerts?status_value=open`');
-  expect(threat).toContain('fetch(`${apiUrl}/incidents?status_value=open`');
+  expect(threat).toContain("const evidenceSourceLabel = simulatorEvidence ? 'simulator/demo' : 'live';");
+  expect(threat).toContain('fetch(`${apiUrl}/alerts?status_value=open&limit=50`');
+  expect(threat).toContain('fetch(`${apiUrl}/incidents?status_value=open&limit=50`');
+  expect(threat).toContain('fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`');
   expect(threat).toContain('fetch(`${apiUrl}/history/actions?limit=50`');
+  expect(threat).toContain('fetch(`${apiUrl}/monitoring/runs?limit=20`');
   expect(threat).toContain('Linked detection: {linkedDetection?.title || linkedDetection?.id || \'Not linked\'}');
   expect(threat).toContain('Active incidents with timeline and run evidence');
   expect(threat).toContain('Detection created → Alert created → Incident opened → Action logged');
-  expect(threat).toContain("category: 'Action' as const");
+  expect(threat).toContain('actionHistory.slice(0, 4).map((entry) => {');
   expect(threat).toContain('Response Actions');
 });
 
