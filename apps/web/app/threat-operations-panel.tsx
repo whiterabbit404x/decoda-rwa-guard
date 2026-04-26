@@ -1666,6 +1666,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }, [detections]);
   const [selectedThreatActionContextId, setSelectedThreatActionContextId] = useState<string>('');
   const [liveActionConfirm, setLiveActionConfirm] = useState<{ actionType: string; label: string } | null>(null);
+  const [liveActionConfirmationText, setLiveActionConfirmationText] = useState<string>('');
   useEffect(() => {
     setSelectedThreatActionContextId((current) => {
       if (!current) return '';
@@ -2453,15 +2454,23 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               >
                 {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
               </button>
+            </div>
+            <div className="buttonRow">
               <span className="ruleChip">SIMULATED</span>
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runThreatAction('notify_team', 'Run simulated response', 'simulated')}>Run simulated response</button>
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'simulated') || ''} onClick={() => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated')}>Revoke approval</button>
+            </div>
+            <div className="buttonRow">
               <span className="ruleChip">RECOMMENDED</span>
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'recommended')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'recommended') || ''} onClick={() => void runThreatAction('freeze_wallet', 'Freeze wallet', 'recommended')}>Freeze wallet (RECOMMENDED)</button>
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.disable_monitored_system, 'recommended')} title={actionDisabledReason(actionCapabilities.disable_monitored_system, 'recommended') || ''} onClick={() => void runThreatAction('disable_monitored_system', 'Disable monitored system', 'recommended')}>Disable monitored system (RECOMMENDED)</button>
+            </div>
+            <div className="buttonRow">
               <span className="ruleChip">LIVE</span>
               <button type="button" disabled={shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'live')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'live') || ''} onClick={() => setLiveActionConfirm({ actionType: 'freeze_wallet', label: 'Freeze wallet' })}>Freeze wallet (LIVE)</button>
               <button type="button" disabled={shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.revoke_approval, 'live')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'live') || ''} onClick={() => setLiveActionConfirm({ actionType: 'revoke_approval', label: 'Revoke approval' })}>Revoke approval (LIVE)</button>
+            </div>
+            <div className="buttonRow">
               <Link href="/alerts" prefetch={false}>Review alerts</Link>
               <Link href="/incidents" prefetch={false}>Open incident queue</Link>
               <Link href="/history" prefetch={false}>View workspace history</Link>
@@ -2494,11 +2503,19 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <h3>{liveActionConfirm.label}</h3>
           <p className="muted">This will use enterprise approval + execution workflow and requires linked incident context.</p>
           <p className="tableMeta">Incident context: {selectedThreatActionContext?.incidentId || 'missing'}</p>
+          <label className="fieldLabel" htmlFor="live-action-confirm-input">Type LIVE to confirm</label>
+          <input
+            id="live-action-confirm-input"
+            value={liveActionConfirmationText}
+            onChange={(event) => setLiveActionConfirmationText(event.target.value)}
+            placeholder="LIVE"
+          />
           <div className="buttonRow">
-            <button type="button" className="secondaryCta" onClick={() => setLiveActionConfirm(null)}>Cancel</button>
-            <button type="button" disabled={!selectedThreatActionContext?.incidentId} onClick={() => {
+            <button type="button" className="secondaryCta" onClick={() => { setLiveActionConfirm(null); setLiveActionConfirmationText(''); }}>Cancel</button>
+            <button type="button" disabled={!selectedThreatActionContext?.incidentId || liveActionConfirmationText.trim().toUpperCase() !== 'LIVE'} onClick={() => {
               void runThreatAction(liveActionConfirm.actionType, liveActionConfirm.label, 'live');
               setLiveActionConfirm(null);
+              setLiveActionConfirmationText('');
             }}>Confirm LIVE action</button>
           </div>
         </article>

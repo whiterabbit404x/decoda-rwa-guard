@@ -1162,6 +1162,24 @@ def with_auth_schema_json(handler):
         raise
 
 
+def _normalize_action_route_response(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    normalized_mode = str(normalized.get('mode') or ('live' if normalized.get('dry_run') is False else 'simulated'))
+    normalized['mode'] = normalized_mode
+    normalized['execution_evidence'] = {
+        **(normalized.get('execution_evidence') if isinstance(normalized.get('execution_evidence'), dict) else {}),
+        'execution_state': normalized.get('execution_state'),
+        'status': normalized.get('status'),
+        'provider_request_id': normalized.get('provider_request_id'),
+        'provider_response_id': normalized.get('provider_response_id'),
+        'safe_tx_hash': normalized.get('safe_tx_hash'),
+        'error_reason': normalized.get('error_reason'),
+        'provider_receipts': normalized.get('provider_receipts') if isinstance(normalized.get('provider_receipts'), list) else [],
+        'execution_artifacts': normalized.get('execution_artifacts') if isinstance(normalized.get('execution_artifacts'), dict) else {},
+    }
+    return normalized
+
+
 def fixture_diagnostics() -> dict[str, Any]:
     ingestion_runtime: dict[str, Any] = {}
     try:
@@ -2677,29 +2695,29 @@ def response_action_capabilities(request: Request) -> dict[str, Any]:
 
 @app.post('/enforcement/actions', summary='Plan a workspace enforcement action')
 def enforcement_actions_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: create_enforcement_action(payload, request))
+    return with_auth_schema_json(lambda: _normalize_action_route_response(create_enforcement_action(payload, request)))
 
 @app.post('/response/actions', summary='Plan a workspace response action')
 def response_actions_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: create_enforcement_action(payload, request))
+    return with_auth_schema_json(lambda: _normalize_action_route_response(create_enforcement_action(payload, request)))
 
 
 @app.post('/enforcement/actions/{action_id}/approve', summary='Approve a planned enforcement action')
 def enforcement_actions_approve(action_id: str, request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: approve_enforcement_action(action_id, request))
+    return with_auth_schema_json(lambda: _normalize_action_route_response(approve_enforcement_action(action_id, request)))
 
 @app.post('/response/actions/{action_id}/approve', summary='Approve a planned response action')
 def response_actions_approve(action_id: str, request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: approve_enforcement_action(action_id, request))
+    return with_auth_schema_json(lambda: _normalize_action_route_response(approve_enforcement_action(action_id, request)))
 
 
 @app.post('/enforcement/actions/{action_id}/execute', summary='Execute an approved enforcement action')
 def enforcement_actions_execute(action_id: str, request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: execute_enforcement_action(action_id, request))
+    return with_auth_schema_json(lambda: _normalize_action_route_response(execute_enforcement_action(action_id, request)))
 
 @app.post('/response/actions/{action_id}/execute', summary='Execute an approved response action')
 def response_actions_execute(action_id: str, request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: execute_enforcement_action(action_id, request))
+    return with_auth_schema_json(lambda: _normalize_action_route_response(execute_enforcement_action(action_id, request)))
 
 
 @app.post('/enforcement/actions/{action_id}/rollback', summary='Rollback enforcement action by creating a compensating action')

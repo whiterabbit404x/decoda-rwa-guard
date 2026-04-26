@@ -497,6 +497,123 @@ def test_execute_live_manual_only_action_returns_manual_required_state(monkeypat
     assert not any("SET status = 'executed'" in statement for statement, _ in executed)
 
 
+def test_execute_live_action_denies_same_user_as_approver(monkeypatch):
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result(
+                    {
+                        'id': 'act-live-self-approved',
+                        'status': 'pending',
+                        'mode': 'live',
+                        'action_type': 'revoke_approval',
+                        'execution_metadata': {},
+                        'incident_id': 'inc-1',
+                        'alert_id': 'alert-1',
+                        'approved_by_user_id': 'admin-1',
+                    }
+                )
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    try:
+        pilot.execute_enforcement_action('act-live-self-approved', request)
+        raise AssertionError('Expected HTTPException when executor matches approver.')
+    except HTTPException as exc:
+        assert exc.status_code == 403
+        assert 'separate approver and executor' in str(exc.detail)
+
+
+def test_execute_live_action_success_includes_execution_evidence_fields(monkeypatch):
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result(
+                    {
+                        'id': 'act-live-success',
+                        'status': 'pending',
+                        'mode': 'live',
+                        'action_type': 'revoke_approval',
+                        'execution_metadata': {},
+                        'execution_artifacts': {},
+                        'provider_receipts': [],
+                        'incident_id': 'inc-1',
+                        'alert_id': 'alert-1',
+                        'token_contract': '0x1111111111111111111111111111111111111111',
+                        'calldata': '0x095ea7b3',
+                        'chain_network': 'ethereum',
+                        'approved_by_user_id': 'admin-2',
+                    }
+                )
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(
+        pilot,
+        '_propose_safe_transaction',
+        lambda *_a, **_k: {'safe_tx_hash': '0xsafehash', 'external_request_id': 'safe-req-44', 'response_code': 201},
+    )
+    monkeypatch.setattr(
+        pilot,
+        'resolve_response_action_capability',
+        lambda *_a, **_k: {
+            'action_type': 'revoke_approval',
+            'supported_modes': ['simulated', 'recommended', 'live'],
+            'live_execution_path': 'safe',
+            'reason': None,
+            'supports_mode': True,
+            'mode': 'live',
+        },
+    )
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    payload = pilot.execute_enforcement_action('act-live-success', request)
+
+    assert payload['mode'] == 'live'
+    assert payload['execution_evidence']['safe_tx_hash'] == '0xsafehash'
+    assert payload['execution_evidence']['provider_request_id'] == 'safe-req-44'
+    assert payload['execution_evidence']['execution_state'] == 'proposed'
+
+
 def test_list_response_action_capabilities_returns_workspace_scoped_payload(monkeypatch):
     @contextmanager
     def _fake_pg():
