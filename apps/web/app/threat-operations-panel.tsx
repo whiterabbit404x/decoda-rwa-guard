@@ -2100,6 +2100,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const started = Date.parse(latestReconcileJob.started_at);
     return Number.isFinite(started) && (Date.now() - started) > 120000;
   }, [latestReconcileJob?.started_at, latestReconcileJob?.status]);
+  const lastSuccessfulReconcileAt = useMemo(() => {
+    if (!latestReconcileJob || latestReconcileJob.status !== 'completed') return null;
+    return latestReconcileJob.completed_at || latestReconcileJob.last_event_at || latestReconcileJob.started_at || null;
+  }, [latestReconcileJob]);
 
   return (
     <section className="stack monitoringConsoleStack">
@@ -2167,12 +2171,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
         {latestReconcileJob ? (
           <p className="tableMeta">
-            {latestReconcileJob.status === 'running' ? 'Repairing monitored systems…' : 'Reconcile status'} {latestReconcileJob.status} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Affected systems {(latestReconcileJob.affected_systems ?? []).length} · Result {latestReconcileJob.reason_code || 'none'}
+            Reconcile status {latestReconcileJob.status} · Progress scanned {Number(latestReconcileJob.counts?.targets_scanned ?? 0)} / updated {Number(latestReconcileJob.counts?.created_or_updated ?? 0)} / invalid {Number(latestReconcileJob.counts?.invalid_targets ?? 0)} / skipped {Number(latestReconcileJob.counts?.skipped_targets ?? 0)} · Last successful reconcile {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)}
           </p>
         ) : null}
-        {latestReconcileJob ? (
+        {latestReconcileJob?.status === 'failed' ? (
           <p className="tableMeta">
-            Reconcile progress: scanned {Number(latestReconcileJob.counts?.targets_scanned ?? 0)} targets, updated {Number(latestReconcileJob.counts?.created_or_updated ?? 0)}, invalid {Number(latestReconcileJob.counts?.invalid_targets ?? 0)}, skipped {Number(latestReconcileJob.counts?.skipped_targets ?? 0)}.
+            Failure reason: {latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No backend detail returned.'}
             {(latestReconcileJob.reason_codes ?? []).length > 0 ? ` Reason codes: ${(latestReconcileJob.reason_codes ?? []).join(', ')}` : ''}
           </p>
         ) : null}

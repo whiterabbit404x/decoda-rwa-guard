@@ -60,6 +60,24 @@ def test_monitoring_reconcile_status_route_returns_job(monkeypatch):
     assert response.json()['job']['status'] == 'running'
 
 
+def test_monitoring_reconcile_events_route_returns_events(monkeypatch):
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        api_main,
+        'get_workspace_reconcile_events',
+        lambda _request, _run_id: {
+            'workspace': {'id': 'ws-1'},
+            'job': {'id': 'run-2', 'status': 'running'},
+            'events': [{'id': 'evt-1', 'event_type': 'reconcile_started', 'event_status': 'running'}],
+        },
+    )
+    response = client.get('/monitoring/systems/reconcile/run-2/events')
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['job']['status'] == 'running'
+    assert payload['events'][0]['event_type'] == 'reconcile_started'
+
+
 def test_monitoring_reconcile_latest_result_route_returns_result(monkeypatch):
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
     monkeypatch.setattr(

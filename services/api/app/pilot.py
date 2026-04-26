@@ -4260,9 +4260,9 @@ def _create_reconcile_run(connection: Any, *, run_id: str, workspace_id: str, re
     connection.execute(
         '''
         INSERT INTO monitoring_reconcile_runs (
-            id, workspace_id, requested_by_user_id, status, started_at, queued_at, counts, reason_codes, affected_systems, result_summary, created_at, updated_at
+            id, workspace_id, requested_by_user_id, status, queued_at, counts, reason_codes, affected_systems, result_summary, created_at, updated_at
         )
-        VALUES (%s::uuid, %s::uuid, %s::uuid, 'queued', NOW(), NOW(), '{}'::jsonb, '[]'::jsonb, '[]'::jsonb, '{}'::jsonb, NOW(), NOW())
+        VALUES (%s::uuid, %s::uuid, %s::uuid, 'queued', NOW(), '{}'::jsonb, '[]'::jsonb, '[]'::jsonb, '{}'::jsonb, NOW(), NOW())
         ON CONFLICT (id) DO NOTHING
         ''',
         (run_id, workspace_id, requested_by_user_id),
@@ -4302,6 +4302,7 @@ def _update_reconcile_run(
             reason_codes = COALESCE(%s::jsonb, reason_codes),
             affected_systems = COALESCE(%s::jsonb, affected_systems),
             result_summary = COALESCE(%s::jsonb, result_summary),
+            started_at = CASE WHEN %s = 'running' THEN COALESCE(started_at, NOW()) ELSE started_at END,
             running_at = CASE WHEN %s = 'running' THEN COALESCE(running_at, NOW()) ELSE running_at END,
             failed_at = CASE WHEN %s = 'failed' THEN COALESCE(failed_at, NOW()) ELSE failed_at END,
             completed_at = CASE WHEN %s THEN NOW() ELSE completed_at END,
@@ -4316,6 +4317,7 @@ def _update_reconcile_run(
             _json_dumps(reason_codes or []) if reason_codes is not None else None,
             _json_dumps(affected_systems or []) if affected_systems is not None else None,
             _json_dumps(result_summary or {}) if result_summary is not None else None,
+            status,
             status,
             status,
             completed,
@@ -4395,6 +4397,35 @@ def _load_reconcile_run_row(connection: Any, *, workspace_id: str, run_id: str |
     return dict(row) if row else None
 
 
+def _load_reconcile_event_rows(connection: Any, *, workspace_id: str, run_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        '''
+        SELECT id, run_id, workspace_id, event_type, event_status, reason_code, reason_codes, detail, payload, event_at, created_at
+        FROM monitoring_reconcile_events
+        WHERE workspace_id = %s::uuid
+          AND run_id = %s::uuid
+        ORDER BY event_at DESC, created_at DESC
+        LIMIT %s
+        ''',
+        (workspace_id, run_id, max(1, min(limit, 200))),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _reconcile_event_payload(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'id': str(item.get('id') or ''),
+        'run_id': str(item.get('run_id') or ''),
+        'event_type': str(item.get('event_type') or ''),
+        'event_status': str(item.get('event_status') or ''),
+        'reason_code': str(item.get('reason_code') or '') or None,
+        'reason_codes': [str(code) for code in (item.get('reason_codes') or []) if str(code).strip()],
+        'detail': str(item.get('detail') or '') or None,
+        'payload': _json_safe_value(item.get('payload') if isinstance(item.get('payload'), dict) else {}),
+        'event_at': item.get('event_at').isoformat() if item.get('event_at') else None,
+    }
+
+
 def _job_payload_from_run_row(item: dict[str, Any]) -> dict[str, Any]:
     return _reconcile_job_payload(
         run_id=str(item.get('id') or ''),
@@ -4446,11 +4477,12 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         _lock_workspace_row_for_reconcile(connection, workspace_id=workspace_id)
         latest_run = _load_reconcile_run_row(connection, workspace_id=workspace_id)
         if latest_run and str(latest_run.get('status') or '') in {'queued', 'running'}:
+            active_status = str(latest_run.get('status') or 'running')
             return {
                 'workspace': workspace_context['workspace'],
                 'job': _job_payload_from_run_row(latest_run),
                 'reconcile_id': str(latest_run.get('id') or ''),
-                'state': 'running',
+                'state': active_status,
                 'reconcile': _normalize_reconcile_result({}),
                 'unresolved_reasons': [],
                 'systems': [],
@@ -4627,9 +4659,9 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                 'code': str(detail.get('code') or 'skipped_target'),
                 'backendReason': str(detail.get('reason') or 'Target was skipped during reconcile.'),
             })
-        reconcile_state = 'failure' if int(result.get('created_or_updated', 0) or 0) <= 0 and unresolved_count > 0 else 'success'
-        status_reason_code = None if reconcile_state == 'success' else (unresolved_reasons[0].get('code') if unresolved_reasons else 'reconcile_failed')
-        status_reason_detail = None if reconcile_state == 'success' else (unresolved_reasons[0].get('backendReason') if unresolved_reasons else 'Reconcile completed with unresolved reasons.')
+        reconcile_failed = int(result.get('created_or_updated', 0) or 0) <= 0 and unresolved_count > 0
+        status_reason_code = None if not reconcile_failed else (unresolved_reasons[0].get('code') if unresolved_reasons else 'reconcile_failed')
+        status_reason_detail = None if not reconcile_failed else (unresolved_reasons[0].get('backendReason') if unresolved_reasons else 'Reconcile completed with unresolved reasons.')
         reason_counts = {
             'invalid': int(sum(int(count or 0) for count in (result.get('invalid_reasons') or {}).values())),
             'skipped': int(sum(int(count or 0) for count in (result.get('skipped_reasons') or {}).values())),
@@ -4644,7 +4676,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         repaired_target_ids = sorted({str(item.get('id')) for item in eligible_targets if item.get('id')})
         reason_codes = sorted({str(reason.get('code') or '').strip() for reason in unresolved_reasons if str(reason.get('code') or '').strip()})
         affected_systems = [str(system_id) for system_id in (result.get('repaired_monitored_system_ids') or []) if str(system_id).strip()]
-        run_status = 'completed' if reconcile_state == 'success' else 'failed'
+        run_status = 'completed' if not reconcile_failed else 'failed'
         _update_reconcile_run(
             connection,
             run_id=reconcile_run_id,
@@ -4655,7 +4687,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
             reason_codes=reason_codes,
             affected_systems=affected_systems,
             result_summary={
-                'state': reconcile_state,
+                'state': run_status,
                 'reason_counts': reason_counts,
                 'unresolved_reasons': unresolved_reasons,
             },
@@ -4684,7 +4716,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                 reason_detail=status_reason_detail,
             ),
             'reconcile_id': reconcile_id,
-            'state': reconcile_state,
+            'state': run_status,
             'reason_counts': reason_counts,
             'unresolved_reasons': unresolved_reasons,
             'reconcile': result,
@@ -4747,6 +4779,23 @@ def get_latest_workspace_reconcile_result(request: Request) -> dict[str, Any]:
             'workspace': workspace_context['workspace'],
             'job': _job_payload_from_run_row(item),
             'result': result_summary,
+        }
+
+
+def get_workspace_reconcile_events(request: Request, reconcile_id: str) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        job = _load_reconcile_run_row(connection, workspace_id=workspace_id, run_id=reconcile_id)
+        if not job:
+            return {'workspace': workspace_context['workspace'], 'job': None, 'events': []}
+        events = _load_reconcile_event_rows(connection, workspace_id=workspace_id, run_id=reconcile_id)
+        return {
+            'workspace': workspace_context['workspace'],
+            'job': _job_payload_from_run_row(job),
+            'events': [_reconcile_event_payload(item) for item in events],
         }
 
 

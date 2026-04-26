@@ -272,7 +272,7 @@ def test_reconcile_workspace_validates_runtime_debug_assertions(monkeypatch):
     assert exc.value.detail['stage'] == 'runtime_debug_assertions'
 
 
-def test_reconcile_workspace_returns_success_state_and_reconcile_id(monkeypatch):
+def test_reconcile_workspace_returns_completed_state_and_reconcile_id(monkeypatch):
     conn = _Conn()
     request = _Request('ws-1')
     rows = [{'id': 'ms-1', 'workspace_id': 'ws-1', 'target_id': 't-1', 'asset_id': 'a-1'}]
@@ -299,7 +299,7 @@ def test_reconcile_workspace_returns_success_state_and_reconcile_id(monkeypatch)
 
     result = pilot.reconcile_workspace_monitored_systems(request)
 
-    assert result['state'] == 'success'
+    assert result['state'] == 'completed'
     assert isinstance(result['reconcile_id'], str)
     assert result['job']['status'] == 'completed'
     assert result['job']['counts']['targets_scanned'] == 1
@@ -307,7 +307,7 @@ def test_reconcile_workspace_returns_success_state_and_reconcile_id(monkeypatch)
     assert result['reconcile']['created_or_updated'] == 1
 
 
-def test_reconcile_workspace_returns_failure_with_unresolved_reasons(monkeypatch):
+def test_reconcile_workspace_returns_failed_state_with_unresolved_reasons(monkeypatch):
     conn = _Conn()
     request = _Request('ws-1')
 
@@ -333,7 +333,7 @@ def test_reconcile_workspace_returns_failure_with_unresolved_reasons(monkeypatch
 
     result = pilot.reconcile_workspace_monitored_systems(request)
 
-    assert result['state'] == 'failure'
+    assert result['state'] == 'failed'
     assert result['job']['status'] == 'failed'
     assert result['job']['reason_code'] == 'missing_asset'
     assert result['reason_counts'] == {'invalid': 1, 'skipped': 0}
@@ -376,7 +376,7 @@ def test_reconcile_workspace_repeated_calls_return_stable_terminal_state(monkeyp
 
     assert call_count['reconcile'] == 2
     assert first['reconcile']['created_or_updated'] == second['reconcile']['created_or_updated'] == 1
-    assert second['state'] == 'success'
+    assert second['state'] == 'completed'
 
 
 def test_reconcile_workspace_idempotency_guard_returns_no_op_while_inflight(monkeypatch):
