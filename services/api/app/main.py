@@ -2037,6 +2037,13 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'worker_heartbeat_freshness': fallback_summary.get('worker_heartbeat_freshness'),
             'event_throughput_window': fallback_summary.get('event_throughput_window'),
             'event_throughput_window_seconds': fallback_summary.get('event_throughput_window_seconds'),
+            'enterprise_ready_pass': False,
+            'failed_checks': [
+                'continuity_slo_pass',
+                'linked_evidence_freshness',
+                'open_proof_chain_gaps',
+                'live_action_capability_available',
+            ],
         }
 
 
