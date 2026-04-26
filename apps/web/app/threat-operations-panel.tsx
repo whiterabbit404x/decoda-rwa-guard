@@ -199,6 +199,7 @@ export type PageOperationalState =
   | 'fetch_error';
 
 type SnapshotFailureKey = 'runtime-status' | 'investigation-timeline';
+type SnapshotFreshnessState = 'fresh' | 'stale' | 'unavailable';
 type ReconcileJobStatus = 'queued' | 'running' | 'completed' | 'failed';
 type ReconcileJobSnapshot = {
   id: string;
@@ -400,7 +401,17 @@ type EvidenceDrawerState = {
 };
 
 const TELEMETRY_STALE_MS = 20 * 60 * 1000;
+const POLL_STALE_MS = 10 * 60 * 1000;
+const HEARTBEAT_STALE_MS = 10 * 60 * 1000;
 const DETECTION_LIVE_MS = 15 * 60 * 1000;
+
+function deriveSnapshotFreshnessState(value: string | null | undefined, staleMs: number): SnapshotFreshnessState {
+  if (!value) return 'unavailable';
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) return 'unavailable';
+  if (Date.now() - timestamp > staleMs) return 'stale';
+  return 'fresh';
+}
 
 function configurationReasonMessage(reason: string | null | undefined): string {
   switch (reason) {
@@ -826,7 +837,7 @@ export function derivePageState(params: {
 
 function formatSnapshotErrorMessage(failedEndpoints: SnapshotFailureKey[]): string | null {
   if (failedEndpoints.length === 0) return null;
-  return `Monitoring snapshot partially unavailable (${failedEndpoints.length} endpoint${failedEndpoints.length === 1 ? '' : 's'} failed).`;
+  return `Monitoring snapshot is running on stale fallback data (${failedEndpoints.length} endpoint${failedEndpoints.length === 1 ? '' : 's'} failed this cycle).`;
 }
 
 export function formatSystemsPanelWarning(failedEndpoints: SnapshotFailureKey[]): string | null {
@@ -918,6 +929,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [actionCapabilities, setActionCapabilities] = useState<Record<string, ResponseActionCapability>>({});
   const [runtimeStatusSnapshot, setRuntimeStatusSnapshot] = useState<MonitoringRuntimeStatus | null>(null);
   const [investigationTimeline, setInvestigationTimeline] = useState<MonitoringInvestigationTimeline | null>(null);
+  const [snapshotFailedEndpoints, setSnapshotFailedEndpoints] = useState<SnapshotFailureKey[]>([]);
   const [latestReconcileJob, setLatestReconcileJob] = useState<ReconcileJobSnapshot | null>(null);
   const [ensuringProofChain, setEnsuringProofChain] = useState(false);
 
@@ -1031,10 +1043,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         }
         setSystemsPanelWarning(formatSystemsPanelWarning(failedEndpoints));
         setSnapshotError(formatSnapshotErrorMessage(failedEndpoints));
+        setSnapshotFailedEndpoints(failedEndpoints);
       } catch {
         if (active) {
           setSnapshotError('Monitoring snapshot refresh failed');
           setSystemsPanelWarning('Systems list unavailable');
+          setSnapshotFailedEndpoints(['runtime-status', 'investigation-timeline']);
         }
       } finally {
         if (active) {
@@ -1104,9 +1118,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const runtimeConfigurationReasonCodes = Array.isArray(runtimeStatusSnapshot?.configuration_reason_codes)
     ? runtimeStatusSnapshot.configuration_reason_codes
     : [];
-  const configurationReason = runtimeConfigurationReason ?? summaryConfigurationReason;
-  const configurationReasonCodes = runtimeConfigurationReasonCodes.length > 0
-    ? runtimeConfigurationReasonCodes
+  const configurationReason = runtimeStatusSnapshot?.configuration_reason ?? summaryConfigurationReason;
+  const configurationReasonCodes = Array.isArray(runtimeStatusSnapshot?.configuration_reason_codes)
+    ? runtimeStatusSnapshot.configuration_reason_codes
     : summaryConfigurationReasonCodes;
   const monitoringMode = runtimeEvidenceSource;
   const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? runtimeSummary?.runtime_status ?? '').toLowerCase();
@@ -1148,6 +1162,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const pollLabel = monitoringPresentation.pollLabel;
   const detectionEvalLabel = formatRelativeTime(runtimeStatusSnapshot?.last_detection_at ?? monitoringPresentation.lastTelemetryAt);
   const continuitySlo = evaluateContinuitySlo(runtimeSummary);
+  const telemetryState = deriveSnapshotFreshnessState(monitoringPresentation.lastTelemetryAt, TELEMETRY_STALE_MS);
+  const pollState = deriveSnapshotFreshnessState(monitoringPresentation.lastPollAt, POLL_STALE_MS);
+  const heartbeatState = deriveSnapshotFreshnessState(monitoringPresentation.lastHeartbeatAt, HEARTBEAT_STALE_MS);
+  const hasCanonicalSnapshot = Boolean(runtimeStatusSnapshot || investigationTimeline);
 
   const targetById = useMemo(() => {
     return new Map(targets.map((target) => [target.id, target] as const));
@@ -1249,7 +1267,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
   const pageState = derivePageState({
     loadingSnapshot,
-    snapshotError: Boolean(snapshotError),
+    snapshotError: Boolean(snapshotError) && !hasCanonicalSnapshot,
     targets,
     liveDetections: categorizedDetections.live,
     workspaceConfigured,
@@ -1294,6 +1312,59 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : monitoringPresentation.status === 'degraded'
       ? 'Runtime reports partial or stale telemetry. Detailed protected system rows are still syncing.'
       : 'Runtime reports healthy coverage. Detailed protected system rows are still syncing.';
+  const headerStatusChips = useMemo(() => {
+    const chips: Array<{ label: string; tone: 'chip' | 'status'; className?: string }> = [
+      { label: monitoringPresentation.statusLabel, tone: 'status', className: `statusBadge statusBadge-${monitoringPresentation.tone}` },
+      { label: `Operational state ${formatOperationalStateLabel(pageState)}`, tone: 'chip' },
+      { label: `Telemetry ${telemetryState}`, tone: 'chip' },
+      { label: `Poll ${pollState}`, tone: 'chip' },
+      { label: `Heartbeat ${heartbeatState}`, tone: 'chip' },
+      { label: `Evidence source ${monitoringPresentation.evidenceSourceLabel}`, tone: 'chip' },
+      { label: `Protected assets ${protectedAssetCount}`, tone: 'chip' },
+      { label: `Monitored systems ${configuredSystems}`, tone: 'chip' },
+      { label: `Reporting systems ${reportingSystems}`, tone: 'chip' },
+      { label: `Evidence records ${evidence.length}`, tone: 'chip' },
+      { label: `Open alerts ${openAlerts}`, tone: 'chip' },
+      { label: `Active incidents ${activeIncidents}`, tone: 'chip' },
+    ];
+    if (monitoringMode === 'simulator' || simulatorMode) {
+      chips.push({ label: 'SIMULATOR MODE', tone: 'status', className: 'statusBadge statusBadge-attention' });
+    }
+    if (!workspaceConfigured) {
+      chips.push({ label: 'Workspace not configured', tone: 'chip' });
+    }
+    if (latestReconcileJob) {
+      chips.push({
+        label: `Reconcile ${latestReconcileJob.status.toUpperCase()}`,
+        tone: 'status',
+        className: `statusBadge statusBadge-${reconcileStatusBadgeTone(latestReconcileJob.status)}`,
+      });
+    }
+    if (systemsPanelWarning) {
+      chips.push({ label: systemsPanelWarning, tone: 'status', className: 'statusBadge statusBadge-attention' });
+    }
+    return chips;
+  }, [
+    activeIncidents,
+    configuredSystems,
+    evidence.length,
+    heartbeatState,
+    latestReconcileJob,
+    monitoringMode,
+    monitoringPresentation.evidenceSourceLabel,
+    monitoringPresentation.statusLabel,
+    monitoringPresentation.tone,
+    openAlerts,
+    pageState,
+    pollState,
+    protectedAssetCount,
+    reportingSystems,
+    simulatorMode,
+    snapshotFailedEndpoints,
+    systemsPanelWarning,
+    telemetryState,
+    workspaceConfigured,
+  ]);
   const targetCoverageRows = useMemo(() => {
     return targets.slice(0, 10).map((target) => {
       const coverage = normalizeCoverageStatus(target);
@@ -1727,27 +1798,19 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           </div>
         </div>
         <div className="chipRow monitoringHeaderChips">
-          <span className={`statusBadge statusBadge-${monitoringPresentation.tone}`}>{monitoringPresentation.statusLabel}</span>
-          {monitoringMode === 'simulator' || simulatorMode ? <span className="statusBadge statusBadge-attention">SIMULATOR MODE</span> : null}
-          <span className="ruleChip">Operational state {formatOperationalStateLabel(pageState)}</span>
-          <span className="ruleChip">{showLiveTelemetry ? `Live telemetry ${telemetryLabel}` : 'Current telemetry unavailable'}</span>
-          <span className="ruleChip">Last poll {pollLabel}</span>
-          <span className="ruleChip">Evidence source {monitoringPresentation.evidenceSourceLabel}</span>
-          <span className="ruleChip">Protected assets {protectedAssetCount}</span>
-          <span className="ruleChip">Monitored systems {configuredSystems}</span>
-          <span className="ruleChip">Reporting systems {reportingSystems}</span>
-          <span className="ruleChip">Evidence records {evidence.length}</span>
-          {!workspaceConfigured ? <span className="ruleChip">Workspace not configured</span> : null}
-          {latestReconcileJob ? (
-            <span className={`statusBadge statusBadge-${reconcileStatusBadgeTone(latestReconcileJob.status)}`}>
-              Reconcile {latestReconcileJob.status.toUpperCase()}
+          {headerStatusChips.map((chip) => (
+            <span
+              key={chip.label}
+              className={chip.tone === 'status' ? (chip.className ?? 'statusBadge statusBadge-attention') : 'ruleChip'}
+            >
+              {chip.label}
             </span>
-          ) : null}
-          {systemsPanelWarning ? <span className="statusBadge statusBadge-attention">{systemsPanelWarning}</span> : null}
-          <span className="ruleChip">Open alerts {openAlerts}</span>
-          <span className="ruleChip">Active incidents {activeIncidents}</span>
+          ))}
         </div>
-        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={runtimeReason} configurationReason={runtimeConfigurationReason} continuityStatus={truth.continuity_status} />
+        <p className="tableMeta">
+          Data provenance: /ops/monitoring/runtime-status ({snapshotFailedEndpoints.includes('runtime-status') ? 'fallback stale snapshot' : 'live refresh'}) · /ops/monitoring/investigation-timeline ({snapshotFailedEndpoints.includes('investigation-timeline') ? 'fallback stale snapshot' : 'live refresh'}) · Last successful runtime refresh: {formatAbsoluteTime(runtimeStatusSnapshot?.refreshed_at ?? runtimeStatusSnapshot?.last_poll_at ?? runtimeSummary?.last_poll_at ?? null)} · Last successful timeline refresh: {formatAbsoluteTime((investigationTimeline as Record<string, any> | null)?.generated_at ?? (investigationTimeline as Record<string, any> | null)?.created_at ?? null)}
+        </p>
+        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={runtimeReason} configurationReason={configurationReason} continuityStatus={truth.continuity_status} />
         {latestReconcileJob ? (
           <p className="tableMeta">
             Reconcile status {latestReconcileJob.status} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Affected systems {(latestReconcileJob.affected_systems ?? []).length} · Result {latestReconcileJob.reason_code || 'none'}
