@@ -260,8 +260,10 @@ def _normalize_monitoring_runtime_contract(payload: dict[str, Any]) -> dict[str,
         'confidence_status',
         'continuity_slo_pass',
         'heartbeat_age_seconds',
+        'telemetry_age_seconds',
         'event_ingestion_age_seconds',
         'detection_eval_age_seconds',
+        'thresholds_seconds',
         'required_thresholds_seconds',
         'runtime_status_summary',
         'configuration_diagnostics',
@@ -5847,6 +5849,23 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             detection_window_seconds=max(900, MONITOR_POLL_INTERVAL_SECONDS * 10),
         )
         summary.update(continuity_evaluation)
+        continuity_slo_pass = bool(summary.get('continuity_slo_pass') is True)
+        if live_mode_enabled() and workspace_configured and not continuity_slo_pass:
+            runtime_status_summary = 'degraded'
+            summary['runtime_status'] = 'degraded'
+            summary['monitoring_status'] = 'limited'
+            if not runtime_status_reason:
+                continuity_reasons = [
+                    str(code)
+                    for code in (summary.get('continuity_reason_codes') or [])
+                    if str(code).strip()
+                ]
+                runtime_status_reason = (
+                    f"runtime_status_degraded:continuity_slo_failed:{continuity_reasons[0]}"
+                    if continuity_reasons
+                    else 'runtime_status_degraded:continuity_slo_failed'
+                )
+                summary['status_reason'] = runtime_status_reason
         if coverage_only_warning_active:
             continuity_reason_codes = list(summary.get('continuity_reason_codes') or [])
             if 'coverage_only_persistent_no_evidence' not in continuity_reason_codes:

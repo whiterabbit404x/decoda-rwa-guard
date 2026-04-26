@@ -20,8 +20,15 @@ export type WorkspaceMonitoringSummary = {
   continuity_signals?: Record<string, unknown>;
   continuity_slo_pass?: boolean;
   heartbeat_age_seconds?: number | null;
+  telemetry_age_seconds?: number | null;
   event_ingestion_age_seconds?: number | null;
   detection_eval_age_seconds?: number | null;
+  thresholds_seconds?: {
+    heartbeat?: number;
+    telemetry?: number;
+    event_ingestion?: number;
+    detection_eval?: number;
+  };
   required_thresholds_seconds?: {
     heartbeat?: number;
     event_ingestion?: number;
@@ -118,6 +125,7 @@ export type MonitoringRuntimeStatus = {
   last_telemetry_at?: string | null;
   last_coverage_telemetry_at?: string | null;
   telemetry_kind?: 'coverage' | 'target_event' | null;
+  refreshed_at?: string | null;
   last_poll_at?: string | null;
   poll_freshness_status?: 'fresh' | 'stale' | 'unavailable';
   last_detection_at?: string | null;

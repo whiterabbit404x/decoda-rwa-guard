@@ -222,7 +222,7 @@ const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
 ]);
 
 type ContinuitySloDimension = {
-  key: 'heartbeat' | 'event_ingestion' | 'detection_eval';
+  key: 'heartbeat' | 'telemetry' | 'detection_eval';
   label: string;
   ageSeconds: number | null;
   thresholdSeconds: number | null;
@@ -245,7 +245,15 @@ function formatSloDuration(value: number | null): string {
 }
 
 export function evaluateContinuitySlo(summary?: MonitoringRuntimeStatus['workspace_monitoring_summary'] | null): ContinuitySloEvaluation {
-  const thresholds = summary?.required_thresholds_seconds ?? {};
+  const thresholds: {
+    heartbeat?: number;
+    telemetry?: number;
+    event_ingestion?: number;
+    detection_eval?: number;
+  } = {
+    ...(summary?.required_thresholds_seconds ?? {}),
+    ...(summary?.thresholds_seconds ?? {}),
+  };
   const normalizedTopLevelPass = summary?.continuity_slo_pass === true;
   const baseDimensions: ContinuitySloDimension[] = [
     {
@@ -257,10 +265,12 @@ export function evaluateContinuitySlo(summary?: MonitoringRuntimeStatus['workspa
       reason: null,
     },
     {
-      key: 'event_ingestion',
-      label: 'Event ingestion',
-      ageSeconds: summary?.event_ingestion_age_seconds ?? null,
-      thresholdSeconds: typeof thresholds.event_ingestion === 'number' ? thresholds.event_ingestion : null,
+      key: 'telemetry',
+      label: 'Telemetry ingestion',
+      ageSeconds: summary?.telemetry_age_seconds ?? summary?.event_ingestion_age_seconds ?? null,
+      thresholdSeconds: typeof thresholds.telemetry === 'number'
+        ? thresholds.telemetry
+        : (typeof thresholds.event_ingestion === 'number' ? thresholds.event_ingestion : null),
       pass: false,
       reason: null,
     },
@@ -297,6 +307,16 @@ export function evaluateContinuitySlo(summary?: MonitoringRuntimeStatus['workspa
     statusLabel: pass ? 'PASS' : 'FAIL',
     dimensions,
   };
+}
+
+function continuitySloFailureReasons(continuitySlo: ContinuitySloEvaluation): string {
+  const reasons = continuitySlo.dimensions
+    .filter((dimension) => !dimension.pass)
+    .map((dimension) => `${dimension.label}: ${dimension.reason || 'failed'}`);
+  if (reasons.length === 0) {
+    return 'All continuity timestamps are within SLO.';
+  }
+  return reasons.join('; ');
 }
 
 export function hasRuntimeQueryFailureMarker(params: {
@@ -854,18 +874,20 @@ export function pageStatePrimaryCopy(
   state: PageOperationalState,
   configurationReason?: string | null,
   continuityStatus?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null,
+  continuitySlo?: ContinuitySloEvaluation,
 ): string {
   if (state === 'healthy_live') {
     return 'Live monitoring is healthy. Telemetry freshness and threat detections reflect current workspace conditions.';
   }
   if (state === 'configured_no_signals') {
+    const sloReasons = continuitySlo ? continuitySloFailureReasons(continuitySlo) : 'Continuity reasons unavailable.';
     if (continuityStatus === 'continuous_no_evidence') {
-      return 'Monitoring is configured, but continuity is not proven yet.';
+      return `Continuity SLO FAIL. ${sloReasons}`;
     }
     if (continuityStatus === 'continuous_live') {
       return 'Continuous live monitoring proven. No active detections are currently open.';
     }
-    return 'Monitoring is configured, but continuity is not proven yet.';
+    return `Continuity SLO FAIL. ${sloReasons}`;
   }
   if (state === 'unconfigured_workspace') {
     return `Workspace is not configured: ${configurationReasonMessage(configurationReason)} Live threat detection starts only after persisted linkage is valid.`;
@@ -879,24 +901,24 @@ export function pageStatePrimaryCopy(
   return 'Monitoring is partially degraded. Threat outcomes may be delayed or incomplete.';
 }
 
-function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason, continuityStatus }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null; continuityStatus?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null }) {
+function PageStateBanner({ state, telemetryLabel, pollLabel, reason, configurationReason, continuityStatus, continuitySlo }: { state: PageOperationalState; telemetryLabel: string; pollLabel: string; reason?: string | null; configurationReason?: string | null; continuityStatus?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null; continuitySlo?: ContinuitySloEvaluation }) {
   if (state === 'healthy_live') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus)}</p>;
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)}</p>;
   }
   if (state === 'configured_no_signals') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus)}</p>;
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)}</p>;
   }
   if (state === 'unconfigured_workspace') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus)}</p>;
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)}</p>;
   }
   if (state === 'offline_no_telemetry') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus)} Reason: {reason || 'no active reporting systems'}. Add one monitored system and confirm telemetry flow.</p>;
+    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)} Reason: {reason || 'no active reporting systems'}. Add one monitored system and confirm telemetry flow.</p>;
   }
   if (state === 'fetch_error') {
     return (
       <div className="emptyStatePanel">
         <h4>Telemetry retrieval degraded</h4>
-        <p className="muted">{pageStatePrimaryCopy(state, configurationReason, continuityStatus)}</p>
+        <p className="muted">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)}</p>
         {reason ? <p className="tableMeta">Backend reason: {reason}</p> : null}
         <p className="tableMeta">Last telemetry: {telemetryLabel} · Last successful poll: {pollLabel}</p>
         <div className="buttonRow">
@@ -1810,7 +1832,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         <p className="tableMeta">
           Data provenance: /ops/monitoring/runtime-status ({snapshotFailedEndpoints.includes('runtime-status') ? 'fallback stale snapshot' : 'live refresh'}) · /ops/monitoring/investigation-timeline ({snapshotFailedEndpoints.includes('investigation-timeline') ? 'fallback stale snapshot' : 'live refresh'}) · Last successful runtime refresh: {formatAbsoluteTime(runtimeStatusSnapshot?.last_poll_at ?? runtimeSummary?.last_poll_at ?? runtimeStatusSnapshot?.last_telemetry_at ?? runtimeSummary?.last_telemetry_at ?? null)} · Last successful timeline refresh: {formatAbsoluteTime((investigationTimeline as Record<string, any> | null)?.generated_at ?? (investigationTimeline as Record<string, any> | null)?.created_at ?? null)}
         </p>
-        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={runtimeReason} configurationReason={configurationReason} continuityStatus={truth.continuity_status} />
+        <PageStateBanner state={pageState} telemetryLabel={telemetryLabel} pollLabel={pollLabel} reason={runtimeReason} configurationReason={configurationReason} continuityStatus={truth.continuity_status} continuitySlo={continuitySlo} />
         {latestReconcileJob ? (
           <p className="tableMeta">
             Reconcile status {latestReconcileJob.status} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Affected systems {(latestReconcileJob.affected_systems ?? []).length} · Result {latestReconcileJob.reason_code || 'none'}
@@ -1841,8 +1863,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <p className="kpiValue">{continuitySlo.statusLabel}</p>
           <p className="tableMeta">
             {continuitySlo.pass
-              ? 'Continuous live monitoring proven.'
-              : 'Configured but continuity not proven.'}
+              ? 'SLO PASS: heartbeat, telemetry, and detection checks are within thresholds.'
+              : `SLO FAIL: ${continuitySloFailureReasons(continuitySlo)}`}
           </p>
           <ul className="tableMeta">
             {continuitySlo.dimensions.map((dimension) => (
