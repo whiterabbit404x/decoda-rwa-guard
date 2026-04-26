@@ -220,6 +220,83 @@ const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
   'target_system_linkage_invalid',
 ]);
 
+type ContinuitySloDimension = {
+  key: 'heartbeat' | 'event_ingestion' | 'detection_eval';
+  label: string;
+  ageSeconds: number | null;
+  thresholdSeconds: number | null;
+  pass: boolean;
+  reason: string | null;
+};
+
+type ContinuitySloEvaluation = {
+  pass: boolean;
+  statusLabel: 'PASS' | 'FAIL';
+  dimensions: ContinuitySloDimension[];
+};
+
+function formatSloDuration(value: number | null): string {
+  if (value === null || Number.isNaN(value)) return 'missing';
+  if (value < 60) return `${value}s`;
+  const minutes = Math.floor(value / 60);
+  const seconds = value % 60;
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+export function evaluateContinuitySlo(summary?: MonitoringRuntimeStatus['workspace_monitoring_summary'] | null): ContinuitySloEvaluation {
+  const thresholds = summary?.required_thresholds_seconds ?? {};
+  const normalizedTopLevelPass = summary?.continuity_slo_pass === true;
+  const dimensions: ContinuitySloDimension[] = [
+    {
+      key: 'heartbeat',
+      label: 'Worker heartbeat',
+      ageSeconds: summary?.heartbeat_age_seconds ?? null,
+      thresholdSeconds: typeof thresholds.heartbeat === 'number' ? thresholds.heartbeat : null,
+      pass: false,
+      reason: null,
+    },
+    {
+      key: 'event_ingestion',
+      label: 'Event ingestion',
+      ageSeconds: summary?.event_ingestion_age_seconds ?? null,
+      thresholdSeconds: typeof thresholds.event_ingestion === 'number' ? thresholds.event_ingestion : null,
+      pass: false,
+      reason: null,
+    },
+    {
+      key: 'detection_eval',
+      label: 'Detection evaluation',
+      ageSeconds: summary?.detection_eval_age_seconds ?? null,
+      thresholdSeconds: typeof thresholds.detection_eval === 'number' ? thresholds.detection_eval : null,
+      pass: false,
+      reason: null,
+    },
+  ].map((dimension) => {
+    if (dimension.ageSeconds === null) {
+      return { ...dimension, pass: false, reason: 'timestamp missing' };
+    }
+    if (dimension.thresholdSeconds === null) {
+      return { ...dimension, pass: false, reason: 'threshold missing' };
+    }
+    if (dimension.ageSeconds > dimension.thresholdSeconds) {
+      return {
+        ...dimension,
+        pass: false,
+        reason: `${formatSloDuration(dimension.ageSeconds)} exceeds ${formatSloDuration(dimension.thresholdSeconds)}`,
+      };
+    }
+    return { ...dimension, pass: true, reason: null };
+  });
+
+  const calculatedPass = dimensions.every((dimension) => dimension.pass);
+  const pass = Boolean(normalizedTopLevelPass && calculatedPass);
+  return {
+    pass,
+    statusLabel: pass ? 'PASS' : 'FAIL',
+    dimensions,
+  };
+}
+
 export function hasRuntimeQueryFailureMarker(params: {
   statusReason?: string | null;
   configurationReason?: string | null;
@@ -771,12 +848,12 @@ export function pageStatePrimaryCopy(
   }
   if (state === 'configured_no_signals') {
     if (continuityStatus === 'continuous_no_evidence') {
-      return 'Live polling active. No recent anomaly evidence.';
+      return 'Monitoring is configured, but continuity is not proven yet.';
     }
     if (continuityStatus === 'continuous_live') {
-      return 'Telemetry continuity is live and continuous. No active detections are currently open.';
+      return 'Continuous live monitoring proven. No active detections are currently open.';
     }
-    return 'No telemetry continuity is currently proven for this workspace. Active detections are not currently available.';
+    return 'Monitoring is configured, but continuity is not proven yet.';
   }
   if (state === 'unconfigured_workspace') {
     return `Workspace is not configured: ${configurationReasonMessage(configurationReason)} Live threat detection starts only after persisted linkage is valid.`;
@@ -1069,6 +1146,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const telemetryDisplayLabel = formatRelativeTime(coverageTelemetryAt);
   const pollLabel = monitoringPresentation.pollLabel;
   const detectionEvalLabel = formatRelativeTime(runtimeStatusSnapshot?.last_detection_at ?? monitoringPresentation.lastTelemetryAt);
+  const continuitySlo = evaluateContinuitySlo(runtimeSummary);
 
   const targetById = useMemo(() => {
     return new Map(targets.map((target) => [target.id, target] as const));
@@ -1648,6 +1726,23 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       </article>
 
       <section className="monitoringKpiGrid" aria-label="Monitoring KPIs">
+        <article className="dataCard kpiCard">
+          <p className="sectionEyebrow">Continuity SLO</p>
+          <p className="kpiValue">{continuitySlo.statusLabel}</p>
+          <p className="tableMeta">
+            {continuitySlo.pass
+              ? 'Continuous live monitoring proven.'
+              : 'Configured but continuity not proven.'}
+          </p>
+          <ul className="tableMeta">
+            {continuitySlo.dimensions.map((dimension) => (
+              <li key={dimension.key}>
+                {dimension.label}: {dimension.pass ? 'PASS' : 'FAIL'} (age {formatSloDuration(dimension.ageSeconds)} / threshold {formatSloDuration(dimension.thresholdSeconds)})
+                {!dimension.pass && dimension.reason ? ` — ${dimension.reason}` : ''}
+              </li>
+            ))}
+          </ul>
+        </article>
         <article className="dataCard kpiCard">
           <p className="sectionEyebrow">Monitoring Status</p>
           <p className="kpiValue">{monitoringPresentation.statusLabel}</p>

@@ -26,6 +26,15 @@ def test_continuity_continuous_live_at_freshness_boundary() -> None:
     assert payload['detection_pipeline_freshness'] == 'fresh'
     assert payload['worker_heartbeat_freshness'] == 'fresh'
     assert payload['event_throughput_window'] == 'in_window'
+    assert payload['continuity_slo_pass'] is True
+    assert payload['heartbeat_age_seconds'] == 180
+    assert payload['event_ingestion_age_seconds'] == 120
+    assert payload['detection_eval_age_seconds'] == 300
+    assert payload['required_thresholds_seconds'] == {
+        'heartbeat': 180,
+        'event_ingestion': 120,
+        'detection_eval': 300,
+    }
 
 
 def test_continuity_degraded_when_event_freshness_is_stale() -> None:
@@ -47,6 +56,10 @@ def test_continuity_degraded_when_event_freshness_is_stale() -> None:
     assert payload['detection_pipeline_freshness'] == 'fresh'
     assert payload['worker_heartbeat_freshness'] == 'fresh'
     assert payload['event_throughput_window'] == 'out_of_window'
+    assert payload['continuity_slo_pass'] is False
+    assert payload['heartbeat_age_seconds'] == 60
+    assert payload['event_ingestion_age_seconds'] == 121
+    assert payload['detection_eval_age_seconds'] == 30
 
 
 def test_continuity_offline_when_worker_dead_and_all_signals_offline() -> None:

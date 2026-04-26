@@ -2083,6 +2083,10 @@ def test_runtime_status_marks_heartbeat_only_as_no_evidence(monkeypatch):
     assert payload['recent_evidence_state'] == 'no_evidence'
     assert payload['recent_evidence_reason_code'] == 'coverage_only_no_events'
     assert payload['continuity_signals']['event_ingestion_freshness'] == 'missing'
+    assert payload['continuity_slo_pass'] is False
+    assert payload['required_thresholds_seconds']['heartbeat'] > 0
+    assert payload['workspace_monitoring_summary']['continuity_slo_pass'] is False
+    assert payload['workspace_monitoring_summary']['event_ingestion_age_seconds'] is None
 
 
 def test_derive_system_runtime_state_marks_unsupported_target_type_explicitly():
