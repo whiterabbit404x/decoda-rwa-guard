@@ -214,6 +214,8 @@ type ThreatActionButtonState = {
   disabled: boolean;
   reason: string;
   noOpMessage: string;
+  nextStepLabel: string;
+  nextStepHref: string;
 };
 
 type ThreatFeedState = 'Live' | 'Historical' | 'Test' | 'Stale' | 'Investigating' | 'Resolved';
@@ -245,8 +247,8 @@ type ReconcileJobSnapshot = {
   completed_at?: string | null;
 };
 
-type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale' | 'partial_failure';
-type EndpointProvenanceState = 'live' | 'stale' | 'partial_failure';
+type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale_snapshot' | 'partial_failure';
+type EndpointProvenanceState = 'live' | 'degraded' | 'stale_snapshot' | 'partial_failure';
 
 type PageBannerModel = {
   variant: 'explanation' | 'fetch_error';
@@ -1098,6 +1100,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [investigationTimeline, setInvestigationTimeline] = useState<MonitoringInvestigationTimeline | null>(null);
   const [snapshotFailedEndpoints, setSnapshotFailedEndpoints] = useState<SnapshotFailureKey[]>([]);
   const [snapshotStaleCollections, setSnapshotStaleCollections] = useState<SnapshotCollectionKey[]>([]);
+  const [collectionLastSuccessfulRefreshAt, setCollectionLastSuccessfulRefreshAt] = useState<Record<SnapshotCollectionKey, string | null>>({
+    detections: null,
+    alerts: null,
+    incidents: null,
+    evidence: null,
+    history: null,
+    'monitoring-runs': null,
+  });
   const collectionCacheRef = useRef<{
     detections: DetectionRow[];
     alerts: AlertRow[];
@@ -1195,6 +1205,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         setter,
         stale,
         cacheKey,
+        markRefreshed,
       }: {
         key: SnapshotCollectionKey;
         result: PromiseSettledResult<Response>;
@@ -1204,12 +1215,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         setter: (rows: T[]) => void;
         stale: SnapshotCollectionKey[];
         cacheKey: keyof typeof collectionCacheRef.current;
+        markRefreshed: (collectionKey: SnapshotCollectionKey) => void;
       }) {
         const endpoint = payloadRowsWithAvailability<T>(payload, payloadKeys);
         if (canonical.available && canonical.rows) {
           const rows = canonical.rows;
           setter(rows);
           collectionCacheRef.current[cacheKey] = rows as any;
+          markRefreshed(key);
           if (!(result.status === 'fulfilled' && result.value.ok)) {
             stale.push(key);
           }
@@ -1219,6 +1232,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           const rows = endpoint.rows;
           setter(rows);
           collectionCacheRef.current[cacheKey] = rows as any;
+          markRefreshed(key);
           return;
         }
         stale.push(key);
@@ -1318,6 +1332,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
         // Runtime-status + investigation-timeline are canonical; collection APIs are refreshed in parallel and kept stale-safe.
         const staleCollections: SnapshotCollectionKey[] = [];
+        const refreshedCollectionTimestamps: Partial<Record<SnapshotCollectionKey, string>> = {};
+        const markCollectionRefreshed = (collectionKey: SnapshotCollectionKey) => {
+          refreshedCollectionTimestamps[collectionKey] = new Date().toISOString();
+        };
         updateCollection<DetectionRow>({
           key: 'detections',
           result: detectionsResult,
@@ -1327,6 +1345,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           setter: setDetections,
           stale: staleCollections,
           cacheKey: 'detections',
+          markRefreshed: markCollectionRefreshed,
         });
         updateCollection<AlertRow>({
           key: 'alerts',
@@ -1337,6 +1356,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           setter: setAlerts,
           stale: staleCollections,
           cacheKey: 'alerts',
+          markRefreshed: markCollectionRefreshed,
         });
         updateCollection<IncidentRow>({
           key: 'incidents',
@@ -1347,6 +1367,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           setter: setIncidents,
           stale: staleCollections,
           cacheKey: 'incidents',
+          markRefreshed: markCollectionRefreshed,
         });
         updateCollection<EvidenceRow>({
           key: 'evidence',
@@ -1360,6 +1381,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           setter: setEvidence,
           stale: staleCollections,
           cacheKey: 'evidence',
+          markRefreshed: markCollectionRefreshed,
         });
         updateCollection<ActionHistoryRow>({
           key: 'history',
@@ -1370,6 +1392,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           setter: setActionHistory,
           stale: staleCollections,
           cacheKey: 'history',
+          markRefreshed: markCollectionRefreshed,
         });
         updateCollection<MonitoringRunRow>({
           key: 'monitoring-runs',
@@ -1380,7 +1403,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           setter: setMonitoringRuns,
           stale: staleCollections,
           cacheKey: 'monitoringRuns',
+          markRefreshed: markCollectionRefreshed,
         });
+        if (Object.keys(refreshedCollectionTimestamps).length > 0) {
+          setCollectionLastSuccessfulRefreshAt((current) => ({
+            ...current,
+            ...refreshedCollectionTimestamps,
+          }));
+        }
         setSnapshotStaleCollections(staleCollections);
         const activeJob = activeReconcileStatusPayload?.job;
         const reconcileJob = activeJob && typeof activeJob === 'object' ? activeJob : reconcileLatestPayload?.job;
@@ -1733,10 +1763,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const runtimeEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('runtime-status')
       ? 'partial_failure'
       : (telemetryState === 'stale' || pollState === 'stale' || heartbeatState === 'stale')
-        ? 'stale'
+        ? 'stale_snapshot'
+        : (pageState === 'degraded_partial' || monitoringPresentation.status === 'degraded')
+          ? 'degraded'
         : 'live';
     const timelineEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('investigation-timeline')
       ? 'partial_failure'
+      : (pageState === 'degraded_partial' || monitoringPresentation.status === 'degraded')
+        ? 'degraded'
       : 'live';
     const lastSuccessfulRuntimeRefreshAt = runtimeStatusSnapshot?.last_poll_at
       ?? runtimeSummary?.last_poll_at
@@ -1749,17 +1783,20 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const derivedProvenanceLabel: MonitoringProvenanceLabel = snapshotFailedEndpoints.length > 0
       ? 'partial_failure'
       : (telemetryState === 'stale' || pollState === 'stale' || heartbeatState === 'stale')
-        ? 'stale'
+        ? 'stale_snapshot'
         : (pageState === 'degraded_partial' || monitoringPresentation.status === 'degraded')
           ? 'degraded'
           : 'live';
     const provenanceExplanation = derivedProvenanceLabel === 'partial_failure'
       ? `Monitoring snapshot fallback is active because ${snapshotFailedEndpoints.join(', ')} failed in the most recent refresh.`
-      : derivedProvenanceLabel === 'stale'
+      : derivedProvenanceLabel === 'stale_snapshot'
         ? 'Runtime snapshot is visible, but at least one freshness timestamp is stale.'
         : derivedProvenanceLabel === 'degraded'
           ? 'Runtime and continuity contract report degraded monitoring health.'
           : 'Runtime and continuity contract confirm live monitoring health.';
+    const staleCollectionNotes = snapshotStaleCollections.map((collection) => (
+      `${collection}: last successful refresh ${formatAbsoluteTime(collectionLastSuccessfulRefreshAt[collection])}`
+    ));
 
     const bannerPrimaryCopy = pageState === 'offline_no_telemetry'
       ? `${pageStatePrimaryCopy(pageState, configurationReason, runtimeSummary?.continuity_status ?? null, continuitySlo)} Reason: ${runtimeReason || 'no active reporting systems'}. Provenance: ${derivedProvenanceLabel}. Add one monitored system and confirm telemetry flow.`
@@ -1773,6 +1810,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           `Provenance: ${derivedProvenanceLabel} · ${provenanceExplanation}`,
           ...(runtimeReason ? [`Backend reason: ${runtimeReason}`] : []),
           `Last telemetry: ${telemetryLabel} · Last successful poll: ${pollLabel}`,
+          ...staleCollectionNotes,
         ],
       }
       : {
@@ -1814,7 +1852,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     }
     if (snapshotStaleCollections.length > 0) {
       headerStatusChips.push({
-        label: `Stale collections ${snapshotStaleCollections.join(', ')}`,
+        label: `Stale collections ${snapshotStaleCollections.map((collection) => `${collection}:${formatAbsoluteTime(collectionLastSuccessfulRefreshAt[collection])}`).join(', ')}`,
         tone: 'status',
         className: 'statusBadge statusBadge-attention',
       });
@@ -1859,6 +1897,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             ? 'Simulator proof chain generation is already running.'
             : (simulatorProofChainUnavailableCopy || 'Simulator proof chain generation is unavailable in the current state.'),
           noOpMessage: 'Generate simulator proof chain is currently unavailable.',
+          nextStepLabel: 'Inspect integration health',
+          nextStepHref: '/integrations',
         },
       },
     };
@@ -1891,6 +1931,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     simulatorMode,
     snapshotFailedEndpoints,
     snapshotStaleCollections,
+    collectionLastSuccessfulRefreshAt,
     systemsPanelWarning,
     telemetryLabel,
     telemetryState,
@@ -2163,41 +2204,57 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       disabled: boolean,
       reason: string | null | undefined,
       noOpMessage: string,
+      nextStepLabel: string,
+      nextStepHref: string,
     ): ThreatActionButtonState => ({
       disabled,
       reason: (reason || 'Unavailable due to current monitoring state').trim(),
       noOpMessage,
+      nextStepLabel,
+      nextStepHref,
     });
     return {
       'sim-notify-team': buildState(
         shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated'),
         shouldBlockThreatActionCreation ? baseContextReason : actionDisabledReason(actionCapabilities.notify_team, 'simulated'),
         'Run simulated response is currently unavailable. No action was executed.',
+        'Review alerts',
+        '/alerts',
       ),
       'sim-revoke-approval': buildState(
         shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated'),
         shouldBlockThreatActionCreation ? baseContextReason : actionDisabledReason(actionCapabilities.revoke_approval, 'simulated'),
         'Revoke approval (simulated) is currently unavailable. No action was executed.',
+        'Review alerts',
+        '/alerts',
       ),
       'rec-freeze-wallet': buildState(
         shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'recommended'),
         shouldBlockThreatActionCreation ? baseContextReason : actionDisabledReason(actionCapabilities.freeze_wallet, 'recommended'),
         'Freeze wallet (recommended) is currently unavailable. No action was created.',
+        'Open incident queue',
+        '/incidents',
       ),
       'rec-disable-monitored-system': buildState(
         shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.disable_monitored_system, 'recommended'),
         shouldBlockThreatActionCreation ? baseContextReason : actionDisabledReason(actionCapabilities.disable_monitored_system, 'recommended'),
         'Disable monitored system (recommended) is currently unavailable. No action was created.',
+        'Manage monitored systems',
+        '/monitored-systems',
       ),
       'live-freeze-wallet': buildState(
         shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'live'),
         shouldBlockThreatActionCreation ? baseContextReason : (missingIncidentContextReason ?? actionDisabledReason(actionCapabilities.freeze_wallet, 'live')),
         'Freeze wallet (live) is currently unavailable. No live workflow was started.',
+        'Open incident queue',
+        '/incidents',
       ),
       'live-revoke-approval': buildState(
         shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.revoke_approval, 'live'),
         shouldBlockThreatActionCreation ? baseContextReason : (missingIncidentContextReason ?? actionDisabledReason(actionCapabilities.revoke_approval, 'live')),
         'Revoke approval (live) is currently unavailable. No live workflow was started.',
+        'Open incident queue',
+        '/incidents',
       ),
     };
   }, [
@@ -2243,65 +2300,76 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     registerDisabledAction(
       'repair-proof-chain',
       'Generate simulator proof chain',
-      ensuringProofChain || !canGenerateSimulatorProofChain,
-      !canGenerateSimulatorProofChain ? simulatorProofChainUnavailableCopy : null,
-      'Inspect integration health',
-      '/integrations',
+      monitoringViewModel.ctas.generateSimulatorProofChain.disabled,
+      monitoringViewModel.ctas.generateSimulatorProofChain.reason,
+      monitoringViewModel.ctas.generateSimulatorProofChain.nextStepLabel,
+      monitoringViewModel.ctas.generateSimulatorProofChain.nextStepHref,
     );
     registerDisabledAction(
       'sim-notify-team',
       'Run simulated response',
       actionButtonStates['sim-notify-team'].disabled,
       actionButtonStates['sim-notify-team'].reason,
-      'Review alerts',
-      '/alerts',
+      actionButtonStates['sim-notify-team'].nextStepLabel,
+      actionButtonStates['sim-notify-team'].nextStepHref,
     );
     registerDisabledAction(
       'sim-revoke-approval',
       'Revoke approval',
       actionButtonStates['sim-revoke-approval'].disabled,
       actionButtonStates['sim-revoke-approval'].reason,
-      'Review alerts',
-      '/alerts',
+      actionButtonStates['sim-revoke-approval'].nextStepLabel,
+      actionButtonStates['sim-revoke-approval'].nextStepHref,
     );
     registerDisabledAction(
       'rec-freeze-wallet',
       'Freeze wallet (RECOMMENDED)',
       actionButtonStates['rec-freeze-wallet'].disabled,
       actionButtonStates['rec-freeze-wallet'].reason,
-      'Open incident queue',
-      '/incidents',
+      actionButtonStates['rec-freeze-wallet'].nextStepLabel,
+      actionButtonStates['rec-freeze-wallet'].nextStepHref,
     );
     registerDisabledAction(
       'rec-disable-monitored-system',
       'Disable monitored system (RECOMMENDED)',
       actionButtonStates['rec-disable-monitored-system'].disabled,
       actionButtonStates['rec-disable-monitored-system'].reason,
-      'Manage monitored systems',
-      '/monitored-systems',
+      actionButtonStates['rec-disable-monitored-system'].nextStepLabel,
+      actionButtonStates['rec-disable-monitored-system'].nextStepHref,
     );
     registerDisabledAction(
       'live-freeze-wallet',
       'Freeze wallet (LIVE)',
       actionButtonStates['live-freeze-wallet'].disabled,
       actionButtonStates['live-freeze-wallet'].reason,
-      'Open incident queue',
-      '/incidents',
+      actionButtonStates['live-freeze-wallet'].nextStepLabel,
+      actionButtonStates['live-freeze-wallet'].nextStepHref,
     );
     registerDisabledAction(
       'live-revoke-approval',
       'Revoke approval (LIVE)',
       actionButtonStates['live-revoke-approval'].disabled,
       actionButtonStates['live-revoke-approval'].reason,
-      'Open incident queue',
-      '/incidents',
+      actionButtonStates['live-revoke-approval'].nextStepLabel,
+      actionButtonStates['live-revoke-approval'].nextStepHref,
+    );
+    registerDisabledAction(
+      'confirm-live-action',
+      'Confirm LIVE action',
+      Boolean(confirmLiveActionDisabledReason),
+      confirmLiveActionDisabledReason,
+      !selectedThreatActionContext?.incidentId ? 'Open incident queue' : 'Review confirmation steps',
+      !selectedThreatActionContext?.incidentId ? '/incidents' : '/threat#response-actions',
     );
     return messages;
   }, [
     actionButtonStates,
-    canGenerateSimulatorProofChain,
-    ensuringProofChain,
-    simulatorProofChainUnavailableCopy,
+    confirmLiveActionDisabledReason,
+    monitoringViewModel.ctas.generateSimulatorProofChain.disabled,
+    monitoringViewModel.ctas.generateSimulatorProofChain.nextStepHref,
+    monitoringViewModel.ctas.generateSimulatorProofChain.nextStepLabel,
+    monitoringViewModel.ctas.generateSimulatorProofChain.reason,
+    selectedThreatActionContext?.incidentId,
   ]);
   const threatOperationsViewModel = useMemo<ThreatOperationsViewModel>(() => ({
     monitoring: monitoringViewModel,
@@ -3254,7 +3322,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               setLiveActionAcknowledged(false);
             }}>Confirm LIVE action</button>
           </div>
-          {confirmLiveActionDisabledReason ? <p className="tableMeta">{confirmLiveActionDisabledReason}</p> : null}
+          {confirmLiveActionDisabledReason ? (
+            <p className="tableMeta">
+              {confirmLiveActionDisabledReason} Next step:{' '}
+              <Link href={!selectedThreatActionContext?.incidentId ? '/incidents' : '/threat#response-actions'} prefetch={false}>
+                {!selectedThreatActionContext?.incidentId ? 'Open incident queue' : 'Complete confirmation checklist'}
+              </Link>
+            </p>
+          ) : null}
         </article>
       ) : null}
     </section>
