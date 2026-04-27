@@ -342,8 +342,10 @@ export function evaluateContinuitySlo(
       key: 'detection_eval',
       label: 'Detection evaluation',
       ageSeconds: continuitySloPayload?.detection_age_seconds
+        ?? continuitySloPayload?.detection_pipeline_age_seconds
         ?? continuitySloPayload?.detection_eval_age_seconds
         ?? summary?.detection_age_seconds
+        ?? summary?.detection_pipeline_age_seconds
         ?? summary?.detection_eval_age_seconds
         ?? null,
       thresholdSeconds: typeof thresholds.detection_eval === 'number' ? thresholds.detection_eval : null,
@@ -385,6 +387,11 @@ function continuitySloFailureReasons(continuitySlo: ContinuitySloEvaluation): st
     return 'All continuity timestamps are within SLO.';
   }
   return reasons.join('; ');
+}
+
+function continuitySloFailingDimensions(continuitySlo: ContinuitySloEvaluation): string {
+  const failed = continuitySlo.dimensions.filter((dimension) => !dimension.pass).map((dimension) => dimension.label);
+  return failed.length > 0 ? failed.join(', ') : 'none';
 }
 
 export function hasRuntimeQueryFailureMarker(params: {
@@ -2258,7 +2265,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <p className="tableMeta">
             {continuitySlo.pass
               ? 'SLO PASS: heartbeat, telemetry, and detection checks are within thresholds.'
-              : `SLO FAIL: ${continuitySloFailureReasons(continuitySlo)}`}
+              : `SLO FAIL (${continuitySloFailingDimensions(continuitySlo)}): ${continuitySloFailureReasons(continuitySlo)}`}
           </p>
           <p className="tableMeta">
             Continuity decision: <strong>{continuitySlo.statusLabel}</strong>{' '}

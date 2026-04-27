@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 import {
   derivePageState,
+  evaluateContinuitySlo,
   formatSystemsPanelWarning,
   formatOperationalStateLabel,
   hasRuntimeQueryFailureMarker,
@@ -11,6 +12,60 @@ import { hasLiveTelemetry, resolveWorkspaceMonitoringTruth } from '../app/worksp
 import type { MonitoringRuntimeStatus } from '../app/monitoring-status-contract';
 
 test.describe('threat runtime guards', () => {
+  test('evaluates continuity SLO transitions for live/fresh, stale, offline, and degraded states', async () => {
+    const liveFresh = evaluateContinuitySlo(
+      {
+        continuity_slo_pass: true,
+        heartbeat_age_seconds: 60,
+        telemetry_age_seconds: 90,
+        detection_pipeline_age_seconds: 120,
+        required_thresholds_seconds: { heartbeat: 180, event_ingestion: 120, detection_eval: 300 },
+      } as MonitoringRuntimeStatus['workspace_monitoring_summary'],
+      null,
+    );
+    expect(liveFresh.pass).toBe(true);
+    expect(liveFresh.statusLabel).toBe('PASS');
+    expect(liveFresh.dimensions.every((dimension) => dimension.pass)).toBe(true);
+
+    const stale = evaluateContinuitySlo(
+      {
+        continuity_slo_pass: false,
+        heartbeat_age_seconds: 20,
+        telemetry_age_seconds: 181,
+        detection_age_seconds: 80,
+        required_thresholds_seconds: { heartbeat: 180, event_ingestion: 120, detection_eval: 300 },
+      } as MonitoringRuntimeStatus['workspace_monitoring_summary'],
+      null,
+    );
+    expect(stale.pass).toBe(false);
+    expect(stale.dimensions.find((dimension) => dimension.key === 'telemetry')?.pass).toBe(false);
+
+    const offline = evaluateContinuitySlo(
+      {
+        continuity_slo_pass: false,
+        heartbeat_age_seconds: 601,
+        telemetry_age_seconds: 721,
+        detection_eval_age_seconds: 901,
+        required_thresholds_seconds: { heartbeat: 180, event_ingestion: 120, detection_eval: 300 },
+      } as MonitoringRuntimeStatus['workspace_monitoring_summary'],
+      null,
+    );
+    expect(offline.pass).toBe(false);
+    expect(offline.dimensions.every((dimension) => dimension.pass === false)).toBe(true);
+
+    const degradedMissingDetectionTimestamp = evaluateContinuitySlo(
+      {
+        continuity_slo_pass: false,
+        heartbeat_age_seconds: 45,
+        telemetry_age_seconds: 75,
+        required_thresholds_seconds: { heartbeat: 180, event_ingestion: 120, detection_eval: 300 },
+      } as MonitoringRuntimeStatus['workspace_monitoring_summary'],
+      null,
+    );
+    expect(degradedMissingDetectionTimestamp.pass).toBe(false);
+    expect(degradedMissingDetectionTimestamp.dimensions.find((dimension) => dimension.key === 'detection_eval')?.reason).toBe('timestamp missing');
+  });
+
   test('handles undefined operational state labels without crashing', async () => {
     expect(formatOperationalStateLabel(undefined)).toBe('unknown');
     expect(formatOperationalStateLabel('offline_no_telemetry')).toBe('offline no telemetry');

@@ -31,12 +31,18 @@ def test_continuity_continuous_live_at_freshness_boundary() -> None:
     assert payload['telemetry_age_seconds'] == 120
     assert payload['event_ingestion_age_seconds'] == 120
     assert payload['detection_eval_age_seconds'] == 300
+    assert payload['detection_pipeline_age_seconds'] == 300
     assert payload['thresholds_seconds'] == {
         'heartbeat': 180,
         'event_ingestion': 120,
         'detection_eval': 300,
     }
     assert payload['required_thresholds_seconds'] == {
+        'heartbeat': 180,
+        'event_ingestion': 120,
+        'detection_eval': 300,
+    }
+    assert payload['continuity_thresholds_seconds'] == {
         'heartbeat': 180,
         'event_ingestion': 120,
         'detection_eval': 300,
@@ -67,6 +73,7 @@ def test_continuity_degraded_when_event_freshness_is_stale() -> None:
     assert payload['telemetry_age_seconds'] == 121
     assert payload['event_ingestion_age_seconds'] == 121
     assert payload['detection_eval_age_seconds'] == 30
+    assert payload['detection_pipeline_age_seconds'] == 30
 
 
 def test_continuity_offline_when_worker_dead_and_all_signals_offline() -> None:
@@ -223,7 +230,11 @@ def test_continuity_transition_contract_live_stale_offline_and_degraded() -> Non
     )
     assert live['continuity_status'] == 'continuous_live'
     assert live['continuity_slo_pass'] is True
+    assert live['ingestion_freshness'] == 'fresh'
     assert stale['continuity_status'] == 'degraded'
     assert stale['continuity_slo_pass'] is False
+    assert stale['ingestion_freshness'] == 'stale'
     assert offline['continuity_status'] == 'offline'
+    assert offline['ingestion_freshness'] == 'offline'
     assert degraded['continuity_status'] == 'degraded'
+    assert degraded['ingestion_freshness'] == 'fresh'

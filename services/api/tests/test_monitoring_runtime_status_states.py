@@ -144,12 +144,14 @@ def test_runtime_status_forces_degraded_when_live_continuity_slo_fails(monkeypat
             'telemetry_age_seconds': 900,
             'event_ingestion_age_seconds': 900,
             'detection_age_seconds': 900,
+            'detection_pipeline_age_seconds': 900,
             'detection_eval_age_seconds': 900,
             'heartbeat_threshold_seconds': 180,
             'telemetry_threshold_seconds': 300,
             'detection_threshold_seconds': 300,
             'thresholds_seconds': {'heartbeat': 180, 'event_ingestion': 300, 'detection_eval': 300},
             'required_thresholds_seconds': {'heartbeat': 180, 'event_ingestion': 300, 'detection_eval': 300},
+            'continuity_thresholds_seconds': {'heartbeat': 180, 'event_ingestion': 300, 'detection_eval': 300},
             'continuity_signals': {},
             'ingestion_freshness': 'stale',
             'detection_pipeline_freshness': 'stale',
@@ -168,7 +170,10 @@ def test_runtime_status_forces_degraded_when_live_continuity_slo_fails(monkeypat
     assert payload['workspace_monitoring_summary']['continuity_slo_pass'] is False
     assert payload['continuity_slo']['pass'] is False
     assert payload['continuity_slo']['detection_age_seconds'] == 900
+    assert payload['continuity_slo']['detection_pipeline_age_seconds'] == 900
     assert payload['continuity_slo']['detection_threshold_seconds'] == 300
+    assert payload['workspace_monitoring_summary']['runtime_degraded_reason_codes'] == ['continuity_slo_failed', 'event_ingestion_stale']
+    assert payload['degraded_reason'] == 'continuity_slo_failed:event_ingestion_stale'
 
 
 def test_runtime_status_transitions_across_continuous_monitoring_lifecycle(monkeypatch):
