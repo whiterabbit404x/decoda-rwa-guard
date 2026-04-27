@@ -1189,6 +1189,24 @@ def _normalize_action_route_response(payload: dict[str, Any]) -> dict[str, Any]:
         **(normalized.get('execution_evidence') if isinstance(normalized.get('execution_evidence'), dict) else {}),
         **execution_provenance,
     }
+    existing_execution_metadata = normalized.get('execution_metadata') if isinstance(normalized.get('execution_metadata'), dict) else {}
+    normalized['execution_metadata'] = {
+        **existing_execution_metadata,
+        'mode': execution_provenance.get('mode'),
+        'status': execution_provenance.get('status'),
+        'execution_state': execution_provenance.get('execution_state'),
+        'provider_request_id': execution_provenance.get('provider_request_id'),
+        'provider_response_id': execution_provenance.get('provider_response_id'),
+        'tx_hash': execution_provenance.get('tx_hash'),
+        'safe_tx_hash': execution_provenance.get('safe_tx_hash'),
+        'result_code': execution_provenance.get('result_code'),
+        'error_reason': execution_provenance.get('error_reason'),
+        'approved_at': execution_provenance.get('approved_at'),
+        'executed_at': execution_provenance.get('executed_at'),
+        'result_summary': normalized.get('result_summary'),
+        'final_status': execution_provenance.get('status'),
+        'finalized_at': execution_provenance.get('executed_at') or execution_provenance.get('approved_at'),
+    }
     return normalized
 
 

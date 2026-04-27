@@ -9884,6 +9884,11 @@ def _require_live_action_authorization(workspace_context: dict[str, Any]) -> Non
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Owner or admin role is required for live action execution.')
 
 
+def _require_action_mode_authorization(mode: str, workspace_context: dict[str, Any]) -> None:
+    if mode in {'recommended', 'live'}:
+        _require_live_action_authorization(workspace_context)
+
+
 def _fallback_governance_action(payload: dict[str, Any]) -> dict[str, Any]:
     action_type = str(payload.get('action_type') or 'governance_action')
     target_id = str(payload.get('target_id') or payload.get('target_wallet') or 'target')
@@ -10020,8 +10025,7 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
         target_wallet = _normalize_eth_address(params.get('target_wallet'), field='target_wallet')
         mode = _normalize_response_action_mode(payload)
         capability = resolve_response_action_capability(action_type, mode)
-        if mode == 'live':
-            _require_live_action_authorization(workspace_context)
+        _require_action_mode_authorization(mode, workspace_context)
         if not capability.get('supports_mode'):
             if mode == 'live':
                 raise HTTPException(
@@ -10034,6 +10038,8 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                     ),
                 )
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Selected mode is not supported for this action.')
+        if mode == 'live' and not incident_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Live action mode requires incident_id.')
         status_value = _normalize_response_action_status(payload.get('status'))
         execution_metadata = {
             'params': params,
@@ -10171,9 +10177,10 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Enforcement action not found.')
-        if str(row.get('mode') or 'simulated') != 'live':
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Only live mode actions require explicit approval.')
-        _require_live_action_authorization(workspace_context)
+        mode = str(row.get('mode') or 'simulated')
+        if mode not in {'recommended', 'live'}:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Only recommended/live actions require explicit approval.')
+        _require_action_mode_authorization(mode, workspace_context)
         if str(row.get('status')) not in {'pending', 'failed', 'planned'}:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action cannot be approved from current status.')
         approved_at = utc_now_iso()
@@ -10243,10 +10250,10 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         artifacts = action.get('execution_artifacts') if isinstance(action.get('execution_artifacts'), dict) else {}
         provider_receipts = action.get('provider_receipts') if isinstance(action.get('provider_receipts'), list) else []
         mode = str(action.get('mode') or 'simulated')
+        _require_action_mode_authorization(mode, workspace_context)
+        if mode in {'recommended', 'live'} and not action.get('approved_by_user_id'):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Recommended/live action requires explicit approval before execution.')
         if mode == 'live':
-            _require_live_action_authorization(workspace_context)
-            if not action.get('approved_by_user_id'):
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Live action requires explicit approval before execution.')
             if str(action.get('approved_by_user_id')) == str(user.get('id')):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action execution requires a separate approver and executor.')
             metadata['step_up'] = _require_live_action_step_up_auth(request, user=user)
@@ -10254,7 +10261,15 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         execution_state = 'simulated_executed'
         next_status = 'executed'
         result_summary = 'Action executed in simulation mode.'
-        if mode != 'live':
+        if mode == 'recommended':
+            metadata['execution_mode'] = 'recommended'
+            metadata['execution_state'] = 'recommended_approved'
+            execution_state = 'recommended_approved'
+            next_status = 'pending'
+            result_summary = 'Recommended action approved for manual/live follow-up.'
+            result_code = 202
+            provider_name = 'recommended'
+        elif mode != 'live':
             metadata['execution_mode'] = 'simulated'
         elif capability.get('live_execution_path') == 'safe':
             safe_response = _propose_safe_transaction(
@@ -10432,6 +10447,19 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         metadata['result_code'] = result_code
         if error_reason:
             metadata['failure_reason'] = error_reason
+        finalized_at = utc_now_iso()
+        metadata['final_status'] = next_status
+        metadata['final_execution_state'] = execution_state
+        metadata['finalized_at'] = finalized_at
+        metadata['provider_request_id'] = provider_request_id
+        metadata['provider_response_id'] = provider_response_id
+        metadata['tx_hash'] = safe_tx_hash
+        metadata['response_payload_summary'] = {
+            'result_summary': result_summary,
+            'result_code': result_code,
+            'error_reason': error_reason,
+            'live_execution_path': capability.get('live_execution_path'),
+        }
         artifacts = _append_execution_attempt(
             artifacts,
             mode=mode,
@@ -10443,6 +10471,20 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             provider_response_id=provider_response_id,
             tx_hash=safe_tx_hash,
             error_reason=error_reason,
+        )
+        artifacts['last_execution'] = _json_safe_value(
+            {
+                'mode': mode,
+                'status': next_status,
+                'execution_state': execution_state,
+                'provider_request_id': provider_request_id,
+                'provider_response_id': provider_response_id,
+                'tx_hash': safe_tx_hash,
+                'result_code': result_code,
+                'error_reason': error_reason,
+                'result_summary': result_summary,
+                'finalized_at': finalized_at,
+            }
         )
         if next_status not in ENFORCEMENT_STATUSES:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Invalid next status for response action execution.')

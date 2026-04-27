@@ -1961,6 +1961,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const selectedThreatActionContext = useMemo(() => (
     threatActionContextOptions.find((option) => option.id === selectedThreatActionContextId) ?? null
   ), [selectedThreatActionContextId, threatActionContextOptions]);
+  const liveActionConfirmationPhrase = useMemo(() => {
+    const incidentId = selectedThreatActionContext?.incidentId;
+    return incidentId ? `LIVE ${incidentId}` : 'LIVE';
+  }, [selectedThreatActionContext?.incidentId]);
   const noLinkedActionContextAvailable = threatActionContextOptions.length === 0;
   const shouldBlockThreatActionCreation = noLinkedActionContextAvailable || !selectedThreatActionContext;
   const actionUnavailableMessages = useMemo<Array<{
@@ -2911,7 +2915,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               <button type="button" disabled={shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'live')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'live') || ''} onClick={() => setLiveActionConfirm({ actionType: 'freeze_wallet', label: 'Freeze wallet' })}>Freeze wallet (LIVE)</button>
               <button type="button" disabled={shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.revoke_approval, 'live')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'live') || ''} onClick={() => setLiveActionConfirm({ actionType: 'revoke_approval', label: 'Revoke approval' })}>Revoke approval (LIVE)</button>
             </div>
-            <p className="tableMeta">LIVE actions require dual control: explicit confirmation, workspace approval, then execution with persisted provenance.</p>
+            <p className="tableMeta">LIVE actions are separated from simulator actions and require linked incident context, explicit confirmation, workspace approval, and persisted provenance.</p>
             <div className="buttonRow">
               <Link href="/alerts" prefetch={false}>Review alerts</Link>
               <Link href="/incidents" prefetch={false}>Open incident queue</Link>
@@ -2945,16 +2949,16 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <h3>{liveActionConfirm.label}</h3>
           <p className="muted">This will use enterprise approval + execution workflow, requires linked incident context, and records live execution provenance.</p>
           <p className="tableMeta">Incident context: {selectedThreatActionContext?.incidentId || 'missing'}</p>
-          <label className="fieldLabel" htmlFor="live-action-confirm-input">Type LIVE to confirm</label>
+          <label className="fieldLabel" htmlFor="live-action-confirm-input">Type {liveActionConfirmationPhrase} to confirm</label>
           <input
             id="live-action-confirm-input"
             value={liveActionConfirmationText}
             onChange={(event) => setLiveActionConfirmationText(event.target.value)}
-            placeholder="LIVE"
+            placeholder={liveActionConfirmationPhrase}
           />
           <div className="buttonRow">
             <button type="button" className="secondaryCta" onClick={() => { setLiveActionConfirm(null); setLiveActionConfirmationText(''); }}>Cancel</button>
-            <button type="button" disabled={!selectedThreatActionContext?.incidentId || liveActionConfirmationText.trim().toUpperCase() !== 'LIVE'} onClick={() => {
+            <button type="button" disabled={!selectedThreatActionContext?.incidentId || liveActionConfirmationText.trim().toUpperCase() !== liveActionConfirmationPhrase.toUpperCase()} onClick={() => {
               void runThreatAction(liveActionConfirm.actionType, liveActionConfirm.label, 'live');
               setLiveActionConfirm(null);
               setLiveActionConfirmationText('');
