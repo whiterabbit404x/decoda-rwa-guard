@@ -205,3 +205,25 @@ def test_get_monitoring_investigation_timeline_complete_chain_has_no_missing_lin
         'incident',
         'response_action',
     ]
+
+
+def test_get_monitoring_investigation_timeline_non_empty_evidence_linked_items_support_rendering(monkeypatch):
+    workspace_id = '11111111-1111-1111-1111-111111111111'
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _FakePgContext(_CompleteTimelineConnection()))
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda connection: None)
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda connection, request: {'id': 'user-1'})
+    monkeypatch.setattr(pilot, 'resolve_workspace', lambda connection, user_id, workspace_id: {'workspace_id': workspace_id})
+
+    payload = pilot.get_monitoring_investigation_timeline(_request(workspace_id))
+
+    assert payload['items']
+    evidence_items = [item for item in payload['items'] if item['link_name'] in {'telemetry', 'evidence'}]
+    assert evidence_items
+    assert all(item['id'] for item in payload['items'])
+    assert all(item['timestamp'] is not None for item in payload['items'])
+    assert payload['linked_evidence_count'] > 0
+    assert payload['chain_linked_ids']['detection_id']
+    assert payload['chain_linked_ids']['alert_id']
+    assert payload['chain_linked_ids']['incident_id']
+    assert payload['chain_linked_ids']['action_id']
