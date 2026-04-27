@@ -2100,7 +2100,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'failed_checks': [
                 'continuity_slo_pass',
                 'linked_evidence_freshness',
-                'open_proof_chain_gaps',
+                'stable_monitored_system_state',
                 'live_action_capability_available',
             ],
         }
