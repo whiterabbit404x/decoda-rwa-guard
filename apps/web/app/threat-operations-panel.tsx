@@ -243,8 +243,8 @@ type ReconcileJobSnapshot = {
   completed_at?: string | null;
 };
 
-type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale_snapshot' | 'partial_endpoint_failure';
-type EndpointProvenanceState = 'live' | 'stale_snapshot' | 'partial_endpoint_failure';
+type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale' | 'partial_failure';
+type EndpointProvenanceState = 'live' | 'stale' | 'partial_failure';
 
 type PageBannerModel = {
   variant: 'explanation' | 'fetch_error';
@@ -296,6 +296,14 @@ type MonitoringViewModel = {
   activeIncidents: number;
   headerStatusChips: Array<{ label: string; tone: 'chip' | 'status'; className?: string }>;
   pageBanner: PageBannerModel;
+  ctas: {
+    generateSimulatorProofChain: ThreatActionButtonState;
+  };
+};
+
+type ThreatOperationsViewModel = {
+  monitoring: MonitoringViewModel;
+  actionButtons: Record<ThreatActionButtonId, ThreatActionButtonState>;
 };
 
 const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
@@ -1654,12 +1662,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       : 'Runtime reports healthy coverage. Detailed protected system rows are still syncing.';
   const monitoringViewModel = useMemo<MonitoringViewModel>(() => {
     const runtimeEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('runtime-status')
-      ? 'partial_endpoint_failure'
+      ? 'partial_failure'
       : (telemetryState === 'stale' || pollState === 'stale' || heartbeatState === 'stale')
-        ? 'stale_snapshot'
+        ? 'stale'
         : 'live';
     const timelineEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('investigation-timeline')
-      ? 'partial_endpoint_failure'
+      ? 'partial_failure'
       : 'live';
     const lastSuccessfulRuntimeRefreshAt = runtimeStatusSnapshot?.last_poll_at
       ?? runtimeSummary?.last_poll_at
@@ -1670,15 +1678,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       ?? (investigationTimeline as Record<string, any> | null)?.created_at
       ?? null;
     const derivedProvenanceLabel: MonitoringProvenanceLabel = snapshotFailedEndpoints.length > 0
-      ? 'partial_endpoint_failure'
+      ? 'partial_failure'
       : (telemetryState === 'stale' || pollState === 'stale' || heartbeatState === 'stale')
-        ? 'stale_snapshot'
+        ? 'stale'
         : (pageState === 'degraded_partial' || monitoringPresentation.status === 'degraded')
           ? 'degraded'
           : 'live';
-    const provenanceExplanation = derivedProvenanceLabel === 'partial_endpoint_failure'
+    const provenanceExplanation = derivedProvenanceLabel === 'partial_failure'
       ? `Monitoring snapshot fallback is active because ${snapshotFailedEndpoints.join(', ')} failed in the most recent refresh.`
-      : derivedProvenanceLabel === 'stale_snapshot'
+      : derivedProvenanceLabel === 'stale'
         ? 'Runtime snapshot is visible, but at least one freshness timestamp is stale.'
         : derivedProvenanceLabel === 'degraded'
           ? 'Runtime and continuity contract report degraded monitoring health.'
@@ -1775,6 +1783,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       activeIncidents,
       headerStatusChips,
       pageBanner,
+      ctas: {
+        generateSimulatorProofChain: {
+          disabled: ensuringProofChain || !canGenerateSimulatorProofChain,
+          reason: ensuringProofChain
+            ? 'Simulator proof chain generation is already running.'
+            : (simulatorProofChainUnavailableCopy || 'Simulator proof chain generation is unavailable in the current state.'),
+          noOpMessage: 'Generate simulator proof chain is currently unavailable.',
+        },
+      },
     };
   }, [
     activeIncidents,
@@ -1810,6 +1827,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     telemetryState,
     workspaceConfigured,
     configurationReason,
+    canGenerateSimulatorProofChain,
+    ensuringProofChain,
+    simulatorProofChainUnavailableCopy,
   ]);
   const headerStatusChips = monitoringViewModel.headerStatusChips;
   const targetCoverageRows = useMemo(() => {
@@ -2056,6 +2076,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const incidentId = selectedThreatActionContext?.incidentId;
     return incidentId ? `LIVE ${incidentId}` : 'LIVE';
   }, [selectedThreatActionContext?.incidentId]);
+  const confirmLiveActionDisabledReason = !selectedThreatActionContext?.incidentId
+    ? 'Confirm LIVE action is disabled because no incident context is linked.'
+    : !liveActionAcknowledged
+      ? 'Confirm LIVE action is disabled until acknowledgement is checked.'
+      : liveActionConfirmationText.trim().toUpperCase() !== liveActionConfirmationPhrase.toUpperCase()
+        ? `Confirm LIVE action is disabled until the exact phrase "${liveActionConfirmationPhrase}" is entered.`
+        : '';
   const noLinkedActionContextAvailable = threatActionContextOptions.length === 0;
   const shouldBlockThreatActionCreation = noLinkedActionContextAvailable || !selectedThreatActionContext;
   const missingIncidentContextReason = selectedThreatActionContext && !selectedThreatActionContext.incidentId
@@ -2207,6 +2234,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     ensuringProofChain,
     simulatorProofChainUnavailableCopy,
   ]);
+  const threatOperationsViewModel = useMemo<ThreatOperationsViewModel>(() => ({
+    monitoring: monitoringViewModel,
+    actionButtons: actionButtonStates,
+  }), [actionButtonStates, monitoringViewModel]);
 
   useEffect(() => {
     void fetch(`${apiUrl}/response/action-capabilities`, { headers: authHeaders(), cache: 'no-store' })
@@ -2441,9 +2472,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <button
               type="button"
               className="secondaryCta"
-              disabled={ensuringProofChain || !canGenerateSimulatorProofChain}
+              disabled={threatOperationsViewModel.monitoring.ctas.generateSimulatorProofChain.disabled}
               onClick={() => void ensureSimulatorProofChain()}
-              title={!canGenerateSimulatorProofChain ? simulatorProofChainUnavailableCopy : ''}
+              title={threatOperationsViewModel.monitoring.ctas.generateSimulatorProofChain.reason}
             >
               {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
             </button>
@@ -2463,9 +2494,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ))}
         </div>
         <p className="tableMeta">
-          Data provenance ({monitoringViewModel.provenanceLabel}): {monitoringViewModel.provenanceExplanation} /ops/monitoring/runtime-status ({monitoringViewModel.endpointProvenance.runtimeStatus}) · /ops/monitoring/investigation-timeline ({monitoringViewModel.endpointProvenance.investigationTimeline}) · Last successful runtime refresh: {formatAbsoluteTime(monitoringViewModel.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: {formatAbsoluteTime(monitoringViewModel.lastSuccessfulTimelineRefreshAt)}
+          Data provenance ({threatOperationsViewModel.monitoring.provenanceLabel}): {threatOperationsViewModel.monitoring.provenanceExplanation} /ops/monitoring/runtime-status ({threatOperationsViewModel.monitoring.endpointProvenance.runtimeStatus}) · /ops/monitoring/investigation-timeline ({threatOperationsViewModel.monitoring.endpointProvenance.investigationTimeline}) · Last successful runtime refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulTimelineRefreshAt)}
         </p>
-        <PageStateBanner viewModel={monitoringViewModel} />
+        <PageStateBanner viewModel={threatOperationsViewModel.monitoring} />
         <p className={`statusLine ${enterpriseReadyPass ? 'statusLine-success' : 'statusLine-warning'}`}>
           Enterprise readiness gate: {enterpriseReadyPass ? 'PASS' : 'FAIL'}.
           {enterpriseReadyPass ? ' All readiness checks are green.' : ' Resolve failed checks using the remediation links below.'}
@@ -2621,8 +2652,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 type="button"
                 className="secondaryCta"
                 onClick={() => void ensureSimulatorProofChain()}
-                disabled={ensuringProofChain || !canGenerateSimulatorProofChain}
-                title={!canGenerateSimulatorProofChain ? simulatorProofChainUnavailableCopy : ''}
+                disabled={threatOperationsViewModel.monitoring.ctas.generateSimulatorProofChain.disabled}
+                title={threatOperationsViewModel.monitoring.ctas.generateSimulatorProofChain.reason}
               >
                 {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
               </button>
@@ -3064,8 +3095,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               <button
                 type="button"
                 className="secondaryCta"
-                disabled={ensuringProofChain || !canGenerateSimulatorProofChain}
-                title={!canGenerateSimulatorProofChain ? simulatorProofChainUnavailableCopy : ''}
+                disabled={threatOperationsViewModel.monitoring.ctas.generateSimulatorProofChain.disabled}
+                title={threatOperationsViewModel.monitoring.ctas.generateSimulatorProofChain.reason}
                 onClick={() => void ensureSimulatorProofChain()}
               >
                 {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
@@ -3073,19 +3104,19 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             </div>
             <div className="buttonRow">
               <span className="ruleChip">SIMULATED</span>
-              <button type="button" disabled={actionButtonStates['sim-notify-team'].disabled} title={actionButtonStates['sim-notify-team'].reason} onClick={() => void runThreatAction('notify_team', 'Run simulated response', 'simulated')}>Run simulated response</button>
-              <button type="button" disabled={actionButtonStates['sim-revoke-approval'].disabled} title={actionButtonStates['sim-revoke-approval'].reason} onClick={() => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated')}>Revoke approval</button>
+              <button type="button" disabled={threatOperationsViewModel.actionButtons['sim-notify-team'].disabled} title={threatOperationsViewModel.actionButtons['sim-notify-team'].reason} onClick={() => void runThreatAction('notify_team', 'Run simulated response', 'simulated')}>Run simulated response</button>
+              <button type="button" disabled={threatOperationsViewModel.actionButtons['sim-revoke-approval'].disabled} title={threatOperationsViewModel.actionButtons['sim-revoke-approval'].reason} onClick={() => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated')}>Revoke approval</button>
             </div>
             <p className="tableMeta">SIMULATED actions run immediately and never submit a live transaction.</p>
             <div className="buttonRow">
               <span className="ruleChip">RECOMMENDED</span>
-              <button type="button" disabled={actionButtonStates['rec-freeze-wallet'].disabled} title={actionButtonStates['rec-freeze-wallet'].reason} onClick={() => void runThreatAction('freeze_wallet', 'Freeze wallet', 'recommended')}>Freeze wallet (RECOMMENDED)</button>
-              <button type="button" disabled={actionButtonStates['rec-disable-monitored-system'].disabled} title={actionButtonStates['rec-disable-monitored-system'].reason} onClick={() => void runThreatAction('disable_monitored_system', 'Disable monitored system', 'recommended')}>Disable monitored system (RECOMMENDED)</button>
+              <button type="button" disabled={threatOperationsViewModel.actionButtons['rec-freeze-wallet'].disabled} title={threatOperationsViewModel.actionButtons['rec-freeze-wallet'].reason} onClick={() => void runThreatAction('freeze_wallet', 'Freeze wallet', 'recommended')}>Freeze wallet (RECOMMENDED)</button>
+              <button type="button" disabled={threatOperationsViewModel.actionButtons['rec-disable-monitored-system'].disabled} title={threatOperationsViewModel.actionButtons['rec-disable-monitored-system'].reason} onClick={() => void runThreatAction('disable_monitored_system', 'Disable monitored system', 'recommended')}>Disable monitored system (RECOMMENDED)</button>
             </div>
             <div className="buttonRow">
               <span className="ruleChip">LIVE</span>
-              <button type="button" disabled={actionButtonStates['live-freeze-wallet'].disabled} title={actionButtonStates['live-freeze-wallet'].reason} onClick={() => setLiveActionConfirm({ actionType: 'freeze_wallet', label: 'Freeze wallet' })}>Freeze wallet (LIVE)</button>
-              <button type="button" disabled={actionButtonStates['live-revoke-approval'].disabled} title={actionButtonStates['live-revoke-approval'].reason} onClick={() => setLiveActionConfirm({ actionType: 'revoke_approval', label: 'Revoke approval' })}>Revoke approval (LIVE)</button>
+              <button type="button" disabled={threatOperationsViewModel.actionButtons['live-freeze-wallet'].disabled} title={threatOperationsViewModel.actionButtons['live-freeze-wallet'].reason} onClick={() => setLiveActionConfirm({ actionType: 'freeze_wallet', label: 'Freeze wallet' })}>Freeze wallet (LIVE)</button>
+              <button type="button" disabled={threatOperationsViewModel.actionButtons['live-revoke-approval'].disabled} title={threatOperationsViewModel.actionButtons['live-revoke-approval'].reason} onClick={() => setLiveActionConfirm({ actionType: 'revoke_approval', label: 'Revoke approval' })}>Revoke approval (LIVE)</button>
             </div>
             <p className="tableMeta">LIVE actions are separated from simulator actions and require linked incident context, explicit confirmation, workspace approval, and persisted provenance.</p>
             <div className="buttonRow">
@@ -3138,13 +3169,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           </label>
           <div className="buttonRow">
             <button type="button" className="secondaryCta" onClick={() => { setLiveActionConfirm(null); setLiveActionConfirmationText(''); setLiveActionAcknowledged(false); }}>Cancel</button>
-            <button type="button" disabled={!selectedThreatActionContext?.incidentId || !liveActionAcknowledged || liveActionConfirmationText.trim().toUpperCase() !== liveActionConfirmationPhrase.toUpperCase()} onClick={() => {
+            <button type="button" disabled={Boolean(confirmLiveActionDisabledReason)} title={confirmLiveActionDisabledReason} onClick={() => {
               void runThreatAction(liveActionConfirm.actionType, liveActionConfirm.label, 'live');
               setLiveActionConfirm(null);
               setLiveActionConfirmationText('');
               setLiveActionAcknowledged(false);
             }}>Confirm LIVE action</button>
           </div>
+          {confirmLiveActionDisabledReason ? <p className="tableMeta">{confirmLiveActionDisabledReason}</p> : null}
         </article>
       ) : null}
     </section>
