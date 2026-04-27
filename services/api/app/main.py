@@ -82,6 +82,7 @@ from services.api.app.pilot import (
     reconcile_workspace_monitored_systems,
     get_latest_workspace_reconcile_run,
     get_workspace_reconcile_status,
+    get_workspace_reconcile_status_by_idempotency_key,
     get_latest_workspace_reconcile_result,
     get_workspace_reconcile_events,
     get_workspace_subscription,
@@ -2077,8 +2078,13 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
                 'required_thresholds_seconds': dict(payload.get('required_thresholds_seconds') or summary.get('required_thresholds_seconds') or {}),
                 'continuity_thresholds_seconds': dict(payload.get('continuity_thresholds_seconds') or summary.get('continuity_thresholds_seconds') or payload.get('required_thresholds_seconds') or summary.get('required_thresholds_seconds') or thresholds),
                 'reason_codes': list(payload.get('continuity_reason_codes') or summary.get('continuity_reason_codes') or []),
+                'checks': dict((payload.get('continuity_contract') or summary.get('continuity_contract') or {}).get('checks') or {}),
             }
         payload['continuity_slo'] = continuity_slo
+        payload['continuity_contract'] = {
+            'pass': bool(payload.get('continuity_slo_pass', summary.get('continuity_slo_pass', continuity_slo.get('pass'))) is True),
+            'checks': dict((payload.get('continuity_contract') or continuity_slo).get('checks') or {}),
+        }
         payload['continuity_slo_pass'] = bool(
             payload.get('continuity_slo_pass', summary.get('continuity_slo_pass', continuity_slo.get('pass'))) is True
         )
@@ -2153,6 +2159,11 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
                 'required_thresholds_seconds': dict(fallback_summary.get('required_thresholds_seconds') or {}),
                 'continuity_thresholds_seconds': dict(fallback_summary.get('continuity_thresholds_seconds') or fallback_summary.get('required_thresholds_seconds') or {}),
                 'reason_codes': list(fallback_summary.get('continuity_reason_codes') or []),
+                'checks': dict((fallback_summary.get('continuity_contract') or {}).get('checks') or {}),
+            },
+            'continuity_contract': {
+                'pass': bool(fallback_summary.get('continuity_slo_pass') is True),
+                'checks': dict((fallback_summary.get('continuity_contract') or {}).get('checks') or {}),
             },
             'ingestion_freshness': fallback_summary.get('ingestion_freshness'),
             'detection_pipeline_freshness': fallback_summary.get('detection_pipeline_freshness'),
@@ -2561,6 +2572,11 @@ def monitoring_systems_reconcile_status(reconcile_id: str, request: Request) -> 
 @app.get('/monitoring/systems/reconcile/status/{reconcile_id}', summary='Get monitored systems reconcile job status')
 def monitoring_systems_reconcile_status_alias(reconcile_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_workspace_reconcile_status(request, reconcile_id))
+
+
+@app.get('/monitoring/systems/reconcile/idempotency/{idempotency_key}', summary='Get monitored systems reconcile job status by idempotency key')
+def monitoring_systems_reconcile_status_by_idempotency(idempotency_key: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_workspace_reconcile_status_by_idempotency_key(request, idempotency_key))
 
 
 @app.get('/monitoring/systems/reconcile/{reconcile_id}/events', summary='Get monitored systems reconcile job events')

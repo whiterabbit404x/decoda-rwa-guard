@@ -78,6 +78,7 @@ MONITORING_RUNTIME_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     ),
 }
 MONITORING_RUNTIME_SCHEMA_MIGRATION_HINTS = ('0036', '0037', '0038', '0039')
+RECONCILE_IDEMPOTENCY_HEADER = 'x-idempotency-key'
 DEFAULT_DEMO_EMAIL = 'demo@decoda.app'
 EMAIL_VERIFICATION_TTL_MINUTES = 60 * 24
 PASSWORD_RESET_TTL_MINUTES = 30
@@ -307,6 +308,12 @@ def evaluate_workspace_monitoring_continuity(
     telemetry_window_seconds: int,
     detection_window_seconds: int,
 ) -> dict[str, Any]:
+    continuity_checks: dict[str, dict[str, Any]] = {
+        'heartbeat_freshness': {'label': 'heartbeat freshness', 'pass': False, 'state': 'missing', 'age_seconds': None, 'threshold_seconds': None},
+        'telemetry_freshness': {'label': 'telemetry freshness', 'pass': False, 'state': 'missing', 'age_seconds': None, 'threshold_seconds': None},
+        'detection_freshness': {'label': 'detection freshness', 'pass': False, 'state': 'missing', 'age_seconds': None, 'threshold_seconds': None},
+    }
+
     def _freshness_state(ts: datetime | None, *, fresh_seconds: int) -> tuple[str, int | None]:
         if ts is None:
             return 'missing', None
@@ -323,6 +330,27 @@ def evaluate_workspace_monitoring_continuity(
     heartbeat_state, heartbeat_age_seconds = _freshness_state(last_heartbeat_at, fresh_seconds=normalized_heartbeat_ttl_seconds)
     event_state, event_age_seconds = _freshness_state(last_event_at, fresh_seconds=normalized_telemetry_window_seconds)
     detection_state, detection_age_seconds = _freshness_state(last_detection_at, fresh_seconds=normalized_detection_window_seconds)
+    continuity_checks['heartbeat_freshness'] = {
+        'label': 'heartbeat freshness',
+        'pass': heartbeat_state == 'fresh',
+        'state': heartbeat_state,
+        'age_seconds': heartbeat_age_seconds,
+        'threshold_seconds': normalized_heartbeat_ttl_seconds,
+    }
+    continuity_checks['telemetry_freshness'] = {
+        'label': 'telemetry freshness',
+        'pass': event_state == 'fresh',
+        'state': event_state,
+        'age_seconds': event_age_seconds,
+        'threshold_seconds': normalized_telemetry_window_seconds,
+    }
+    continuity_checks['detection_freshness'] = {
+        'label': 'detection freshness',
+        'pass': detection_state == 'fresh',
+        'state': detection_state,
+        'age_seconds': detection_age_seconds,
+        'threshold_seconds': normalized_detection_window_seconds,
+    }
     worker_liveness = 'live' if worker_running else 'offline'
     if last_event_at is None:
         event_throughput_window = 'no_events'
@@ -370,9 +398,9 @@ def evaluate_workspace_monitoring_continuity(
     continuity_slo_pass = bool(
         workspace_configured
         and worker_liveness == 'live'
-        and heartbeat_state == 'fresh'
-        and event_state == 'fresh'
-        and detection_state == 'fresh'
+        and continuity_checks['heartbeat_freshness']['pass']
+        and continuity_checks['telemetry_freshness']['pass']
+        and continuity_checks['detection_freshness']['pass']
     )
 
     return {
@@ -409,6 +437,11 @@ def evaluate_workspace_monitoring_continuity(
             'continuity_slo_pass': continuity_slo_pass,
             'event_throughput_window': event_throughput_window,
             'event_throughput_window_seconds': normalized_telemetry_window_seconds,
+            'continuity_checks': continuity_checks,
+        },
+        'continuity_contract': {
+            'pass': continuity_slo_pass,
+            'checks': continuity_checks,
         },
         'ingestion_freshness': event_state,
         'detection_pipeline_freshness': detection_state,
@@ -4248,9 +4281,12 @@ def _reconcile_job_payload(
     started_at: str | None = None,
     completed_at: str | None = None,
     retry_count: int = 0,
+    idempotency_key: str | None = None,
+    progress_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         'id': run_id,
+        'idempotency_key': idempotency_key,
         'status': status,
         'retry_count': max(0, int(retry_count or 0)),
         'counts': _json_safe_value(counts),
@@ -4261,19 +4297,27 @@ def _reconcile_job_payload(
         'last_event_at': last_event_at,
         'started_at': started_at,
         'completed_at': completed_at,
+        'progress_state': _json_safe_value(progress_state if isinstance(progress_state, dict) else {}),
     }
 
 
-def _create_reconcile_run(connection: Any, *, run_id: str, workspace_id: str, requested_by_user_id: str | None) -> None:
+def _create_reconcile_run(
+    connection: Any,
+    *,
+    run_id: str,
+    workspace_id: str,
+    requested_by_user_id: str | None,
+    idempotency_key: str | None = None,
+) -> None:
     connection.execute(
         '''
         INSERT INTO monitoring_reconcile_runs (
-            id, workspace_id, requested_by_user_id, status, queued_at, retry_count, counts, reason_codes, affected_systems, result_summary, created_at, updated_at
+            id, workspace_id, requested_by_user_id, idempotency_key, status, queued_at, retry_count, counts, reason_codes, affected_systems, result_summary, progress_state, created_at, updated_at
         )
-        VALUES (%s::uuid, %s::uuid, %s::uuid, 'queued', NOW(), 0, '{}'::jsonb, '[]'::jsonb, '[]'::jsonb, '{}'::jsonb, NOW(), NOW())
+        VALUES (%s::uuid, %s::uuid, %s::uuid, %s, 'queued', NOW(), 0, '{}'::jsonb, '[]'::jsonb, '[]'::jsonb, '{}'::jsonb, %s::jsonb, NOW(), NOW())
         ON CONFLICT (id) DO NOTHING
         ''',
-        (run_id, workspace_id, requested_by_user_id),
+        (run_id, workspace_id, requested_by_user_id, idempotency_key, _json_dumps({'status': 'queued', 'stage': 'queued'})),
     )
     _append_reconcile_event(
         connection,
@@ -4283,8 +4327,15 @@ def _create_reconcile_run(connection: Any, *, run_id: str, workspace_id: str, re
         event_status='queued',
         reason_code=None,
         detail='Reconcile request accepted.',
-        payload={},
+        payload={'idempotency_key': idempotency_key},
     )
+
+
+def _normalize_reconcile_idempotency_key(value: Any) -> str | None:
+    normalized = str(value or '').strip()
+    if not normalized:
+        return None
+    return normalized[:160]
 
 
 def _update_reconcile_run(
@@ -4299,6 +4350,7 @@ def _update_reconcile_run(
     affected_systems: list[str] | None = None,
     result_summary: dict[str, Any] | None = None,
     retry_count: int | None = None,
+    progress_state: dict[str, Any] | None = None,
     completed: bool = False,
 ) -> None:
     connection.execute(
@@ -4311,6 +4363,7 @@ def _update_reconcile_run(
             reason_codes = COALESCE(%s::jsonb, reason_codes),
             affected_systems = COALESCE(%s::jsonb, affected_systems),
             result_summary = COALESCE(%s::jsonb, result_summary),
+            progress_state = COALESCE(%s::jsonb, progress_state),
             retry_count = COALESCE(%s, retry_count),
             last_attempt_at = NOW(),
             lock_acquired_at = CASE WHEN %s = 'running' THEN COALESCE(lock_acquired_at, NOW()) ELSE lock_acquired_at END,
@@ -4329,6 +4382,7 @@ def _update_reconcile_run(
             _json_dumps(reason_codes or []) if reason_codes is not None else None,
             _json_dumps(affected_systems or []) if affected_systems is not None else None,
             _json_dumps(result_summary or {}) if result_summary is not None else None,
+            _json_dumps(progress_state or {}) if progress_state is not None else None,
             retry_count,
             status,
             status,
@@ -4413,7 +4467,7 @@ def _load_reconcile_run_row(connection: Any, *, workspace_id: str, run_id: str |
     if run_id:
         row = connection.execute(
             '''
-            SELECT id, status, started_at, completed_at, queued_at, running_at, failed_at, status_reason_code, status_reason_detail, retry_count, counts, reason_codes, affected_systems, result_summary, updated_at
+            SELECT id, status, started_at, completed_at, queued_at, running_at, failed_at, status_reason_code, status_reason_detail, retry_count, counts, reason_codes, affected_systems, result_summary, progress_state, updated_at, idempotency_key
             FROM monitoring_reconcile_runs
             WHERE workspace_id = %s::uuid
               AND id = %s::uuid
@@ -4424,7 +4478,7 @@ def _load_reconcile_run_row(connection: Any, *, workspace_id: str, run_id: str |
     else:
         row = connection.execute(
             '''
-            SELECT id, status, started_at, completed_at, queued_at, running_at, failed_at, status_reason_code, status_reason_detail, retry_count, counts, reason_codes, affected_systems, result_summary, updated_at
+            SELECT id, status, started_at, completed_at, queued_at, running_at, failed_at, status_reason_code, status_reason_detail, retry_count, counts, reason_codes, affected_systems, result_summary, progress_state, updated_at, idempotency_key
             FROM monitoring_reconcile_runs
             WHERE workspace_id = %s::uuid
             ORDER BY created_at DESC
@@ -4432,6 +4486,21 @@ def _load_reconcile_run_row(connection: Any, *, workspace_id: str, run_id: str |
             ''',
             (workspace_id,),
         ).fetchone()
+    return dict(row) if row else None
+
+
+def _load_reconcile_run_row_by_idempotency_key(connection: Any, *, workspace_id: str, idempotency_key: str) -> dict[str, Any] | None:
+    row = connection.execute(
+        '''
+        SELECT id, status, started_at, completed_at, queued_at, running_at, failed_at, status_reason_code, status_reason_detail, retry_count, counts, reason_codes, affected_systems, result_summary, progress_state, updated_at, idempotency_key
+        FROM monitoring_reconcile_runs
+        WHERE workspace_id = %s::uuid
+          AND idempotency_key = %s
+        ORDER BY created_at DESC
+        LIMIT 1
+        ''',
+        (workspace_id, idempotency_key),
+    ).fetchone()
     return dict(row) if row else None
 
 
@@ -4478,6 +4547,8 @@ def _job_payload_from_run_row(item: dict[str, Any]) -> dict[str, Any]:
         started_at=item.get('started_at').isoformat() if item.get('started_at') else None,
         completed_at=item.get('completed_at').isoformat() if item.get('completed_at') else None,
         retry_count=int(item.get('retry_count') or 0),
+        idempotency_key=_normalize_reconcile_idempotency_key(item.get('idempotency_key')),
+        progress_state=item.get('progress_state') if isinstance(item.get('progress_state'), dict) else {},
     )
 
 
@@ -4518,6 +4589,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
     user_id: str | None = None
     reconcile_id = str(uuid.uuid4())
     reconcile_run_id = reconcile_id
+    request_idempotency_key = _normalize_reconcile_idempotency_key(request.headers.get(RECONCILE_IDEMPOTENCY_HEADER))
     logger.info('monitoring_reconcile step=%s', stage)
     try:
         require_live_mode()
@@ -4545,6 +4617,30 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         workspace_id = workspace_context['workspace_id']
         user_id = str(user.get('id') or '')
         _lock_workspace_row_for_reconcile(connection, workspace_id=workspace_id)
+        if request_idempotency_key:
+            keyed_run = _load_reconcile_run_row_by_idempotency_key(
+                connection,
+                workspace_id=workspace_id,
+                idempotency_key=request_idempotency_key,
+            )
+            if keyed_run:
+                run_status = str(keyed_run.get('status') or 'queued')
+                if run_status in {'queued', 'running'}:
+                    return {
+                        'workspace': workspace_context['workspace'],
+                        'job': _job_payload_from_run_row(keyed_run),
+                        'reconcile_id': str(keyed_run.get('id') or ''),
+                        'state': run_status,
+                        'reconcile': _normalize_reconcile_result({}),
+                        'unresolved_reasons': [],
+                        'systems': [],
+                        'monitored_systems_count': 0,
+                        'idempotent_replay': True,
+                    }
+                return _reconcile_terminal_state_replay_payload(
+                    workspace=workspace_context['workspace'],
+                    run_row=keyed_run,
+                )
         if not _try_lock_workspace_reconcile_job(connection, workspace_id=workspace_id):
             latest_locked = _load_reconcile_run_row(connection, workspace_id=workspace_id)
             if latest_locked and str(latest_locked.get('status') or '') in {'queued', 'running'}:
@@ -4579,7 +4675,13 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                     workspace=workspace_context['workspace'],
                     run_row=latest_run,
                 )
-        _create_reconcile_run(connection, run_id=reconcile_run_id, workspace_id=workspace_id, requested_by_user_id=user_id)
+        _create_reconcile_run(
+            connection,
+            run_id=reconcile_run_id,
+            workspace_id=workspace_id,
+            requested_by_user_id=user_id,
+            idempotency_key=request_idempotency_key,
+        )
         logger.info('monitoring_reconcile step=workspace_resolved workspace_id=%s', workspace_id)
         stage = 'verify_eligible_targets'
         logger.info('monitoring_reconcile step=%s workspace_id=%s', stage, workspace_id)
@@ -4621,6 +4723,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
             status='running',
             reason_code=None,
             reason_detail='Reconcile execution in progress.',
+            progress_state={'status': 'running', 'stage': stage, 'retry_count': 0},
         )
         max_retries = _safe_int_env(WORKSPACE_RECONCILE_MAX_RETRIES_ENV, 2, minimum=0)
         retry_backoff = max(0.0, float(os.getenv(WORKSPACE_RECONCILE_RETRY_BACKOFF_SECONDS_ENV, '0.25') or 0.25))
@@ -4634,6 +4737,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                     reason_code=None,
                     reason_detail='Reconcile execution in progress.',
                     retry_count=retry_attempt,
+                    progress_state={'status': 'running', 'stage': stage, 'retry_count': retry_attempt},
                 )
                 result = _normalize_reconcile_result(reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id))
                 break
@@ -4662,6 +4766,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                     reason_code='monitoring_reconcile_failed',
                     reason_detail=str(exc),
                     retry_count=retry_attempt,
+                    progress_state={'status': 'failed', 'stage': stage, 'retry_count': retry_attempt, 'error': str(exc)},
                     completed=True,
                 )
                 _append_reconcile_event(
@@ -4813,6 +4918,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                 'reason_counts': reason_counts,
                 'unresolved_reasons': unresolved_reasons,
             },
+            progress_state={'status': run_status, 'stage': 'finished', 'retry_count': retry_attempt},
             completed=True,
         )
         _append_reconcile_event(
@@ -4837,6 +4943,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                 reason_code=status_reason_code,
                 reason_detail=status_reason_detail,
                 retry_count=retry_attempt,
+                idempotency_key=request_idempotency_key,
             ),
             'reconcile_id': reconcile_id,
             'state': run_status,
@@ -4885,6 +4992,19 @@ def get_workspace_reconcile_status(request: Request, reconcile_id: str) -> dict[
         _user, workspace_context = _require_workspace_admin(connection, request)
         workspace_id = workspace_context['workspace_id']
         item = _load_reconcile_run_row(connection, workspace_id=workspace_id, run_id=reconcile_id)
+        return {'workspace': workspace_context['workspace'], 'job': _job_payload_from_run_row(item) if item else None}
+
+
+def get_workspace_reconcile_status_by_idempotency_key(request: Request, idempotency_key: str) -> dict[str, Any]:
+    require_live_mode()
+    normalized_key = _normalize_reconcile_idempotency_key(idempotency_key)
+    if not normalized_key:
+        return {'workspace': None, 'job': None}
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        _user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        item = _load_reconcile_run_row_by_idempotency_key(connection, workspace_id=workspace_id, idempotency_key=normalized_key)
         return {'workspace': workspace_context['workspace'], 'job': _job_payload_from_run_row(item) if item else None}
 
 

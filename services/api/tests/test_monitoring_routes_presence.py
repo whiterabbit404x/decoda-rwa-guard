@@ -12,6 +12,7 @@ def test_monitoring_routes_registered() -> None:
     assert "@app.post('/monitoring/systems/reconcile/start'" in content
     assert "@app.get('/monitoring/systems/reconcile/{reconcile_id}'" in content
     assert "@app.get('/monitoring/systems/reconcile/status/{reconcile_id}'" in content
+    assert "@app.get('/monitoring/systems/reconcile/idempotency/{idempotency_key}'" in content
     assert "@app.get('/monitoring/systems/reconcile/latest/result'" in content
     assert "@app.get('/monitoring/systems/reconcile/result/latest'" in content
     assert "@app.get('/monitoring/workspace-debug'" in content
