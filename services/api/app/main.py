@@ -2077,12 +2077,30 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
                 'reason_codes': list(payload.get('continuity_reason_codes') or summary.get('continuity_reason_codes') or []),
             }
         payload['continuity_slo'] = continuity_slo
+        payload['continuity_slo_pass'] = bool(
+            payload.get('continuity_slo_pass', summary.get('continuity_slo_pass', continuity_slo.get('pass'))) is True
+        )
+        payload['heartbeat_age_seconds'] = payload.get('heartbeat_age_seconds', continuity_slo.get('heartbeat_age_seconds'))
+        payload['telemetry_age_seconds'] = payload.get('telemetry_age_seconds', continuity_slo.get('telemetry_age_seconds'))
         payload['detection_age_seconds'] = payload.get('detection_age_seconds', continuity_slo.get('detection_age_seconds'))
         payload['detection_pipeline_age_seconds'] = payload.get('detection_pipeline_age_seconds', continuity_slo.get('detection_pipeline_age_seconds'))
+        payload['detection_eval_age_seconds'] = payload.get('detection_eval_age_seconds', continuity_slo.get('detection_eval_age_seconds'))
         payload['heartbeat_threshold_seconds'] = payload.get('heartbeat_threshold_seconds', continuity_slo.get('heartbeat_threshold_seconds'))
         payload['telemetry_threshold_seconds'] = payload.get('telemetry_threshold_seconds', continuity_slo.get('telemetry_threshold_seconds'))
         payload['detection_threshold_seconds'] = payload.get('detection_threshold_seconds', continuity_slo.get('detection_threshold_seconds'))
+        payload['thresholds_seconds'] = payload.get('thresholds_seconds', continuity_slo.get('thresholds_seconds'))
+        payload['required_thresholds_seconds'] = payload.get('required_thresholds_seconds', continuity_slo.get('required_thresholds_seconds'))
         payload['continuity_thresholds_seconds'] = payload.get('continuity_thresholds_seconds', continuity_slo.get('continuity_thresholds_seconds'))
+        payload['runtime_degraded_reason_codes'] = list(
+            payload.get('runtime_degraded_reason_codes')
+            or summary.get('runtime_degraded_reason_codes')
+            or []
+        )
+        payload['runtime_status_reason_codes'] = list(
+            payload.get('runtime_status_reason_codes')
+            or summary.get('runtime_status_reason_codes')
+            or []
+        )
         return payload
     except Exception as exc:
         logger.exception('ops_monitoring_runtime_status_route_failed')

@@ -124,6 +124,8 @@ export type MonitoringRuntimeStatus = {
   provider_name?: string | null;
   provider_kind?: string | null;
   degraded_reason?: string | null;
+  runtime_degraded_reason_codes?: string[];
+  runtime_status_reason_codes?: string[];
   error_code?: string | null;
   sales_claims_allowed?: boolean;
   claim_validator_status?: 'PASS' | 'FAIL' | string;
@@ -167,6 +169,16 @@ export type MonitoringRuntimeStatus = {
   failed_checks?: string[];
   check_results?: Array<{ name: string; pass: boolean; remediation_url?: string | null }>;
   remediation_links?: Record<string, string>;
+  continuity_slo_pass?: boolean;
+  heartbeat_age_seconds?: number | null;
+  telemetry_age_seconds?: number | null;
+  detection_age_seconds?: number | null;
+  heartbeat_threshold_seconds?: number | null;
+  telemetry_threshold_seconds?: number | null;
+  detection_threshold_seconds?: number | null;
+  thresholds_seconds?: WorkspaceMonitoringSummary['thresholds_seconds'];
+  required_thresholds_seconds?: WorkspaceMonitoringSummary['required_thresholds_seconds'];
+  continuity_thresholds_seconds?: WorkspaceMonitoringSummary['required_thresholds_seconds'];
 };
 
 export type MonitoringTimelineLinkName =

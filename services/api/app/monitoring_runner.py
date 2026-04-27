@@ -5942,10 +5942,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ]
             runtime_status_summary = 'degraded'
             monitoring_status = 'degraded'
+            runtime_status = 'Degraded'
             summary['runtime_status'] = 'degraded'
             summary['monitoring_status'] = 'limited'
             summary['runtime_degraded_reason_codes'] = ['continuity_slo_failed', *continuity_reason_codes]
             runtime_degraded_reason = 'continuity_slo_failed'
+            payload_reason_codes = ['continuity_slo_failed', *continuity_reason_codes]
+            summary['runtime_status_reason_codes'] = payload_reason_codes
             degraded_reason = degraded_reason or (
                 f"continuity_slo_failed:{continuity_reason_codes[0]}"
                 if continuity_reason_codes
@@ -6067,6 +6070,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'degraded_reason': degraded_reason,
             'runtime_error_code': runtime_error_code,
             'runtime_degraded_reason': runtime_degraded_reason,
+            'runtime_degraded_reason_codes': list(summary.get('runtime_degraded_reason_codes') or []),
+            'runtime_status_reason_codes': list(summary.get('runtime_status_reason_codes') or []),
             'recent_evidence_state': effective_recent_evidence_state,
             'recent_evidence_reason_code': recent_evidence_reason_code,
             'recent_real_event_count': real_event_count,

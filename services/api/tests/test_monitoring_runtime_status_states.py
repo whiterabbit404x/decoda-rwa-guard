@@ -164,6 +164,8 @@ def test_runtime_status_forces_degraded_when_live_continuity_slo_fails(monkeypat
     payload = monitoring_runner.monitoring_runtime_status()
 
     assert payload['monitoring_status'] in {'degraded', 'limited'}
+    assert payload['status'] == 'Degraded'
+    assert payload['runtime_status'] == 'degraded'
     assert payload['runtime_status_summary'] == 'degraded'
     assert payload['workspace_monitoring_summary']['runtime_status'] == 'degraded'
     assert payload['workspace_monitoring_summary']['monitoring_status'] == 'limited'
@@ -172,6 +174,8 @@ def test_runtime_status_forces_degraded_when_live_continuity_slo_fails(monkeypat
     assert payload['continuity_slo']['detection_age_seconds'] == 900
     assert payload['continuity_slo']['detection_pipeline_age_seconds'] == 900
     assert payload['continuity_slo']['detection_threshold_seconds'] == 300
+    assert payload['runtime_degraded_reason_codes'] == ['continuity_slo_failed', 'event_ingestion_stale']
+    assert payload['runtime_status_reason_codes'] == ['continuity_slo_failed', 'event_ingestion_stale']
     assert payload['workspace_monitoring_summary']['runtime_degraded_reason_codes'] == ['continuity_slo_failed', 'event_ingestion_stale']
     assert payload['degraded_reason'] == 'continuity_slo_failed:event_ingestion_stale'
 

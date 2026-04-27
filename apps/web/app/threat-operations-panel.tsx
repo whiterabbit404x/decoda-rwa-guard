@@ -320,6 +320,11 @@ type ContinuitySloEvaluation = {
   dimensions: ContinuitySloDimension[];
 };
 
+type ContinuityFailedCheck = {
+  code: string;
+  label: string;
+};
+
 function formatSloDuration(value: number | null): string {
   if (value === null || Number.isNaN(value)) return 'missing';
   if (value < 60) return `${value}s`;
@@ -417,6 +422,34 @@ function continuitySloFailureReasons(continuitySlo: ContinuitySloEvaluation): st
 function continuitySloFailingDimensions(continuitySlo: ContinuitySloEvaluation): string {
   const failed = continuitySlo.dimensions.filter((dimension) => !dimension.pass).map((dimension) => dimension.label);
   return failed.length > 0 ? failed.join(', ') : 'none';
+}
+
+function continuityFailureLabelFromCode(code: string): string {
+  if (code.startsWith('heartbeat_')) return 'Worker heartbeat';
+  if (code.startsWith('event_ingestion_') || code.startsWith('telemetry_')) return 'Telemetry ingestion';
+  if (code.startsWith('detection_pipeline_') || code.startsWith('detection_eval_') || code.startsWith('detection_')) return 'Detection evaluation';
+  return code.replaceAll('_', ' ');
+}
+
+export function continuityFailedChecks(
+  summary?: MonitoringRuntimeStatus['workspace_monitoring_summary'] | null,
+  continuitySloPayload?: MonitoringRuntimeStatus['continuity_slo'] | null,
+  continuitySlo?: ContinuitySloEvaluation,
+): ContinuityFailedCheck[] {
+  const reasonCodes = Array.from(new Set(
+    [
+      ...(continuitySloPayload?.reason_codes ?? []),
+      ...(summary?.continuity_reason_codes ?? []),
+    ]
+      .map((code) => String(code ?? '').trim())
+      .filter(Boolean),
+  ));
+  if (reasonCodes.length > 0) {
+    return reasonCodes.map((code) => ({ code, label: continuityFailureLabelFromCode(code) }));
+  }
+  return (continuitySlo?.dimensions ?? [])
+    .filter((dimension) => !dimension.pass)
+    .map((dimension) => ({ code: dimension.key, label: dimension.label }));
 }
 
 export function hasRuntimeQueryFailureMarker(params: {
@@ -1423,6 +1456,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const pollLabel = monitoringPresentation.pollLabel;
   const detectionEvalLabel = formatRelativeTime(runtimeStatusSnapshot?.last_detection_at ?? monitoringPresentation.lastTelemetryAt);
   const continuitySlo = evaluateContinuitySlo(runtimeSummary, runtimeStatusSnapshot?.continuity_slo);
+  const continuityFailedCheckList = continuityFailedChecks(runtimeSummary, runtimeStatusSnapshot?.continuity_slo, continuitySlo);
   const telemetryState = deriveSnapshotFreshnessState(monitoringPresentation.lastTelemetryAt, TELEMETRY_STALE_MS);
   const pollState = deriveSnapshotFreshnessState(monitoringPresentation.lastPollAt, POLL_STALE_MS);
   const heartbeatState = deriveSnapshotFreshnessState(monitoringPresentation.lastHeartbeatAt, HEARTBEAT_STALE_MS);
@@ -2442,6 +2476,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               ? 'SLO PASS: heartbeat, telemetry, and detection checks are within thresholds.'
               : `SLO FAIL (${continuitySloFailingDimensions(continuitySlo)}): ${continuitySloFailureReasons(continuitySlo)}`}
           </p>
+          {!continuitySlo.pass ? (
+            <p className="tableMeta">
+              Failed checks: {continuityFailedCheckList.map((item) => `${item.code} (${item.label})`).join(', ')}
+            </p>
+          ) : null}
           <p className="tableMeta">
             Continuity decision: <strong>{continuitySlo.statusLabel}</strong>{' '}
             {continuitySlo.pass ? 'because all monitored dimensions are within SLO bounds.' : `because ${continuitySloFailureReasons(continuitySlo)}.`}

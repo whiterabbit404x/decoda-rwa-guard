@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { evaluateContinuitySlo, pageStatePrimaryCopy } from '../app/threat-operations-panel';
+import { continuityFailedChecks, evaluateContinuitySlo, pageStatePrimaryCopy } from '../app/threat-operations-panel';
 
 test('continuity SLO passes when all dimensions are within thresholds', () => {
   const result = evaluateContinuitySlo({
@@ -143,4 +143,32 @@ test('continuity SLO evaluator reads runtime continuity payload for stale/offlin
     'timestamp missing',
     'timestamp missing',
   ]);
+});
+
+test('continuity failed checks expose explicit codes for live/stale/offline/degraded transitions', () => {
+  const live = continuityFailedChecks(
+    { continuity_reason_codes: [] } as any,
+    { pass: true, reason_codes: [] },
+    { pass: true, statusLabel: 'PASS', dimensions: [] },
+  );
+  const stale = continuityFailedChecks(
+    { continuity_reason_codes: ['event_ingestion_stale'] } as any,
+    { pass: false, reason_codes: ['event_ingestion_stale'] },
+  );
+  const offline = continuityFailedChecks(
+    { continuity_reason_codes: ['worker_not_live', 'heartbeat_offline'] } as any,
+    { pass: false, reason_codes: ['worker_not_live', 'heartbeat_offline'] },
+  );
+  const degraded = continuityFailedChecks(
+    { continuity_reason_codes: ['detection_pipeline_stale'] } as any,
+    { pass: false, reason_codes: ['detection_pipeline_stale'] },
+  );
+
+  expect(live).toEqual([]);
+  expect(stale).toEqual([{ code: 'event_ingestion_stale', label: 'Telemetry ingestion' }]);
+  expect(offline).toEqual([
+    { code: 'worker_not_live', label: 'worker not live' },
+    { code: 'heartbeat_offline', label: 'Worker heartbeat' },
+  ]);
+  expect(degraded).toEqual([{ code: 'detection_pipeline_stale', label: 'Detection evaluation' }]);
 });
