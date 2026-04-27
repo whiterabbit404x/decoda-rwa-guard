@@ -19,7 +19,7 @@ def test_enterprise_ready_gate_fails_continuity_slo_check():
     assert 'continuity_slo_pass' in payload['failed_checks']
 
 
-def test_enterprise_ready_gate_fails_linked_evidence_freshness_check():
+def test_enterprise_ready_gate_fails_linked_fresh_evidence_chain_check():
     payload = _evaluate_enterprise_ready_gate(
         continuity_slo_pass=True,
         telemetry_freshness='stale',
@@ -34,7 +34,7 @@ def test_enterprise_ready_gate_fails_linked_evidence_freshness_check():
         active_incidents_count=1,
     )
     assert payload['enterprise_ready_pass'] is False
-    assert 'linked_evidence_freshness' in payload['failed_checks']
+    assert 'linked_fresh_evidence_chain' in payload['failed_checks']
 
 
 def test_enterprise_ready_gate_fails_stable_monitored_systems_check():
@@ -90,9 +90,15 @@ def test_enterprise_ready_gate_fails_all_red_scenario():
     assert payload['enterprise_ready_pass'] is False
     assert payload['failed_checks'] == [
         'continuity_slo_pass',
-        'linked_evidence_freshness',
+        'linked_fresh_evidence_chain',
         'stable_monitored_systems',
         'live_action_capability_readiness',
+    ]
+    assert payload['check_results'] == [
+        {'name': 'continuity_slo_pass', 'pass': False, 'remediation_url': '/threat#continuity-slo'},
+        {'name': 'linked_fresh_evidence_chain', 'pass': False, 'remediation_url': '/threat#telemetry-freshness'},
+        {'name': 'stable_monitored_systems', 'pass': False, 'remediation_url': '/threat#monitored-system-state'},
+        {'name': 'live_action_capability_readiness', 'pass': False, 'remediation_url': '/threat#response-actions'},
     ]
 
 
@@ -112,3 +118,10 @@ def test_enterprise_ready_gate_passes_all_green_scenario():
     )
     assert payload['enterprise_ready_pass'] is True
     assert payload['failed_checks'] == []
+    assert [check['name'] for check in payload['check_results']] == [
+        'continuity_slo_pass',
+        'linked_fresh_evidence_chain',
+        'stable_monitored_systems',
+        'live_action_capability_readiness',
+    ]
+    assert all(check['pass'] is True for check in payload['check_results'])
