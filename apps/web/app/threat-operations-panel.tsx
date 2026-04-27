@@ -2035,6 +2035,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [selectedThreatActionContextId, setSelectedThreatActionContextId] = useState<string>('');
   const [liveActionConfirm, setLiveActionConfirm] = useState<{ actionType: string; label: string } | null>(null);
   const [liveActionConfirmationText, setLiveActionConfirmationText] = useState<string>('');
+  const [liveActionAcknowledged, setLiveActionAcknowledged] = useState<boolean>(false);
   useEffect(() => {
     setSelectedThreatActionContextId((current) => {
       if (!current) return '';
@@ -2043,6 +2044,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         : '';
     });
   }, [threatActionContextOptions]);
+  useEffect(() => {
+    if (!liveActionConfirm) {
+      setLiveActionAcknowledged(false);
+    }
+  }, [liveActionConfirm]);
   const selectedThreatActionContext = useMemo(() => (
     threatActionContextOptions.find((option) => option.id === selectedThreatActionContextId) ?? null
   ), [selectedThreatActionContextId, threatActionContextOptions]);
@@ -3122,12 +3128,21 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             onChange={(event) => setLiveActionConfirmationText(event.target.value)}
             placeholder={liveActionConfirmationPhrase}
           />
+          <label className="tableMeta" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={liveActionAcknowledged}
+              onChange={(event) => setLiveActionAcknowledged(event.target.checked)}
+            />
+            I understand this may submit a LIVE workflow and will be audit logged.
+          </label>
           <div className="buttonRow">
-            <button type="button" className="secondaryCta" onClick={() => { setLiveActionConfirm(null); setLiveActionConfirmationText(''); }}>Cancel</button>
-            <button type="button" disabled={!selectedThreatActionContext?.incidentId || liveActionConfirmationText.trim().toUpperCase() !== liveActionConfirmationPhrase.toUpperCase()} onClick={() => {
+            <button type="button" className="secondaryCta" onClick={() => { setLiveActionConfirm(null); setLiveActionConfirmationText(''); setLiveActionAcknowledged(false); }}>Cancel</button>
+            <button type="button" disabled={!selectedThreatActionContext?.incidentId || !liveActionAcknowledged || liveActionConfirmationText.trim().toUpperCase() !== liveActionConfirmationPhrase.toUpperCase()} onClick={() => {
               void runThreatAction(liveActionConfirm.actionType, liveActionConfirm.label, 'live');
               setLiveActionConfirm(null);
               setLiveActionConfirmationText('');
+              setLiveActionAcknowledged(false);
             }}>Confirm LIVE action</button>
           </div>
         </article>

@@ -1178,6 +1178,7 @@ def _normalize_action_route_response(payload: dict[str, Any]) -> dict[str, Any]:
         'tx_hash': tx_hash,
         'safe_tx_hash': normalized.get('safe_tx_hash'),
         'result_code': normalized.get('result_code'),
+        'error_code': normalized.get('error_code'),
         'error_reason': normalized.get('error_reason'),
         'executed_at': normalized.get('executed_at'),
         'approved_at': normalized.get('approved_at'),
@@ -1200,6 +1201,7 @@ def _normalize_action_route_response(payload: dict[str, Any]) -> dict[str, Any]:
         'tx_hash': execution_provenance.get('tx_hash'),
         'safe_tx_hash': execution_provenance.get('safe_tx_hash'),
         'result_code': execution_provenance.get('result_code'),
+        'error_code': execution_provenance.get('error_code'),
         'error_reason': execution_provenance.get('error_reason'),
         'approved_at': execution_provenance.get('approved_at'),
         'executed_at': execution_provenance.get('executed_at'),
@@ -2886,11 +2888,11 @@ def response_actions_execute(action_id: str, request: Request) -> dict[str, Any]
 
 @app.post('/enforcement/actions/{action_id}/rollback', summary='Rollback enforcement action by creating a compensating action')
 def enforcement_actions_rollback(action_id: str, request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: rollback_enforcement_action(action_id, request))
+    return with_auth_schema_json(lambda: _normalize_action_route_response(rollback_enforcement_action(action_id, request)))
 
 @app.post('/response/actions/{action_id}/rollback', summary='Rollback response action by creating a compensating action')
 def response_actions_rollback(action_id: str, request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: rollback_enforcement_action(action_id, request))
+    return with_auth_schema_json(lambda: _normalize_action_route_response(rollback_enforcement_action(action_id, request)))
 
 
 @app.post('/exports/history', summary='Export analysis history')
