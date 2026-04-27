@@ -113,7 +113,7 @@ _WORKSPACE_COVERAGE_ONLY_STREAK: dict[str, dict[str, Any]] = {}
 
 ENTERPRISE_READY_REMEDIATION_LINKS: dict[str, str] = {
     'continuity_slo_pass': '/threat#continuity-slo',
-    'linked_evidence_freshness': '/threat#telemetry-freshness',
+    'linked_fresh_evidence_chain': '/threat#telemetry-freshness',
     'stable_monitored_systems': '/threat#monitored-system-state',
     'live_action_capability_readiness': '/threat#response-actions',
 }
@@ -151,7 +151,7 @@ def _evaluate_enterprise_ready_gate(
     checks: list[tuple[str, bool]] = [
         ('continuity_slo_pass', bool(continuity_slo_pass)),
         (
-            'linked_evidence_freshness',
+            'linked_fresh_evidence_chain',
             str(telemetry_freshness or '').strip().lower() in fresh_states
             and str(ingestion_freshness or '').strip().lower() in fresh_states
             and str(detection_pipeline_freshness or '').strip().lower() in fresh_states,
@@ -6250,6 +6250,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             active_incidents_count=int(payload.get('active_incidents') or summary.get('active_incidents_count') or 0),
         )
         payload.update(enterprise_ready_gate)
+        if isinstance(summary, dict):
+            summary.update(enterprise_ready_gate)
         logger.info(
             'monitoring_runtime_status_summary workspace_id=%s healthy_enabled_targets=%s monitored_rows=%s enabled_rows=%s protected_assets=%s monitoring_status=%s systems_with_recent_heartbeat=%s status_inputs=%s',
             workspace_id,
