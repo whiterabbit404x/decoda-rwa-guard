@@ -9,9 +9,11 @@ function source(): string {
 test('action buttons use deterministic disable reasons from derived button states', () => {
   const threat = source();
   expect(threat).toContain('const actionButtonStates = useMemo<Record<ThreatActionButtonId, ThreatActionButtonState>>(() => {');
-  expect(threat).toContain("title={actionButtonStates['sim-notify-team'].reason}");
-  expect(threat).toContain("title={actionButtonStates['rec-freeze-wallet'].reason}");
-  expect(threat).toContain("title={actionButtonStates['live-freeze-wallet'].reason}");
+  expect(threat).toContain("title={threatOperationsViewModel.actionButtons['sim-notify-team'].reason}");
+  expect(threat).toContain("title={threatOperationsViewModel.actionButtons['rec-freeze-wallet'].reason}");
+  expect(threat).toContain("title={threatOperationsViewModel.actionButtons['live-freeze-wallet'].reason}");
+  expect(threat).toContain('nextStepLabel: string;');
+  expect(threat).toContain('nextStepHref: string;');
 });
 
 test('unavailable actions trigger explicit no-op protection messages', () => {
@@ -24,7 +26,9 @@ test('unavailable actions trigger explicit no-op protection messages', () => {
 
 test('status chips and provenance labels stay non-contradictory', () => {
   const threat = source();
-  expect(threat).toContain("type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale_snapshot' | 'partial_endpoint_failure';");
+  expect(threat).toContain("type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale_snapshot' | 'partial_failure';");
   expect(threat).toContain('const headerStatusChips = monitoringViewModel.headerStatusChips;');
-  expect(threat).toContain('<PageStateBanner viewModel={monitoringViewModel} />');
+  expect(threat).toContain('<PageStateBanner viewModel={threatOperationsViewModel.monitoring} />');
+  expect(threat).toContain('Confirm LIVE action');
+  expect(threat).toContain('Next step:');
 });
