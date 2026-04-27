@@ -188,6 +188,15 @@ export type MonitoringInvestigationTimeline = {
   workspace_id?: string;
   proof_chain_status: 'complete' | 'incomplete' | string;
   correlation_id?: string | null;
+  linked_evidence_count?: number;
+  chain_linked_ids?: {
+    detection_id?: string | null;
+    alert_id?: string | null;
+    incident_id?: string | null;
+    action_id?: string | null;
+  } | null;
+  canonical_collections?: Record<string, unknown>;
+  collections?: Record<string, unknown>;
   items: MonitoringInvestigationTimelineItem[];
   missing?: string[];
 };

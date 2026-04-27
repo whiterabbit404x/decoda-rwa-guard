@@ -194,15 +194,6 @@ type DetectionRow = {
   } | null;
 };
 
-function hasEvidenceLinkedChainIds(detection: DetectionRow): boolean {
-  const chain = detection.chain_linked_ids;
-  if (!chain || typeof chain !== 'object') return false;
-  const detectionId = normalizeLookup(chain.detection_id ?? detection.id);
-  const alertId = normalizeLookup(chain.alert_id ?? detection.linked_alert_id);
-  const incidentId = normalizeLookup(chain.incident_id ?? detection.linked_incident_id);
-  const evidenceCount = Number(detection.linked_evidence_count ?? 0);
-  return Boolean(detectionId && alertId && incidentId && evidenceCount > 0);
-}
 type ThreatActionContextOption = {
   id: string;
   label: string;
@@ -240,6 +231,17 @@ type ReconcileJobSnapshot = {
 
 type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale' | 'partial_failure';
 type EndpointProvenanceState = 'live' | 'stale' | 'partial_failure';
+
+type CanonicalCollectionPayload = {
+  detections?: DetectionRow[];
+  alerts?: AlertRow[];
+  incidents?: IncidentRow[];
+  evidence?: EvidenceRow[];
+  history?: ActionHistoryRow[];
+  actions?: ActionHistoryRow[];
+  monitoring_runs?: MonitoringRunRow[];
+  runs?: MonitoringRunRow[];
+};
 
 type MonitoringViewModel = {
   presentationStatus: MonitoringPresentationStatus;
@@ -1101,27 +1103,40 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         }
       }
 
-      function payloadRows<T>(payload: any, key: string): T[] {
-        return Array.isArray(payload?.[key]) ? payload[key] as T[] : [];
+      function payloadRows<T>(payload: any, keys: string[]): T[] | null {
+        for (const key of keys) {
+          const rows = payload?.[key];
+          if (Array.isArray(rows)) {
+            return rows as T[];
+          }
+        }
+        return null;
       }
 
       function updateCollection<T>({
         key,
         result,
         payload,
-        payloadKey,
+        payloadKeys,
+        canonicalRows,
         setter,
         stale,
       }: {
         key: SnapshotCollectionKey;
         result: PromiseSettledResult<Response>;
         payload: any;
-        payloadKey: string;
+        payloadKeys: string[];
+        canonicalRows: T[] | null;
         setter: (rows: T[]) => void;
         stale: SnapshotCollectionKey[];
       }) {
-        if (result.status === 'fulfilled' && result.value.ok) {
-          setter(payloadRows<T>(payload, payloadKey));
+        const endpointRows = payloadRows<T>(payload, payloadKeys);
+        if (result.status === 'fulfilled' && result.value.ok && endpointRows) {
+          setter(endpointRows);
+          return;
+        }
+        if (canonicalRows) {
+          setter(canonicalRows);
           return;
         }
         stale.push(key);
@@ -1137,6 +1152,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           evidenceResult,
           historyResult,
           monitoringRunsResult,
+          linkedAlertEvidenceResult,
           reconcileLatestResult,
           activeReconcileStatusResult,
         ] = await Promise.allSettled([
@@ -1148,6 +1164,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/history/actions?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/monitoring/runs?limit=20`, { headers: authHeaders(), cache: 'no-store' }),
+          investigationTimeline?.chain_linked_ids?.alert_id
+            ? fetch(`${apiUrl}/alerts/${encodeURIComponent(investigationTimeline.chain_linked_ids.alert_id)}/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' })
+            : Promise.resolve(new Response('{}', { status: 204 })),
           fetch(`${apiUrl}/monitoring/systems/reconcile/latest`, { headers: authHeaders(), cache: 'no-store' }),
           activeReconcileId ? fetch(`${apiUrl}/monitoring/systems/reconcile/${encodeURIComponent(activeReconcileId)}`, { headers: authHeaders(), cache: 'no-store' }) : Promise.resolve(new Response('{}', { status: 204 })),
         ]);
@@ -1174,6 +1193,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const evidenceResponse = evidenceResult.status === 'fulfilled' && evidenceResult.value.ok ? evidenceResult.value : null;
         const historyResponse = historyResult.status === 'fulfilled' && historyResult.value.ok ? historyResult.value : null;
         const monitoringRunsResponse = monitoringRunsResult.status === 'fulfilled' && monitoringRunsResult.value.ok ? monitoringRunsResult.value : null;
+        const linkedAlertEvidenceResponse = linkedAlertEvidenceResult.status === 'fulfilled' && linkedAlertEvidenceResult.value.ok ? linkedAlertEvidenceResult.value : null;
         const reconcileLatestResponse = reconcileLatestResult.status === 'fulfilled' && reconcileLatestResult.value.ok ? reconcileLatestResult.value : null;
         const activeReconcileStatusResponse = activeReconcileStatusResult.status === 'fulfilled' && activeReconcileStatusResult.value.ok ? activeReconcileStatusResult.value : null;
         const [
@@ -1183,6 +1203,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           evidencePayload,
           historyPayload,
           monitoringRunsPayload,
+          linkedAlertEvidencePayload,
           reconcileLatestPayload,
           activeReconcileStatusPayload,
         ] = await Promise.all([
@@ -1192,18 +1213,84 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           safeJson(evidenceResponse),
           safeJson(historyResponse),
           safeJson(monitoringRunsResponse),
+          safeJson(linkedAlertEvidenceResponse),
           safeJson(reconcileLatestResponse),
           safeJson(activeReconcileStatusResponse),
         ]);
 
+        const canonicalCollections: CanonicalCollectionPayload = {
+          ...(runtimeStatusPayload?.canonical_collections ?? {}),
+          ...(investigationTimelinePayload?.canonical_collections ?? {}),
+          ...(investigationTimelinePayload?.collections ?? {}),
+        };
+        const canonicalEvidence = payloadRows<EvidenceRow>(canonicalCollections, ['evidence']);
+        const alertEvidenceRows = payloadRows<EvidenceRow>(linkedAlertEvidencePayload, ['evidence']) ?? [];
+        const mergedCanonicalEvidence = [
+          ...(canonicalEvidence ?? []),
+          ...alertEvidenceRows,
+        ];
+        const canonicalEvidenceById = new Map<string, EvidenceRow>();
+        mergedCanonicalEvidence.forEach((row) => {
+          if (!row?.id) return;
+          canonicalEvidenceById.set(row.id, row);
+        });
+
         // Runtime-status + investigation-timeline are canonical; collection APIs are refreshed in parallel and kept stale-safe.
         const staleCollections: SnapshotCollectionKey[] = [];
-        updateCollection<DetectionRow>({ key: 'detections', result: detectionsResult, payload: detectionsPayload, payloadKey: 'detections', setter: setDetections, stale: staleCollections });
-        updateCollection<AlertRow>({ key: 'alerts', result: alertsResult, payload: alertsPayload, payloadKey: 'alerts', setter: setAlerts, stale: staleCollections });
-        updateCollection<IncidentRow>({ key: 'incidents', result: incidentsResult, payload: incidentsPayload, payloadKey: 'incidents', setter: setIncidents, stale: staleCollections });
-        updateCollection<EvidenceRow>({ key: 'evidence', result: evidenceResult, payload: evidencePayload, payloadKey: 'evidence', setter: setEvidence, stale: staleCollections });
-        updateCollection<ActionHistoryRow>({ key: 'history', result: historyResult, payload: historyPayload, payloadKey: 'history', setter: setActionHistory, stale: staleCollections });
-        updateCollection<MonitoringRunRow>({ key: 'monitoring-runs', result: monitoringRunsResult, payload: monitoringRunsPayload, payloadKey: 'runs', setter: setMonitoringRuns, stale: staleCollections });
+        updateCollection<DetectionRow>({
+          key: 'detections',
+          result: detectionsResult,
+          payload: detectionsPayload,
+          payloadKeys: ['detections'],
+          canonicalRows: payloadRows(canonicalCollections, ['detections']),
+          setter: setDetections,
+          stale: staleCollections,
+        });
+        updateCollection<AlertRow>({
+          key: 'alerts',
+          result: alertsResult,
+          payload: alertsPayload,
+          payloadKeys: ['alerts'],
+          canonicalRows: payloadRows(canonicalCollections, ['alerts']),
+          setter: setAlerts,
+          stale: staleCollections,
+        });
+        updateCollection<IncidentRow>({
+          key: 'incidents',
+          result: incidentsResult,
+          payload: incidentsPayload,
+          payloadKeys: ['incidents'],
+          canonicalRows: payloadRows(canonicalCollections, ['incidents']),
+          setter: setIncidents,
+          stale: staleCollections,
+        });
+        updateCollection<EvidenceRow>({
+          key: 'evidence',
+          result: evidenceResult,
+          payload: evidencePayload,
+          payloadKeys: ['evidence'],
+          canonicalRows: [...canonicalEvidenceById.values()],
+          setter: setEvidence,
+          stale: staleCollections,
+        });
+        updateCollection<ActionHistoryRow>({
+          key: 'history',
+          result: historyResult,
+          payload: historyPayload,
+          payloadKeys: ['history', 'actions'],
+          canonicalRows: payloadRows(canonicalCollections, ['history', 'actions']),
+          setter: setActionHistory,
+          stale: staleCollections,
+        });
+        updateCollection<MonitoringRunRow>({
+          key: 'monitoring-runs',
+          result: monitoringRunsResult,
+          payload: monitoringRunsPayload,
+          payloadKeys: ['runs', 'monitoring_runs'],
+          canonicalRows: payloadRows(canonicalCollections, ['runs', 'monitoring_runs']),
+          setter: setMonitoringRuns,
+          stale: staleCollections,
+        });
         setSnapshotStaleCollections(staleCollections);
         const activeJob = activeReconcileStatusPayload?.job;
         const reconcileJob = activeJob && typeof activeJob === 'object' ? activeJob : reconcileLatestPayload?.job;
@@ -1432,12 +1519,32 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const historical: DetectionItem[] = [];
 
     baseDetections.forEach((item) => {
+      const row = detections.find((detection) => detection.id === item.detectionId) ?? null;
+      const linkedAlertId = row?.chain_linked_ids?.alert_id ?? row?.linked_alert_id ?? null;
+      const linkedIncidentId = row?.chain_linked_ids?.incident_id ?? row?.linked_incident_id ?? null;
+      const linkedAlert = linkedAlertId ? coverageIndexes.alertsById.get(normalizeLookup(linkedAlertId)) ?? null : null;
+      const linkedIncident = linkedAlert?.incident_id
+        ? incidents.find((incident) => incident.id === linkedAlert.incident_id) ?? null
+        : linkedIncidentId
+          ? incidents.find((incident) => incident.id === linkedIncidentId) ?? null
+          : null;
+      const linkedEvidenceRows = coverageIndexes.evidenceByDetectionId.get(normalizeLookup(item.detectionId)) ?? [];
+      const linkedEvidence = pickLatestByTime(linkedEvidenceRows, (entry) => entry.observed_at);
+      const linkedEvidenceCount = Number(
+        row?.linked_evidence_count
+        ?? linkedAlert?.linked_evidence_count
+        ?? linkedIncident?.linked_evidence_count
+        ?? linkedEvidenceRows.length,
+      );
+      const completeProofChain = Boolean(row && linkedAlert && linkedIncident);
+      const hasRealLinkedEvidence = linkedEvidenceCount > 0 && isRealEvidence(linkedEvidence, row);
       const ageMs = now - new Date(item.timestamp).getTime();
       const telemetryFresh = monitoringPresentation.status === 'live' && monitoringPresentation.hasLiveTelemetry;
       const liveCandidate = telemetryFresh
         && !dbPersistenceOutageActive
         && item.liveEvidenceEligible !== false
-        && hasEvidenceLinkedChainIds(item)
+        && completeProofChain
+        && hasRealLinkedEvidence
         && ageMs <= DETECTION_LIVE_MS
         && item.state !== 'Test';
       if (liveCandidate) {
@@ -1451,7 +1558,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     });
 
     return { live, historical };
-  }, [baseDetections, dbPersistenceOutageActive, monitoringPresentation.hasLiveTelemetry, monitoringPresentation.status]);
+  }, [baseDetections, coverageIndexes.alertsById, coverageIndexes.evidenceByDetectionId, dbPersistenceOutageActive, detections, incidents, monitoringPresentation.hasLiveTelemetry, monitoringPresentation.status]);
 
   const pageState = derivePageState({
     loadingSnapshot,
@@ -2725,11 +2832,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   {investigationTimelineItems.map((item) => {
                     const linkName = String(item.link_name || 'unknown');
                     const sourceLabel = String(item.evidence_source || 'simulator');
+                    const chainIds = investigationTimeline?.chain_linked_ids ?? {};
                     return (
                       <div key={item.id} className="overviewListItem">
                         <div>
                           <p>{linkName.replaceAll('_', ' ')}</p>
                           <p className="tableMeta">id {item.id} · table {String(item.table_name || 'unknown')} · evidence {sourceLabel}</p>
+                          <p className="tableMeta">
+                            linked IDs: detection {String(chainIds.detection_id || 'n/a')} · alert {String(chainIds.alert_id || 'n/a')} · incident {String(chainIds.incident_id || 'n/a')} · action {String(chainIds.action_id || 'n/a')}
+                          </p>
                           <p className="tableMeta">
                             <span className={`statusBadge statusBadge-${timelineLinkTone(linkName)}`}>{linkName}</span>{' '}
                             {formatAbsoluteTime(item.timestamp)}
