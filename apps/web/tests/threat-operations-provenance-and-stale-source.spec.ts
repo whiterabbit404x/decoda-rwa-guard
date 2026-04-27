@@ -14,7 +14,7 @@ test('partial endpoint failures keep stale fallback snapshot copy visible', () =
   expect(threat).toContain("setSnapshotFailedEndpoints(failedEndpoints);");
   expect(threat).toContain("snapshotError: Boolean(snapshotError) && !hasCanonicalSnapshot,");
   expect(threat).toContain('Monitoring snapshot is running on stale fallback data');
-  expect(threat).toContain("fallback stale snapshot");
+  expect(threat).toContain("fallback data");
 });
 
 test('provenance banner and explicit freshness states are present for telemetry, poll, and heartbeat', () => {
@@ -24,14 +24,15 @@ test('provenance banner and explicit freshness states are present for telemetry,
   expect(threat).toContain('const telemetryState = deriveSnapshotFreshnessState');
   expect(threat).toContain('const pollState = deriveSnapshotFreshnessState');
   expect(threat).toContain('const heartbeatState = deriveSnapshotFreshnessState');
-  expect(threat).toContain('Data provenance: /ops/monitoring/runtime-status');
+  expect(threat).toContain('/ops/monitoring/runtime-status ({monitoringViewModel.endpointProvenance.runtimeStatus})');
   expect(threat).toContain('Last successful runtime refresh');
 });
 
 test('header status chips are derived from one normalized view-model list', () => {
   const threat = readThreatPanel();
 
-  expect(threat).toContain('const headerStatusChips = useMemo(() => {');
+  expect(threat).toContain('const monitoringViewModel = useMemo<MonitoringViewModel>(() => {');
+  expect(threat).toContain('const headerStatusChips = monitoringViewModel.headerStatusChips;');
   expect(threat).toContain('{headerStatusChips.map((chip) => (');
   expect(threat).toContain('`Telemetry ${telemetryState}`');
   expect(threat).toContain('`Poll ${pollState}`');

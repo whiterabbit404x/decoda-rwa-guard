@@ -237,7 +237,8 @@ type ReconcileJobSnapshot = {
   completed_at?: string | null;
 };
 
-type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale snapshot' | 'partial endpoint failure';
+type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale' | 'partial_failure';
+type EndpointProvenanceState = 'live' | 'stale' | 'partial_failure';
 
 type MonitoringViewModel = {
   presentationStatus: MonitoringPresentationStatus;
@@ -253,6 +254,12 @@ type MonitoringViewModel = {
   heartbeatState: SnapshotFreshnessState;
   provenanceLabel: MonitoringProvenanceLabel;
   provenanceExplanation: string;
+  endpointProvenance: {
+    runtimeStatus: EndpointProvenanceState;
+    investigationTimeline: EndpointProvenanceState;
+  };
+  lastSuccessfulRuntimeRefreshAt: string | null;
+  lastSuccessfulTimelineRefreshAt: string | null;
   runtimeReason: string;
   configurationReason: string | null;
   continuityStatus: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null;
@@ -1486,16 +1493,26 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       ? 'Runtime reports partial or stale telemetry. Detailed protected system rows are still syncing.'
       : 'Runtime reports healthy coverage. Detailed protected system rows are still syncing.';
   const monitoringViewModel = useMemo<MonitoringViewModel>(() => {
+    const runtimeEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('runtime-status') ? 'partial_failure' : 'live';
+    const timelineEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('investigation-timeline') ? 'partial_failure' : 'live';
+    const lastSuccessfulRuntimeRefreshAt = runtimeStatusSnapshot?.last_poll_at
+      ?? runtimeSummary?.last_poll_at
+      ?? runtimeStatusSnapshot?.last_telemetry_at
+      ?? runtimeSummary?.last_telemetry_at
+      ?? null;
+    const lastSuccessfulTimelineRefreshAt = (investigationTimeline as Record<string, any> | null)?.generated_at
+      ?? (investigationTimeline as Record<string, any> | null)?.created_at
+      ?? null;
     const derivedProvenanceLabel: MonitoringProvenanceLabel = snapshotFailedEndpoints.length > 0
-      ? 'partial endpoint failure'
+      ? 'partial_failure'
       : (telemetryState === 'stale' || pollState === 'stale' || heartbeatState === 'stale')
-        ? 'stale snapshot'
+        ? 'stale'
         : (pageState === 'degraded_partial' || monitoringPresentation.status === 'degraded')
           ? 'degraded'
           : 'live';
-    const provenanceExplanation = derivedProvenanceLabel === 'partial endpoint failure'
+    const provenanceExplanation = derivedProvenanceLabel === 'partial_failure'
       ? `Monitoring snapshot fallback is active because ${snapshotFailedEndpoints.join(', ')} failed in the most recent refresh.`
-      : derivedProvenanceLabel === 'stale snapshot'
+      : derivedProvenanceLabel === 'stale'
         ? 'Runtime snapshot is visible, but at least one freshness timestamp is stale.'
         : derivedProvenanceLabel === 'degraded'
           ? 'Runtime and continuity contract report degraded monitoring health.'
@@ -1554,6 +1571,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       heartbeatState,
       provenanceLabel: derivedProvenanceLabel,
       provenanceExplanation,
+      endpointProvenance: {
+        runtimeStatus: runtimeEndpointState,
+        investigationTimeline: timelineEndpointState,
+      },
+      lastSuccessfulRuntimeRefreshAt,
+      lastSuccessfulTimelineRefreshAt,
       runtimeReason,
       configurationReason,
       continuityStatus: runtimeSummary?.continuity_status ?? null,
@@ -1585,6 +1608,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     reportingSystems,
     runtimeReason,
     runtimeSummary?.continuity_status,
+    runtimeSummary?.last_poll_at,
+    runtimeSummary?.last_telemetry_at,
+    runtimeStatusSnapshot?.last_poll_at,
+    runtimeStatusSnapshot?.last_telemetry_at,
+    investigationTimeline,
     latestReconcileJob,
     monitoringMode,
     simulatorMode,
@@ -2166,7 +2194,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ))}
         </div>
         <p className="tableMeta">
-          Data provenance ({monitoringViewModel.provenanceLabel}): {monitoringViewModel.provenanceExplanation} /ops/monitoring/runtime-status ({snapshotFailedEndpoints.includes('runtime-status') ? 'stale snapshot' : 'live'}) · /ops/monitoring/investigation-timeline ({snapshotFailedEndpoints.includes('investigation-timeline') ? 'stale snapshot' : 'live'}) · Last successful runtime refresh: {formatAbsoluteTime(runtimeStatusSnapshot?.last_poll_at ?? runtimeSummary?.last_poll_at ?? runtimeStatusSnapshot?.last_telemetry_at ?? runtimeSummary?.last_telemetry_at ?? null)} · Last successful timeline refresh: {formatAbsoluteTime((investigationTimeline as Record<string, any> | null)?.generated_at ?? (investigationTimeline as Record<string, any> | null)?.created_at ?? null)}
+          Data provenance ({monitoringViewModel.provenanceLabel}): {monitoringViewModel.provenanceExplanation} /ops/monitoring/runtime-status ({monitoringViewModel.endpointProvenance.runtimeStatus}) · /ops/monitoring/investigation-timeline ({monitoringViewModel.endpointProvenance.investigationTimeline}) · Last successful runtime refresh: {formatAbsoluteTime(monitoringViewModel.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: {formatAbsoluteTime(monitoringViewModel.lastSuccessfulTimelineRefreshAt)}
         </p>
         <PageStateBanner viewModel={monitoringViewModel} />
         <article className="dataCard">
