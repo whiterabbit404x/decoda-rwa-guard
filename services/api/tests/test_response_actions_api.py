@@ -168,6 +168,43 @@ def test_create_live_unsupported_action_returns_structured_422_and_does_not_inse
     assert not any('INSERT INTO response_actions' in statement for statement, _ in executed)
 
 
+def test_create_live_action_denied_for_non_approver_role(monkeypatch):
+    class _Result:
+        def fetchone(self):
+            return None
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(
+        pilot,
+        '_require_workspace_admin',
+        lambda *_: (
+            {'id': 'analyst-1', 'mfa_enabled': False},
+            {'workspace_id': 'ws-1', 'role': 'analyst'},
+        ),
+    )
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    try:
+        pilot.create_enforcement_action({'action_type': 'freeze_wallet', 'mode': 'live', 'status': 'pending', 'incident_id': 'inc-1'}, request)
+        raise AssertionError('Expected HTTPException for unauthorized live action creation.')
+    except HTTPException as exc:
+        assert exc.status_code == 403
+        assert 'Owner or admin role is required for live action execution' in str(exc.detail)
+
+
 def test_list_response_actions_returns_supported_fields(monkeypatch):
     class _Result:
         def __init__(self, rows=None):
@@ -265,7 +302,7 @@ def test_execute_live_unsupported_action_returns_structured_error_without_execut
         assert exc.detail['reason'] == 'Unsupported live action'
 
     assert any(
-        "UPDATE response_actions SET status = %s, execution_state = %s, execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, result_summary = %s WHERE id = %s" in statement
+        "UPDATE response_actions SET status = %s, execution_state = %s, execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, result_summary = %s, error_code = %s WHERE id = %s" in statement
         and params[0] == 'failed'
         and params[1] == 'unsupported'
         for statement, params in executed
@@ -883,5 +920,8 @@ def test_execute_live_action_success_writes_audit_trail_and_provenance(monkeypat
     assert payload['execution_provenance']['tx_hash'] == '0xabc'
     assert payload['execution_provenance']['result_code'] == 202
     assert payload['execution_evidence']['provider_request_id'] == 'safe-req-1'
+    assert payload['execution_provenance']['error_code'] is None
+    assert isinstance(payload['execution_artifacts'].get('status_transitions'), list)
+    assert any(item.get('to_status') == 'pending' for item in payload['execution_artifacts'].get('status_transitions', []))
     assert any('UPDATE response_actions SET status = \'pending\'' in statement for statement, _ in executed)
     assert {'action': 'enforcement.action.execute', 'entity_type': 'enforcement_action'} in audits
