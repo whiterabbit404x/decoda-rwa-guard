@@ -17,13 +17,13 @@ const THREAT_PAGE_POLL_HIDDEN_MS = 60000;
 const ENTERPRISE_GATE_LABELS: Record<string, string> = {
   continuity_slo_pass: 'Continuity SLO pass',
   linked_evidence_freshness: 'Linked evidence freshness',
-  open_proof_chain_gaps: 'Proof-chain gaps closed',
+  stable_monitored_system_state: 'Stable monitored-system state',
   live_action_capability_available: 'Live action capability available',
 };
 const ENTERPRISE_GATE_REMEDIATION_LINKS: Record<string, string> = {
   continuity_slo_pass: '/threat#continuity-slo',
   linked_evidence_freshness: '/threat#telemetry-freshness',
-  open_proof_chain_gaps: '/threat#proof-chain-status',
+  stable_monitored_system_state: '/threat#monitored-system-state',
   live_action_capability_available: '/threat#response-actions',
 };
 
@@ -2303,7 +2303,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <p className="kpiValue">{latestRiskScore.value}</p>
           <p className="tableMeta">{latestRiskScore.tier} · {riskFreshness}</p>
         </article>
-        <article className="dataCard kpiCard">
+        <article id="monitored-system-state" className="dataCard kpiCard">
           <p className="sectionEyebrow">Coverage State</p>
           <p className="kpiValue">{coverageSummary}</p>
           <p className="tableMeta">Systems reporting telemetry.</p>

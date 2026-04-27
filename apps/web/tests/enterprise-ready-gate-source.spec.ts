@@ -11,7 +11,8 @@ test('threat panel renders enterprise readiness gate banner and remediation link
   expect(threat).toContain('Enterprise readiness gate');
   expect(threat).toContain("Enterprise-readiness checks failed. Enterprise-ready copy is hidden until all checks pass.");
   expect(threat).toContain('ENTERPRISE_GATE_REMEDIATION_LINKS');
-  expect(threat).toContain("'/threat#proof-chain-status'");
+  expect(threat).toContain("stable_monitored_system_state: 'Stable monitored-system state'");
+  expect(threat).toContain("'/threat#monitored-system-state'");
   expect(threat).toContain("'/threat#response-actions'");
 });
 
