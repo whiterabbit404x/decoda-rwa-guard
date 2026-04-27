@@ -114,6 +114,18 @@ def test_monitoring_reconcile_status_route_alias_returns_job(monkeypatch):
     assert response.json()['job']['id'] == 'run-2'
 
 
+def test_monitoring_reconcile_latest_status_alias_returns_latest_job(monkeypatch):
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        api_main,
+        'get_latest_workspace_reconcile_run',
+        lambda _request: {'workspace': {'id': 'ws-1'}, 'job': {'id': 'run-3', 'status': 'completed'}},
+    )
+    response = client.get('/monitoring/systems/reconcile/status')
+    assert response.status_code == 200
+    assert response.json()['job']['id'] == 'run-3'
+
+
 def test_monitoring_reconcile_route_returns_structured_error_for_unexpected_exception(monkeypatch, caplog):
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
     monkeypatch.setenv('APP_ENV', 'development')

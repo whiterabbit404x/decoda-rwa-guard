@@ -4481,6 +4481,36 @@ def _job_payload_from_run_row(item: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _reconcile_terminal_state_replay_payload(*, workspace: dict[str, Any], run_row: dict[str, Any]) -> dict[str, Any]:
+    run_status = str(run_row.get('status') or 'completed')
+    result_summary = run_row.get('result_summary') if isinstance(run_row.get('result_summary'), dict) else {}
+    unresolved_reasons = result_summary.get('unresolved_reasons') if isinstance(result_summary.get('unresolved_reasons'), list) else []
+    reason_counts = result_summary.get('reason_counts') if isinstance(result_summary.get('reason_counts'), dict) else {}
+    return {
+        'workspace': workspace,
+        'job': _job_payload_from_run_row(run_row),
+        'reconcile_id': str(run_row.get('id') or ''),
+        'state': run_status,
+        'reason_counts': {
+            'invalid': int(reason_counts.get('invalid', 0) or 0),
+            'skipped': int(reason_counts.get('skipped', 0) or 0),
+        },
+        'unresolved_reasons': [
+            {
+                'stage': str(item.get('stage') or 'reconcile_targets'),
+                'code': str(item.get('code') or 'reconcile_failed'),
+                'backendReason': str(item.get('backendReason') or 'Reconcile completed with unresolved reasons.'),
+            }
+            for item in unresolved_reasons
+            if isinstance(item, dict)
+        ],
+        'reconcile': _normalize_reconcile_result({}),
+        'systems': [],
+        'monitored_systems_count': 0,
+        'idempotent_replay': True,
+    }
+
+
 def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
     logger.info('monitoring_reconcile step=start')
     stage = 'require_live_mode'
@@ -4541,6 +4571,14 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                 'systems': [],
                 'monitored_systems_count': 0,
             }
+        if latest_run and str(latest_run.get('status') or '') in {'completed', 'failed'}:
+            latest_updated_at = latest_run.get('updated_at')
+            run_age_seconds = (utc_now() - latest_updated_at).total_seconds() if latest_updated_at else (WORKSPACE_RECONCILE_CACHE_SECONDS + 1)
+            if run_age_seconds <= WORKSPACE_RECONCILE_CACHE_SECONDS:
+                return _reconcile_terminal_state_replay_payload(
+                    workspace=workspace_context['workspace'],
+                    run_row=latest_run,
+                )
         _create_reconcile_run(connection, run_id=reconcile_run_id, workspace_id=workspace_id, requested_by_user_id=user_id)
         logger.info('monitoring_reconcile step=workspace_resolved workspace_id=%s', workspace_id)
         stage = 'verify_eligible_targets'

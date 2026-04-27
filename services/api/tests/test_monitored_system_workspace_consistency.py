@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -372,11 +373,30 @@ def test_reconcile_workspace_repeated_calls_return_stable_terminal_state(monkeyp
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
 
     first = pilot.reconcile_workspace_monitored_systems(request)
+
+    run_row = {
+        'id': first['reconcile_id'],
+        'status': 'completed',
+        'counts': first['job']['counts'],
+        'reason_codes': [],
+        'affected_systems': ['ms-1'],
+        'result_summary': {
+            'state': 'completed',
+            'reason_counts': {'invalid': 0, 'skipped': 0},
+            'unresolved_reasons': [],
+        },
+        'updated_at': datetime.now(timezone.utc),
+    }
+    monkeypatch.setattr(pilot, '_load_reconcile_run_row', lambda *_a, **_k: run_row)
+
     second = pilot.reconcile_workspace_monitored_systems(request)
 
-    assert call_count['reconcile'] == 2
-    assert first['reconcile']['created_or_updated'] == second['reconcile']['created_or_updated'] == 1
+    assert call_count['reconcile'] == 1
+    assert first['reconcile']['created_or_updated'] == 1
+    assert second['job']['counts']['created_or_updated'] == 1
     assert second['state'] == 'completed'
+    assert second['idempotent_replay'] is True
+    assert second['reconcile_id'] == first['reconcile_id']
 
 
 def test_reconcile_workspace_idempotency_guard_returns_no_op_while_inflight(monkeypatch):

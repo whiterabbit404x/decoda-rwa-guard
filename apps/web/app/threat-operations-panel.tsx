@@ -2360,6 +2360,20 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const started = Date.parse(latestReconcileJob.started_at);
     return Number.isFinite(started) && (Date.now() - started) > 120000;
   }, [latestReconcileJob?.started_at, latestReconcileJob?.status]);
+  const reconcileProgressLabel = useMemo(() => {
+    if (!latestReconcileJob) return null;
+    const scanned = Number(latestReconcileJob.counts?.targets_scanned ?? 0);
+    const updated = Number(latestReconcileJob.counts?.created_or_updated ?? 0);
+    const invalid = Number(latestReconcileJob.counts?.invalid_targets ?? 0);
+    const skipped = Number(latestReconcileJob.counts?.skipped_targets ?? 0);
+    return `Reconcile progress: scanned ${scanned} targets · updated ${updated} · invalid ${invalid} · skipped ${skipped}`;
+  }, [latestReconcileJob]);
+  const reconcileActionableError = useMemo(() => {
+    if (latestReconcileJob?.status !== 'failed') return null;
+    const reasonCodes = latestReconcileJob.reason_codes ?? [];
+    const reasonCodeList = reasonCodes.length > 0 ? ` Reason codes: ${reasonCodes.join(', ')}.` : '';
+    return `Action required: resolve ${latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'the backend reconcile failure'} and rerun reconcile from Monitored Systems.${reasonCodeList}`;
+  }, [latestReconcileJob]);
   const lastSuccessfulReconcileAt = useMemo(() => {
     if (!latestReconcileJob || latestReconcileJob.status !== 'completed') return null;
     return latestReconcileJob.completed_at || latestReconcileJob.last_event_at || latestReconcileJob.started_at || null;
@@ -2435,7 +2449,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
         {latestReconcileJob ? (
           <p className="tableMeta">
-            Reconcile job state {latestReconcileJob.status.toUpperCase()} · Progress scanned {Number(latestReconcileJob.counts?.targets_scanned ?? 0)} / updated {Number(latestReconcileJob.counts?.created_or_updated ?? 0)} / invalid {Number(latestReconcileJob.counts?.invalid_targets ?? 0)} / skipped {Number(latestReconcileJob.counts?.skipped_targets ?? 0)} · Retry count {Number(latestReconcileJob.retry_count ?? 0)} · Last success {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Failure reason {latestReconcileJob.status === 'failed' ? (latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No backend detail returned.') : 'None'}
+            Reconcile job state {latestReconcileJob.status.toUpperCase()} · {reconcileProgressLabel} · Retry count {Number(latestReconcileJob.retry_count ?? 0)} · Last success {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Failure reason {latestReconcileJob.status === 'failed' ? (latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No backend detail returned.') : 'None'}
           </p>
         ) : null}
         {latestReconcileJob?.status === 'failed' ? (
@@ -2449,9 +2463,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             Reconcile failed: {latestReconcileJob.reason_detail || 'No backend detail returned.'} {(latestReconcileJob.reason_codes ?? []).length > 0 ? `Reason codes: ${(latestReconcileJob.reason_codes ?? []).join(', ')}.` : ''}
           </p>
         ) : null}
+        {reconcileActionableError ? (
+          <p className="statusLine">{reconcileActionableError}</p>
+        ) : null}
         {reconcileTimeoutExceeded ? (
           <p className="statusLine">
-            Reconcile is still running after 120 seconds. Keep this page open to continue polling job status, or open monitored systems to confirm persisted state.
+            Reconcile timeout guard reached (120 seconds). Keep this page open for job polling, then open /monitored-systems to confirm persisted state before retrying.
           </p>
         ) : null}
         {dbPersistenceOutageActive ? (
