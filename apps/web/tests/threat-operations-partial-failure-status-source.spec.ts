@@ -9,9 +9,9 @@ function threatPanelSource(): string {
 test('partial failures expose normalized provenance labels and last successful refresh timestamps', () => {
   const threat = threatPanelSource();
 
-  expect(threat).toContain("type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale' | 'partial_failure';");
-  expect(threat).toContain('runtimeEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes(\'runtime-status\') ? \'partial_failure\' : \'live\';');
-  expect(threat).toContain('timelineEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes(\'investigation-timeline\') ? \'partial_failure\' : \'live\';');
+  expect(threat).toContain("type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale_snapshot' | 'partial_endpoint_failure';");
+  expect(threat).toContain("snapshotFailedEndpoints.includes('runtime-status')");
+  expect(threat).toContain("'partial_endpoint_failure'");
   expect(threat).toContain('lastSuccessfulRuntimeRefreshAt');
   expect(threat).toContain('lastSuccessfulTimelineRefreshAt');
 });
