@@ -90,6 +90,30 @@ def test_monitoring_reconcile_latest_result_route_returns_result(monkeypatch):
     assert response.json()['result']['state'] == 'success'
 
 
+def test_monitoring_reconcile_start_route_alias_returns_200_for_success(monkeypatch):
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        api_main,
+        'reconcile_workspace_monitored_systems',
+        lambda _request: {'workspace': {'id': 'ws-1'}, 'job': {'id': 'run-1', 'status': 'running'}},
+    )
+    response = client.post('/monitoring/systems/reconcile/start')
+    assert response.status_code == 200
+    assert response.json()['job']['status'] == 'running'
+
+
+def test_monitoring_reconcile_status_route_alias_returns_job(monkeypatch):
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        api_main,
+        'get_workspace_reconcile_status',
+        lambda _request, _run_id: {'workspace': {'id': 'ws-1'}, 'job': {'id': 'run-2', 'status': 'running'}},
+    )
+    response = client.get('/monitoring/systems/reconcile/status/run-2')
+    assert response.status_code == 200
+    assert response.json()['job']['id'] == 'run-2'
+
+
 def test_monitoring_reconcile_route_returns_structured_error_for_unexpected_exception(monkeypatch, caplog):
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
     monkeypatch.setenv('APP_ENV', 'development')

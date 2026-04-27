@@ -2471,6 +2471,11 @@ def monitoring_systems_reconcile(request: Request) -> Any:
         return JSONResponse(payload, status_code=500)
 
 
+@app.post('/monitoring/systems/reconcile/start', summary='Start monitored systems reconcile job')
+def monitoring_systems_reconcile_start(request: Request) -> Any:
+    return monitoring_systems_reconcile(request)
+
+
 @app.get('/monitoring/systems/reconcile/latest', summary='Latest monitored systems reconcile status')
 def monitoring_systems_reconcile_latest(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_latest_workspace_reconcile_run(request))
@@ -2481,6 +2486,11 @@ def monitoring_systems_reconcile_status(reconcile_id: str, request: Request) -> 
     return with_auth_schema_json(lambda: get_workspace_reconcile_status(request, reconcile_id))
 
 
+@app.get('/monitoring/systems/reconcile/status/{reconcile_id}', summary='Get monitored systems reconcile job status')
+def monitoring_systems_reconcile_status_alias(reconcile_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_workspace_reconcile_status(request, reconcile_id))
+
+
 @app.get('/monitoring/systems/reconcile/{reconcile_id}/events', summary='Get monitored systems reconcile job events')
 def monitoring_systems_reconcile_events(reconcile_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_workspace_reconcile_events(request, reconcile_id))
@@ -2488,6 +2498,11 @@ def monitoring_systems_reconcile_events(reconcile_id: str, request: Request) -> 
 
 @app.get('/monitoring/systems/reconcile/latest/result', summary='Get latest monitored systems reconcile result summary')
 def monitoring_systems_reconcile_latest_result(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_latest_workspace_reconcile_result(request))
+
+
+@app.get('/monitoring/systems/reconcile/result/latest', summary='Get latest monitored systems reconcile result summary')
+def monitoring_systems_reconcile_latest_result_alias(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_latest_workspace_reconcile_result(request))
 
 

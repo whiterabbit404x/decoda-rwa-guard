@@ -96,6 +96,8 @@ _redis_rate_limiter_lock = threading.Lock()
 _workspace_reconcile_lock = threading.Lock()
 _workspace_reconcile_inflight: dict[str, dict[str, Any]] = {}
 WORKSPACE_RECONCILE_CACHE_SECONDS = 30
+WORKSPACE_RECONCILE_MAX_RETRIES_ENV = 'WORKSPACE_RECONCILE_MAX_RETRIES'
+WORKSPACE_RECONCILE_RETRY_BACKOFF_SECONDS_ENV = 'WORKSPACE_RECONCILE_RETRY_BACKOFF_SECONDS'
 _AUTH_DB_CLASSIFICATIONS = {'quota_exceeded', 'network_unreachable', 'db_unavailable', 'unknown_db_error'}
 _AUTH_DB_ERROR_CODE_BY_CLASSIFICATION = {
     'quota_exceeded': 'AUTH_DB_QUOTA_EXCEEDED',
@@ -4245,10 +4247,12 @@ def _reconcile_job_payload(
     reason_detail: str | None = None,
     started_at: str | None = None,
     completed_at: str | None = None,
+    retry_count: int = 0,
 ) -> dict[str, Any]:
     return {
         'id': run_id,
         'status': status,
+        'retry_count': max(0, int(retry_count or 0)),
         'counts': _json_safe_value(counts),
         'reason_codes': [str(code) for code in reason_codes if str(code).strip()],
         'reason_code': reason_code,
@@ -4264,9 +4268,9 @@ def _create_reconcile_run(connection: Any, *, run_id: str, workspace_id: str, re
     connection.execute(
         '''
         INSERT INTO monitoring_reconcile_runs (
-            id, workspace_id, requested_by_user_id, status, queued_at, counts, reason_codes, affected_systems, result_summary, created_at, updated_at
+            id, workspace_id, requested_by_user_id, status, queued_at, retry_count, counts, reason_codes, affected_systems, result_summary, created_at, updated_at
         )
-        VALUES (%s::uuid, %s::uuid, %s::uuid, 'queued', NOW(), '{}'::jsonb, '[]'::jsonb, '[]'::jsonb, '{}'::jsonb, NOW(), NOW())
+        VALUES (%s::uuid, %s::uuid, %s::uuid, 'queued', NOW(), 0, '{}'::jsonb, '[]'::jsonb, '[]'::jsonb, '{}'::jsonb, NOW(), NOW())
         ON CONFLICT (id) DO NOTHING
         ''',
         (run_id, workspace_id, requested_by_user_id),
@@ -4294,6 +4298,7 @@ def _update_reconcile_run(
     reason_codes: list[str] | None = None,
     affected_systems: list[str] | None = None,
     result_summary: dict[str, Any] | None = None,
+    retry_count: int | None = None,
     completed: bool = False,
 ) -> None:
     connection.execute(
@@ -4306,6 +4311,9 @@ def _update_reconcile_run(
             reason_codes = COALESCE(%s::jsonb, reason_codes),
             affected_systems = COALESCE(%s::jsonb, affected_systems),
             result_summary = COALESCE(%s::jsonb, result_summary),
+            retry_count = COALESCE(%s, retry_count),
+            last_attempt_at = NOW(),
+            lock_acquired_at = CASE WHEN %s = 'running' THEN COALESCE(lock_acquired_at, NOW()) ELSE lock_acquired_at END,
             started_at = CASE WHEN %s = 'running' THEN COALESCE(started_at, NOW()) ELSE started_at END,
             running_at = CASE WHEN %s = 'running' THEN COALESCE(running_at, NOW()) ELSE running_at END,
             failed_at = CASE WHEN %s = 'failed' THEN COALESCE(failed_at, NOW()) ELSE failed_at END,
@@ -4321,6 +4329,8 @@ def _update_reconcile_run(
             _json_dumps(reason_codes or []) if reason_codes is not None else None,
             _json_dumps(affected_systems or []) if affected_systems is not None else None,
             _json_dumps(result_summary or {}) if result_summary is not None else None,
+            retry_count,
+            status,
             status,
             status,
             status,
@@ -4339,15 +4349,16 @@ def _append_reconcile_event(
     event_status: str,
     reason_code: str | None,
     reason_codes: list[str] | None = None,
+    attempt_number: int | None = None,
     detail: str | None,
     payload: dict[str, Any],
 ) -> None:
     connection.execute(
         '''
         INSERT INTO monitoring_reconcile_events (
-            id, run_id, workspace_id, event_type, event_status, reason_code, reason_codes, detail, payload, event_at, created_at
+            id, run_id, workspace_id, event_type, event_status, reason_code, reason_codes, attempt_number, detail, payload, event_at, created_at
         )
-        VALUES (%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s::jsonb, %s, %s::jsonb, NOW(), NOW())
+        VALUES (%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, NOW(), NOW())
         ''',
         (
             str(uuid.uuid4()),
@@ -4357,10 +4368,33 @@ def _append_reconcile_event(
             event_status,
             reason_code,
             _json_dumps(reason_codes or []),
+            attempt_number,
             detail,
             _json_dumps(payload),
         ),
     )
+
+
+def _workspace_reconcile_advisory_lock_keys(workspace_id: str) -> tuple[int, int]:
+    digest = hashlib.sha256(f'monitoring_reconcile:{workspace_id}'.encode('utf-8')).digest()
+    return int.from_bytes(digest[0:4], byteorder='big', signed=False), int.from_bytes(digest[4:8], byteorder='big', signed=False)
+
+
+def _try_lock_workspace_reconcile_job(connection: Any, *, workspace_id: str) -> bool:
+    key1, key2 = _workspace_reconcile_advisory_lock_keys(workspace_id)
+    row = connection.execute(
+        'SELECT pg_try_advisory_xact_lock(%s, %s) AS acquired',
+        (key1, key2),
+    ).fetchone()
+    if not row:
+        return True
+    if isinstance(row, dict):
+        return bool(row.get('acquired', True))
+    return bool(getattr(row, 'acquired', True))
+
+
+def _is_reconcile_retryable_error(exc: Exception) -> bool:
+    return type(exc).__name__ in MIGRATION_RETRYABLE_ERROR_NAMES
 
 
 def _lock_workspace_row_for_reconcile(connection: Any, *, workspace_id: str) -> None:
@@ -4379,7 +4413,7 @@ def _load_reconcile_run_row(connection: Any, *, workspace_id: str, run_id: str |
     if run_id:
         row = connection.execute(
             '''
-            SELECT id, status, started_at, completed_at, queued_at, running_at, failed_at, status_reason_code, status_reason_detail, counts, reason_codes, affected_systems, result_summary, updated_at
+            SELECT id, status, started_at, completed_at, queued_at, running_at, failed_at, status_reason_code, status_reason_detail, retry_count, counts, reason_codes, affected_systems, result_summary, updated_at
             FROM monitoring_reconcile_runs
             WHERE workspace_id = %s::uuid
               AND id = %s::uuid
@@ -4390,7 +4424,7 @@ def _load_reconcile_run_row(connection: Any, *, workspace_id: str, run_id: str |
     else:
         row = connection.execute(
             '''
-            SELECT id, status, started_at, completed_at, queued_at, running_at, failed_at, status_reason_code, status_reason_detail, counts, reason_codes, affected_systems, result_summary, updated_at
+            SELECT id, status, started_at, completed_at, queued_at, running_at, failed_at, status_reason_code, status_reason_detail, retry_count, counts, reason_codes, affected_systems, result_summary, updated_at
             FROM monitoring_reconcile_runs
             WHERE workspace_id = %s::uuid
             ORDER BY created_at DESC
@@ -4404,7 +4438,7 @@ def _load_reconcile_run_row(connection: Any, *, workspace_id: str, run_id: str |
 def _load_reconcile_event_rows(connection: Any, *, workspace_id: str, run_id: str, limit: int = 50) -> list[dict[str, Any]]:
     rows = connection.execute(
         '''
-        SELECT id, run_id, workspace_id, event_type, event_status, reason_code, reason_codes, detail, payload, event_at, created_at
+        SELECT id, run_id, workspace_id, event_type, event_status, reason_code, reason_codes, attempt_number, detail, payload, event_at, created_at
         FROM monitoring_reconcile_events
         WHERE workspace_id = %s::uuid
           AND run_id = %s::uuid
@@ -4424,6 +4458,7 @@ def _reconcile_event_payload(item: dict[str, Any]) -> dict[str, Any]:
         'event_status': str(item.get('event_status') or ''),
         'reason_code': str(item.get('reason_code') or '') or None,
         'reason_codes': [str(code) for code in (item.get('reason_codes') or []) if str(code).strip()],
+        'attempt_number': int(item.get('attempt_number') or 0),
         'detail': str(item.get('detail') or '') or None,
         'payload': _json_safe_value(item.get('payload') if isinstance(item.get('payload'), dict) else {}),
         'event_at': item.get('event_at').isoformat() if item.get('event_at') else None,
@@ -4442,6 +4477,7 @@ def _job_payload_from_run_row(item: dict[str, Any]) -> dict[str, Any]:
         reason_detail=str(item.get('status_reason_detail') or '') or None,
         started_at=item.get('started_at').isoformat() if item.get('started_at') else None,
         completed_at=item.get('completed_at').isoformat() if item.get('completed_at') else None,
+        retry_count=int(item.get('retry_count') or 0),
     )
 
 
@@ -4479,6 +4515,19 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         workspace_id = workspace_context['workspace_id']
         user_id = str(user.get('id') or '')
         _lock_workspace_row_for_reconcile(connection, workspace_id=workspace_id)
+        if not _try_lock_workspace_reconcile_job(connection, workspace_id=workspace_id):
+            latest_locked = _load_reconcile_run_row(connection, workspace_id=workspace_id)
+            if latest_locked and str(latest_locked.get('status') or '') in {'queued', 'running'}:
+                return {
+                    'workspace': workspace_context['workspace'],
+                    'job': _job_payload_from_run_row(latest_locked),
+                    'reconcile_id': str(latest_locked.get('id') or ''),
+                    'state': str(latest_locked.get('status') or 'running'),
+                    'reconcile': _normalize_reconcile_result({}),
+                    'unresolved_reasons': [],
+                    'systems': [],
+                    'monitored_systems_count': 0,
+                }
         latest_run = _load_reconcile_run_row(connection, workspace_id=workspace_id)
         if latest_run and str(latest_run.get('status') or '') in {'queued', 'running'}:
             active_status = str(latest_run.get('status') or 'running')
@@ -4535,30 +4584,60 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
             reason_code=None,
             reason_detail='Reconcile execution in progress.',
         )
-        try:
-            result = _normalize_reconcile_result(reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id))
-        except HTTPException:
-            raise
-        except Exception as exc:
-            _update_reconcile_run(
-                connection,
-                run_id=reconcile_run_id,
-                status='failed',
-                reason_code='monitoring_reconcile_failed',
-                reason_detail=str(exc),
-                completed=True,
-            )
-            _append_reconcile_event(
-                connection,
-                run_id=reconcile_run_id,
-                workspace_id=workspace_id,
-                event_type='reconcile_failed',
-                event_status='failed',
-                reason_code='monitoring_reconcile_failed',
-                detail=str(exc),
-                payload={'stage': stage},
-            )
-            raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id, reconcile_id=reconcile_id) from exc
+        max_retries = _safe_int_env(WORKSPACE_RECONCILE_MAX_RETRIES_ENV, 2, minimum=0)
+        retry_backoff = max(0.0, float(os.getenv(WORKSPACE_RECONCILE_RETRY_BACKOFF_SECONDS_ENV, '0.25') or 0.25))
+        retry_attempt = 0
+        while True:
+            try:
+                _update_reconcile_run(
+                    connection,
+                    run_id=reconcile_run_id,
+                    status='running',
+                    reason_code=None,
+                    reason_detail='Reconcile execution in progress.',
+                    retry_count=retry_attempt,
+                )
+                result = _normalize_reconcile_result(reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id))
+                break
+            except HTTPException:
+                raise
+            except Exception as exc:
+                if _is_reconcile_retryable_error(exc) and retry_attempt < max_retries:
+                    retry_attempt += 1
+                    _append_reconcile_event(
+                        connection,
+                        run_id=reconcile_run_id,
+                        workspace_id=workspace_id,
+                        event_type='reconcile_retry',
+                        event_status='running',
+                        reason_code='retryable_reconcile_error',
+                        attempt_number=retry_attempt,
+                        detail=str(exc),
+                        payload={'stage': stage, 'max_retries': max_retries},
+                    )
+                    sleep(retry_backoff * retry_attempt)
+                    continue
+                _update_reconcile_run(
+                    connection,
+                    run_id=reconcile_run_id,
+                    status='failed',
+                    reason_code='monitoring_reconcile_failed',
+                    reason_detail=str(exc),
+                    retry_count=retry_attempt,
+                    completed=True,
+                )
+                _append_reconcile_event(
+                    connection,
+                    run_id=reconcile_run_id,
+                    workspace_id=workspace_id,
+                    event_type='reconcile_failed',
+                    event_status='failed',
+                    reason_code='monitoring_reconcile_failed',
+                    attempt_number=retry_attempt,
+                    detail=str(exc),
+                    payload={'stage': stage},
+                )
+                raise _reconcile_error(stage, exc, request=request, workspace_id=workspace_id, user_id=user_id, reconcile_id=reconcile_id) from exc
         logger.info(
             'monitoring_reconcile step=reconcile_completed workspace_id=%s created_or_updated=%s',
             workspace_id,
@@ -4690,6 +4769,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
             reason_detail=status_reason_detail,
             reason_codes=reason_codes,
             affected_systems=affected_systems,
+            retry_count=retry_attempt,
             result_summary={
                 'state': run_status,
                 'reason_counts': reason_counts,
@@ -4718,6 +4798,7 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
                 last_event_at=utc_now_iso(),
                 reason_code=status_reason_code,
                 reason_detail=status_reason_detail,
+                retry_count=retry_attempt,
             ),
             'reconcile_id': reconcile_id,
             'state': run_status,
