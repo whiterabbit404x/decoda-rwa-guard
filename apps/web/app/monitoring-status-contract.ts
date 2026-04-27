@@ -18,6 +18,10 @@ export type WorkspaceMonitoringSummary = {
   continuity_status?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry';
   continuity_reason_codes?: string[];
   continuity_signals?: Record<string, unknown>;
+  continuity_contract?: {
+    pass?: boolean;
+    checks?: Record<string, unknown>;
+  };
   continuity_slo_pass?: boolean;
   heartbeat_age_seconds?: number | null;
   telemetry_age_seconds?: number | null;
@@ -78,6 +82,11 @@ export type MonitoringRuntimeStatus = {
     required_thresholds_seconds?: WorkspaceMonitoringSummary['required_thresholds_seconds'];
     continuity_thresholds_seconds?: WorkspaceMonitoringSummary['required_thresholds_seconds'];
     reason_codes?: string[];
+    checks?: Record<string, unknown>;
+  };
+  continuity_contract?: {
+    pass?: boolean;
+    checks?: Record<string, unknown>;
   };
   error?: {
     code?: string;

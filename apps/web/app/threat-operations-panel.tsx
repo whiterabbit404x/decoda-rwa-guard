@@ -232,11 +232,13 @@ type ReconcileJobStatus = 'queued' | 'running' | 'completed' | 'failed';
 type ReconcileJobSnapshot = {
   id: string;
   status: ReconcileJobStatus;
+  idempotency_key?: string | null;
   retry_count?: number;
   counts?: Record<string, number>;
   reason_codes?: string[];
   reason_code?: string | null;
   reason_detail?: string | null;
+  progress_state?: Record<string, unknown> | null;
   affected_systems?: string[];
   last_event_at?: string | null;
   started_at?: string | null;
@@ -345,6 +347,9 @@ export function evaluateContinuitySlo(
   summary?: MonitoringRuntimeStatus['workspace_monitoring_summary'] | null,
   continuitySloPayload?: MonitoringRuntimeStatus['continuity_slo'] | null,
 ): ContinuitySloEvaluation {
+  const continuityContractChecks = (summary?.continuity_contract as Record<string, any> | undefined)?.checks
+    ?? (continuitySloPayload as Record<string, any> | undefined)?.checks
+    ?? {};
   const thresholds: {
     heartbeat?: number;
     telemetry?: number;
@@ -392,6 +397,16 @@ export function evaluateContinuitySlo(
     },
   ];
   const dimensions: ContinuitySloDimension[] = baseDimensions.map((dimension): ContinuitySloDimension => {
+    const contractCheck = continuityContractChecks[`${dimension.key === 'detection_eval' ? 'detection' : dimension.key}_freshness`];
+    if (contractCheck && typeof contractCheck === 'object' && typeof contractCheck.pass === 'boolean') {
+      return {
+        ...dimension,
+        ageSeconds: typeof contractCheck.age_seconds === 'number' ? contractCheck.age_seconds : dimension.ageSeconds,
+        thresholdSeconds: typeof contractCheck.threshold_seconds === 'number' ? contractCheck.threshold_seconds : dimension.thresholdSeconds,
+        pass: Boolean(contractCheck.pass),
+        reason: contractCheck.pass ? null : `${String(contractCheck.state || 'failed')}`,
+      };
+    }
     if (dimension.ageSeconds === null) {
       return { ...dimension, pass: false, reason: 'timestamp missing' };
     }
@@ -2442,6 +2457,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const skipped = Number(latestReconcileJob.counts?.skipped_targets ?? 0);
     return `Reconcile progress: scanned ${scanned} targets · updated ${updated} · invalid ${invalid} · skipped ${skipped}`;
   }, [latestReconcileJob]);
+  const deterministicRepairState = useMemo(() => {
+    if (!latestReconcileJob?.status) return 'queued';
+    const normalized = String(latestReconcileJob.status).toLowerCase();
+    if (normalized === 'running' || normalized === 'completed' || normalized === 'failed' || normalized === 'queued') return normalized;
+    return 'queued';
+  }, [latestReconcileJob?.status]);
   const reconcileActionableError = useMemo(() => {
     if (latestReconcileJob?.status !== 'failed') return null;
     const reasonCodes = latestReconcileJob.reason_codes ?? [];
@@ -2523,7 +2544,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
         {latestReconcileJob ? (
           <p className="tableMeta">
-            Reconcile job state {latestReconcileJob.status.toUpperCase()} · {reconcileProgressLabel} · Retry count {Number(latestReconcileJob.retry_count ?? 0)} · Last success {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Failure reason {latestReconcileJob.status === 'failed' ? (latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No backend detail returned.') : 'None'}
+            Deterministic repair state {deterministicRepairState.toUpperCase()} · {reconcileProgressLabel} · Retry count {Number(latestReconcileJob.retry_count ?? 0)} · Last success {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Reason codes {(latestReconcileJob.reason_codes ?? []).length > 0 ? (latestReconcileJob.reason_codes ?? []).join(', ') : 'none'} · Failure reason {latestReconcileJob.status === 'failed' ? (latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No backend detail returned.') : 'None'}
           </p>
         ) : null}
         {latestReconcileJob?.status === 'failed' ? (

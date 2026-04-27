@@ -51,6 +51,11 @@ def test_continuity_status_transitions_cover_live_to_degraded_to_offline() -> No
         'degraded',
         'offline',
     ]
+    assert continuous['continuity_contract']['pass'] is True
+    assert degraded['continuity_contract']['pass'] is False
+    assert offline['continuity_contract']['pass'] is False
+    assert continuous['continuity_contract']['checks']['heartbeat_freshness']['pass'] is True
+    assert degraded['continuity_contract']['checks']['telemetry_freshness']['pass'] is False
 
 
 def test_live_revoke_records_safe_proposal_metadata_and_hash(monkeypatch):

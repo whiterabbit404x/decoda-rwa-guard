@@ -5933,6 +5933,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         summary['telemetry_threshold_seconds'] = summary.get('telemetry_threshold_seconds') or threshold_seconds.get('telemetry') or threshold_seconds.get('event_ingestion')
         summary['detection_threshold_seconds'] = summary.get('detection_threshold_seconds') or threshold_seconds.get('detection_eval')
         summary['continuity_thresholds_seconds'] = dict(summary.get('required_thresholds_seconds') or threshold_seconds)
+        continuity_contract = summary.get('continuity_contract') if isinstance(summary.get('continuity_contract'), dict) else {}
+        continuity_checks = continuity_contract.get('checks') if isinstance(continuity_contract.get('checks'), dict) else {}
+        summary['continuity_contract'] = {
+            'pass': bool(summary.get('continuity_slo_pass') is True),
+            'checks': continuity_checks,
+        }
         continuity_slo_pass = bool(summary.get('continuity_slo_pass') is True)
         if live_mode_enabled() and workspace_configured and not continuity_slo_pass:
             continuity_reason_codes = [
@@ -5995,9 +6001,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             and summary_confidence_status not in {'', 'unavailable'}
         )
         if runtime_status_summary == 'healthy' and not strict_live_healthy_proof:
-            runtime_status_summary = 'idle'
-            summary['runtime_status'] = 'idle'
-            summary['monitoring_status'] = 'idle'
+            runtime_status_summary = 'degraded'
+            summary['runtime_status'] = 'degraded'
+            summary['monitoring_status'] = 'limited'
             if runtime_status_reason is None:
                 runtime_status_reason = 'no_fresh_live_coverage_telemetry'
                 summary['status_reason'] = runtime_status_reason
@@ -6133,7 +6139,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'required_thresholds_seconds': dict(summary.get('required_thresholds_seconds') or {}),
                 'continuity_thresholds_seconds': dict(summary.get('continuity_thresholds_seconds') or {}),
                 'reason_codes': list(summary.get('continuity_reason_codes') or []),
+                'checks': dict((summary.get('continuity_contract') or {}).get('checks') or {}),
             },
+            'continuity_contract': dict(summary.get('continuity_contract') or {}),
             'field_reason_codes': dict(field_reason_codes),
             'coverage_only_warning': dict(summary.get('coverage_only_warning') or {}),
             'db_failure_classification': None,
