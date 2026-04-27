@@ -164,3 +164,45 @@ def test_list_alerts_without_linked_evidence_stays_stable(monkeypatch):
     assert row['linked_evidence_count'] == 0
     assert row['last_evidence_at'] is None
     assert row['evidence_origin'] is None
+
+
+def test_list_incidents_preserves_chain_and_evidence_presence(monkeypatch):
+    class _EvidenceConn(_Conn):
+        def execute(self, query, params=None):
+            normalized = ' '.join(str(query).split())
+            self.calls.append((normalized, params))
+            if 'FROM incidents i' in normalized:
+                return _Result(
+                    rows=[
+                        {
+                            'id': 'inc-9',
+                            'linked_detection_id': 'det-9',
+                            'source_alert_id': 'alert-9',
+                            'linked_action_id': 'action-9',
+                            'linked_evidence_count': 3,
+                            'last_evidence_at': '2026-04-23T10:00:00Z',
+                            'evidence_origin': 'live',
+                            'tx_hash': '0x999',
+                            'block_number': 999,
+                            'detector_kind': 'transfer-spike',
+                        }
+                    ]
+                )
+            return _Result()
+
+    connection = _EvidenceConn()
+    request = Request({'type': 'http', 'headers': []})
+    _bootstrap(monkeypatch, connection)
+
+    payload = pilot.list_incidents(request)
+
+    row = payload['incidents'][0]
+    assert row['chain_linked_ids'] == {
+        'detection_id': 'det-9',
+        'alert_id': 'alert-9',
+        'incident_id': 'inc-9',
+        'action_id': 'action-9',
+    }
+    assert row['linked_evidence_count'] == 3
+    assert row['last_evidence_at'] == '2026-04-23T10:00:00Z'
+    assert row['evidence_origin'] == 'live'

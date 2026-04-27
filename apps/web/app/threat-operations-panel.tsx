@@ -193,6 +193,16 @@ type DetectionRow = {
     action_id?: string | null;
   } | null;
 };
+
+function hasEvidenceLinkedChainIds(detection: DetectionRow): boolean {
+  const chain = detection.chain_linked_ids;
+  if (!chain || typeof chain !== 'object') return false;
+  const detectionId = normalizeLookup(chain.detection_id ?? detection.id);
+  const alertId = normalizeLookup(chain.alert_id ?? detection.linked_alert_id);
+  const incidentId = normalizeLookup(chain.incident_id ?? detection.linked_incident_id);
+  const evidenceCount = Number(detection.linked_evidence_count ?? 0);
+  return Boolean(detectionId && alertId && incidentId && evidenceCount > 0);
+}
 type ThreatActionContextOption = {
   id: string;
   label: string;
@@ -1118,8 +1128,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/ops/monitoring/investigation-timeline`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/detections?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/alerts?status_value=open&limit=50`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/incidents?status_value=open&limit=50`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/alerts?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(`${apiUrl}/incidents?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/history/actions?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/monitoring/runs?limit=20`, { headers: authHeaders(), cache: 'no-store' }),
@@ -1412,6 +1422,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       const liveCandidate = telemetryFresh
         && !dbPersistenceOutageActive
         && item.liveEvidenceEligible !== false
+        && hasEvidenceLinkedChainIds(item)
         && ageMs <= DETECTION_LIVE_MS
         && item.state !== 'Test';
       if (liveCandidate) {

@@ -133,6 +133,14 @@ def test_list_detections_returns_workspace_rows(monkeypatch):
     assert payload['detections'][0]['block_number'] == 12345
     assert payload['detections'][0]['detector_kind'] == 'contract-call-anomaly'
     assert payload['detections'][0]['chain_linked_ids']['incident_id'] == 'inc-1'
+    assert payload['detections'][0]['chain_linked_ids'] == {
+        'detection_id': 'det-1',
+        'alert_id': 'alert-1',
+        'incident_id': 'inc-1',
+        'action_id': 'action-1',
+    }
+    assert payload['detections'][0]['linked_evidence_count'] > 0
+    assert payload['detections'][0]['last_evidence_at'] == '2026-04-18T01:00:00Z'
     assert payload['detections'][0]['evidence_source'] == 'simulator'
     assert payload['detections'][0]['evidence_origin_label'] == 'SIMULATED EVIDENCE'
     query = next(call for call in connection.calls if call.startswith('SELECT d.id AS id'))
