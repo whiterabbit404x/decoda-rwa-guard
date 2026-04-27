@@ -23,6 +23,7 @@ export type WorkspaceMonitoringSummary = {
   telemetry_age_seconds?: number | null;
   event_ingestion_age_seconds?: number | null;
   detection_age_seconds?: number | null;
+  detection_pipeline_age_seconds?: number | null;
   detection_eval_age_seconds?: number | null;
   thresholds_seconds?: {
     heartbeat?: number;
@@ -66,12 +67,14 @@ export type MonitoringRuntimeStatus = {
     heartbeat_age_seconds?: number | null;
     telemetry_age_seconds?: number | null;
     detection_age_seconds?: number | null;
+    detection_pipeline_age_seconds?: number | null;
     detection_eval_age_seconds?: number | null;
     heartbeat_threshold_seconds?: number | null;
     telemetry_threshold_seconds?: number | null;
     detection_threshold_seconds?: number | null;
     thresholds_seconds?: WorkspaceMonitoringSummary['thresholds_seconds'];
     required_thresholds_seconds?: WorkspaceMonitoringSummary['required_thresholds_seconds'];
+    continuity_thresholds_seconds?: WorkspaceMonitoringSummary['required_thresholds_seconds'];
     reason_codes?: string[];
   };
   error?: {

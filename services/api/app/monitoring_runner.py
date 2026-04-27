@@ -5927,25 +5927,34 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         )
         summary.update(continuity_evaluation)
         summary['detection_age_seconds'] = summary.get('detection_eval_age_seconds')
+        summary['detection_pipeline_age_seconds'] = summary.get('detection_eval_age_seconds')
         threshold_seconds = dict(summary.get('thresholds_seconds') or {})
         summary['heartbeat_threshold_seconds'] = summary.get('heartbeat_threshold_seconds') or threshold_seconds.get('heartbeat')
         summary['telemetry_threshold_seconds'] = summary.get('telemetry_threshold_seconds') or threshold_seconds.get('telemetry') or threshold_seconds.get('event_ingestion')
         summary['detection_threshold_seconds'] = summary.get('detection_threshold_seconds') or threshold_seconds.get('detection_eval')
+        summary['continuity_thresholds_seconds'] = dict(summary.get('required_thresholds_seconds') or threshold_seconds)
         continuity_slo_pass = bool(summary.get('continuity_slo_pass') is True)
         if live_mode_enabled() and workspace_configured and not continuity_slo_pass:
+            continuity_reason_codes = [
+                str(code)
+                for code in (summary.get('continuity_reason_codes') or [])
+                if str(code).strip()
+            ]
             runtime_status_summary = 'degraded'
             monitoring_status = 'degraded'
             summary['runtime_status'] = 'degraded'
             summary['monitoring_status'] = 'limited'
+            summary['runtime_degraded_reason_codes'] = ['continuity_slo_failed', *continuity_reason_codes]
+            runtime_degraded_reason = 'continuity_slo_failed'
+            degraded_reason = degraded_reason or (
+                f"continuity_slo_failed:{continuity_reason_codes[0]}"
+                if continuity_reason_codes
+                else 'continuity_slo_failed'
+            )
             if not runtime_status_reason:
-                continuity_reasons = [
-                    str(code)
-                    for code in (summary.get('continuity_reason_codes') or [])
-                    if str(code).strip()
-                ]
                 runtime_status_reason = (
-                    f"runtime_status_degraded:continuity_slo_failed:{continuity_reasons[0]}"
-                    if continuity_reasons
+                    f"runtime_status_degraded:continuity_slo_failed:{continuity_reason_codes[0]}"
+                    if continuity_reason_codes
                     else 'runtime_status_degraded:continuity_slo_failed'
                 )
                 summary['status_reason'] = runtime_status_reason
@@ -6110,12 +6119,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'heartbeat_age_seconds': summary.get('heartbeat_age_seconds'),
                 'telemetry_age_seconds': summary.get('telemetry_age_seconds'),
                 'detection_age_seconds': summary.get('detection_age_seconds'),
+                'detection_pipeline_age_seconds': summary.get('detection_pipeline_age_seconds'),
                 'detection_eval_age_seconds': summary.get('detection_eval_age_seconds'),
                 'heartbeat_threshold_seconds': summary.get('heartbeat_threshold_seconds'),
                 'telemetry_threshold_seconds': summary.get('telemetry_threshold_seconds'),
                 'detection_threshold_seconds': summary.get('detection_threshold_seconds'),
                 'thresholds_seconds': dict(summary.get('thresholds_seconds') or {}),
                 'required_thresholds_seconds': dict(summary.get('required_thresholds_seconds') or {}),
+                'continuity_thresholds_seconds': dict(summary.get('continuity_thresholds_seconds') or {}),
                 'reason_codes': list(summary.get('continuity_reason_codes') or []),
             },
             'field_reason_codes': dict(field_reason_codes),

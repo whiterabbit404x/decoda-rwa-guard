@@ -269,6 +269,7 @@ def test_ops_monitoring_runtime_status_exposes_continuity_contract_fields_unmodi
         'heartbeat_age_seconds': 181,
         'telemetry_age_seconds': 121,
         'detection_age_seconds': 301,
+        'detection_pipeline_age_seconds': 301,
         'detection_eval_age_seconds': 301,
         'heartbeat_threshold_seconds': 180,
         'telemetry_threshold_seconds': 120,
@@ -279,6 +280,7 @@ def test_ops_monitoring_runtime_status_exposes_continuity_contract_fields_unmodi
             'heartbeat_age_seconds': 181,
             'telemetry_age_seconds': 121,
             'detection_age_seconds': 301,
+            'detection_pipeline_age_seconds': 301,
             'detection_eval_age_seconds': 301,
             'thresholds_seconds': {'heartbeat': 180, 'telemetry': 120, 'detection_eval': 300},
         },
@@ -294,10 +296,12 @@ def test_ops_monitoring_runtime_status_exposes_continuity_contract_fields_unmodi
     assert payload['heartbeat_age_seconds'] == 181
     assert payload['telemetry_age_seconds'] == 121
     assert payload['detection_age_seconds'] == 301
+    assert payload['detection_pipeline_age_seconds'] == 301
     assert payload['detection_eval_age_seconds'] == 301
     assert payload['thresholds_seconds'] == {'heartbeat': 180, 'telemetry': 120, 'detection_eval': 300}
     assert payload['continuity_slo']['pass'] is False
     assert payload['continuity_slo']['detection_age_seconds'] == 301
+    assert payload['continuity_slo']['detection_pipeline_age_seconds'] == 301
 
 
 def test_ops_monitoring_run_returns_structured_error_for_unexpected_exception(monkeypatch, caplog):
