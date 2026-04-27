@@ -33,6 +33,9 @@ test('refresh no longer clears collections and marks stale data on partial failu
   expect(threat).toContain('if (canonicalRows) {');
   expect(threat).toContain('setSnapshotStaleCollections(staleCollections)');
   expect(threat).toContain('Stale collections ${snapshotStaleCollections.join');
+  expect(threat).toContain('if (canonicalRows) {');
+  expect(threat).toContain('if (!(result.status === \'fulfilled\' && result.value.ok)) {');
+  expect(threat).toContain('stale.push(key);');
 });
 
 test('chain display uses persisted linkage ids and evidence counts from linked records', () => {
@@ -42,7 +45,8 @@ test('chain display uses persisted linkage ids and evidence counts from linked r
   expect(threat).toContain('incident.chain_linked_ids?.detection_id');
   expect(threat).toContain('evidence {Number(alert.linked_evidence_count');
   expect(threat).toContain('linkedEvidenceCount: latestDetection?.linked_evidence_count');
-  expect(threat).toContain('const completeProofChain = Boolean(row && linkedAlert && linkedIncident);');
+  expect(threat).toContain('const completeProofChain = Boolean(');
+  expect(threat).toContain('&& linkedActionId');
   expect(threat).toContain('const hasRealLinkedEvidence = linkedEvidenceCount > 0 && isRealEvidence(linkedEvidence, row);');
   expect(threat).toContain('&& completeProofChain');
   expect(threat).toContain('&& hasRealLinkedEvidence');
@@ -56,6 +60,9 @@ test('incident timeline and evidence rendering blocks assert populated rows', ()
   expect(threat).toContain('id {item.id} · table {String(item.table_name || \'unknown\')} · evidence {sourceLabel}');
   expect(threat).toContain('linked IDs: detection {String(chainIds.detection_id || \'n/a\')}');
   expect(threat).toContain('formatAbsoluteTime(item.timestamp)');
+  expect(threat).toContain('raw evidence refs: evidence_id');
+  expect(threat).toContain('threatChainTimeline.orderedTimeline.map((step) => (');
+  expect(threat).toContain('<p>{step.label}: {step.id || \'n/a\'}</p>');
   expect(threat).toContain('!loadingSnapshot && linkedAlertRows.length === 0 ? (');
   expect(threat).toContain('!loadingSnapshot && incidents.length === 0 ? (');
 });
