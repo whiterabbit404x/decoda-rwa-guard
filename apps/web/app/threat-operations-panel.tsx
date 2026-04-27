@@ -202,6 +202,20 @@ type ThreatActionContextOption = {
   incidentId: string | null;
 };
 
+type ThreatActionButtonId =
+  | 'sim-notify-team'
+  | 'sim-revoke-approval'
+  | 'rec-freeze-wallet'
+  | 'rec-disable-monitored-system'
+  | 'live-freeze-wallet'
+  | 'live-revoke-approval';
+
+type ThreatActionButtonState = {
+  disabled: boolean;
+  reason: string;
+  noOpMessage: string;
+};
+
 type ThreatFeedState = 'Live' | 'Historical' | 'Test' | 'Stale' | 'Investigating' | 'Resolved';
 export type PageOperationalState =
   | 'healthy_live'
@@ -229,8 +243,15 @@ type ReconcileJobSnapshot = {
   completed_at?: string | null;
 };
 
-type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale' | 'partial_failure';
-type EndpointProvenanceState = 'live' | 'stale' | 'partial_failure';
+type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale_snapshot' | 'partial_endpoint_failure';
+type EndpointProvenanceState = 'live' | 'stale_snapshot' | 'partial_endpoint_failure';
+
+type PageBannerModel = {
+  variant: 'explanation' | 'fetch_error';
+  headline?: string;
+  primaryCopy: string;
+  metaLines: string[];
+};
 
 type CanonicalCollectionPayload = {
   detections?: DetectionRow[];
@@ -274,6 +295,7 @@ type MonitoringViewModel = {
   openAlerts: number;
   activeIncidents: number;
   headerStatusChips: Array<{ label: string; tone: 'chip' | 'status'; className?: string }>;
+  pageBanner: PageBannerModel;
 };
 
 const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
@@ -980,47 +1002,12 @@ export function pageStatePrimaryCopy(
 }
 
 function PageStateBanner({ viewModel }: { viewModel: MonitoringViewModel }) {
-  const {
-    state,
-    telemetryLabel,
-    pollLabel,
-    reason,
-    configurationReason,
-    continuityStatus,
-    continuitySlo,
-    provenanceLabel,
-    provenanceExplanation,
-  } = {
-    state: viewModel.pageState,
-    telemetryLabel: viewModel.telemetryLabel,
-    pollLabel: viewModel.pollLabel,
-    reason: viewModel.runtimeReason,
-    configurationReason: viewModel.configurationReason,
-    continuityStatus: viewModel.continuityStatus,
-    continuitySlo: viewModel.continuitySlo,
-    provenanceLabel: viewModel.provenanceLabel,
-    provenanceExplanation: viewModel.provenanceExplanation,
-  };
-  if (state === 'healthy_live') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)} Provenance: {provenanceLabel}.</p>;
-  }
-  if (state === 'configured_no_signals') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)} Provenance: {provenanceLabel}.</p>;
-  }
-  if (state === 'unconfigured_workspace') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)} Provenance: {provenanceLabel}.</p>;
-  }
-  if (state === 'offline_no_telemetry') {
-    return <p className="explanation">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)} Reason: {reason || 'no active reporting systems'}. Provenance: {provenanceLabel}. Add one monitored system and confirm telemetry flow.</p>;
-  }
-  if (state === 'fetch_error') {
+  if (viewModel.pageBanner.variant === 'fetch_error') {
     return (
       <div className="emptyStatePanel">
-        <h4>Telemetry retrieval degraded</h4>
-        <p className="muted">{pageStatePrimaryCopy(state, configurationReason, continuityStatus, continuitySlo)}</p>
-        <p className="tableMeta">Provenance: {provenanceLabel} · {provenanceExplanation}</p>
-        {reason ? <p className="tableMeta">Backend reason: {reason}</p> : null}
-        <p className="tableMeta">Last telemetry: {telemetryLabel} · Last successful poll: {pollLabel}</p>
+        <h4>{viewModel.pageBanner.headline || 'Telemetry retrieval degraded'}</h4>
+        <p className="muted">{viewModel.pageBanner.primaryCopy}</p>
+        {viewModel.pageBanner.metaLines.map((line) => <p key={line} className="tableMeta">{line}</p>)}
         <div className="buttonRow">
           <Link href="/threat" prefetch={false}>Retry</Link>
           <Link href="/integrations" prefetch={false}>Inspect backend integration status</Link>
@@ -1029,7 +1016,7 @@ function PageStateBanner({ viewModel }: { viewModel: MonitoringViewModel }) {
       </div>
     );
   }
-  return <p className="explanation">Monitoring is partially degraded. Threat outcomes may be delayed or incomplete. Provenance: {provenanceLabel}.</p>;
+  return <p className="explanation">{viewModel.pageBanner.primaryCopy}</p>;
 }
 
 export default function ThreatOperationsPanel({ apiUrl }: Props) {
@@ -1608,8 +1595,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       ? 'Runtime reports partial or stale telemetry. Detailed protected system rows are still syncing.'
       : 'Runtime reports healthy coverage. Detailed protected system rows are still syncing.';
   const monitoringViewModel = useMemo<MonitoringViewModel>(() => {
-    const runtimeEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('runtime-status') ? 'partial_failure' : 'live';
-    const timelineEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('investigation-timeline') ? 'partial_failure' : 'live';
+    const runtimeEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('runtime-status')
+      ? 'partial_endpoint_failure'
+      : (telemetryState === 'stale' || pollState === 'stale' || heartbeatState === 'stale')
+        ? 'stale_snapshot'
+        : 'live';
+    const timelineEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('investigation-timeline')
+      ? 'partial_endpoint_failure'
+      : 'live';
     const lastSuccessfulRuntimeRefreshAt = runtimeStatusSnapshot?.last_poll_at
       ?? runtimeSummary?.last_poll_at
       ?? runtimeStatusSnapshot?.last_telemetry_at
@@ -1619,19 +1612,39 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       ?? (investigationTimeline as Record<string, any> | null)?.created_at
       ?? null;
     const derivedProvenanceLabel: MonitoringProvenanceLabel = snapshotFailedEndpoints.length > 0
-      ? 'partial_failure'
+      ? 'partial_endpoint_failure'
       : (telemetryState === 'stale' || pollState === 'stale' || heartbeatState === 'stale')
-        ? 'stale'
+        ? 'stale_snapshot'
         : (pageState === 'degraded_partial' || monitoringPresentation.status === 'degraded')
           ? 'degraded'
           : 'live';
-    const provenanceExplanation = derivedProvenanceLabel === 'partial_failure'
+    const provenanceExplanation = derivedProvenanceLabel === 'partial_endpoint_failure'
       ? `Monitoring snapshot fallback is active because ${snapshotFailedEndpoints.join(', ')} failed in the most recent refresh.`
-      : derivedProvenanceLabel === 'stale'
+      : derivedProvenanceLabel === 'stale_snapshot'
         ? 'Runtime snapshot is visible, but at least one freshness timestamp is stale.'
         : derivedProvenanceLabel === 'degraded'
           ? 'Runtime and continuity contract report degraded monitoring health.'
           : 'Runtime and continuity contract confirm live monitoring health.';
+
+    const bannerPrimaryCopy = pageState === 'offline_no_telemetry'
+      ? `${pageStatePrimaryCopy(pageState, configurationReason, runtimeSummary?.continuity_status ?? null, continuitySlo)} Reason: ${runtimeReason || 'no active reporting systems'}. Provenance: ${derivedProvenanceLabel}. Add one monitored system and confirm telemetry flow.`
+      : `${pageStatePrimaryCopy(pageState, configurationReason, runtimeSummary?.continuity_status ?? null, continuitySlo)} Provenance: ${derivedProvenanceLabel}.`;
+    const pageBanner: PageBannerModel = pageState === 'fetch_error'
+      ? {
+        variant: 'fetch_error',
+        headline: 'Telemetry retrieval degraded',
+        primaryCopy: pageStatePrimaryCopy(pageState, configurationReason, runtimeSummary?.continuity_status ?? null, continuitySlo),
+        metaLines: [
+          `Provenance: ${derivedProvenanceLabel} · ${provenanceExplanation}`,
+          ...(runtimeReason ? [`Backend reason: ${runtimeReason}`] : []),
+          `Last telemetry: ${telemetryLabel} · Last successful poll: ${pollLabel}`,
+        ],
+      }
+      : {
+        variant: 'explanation',
+        primaryCopy: bannerPrimaryCopy,
+        metaLines: [],
+      };
 
     const headerStatusChips: MonitoringViewModel['headerStatusChips'] = [
       { label: monitoringPresentation.statusLabel, tone: 'status', className: `statusBadge statusBadge-${monitoringPresentation.tone}` },
@@ -1703,6 +1716,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       openAlerts,
       activeIncidents,
       headerStatusChips,
+      pageBanner,
     };
   }, [
     activeIncidents,
@@ -1967,6 +1981,61 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }, [selectedThreatActionContext?.incidentId]);
   const noLinkedActionContextAvailable = threatActionContextOptions.length === 0;
   const shouldBlockThreatActionCreation = noLinkedActionContextAvailable || !selectedThreatActionContext;
+  const missingIncidentContextReason = selectedThreatActionContext && !selectedThreatActionContext.incidentId
+    ? 'Selected context has no incident link.'
+    : null;
+  const actionButtonStates = useMemo<Record<ThreatActionButtonId, ThreatActionButtonState>>(() => {
+    const baseContextReason = 'No linked alert/incident context is selected.';
+    const buildState = (
+      disabled: boolean,
+      reason: string | null | undefined,
+      noOpMessage: string,
+    ): ThreatActionButtonState => ({
+      disabled,
+      reason: (reason || 'Unavailable due to current monitoring state').trim(),
+      noOpMessage,
+    });
+    return {
+      'sim-notify-team': buildState(
+        shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated'),
+        shouldBlockThreatActionCreation ? baseContextReason : actionDisabledReason(actionCapabilities.notify_team, 'simulated'),
+        'Run simulated response is currently unavailable. No action was executed.',
+      ),
+      'sim-revoke-approval': buildState(
+        shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated'),
+        shouldBlockThreatActionCreation ? baseContextReason : actionDisabledReason(actionCapabilities.revoke_approval, 'simulated'),
+        'Revoke approval (simulated) is currently unavailable. No action was executed.',
+      ),
+      'rec-freeze-wallet': buildState(
+        shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'recommended'),
+        shouldBlockThreatActionCreation ? baseContextReason : actionDisabledReason(actionCapabilities.freeze_wallet, 'recommended'),
+        'Freeze wallet (recommended) is currently unavailable. No action was created.',
+      ),
+      'rec-disable-monitored-system': buildState(
+        shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.disable_monitored_system, 'recommended'),
+        shouldBlockThreatActionCreation ? baseContextReason : actionDisabledReason(actionCapabilities.disable_monitored_system, 'recommended'),
+        'Disable monitored system (recommended) is currently unavailable. No action was created.',
+      ),
+      'live-freeze-wallet': buildState(
+        shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'live'),
+        shouldBlockThreatActionCreation ? baseContextReason : (missingIncidentContextReason ?? actionDisabledReason(actionCapabilities.freeze_wallet, 'live')),
+        'Freeze wallet (live) is currently unavailable. No live workflow was started.',
+      ),
+      'live-revoke-approval': buildState(
+        shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.revoke_approval, 'live'),
+        shouldBlockThreatActionCreation ? baseContextReason : (missingIncidentContextReason ?? actionDisabledReason(actionCapabilities.revoke_approval, 'live')),
+        'Revoke approval (live) is currently unavailable. No live workflow was started.',
+      ),
+    };
+  }, [
+    actionCapabilities.disable_monitored_system,
+    actionCapabilities.freeze_wallet,
+    actionCapabilities.notify_team,
+    actionCapabilities.revoke_approval,
+    missingIncidentContextReason,
+    selectedThreatActionContext?.incidentId,
+    shouldBlockThreatActionCreation,
+  ]);
   const actionUnavailableMessages = useMemo<Array<{
     key: string;
     action: string;
@@ -2009,68 +2078,56 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     registerDisabledAction(
       'sim-notify-team',
       'Run simulated response',
-      shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated'),
-      shouldBlockThreatActionCreation ? 'No linked alert/incident context is selected.' : actionDisabledReason(actionCapabilities.notify_team, 'simulated'),
+      actionButtonStates['sim-notify-team'].disabled,
+      actionButtonStates['sim-notify-team'].reason,
       'Review alerts',
       '/alerts',
     );
     registerDisabledAction(
       'sim-revoke-approval',
       'Revoke approval',
-      shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated'),
-      shouldBlockThreatActionCreation ? 'No linked alert/incident context is selected.' : actionDisabledReason(actionCapabilities.revoke_approval, 'simulated'),
+      actionButtonStates['sim-revoke-approval'].disabled,
+      actionButtonStates['sim-revoke-approval'].reason,
       'Review alerts',
       '/alerts',
     );
     registerDisabledAction(
       'rec-freeze-wallet',
       'Freeze wallet (RECOMMENDED)',
-      shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'recommended'),
-      shouldBlockThreatActionCreation ? 'No linked alert/incident context is selected.' : actionDisabledReason(actionCapabilities.freeze_wallet, 'recommended'),
+      actionButtonStates['rec-freeze-wallet'].disabled,
+      actionButtonStates['rec-freeze-wallet'].reason,
       'Open incident queue',
       '/incidents',
     );
     registerDisabledAction(
       'rec-disable-monitored-system',
       'Disable monitored system (RECOMMENDED)',
-      shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.disable_monitored_system, 'recommended'),
-      shouldBlockThreatActionCreation ? 'No linked alert/incident context is selected.' : actionDisabledReason(actionCapabilities.disable_monitored_system, 'recommended'),
+      actionButtonStates['rec-disable-monitored-system'].disabled,
+      actionButtonStates['rec-disable-monitored-system'].reason,
       'Manage monitored systems',
       '/monitored-systems',
     );
-    const missingIncidentContextReason = selectedThreatActionContext && !selectedThreatActionContext.incidentId
-      ? 'Selected context has no incident link.'
-      : null;
     registerDisabledAction(
       'live-freeze-wallet',
       'Freeze wallet (LIVE)',
-      shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'live'),
-      shouldBlockThreatActionCreation
-        ? 'No linked alert/incident context is selected.'
-        : (missingIncidentContextReason ?? actionDisabledReason(actionCapabilities.freeze_wallet, 'live')),
+      actionButtonStates['live-freeze-wallet'].disabled,
+      actionButtonStates['live-freeze-wallet'].reason,
       'Open incident queue',
       '/incidents',
     );
     registerDisabledAction(
       'live-revoke-approval',
       'Revoke approval (LIVE)',
-      shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.revoke_approval, 'live'),
-      shouldBlockThreatActionCreation
-        ? 'No linked alert/incident context is selected.'
-        : (missingIncidentContextReason ?? actionDisabledReason(actionCapabilities.revoke_approval, 'live')),
+      actionButtonStates['live-revoke-approval'].disabled,
+      actionButtonStates['live-revoke-approval'].reason,
       'Open incident queue',
       '/incidents',
     );
     return messages;
   }, [
-    actionCapabilities.disable_monitored_system,
-    actionCapabilities.freeze_wallet,
-    actionCapabilities.notify_team,
-    actionCapabilities.revoke_approval,
+    actionButtonStates,
     canGenerateSimulatorProofChain,
     ensuringProofChain,
-    selectedThreatActionContext,
-    shouldBlockThreatActionCreation,
     simulatorProofChainUnavailableCopy,
   ]);
 
@@ -2173,12 +2230,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }
 
   async function runThreatAction(actionType: string, label: string, mode: 'simulated' | 'recommended' | 'live') {
-    if (shouldBlockThreatActionCreation) {
-      setResponseToast('No linked alert/incident context available.');
-      return;
-    }
-    if (mode === 'live' && !selectedThreatActionContext?.incidentId) {
-      setResponseToast('LIVE actions require linked incident context.');
+    const guardId: ThreatActionButtonId = mode === 'simulated'
+      ? (actionType === 'notify_team' ? 'sim-notify-team' : 'sim-revoke-approval')
+      : mode === 'recommended'
+        ? (actionType === 'freeze_wallet' ? 'rec-freeze-wallet' : 'rec-disable-monitored-system')
+        : (actionType === 'freeze_wallet' ? 'live-freeze-wallet' : 'live-revoke-approval');
+    const guardState = actionButtonStates[guardId];
+    if (guardState?.disabled) {
+      setResponseToast(`${guardState.noOpMessage} Reason: ${guardState.reason}`);
       return;
     }
     if (mode === 'simulated') {
@@ -2901,19 +2960,19 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             </div>
             <div className="buttonRow">
               <span className="ruleChip">SIMULATED</span>
-              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runThreatAction('notify_team', 'Run simulated response', 'simulated')}>Run simulated response</button>
-              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'simulated') || ''} onClick={() => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated')}>Revoke approval</button>
+              <button type="button" disabled={actionButtonStates['sim-notify-team'].disabled} title={actionButtonStates['sim-notify-team'].reason} onClick={() => void runThreatAction('notify_team', 'Run simulated response', 'simulated')}>Run simulated response</button>
+              <button type="button" disabled={actionButtonStates['sim-revoke-approval'].disabled} title={actionButtonStates['sim-revoke-approval'].reason} onClick={() => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated')}>Revoke approval</button>
             </div>
             <p className="tableMeta">SIMULATED actions run immediately and never submit a live transaction.</p>
             <div className="buttonRow">
               <span className="ruleChip">RECOMMENDED</span>
-              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'recommended')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'recommended') || ''} onClick={() => void runThreatAction('freeze_wallet', 'Freeze wallet', 'recommended')}>Freeze wallet (RECOMMENDED)</button>
-              <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.disable_monitored_system, 'recommended')} title={actionDisabledReason(actionCapabilities.disable_monitored_system, 'recommended') || ''} onClick={() => void runThreatAction('disable_monitored_system', 'Disable monitored system', 'recommended')}>Disable monitored system (RECOMMENDED)</button>
+              <button type="button" disabled={actionButtonStates['rec-freeze-wallet'].disabled} title={actionButtonStates['rec-freeze-wallet'].reason} onClick={() => void runThreatAction('freeze_wallet', 'Freeze wallet', 'recommended')}>Freeze wallet (RECOMMENDED)</button>
+              <button type="button" disabled={actionButtonStates['rec-disable-monitored-system'].disabled} title={actionButtonStates['rec-disable-monitored-system'].reason} onClick={() => void runThreatAction('disable_monitored_system', 'Disable monitored system', 'recommended')}>Disable monitored system (RECOMMENDED)</button>
             </div>
             <div className="buttonRow">
               <span className="ruleChip">LIVE</span>
-              <button type="button" disabled={shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'live')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'live') || ''} onClick={() => setLiveActionConfirm({ actionType: 'freeze_wallet', label: 'Freeze wallet' })}>Freeze wallet (LIVE)</button>
-              <button type="button" disabled={shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.revoke_approval, 'live')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'live') || ''} onClick={() => setLiveActionConfirm({ actionType: 'revoke_approval', label: 'Revoke approval' })}>Revoke approval (LIVE)</button>
+              <button type="button" disabled={actionButtonStates['live-freeze-wallet'].disabled} title={actionButtonStates['live-freeze-wallet'].reason} onClick={() => setLiveActionConfirm({ actionType: 'freeze_wallet', label: 'Freeze wallet' })}>Freeze wallet (LIVE)</button>
+              <button type="button" disabled={actionButtonStates['live-revoke-approval'].disabled} title={actionButtonStates['live-revoke-approval'].reason} onClick={() => setLiveActionConfirm({ actionType: 'revoke_approval', label: 'Revoke approval' })}>Revoke approval (LIVE)</button>
             </div>
             <p className="tableMeta">LIVE actions are separated from simulator actions and require linked incident context, explicit confirmation, workspace approval, and persisted provenance.</p>
             <div className="buttonRow">

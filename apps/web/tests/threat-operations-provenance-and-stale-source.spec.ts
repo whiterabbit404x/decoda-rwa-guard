@@ -33,8 +33,10 @@ test('header status chips are derived from one normalized view-model list', () =
 
   expect(threat).toContain('const monitoringViewModel = useMemo<MonitoringViewModel>(() => {');
   expect(threat).toContain('const headerStatusChips = monitoringViewModel.headerStatusChips;');
+  expect(threat).toContain('pageBanner: PageBannerModel;');
   expect(threat).toContain('{headerStatusChips.map((chip) => (');
   expect(threat).toContain('`Telemetry ${telemetryState}`');
   expect(threat).toContain('`Poll ${pollState}`');
   expect(threat).toContain('`Heartbeat ${heartbeatState}`');
+  expect(threat).toContain('`Provenance ${derivedProvenanceLabel}`');
 });
