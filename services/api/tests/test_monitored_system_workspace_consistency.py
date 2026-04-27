@@ -400,3 +400,46 @@ def test_reconcile_workspace_idempotency_guard_returns_no_op_while_inflight(monk
     assert result['reconcile_id'] == 'rid-existing'
     assert result['unresolved_reasons'] == []
     assert result['job']['status'] == 'running'
+
+
+def test_reconcile_workspace_retries_retryable_errors_and_stabilizes_final_state(monkeypatch):
+    conn = _Conn()
+    request = _Request('ws-1')
+    rows = [{'id': 'ms-1', 'workspace_id': 'ws-1', 'target_id': 't-1', 'asset_id': 'a-1'}]
+    attempts = {'count': 0}
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}))
+    monkeypatch.setenv('WORKSPACE_RECONCILE_MAX_RETRIES', '2')
+    monkeypatch.setenv('WORKSPACE_RECONCILE_RETRY_BACKOFF_SECONDS', '0')
+
+    def _reconcile_flaky(*_a, **_k):
+        attempts['count'] += 1
+        if attempts['count'] == 1:
+            class SerializationFailure(Exception):
+                pass
+
+            raise SerializationFailure('simulated serialization conflict')
+        return {
+            'targets_scanned': 1,
+            'created_or_updated': 1,
+            'invalid_reasons': {},
+            'invalid_target_details': [],
+            'skipped_reasons': {},
+            'skipped_target_details': [],
+            'repaired_monitored_system_ids': ['ms-1'],
+        }
+
+    monkeypatch.setattr(pilot, 'reconcile_enabled_targets_monitored_systems', _reconcile_flaky)
+    monkeypatch.setattr(pilot, 'list_workspace_monitored_system_rows', lambda *_a, **_k: rows)
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+
+    result = pilot.reconcile_workspace_monitored_systems(request)
+
+    assert attempts['count'] == 2
+    assert result['state'] == 'completed'
+    assert result['job']['status'] == 'completed'
+    assert result['job']['retry_count'] == 1
+    assert result['reconcile']['created_or_updated'] == 1

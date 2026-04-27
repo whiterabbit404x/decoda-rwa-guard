@@ -227,6 +227,7 @@ type ReconcileJobStatus = 'queued' | 'running' | 'completed' | 'failed';
 type ReconcileJobSnapshot = {
   id: string;
   status: ReconcileJobStatus;
+  retry_count?: number;
   counts?: Record<string, number>;
   reason_codes?: string[];
   reason_code?: string | null;
@@ -2226,7 +2227,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
         {latestReconcileJob ? (
           <p className="tableMeta">
-            Reconcile status {latestReconcileJob.status} · Progress scanned {Number(latestReconcileJob.counts?.targets_scanned ?? 0)} / updated {Number(latestReconcileJob.counts?.created_or_updated ?? 0)} / invalid {Number(latestReconcileJob.counts?.invalid_targets ?? 0)} / skipped {Number(latestReconcileJob.counts?.skipped_targets ?? 0)} · Last successful reconcile {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)}
+            Reconcile job state {latestReconcileJob.status.toUpperCase()} · Progress scanned {Number(latestReconcileJob.counts?.targets_scanned ?? 0)} / updated {Number(latestReconcileJob.counts?.created_or_updated ?? 0)} / invalid {Number(latestReconcileJob.counts?.invalid_targets ?? 0)} / skipped {Number(latestReconcileJob.counts?.skipped_targets ?? 0)} · Retry count {Number(latestReconcileJob.retry_count ?? 0)} · Last success {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Failure reason {latestReconcileJob.status === 'failed' ? (latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No backend detail returned.') : 'None'}
           </p>
         ) : null}
         {latestReconcileJob?.status === 'failed' ? (
