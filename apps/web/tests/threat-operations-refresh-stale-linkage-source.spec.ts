@@ -12,8 +12,8 @@ test('snapshot refresh keeps canonical endpoints plus linked collections in para
   expect(threat).toContain("fetch(`${apiUrl}/ops/monitoring/runtime-status`");
   expect(threat).toContain("fetch(`${apiUrl}/ops/monitoring/investigation-timeline`");
   expect(threat).toContain("fetch(`${apiUrl}/detections?limit=50`");
-  expect(threat).toContain("fetch(`${apiUrl}/alerts?status_value=open&limit=50`");
-  expect(threat).toContain("fetch(`${apiUrl}/incidents?status_value=open&limit=50`");
+  expect(threat).toContain("fetch(`${apiUrl}/alerts?limit=50`");
+  expect(threat).toContain("fetch(`${apiUrl}/incidents?limit=50`");
   expect(threat).toContain("fetch(`${apiUrl}/history/actions?limit=50`");
   expect(threat).toContain("fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`");
 });
@@ -37,4 +37,14 @@ test('chain display uses persisted linkage ids and evidence counts from linked r
   expect(threat).toContain('incident.chain_linked_ids?.detection_id');
   expect(threat).toContain('evidence {Number(alert.linked_evidence_count');
   expect(threat).toContain('linkedEvidenceCount: latestDetection?.linked_evidence_count');
+  expect(threat).toContain('function hasEvidenceLinkedChainIds(detection: DetectionRow): boolean');
+  expect(threat).toContain('&& hasEvidenceLinkedChainIds(item)');
+});
+
+test('incident timeline and evidence rendering blocks assert populated rows', () => {
+  const threat = appSource('threat-operations-panel.tsx');
+
+  expect(threat).toContain('investigationTimelineItems.map((item) => {');
+  expect(threat).toContain('Open evidence drawer');
+  expect(threat).toContain('id {item.id} · table {String(item.table_name || \'unknown\')} · evidence {sourceLabel}');
 });

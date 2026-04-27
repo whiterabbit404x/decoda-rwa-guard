@@ -27,8 +27,8 @@ test('threat page source renders persisted detections with linked alerts, incide
   expect(threat).toContain('const targetById = useMemo(() => {');
   expect(threat).toContain('const monitoredSystemById = useMemo(() => {');
   expect(threat).toContain("const evidenceSourceLabel = simulatorEvidence ? 'simulator/demo' : 'live';");
-  expect(threat).toContain('fetch(`${apiUrl}/alerts?status_value=open&limit=50`');
-  expect(threat).toContain('fetch(`${apiUrl}/incidents?status_value=open&limit=50`');
+  expect(threat).toContain('fetch(`${apiUrl}/alerts?limit=50`');
+  expect(threat).toContain('fetch(`${apiUrl}/incidents?limit=50`');
   expect(threat).toContain('fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`');
   expect(threat).toContain('fetch(`${apiUrl}/history/actions?limit=50`');
   expect(threat).toContain('fetch(`${apiUrl}/monitoring/runs?limit=20`');
