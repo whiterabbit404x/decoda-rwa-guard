@@ -20,6 +20,6 @@ test('live actions require explicit confirmation and linked incident context', (
   expect(threat).toContain('role="dialog" aria-label="Confirm live action"');
   expect(threat).toContain('LIVE action confirmation');
   expect(threat).toContain('requires linked incident context');
-  expect(threat).toContain('disabled={!selectedThreatActionContext?.incidentId}');
+  expect(threat).toContain("disabled={!selectedThreatActionContext?.incidentId || liveActionConfirmationText.trim().toUpperCase() !== 'LIVE'}");
   expect(threat).toContain('Confirm LIVE action');
 });

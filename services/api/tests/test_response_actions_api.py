@@ -694,6 +694,59 @@ def test_execute_live_action_requires_explicit_approval(monkeypatch):
         assert 'requires explicit approval' in str(exc.detail)
 
 
+def test_execute_live_action_denied_for_unauthorized_workspace_role(monkeypatch):
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result(
+                    {
+                        'id': 'act-live-unauthorized',
+                        'status': 'pending',
+                        'mode': 'live',
+                        'action_type': 'freeze_wallet',
+                        'execution_metadata': {},
+                        'incident_id': 'inc-1',
+                        'alert_id': 'alert-1',
+                        'approved_by_user_id': 'admin-2',
+                    }
+                )
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(
+        pilot,
+        '_require_workspace_admin',
+        lambda *_: (
+            {'id': 'analyst-1', 'mfa_enabled': False},
+            {'workspace_id': 'ws-1', 'role': 'analyst'},
+        ),
+    )
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    try:
+        pilot.execute_enforcement_action('act-live-unauthorized', request)
+        raise AssertionError('Expected HTTPException for unauthorized live execution.')
+    except HTTPException as exc:
+        assert exc.status_code == 403
+        assert 'Owner or admin role is required' in str(exc.detail)
+
+
 def test_execute_live_action_requires_step_up_when_available(monkeypatch):
     class _Result:
         def __init__(self, row=None):
@@ -745,3 +798,90 @@ def test_execute_live_action_requires_step_up_when_available(monkeypatch):
     except HTTPException as exc:
         assert exc.status_code == 403
         assert 'Step-up authentication is required' in str(exc.detail)
+
+
+def test_execute_live_action_success_writes_audit_trail_and_provenance(monkeypatch):
+    executed: list[tuple[str, object]] = []
+    audits: list[dict[str, object]] = []
+
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            executed.append((normalized, params))
+            if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result(
+                    {
+                        'id': 'act-live-audit',
+                        'status': 'pending',
+                        'mode': 'live',
+                        'action_type': 'revoke_approval',
+                        'execution_metadata': {'approved_at': '2026-04-27T08:00:00+00:00'},
+                        'execution_artifacts': {},
+                        'provider_receipts': [],
+                        'incident_id': 'inc-1',
+                        'alert_id': 'alert-1',
+                        'token_contract': '0x1111111111111111111111111111111111111111',
+                        'calldata': '0x095ea7b3',
+                        'chain_network': 'ethereum',
+                        'approved_by_user_id': 'admin-2',
+                    }
+                )
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(
+        pilot,
+        '_require_workspace_admin',
+        lambda *_: (
+            {'id': 'admin-1', 'mfa_enabled': False},
+            {'workspace_id': 'ws-1', 'role': 'admin'},
+        ),
+    )
+    monkeypatch.setattr(
+        pilot,
+        '_propose_safe_transaction',
+        lambda *_a, **_k: {'safe_tx_hash': '0xabc', 'external_request_id': 'safe-req-1', 'response_code': 202},
+    )
+    monkeypatch.setattr(
+        pilot,
+        'resolve_response_action_capability',
+        lambda *_a, **_k: {
+            'action_type': 'revoke_approval',
+            'supported_modes': ['simulated', 'recommended', 'live'],
+            'live_execution_path': 'safe',
+            'reason': None,
+            'supports_mode': True,
+            'mode': 'live',
+        },
+    )
+    monkeypatch.setattr(
+        pilot,
+        'log_audit',
+        lambda _connection, **kwargs: audits.append({'action': kwargs.get('action'), 'entity_type': kwargs.get('entity_type')}),
+    )
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    payload = pilot.execute_enforcement_action('act-live-audit', request)
+
+    assert payload['mode'] == 'live'
+    assert payload['execution_provenance']['tx_hash'] == '0xabc'
+    assert payload['execution_provenance']['result_code'] == 202
+    assert payload['execution_evidence']['provider_request_id'] == 'safe-req-1'
+    assert any('UPDATE response_actions SET status = \'pending\'' in statement for statement, _ in executed)
+    assert {'action': 'enforcement.action.execute', 'entity_type': 'enforcement_action'} in audits
