@@ -37,7 +37,7 @@ def test_enterprise_ready_gate_fails_linked_evidence_freshness_check():
     assert 'linked_evidence_freshness' in payload['failed_checks']
 
 
-def test_enterprise_ready_gate_fails_stable_monitored_system_state_check():
+def test_enterprise_ready_gate_fails_stable_monitored_systems_check():
     payload = _evaluate_enterprise_ready_gate(
         continuity_slo_pass=True,
         telemetry_freshness='fresh',
@@ -52,10 +52,10 @@ def test_enterprise_ready_gate_fails_stable_monitored_system_state_check():
         active_incidents_count=1,
     )
     assert payload['enterprise_ready_pass'] is False
-    assert 'stable_monitored_system_state' in payload['failed_checks']
+    assert 'stable_monitored_systems' in payload['failed_checks']
 
 
-def test_enterprise_ready_gate_fails_live_action_capability_check():
+def test_enterprise_ready_gate_fails_live_action_capability_readiness_check():
     payload = _evaluate_enterprise_ready_gate(
         continuity_slo_pass=True,
         telemetry_freshness='fresh',
@@ -70,7 +70,7 @@ def test_enterprise_ready_gate_fails_live_action_capability_check():
         active_incidents_count=0,
     )
     assert payload['enterprise_ready_pass'] is False
-    assert 'live_action_capability_available' in payload['failed_checks']
+    assert 'live_action_capability_readiness' in payload['failed_checks']
 
 
 def test_enterprise_ready_gate_fails_all_red_scenario():
@@ -91,8 +91,8 @@ def test_enterprise_ready_gate_fails_all_red_scenario():
     assert payload['failed_checks'] == [
         'continuity_slo_pass',
         'linked_evidence_freshness',
-        'stable_monitored_system_state',
-        'live_action_capability_available',
+        'stable_monitored_systems',
+        'live_action_capability_readiness',
     ]
 
 

@@ -17,14 +17,14 @@ const THREAT_PAGE_POLL_HIDDEN_MS = 60000;
 const ENTERPRISE_GATE_LABELS: Record<string, string> = {
   continuity_slo_pass: 'Continuity SLO pass',
   linked_evidence_freshness: 'Linked evidence freshness',
-  stable_monitored_system_state: 'Stable monitored-system state',
-  live_action_capability_available: 'Live action capability available',
+  stable_monitored_systems: 'Stable monitored systems',
+  live_action_capability_readiness: 'Live action capability readiness',
 };
 const ENTERPRISE_GATE_REMEDIATION_LINKS: Record<string, string> = {
   continuity_slo_pass: '/threat#continuity-slo',
   linked_evidence_freshness: '/threat#telemetry-freshness',
-  stable_monitored_system_state: '/threat#monitored-system-state',
-  live_action_capability_available: '/threat#response-actions',
+  stable_monitored_systems: '/threat#monitored-system-state',
+  live_action_capability_readiness: '/threat#response-actions',
 };
 
 type TargetRow = {
@@ -2375,6 +2375,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           Data provenance ({monitoringViewModel.provenanceLabel}): {monitoringViewModel.provenanceExplanation} /ops/monitoring/runtime-status ({monitoringViewModel.endpointProvenance.runtimeStatus}) · /ops/monitoring/investigation-timeline ({monitoringViewModel.endpointProvenance.investigationTimeline}) · Last successful runtime refresh: {formatAbsoluteTime(monitoringViewModel.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: {formatAbsoluteTime(monitoringViewModel.lastSuccessfulTimelineRefreshAt)}
         </p>
         <PageStateBanner viewModel={monitoringViewModel} />
+        <p className={`statusLine ${enterpriseReadyPass ? 'statusLine-success' : 'statusLine-warning'}`}>
+          Enterprise readiness gate: {enterpriseReadyPass ? 'PASS' : 'FAIL'}.
+          {enterpriseReadyPass ? ' All readiness checks are green.' : ' Resolve failed checks using the remediation links below.'}
+        </p>
         <article className="dataCard">
           <p className="sectionEyebrow">Enterprise readiness gate</p>
           <p className="kpiValue">{enterpriseReadyPass ? 'PASS' : 'FAIL'}</p>

@@ -59,6 +59,8 @@ export type WorkspaceMonitoringSummary = {
   };
   enterprise_ready_pass?: boolean;
   failed_checks?: string[];
+  check_results?: Array<{ name: string; pass: boolean; remediation_url?: string | null }>;
+  remediation_links?: Record<string, string>;
 };
 
 export type MonitoringRuntimeStatus = {
@@ -163,6 +165,7 @@ export type MonitoringRuntimeStatus = {
   proof_chain_missing?: string[];
   enterprise_ready_pass?: boolean;
   failed_checks?: string[];
+  check_results?: Array<{ name: string; pass: boolean; remediation_url?: string | null }>;
   remediation_links?: Record<string, string>;
 };
 
