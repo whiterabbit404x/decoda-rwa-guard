@@ -1151,12 +1151,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         stale: SnapshotCollectionKey[];
       }) {
         const endpointRows = payloadRows<T>(payload, payloadKeys);
-        if (result.status === 'fulfilled' && result.value.ok && endpointRows) {
-          setter(endpointRows);
-          return;
-        }
         if (canonicalRows) {
           setter(canonicalRows);
+          if (!(result.status === 'fulfilled' && result.value.ok)) {
+            stale.push(key);
+          }
+          return;
+        }
+        if (result.status === 'fulfilled' && result.value.ok && endpointRows) {
+          setter(endpointRows);
           return;
         }
         stale.push(key);
@@ -1551,13 +1554,26 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           : null;
       const linkedEvidenceRows = coverageIndexes.evidenceByDetectionId.get(normalizeLookup(item.detectionId)) ?? [];
       const linkedEvidence = pickLatestByTime(linkedEvidenceRows, (entry) => entry.observed_at);
+      const linkedDetectionId = row?.chain_linked_ids?.detection_id ?? row?.id ?? null;
       const linkedEvidenceCount = Number(
         row?.linked_evidence_count
         ?? linkedAlert?.linked_evidence_count
         ?? linkedIncident?.linked_evidence_count
         ?? linkedEvidenceRows.length,
       );
-      const completeProofChain = Boolean(row && linkedAlert && linkedIncident);
+      const linkedActionId = row?.chain_linked_ids?.action_id
+        ?? row?.linked_action_id
+        ?? linkedAlert?.chain_linked_ids?.action_id
+        ?? linkedAlert?.linked_action_id
+        ?? linkedIncident?.chain_linked_ids?.action_id
+        ?? linkedIncident?.linked_action_id
+        ?? null;
+      const completeProofChain = Boolean(
+        linkedDetectionId
+        && linkedAlertId
+        && linkedIncidentId
+        && linkedActionId,
+      );
       const hasRealLinkedEvidence = linkedEvidenceCount > 0 && isRealEvidence(linkedEvidence, row);
       const ageMs = now - new Date(item.timestamp).getTime();
       const telemetryFresh = monitoringPresentation.status === 'live' && monitoringPresentation.hasLiveTelemetry;
@@ -1613,7 +1629,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const timelineLinkNames = new Set(timelineItems.map((item) => String(item.link_name || '')));
   const hasDetectionTimelineLink = timelineLinkNames.has('detection');
   const hasEvidenceTimelineLink = timelineLinkNames.has('telemetry_event') || timelineLinkNames.has('detection_evidence');
-  const showEvidenceLinkedSignals = hasDetectionTimelineLink && hasEvidenceTimelineLink;
+  const timelineChainLinkedIds = investigationTimeline?.chain_linked_ids ?? null;
+  const hasCompleteTimelineLinkedIds = Boolean(
+    timelineChainLinkedIds?.detection_id
+    && timelineChainLinkedIds?.alert_id
+    && timelineChainLinkedIds?.incident_id
+    && timelineChainLinkedIds?.action_id,
+  );
+  const hasTimelineLinkedEvidence = Number(investigationTimeline?.linked_evidence_count ?? 0) > 0;
+  const showEvidenceLinkedSignals = hasDetectionTimelineLink && hasEvidenceTimelineLink && hasCompleteTimelineLinkedIds && hasTimelineLinkedEvidence;
 
   const coverageSummary = `${Math.max(reportingSystems, 0)} / ${Math.max(configuredSystems, 0)}`;
   const hasCoverageFromRuntime = workspaceConfigured && (protectedAssetCount > 0 || configuredSystems > 0);
@@ -1972,6 +1996,19 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       chainLinkedIds: latestDetection?.chain_linked_ids ?? linkedAlert?.chain_linked_ids ?? linkedIncident?.chain_linked_ids ?? null,
     };
   }, [alerts, coverageIndexes.evidenceByDetectionId, detections, incidents]);
+  const threatChainTimeline = useMemo(() => {
+    const latestEvidence = chainPanelSelection.detectionId
+      ? pickLatestByTime(coverageIndexes.evidenceByDetectionId.get(normalizeLookup(chainPanelSelection.detectionId)) ?? [], (entry) => entry.observed_at)
+      : null;
+    const orderedTimeline = [
+      { key: 'detection', label: 'Detection', id: chainPanelSelection.detectionId, timestamp: detections.find((item) => item.id === chainPanelSelection.detectionId)?.detected_at ?? null, href: '/alerts' },
+      { key: 'alert', label: 'Alert', id: chainPanelSelection.alertId, timestamp: alerts.find((item) => item.id === chainPanelSelection.alertId)?.created_at ?? null, href: '/alerts' },
+      { key: 'incident', label: 'Incident', id: chainPanelSelection.incidentId, timestamp: incidents.find((item) => item.id === chainPanelSelection.incidentId)?.created_at ?? null, href: '/incidents' },
+      { key: 'action', label: 'Action', id: chainPanelSelection.actionId, timestamp: actionHistory.find((item) => String(item.object_id ?? '') === String(chainPanelSelection.incidentId ?? '') || String(item.object_id ?? '') === String(chainPanelSelection.alertId ?? ''))?.timestamp ?? null, href: '/history' },
+    ];
+    const rawEvidenceReference = `raw evidence refs: evidence_id ${latestEvidence?.id || 'n/a'} · tx ${latestEvidence?.tx_hash || chainPanelSelection.txHash || 'n/a'} · block ${latestEvidence?.block_number ?? chainPanelSelection.blockNumber ?? 'n/a'} · provider ${latestEvidence?.source_provider || chainPanelSelection.evidenceOrigin || 'n/a'}`;
+    return { orderedTimeline, rawEvidenceReference };
+  }, [actionHistory, alerts, chainPanelSelection.alertId, chainPanelSelection.blockNumber, chainPanelSelection.detectionId, chainPanelSelection.evidenceOrigin, chainPanelSelection.incidentId, chainPanelSelection.txHash, coverageIndexes.evidenceByDetectionId, detections, incidents]);
 
   const threatActionContextOptions = useMemo<ThreatActionContextOption[]>(() => {
     const options: ThreatActionContextOption[] = [];
@@ -2926,6 +2963,16 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                     <p className="sectionEyebrow">Chain proof</p>
                     <h4>Detection created → Alert created → Incident opened → Action logged</h4>
                   </div>
+                  {threatChainTimeline.orderedTimeline.map((step) => (
+                    <div key={step.key} className="overviewListItem">
+                      <div>
+                        <p>{step.label}: {step.id || 'n/a'}</p>
+                        <p className="tableMeta">{formatAbsoluteTime(step.timestamp)}</p>
+                        <p className="tableMeta">{threatChainTimeline.rawEvidenceReference}</p>
+                      </div>
+                      <Link href={step.href} prefetch={false}>Open</Link>
+                    </div>
+                  ))}
                   {actionHistory.slice(0, 4).map((entry) => {
                     const entryAlertId = typeof entry.details_json?.alert_id === 'string' ? entry.details_json.alert_id : null;
                     const entryIncidentId = typeof entry.details_json?.incident_id === 'string' ? entry.details_json.incident_id : null;
@@ -2950,7 +2997,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 </div>
                 <div className="stack compactStack">
                   {investigationTimelineItems.length === 0 ? (
-                    <p className="muted">No investigation timeline records currently returned. Missing links: {missingTimelineLinks.length === 0 ? 'none' : missingTimelineLinks.join(', ')}.</p>
+                    <p className="muted">No investigation timeline records currently returned. Missing links: {missingTimelineLinks.length === 0 ? 'none' : missingTimelineLinks.join(', ')}. Linked evidence count: {Number(investigationTimeline?.linked_evidence_count ?? 0)}.</p>
                   ) : null}
                   {investigationTimelineItems.map((item) => {
                     const linkName = String(item.link_name || 'unknown');
