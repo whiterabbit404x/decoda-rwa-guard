@@ -16,7 +16,8 @@ test('snapshot refresh keeps canonical endpoints plus linked collections in para
   expect(threat).toContain("fetch(`${apiUrl}/incidents?limit=50`");
   expect(threat).toContain("fetch(`${apiUrl}/history/actions?limit=50`");
   expect(threat).toContain("fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`");
-  expect(threat).toContain('fetch(`${apiUrl}/alerts/${encodeURIComponent(investigationTimeline.chain_linked_ids.alert_id)}/evidence?limit=50`');
+  expect(threat).toContain('const timelineAlertId = investigationTimelinePayload?.chain_linked_ids?.alert_id;');
+  expect(threat).toContain('fetch(`${apiUrl}/alerts/${encodeURIComponent(String(timelineAlertId))}/evidence?limit=50`');
   expect(threat).toContain('canonical_collections');
 });
 
@@ -29,12 +30,12 @@ test('refresh no longer clears collections and marks stale data on partial failu
   expect(threat).not.toContain('setEvidence([])');
   expect(threat).not.toContain('setActionHistory([])');
   expect(threat).toContain('function payloadRows<T>(payload: any, keys: string[]): T[] | null');
-  expect(threat).toContain('if (result.status === \'fulfilled\' && result.value.ok && endpointRows) {');
-  expect(threat).toContain('if (canonicalRows) {');
+  expect(threat).toContain('function payloadRowsWithAvailability<T>(payload: any, keys: string[]): { rows: T[] | null; available: boolean }');
+  expect(threat).toContain('if (canonical.available && canonical.rows) {');
+  expect(threat).toContain("if (result.status === 'fulfilled' && result.value.ok && endpoint.available && endpoint.rows) {");
   expect(threat).toContain('setSnapshotStaleCollections(staleCollections)');
   expect(threat).toContain('Stale collections ${snapshotStaleCollections.join');
-  expect(threat).toContain('if (canonicalRows) {');
-  expect(threat).toContain('if (!(result.status === \'fulfilled\' && result.value.ok)) {');
+  expect(threat).toContain("if (!(result.status === 'fulfilled' && result.value.ok)) {");
   expect(threat).toContain('stale.push(key);');
 });
 
@@ -65,6 +66,25 @@ test('incident timeline and evidence rendering blocks assert populated rows', ()
   expect(threat).toContain('<p>{step.label}: {step.id || \'n/a\'}</p>');
   expect(threat).toContain('!loadingSnapshot && linkedAlertRows.length === 0 ? (');
   expect(threat).toContain('!loadingSnapshot && incidents.length === 0 ? (');
+});
+
+test('detection rows surface raw evidence references and observed timestamps', () => {
+  const threat = appSource('threat-operations-panel.tsx');
+
+  expect(threat).toContain('rawEvidenceReference');
+  expect(threat).toContain('raw evidence refs: evidence_id');
+  expect(threat).toContain('raw evidence refs: detection');
+  expect(threat).toContain('rawEvidenceObservedAt');
+  expect(threat).toContain('observed {formatAbsoluteTime(signal.rawEvidenceObservedAt || signal.timestamp)}');
+});
+
+test('timeline evidence gate accepts telemetry/evidence links and complete chain ids', () => {
+  const threat = appSource('threat-operations-panel.tsx');
+
+  expect(threat).toContain("timelineLinkNames.has('telemetry')");
+  expect(threat).toContain("timelineLinkNames.has('evidence')");
+  expect(threat).toContain('const hasCompleteTimelineLinkedIds = Boolean(');
+  expect(threat).toContain('const showEvidenceLinkedSignals = hasDetectionTimelineLink && hasEvidenceTimelineLink && hasCompleteTimelineLinkedIds && hasTimelineLinkedEvidence;');
 });
 
 test('alerts and incidents tables render non-empty list rows with persisted proof chain fields when data exists', () => {
