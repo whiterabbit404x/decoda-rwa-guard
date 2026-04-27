@@ -205,6 +205,43 @@ def test_create_live_action_denied_for_non_approver_role(monkeypatch):
         assert 'Owner or admin role is required for live action execution' in str(exc.detail)
 
 
+def test_create_live_action_rejects_non_pending_status(monkeypatch):
+    class _Result:
+        def fetchone(self):
+            return None
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(
+        pilot,
+        '_require_workspace_admin',
+        lambda *_: (
+            {'id': 'admin-1', 'mfa_enabled': False},
+            {'workspace_id': 'ws-1', 'role': 'admin'},
+        ),
+    )
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    try:
+        pilot.create_enforcement_action({'action_type': 'freeze_wallet', 'mode': 'live', 'status': 'executed', 'incident_id': 'inc-1'}, request)
+        raise AssertionError('Expected HTTPException for invalid live action status.')
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert 'must be created with pending status' in str(exc.detail)
+
+
 def test_list_response_actions_returns_supported_fields(monkeypatch):
     class _Result:
         def __init__(self, rows=None):
@@ -302,7 +339,7 @@ def test_execute_live_unsupported_action_returns_structured_error_without_execut
         assert exc.detail['reason'] == 'Unsupported live action'
 
     assert any(
-        "UPDATE response_actions SET status = %s, execution_state = %s, execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, result_summary = %s, error_code = %s WHERE id = %s" in statement
+        "UPDATE response_actions SET status = %s, execution_state = %s, execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, result_summary = %s, error_reason = %s, error_code = %s" in statement
         and params[0] == 'failed'
         and params[1] == 'unsupported'
         for statement, params in executed
@@ -728,7 +765,7 @@ def test_execute_live_action_requires_explicit_approval(monkeypatch):
         raise AssertionError('Expected HTTPException for missing approval.')
     except HTTPException as exc:
         assert exc.status_code == 409
-        assert 'requires explicit approval' in str(exc.detail)
+        assert 'requires owner/admin approval' in str(exc.detail)
 
 
 def test_execute_live_action_denied_for_unauthorized_workspace_role(monkeypatch):
