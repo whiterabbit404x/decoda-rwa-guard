@@ -26,14 +26,14 @@ import { toDashboardBadgeState } from './dashboard-status-presentation';
 const ENTERPRISE_GATE_LABELS: Record<string, string> = {
   continuity_slo_pass: 'Continuity SLO pass',
   linked_evidence_freshness: 'Linked evidence freshness',
-  stable_monitored_system_state: 'Stable monitored-system state',
-  live_action_capability_available: 'Live action capability available',
+  stable_monitored_systems: 'Stable monitored systems',
+  live_action_capability_readiness: 'Live action capability readiness',
 };
 const ENTERPRISE_GATE_REMEDIATION_LINKS: Record<string, string> = {
   continuity_slo_pass: '/threat#continuity-slo',
   linked_evidence_freshness: '/threat#telemetry-freshness',
-  stable_monitored_system_state: '/threat#monitored-system-state',
-  live_action_capability_available: '/threat#response-actions',
+  stable_monitored_systems: '/threat#monitored-system-state',
+  live_action_capability_readiness: '/threat#response-actions',
 };
 
 function mapMonitoringStatusToBadgeState(status: MonitoringPresentationStatus): CustomerStatusBadgeState {
@@ -122,6 +122,10 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           </div>
         </div>
         <div className="heroPanel">
+          <p className={`statusLine ${enterpriseReadyPass ? 'statusLine-success' : 'statusLine-warning'}`}>
+            Enterprise readiness gate: {enterpriseReadyPass ? 'PASS' : 'FAIL'}.
+            {enterpriseReadyPass ? ' All enterprise checks are green.' : ' Claims remain blocked until the failed checks are remediated.'}
+          </p>
           <p><strong>Platform state:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Coverage degraded' : 'Telemetry offline'}</p>
           <p><strong>Runtime status:</strong> {runtimeStatusLabel}</p>
           <p><strong>Freshness:</strong> {freshnessLabel}</p>

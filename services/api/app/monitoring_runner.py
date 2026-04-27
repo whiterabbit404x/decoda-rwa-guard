@@ -114,8 +114,8 @@ _WORKSPACE_COVERAGE_ONLY_STREAK: dict[str, dict[str, Any]] = {}
 ENTERPRISE_READY_REMEDIATION_LINKS: dict[str, str] = {
     'continuity_slo_pass': '/threat#continuity-slo',
     'linked_evidence_freshness': '/threat#telemetry-freshness',
-    'stable_monitored_system_state': '/threat#monitored-system-state',
-    'live_action_capability_available': '/threat#response-actions',
+    'stable_monitored_systems': '/threat#monitored-system-state',
+    'live_action_capability_readiness': '/threat#response-actions',
 }
 
 
@@ -134,13 +134,13 @@ def _evaluate_enterprise_ready_gate(
     active_incidents_count: int,
 ) -> dict[str, Any]:
     fresh_states = {'fresh', 'in_window'}
-    live_action_capability_available = bool(active_incidents_count > 0)
+    live_action_capability_readiness = bool(active_incidents_count > 0)
     try:
         capability = resolve_response_action_capability('freeze_wallet', 'live')
-        live_action_capability_available = bool(live_action_capability_available and capability.get('supports_mode'))
+        live_action_capability_readiness = bool(live_action_capability_readiness and capability.get('supports_mode'))
     except Exception:
-        live_action_capability_available = False
-    stable_monitored_system_state = (
+        live_action_capability_readiness = False
+    stable_monitored_systems = (
         str(runtime_status or '').strip().lower() == 'live'
         and str(monitoring_status or '').strip().lower() == 'live'
         and int(reporting_systems_count or 0) > 0
@@ -156,8 +156,8 @@ def _evaluate_enterprise_ready_gate(
             and str(ingestion_freshness or '').strip().lower() in fresh_states
             and str(detection_pipeline_freshness or '').strip().lower() in fresh_states,
         ),
-        ('stable_monitored_system_state', stable_monitored_system_state),
-        ('live_action_capability_available', live_action_capability_available),
+        ('stable_monitored_systems', stable_monitored_systems),
+        ('live_action_capability_readiness', live_action_capability_readiness),
     ]
     failed_checks = [name for name, passed in checks if not passed]
     return {
