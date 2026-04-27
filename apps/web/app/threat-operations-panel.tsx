@@ -2064,7 +2064,16 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       const execute = await fetch(`${apiUrl}/response/actions/${action.id}/execute`, { method: 'POST', headers: authHeaders() });
       const executePayload = await execute.json().catch(() => ({}));
       const executionResult = responseActionExecutionMessage(executePayload);
-      setResponseToast(execute.ok && executionResult.isSuccess ? 'LIVE action submitted through enterprise workflow.' : (executionResult.text || 'LIVE action execution failed.'));
+      const provenance = executePayload?.execution_provenance ?? executePayload?.execution_evidence ?? {};
+      const txHash = String(provenance?.tx_hash || provenance?.safe_tx_hash || '').trim();
+      const resultCode = provenance?.result_code;
+      if (execute.ok && executionResult.isSuccess) {
+        const receiptLabel = txHash ? ` tx=${txHash}` : '';
+        const codeLabel = typeof resultCode === 'number' ? ` code=${resultCode}` : '';
+        setResponseToast(`LIVE action submitted through enterprise workflow.${receiptLabel}${codeLabel}`);
+      } else {
+        setResponseToast(executionResult.text || 'LIVE action execution failed.');
+      }
       return;
     }
     setResponseToast('RECOMMENDED action recorded. Approval and live execution workflow required.');
@@ -2744,6 +2753,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.notify_team, 'simulated')} title={actionDisabledReason(actionCapabilities.notify_team, 'simulated') || ''} onClick={() => void runThreatAction('notify_team', 'Run simulated response', 'simulated')}>Run simulated response</button>
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.revoke_approval, 'simulated')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'simulated') || ''} onClick={() => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated')}>Revoke approval</button>
             </div>
+            <p className="tableMeta">SIMULATED actions run immediately and never submit a live transaction.</p>
             <div className="buttonRow">
               <span className="ruleChip">RECOMMENDED</span>
               <button type="button" disabled={shouldBlockThreatActionCreation || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'recommended')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'recommended') || ''} onClick={() => void runThreatAction('freeze_wallet', 'Freeze wallet', 'recommended')}>Freeze wallet (RECOMMENDED)</button>
@@ -2754,6 +2764,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               <button type="button" disabled={shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.freeze_wallet, 'live')} title={actionDisabledReason(actionCapabilities.freeze_wallet, 'live') || ''} onClick={() => setLiveActionConfirm({ actionType: 'freeze_wallet', label: 'Freeze wallet' })}>Freeze wallet (LIVE)</button>
               <button type="button" disabled={shouldBlockThreatActionCreation || !selectedThreatActionContext?.incidentId || isActionDisabledInMode(actionCapabilities.revoke_approval, 'live')} title={actionDisabledReason(actionCapabilities.revoke_approval, 'live') || ''} onClick={() => setLiveActionConfirm({ actionType: 'revoke_approval', label: 'Revoke approval' })}>Revoke approval (LIVE)</button>
             </div>
+            <p className="tableMeta">LIVE actions require dual control: explicit confirmation, workspace approval, then execution with persisted provenance.</p>
             <div className="buttonRow">
               <Link href="/alerts" prefetch={false}>Review alerts</Link>
               <Link href="/incidents" prefetch={false}>Open incident queue</Link>
@@ -2785,7 +2796,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         <article className="dataCard" role="dialog" aria-label="Confirm live action">
           <p className="sectionEyebrow">LIVE action confirmation</p>
           <h3>{liveActionConfirm.label}</h3>
-          <p className="muted">This will use enterprise approval + execution workflow and requires linked incident context.</p>
+          <p className="muted">This will use enterprise approval + execution workflow, requires linked incident context, and records live execution provenance.</p>
           <p className="tableMeta">Incident context: {selectedThreatActionContext?.incidentId || 'missing'}</p>
           <label className="fieldLabel" htmlFor="live-action-confirm-input">Type LIVE to confirm</label>
           <input

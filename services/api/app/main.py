@@ -1167,17 +1167,35 @@ def _normalize_action_route_response(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload or {})
     normalized_mode = str(normalized.get('mode') or ('live' if normalized.get('dry_run') is False else 'simulated'))
     normalized['mode'] = normalized_mode
-    normalized['execution_evidence'] = {
-        **(normalized.get('execution_evidence') if isinstance(normalized.get('execution_evidence'), dict) else {}),
+    tx_hash = normalized.get('tx_hash') or normalized.get('safe_tx_hash')
+    execution_provenance = {
+        **(normalized.get('execution_provenance') if isinstance(normalized.get('execution_provenance'), dict) else {}),
+        'mode': normalized_mode,
         'execution_state': normalized.get('execution_state'),
         'status': normalized.get('status'),
         'provider_request_id': normalized.get('provider_request_id'),
         'provider_response_id': normalized.get('provider_response_id'),
+        'tx_hash': tx_hash,
         'safe_tx_hash': normalized.get('safe_tx_hash'),
+        'result_code': normalized.get('result_code'),
         'error_reason': normalized.get('error_reason'),
+        'executed_at': normalized.get('executed_at'),
+        'approved_at': normalized.get('approved_at'),
         'provider_receipts': normalized.get('provider_receipts') if isinstance(normalized.get('provider_receipts'), list) else [],
         'execution_artifacts': normalized.get('execution_artifacts') if isinstance(normalized.get('execution_artifacts'), dict) else {},
     }
+    normalized['execution_provenance'] = execution_provenance
+    normalized['execution_evidence'] = {
+        **(normalized.get('execution_evidence') if isinstance(normalized.get('execution_evidence'), dict) else {}),
+        **execution_provenance,
+    }
+    return normalized
+
+
+def _normalize_action_list_route_response(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    actions = normalized.get('actions') if isinstance(normalized.get('actions'), list) else []
+    normalized['actions'] = [_normalize_action_route_response(item if isinstance(item, dict) else {}) for item in actions]
     return normalized
 
 
@@ -2733,12 +2751,12 @@ def history_actions_create(payload: dict[str, Any], request: Request) -> dict[st
 
 @app.get('/enforcement/actions', summary='List enforcement actions with capability and execution state details')
 def enforcement_actions_list(request: Request, incident_id: str | None = None, alert_id: str | None = None, status_value: str | None = None, limit: int = 200) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: list_enforcement_actions(request, incident_id=incident_id, alert_id=alert_id, status_value=status_value, limit=limit))
+    return with_auth_schema_json(lambda: _normalize_action_list_route_response(list_enforcement_actions(request, incident_id=incident_id, alert_id=alert_id, status_value=status_value, limit=limit)))
 
 
 @app.get('/response/actions', summary='List response actions')
 def response_actions_list(request: Request, incident_id: str | None = None, alert_id: str | None = None, status_value: str | None = None, limit: int = 200) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: list_enforcement_actions(request, incident_id=incident_id, alert_id=alert_id, status_value=status_value, limit=limit))
+    return with_auth_schema_json(lambda: _normalize_action_list_route_response(list_enforcement_actions(request, incident_id=incident_id, alert_id=alert_id, status_value=status_value, limit=limit)))
 
 
 @app.get('/response/action-capabilities', summary='List response action capabilities and live execution routing for the active workspace')
