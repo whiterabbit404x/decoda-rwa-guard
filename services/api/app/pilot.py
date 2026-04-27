@@ -10238,6 +10238,8 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
         if mode == 'live' and not incident_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Live action mode requires incident_id.')
         status_value = _normalize_response_action_status(payload.get('status'))
+        if mode in {'recommended', 'live'} and status_value != 'pending':
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Recommended/live action mode must be created with pending status.')
         execution_metadata = {
             'params': params,
             'created_via': 'api',
@@ -10464,6 +10466,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action must be pending before execute.')
         action = _json_safe_value(dict(row))
         safe_tx_hash = None
+        execution_tx_hash: str | None = None
         provider_request_id: str | None = None
         provider_response_id: str | None = None
         error_reason: str | None = None
@@ -10476,7 +10479,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         mode = str(action.get('mode') or 'simulated')
         _enforce_response_action_mode_policy(action_type=str(action.get('action_type') or ''), mode=mode, workspace_context=workspace_context)
         if mode in {'recommended', 'live'} and not action.get('approved_by_user_id'):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Recommended/live action requires explicit approval before execution.')
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Recommended/live action requires owner/admin approval before execution.')
         if mode == 'live':
             if str(action.get('approved_by_user_id')) == str(user.get('id')):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action execution requires a separate approver and executor.')
@@ -10503,6 +10506,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 chain_network=str(action.get('chain_network') or ''),
             )
             safe_tx_hash = str(safe_response.get('safe_tx_hash') or '').strip() or None
+            execution_tx_hash = safe_tx_hash
             provider_request_id = str(safe_response.get('external_request_id') or '').strip() or None
             provider_response_id = str(safe_response.get('safe_tx_hash') or '').strip() or None
             result_code = int(safe_response.get('response_code') or 0) or None
@@ -10565,6 +10569,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                     }
                 )
                 metadata['execution_mode'] = 'governance_submitted'
+                execution_tx_hash = str(governance_response.get('tx_hash') or '').strip() or None
                 metadata['execution_state'] = 'proposed'
                 execution_state = 'proposed'
                 next_status = 'pending'
@@ -10625,8 +10630,8 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             result_code = 409
             provider_name = 'unsupported'
             connection.execute(
-                'UPDATE response_actions SET status = %s, execution_state = %s, execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, result_summary = %s, error_code = %s WHERE id = %s',
-                ('failed', 'unsupported', _json_dumps(metadata), _json_dumps(artifacts), _json_dumps(provider_receipts), result_summary, error_code, action_id),
+                'UPDATE response_actions SET status = %s, execution_state = %s, execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, result_summary = %s, error_reason = %s, error_code = %s, provider_request_id = COALESCE(%s, provider_request_id), provider_response_id = COALESCE(%s, provider_response_id) WHERE id = %s',
+                ('failed', 'unsupported', _json_dumps(metadata), _json_dumps(artifacts), _json_dumps(provider_receipts), result_summary, error_reason, error_code, provider_request_id, provider_response_id, action_id),
             )
             write_action_history(
                 connection,
@@ -10677,11 +10682,12 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             metadata['error_code'] = error_code
         finalized_at = utc_now_iso()
         metadata['final_status'] = next_status
+        metadata['execution_status'] = next_status
         metadata['final_execution_state'] = execution_state
         metadata['finalized_at'] = finalized_at
         metadata['provider_request_id'] = provider_request_id
         metadata['provider_response_id'] = provider_response_id
-        metadata['tx_hash'] = safe_tx_hash
+        metadata['tx_hash'] = execution_tx_hash
         metadata['response_payload_summary'] = {
             'result_summary': result_summary,
             'result_code': result_code,
@@ -10698,7 +10704,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             result_code=result_code,
             provider_request_id=provider_request_id,
             provider_response_id=provider_response_id,
-            tx_hash=safe_tx_hash,
+            tx_hash=execution_tx_hash,
             error_reason=error_reason,
         )
         artifacts['last_execution'] = _json_safe_value(
@@ -10708,11 +10714,12 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 'execution_state': execution_state,
                 'provider_request_id': provider_request_id,
                 'provider_response_id': provider_response_id,
-                'tx_hash': safe_tx_hash,
+                'tx_hash': execution_tx_hash,
                 'result_code': result_code,
                 'error_code': error_code,
                 'error_reason': error_reason,
                 'result_summary': result_summary,
+                'execution_status': next_status,
                 'finalized_at': finalized_at,
             }
         )
@@ -10724,7 +10731,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             execution_state=execution_state,
             reason='execute',
             provider_request_id=provider_request_id,
-            tx_hash=safe_tx_hash,
+            tx_hash=execution_tx_hash,
             error_code=error_code,
         )
         if next_status not in ENFORCEMENT_STATUSES:
@@ -10818,7 +10825,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 'execution_artifacts': artifacts,
                 'result_code': result_code,
                 'error_code': error_code,
-                'tx_hash': safe_tx_hash,
+                'tx_hash': execution_tx_hash,
                 'executed_at': utc_now_iso() if next_status == 'executed' else None,
                 'approved_at': metadata.get('approved_at'),
             }

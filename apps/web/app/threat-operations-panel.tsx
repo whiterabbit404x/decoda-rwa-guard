@@ -3178,6 +3178,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
               </button>
             </div>
+            <p className="sectionEyebrow">SIMULATED + RECOMMENDED</p>
             <div className="buttonRow">
               <span className="ruleChip">SIMULATED</span>
               <button type="button" disabled={threatOperationsViewModel.actionButtons['sim-notify-team'].disabled} title={threatOperationsViewModel.actionButtons['sim-notify-team'].reason} onClick={() => void runThreatAction('notify_team', 'Run simulated response', 'simulated')}>Run simulated response</button>
@@ -3189,6 +3190,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               <button type="button" disabled={threatOperationsViewModel.actionButtons['rec-freeze-wallet'].disabled} title={threatOperationsViewModel.actionButtons['rec-freeze-wallet'].reason} onClick={() => void runThreatAction('freeze_wallet', 'Freeze wallet', 'recommended')}>Freeze wallet (RECOMMENDED)</button>
               <button type="button" disabled={threatOperationsViewModel.actionButtons['rec-disable-monitored-system'].disabled} title={threatOperationsViewModel.actionButtons['rec-disable-monitored-system'].reason} onClick={() => void runThreatAction('disable_monitored_system', 'Disable monitored system', 'recommended')}>Disable monitored system (RECOMMENDED)</button>
             </div>
+            <p className="sectionEyebrow">LIVE ACTIONS</p>
             <div className="buttonRow">
               <span className="ruleChip">LIVE</span>
               <button type="button" disabled={threatOperationsViewModel.actionButtons['live-freeze-wallet'].disabled} title={threatOperationsViewModel.actionButtons['live-freeze-wallet'].reason} onClick={() => setLiveActionConfirm({ actionType: 'freeze_wallet', label: 'Freeze wallet' })}>Freeze wallet (LIVE)</button>

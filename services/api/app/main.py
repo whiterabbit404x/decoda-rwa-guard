@@ -1210,6 +1210,23 @@ def _normalize_action_route_response(payload: dict[str, Any]) -> dict[str, Any]:
         'final_status': execution_provenance.get('status'),
         'finalized_at': execution_provenance.get('executed_at') or execution_provenance.get('approved_at'),
     }
+    existing_audit = normalized.get('audit_metadata') if isinstance(normalized.get('audit_metadata'), dict) else {}
+    normalized['audit_metadata'] = {
+        **existing_audit,
+        'mode': normalized_mode,
+        'status': normalized.get('status'),
+        'execution_state': normalized.get('execution_state'),
+        'action_id': normalized.get('id'),
+        'incident_id': normalized.get('incident_id'),
+        'alert_id': normalized.get('alert_id'),
+        'created_by_user_id': normalized.get('created_by_user_id'),
+        'approved_by_user_id': normalized.get('approved_by_user_id'),
+        'provider_request_id': execution_provenance.get('provider_request_id'),
+        'provider_response_id': execution_provenance.get('provider_response_id'),
+        'tx_hash': execution_provenance.get('tx_hash'),
+        'error_reason': execution_provenance.get('error_reason'),
+        'error_code': execution_provenance.get('error_code'),
+    }
     return normalized
 
 
