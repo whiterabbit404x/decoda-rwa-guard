@@ -11,9 +11,10 @@ test('live signal badges require complete linked ids and persisted linked eviden
 
   expect(threat).toContain('const hasCompleteTimelineLinkedIds = Boolean(');
   expect(threat).toContain('const hasTimelineLinkedEvidence = Number(investigationTimeline?.linked_evidence_count ?? 0) > 0;');
-  expect(threat).toContain('const showEvidenceLinkedSignals = hasDetectionTimelineLink && hasEvidenceTimelineLink && hasCompleteTimelineLinkedIds && hasTimelineLinkedEvidence;');
-  expect(threat).toContain('const completeProofChain = Boolean(');
-  expect(threat).toContain('&& linkedActionId');
+  expect(threat).toContain('const hasPersistedTimelineEvidence = Boolean(');
+  expect(threat).toContain('const showEvidenceLinkedSignals = hasDetectionTimelineLink');
+  expect(threat).toContain('&& hasPersistedTimelineEvidence;');
+  expect(threat).toContain('const hasLinkedChainIds = Boolean(');
   expect(threat).toContain('const hasRealLinkedEvidence = linkedEvidenceCount > 0 && isRealEvidence(linkedEvidence, row);');
 });
 
@@ -21,8 +22,10 @@ test('refresh prefers canonical collections and keeps stale fallback markers whe
   const threat = appSource('threat-operations-panel.tsx');
 
   expect(threat).toContain('function updateCollection<T>({');
-  expect(threat).toContain('if (canonicalRows) {');
-  expect(threat).toContain('if (!(result.status === \'fulfilled\' && result.value.ok)) {');
+  expect(threat).toContain('const endpointOk = result.status === \'fulfilled\' && result.value.ok;');
+  expect(threat).toContain('const applyRows = (rows: T[], allowEmpty: boolean): boolean => {');
+  expect(threat).toContain('if (rows.length === 0 && !allowEmpty) {');
+  expect(threat).toContain('if (applyRows(rows, endpointOk)) {');
   expect(threat).toContain('stale.push(key);');
   expect(threat).toContain('setSnapshotStaleCollections(staleCollections);');
 });
