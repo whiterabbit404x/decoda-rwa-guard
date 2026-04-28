@@ -6122,9 +6122,19 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             runtime_status = 'Degraded'
             summary['runtime_status'] = 'degraded'
             summary['monitoring_status'] = 'limited'
-            summary['runtime_degraded_reason_codes'] = ['continuity_slo_failed', *continuity_reason_codes]
+            summary['runtime_degraded_reason_codes'] = [
+                'runtime_status_degraded',
+                'live_mode_continuity_failed',
+                'continuity_slo_failed',
+                *continuity_reason_codes,
+            ]
             runtime_degraded_reason = 'continuity_slo_failed'
-            payload_reason_codes = ['continuity_slo_failed', *continuity_reason_codes]
+            payload_reason_codes = [
+                'runtime_status_degraded',
+                'live_mode_continuity_failed',
+                'continuity_slo_failed',
+                *continuity_reason_codes,
+            ]
             summary['runtime_status_reason_codes'] = payload_reason_codes
             degraded_reason = degraded_reason or (
                 f"continuity_slo_failed:{continuity_reason_codes[0]}"
@@ -6322,6 +6332,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'freshness_ages_seconds': dict(summary.get('continuity_freshness_ages_seconds') or {}),
                 'configured_thresholds_seconds': dict(summary.get('continuity_configured_thresholds_seconds') or {}),
                 'breach_reasons': list(summary.get('continuity_breach_reasons') or []),
+                'failed_checks': list(summary.get('continuity_failed_checks') or summary.get('continuity_reason_codes') or []),
             },
             'continuity_failed_checks': list(summary.get('continuity_failed_checks') or summary.get('continuity_reason_codes') or []),
             'continuity_contract': dict(summary.get('continuity_contract') or {}),

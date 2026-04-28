@@ -164,6 +164,27 @@ test('continuity SLO evaluator reads runtime continuity payload for stale/offlin
   ]);
 });
 
+test('continuity SLO evaluator uses worker heartbeat age when provided in continuity payload', () => {
+  const result = evaluateContinuitySlo(
+    undefined,
+    {
+      pass: false,
+      worker_heartbeat_age_seconds: 301,
+      heartbeat_age_seconds: 10,
+      telemetry_age_seconds: 30,
+      detection_age_seconds: 30,
+      thresholds_seconds: { heartbeat: 300, telemetry: 120, detection_eval: 300 },
+    },
+  );
+
+  expect(result.statusLabel).toBe('FAIL');
+  expect(result.dimensions[0]).toMatchObject({
+    key: 'heartbeat',
+    pass: false,
+    reason: '5m 1s exceeds 5m',
+  });
+});
+
 test('continuity failed checks expose explicit codes for live/stale/offline/degraded transitions', () => {
   const live = continuityFailedChecks(
     { continuity_reason_codes: [] } as any,
