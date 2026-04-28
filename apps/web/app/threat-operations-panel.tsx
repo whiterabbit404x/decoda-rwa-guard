@@ -1381,23 +1381,32 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         cacheKey: keyof typeof collectionCacheRef.current;
         markRefreshed: (collectionKey: SnapshotCollectionKey) => void;
       }) {
+        const endpointOk = result.status === 'fulfilled' && result.value.ok;
+        const applyRows = (rows: T[], allowEmpty: boolean): boolean => {
+          if (rows.length === 0 && !allowEmpty) {
+            return false;
+          }
+          setter(rows);
+          collectionCacheRef.current[cacheKey] = rows as any;
+          markRefreshed(key);
+          return true;
+        };
         const endpoint = payloadRowsWithAvailability<T>(payload, payloadKeys);
         if (canonical.available && canonical.rows) {
           const rows = canonical.rows;
-          setter(rows);
-          collectionCacheRef.current[cacheKey] = rows as any;
-          markRefreshed(key);
-          if (!(result.status === 'fulfilled' && result.value.ok)) {
+          if (applyRows(rows, endpointOk)) {
+            if (!endpointOk) {
+              stale.push(key);
+            }
+            return;
+          }
+          if (!endpointOk) {
             stale.push(key);
           }
-          return;
         }
-        if (result.status === 'fulfilled' && result.value.ok && endpoint.available && endpoint.rows) {
+        if (endpointOk && endpoint.available && endpoint.rows) {
           const rows = endpoint.rows;
-          setter(rows);
-          collectionCacheRef.current[cacheKey] = rows as any;
-          markRefreshed(key);
-          return;
+          if (applyRows(rows, true)) return;
         }
         const cachedRows = collectionCacheRef.current[cacheKey] as T[];
         if (cachedRows.length > 0) {
@@ -1844,25 +1853,21 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       const linkedEvidence = pickLatestByTime(linkedEvidenceRows, (entry) => entry.observed_at);
       const rawEvidenceReference = `raw evidence refs: evidence_id ${linkedEvidence?.id || 'n/a'} · tx ${linkedEvidence?.tx_hash || item.txHash || 'n/a'} · block ${linkedEvidence?.block_number ?? item.blockNumber ?? 'n/a'} · provider ${linkedEvidence?.source_provider || row?.evidence_origin || row?.evidence_source || 'n/a'}`;
       const rawEvidenceObservedAt = linkedEvidence?.observed_at ?? row?.last_evidence_at ?? item.rawEvidenceObservedAt ?? null;
-      const linkedDetectionId = row?.chain_linked_ids?.detection_id ?? row?.id ?? null;
+      const chainLinkedIds = row?.chain_linked_ids
+        ?? linkedAlert?.chain_linked_ids
+        ?? linkedIncident?.chain_linked_ids
+        ?? null;
       const linkedEvidenceCount = Number(
         row?.linked_evidence_count
         ?? linkedAlert?.linked_evidence_count
         ?? linkedIncident?.linked_evidence_count
         ?? linkedEvidenceRows.length,
       );
-      const linkedActionId = row?.chain_linked_ids?.action_id
-        ?? row?.linked_action_id
-        ?? linkedAlert?.chain_linked_ids?.action_id
-        ?? linkedAlert?.linked_action_id
-        ?? linkedIncident?.chain_linked_ids?.action_id
-        ?? linkedIncident?.linked_action_id
-        ?? null;
-      const completeProofChain = Boolean(
-        linkedDetectionId
-        && linkedAlertId
-        && linkedIncidentId
-        && linkedActionId,
+      const hasLinkedChainIds = Boolean(
+        chainLinkedIds?.detection_id
+        && chainLinkedIds?.alert_id
+        && chainLinkedIds?.incident_id
+        && chainLinkedIds?.action_id,
       );
       const hasRealLinkedEvidence = linkedEvidenceCount > 0 && isRealEvidence(linkedEvidence, row);
       const ageMs = now - new Date(item.timestamp).getTime();
@@ -1870,7 +1875,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       const liveCandidate = telemetryFresh
         && !dbPersistenceOutageActive
         && item.liveEvidenceEligible !== false
-        && completeProofChain
+        && hasLinkedChainIds
         && hasRealLinkedEvidence
         && ageMs <= DETECTION_LIVE_MS
         && item.state !== 'Test';
@@ -3346,17 +3351,19 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                     const linkName = String(item.link_name || 'unknown');
                     const sourceLabel = String(item.evidence_source || 'simulator');
                     const chainIds = investigationTimeline?.chain_linked_ids ?? {};
+                    const timelineTimestamp = formatAbsoluteTime(item.timestamp);
                     return (
                       <div key={item.id} className="overviewListItem">
                         <div>
                           <p>{linkName.replaceAll('_', ' ')}</p>
                           <p className="tableMeta">id {item.id} · table {String(item.table_name || 'unknown')} · evidence {sourceLabel}</p>
+                          <p className="tableMeta">timeline: timestamp {timelineTimestamp} · source {sourceLabel}</p>
                           <p className="tableMeta">
                             linked IDs: detection {String(chainIds.detection_id || 'n/a')} · alert {String(chainIds.alert_id || 'n/a')} · incident {String(chainIds.incident_id || 'n/a')} · action {String(chainIds.action_id || 'n/a')}
                           </p>
                           <p className="tableMeta">
                             <span className={`statusBadge statusBadge-${timelineLinkTone(linkName)}`}>{linkName}</span>{' '}
-                            {formatAbsoluteTime(item.timestamp)}
+                            {timelineTimestamp}
                           </p>
                         </div>
                         <Link href={timelineLinkHref(linkName)} prefetch={false}>Open</Link>
