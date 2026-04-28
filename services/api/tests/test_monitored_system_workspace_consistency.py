@@ -422,6 +422,22 @@ def test_reconcile_workspace_idempotency_guard_returns_no_op_while_inflight(monk
     assert result['job']['status'] == 'running'
 
 
+def test_reconcile_workspace_commits_failed_job_lifecycle_when_reconcile_errors(monkeypatch):
+    conn = _Conn()
+    request = _Request('ws-1')
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}))
+    monkeypatch.setattr(pilot, 'reconcile_enabled_targets_monitored_systems', lambda *_a, **_k: (_ for _ in ()).throw(ValueError('failed reconcile write')))
+
+    with pytest.raises(HTTPException):
+        pilot.reconcile_workspace_monitored_systems(request)
+
+    assert conn.commits == 1
+
+
 def test_reconcile_workspace_retries_retryable_errors_and_stabilizes_final_state(monkeypatch):
     conn = _Conn()
     request = _Request('ws-1')
