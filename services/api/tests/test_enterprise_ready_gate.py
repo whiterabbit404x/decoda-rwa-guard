@@ -111,6 +111,15 @@ def test_enterprise_ready_gate_fails_all_red_scenario(monkeypatch):
         {'name': 'stable_monitored_systems', 'pass': False, 'remediation_url': '/threat#monitored-system-state'},
         {'name': 'live_action_capability_readiness', 'pass': False, 'remediation_url': '/threat#response-actions'},
     ]
+    assert payload['enterprise_criteria_pass'] is False
+    assert payload['enterprise_criteria_failed'] == [
+        'criterion_b_continuity_slos',
+        'criterion_c_reconcile_stability',
+        'criterion_d_evidence_chain_hydration',
+        'criterion_e_live_action_governance',
+        'criterion_f_state_model_ux',
+        'hidden_architecture',
+    ]
 
 
 def test_enterprise_ready_gate_passes_all_green_scenario(monkeypatch):
@@ -142,3 +151,15 @@ def test_enterprise_ready_gate_passes_all_green_scenario(monkeypatch):
         'live_action_capability_readiness',
     ]
     assert all(check['pass'] is True for check in payload['check_results'])
+    assert payload['enterprise_criteria_pass'] is True
+    assert payload['enterprise_criteria_failed'] == []
+    assert [check['name'] for check in payload['enterprise_criteria']] == [
+        'criterion_b_continuity_slos',
+        'criterion_c_reconcile_stability',
+        'criterion_d_evidence_chain_hydration',
+        'criterion_e_live_action_governance',
+        'criterion_f_state_model_ux',
+        'hidden_architecture',
+    ]
+    assert all(check['requires_measurable_evidence'] is True for check in payload['enterprise_criteria'])
+    assert all(check['pass'] is True for check in payload['enterprise_criteria'])

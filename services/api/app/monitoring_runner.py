@@ -125,6 +125,14 @@ ENTERPRISE_READY_REMEDIATION_LINKS: dict[str, str] = {
     'stable_monitored_systems': '/threat#monitored-system-state',
     'live_action_capability_readiness': '/threat#response-actions',
 }
+ENTERPRISE_CRITERIA_REMEDIATION_LINKS: dict[str, str] = {
+    'criterion_b_continuity_slos': '/threat#continuity-slo',
+    'criterion_c_reconcile_stability': '/threat#monitored-system-state',
+    'criterion_d_evidence_chain_hydration': '/threat#telemetry-freshness',
+    'criterion_e_live_action_governance': '/threat#response-actions',
+    'criterion_f_state_model_ux': '/threat#state-model-ux',
+    'hidden_architecture': '/threat#hidden-architecture',
+}
 ENTERPRISE_READY_LIVE_ACTION_TYPES: tuple[str, ...] = (
     'freeze_wallet',
     'revoke_approval',
@@ -184,12 +192,48 @@ def _evaluate_enterprise_ready_gate(
         ('live_action_capability_readiness', live_action_capability_readiness),
     ]
     failed_checks = [name for name, passed in checks if not passed]
+    criteria_checks: list[tuple[str, bool, list[str]]] = [
+        ('criterion_b_continuity_slos', bool(continuity_slo_pass), ['continuity_slo_pass']),
+        ('criterion_c_reconcile_stability', stable_monitored_systems, ['stable_monitored_systems']),
+        (
+            'criterion_d_evidence_chain_hydration',
+            any(name == 'linked_fresh_evidence' and passed for name, passed in checks),
+            ['linked_fresh_evidence', 'telemetry_freshness', 'ingestion_freshness', 'detection_pipeline_freshness', 'proof_chain_status'],
+        ),
+        ('criterion_e_live_action_governance', live_action_capability_readiness, ['validated_live_action_paths']),
+        (
+            'criterion_f_state_model_ux',
+            stable_monitored_systems and bool(continuity_slo_pass),
+            ['runtime_status', 'monitoring_status', 'contradiction_flags', 'guard_flags', 'continuity_slo_pass'],
+        ),
+    ]
+    hidden_architecture_pass = all(passed for _, passed, _ in criteria_checks)
+    criteria_checks.append(
+        (
+            'hidden_architecture',
+            hidden_architecture_pass,
+            ['criterion_b_continuity_slos', 'criterion_c_reconcile_stability', 'criterion_d_evidence_chain_hydration', 'criterion_e_live_action_governance', 'criterion_f_state_model_ux'],
+        )
+    )
+    failed_criteria = [name for name, passed, _ in criteria_checks if not passed]
     return {
         'enterprise_ready_pass': len(failed_checks) == 0,
         'failed_checks': failed_checks,
         'check_results': [{'name': name, 'pass': passed, 'remediation_url': ENTERPRISE_READY_REMEDIATION_LINKS.get(name)} for name, passed in checks],
         'remediation_links': {name: ENTERPRISE_READY_REMEDIATION_LINKS[name] for name in failed_checks if name in ENTERPRISE_READY_REMEDIATION_LINKS},
         'validated_live_action_paths': validated_live_action_paths,
+        'enterprise_criteria_pass': len(failed_criteria) == 0,
+        'enterprise_criteria_failed': failed_criteria,
+        'enterprise_criteria': [
+            {
+                'name': name,
+                'pass': passed,
+                'requires_measurable_evidence': True,
+                'evidence_basis': evidence_basis,
+                'remediation_url': ENTERPRISE_CRITERIA_REMEDIATION_LINKS.get(name),
+            }
+            for name, passed, evidence_basis in criteria_checks
+        ],
     }
 
 
