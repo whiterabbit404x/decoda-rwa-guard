@@ -335,12 +335,17 @@ def _normalize_monitoring_runtime_contract(payload: dict[str, Any]) -> dict[str,
         'telemetry_age_seconds',
         'event_ingestion_age_seconds',
         'detection_age_seconds',
+        'detection_pipeline_age_seconds',
         'detection_eval_age_seconds',
         'heartbeat_threshold_seconds',
         'telemetry_threshold_seconds',
+        'event_ingestion_threshold_seconds',
         'detection_threshold_seconds',
         'thresholds_seconds',
         'required_thresholds_seconds',
+        'continuity_thresholds_seconds',
+        'runtime_degraded_reason_codes',
+        'runtime_status_reason_codes',
         'runtime_status_summary',
         'configuration_diagnostics',
     )
@@ -5953,12 +5958,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'checks': continuity_checks,
         }
         continuity_slo_pass = bool(summary.get('continuity_slo_pass') is True)
-        if live_mode_enabled() and workspace_configured and not continuity_slo_pass:
+        continuity_status = str(summary.get('continuity_status') or '').strip().lower()
+        if (
+            workspace_configured
+            and runtime_status_summary != 'offline'
+            and continuity_status == 'degraded'
+            and not continuity_slo_pass
+        ):
             continuity_reason_codes = [
                 str(code)
                 for code in (summary.get('continuity_reason_codes') or [])
                 if str(code).strip()
             ]
+            if not continuity_reason_codes:
+                continuity_reason_codes = ['continuity_slo_failed']
             runtime_status_summary = 'degraded'
             monitoring_status = 'degraded'
             runtime_status = 'Degraded'
@@ -6142,11 +6155,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'pass': bool(summary.get('continuity_slo_pass') is True),
                 'heartbeat_age_seconds': summary.get('heartbeat_age_seconds'),
                 'telemetry_age_seconds': summary.get('telemetry_age_seconds'),
+                'event_ingestion_age_seconds': summary.get('event_ingestion_age_seconds'),
                 'detection_age_seconds': summary.get('detection_age_seconds'),
                 'detection_pipeline_age_seconds': summary.get('detection_pipeline_age_seconds'),
                 'detection_eval_age_seconds': summary.get('detection_eval_age_seconds'),
                 'heartbeat_threshold_seconds': summary.get('heartbeat_threshold_seconds'),
                 'telemetry_threshold_seconds': summary.get('telemetry_threshold_seconds'),
+                'event_ingestion_threshold_seconds': summary.get('event_ingestion_threshold_seconds'),
                 'detection_threshold_seconds': summary.get('detection_threshold_seconds'),
                 'thresholds_seconds': dict(summary.get('thresholds_seconds') or {}),
                 'required_thresholds_seconds': dict(summary.get('required_thresholds_seconds') or {}),
