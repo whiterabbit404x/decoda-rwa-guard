@@ -14,10 +14,11 @@ test('dashboard and threat pages render contradiction-safe fallback copy paths',
 
   expect(dashboard).toContain('const guardedPresentation = (monitoringTruth.guard_flags ?? []).length > 0;');
   expect(dashboard).toContain('const safeMonitoringSummary = telemetryUnavailable');
-  expect(threat).toContain('import { hasLiveTelemetry, monitoringHealthyCopyAllowed } from \'./workspace-monitoring-truth\';');
-  expect(threat).toContain("showLiveTelemetry ? `Live telemetry ${telemetryLabel}` : 'Current telemetry unavailable'");
   expect(threat).toContain('const dbPersistenceOutageReason = truth.db_failure_reason || null;');
   expect(threat).toContain('Persistence outage active: {dbPersistenceOutageReason}.');
+  expect(threat).toContain('function collectMonitoringContradictions(model: Pick<MonitoringViewModel');
+  expect(threat).toContain('Live provenance cannot be shown while telemetry, poll, or heartbeat freshness is stale/unavailable.');
+  expect(threat).toContain('Contradiction guard active');
   expect(threat).toContain('&& !dbPersistenceOutageActive');
   expect(presentation).toContain('if (truth.db_failure_reason) {');
   expect(presentation).toContain('Telemetry verification paused while monitoring persistence is unavailable.');
