@@ -178,6 +178,8 @@ def test_runtime_status_forces_degraded_when_live_continuity_slo_fails(monkeypat
     assert payload['runtime_status_reason_codes'] == ['continuity_slo_failed', 'event_ingestion_stale']
     assert payload['workspace_monitoring_summary']['runtime_degraded_reason_codes'] == ['continuity_slo_failed', 'event_ingestion_stale']
     assert payload['degraded_reason'] == 'continuity_slo_failed:event_ingestion_stale'
+    assert payload['continuity_breach_reasons'][0]['code'] == 'event_ingestion_stale'
+    assert payload['continuity_slo']['breach_reasons'][0]['code'] == 'event_ingestion_stale'
 
 
 def test_runtime_status_transitions_across_continuous_monitoring_lifecycle(monkeypatch):

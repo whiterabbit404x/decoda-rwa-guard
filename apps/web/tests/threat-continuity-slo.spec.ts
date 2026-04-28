@@ -172,3 +172,39 @@ test('continuity failed checks expose explicit codes for live/stale/offline/degr
   ]);
   expect(degraded).toEqual([{ code: 'detection_pipeline_stale', label: 'Detection evaluation' }]);
 });
+
+test('continuity failed checks include concrete breach details when runtime payload provides them', () => {
+  const failed = continuityFailedChecks(
+    {
+      continuity_breach_reasons: [
+        {
+          code: 'event_ingestion_stale',
+          check: 'telemetry_freshness',
+          state: 'stale',
+          age_seconds: 901,
+          threshold_seconds: 300,
+        },
+      ],
+    } as any,
+    {
+      pass: false,
+      breach_reasons: [
+        {
+          code: 'event_ingestion_stale',
+          check: 'telemetry_freshness',
+          state: 'stale',
+          age_seconds: 901,
+          threshold_seconds: 300,
+        },
+      ],
+    },
+  );
+
+  expect(failed).toEqual([
+    {
+      code: 'event_ingestion_stale',
+      label: 'Telemetry ingestion',
+      detail: 'age 15m 1s · threshold 5m · state stale',
+    },
+  ]);
+});

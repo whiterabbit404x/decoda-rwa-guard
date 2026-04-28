@@ -28,6 +28,13 @@ def _base_summary(runtime_status: str, continuity_pass: bool, continuity_reason_
         'continuity_thresholds_seconds': {'heartbeat': 180, 'event_ingestion': 300, 'detection_eval': 300},
         'runtime_degraded_reason_codes': ['continuity_slo_failed', *continuity_reason_codes] if not continuity_pass else [],
         'runtime_status_reason_codes': ['continuity_slo_failed', *continuity_reason_codes] if not continuity_pass else [],
+        'continuity_freshness_ages_seconds': {'heartbeat': 15, 'telemetry': 20, 'event_ingestion': 20, 'detection_eval': 40},
+        'continuity_configured_thresholds_seconds': {'heartbeat': 180, 'event_ingestion': 300, 'detection_eval': 300},
+        'continuity_breach_reasons': (
+            [{'code': continuity_reason_codes[0], 'check': 'telemetry_freshness', 'state': 'stale', 'age_seconds': 900, 'threshold_seconds': 300}]
+            if continuity_reason_codes
+            else []
+        ),
     }
 
 
@@ -101,6 +108,12 @@ def test_ops_runtime_status_exposes_continuity_fields_for_healthy_stale_degraded
         assert body['continuity_slo']['pass'] is payload['continuity_slo_pass']
         assert body['continuity_reason_codes'] == payload['continuity_reason_codes']
         assert body['continuity_slo']['reason_codes'] == payload['continuity_reason_codes']
+        assert isinstance(body['continuity'], dict)
+        assert body['continuity']['status'] == body['continuity_status']
+        assert body['continuity']['slo']['pass'] is payload['continuity_slo_pass']
+        assert body['continuity']['freshness_ages_seconds'] == payload['workspace_monitoring_summary']['continuity_freshness_ages_seconds']
+        assert body['continuity']['configured_thresholds_seconds'] == payload['workspace_monitoring_summary']['continuity_configured_thresholds_seconds']
+        assert body['continuity']['breach_reasons'] == payload['workspace_monitoring_summary']['continuity_breach_reasons']
         assert body['heartbeat_age_seconds'] == 15
         assert body['telemetry_age_seconds'] == 20
         assert body['event_ingestion_age_seconds'] == 20

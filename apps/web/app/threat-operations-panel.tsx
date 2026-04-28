@@ -337,6 +337,7 @@ type ContinuitySloEvaluation = {
 type ContinuityFailedCheck = {
   code: string;
   label: string;
+  detail?: string;
 };
 
 function formatSloDuration(value: number | null): string {
@@ -463,6 +464,26 @@ export function continuityFailedChecks(
   continuitySloPayload?: MonitoringRuntimeStatus['continuity_slo'] | null,
   continuitySlo?: ContinuitySloEvaluation,
 ): ContinuityFailedCheck[] {
+  const breachReasons = [
+    ...(continuitySloPayload?.breach_reasons ?? []),
+    ...(summary?.continuity_breach_reasons ?? []),
+  ].filter((item) => Boolean(item && typeof item === 'object'));
+  if (breachReasons.length > 0) {
+    const mapped = breachReasons.map((item: any) => {
+      const code = String(item.code ?? item.check ?? 'continuity_breach').trim();
+      const label = continuityFailureLabelFromCode(code);
+      const ageSeconds = typeof item.age_seconds === 'number' ? item.age_seconds : null;
+      const thresholdSeconds = typeof item.threshold_seconds === 'number' ? item.threshold_seconds : null;
+      const state = String(item.state ?? '').trim();
+      const detail = [
+        ageSeconds !== null ? `age ${formatSloDuration(ageSeconds)}` : null,
+        thresholdSeconds !== null ? `threshold ${formatSloDuration(thresholdSeconds)}` : null,
+        state ? `state ${state}` : null,
+      ].filter(Boolean).join(' · ');
+      return { code, label, detail };
+    });
+    return Array.from(new Map(mapped.map((item) => [`${item.code}:${item.detail ?? ''}`, item])).values());
+  }
   const reasonCodes = Array.from(new Set(
     [
       ...(continuitySloPayload?.reason_codes ?? []),
@@ -2845,7 +2866,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           </p>
           {!continuitySlo.pass ? (
             <p className="tableMeta">
-              Failed checks: {continuityFailedCheckList.map((item) => `${item.code} (${item.label})`).join(', ')}
+              Failed checks: {continuityFailedCheckList.map((item) => `${item.code} (${item.label}${item.detail ? `: ${item.detail}` : ''})`).join(', ')}
             </p>
           ) : null}
           <p className="tableMeta">
