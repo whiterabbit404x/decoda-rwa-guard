@@ -1,4 +1,12 @@
 export type MonitoringMode = 'LIVE' | 'DEGRADED' | 'OFFLINE' | 'STALE' | 'LIMITED_COVERAGE';
+export type MonitoringLoopHealth = {
+  loop_running: boolean;
+  last_successful_cycle: string | null;
+  consecutive_failures: number;
+  next_retry_at: string | null;
+  backoff_seconds?: number | null;
+  updated_at?: string | null;
+};
 
 export type WorkspaceMonitoringSummary = {
   workspace_configured: boolean;
@@ -72,6 +80,7 @@ export type WorkspaceMonitoringSummary = {
     first_seen_at?: string | null;
     last_cycle_at?: string | null;
   };
+  background_loop_health?: MonitoringLoopHealth;
   enterprise_ready_pass?: boolean;
   failed_checks?: string[];
   continuity_failed_checks?: string[];
@@ -226,6 +235,11 @@ export type MonitoringRuntimeStatus = {
     breach_reasons?: WorkspaceMonitoringSummary['continuity_breach_reasons'];
     failed_checks?: string[];
   };
+  background_loop_health?: MonitoringLoopHealth;
+  loop_running?: boolean;
+  last_successful_cycle?: string | null;
+  consecutive_failures?: number;
+  next_retry_at?: string | null;
 };
 
 export type MonitoringTimelineLinkName =

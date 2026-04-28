@@ -7,6 +7,7 @@ import {
   formatOperationalStateLabel,
   hasRuntimeQueryFailureMarker,
   pageStatePrimaryCopy,
+  resolveLoopHealthSignal,
 } from '../app/threat-operations-panel';
 import { hasLiveTelemetry, resolveWorkspaceMonitoringTruth } from '../app/workspace-monitoring-truth';
 import type { MonitoringRuntimeStatus } from '../app/monitoring-status-contract';
@@ -69,6 +70,35 @@ test.describe('threat runtime guards', () => {
   test('handles undefined operational state labels without crashing', async () => {
     expect(formatOperationalStateLabel(undefined)).toBe('unknown');
     expect(formatOperationalStateLabel('offline_no_telemetry')).toBe('offline no telemetry');
+  });
+
+  test('resolves background loop health as healthy, degraded, and recovering', async () => {
+    const nowMs = Date.parse('2026-04-28T12:00:00Z');
+    const healthy = resolveLoopHealthSignal({
+      loop_running: true,
+      last_successful_cycle: '2026-04-28T11:59:30Z',
+      consecutive_failures: 0,
+      next_retry_at: null,
+    }, nowMs, 600);
+    const degraded = resolveLoopHealthSignal({
+      loop_running: false,
+      last_successful_cycle: '2026-04-28T11:45:00Z',
+      consecutive_failures: 4,
+      next_retry_at: '2026-04-28T12:01:00Z',
+    }, nowMs, 600);
+    const recovering = resolveLoopHealthSignal({
+      loop_running: true,
+      last_successful_cycle: '2026-04-28T11:58:00Z',
+      consecutive_failures: 1,
+      next_retry_at: null,
+    }, nowMs, 600);
+
+    expect(healthy.state).toBe('healthy');
+    expect(healthy.shouldAlert).toBe(false);
+    expect(degraded.state).toBe('degraded');
+    expect(degraded.shouldAlert).toBe(true);
+    expect(recovering.state).toBe('recovering');
+    expect(recovering.shouldAlert).toBe(false);
   });
 
   test('defensively parses null and undefined runtime summary fields', async () => {

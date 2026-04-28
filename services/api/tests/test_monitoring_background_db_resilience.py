@@ -62,6 +62,8 @@ def test_loop_survives_db_error_and_marks_degraded_state(api_main, monkeypatch: 
     assert attempts['value'] >= 2
     assert sleep_calls == [10.0, 20.0]
     assert snapshots[0]['degraded'] is True
+    assert snapshots[0]['loop_running'] is False
+    assert snapshots[0]['consecutive_failures'] == 1
     assert snapshots[0]['classification'] == 'network_unreachable'
     assert snapshots[0]['reason'] == 'Database network unreachable'
     assert snapshots[0]['backoff_seconds'] == 10
@@ -109,9 +111,41 @@ def test_loop_clears_degraded_state_after_db_recovers(api_main, monkeypatch: pyt
     assert snapshots[0]['degraded'] is True
     assert snapshots[0]['classification'] == 'quota_exceeded'
     assert snapshots[1]['degraded'] is False
+    assert snapshots[1]['loop_running'] is True
+    assert snapshots[1]['consecutive_failures'] == 0
     assert snapshots[1]['classification'] is None
     assert snapshots[1]['backoff_seconds'] is None
     assert snapshots[1]['next_retry_at'] is None
+
+
+def test_runtime_status_route_exposes_background_loop_health_fields(api_main, monkeypatch: pytest.MonkeyPatch) -> None:
+    from starlette.requests import Request
+
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda fn: fn())
+    monkeypatch.setattr(
+        api_main,
+        'monitoring_runtime_status',
+        lambda _request: {'workspace_monitoring_summary': {}, 'monitoring_status': 'offline'},
+    )
+    monkeypatch.setattr(
+        api_main,
+        'get_background_loop_health',
+        lambda: {
+            'loop_running': False,
+            'last_successful_cycle': '2026-04-28T09:00:00Z',
+            'consecutive_failures': 3,
+            'next_retry_at': '2026-04-28T09:05:00Z',
+            'backoff_seconds': 300,
+        },
+    )
+    request = Request({'type': 'http', 'method': 'GET', 'path': '/ops/monitoring/runtime-status', 'headers': []})
+    payload = api_main.ops_monitoring_runtime_status(request)
+
+    assert payload['loop_running'] is False
+    assert payload['last_successful_cycle'] == '2026-04-28T09:00:00Z'
+    assert payload['consecutive_failures'] == 3
+    assert payload['next_retry_at'] == '2026-04-28T09:05:00Z'
+    assert payload['background_loop_health']['loop_running'] is False
 
 
 def test_startup_reconcile_emits_first_structured_db_degraded_event_once(
