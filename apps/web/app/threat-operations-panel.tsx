@@ -1703,7 +1703,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : Array.isArray(runtimeSummary?.failed_checks)
       ? runtimeSummary.failed_checks
       : [];
-  const remediationLinks = {
+  const remediationLinks: Record<string, string> = {
     ...ENTERPRISE_GATE_REMEDIATION_LINKS,
     ...(runtimeSummary?.remediation_links ?? {}),
     ...(runtimeStatusSnapshot?.remediation_links ?? {}),

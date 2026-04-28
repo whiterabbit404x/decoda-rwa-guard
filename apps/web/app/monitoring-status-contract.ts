@@ -104,6 +104,7 @@ export type MonitoringRuntimeStatus = {
   continuity_slo?: {
     pass?: boolean;
     heartbeat_age_seconds?: number | null;
+    worker_heartbeat_age_seconds?: number | null;
     telemetry_age_seconds?: number | null;
     event_ingestion_age_seconds?: number | null;
     detection_age_seconds?: number | null;
@@ -118,6 +119,7 @@ export type MonitoringRuntimeStatus = {
     continuity_thresholds_seconds?: WorkspaceMonitoringSummary['required_thresholds_seconds'];
     reason_codes?: string[];
     checks?: Record<string, unknown>;
+    failed_checks?: string[];
     freshness_ages_seconds?: Record<string, number | null | undefined>;
     configured_thresholds_seconds?: Record<string, number | null | undefined>;
     breach_reasons?: WorkspaceMonitoringSummary['continuity_breach_reasons'];
