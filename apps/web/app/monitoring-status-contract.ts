@@ -34,6 +34,7 @@ export type WorkspaceMonitoringSummary = {
     reason?: string;
   }>;
   heartbeat_age_seconds?: number | null;
+  worker_heartbeat_age_seconds?: number | null;
   telemetry_age_seconds?: number | null;
   event_ingestion_age_seconds?: number | null;
   detection_age_seconds?: number | null;
@@ -73,6 +74,7 @@ export type WorkspaceMonitoringSummary = {
   };
   enterprise_ready_pass?: boolean;
   failed_checks?: string[];
+  continuity_failed_checks?: string[];
   check_results?: Array<{ name: string; pass: boolean; remediation_url?: string | null }>;
   remediation_links?: Record<string, string>;
   validated_live_action_paths?: string[];
@@ -83,11 +85,13 @@ export type MonitoringRuntimeStatus = {
     pass?: boolean;
     heartbeat_age_seconds?: number | null;
     telemetry_age_seconds?: number | null;
+    event_ingestion_age_seconds?: number | null;
     detection_age_seconds?: number | null;
     detection_pipeline_age_seconds?: number | null;
     detection_eval_age_seconds?: number | null;
     heartbeat_threshold_seconds?: number | null;
     telemetry_threshold_seconds?: number | null;
+    event_ingestion_threshold_seconds?: number | null;
     detection_threshold_seconds?: number | null;
     thresholds_seconds?: WorkspaceMonitoringSummary['thresholds_seconds'];
     required_thresholds_seconds?: WorkspaceMonitoringSummary['required_thresholds_seconds'];
@@ -195,8 +199,12 @@ export type MonitoringRuntimeStatus = {
   validated_live_action_paths?: string[];
   continuity_slo_pass?: boolean;
   heartbeat_age_seconds?: number | null;
+  worker_heartbeat_age_seconds?: number | null;
   telemetry_age_seconds?: number | null;
+  event_ingestion_age_seconds?: number | null;
   detection_age_seconds?: number | null;
+  detection_pipeline_age_seconds?: number | null;
+  detection_eval_age_seconds?: number | null;
   heartbeat_threshold_seconds?: number | null;
   telemetry_threshold_seconds?: number | null;
   detection_threshold_seconds?: number | null;
@@ -206,6 +214,7 @@ export type MonitoringRuntimeStatus = {
   continuity_freshness_ages_seconds?: WorkspaceMonitoringSummary['continuity_freshness_ages_seconds'];
   continuity_configured_thresholds_seconds?: WorkspaceMonitoringSummary['continuity_configured_thresholds_seconds'];
   continuity_breach_reasons?: WorkspaceMonitoringSummary['continuity_breach_reasons'];
+  continuity_failed_checks?: string[];
   continuity?: {
     status?: WorkspaceMonitoringSummary['continuity_status'];
     slo?: MonitoringRuntimeStatus['continuity_slo'];
@@ -215,6 +224,7 @@ export type MonitoringRuntimeStatus = {
     freshness_ages_seconds?: WorkspaceMonitoringSummary['continuity_freshness_ages_seconds'];
     configured_thresholds_seconds?: WorkspaceMonitoringSummary['continuity_configured_thresholds_seconds'];
     breach_reasons?: WorkspaceMonitoringSummary['continuity_breach_reasons'];
+    failed_checks?: string[];
   };
 };
 

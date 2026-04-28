@@ -2144,6 +2144,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             payload.get('continuity_slo_pass', summary.get('continuity_slo_pass', continuity_slo.get('pass'))) is True
         )
         payload['heartbeat_age_seconds'] = payload.get('heartbeat_age_seconds', continuity_slo.get('heartbeat_age_seconds'))
+        payload['worker_heartbeat_age_seconds'] = payload.get('worker_heartbeat_age_seconds', payload.get('heartbeat_age_seconds'))
         payload['telemetry_age_seconds'] = payload.get('telemetry_age_seconds', continuity_slo.get('telemetry_age_seconds'))
         payload['event_ingestion_age_seconds'] = payload.get('event_ingestion_age_seconds', continuity_slo.get('event_ingestion_age_seconds'))
         payload['detection_age_seconds'] = payload.get('detection_age_seconds', continuity_slo.get('detection_age_seconds'))
@@ -2177,6 +2178,12 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             or summary.get('continuity_breach_reasons')
             or []
         )
+        payload['continuity_failed_checks'] = list(
+            payload.get('continuity_failed_checks')
+            or summary.get('continuity_failed_checks')
+            or payload.get('continuity_reason_codes')
+            or []
+        )
         payload['continuity'] = {
             'status': payload.get('continuity_status'),
             'slo': payload.get('continuity_slo'),
@@ -2186,6 +2193,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'freshness_ages_seconds': dict(payload.get('continuity_freshness_ages_seconds') or {}),
             'configured_thresholds_seconds': dict(payload.get('continuity_configured_thresholds_seconds') or {}),
             'breach_reasons': list(payload.get('continuity_breach_reasons') or []),
+            'failed_checks': list(payload.get('continuity_failed_checks') or []),
         }
         payload['runtime_degraded_reason_codes'] = list(
             payload.get('runtime_degraded_reason_codes')
@@ -2232,11 +2240,13 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             ),
             'continuity_breach_reasons': list(fallback_summary.get('continuity_breach_reasons') or []),
             'heartbeat_age_seconds': fallback_summary.get('heartbeat_age_seconds'),
+            'worker_heartbeat_age_seconds': fallback_summary.get('heartbeat_age_seconds'),
             'telemetry_age_seconds': fallback_summary.get('telemetry_age_seconds'),
             'event_ingestion_age_seconds': fallback_summary.get('event_ingestion_age_seconds'),
             'detection_age_seconds': fallback_summary.get('detection_age_seconds', fallback_summary.get('detection_eval_age_seconds')),
             'detection_pipeline_age_seconds': fallback_summary.get('detection_pipeline_age_seconds', fallback_summary.get('detection_eval_age_seconds')),
             'detection_eval_age_seconds': fallback_summary.get('detection_eval_age_seconds'),
+            'continuity_failed_checks': list(fallback_summary.get('continuity_reason_codes') or []),
             'heartbeat_threshold_seconds': fallback_summary.get('heartbeat_threshold_seconds'),
             'telemetry_threshold_seconds': fallback_summary.get('telemetry_threshold_seconds'),
             'event_ingestion_threshold_seconds': fallback_summary.get('event_ingestion_threshold_seconds'),

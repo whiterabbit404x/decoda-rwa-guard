@@ -108,9 +108,28 @@ test('configured-no-signals copy explicitly reports SLO FAIL reasons', () => {
   });
   const copy = pageStatePrimaryCopy('configured_no_signals', null, 'continuous_no_evidence', continuity);
   expect(copy).toContain('Continuity SLO FAIL.');
-  expect(copy).toContain('Worker heartbeat');
-  expect(copy).toContain('Telemetry ingestion');
-  expect(copy).toContain('Detection evaluation');
+  expect(copy).toContain('Worker heartbeat: 3m 1s exceeds 3m');
+  expect(copy).toContain('Telemetry ingestion: 2m 1s exceeds 2m');
+  expect(copy).toContain('Detection evaluation: 5m 1s exceeds 5m');
+});
+
+test('configured-no-signals copy includes remediation links when explicit failed checks are provided', () => {
+  const copy = pageStatePrimaryCopy(
+    'configured_no_signals',
+    null,
+    'continuous_no_evidence',
+    undefined,
+    [
+      { code: 'event_ingestion_stale', label: 'Telemetry ingestion' },
+      { code: 'heartbeat_stale', label: 'Worker heartbeat' },
+    ],
+    {
+      event_ingestion_stale: '/threat#telemetry-freshness',
+      heartbeat_stale: '/threat#continuity-slo',
+    },
+  );
+  expect(copy).toContain('Failed checks: Telemetry ingestion, Worker heartbeat.');
+  expect(copy).toContain('Remediation: /threat#telemetry-freshness · /threat#continuity-slo.');
 });
 
 test('continuity SLO evaluator reads runtime continuity payload for stale/offline transitions', () => {

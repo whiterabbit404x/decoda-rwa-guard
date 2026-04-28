@@ -6012,14 +6012,25 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         }
         continuity_slo_pass = bool(summary.get('continuity_slo_pass') is True)
         continuity_status = str(summary.get('continuity_status') or '').strip().lower()
+        continuity_failed_checks = sorted(
+            {
+                str(item.get('code') or '').strip()
+                for item in continuity_breach_reasons
+                if isinstance(item, dict) and str(item.get('code') or '').strip()
+            }
+            | {
+                str(code).strip()
+                for code in (summary.get('continuity_reason_codes') or [])
+                if str(code).strip()
+            }
+        )
+        summary['worker_heartbeat_age_seconds'] = summary.get('heartbeat_age_seconds')
+        summary['continuity_failed_checks'] = continuity_failed_checks
         if (
             workspace_configured
             and live_mode_enabled()
             and runtime_status_summary != 'offline'
-            and (
-                continuity_status == 'degraded'
-                or (runtime_status_summary == 'idle' and not continuity_slo_pass)
-            )
+            and not continuity_slo_pass
         ):
             continuity_reason_codes = [
                 str(code)
@@ -6214,12 +6225,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'continuity_breach_reasons': list(summary.get('continuity_breach_reasons') or []),
             'continuity_slo': {
                 'pass': bool(summary.get('continuity_slo_pass') is True),
-                'heartbeat_age_seconds': summary.get('heartbeat_age_seconds'),
-                'telemetry_age_seconds': summary.get('telemetry_age_seconds'),
-                'event_ingestion_age_seconds': summary.get('event_ingestion_age_seconds'),
-                'detection_age_seconds': summary.get('detection_age_seconds'),
-                'detection_pipeline_age_seconds': summary.get('detection_pipeline_age_seconds'),
-                'detection_eval_age_seconds': summary.get('detection_eval_age_seconds'),
+            'heartbeat_age_seconds': summary.get('heartbeat_age_seconds'),
+            'worker_heartbeat_age_seconds': summary.get('worker_heartbeat_age_seconds', summary.get('heartbeat_age_seconds')),
+            'telemetry_age_seconds': summary.get('telemetry_age_seconds'),
+            'event_ingestion_age_seconds': summary.get('event_ingestion_age_seconds'),
+            'detection_age_seconds': summary.get('detection_age_seconds'),
+            'detection_pipeline_age_seconds': summary.get('detection_pipeline_age_seconds'),
+            'detection_eval_age_seconds': summary.get('detection_eval_age_seconds'),
                 'heartbeat_threshold_seconds': summary.get('heartbeat_threshold_seconds'),
                 'telemetry_threshold_seconds': summary.get('telemetry_threshold_seconds'),
                 'event_ingestion_threshold_seconds': summary.get('event_ingestion_threshold_seconds'),
@@ -6233,6 +6245,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'configured_thresholds_seconds': dict(summary.get('continuity_configured_thresholds_seconds') or {}),
                 'breach_reasons': list(summary.get('continuity_breach_reasons') or []),
             },
+            'continuity_failed_checks': list(summary.get('continuity_failed_checks') or summary.get('continuity_reason_codes') or []),
             'continuity_contract': dict(summary.get('continuity_contract') or {}),
             'field_reason_codes': dict(field_reason_codes),
             'coverage_only_warning': dict(summary.get('coverage_only_warning') or {}),

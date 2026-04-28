@@ -1188,19 +1188,30 @@ export function pageStatePrimaryCopy(
   configurationReason?: string | null,
   continuityStatus?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null,
   continuitySlo?: ContinuitySloEvaluation,
+  continuityFailedCheckList: ContinuityFailedCheck[] = [],
+  remediationLinks: Record<string, string> = {},
 ): string {
   if (state === 'healthy_live') {
     return 'Live monitoring is healthy. Telemetry freshness and threat detections reflect current workspace conditions.';
   }
   if (state === 'configured_no_signals') {
     const sloReasons = continuitySlo ? continuitySloFailureReasons(continuitySlo) : 'Continuity reasons unavailable.';
+    const failedReasons = continuityFailedCheckList.length > 0
+      ? continuityFailedCheckList.map((item) => item.label).join(', ')
+      : sloReasons;
+    const remediationTargets = continuityFailedCheckList
+      .map((item) => remediationLinks[item.code] ?? ENTERPRISE_GATE_REMEDIATION_LINKS.continuity_slo_pass)
+      .filter(Boolean);
+    const remediationCopy = remediationTargets.length > 0
+      ? ` Remediation: ${Array.from(new Set(remediationTargets)).join(' · ')}.`
+      : '';
     if (continuityStatus === 'continuous_no_evidence') {
-      return `Continuity SLO FAIL. ${sloReasons}`;
+      return `Continuity SLO FAIL. Failed checks: ${failedReasons}.${remediationCopy}`;
     }
     if (continuityStatus === 'continuous_live') {
       return 'Continuous live monitoring proven. No active detections are currently open.';
     }
-    return `Continuity SLO FAIL. ${sloReasons}`;
+    return `Continuity SLO FAIL. Failed checks: ${failedReasons}.${remediationCopy}`;
   }
   if (state === 'unconfigured_workspace') {
     return `Workspace is not configured: ${configurationReasonMessage(configurationReason)} Live threat detection starts only after persisted linkage is valid.`;
@@ -1645,6 +1656,18 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : Array.isArray(runtimeSummary?.failed_checks)
       ? runtimeSummary.failed_checks
       : [];
+  const remediationLinks = {
+    ...ENTERPRISE_GATE_REMEDIATION_LINKS,
+    ...(runtimeSummary?.remediation_links ?? {}),
+    ...(runtimeStatusSnapshot?.remediation_links ?? {}),
+    heartbeat_stale: '/threat#continuity-slo',
+    heartbeat_offline: '/threat#continuity-slo',
+    worker_not_live: '/threat#continuity-slo',
+    event_ingestion_stale: '/threat#telemetry-freshness',
+    event_ingestion_offline: '/threat#telemetry-freshness',
+    detection_pipeline_stale: '/threat#continuity-slo',
+    detection_eval_stale: '/threat#continuity-slo',
+  };
   const remediationChecks = failedEnterpriseChecks.length > 0
     ? failedEnterpriseChecks
     : Object.keys(ENTERPRISE_GATE_LABELS);
@@ -1973,13 +1996,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     ));
 
     const bannerPrimaryCopy = pageState === 'offline_no_telemetry'
-      ? `${pageStatePrimaryCopy(pageState, configurationReason, runtimeSummary?.continuity_status ?? null, continuitySlo)} Reason: ${runtimeReason || 'no active reporting systems'}. Provenance: ${derivedProvenanceLabel}. Add one monitored system and confirm telemetry flow.`
-      : `${pageStatePrimaryCopy(pageState, configurationReason, runtimeSummary?.continuity_status ?? null, continuitySlo)} Provenance: ${derivedProvenanceLabel}.`;
+      ? `${pageStatePrimaryCopy(pageState, configurationReason, runtimeSummary?.continuity_status ?? null, continuitySlo, continuityFailedCheckList, remediationLinks)} Reason: ${runtimeReason || 'no active reporting systems'}. Provenance: ${derivedProvenanceLabel}. Add one monitored system and confirm telemetry flow.`
+      : `${pageStatePrimaryCopy(pageState, configurationReason, runtimeSummary?.continuity_status ?? null, continuitySlo, continuityFailedCheckList, remediationLinks)} Provenance: ${derivedProvenanceLabel}.`;
     const pageBanner: PageBannerModel = pageState === 'fetch_error'
       ? {
         variant: 'fetch_error',
         headline: 'Telemetry retrieval degraded',
-        primaryCopy: pageStatePrimaryCopy(pageState, configurationReason, runtimeSummary?.continuity_status ?? null, continuitySlo),
+        primaryCopy: pageStatePrimaryCopy(pageState, configurationReason, runtimeSummary?.continuity_status ?? null, continuitySlo, continuityFailedCheckList, remediationLinks),
         metaLines: [
           `Provenance: ${derivedProvenanceLabel} · ${provenanceExplanation}`,
           ...(runtimeReason ? [`Backend reason: ${runtimeReason}`] : []),
