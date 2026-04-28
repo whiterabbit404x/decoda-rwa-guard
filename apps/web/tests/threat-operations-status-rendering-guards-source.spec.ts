@@ -9,14 +9,14 @@ function threatPanelSource(): string {
 test('normalized threat operations view model drives badges, banners, and CTA disable reasons', () => {
   const threat = threatPanelSource();
 
-  expect(threat).toContain('type ThreatOperationsViewModel = {');
-  expect(threat).toContain('const threatOperationsViewModel = useMemo<ThreatOperationsViewModel>(() => ({');
-  expect(threat).toContain('monitoring: monitoringViewModel');
+  expect(threat).toContain('type MonitoringViewModel = {');
+  expect(threat).toContain('const monitoringViewModel = useMemo<MonitoringViewModel>(() => {');
+  expect(threat).toContain('...monitoringStatusViewModel,');
   expect(threat).toContain('actionButtons: actionButtonStates');
-  expect(threat).toContain('Data provenance ({threatOperationsViewModel.monitoring.provenanceLabel})');
-  expect(threat).toContain('<PageStateBanner viewModel={threatOperationsViewModel.monitoring} />');
-  expect(threat).toContain('title={threatOperationsViewModel.monitoring.ctas.generateSimulatorProofChain.reason}');
-  expect(threat).toContain('title={confirmLiveActionDisabledReason}');
+  expect(threat).toContain('Data provenance ({monitoringViewModel.provenanceLabel})');
+  expect(threat).toContain('<PageStateBanner viewModel={monitoringViewModel} />');
+  expect(threat).toContain('title={monitoringViewModel.ctas.generateSimulatorProofChain.reason}');
+  expect(threat).toContain('title={monitoringViewModel.confirmLiveAction.reason}');
   expect(threat).toContain('Confirm LIVE action is disabled because no incident context is linked.');
   expect(threat).toContain('Confirm LIVE action is disabled until acknowledgement is checked.');
 });
