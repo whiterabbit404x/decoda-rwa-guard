@@ -2175,6 +2175,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             continuity_slo = {
                 'pass': bool(payload.get('continuity_slo_pass', summary.get('continuity_slo_pass')) is True),
                 'heartbeat_age_seconds': payload.get('heartbeat_age_seconds', summary.get('heartbeat_age_seconds')),
+                'worker_heartbeat_age_seconds': payload.get('worker_heartbeat_age_seconds', summary.get('worker_heartbeat_age_seconds', summary.get('heartbeat_age_seconds'))),
                 'telemetry_age_seconds': payload.get('telemetry_age_seconds', summary.get('telemetry_age_seconds')),
                 'event_ingestion_age_seconds': payload.get('event_ingestion_age_seconds', summary.get('event_ingestion_age_seconds')),
                 'detection_age_seconds': payload.get('detection_age_seconds', summary.get('detection_age_seconds', summary.get('detection_eval_age_seconds'))),
@@ -2189,6 +2190,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
                 'continuity_thresholds_seconds': dict(payload.get('continuity_thresholds_seconds') or summary.get('continuity_thresholds_seconds') or payload.get('required_thresholds_seconds') or summary.get('required_thresholds_seconds') or thresholds),
                 'reason_codes': list(payload.get('continuity_reason_codes') or summary.get('continuity_reason_codes') or []),
                 'checks': dict((payload.get('continuity_contract') or summary.get('continuity_contract') or {}).get('checks') or {}),
+                'failed_checks': list(payload.get('continuity_failed_checks') or summary.get('continuity_failed_checks') or payload.get('continuity_reason_codes') or summary.get('continuity_reason_codes') or []),
             }
         payload['continuity_slo'] = continuity_slo
         payload['continuity_contract'] = {
@@ -2214,6 +2216,13 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         payload['continuity_thresholds_seconds'] = payload.get('continuity_thresholds_seconds', continuity_slo.get('continuity_thresholds_seconds'))
         payload['continuity_reason_codes'] = list(payload.get('continuity_reason_codes') or continuity_slo.get('reason_codes') or [])
         payload['continuity_slo']['reason_codes'] = list(payload['continuity_reason_codes'])
+        payload['continuity_slo']['failed_checks'] = list(
+            payload.get('continuity_failed_checks')
+            or continuity_slo.get('failed_checks')
+            or summary.get('continuity_failed_checks')
+            or payload.get('continuity_reason_codes')
+            or []
+        )
         payload['continuity_freshness_ages_seconds'] = dict(
             payload.get('continuity_freshness_ages_seconds')
             or continuity_slo.get('freshness_ages_seconds')

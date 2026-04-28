@@ -33,6 +33,16 @@ const ENTERPRISE_GATE_REMEDIATION_COPY: Record<string, string> = {
   stable_monitored_systems: 'Bring monitored systems back to live reporting without contradiction or guard flags.',
   live_action_capability_readiness: 'Validate at least one live action path from threat to response execution.',
 };
+const CONTINUITY_REMEDIATION_COPY: Record<string, string> = {
+  heartbeat_stale: 'Restart or recover the monitoring worker loop, then verify heartbeat freshness.',
+  heartbeat_offline: 'Bring monitoring workers online and validate heartbeat telemetry resumes.',
+  worker_not_live: 'Switch to live monitoring mode for this workspace and restart worker execution.',
+  event_ingestion_stale: 'Verify telemetry provider reachability and re-run ingestion to refresh event timestamps.',
+  event_ingestion_offline: 'Restore telemetry ingestion connectivity and confirm new events are persisted.',
+  detection_pipeline_stale: 'Run detection evaluation and confirm recent detections are written for monitored systems.',
+  detection_eval_stale: 'Run detection evaluation and confirm recent detections are written for monitored systems.',
+  continuity_slo_failed: 'Review all continuity dimensions and remediate the first failed freshness check.',
+};
 const ENTERPRISE_CRITERIA_LABELS: Record<string, string> = {
   criterion_b_continuity_slos: 'Criterion B · Continuity SLOs',
   criterion_c_reconcile_stability: 'Criterion C · Reconcile stability',
@@ -392,7 +402,11 @@ export function evaluateContinuitySlo(
     {
       key: 'heartbeat',
       label: 'Worker heartbeat',
-      ageSeconds: continuitySloPayload?.heartbeat_age_seconds ?? summary?.heartbeat_age_seconds ?? null,
+      ageSeconds: continuitySloPayload?.worker_heartbeat_age_seconds
+        ?? continuitySloPayload?.heartbeat_age_seconds
+        ?? summary?.worker_heartbeat_age_seconds
+        ?? summary?.heartbeat_age_seconds
+        ?? null,
       thresholdSeconds: typeof thresholds.heartbeat === 'number' ? thresholds.heartbeat : null,
       pass: false,
       reason: null,
@@ -1689,7 +1703,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : Array.isArray(runtimeSummary?.failed_checks)
       ? runtimeSummary.failed_checks
       : [];
-  const remediationLinks = {
+  const remediationLinks: Record<string, string> = {
     ...ENTERPRISE_GATE_REMEDIATION_LINKS,
     ...(runtimeSummary?.remediation_links ?? {}),
     ...(runtimeStatusSnapshot?.remediation_links ?? {}),
@@ -1783,6 +1797,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const detectionEvalLabel = formatRelativeTime(runtimeStatusSnapshot?.last_detection_at ?? monitoringPresentation.lastTelemetryAt);
   const continuitySlo = evaluateContinuitySlo(runtimeSummary, runtimeStatusSnapshot?.continuity_slo);
   const continuityFailedCheckList = continuityFailedChecks(runtimeSummary, runtimeStatusSnapshot?.continuity_slo, continuitySlo);
+  const continuityRemediationActions = Array.from(new Map(
+    continuityFailedCheckList.map((item) => {
+      const href = remediationLinks[item.code] ?? '/threat#continuity-slo';
+      const label = CONTINUITY_REMEDIATION_COPY[item.code] ?? `Remediate ${item.label.toLowerCase()}.`;
+      return [`${href}:${label}`, { href, label }];
+    }),
+  ).values());
   const telemetryState = deriveSnapshotFreshnessState(monitoringPresentation.lastTelemetryAt, TELEMETRY_STALE_MS);
   const pollState = deriveSnapshotFreshnessState(monitoringPresentation.lastPollAt, POLL_STALE_MS);
   const heartbeatState = deriveSnapshotFreshnessState(monitoringPresentation.lastHeartbeatAt, HEARTBEAT_STALE_MS);
@@ -2942,6 +2963,16 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <p className="tableMeta">
               Failed checks: {continuityFailedCheckList.map((item) => `${item.code} (${item.label}${item.detail ? `: ${item.detail}` : ''})`).join(', ')}
             </p>
+          ) : null}
+          {!continuitySlo.pass && continuityRemediationActions.length > 0 ? (
+            <ul className="tableMeta">
+              {continuityRemediationActions.map((action) => (
+                <li key={`${action.href}-${action.label}`}>
+                  {action.label} {' — '}
+                  <Link href={action.href} prefetch={false}>Open remediation</Link>
+                </li>
+              ))}
+            </ul>
           ) : null}
           <p className="tableMeta">
             Continuity decision: <strong>{continuitySlo.statusLabel}</strong>{' '}
