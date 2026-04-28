@@ -1785,11 +1785,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       const matchedTarget = monitoredSystem?.target_id ? targetById.get(monitoredSystem.target_id) : null;
       const fallbackAssetName = monitoredSystem?.asset_name || monitoredSystem?.target_name || matchedTarget?.name || 'Unbound workspace asset';
       const fallbackAssetType = matchedTarget?.target_type || matchedTarget?.asset_type || 'system';
+      const reconcileTerminal = latestReconcileJob?.status === 'completed' || latestReconcileJob?.status === 'failed';
       const monitoringStatus = monitoredSystem?.is_enabled
         ? 'Monitored'
         : monitoredSystem
         ? 'Disabled'
-        : (matchedTarget?.monitoring_enabled ? 'Monitored' : 'Status unavailable');
+        : (reconcileTerminal ? 'Status unavailable' : (matchedTarget?.monitoring_enabled ? 'Monitored' : 'Status unavailable'));
       const normalizedEvidenceSource = String(item.evidence_source ?? '').toLowerCase();
       const simulatorEvidence = ['simulator', 'demo', 'synthetic', 'fallback', 'replay'].includes(normalizedEvidenceSource);
       const evidenceSourceLabel = simulatorEvidence ? 'simulator/demo' : 'live';
@@ -1822,7 +1823,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         actionId: item.linked_action_id ?? null,
       };
     }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  }, [detections, monitoredSystemById, targetById]);
+  }, [detections, latestReconcileJob?.status, monitoredSystemById, targetById]);
 
   const categorizedDetections = useMemo(() => {
     const now = Date.now();
@@ -2730,10 +2731,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const skipped = Number(latestReconcileJob.counts?.skipped_targets ?? 0);
     return `Reconcile progress: scanned ${scanned} targets · updated ${updated} · invalid ${invalid} · skipped ${skipped}`;
   }, [latestReconcileJob]);
-  const deterministicRepairState = useMemo(() => {
-    if (!latestReconcileJob?.status) return 'queued';
-    const normalized = String(latestReconcileJob.status).toLowerCase();
-    if (normalized === 'running' || normalized === 'completed' || normalized === 'failed' || normalized === 'queued') return normalized;
+  const reconcileUiState = useMemo<ReconcileJobStatus>(() => {
+    if (latestReconcileJob?.status === 'queued' || latestReconcileJob?.status === 'running' || latestReconcileJob?.status === 'completed' || latestReconcileJob?.status === 'failed') {
+      return latestReconcileJob.status;
+    }
     return 'queued';
   }, [latestReconcileJob?.status]);
   const reconcileActionableError = useMemo(() => {
@@ -2824,7 +2825,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
         {latestReconcileJob ? (
           <p className="tableMeta">
-            Deterministic reconcile state {deterministicRepairState.toUpperCase()} · {reconcileProgressLabel} · Retry count {Number(latestReconcileJob.retry_count ?? 0)} · Last success {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Reason codes {(latestReconcileJob.reason_codes ?? []).length > 0 ? (latestReconcileJob.reason_codes ?? []).join(', ') : 'none'} · Failure reason {latestReconcileJob.status === 'failed' ? (latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No backend detail returned.') : 'None'}
+            Reconcile job state {reconcileUiState.toUpperCase()} · {reconcileProgressLabel} · Retry count {Number(latestReconcileJob.retry_count ?? 0)} · Last success {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Reason codes {(latestReconcileJob.reason_codes ?? []).length > 0 ? (latestReconcileJob.reason_codes ?? []).join(', ') : 'none'} · Failure reason {latestReconcileJob.status === 'failed' ? (latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No backend detail returned.') : 'None'}
           </p>
         ) : null}
         {latestReconcileJob?.status === 'failed' ? (
