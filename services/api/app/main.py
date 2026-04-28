@@ -1168,12 +1168,23 @@ def with_auth_schema_json(handler):
 def _normalize_action_route_response(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload or {})
     normalized_mode = str(normalized.get('mode') or ('live' if normalized.get('dry_run') is False else 'simulated'))
+    normalized_execution_mode = str(
+        normalized.get('execution_mode')
+        or (
+            (normalized.get('execution_metadata') or {}).get('execution_mode')
+            if isinstance(normalized.get('execution_metadata'), dict)
+            else ''
+        )
+        or normalized_mode
+    )
     normalized['mode'] = normalized_mode
+    normalized['execution_mode'] = normalized_execution_mode
     normalized['result_status'] = normalized.get('result_status') or normalized.get('status')
     tx_hash = normalized.get('tx_hash') or normalized.get('safe_tx_hash')
     execution_provenance = {
         **(normalized.get('execution_provenance') if isinstance(normalized.get('execution_provenance'), dict) else {}),
         'mode': normalized_mode,
+        'execution_mode': normalized_execution_mode,
         'execution_state': normalized.get('execution_state'),
         'status': normalized.get('status'),
         'result_status': normalized.get('result_status'),
@@ -1202,6 +1213,7 @@ def _normalize_action_route_response(payload: dict[str, Any]) -> dict[str, Any]:
     normalized['execution_metadata'] = {
         **existing_execution_metadata,
         'mode': execution_provenance.get('mode'),
+        'execution_mode': execution_provenance.get('execution_mode'),
         'status': execution_provenance.get('status'),
         'result_status': execution_provenance.get('result_status'),
         'execution_state': execution_provenance.get('execution_state'),
@@ -1225,6 +1237,7 @@ def _normalize_action_route_response(payload: dict[str, Any]) -> dict[str, Any]:
     normalized['audit_metadata'] = {
         **existing_audit,
         'mode': normalized_mode,
+        'execution_mode': normalized_execution_mode,
         'status': normalized.get('status'),
         'result_status': normalized.get('result_status'),
         'execution_state': normalized.get('execution_state'),
@@ -1240,6 +1253,7 @@ def _normalize_action_route_response(payload: dict[str, Any]) -> dict[str, Any]:
         'error_reason': execution_provenance.get('error_reason'),
         'failure_reason': execution_provenance.get('failure_reason'),
         'error_code': execution_provenance.get('error_code'),
+        'route_normalized_at': datetime.now(timezone.utc).isoformat(),
     }
     return normalized
 
