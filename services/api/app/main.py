@@ -2085,11 +2085,13 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
                 'pass': bool(payload.get('continuity_slo_pass', summary.get('continuity_slo_pass')) is True),
                 'heartbeat_age_seconds': payload.get('heartbeat_age_seconds', summary.get('heartbeat_age_seconds')),
                 'telemetry_age_seconds': payload.get('telemetry_age_seconds', summary.get('telemetry_age_seconds')),
+                'event_ingestion_age_seconds': payload.get('event_ingestion_age_seconds', summary.get('event_ingestion_age_seconds')),
                 'detection_age_seconds': payload.get('detection_age_seconds', summary.get('detection_age_seconds', summary.get('detection_eval_age_seconds'))),
                 'detection_pipeline_age_seconds': payload.get('detection_pipeline_age_seconds', summary.get('detection_pipeline_age_seconds', summary.get('detection_eval_age_seconds'))),
                 'detection_eval_age_seconds': payload.get('detection_eval_age_seconds', summary.get('detection_eval_age_seconds')),
                 'heartbeat_threshold_seconds': payload.get('heartbeat_threshold_seconds', summary.get('heartbeat_threshold_seconds', thresholds.get('heartbeat'))),
                 'telemetry_threshold_seconds': payload.get('telemetry_threshold_seconds', summary.get('telemetry_threshold_seconds', thresholds.get('telemetry', thresholds.get('event_ingestion')))),
+                'event_ingestion_threshold_seconds': payload.get('event_ingestion_threshold_seconds', summary.get('event_ingestion_threshold_seconds', thresholds.get('event_ingestion'))),
                 'detection_threshold_seconds': payload.get('detection_threshold_seconds', summary.get('detection_threshold_seconds', thresholds.get('detection_eval'))),
                 'thresholds_seconds': thresholds,
                 'required_thresholds_seconds': dict(payload.get('required_thresholds_seconds') or summary.get('required_thresholds_seconds') or {}),
@@ -2107,15 +2109,19 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         )
         payload['heartbeat_age_seconds'] = payload.get('heartbeat_age_seconds', continuity_slo.get('heartbeat_age_seconds'))
         payload['telemetry_age_seconds'] = payload.get('telemetry_age_seconds', continuity_slo.get('telemetry_age_seconds'))
+        payload['event_ingestion_age_seconds'] = payload.get('event_ingestion_age_seconds', continuity_slo.get('event_ingestion_age_seconds'))
         payload['detection_age_seconds'] = payload.get('detection_age_seconds', continuity_slo.get('detection_age_seconds'))
         payload['detection_pipeline_age_seconds'] = payload.get('detection_pipeline_age_seconds', continuity_slo.get('detection_pipeline_age_seconds'))
         payload['detection_eval_age_seconds'] = payload.get('detection_eval_age_seconds', continuity_slo.get('detection_eval_age_seconds'))
         payload['heartbeat_threshold_seconds'] = payload.get('heartbeat_threshold_seconds', continuity_slo.get('heartbeat_threshold_seconds'))
         payload['telemetry_threshold_seconds'] = payload.get('telemetry_threshold_seconds', continuity_slo.get('telemetry_threshold_seconds'))
+        payload['event_ingestion_threshold_seconds'] = payload.get('event_ingestion_threshold_seconds', continuity_slo.get('event_ingestion_threshold_seconds'))
         payload['detection_threshold_seconds'] = payload.get('detection_threshold_seconds', continuity_slo.get('detection_threshold_seconds'))
         payload['thresholds_seconds'] = payload.get('thresholds_seconds', continuity_slo.get('thresholds_seconds'))
         payload['required_thresholds_seconds'] = payload.get('required_thresholds_seconds', continuity_slo.get('required_thresholds_seconds'))
         payload['continuity_thresholds_seconds'] = payload.get('continuity_thresholds_seconds', continuity_slo.get('continuity_thresholds_seconds'))
+        payload['continuity_reason_codes'] = list(payload.get('continuity_reason_codes') or continuity_slo.get('reason_codes') or [])
+        payload['continuity_slo']['reason_codes'] = list(payload['continuity_reason_codes'])
         payload['runtime_degraded_reason_codes'] = list(
             payload.get('runtime_degraded_reason_codes')
             or summary.get('runtime_degraded_reason_codes')
@@ -2154,11 +2160,13 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'continuity_slo_pass': fallback_summary.get('continuity_slo_pass'),
             'heartbeat_age_seconds': fallback_summary.get('heartbeat_age_seconds'),
             'telemetry_age_seconds': fallback_summary.get('telemetry_age_seconds'),
+            'event_ingestion_age_seconds': fallback_summary.get('event_ingestion_age_seconds'),
             'detection_age_seconds': fallback_summary.get('detection_age_seconds', fallback_summary.get('detection_eval_age_seconds')),
             'detection_pipeline_age_seconds': fallback_summary.get('detection_pipeline_age_seconds', fallback_summary.get('detection_eval_age_seconds')),
             'detection_eval_age_seconds': fallback_summary.get('detection_eval_age_seconds'),
             'heartbeat_threshold_seconds': fallback_summary.get('heartbeat_threshold_seconds'),
             'telemetry_threshold_seconds': fallback_summary.get('telemetry_threshold_seconds'),
+            'event_ingestion_threshold_seconds': fallback_summary.get('event_ingestion_threshold_seconds'),
             'detection_threshold_seconds': fallback_summary.get('detection_threshold_seconds'),
             'thresholds_seconds': fallback_summary.get('thresholds_seconds'),
             'continuity_thresholds_seconds': fallback_summary.get('continuity_thresholds_seconds', fallback_summary.get('required_thresholds_seconds')),
@@ -2166,11 +2174,13 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
                 'pass': bool(fallback_summary.get('continuity_slo_pass') is True),
                 'heartbeat_age_seconds': fallback_summary.get('heartbeat_age_seconds'),
                 'telemetry_age_seconds': fallback_summary.get('telemetry_age_seconds'),
+                'event_ingestion_age_seconds': fallback_summary.get('event_ingestion_age_seconds'),
                 'detection_age_seconds': fallback_summary.get('detection_age_seconds', fallback_summary.get('detection_eval_age_seconds')),
                 'detection_pipeline_age_seconds': fallback_summary.get('detection_pipeline_age_seconds', fallback_summary.get('detection_eval_age_seconds')),
                 'detection_eval_age_seconds': fallback_summary.get('detection_eval_age_seconds'),
                 'heartbeat_threshold_seconds': fallback_summary.get('heartbeat_threshold_seconds'),
                 'telemetry_threshold_seconds': fallback_summary.get('telemetry_threshold_seconds'),
+                'event_ingestion_threshold_seconds': fallback_summary.get('event_ingestion_threshold_seconds'),
                 'detection_threshold_seconds': fallback_summary.get('detection_threshold_seconds'),
                 'thresholds_seconds': dict(fallback_summary.get('thresholds_seconds') or {}),
                 'required_thresholds_seconds': dict(fallback_summary.get('required_thresholds_seconds') or {}),
