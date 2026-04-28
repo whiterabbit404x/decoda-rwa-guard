@@ -60,7 +60,7 @@ def test_enterprise_ready_gate_fails_live_action_capability_readiness_check(monk
     monkeypatch.setattr(
         monitoring_runner,
         'resolve_response_action_capability',
-        lambda _action, _mode: {'supports_mode': False},
+        lambda _action, _mode: {'supports_mode': False, 'live_execution_path': 'unsupported'},
     )
     payload = _evaluate_enterprise_ready_gate(
         continuity_slo_pass=True,
@@ -83,7 +83,7 @@ def test_enterprise_ready_gate_fails_all_red_scenario(monkeypatch):
     monkeypatch.setattr(
         monitoring_runner,
         'resolve_response_action_capability',
-        lambda _action, _mode: {'supports_mode': False},
+        lambda _action, _mode: {'supports_mode': False, 'live_execution_path': 'unsupported'},
     )
     payload = _evaluate_enterprise_ready_gate(
         continuity_slo_pass=False,
@@ -117,7 +117,7 @@ def test_enterprise_ready_gate_passes_all_green_scenario(monkeypatch):
     monkeypatch.setattr(
         monitoring_runner,
         'resolve_response_action_capability',
-        lambda _action, _mode: {'supports_mode': True},
+        lambda _action, _mode: {'supports_mode': True, 'live_execution_path': 'governance'},
     )
     payload = _evaluate_enterprise_ready_gate(
         continuity_slo_pass=True,
@@ -134,6 +134,7 @@ def test_enterprise_ready_gate_passes_all_green_scenario(monkeypatch):
     )
     assert payload['enterprise_ready_pass'] is True
     assert payload['failed_checks'] == []
+    assert payload['validated_live_action_paths'] != []
     assert [check['name'] for check in payload['check_results']] == [
         'continuity_slo_pass',
         'linked_fresh_evidence',

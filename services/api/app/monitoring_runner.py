@@ -117,6 +117,15 @@ ENTERPRISE_READY_REMEDIATION_LINKS: dict[str, str] = {
     'stable_monitored_systems': '/threat#monitored-system-state',
     'live_action_capability_readiness': '/threat#response-actions',
 }
+ENTERPRISE_READY_LIVE_ACTION_TYPES: tuple[str, ...] = (
+    'freeze_wallet',
+    'revoke_approval',
+    'notify_team',
+    'disable_monitored_system',
+    'suppress_rule',
+    'block_transaction',
+)
+ENTERPRISE_READY_VALIDATED_LIVE_PATHS: set[str] = {'safe', 'governance', 'manual_only'}
 
 
 def _evaluate_enterprise_ready_gate(
@@ -134,12 +143,18 @@ def _evaluate_enterprise_ready_gate(
     guard_flags: list[str] | None,
 ) -> dict[str, Any]:
     fresh_states = {'fresh', 'in_window'}
-    live_action_capability_readiness = False
-    try:
-        capability = resolve_response_action_capability('freeze_wallet', 'live')
-        live_action_capability_readiness = bool(capability.get('supports_mode'))
-    except Exception:
-        live_action_capability_readiness = False
+    validated_live_action_paths: list[str] = []
+    for action_type in ENTERPRISE_READY_LIVE_ACTION_TYPES:
+        try:
+            capability = resolve_response_action_capability(action_type, 'live')
+        except Exception:
+            continue
+        if not capability.get('supports_mode'):
+            continue
+        live_execution_path = str(capability.get('live_execution_path') or '').strip().lower()
+        if live_execution_path in ENTERPRISE_READY_VALIDATED_LIVE_PATHS:
+            validated_live_action_paths.append(action_type)
+    live_action_capability_readiness = len(validated_live_action_paths) > 0
     stable_monitored_systems = (
         str(runtime_status or '').strip().lower() == 'live'
         and str(monitoring_status or '').strip().lower() == 'live'
@@ -166,6 +181,7 @@ def _evaluate_enterprise_ready_gate(
         'failed_checks': failed_checks,
         'check_results': [{'name': name, 'pass': passed, 'remediation_url': ENTERPRISE_READY_REMEDIATION_LINKS.get(name)} for name, passed in checks],
         'remediation_links': {name: ENTERPRISE_READY_REMEDIATION_LINKS[name] for name in failed_checks if name in ENTERPRISE_READY_REMEDIATION_LINKS},
+        'validated_live_action_paths': validated_live_action_paths,
     }
 
 
