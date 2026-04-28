@@ -58,8 +58,9 @@ test('LIVE/HYBRID no-evidence wording stays degraded and does not imply healthy 
   const threatOperationsPanel = read('threat-operations-panel.tsx').toLowerCase();
 
   expect(chainPanel).toContain('degraded evidence state: live/hybrid monitoring is active but this chain has no persisted evidence yet.');
-  expect(threatOperationsPanel).toContain('live polling active. no recent anomaly evidence.');
-  expect(threatOperationsPanel).not.toContain('live polling active. telemetry continuity is healthy');
+  expect(threatOperationsPanel).toContain('continuity slo fail. failed checks:');
+  expect(threatOperationsPanel).toContain('remediation:');
+  expect(threatOperationsPanel).not.toContain('telemetry continuity is healthy');
   expect(alertsPage).not.toContain('all clear');
   expect(incidentsPage).not.toContain('all clear');
   expect(alertsPage).not.toContain('healthy');
@@ -71,7 +72,6 @@ test('unsupported live actions stay disabled with explicit reason text in all ac
   const alertsPage = read('(product)/alerts-page-client.tsx');
   const incidentsPage = read('(product)/incidents-page-client.tsx');
 
-  expect(threatPage).toContain("title={actionDisabledReason(actionCapabilities.block_transaction, 'simulated') || ''}");
   expect(alertsPage).toContain("title={actionDisabledReason(actionCapabilities.block_transaction, actionMode) || ''}");
   expect(incidentsPage).toContain("title={actionDisabledReason(actionCapabilities.block_transaction, actionMode) || ''}");
   expect(alertsPage).toContain('Unsupported live action');

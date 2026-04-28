@@ -14,6 +14,7 @@ def _base_summary(runtime_status: str, continuity_pass: bool, continuity_reason_
         'continuity_slo_pass': continuity_pass,
         'continuity_reason_codes': list(continuity_reason_codes),
         'heartbeat_age_seconds': 15,
+        'worker_heartbeat_age_seconds': 15,
         'telemetry_age_seconds': 20,
         'event_ingestion_age_seconds': 20,
         'detection_age_seconds': 40,
@@ -30,6 +31,7 @@ def _base_summary(runtime_status: str, continuity_pass: bool, continuity_reason_
         'runtime_status_reason_codes': ['continuity_slo_failed', *continuity_reason_codes] if not continuity_pass else [],
         'continuity_freshness_ages_seconds': {'heartbeat': 15, 'telemetry': 20, 'event_ingestion': 20, 'detection_eval': 40},
         'continuity_configured_thresholds_seconds': {'heartbeat': 180, 'event_ingestion': 300, 'detection_eval': 300},
+        'continuity_failed_checks': list(continuity_reason_codes),
         'continuity_breach_reasons': (
             [{'code': continuity_reason_codes[0], 'check': 'telemetry_freshness', 'state': 'stale', 'age_seconds': 900, 'threshold_seconds': 300}]
             if continuity_reason_codes
@@ -117,8 +119,11 @@ def test_ops_runtime_status_exposes_continuity_fields_for_healthy_stale_degraded
         assert body['heartbeat_age_seconds'] == 15
         assert body['telemetry_age_seconds'] == 20
         assert body['event_ingestion_age_seconds'] == 20
+        assert body['worker_heartbeat_age_seconds'] == 15
         assert body['detection_age_seconds'] == 40
         assert body['detection_pipeline_age_seconds'] == 40
+        assert body['continuity_failed_checks'] == payload['continuity_reason_codes']
+        assert body['continuity']['failed_checks'] == payload['continuity_reason_codes']
         assert body['heartbeat_threshold_seconds'] == 180
         assert body['telemetry_threshold_seconds'] == 300
         assert body['event_ingestion_threshold_seconds'] == 300
