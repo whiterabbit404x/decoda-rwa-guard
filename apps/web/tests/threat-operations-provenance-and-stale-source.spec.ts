@@ -24,8 +24,8 @@ test('provenance banner and explicit freshness states are present for telemetry,
   expect(threat).toContain('const telemetryState = deriveSnapshotFreshnessState');
   expect(threat).toContain('const pollState = deriveSnapshotFreshnessState');
   expect(threat).toContain('const heartbeatState = deriveSnapshotFreshnessState');
-  expect(threat).toContain('/ops/monitoring/runtime-status ({monitoringViewModel.endpointProvenance.runtimeStatus})');
-  expect(threat).toContain('Last successful runtime refresh');
+  expect(threat).toContain('/ops/monitoring/runtime-status ({threatOperationsViewModel.monitoring.endpointProvenance.runtimeStatus})');
+  expect(threat).toContain('Last successful monitoring refresh');
 });
 
 test('header status chips are derived from one normalized view-model list', () => {
@@ -39,4 +39,5 @@ test('header status chips are derived from one normalized view-model list', () =
   expect(threat).toContain('`Poll ${pollState}`');
   expect(threat).toContain('`Heartbeat ${heartbeatState}`');
   expect(threat).toContain('`Provenance ${derivedProvenanceLabel}`');
+  expect(threat).toContain('`Last successful refresh ${formatAbsoluteTime(lastSuccessfulRefreshAt)}`');
 });

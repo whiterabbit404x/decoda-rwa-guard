@@ -9,7 +9,7 @@ function source(): string {
 test('partial endpoint failure behavior is represented via monitoring view model provenance', () => {
   const threat = source();
   expect(threat).toContain('const monitoringViewModel = useMemo<MonitoringViewModel>(() => {');
-  expect(threat).toContain("type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale_snapshot' | 'partial_failure';");
+  expect(threat).toContain("type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale' | 'partial_failure';");
   expect(threat).toContain("? 'partial_failure'");
   expect(threat).toContain('Monitoring snapshot fallback is active because');
   expect(threat).toContain('endpointProvenance: {');
@@ -18,12 +18,13 @@ test('partial endpoint failure behavior is represented via monitoring view model
 
 test('stale-but-visible data behavior is shown from the single view model', () => {
   const threat = source();
-  expect(threat).toContain("? 'stale_snapshot'");
-  expect(threat).toContain('Runtime snapshot is visible, but at least one freshness timestamp is stale.');
+  expect(threat).toContain("? 'stale'");
+  expect(threat).toContain('Runtime snapshot is visible, but at least one freshness timestamp is stale or unavailable.');
   expect(threat).toContain('{ label: `Provenance ${derivedProvenanceLabel}`, tone: \'status\', className: \'statusBadge statusBadge-attention\' }');
-  expect(threat).toContain('Last successful runtime refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRuntimeRefreshAt)}');
+  expect(threat).toContain('Last successful monitoring refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRefreshAt)}');
   expect(threat).toContain('Stale collections');
   expect(threat).toContain('last successful refresh');
+  expect(threat).toContain('const lastSuccessfulRefreshAt = mostRecentTimestamp(lastSuccessfulRuntimeRefreshAt, lastSuccessfulTimelineRefreshAt);');
 });
 
 test('no contradictory monitoring states are presented on screen', () => {
@@ -32,4 +33,6 @@ test('no contradictory monitoring states are presented on screen', () => {
   expect(threat).toContain('<PageStateBanner viewModel={threatOperationsViewModel.monitoring} />');
   expect(threat).toContain('actionUnavailableMessages.length > 0');
   expect(threat).toContain('pageBanner: PageBannerModel;');
+  expect(threat).toContain('const contradictions = collectMonitoringContradictions({');
+  expect(threat).toContain('Contradiction guard active');
 });

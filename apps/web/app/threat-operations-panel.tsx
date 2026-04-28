@@ -247,8 +247,8 @@ type ReconcileJobSnapshot = {
   completed_at?: string | null;
 };
 
-type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale_snapshot' | 'partial_failure';
-type EndpointProvenanceState = 'live' | 'degraded' | 'stale_snapshot' | 'partial_failure';
+type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale' | 'partial_failure';
+type EndpointProvenanceState = 'live' | 'degraded' | 'stale' | 'partial_failure';
 
 type PageBannerModel = {
   variant: 'explanation' | 'fetch_error';
@@ -288,6 +288,7 @@ type MonitoringViewModel = {
   };
   lastSuccessfulRuntimeRefreshAt: string | null;
   lastSuccessfulTimelineRefreshAt: string | null;
+  lastSuccessfulRefreshAt: string | null;
   runtimeReason: string;
   configurationReason: string | null;
   continuityStatus: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null;
@@ -299,6 +300,7 @@ type MonitoringViewModel = {
   openAlerts: number;
   activeIncidents: number;
   headerStatusChips: Array<{ label: string; tone: 'chip' | 'status'; className?: string }>;
+  contradictions: string[];
   pageBanner: PageBannerModel;
   ctas: {
     generateSimulatorProofChain: ThreatActionButtonState;
@@ -626,6 +628,43 @@ function formatAbsoluteTime(value?: string | null): string {
   if (!value) return 'Not available';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? 'Not available' : date.toLocaleString();
+}
+
+function mostRecentTimestamp(...values: Array<string | null | undefined>): string | null {
+  let latest: number | null = null;
+  let latestIso: string | null = null;
+  values.forEach((value) => {
+    if (!value) return;
+    const timestamp = new Date(value).getTime();
+    if (Number.isNaN(timestamp)) return;
+    if (latest === null || timestamp > latest) {
+      latest = timestamp;
+      latestIso = value;
+    }
+  });
+  return latestIso;
+}
+
+function deterministicDisabledReason(reason: string | null | undefined, fallback: string): string {
+  const normalized = String(reason || '').trim();
+  return normalized.length > 0 ? normalized : fallback;
+}
+
+function collectMonitoringContradictions(model: Pick<MonitoringViewModel, 'provenanceLabel' | 'telemetryState' | 'pollState' | 'heartbeatState' | 'endpointProvenance' | 'presentationStatus'>): string[] {
+  const contradictions: string[] = [];
+  if (model.provenanceLabel === 'live' && (model.telemetryState !== 'fresh' || model.pollState !== 'fresh' || model.heartbeatState !== 'fresh')) {
+    contradictions.push('Live provenance cannot be shown while telemetry, poll, or heartbeat freshness is stale/unavailable.');
+  }
+  if (model.provenanceLabel === 'live' && model.endpointProvenance.runtimeStatus !== 'live') {
+    contradictions.push('Live provenance requires runtime endpoint provenance to be live.');
+  }
+  if (model.provenanceLabel === 'live' && model.presentationStatus !== 'live') {
+    contradictions.push('Live provenance requires presentation status to be live.');
+  }
+  if (model.provenanceLabel === 'partial_failure' && ![model.endpointProvenance.runtimeStatus, model.endpointProvenance.investigationTimeline].includes('partial_failure')) {
+    contradictions.push('Partial failure provenance requires at least one endpoint to report partial_failure.');
+  }
+  return contradictions;
 }
 
 function reconcileStatusBadgeTone(status?: ReconcileJobStatus | null): 'healthy' | 'attention' | 'offline' {
@@ -1839,7 +1878,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const runtimeEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('runtime-status')
       ? 'partial_failure'
       : (telemetryState === 'stale' || pollState === 'stale' || heartbeatState === 'stale')
-        ? 'stale_snapshot'
+        ? 'stale'
         : (pageState === 'degraded_partial' || monitoringPresentation.status === 'degraded')
           ? 'degraded'
         : 'live';
@@ -1856,17 +1895,18 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const lastSuccessfulTimelineRefreshAt = (investigationTimeline as Record<string, any> | null)?.generated_at
       ?? (investigationTimeline as Record<string, any> | null)?.created_at
       ?? null;
+    const lastSuccessfulRefreshAt = mostRecentTimestamp(lastSuccessfulRuntimeRefreshAt, lastSuccessfulTimelineRefreshAt);
     const derivedProvenanceLabel: MonitoringProvenanceLabel = snapshotFailedEndpoints.length > 0
       ? 'partial_failure'
       : (telemetryState === 'stale' || pollState === 'stale' || heartbeatState === 'stale')
-        ? 'stale_snapshot'
+        ? 'stale'
         : (pageState === 'degraded_partial' || monitoringPresentation.status === 'degraded')
           ? 'degraded'
           : 'live';
     const provenanceExplanation = derivedProvenanceLabel === 'partial_failure'
       ? `Monitoring snapshot fallback is active because ${snapshotFailedEndpoints.join(', ')} failed in the most recent refresh.`
-      : derivedProvenanceLabel === 'stale_snapshot'
-        ? 'Runtime snapshot is visible, but at least one freshness timestamp is stale.'
+      : derivedProvenanceLabel === 'stale'
+        ? 'Runtime snapshot is visible, but at least one freshness timestamp is stale or unavailable.'
         : derivedProvenanceLabel === 'degraded'
           ? 'Runtime and continuity contract report degraded monitoring health.'
           : 'Runtime and continuity contract confirm live monitoring health.';
@@ -1901,6 +1941,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       { label: `Telemetry ${telemetryState}`, tone: 'chip' },
       { label: `Poll ${pollState}`, tone: 'chip' },
       { label: `Heartbeat ${heartbeatState}`, tone: 'chip' },
+      { label: `Last successful refresh ${formatAbsoluteTime(lastSuccessfulRefreshAt)}`, tone: 'chip' },
       { label: `Provenance ${derivedProvenanceLabel}`, tone: 'status', className: 'statusBadge statusBadge-attention' },
       { label: `Evidence source ${monitoringPresentation.evidenceSourceLabel}`, tone: 'chip' },
       { label: `Protected assets ${protectedAssetCount}`, tone: 'chip' },
@@ -1934,6 +1975,25 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       });
     }
 
+    const contradictions = collectMonitoringContradictions({
+      provenanceLabel: derivedProvenanceLabel,
+      telemetryState,
+      pollState,
+      heartbeatState,
+      endpointProvenance: {
+        runtimeStatus: runtimeEndpointState,
+        investigationTimeline: timelineEndpointState,
+      },
+      presentationStatus: monitoringPresentation.status,
+    });
+    if (contradictions.length > 0) {
+      headerStatusChips.push({
+        label: `Contradiction guard active (${contradictions.length})`,
+        tone: 'status',
+        className: 'statusBadge statusBadge-offline',
+      });
+    }
+
     return {
       presentationStatus: monitoringPresentation.status,
       presentationStatusLabel: monitoringPresentation.statusLabel,
@@ -1954,6 +2014,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       },
       lastSuccessfulRuntimeRefreshAt,
       lastSuccessfulTimelineRefreshAt,
+      lastSuccessfulRefreshAt,
       runtimeReason,
       configurationReason,
       continuityStatus: runtimeSummary?.continuity_status ?? null,
@@ -1965,13 +2026,17 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       openAlerts,
       activeIncidents,
       headerStatusChips,
+      contradictions,
       pageBanner,
       ctas: {
         generateSimulatorProofChain: {
           disabled: ensuringProofChain || !canGenerateSimulatorProofChain,
-          reason: ensuringProofChain
-            ? 'Simulator proof chain generation is already running.'
-            : (simulatorProofChainUnavailableCopy || 'Simulator proof chain generation is unavailable in the current state.'),
+          reason: deterministicDisabledReason(
+            ensuringProofChain
+              ? 'Simulator proof chain generation is already running.'
+              : simulatorProofChainUnavailableCopy,
+            'Simulator proof chain generation is unavailable in the current state.',
+          ),
           noOpMessage: 'Generate simulator proof chain is currently unavailable.',
           nextStepLabel: 'Inspect integration health',
           nextStepHref: '/integrations',
@@ -2271,7 +2336,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       nextStepHref: string,
     ): ThreatActionButtonState => ({
       disabled,
-      reason: (reason || 'Unavailable due to current monitoring state').trim(),
+      reason: deterministicDisabledReason(reason, 'Unavailable due to current monitoring state'),
       noOpMessage,
       nextStepLabel,
       nextStepHref,
@@ -2355,7 +2420,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       messages.push({
         key,
         action,
-        reason: (reason || 'Unavailable due to current monitoring state').trim(),
+        reason: deterministicDisabledReason(reason, 'Unavailable due to current monitoring state'),
         nextStepLabel,
         nextStepHref,
       });
@@ -2700,9 +2765,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ))}
         </div>
         <p className="tableMeta">
-          Data provenance ({threatOperationsViewModel.monitoring.provenanceLabel}): {threatOperationsViewModel.monitoring.provenanceExplanation} /ops/monitoring/runtime-status ({threatOperationsViewModel.monitoring.endpointProvenance.runtimeStatus}) · /ops/monitoring/investigation-timeline ({threatOperationsViewModel.monitoring.endpointProvenance.investigationTimeline}) · Last successful runtime refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulTimelineRefreshAt)}
+          Data provenance ({threatOperationsViewModel.monitoring.provenanceLabel}): {threatOperationsViewModel.monitoring.provenanceExplanation} /ops/monitoring/runtime-status ({threatOperationsViewModel.monitoring.endpointProvenance.runtimeStatus}) · /ops/monitoring/investigation-timeline ({threatOperationsViewModel.monitoring.endpointProvenance.investigationTimeline}) · Last successful monitoring refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRefreshAt)} · Last successful runtime refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulTimelineRefreshAt)}
         </p>
         <PageStateBanner viewModel={threatOperationsViewModel.monitoring} />
+        {threatOperationsViewModel.monitoring.contradictions.length > 0 ? (
+          <p className="statusLine statusLine-warning">
+            Contradiction guard: {threatOperationsViewModel.monitoring.contradictions.join(' ')}
+          </p>
+        ) : null}
         <p className={`statusLine ${enterpriseReadyPass ? 'statusLine-success' : 'statusLine-warning'}`}>
           Enterprise readiness gate: {enterpriseReadyPass ? 'PASS' : 'FAIL'}.
           {enterpriseReadyPass ? ' All readiness checks are green.' : ' Resolve failed checks using the remediation links below.'}
@@ -3378,14 +3448,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           </label>
           <div className="buttonRow">
             <button type="button" className="secondaryCta" onClick={() => { setLiveActionConfirm(null); setLiveActionConfirmationText(''); setLiveActionAcknowledged(false); }}>Cancel</button>
-            <button type="button" disabled={Boolean(confirmLiveActionDisabledReason)} title={confirmLiveActionDisabledReason} onClick={() => {
+            <button type="button" disabled={Boolean(confirmLiveActionDisabledReason)} title={deterministicDisabledReason(confirmLiveActionDisabledReason, 'Confirm LIVE action is available.')} onClick={() => {
               void runThreatAction(liveActionConfirm.actionType, liveActionConfirm.label, 'live');
               setLiveActionConfirm(null);
               setLiveActionConfirmationText('');
               setLiveActionAcknowledged(false);
             }}>Confirm LIVE action</button>
           </div>
-          {confirmLiveActionDisabledReason ? (
+          {Boolean(confirmLiveActionDisabledReason) ? (
             <p className="tableMeta">
               {confirmLiveActionDisabledReason} Next step:{' '}
               <Link href={!selectedThreatActionContext?.incidentId ? '/incidents' : '/threat#response-actions'} prefetch={false}>
