@@ -540,3 +540,10 @@ def test_reconcile_workspace_retries_retryable_errors_and_stabilizes_final_state
     assert result['job']['status'] == 'completed'
     assert result['job']['retry_count'] == 1
     assert result['reconcile']['created_or_updated'] == 1
+
+
+def test_reconcile_status_transition_guard_keeps_terminal_states_idempotent():
+    assert pilot._reconcile_status_transition_allowed('queued', 'running') is True
+    assert pilot._reconcile_status_transition_allowed('running', 'completed') is True
+    assert pilot._reconcile_status_transition_allowed('completed', 'running') is False
+    assert pilot._reconcile_status_transition_allowed('failed', 'running') is False

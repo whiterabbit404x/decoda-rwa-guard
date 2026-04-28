@@ -4345,6 +4345,18 @@ def _normalize_reconcile_reason_codes(reason_codes: Any) -> list[str]:
     return sorted(code for code in normalized_codes if code)
 
 
+def _reconcile_status_transition_allowed(current_status: str, next_status: str) -> bool:
+    normalized_current = str(current_status or 'queued').strip().lower() or 'queued'
+    normalized_next = str(next_status or normalized_current).strip().lower() or normalized_current
+    if normalized_current in {'completed', 'failed'}:
+        return normalized_next == normalized_current
+    if normalized_current == 'running':
+        return normalized_next in {'running', 'completed', 'failed'}
+    if normalized_current == 'queued':
+        return normalized_next in {'queued', 'running', 'completed', 'failed'}
+    return normalized_next in {'queued', 'running', 'completed', 'failed'}
+
+
 def _update_reconcile_run(
     connection: Any,
     *,
@@ -4360,6 +4372,18 @@ def _update_reconcile_run(
     progress_state: dict[str, Any] | None = None,
     completed: bool = False,
 ) -> None:
+    row = connection.execute(
+        '''
+        SELECT status
+        FROM monitoring_reconcile_runs
+        WHERE id = %s::uuid
+        LIMIT 1
+        ''',
+        (run_id,),
+    ).fetchone()
+    current_status = str((dict(row).get('status') if isinstance(row, dict) else getattr(row, 'status', 'queued')) if row else 'queued')
+    next_status = status if _reconcile_status_transition_allowed(current_status, status) else current_status
+    next_completed = bool(completed and next_status in {'completed', 'failed'})
     connection.execute(
         '''
         UPDATE monitoring_reconcile_runs
@@ -4383,7 +4407,7 @@ def _update_reconcile_run(
         WHERE id = %s::uuid
         ''',
         (
-            status,
+            next_status,
             reason_code,
             reason_detail,
             _json_dumps(counts) if counts is not None else None,
@@ -4392,11 +4416,11 @@ def _update_reconcile_run(
             _json_dumps(result_summary or {}) if result_summary is not None else None,
             _json_dumps(progress_state or {}) if progress_state is not None else None,
             retry_count,
-            status,
-            status,
-            status,
-            status,
-            completed,
+            next_status,
+            next_status,
+            next_status,
+            next_status,
+            next_completed,
             run_id,
         ),
     )
@@ -4415,18 +4439,20 @@ def _append_reconcile_event(
     detail: str | None,
     payload: dict[str, Any],
 ) -> None:
+    step_name = str(payload.get('stage') or event_type or 'unknown').strip() if isinstance(payload, dict) else str(event_type or 'unknown').strip()
     connection.execute(
         '''
         INSERT INTO monitoring_reconcile_events (
-            id, run_id, workspace_id, event_type, event_status, reason_code, reason_codes, attempt_number, detail, payload, event_at, created_at
+            id, run_id, workspace_id, event_type, step_name, event_status, reason_code, reason_codes, attempt_number, detail, payload, event_at, created_at
         )
-        VALUES (%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, NOW(), NOW())
+        VALUES (%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, NOW(), NOW())
         ''',
         (
             str(uuid.uuid4()),
             run_id,
             workspace_id,
             event_type,
+            step_name,
             event_status,
             reason_code,
             _json_dumps(_normalize_reconcile_reason_codes(reason_codes)),
@@ -4515,7 +4541,7 @@ def _load_reconcile_run_row_by_idempotency_key(connection: Any, *, workspace_id:
 def _load_reconcile_event_rows(connection: Any, *, workspace_id: str, run_id: str, limit: int = 50) -> list[dict[str, Any]]:
     rows = connection.execute(
         '''
-        SELECT id, run_id, workspace_id, event_type, event_status, reason_code, reason_codes, attempt_number, detail, payload, event_at, created_at
+        SELECT id, run_id, workspace_id, event_type, step_name, event_status, reason_code, reason_codes, attempt_number, detail, payload, event_at, created_at
         FROM monitoring_reconcile_events
         WHERE workspace_id = %s::uuid
           AND run_id = %s::uuid
@@ -4532,6 +4558,7 @@ def _reconcile_event_payload(item: dict[str, Any]) -> dict[str, Any]:
         'id': str(item.get('id') or ''),
         'run_id': str(item.get('run_id') or ''),
         'event_type': str(item.get('event_type') or ''),
+        'step_name': str(item.get('step_name') or '') or None,
         'event_status': str(item.get('event_status') or ''),
         'reason_code': str(item.get('reason_code') or '') or None,
         'reason_codes': _normalize_reconcile_reason_codes(item.get('reason_codes') or []),

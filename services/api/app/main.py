@@ -2703,6 +2703,11 @@ def monitoring_systems_reconcile_latest_status_alias(request: Request) -> dict[s
     return with_auth_schema_json(lambda: get_latest_workspace_reconcile_run(request))
 
 
+@app.get('/monitoring/systems/reconcile/status/latest', summary='Latest monitored systems reconcile status')
+def monitoring_systems_reconcile_latest_status(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_latest_workspace_reconcile_run(request))
+
+
 @app.get('/monitoring/systems/reconcile/{reconcile_id}', summary='Get monitored systems reconcile job status')
 def monitoring_systems_reconcile_status(reconcile_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_workspace_reconcile_status(request, reconcile_id))
@@ -2725,6 +2730,11 @@ def monitoring_systems_reconcile_events(reconcile_id: str, request: Request) -> 
 
 @app.get('/monitoring/systems/reconcile/latest/result', summary='Get latest monitored systems reconcile result summary')
 def monitoring_systems_reconcile_latest_result(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_latest_workspace_reconcile_result(request))
+
+
+@app.get('/monitoring/systems/reconcile/outcome/latest', summary='Get latest monitored systems reconcile outcome')
+def monitoring_systems_reconcile_latest_outcome(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_latest_workspace_reconcile_result(request))
 
 
