@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { MonitoringPresentationStatus } from './monitoring-status-presentation';
-import type { MonitoringInvestigationTimeline, MonitoringRuntimeStatus } from './monitoring-status-contract';
+import type { MonitoringInvestigationTimeline, MonitoringLoopHealth, MonitoringRuntimeStatus } from './monitoring-status-contract';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from './response-action-capabilities';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
@@ -14,6 +14,7 @@ type Props = { apiUrl: string };
 // Temporary backoff while runtime-status latency is elevated; re-evaluate when p95 is back under threshold.
 const THREAT_PAGE_POLL_VISIBLE_MS = 45000;
 const THREAT_PAGE_POLL_HIDDEN_MS = 60000;
+const LOOP_DEGRADED_ALERT_THRESHOLD_SECONDS = 600;
 const ENTERPRISE_GATE_LABELS: Record<string, string> = {
   continuity_slo_pass: 'Continuity SLO pass',
   linked_fresh_evidence: 'Linked fresh evidence',
@@ -716,6 +717,23 @@ function reconcileStatusBadgeTone(status?: ReconcileJobStatus | null): 'healthy'
 export function formatOperationalStateLabel(value: unknown): string {
   const normalized = String(value ?? '').trim();
   return normalized ? normalized.replaceAll('_', ' ') : 'unknown';
+}
+
+export function resolveLoopHealthSignal(
+  loopHealth: MonitoringLoopHealth | null | undefined,
+  nowMs = Date.now(),
+  degradedThresholdSeconds = LOOP_DEGRADED_ALERT_THRESHOLD_SECONDS,
+): { state: 'healthy' | 'degraded' | 'recovering'; degradedSeconds: number | null; shouldAlert: boolean } {
+  const lastSuccessful = loopHealth?.last_successful_cycle ? Date.parse(loopHealth.last_successful_cycle) : Number.NaN;
+  const degradedSeconds = Number.isFinite(lastSuccessful) ? Math.max(0, Math.floor((nowMs - lastSuccessful) / 1000)) : null;
+  const hasFailures = Number(loopHealth?.consecutive_failures ?? 0) > 0;
+  const loopRunning = Boolean(loopHealth?.loop_running);
+  const hasRetry = Boolean(loopHealth?.next_retry_at);
+  const degraded = !loopRunning && (hasFailures || hasRetry);
+  const recovering = loopRunning && hasFailures;
+  const state: 'healthy' | 'degraded' | 'recovering' = degraded ? 'degraded' : (recovering ? 'recovering' : 'healthy');
+  const shouldAlert = state === 'degraded' && degradedSeconds !== null && degradedSeconds >= degradedThresholdSeconds;
+  return { state, degradedSeconds, shouldAlert };
 }
 
 function severityClass(severity?: string | null) {
@@ -1959,6 +1977,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : monitoringPresentation.status === 'degraded'
       ? 'Runtime reports partial or stale telemetry. Detailed protected system rows are still syncing.'
       : 'Runtime reports healthy coverage. Detailed protected system rows are still syncing.';
+  const loopHealth = (runtimeStatusSnapshot?.background_loop_health ?? runtimeSummary?.background_loop_health ?? null) as MonitoringLoopHealth | null;
+  const loopHealthSignal = resolveLoopHealthSignal(loopHealth);
   const monitoringStatusViewModel = useMemo<MonitoringStatusViewModel>(() => {
     const runtimeEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('runtime-status')
       ? 'partial_failure'
@@ -2021,6 +2041,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       };
 
     const headerStatusChips: MonitoringViewModel['headerStatusChips'] = [
+      {
+        label: `Loop ${loopHealthSignal.state}${loopHealth?.consecutive_failures ? ` (${loopHealth.consecutive_failures} failures)` : ''}`,
+        tone: 'status',
+        className: `statusBadge statusBadge-${loopHealthSignal.state === 'healthy' ? 'healthy' : 'attention'}`,
+      },
       { label: monitoringPresentation.statusLabel, tone: 'status', className: `statusBadge statusBadge-${monitoringPresentation.tone}` },
       { label: `Operational state ${formatOperationalStateLabel(pageState)}`, tone: 'chip' },
       { label: `Telemetry ${telemetryState}`, tone: 'chip' },
@@ -2036,6 +2061,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       { label: `Open alerts ${openAlerts}`, tone: 'chip' },
       { label: `Active incidents ${activeIncidents}`, tone: 'chip' },
     ];
+    if (loopHealth?.last_successful_cycle) {
+      headerStatusChips.push({ label: `Loop last success ${formatAbsoluteTime(loopHealth.last_successful_cycle)}`, tone: 'chip' });
+    }
+    if (loopHealth?.next_retry_at) {
+      headerStatusChips.push({ label: `Loop next retry ${formatAbsoluteTime(loopHealth.next_retry_at)}`, tone: 'chip' });
+    }
     if (monitoringMode === 'simulator' || simulatorMode) {
       headerStatusChips.push({ label: 'SIMULATOR MODE', tone: 'status', className: 'statusBadge statusBadge-attention' });
     }
@@ -2139,6 +2170,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     monitoringPresentation.status,
     monitoringPresentation.statusLabel,
     monitoringPresentation.tone,
+    loopHealth,
+    loopHealthSignal.state,
     openAlerts,
     pageState,
     pollLabel,
@@ -2849,6 +2882,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             Reconcile timeout guard reached (120 seconds). Keep this page open for job polling, then open /monitored-systems to confirm persisted state before retrying.
           </p>
         ) : null}
+        {loopHealthSignal.shouldAlert ? (
+          <p className="statusLine statusLine-warning">
+            Monitoring loop degraded for {Math.floor((loopHealthSignal.degradedSeconds ?? 0) / 60)} minutes (threshold {Math.floor(LOOP_DEGRADED_ALERT_THRESHOLD_SECONDS / 60)}). Check worker dependencies and retry telemetry ingestion.
+          </p>
+        ) : null}
         {dbPersistenceOutageActive ? (
           <p className="statusLine">
             Persistence outage active: {dbPersistenceOutageReason}. Simulator/demo rows remain visible but are excluded from live-evidence claims.
@@ -2856,7 +2894,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         ) : null}
         {!canGenerateSimulatorProofChain ? <p className="statusLine">{simulatorProofChainUnavailableCopy}</p> : null}
         <p className="tableMeta">
-          Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {monitoringViewModel.pollLabel} · Last heartbeat: {monitoringViewModel.heartbeatLabel} · Runtime freshness: {String(runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeSummary?.confidence ?? runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
+          Loop health: {loopHealthSignal.state} · Loop running: {loopHealth?.loop_running ? 'yes' : 'no'} · Consecutive failures: {Number(loopHealth?.consecutive_failures ?? 0)} · Last successful cycle: {formatAbsoluteTime(loopHealth?.last_successful_cycle ?? null)} · Next retry: {formatAbsoluteTime(loopHealth?.next_retry_at ?? null)} · Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {monitoringViewModel.pollLabel} · Last heartbeat: {monitoringViewModel.heartbeatLabel} · Runtime freshness: {String(runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeSummary?.confidence ?? runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
         </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}

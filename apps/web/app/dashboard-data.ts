@@ -1055,6 +1055,7 @@ type DashboardPageAggregateResponse = {
   compliance_dashboard: ComplianceDashboardResponse;
   resilience_dashboard: ResilienceDashboardResponse;
   workspace_monitoring_summary?: MonitoringRuntimeStatus['workspace_monitoring_summary'] | null;
+  background_loop_health?: MonitoringRuntimeStatus['background_loop_health'] | null;
 };
 
 const DASHBOARD_ENDPOINT_PATHS: Record<DashboardEndpointKey, string> = {
@@ -1520,6 +1521,7 @@ export type DashboardPageData = {
   complianceDashboard: ComplianceDashboardResponse;
   resilienceDashboard: ResilienceDashboardResponse;
   workspaceMonitoringSummary: MonitoringRuntimeStatus['workspace_monitoring_summary'] | null;
+  backgroundLoopHealth?: MonitoringRuntimeStatus['background_loop_health'] | null;
   diagnostics: DashboardDiagnostics;
 };
 
@@ -1714,6 +1716,7 @@ export async function fetchDashboardPageData(
       complianceDashboard: aggregatePayload.compliance_dashboard,
       resilienceDashboard: aggregatePayload.resilience_dashboard,
       workspaceMonitoringSummary: aggregatePayload.workspace_monitoring_summary ?? null,
+      backgroundLoopHealth: aggregatePayload.background_loop_health ?? null,
       diagnostics,
     };
   }
@@ -1835,6 +1838,7 @@ export async function fetchDashboardPageData(
     complianceDashboard,
     resilienceDashboard,
     workspaceMonitoringSummary: null,
+    backgroundLoopHealth: null,
     diagnostics,
   };
 }

@@ -101,6 +101,14 @@ RUNTIME_STATUS_ALERT_BREACH_HISTORY: dict[str, dict[str, deque[bool]]] = default
         'p99': deque(maxlen=max(RUNTIME_STATUS_ALERT_WINDOW_SAMPLES, 1)),
     }
 )
+BACKGROUND_LOOP_HEALTH: dict[str, Any] = {
+    'loop_running': False,
+    'last_successful_cycle': None,
+    'consecutive_failures': 0,
+    'next_retry_at': None,
+    'backoff_seconds': None,
+    'updated_at': None,
+}
 
 RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED = os.getenv('RUNTIME_STATUS_DEEP_DIAGNOSTICS_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
 MONITORING_COVERAGE_ONLY_WARNING_SECONDS = max(
@@ -240,6 +248,29 @@ def _workspace_coverage_only_state(
 
 def _provider_source_is_live(source_type: Any) -> bool:
     return str(source_type or '').strip().lower() not in NON_LIVE_PROVIDER_SOURCE_TYPES
+
+
+def set_background_loop_health(
+    *,
+    loop_running: bool,
+    last_successful_cycle: str | None = None,
+    consecutive_failures: int | None = None,
+    next_retry_at: str | None = None,
+    backoff_seconds: int | None = None,
+) -> dict[str, Any]:
+    if last_successful_cycle is not None:
+        BACKGROUND_LOOP_HEALTH['last_successful_cycle'] = str(last_successful_cycle)
+    if consecutive_failures is not None:
+        BACKGROUND_LOOP_HEALTH['consecutive_failures'] = max(0, int(consecutive_failures))
+    BACKGROUND_LOOP_HEALTH['loop_running'] = bool(loop_running)
+    BACKGROUND_LOOP_HEALTH['next_retry_at'] = str(next_retry_at) if next_retry_at else None
+    BACKGROUND_LOOP_HEALTH['backoff_seconds'] = int(backoff_seconds) if isinstance(backoff_seconds, (int, float)) else None
+    BACKGROUND_LOOP_HEALTH['updated_at'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    return dict(BACKGROUND_LOOP_HEALTH)
+
+
+def get_background_loop_health() -> dict[str, Any]:
+    return dict(BACKGROUND_LOOP_HEALTH)
 
 
 def _normalize_detection_evidence_source(*, ingestion_source: Any, analysis_source: Any, ingestion_mode: Any) -> str:
@@ -3854,6 +3885,7 @@ def get_monitoring_health() -> dict[str, Any]:
     if not live_mode_enabled():
         runtime = monitoring_ingestion_runtime()
         degraded_reason = str(runtime.get('reason')) if runtime.get('degraded') else None
+        background_loop_health = get_background_loop_health()
         return {
             **WORKER_STATE,
             'live_mode': False,
@@ -3863,6 +3895,7 @@ def get_monitoring_health() -> dict[str, Any]:
             'source_type': runtime.get('source'),
             'degraded': runtime.get('degraded'),
             'degraded_reason': degraded_reason,
+            'background_loop_health': background_loop_health,
         }
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -3994,6 +4027,7 @@ def get_monitoring_health() -> dict[str, Any]:
             degraded=bool(normalized.get('degraded')) or bool(normalized.get('degraded_reason')),
             degraded_reason=normalized.get('degraded_reason'),
         )
+        normalized['background_loop_health'] = get_background_loop_health()
         return {**normalized, 'live_mode': True}
 
 
@@ -6252,7 +6286,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'db_failure_classification': None,
             'db_failure_reason': None,
         }
+        background_loop_health = get_background_loop_health()
+        payload['background_loop_health'] = background_loop_health
+        payload['loop_running'] = bool(background_loop_health.get('loop_running'))
+        payload['last_successful_cycle'] = background_loop_health.get('last_successful_cycle')
+        payload['consecutive_failures'] = int(background_loop_health.get('consecutive_failures') or 0)
+        payload['next_retry_at'] = background_loop_health.get('next_retry_at')
         payload.update(summary)
+        if isinstance(payload.get('workspace_monitoring_summary'), dict):
+            payload['workspace_monitoring_summary']['background_loop_health'] = dict(background_loop_health)
         logger.info(
             'monitoring_workspace_summary_assembly workspace_id=%s workspace_slug=%s valid_asset_count=%s linked_system_count=%s enabled_config_count=%s valid_link_count=%s configured_systems=%s reporting_systems=%s configuration_reason=%s status_reason=%s',
             workspace_id,

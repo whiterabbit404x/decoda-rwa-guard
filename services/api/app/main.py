@@ -178,6 +178,7 @@ from services.api.app.pilot import (
     delete_monitored_system,
 )
 from services.api.app.monitoring_runner import (
+    get_background_loop_health,
     get_monitoring_health,
     list_monitoring_evidence,
     list_monitoring_heartbeats,
@@ -189,6 +190,7 @@ from services.api.app.monitoring_runner import (
     production_claim_validator,
     run_monitoring_cycle,
     run_monitoring_once,
+    set_background_loop_health,
 )
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary_fallback
 from services.api.app.threat_payloads import normalize_threat_payload
@@ -276,6 +278,9 @@ MONITORING_BACKGROUND_TASK: asyncio.Task[Any] | None = None
 HAS_EMITTED_INITIAL_MONITORING_DB_DEGRADED_EVENT = False
 HAS_EMITTED_INITIAL_STARTUP_RECONCILE_DB_DEGRADED_EVENT = False
 MONITORING_LOOP_RUNTIME_STATE: dict[str, Any] = {
+    'loop_running': False,
+    'last_successful_cycle': None,
+    'consecutive_failures': 0,
     'degraded': False,
     'classification': None,
     'reason': None,
@@ -1425,6 +1430,13 @@ async def lifespan(_: FastAPI):
     seed_embedded_dependency_registry()
     bootstrap_live_pilot()
     emit_startup_fixture_diagnostics()
+    set_background_loop_health(
+        loop_running=False,
+        last_successful_cycle=MONITORING_LOOP_RUNTIME_STATE.get('last_successful_cycle'),
+        consecutive_failures=int(MONITORING_LOOP_RUNTIME_STATE.get('consecutive_failures') or 0),
+        next_retry_at=MONITORING_LOOP_RUNTIME_STATE.get('next_retry_at'),
+        backoff_seconds=MONITORING_LOOP_RUNTIME_STATE.get('backoff_seconds'),
+    )
     if str(os.getenv('LIVE_MONITORING_ENABLED', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'}:
         async def _monitoring_loop() -> None:
             global MONITORING_LOOP_RUNTIME_STATE, HAS_EMITTED_INITIAL_MONITORING_DB_DEGRADED_EVENT
@@ -1445,6 +1457,9 @@ async def lifespan(_: FastAPI):
                     last_db_failure_classification = None
                     last_emitted_degraded_warning_state = None
                     MONITORING_LOOP_RUNTIME_STATE = {
+                        'loop_running': True,
+                        'last_successful_cycle': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                        'consecutive_failures': 0,
                         'degraded': False,
                         'classification': None,
                         'reason': None,
@@ -1453,6 +1468,13 @@ async def lifespan(_: FastAPI):
                         'db_host': extract_db_host_from_dsn(resolved_database_url()),
                         'updated_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
                     }
+                    set_background_loop_health(
+                        loop_running=True,
+                        last_successful_cycle=MONITORING_LOOP_RUNTIME_STATE['last_successful_cycle'],
+                        consecutive_failures=0,
+                        next_retry_at=None,
+                        backoff_seconds=None,
+                    )
                     await asyncio.sleep(interval)
                     continue
                 except Exception as exc:
@@ -1482,6 +1504,9 @@ async def lifespan(_: FastAPI):
                         next_retry_at = next_retry_at_dt.isoformat().replace('+00:00', 'Z')
                         db_host = extract_db_host_from_dsn(resolved_database_url())
                         MONITORING_LOOP_RUNTIME_STATE = {
+                            'loop_running': False,
+                            'last_successful_cycle': MONITORING_LOOP_RUNTIME_STATE.get('last_successful_cycle'),
+                            'consecutive_failures': consecutive_db_failures,
                             'degraded': True,
                             'classification': classification,
                             'reason': db_error_reason_label(classification),
@@ -1491,6 +1516,13 @@ async def lifespan(_: FastAPI):
                             'state_downgraded': state_downgraded,
                             'updated_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
                         }
+                        set_background_loop_health(
+                            loop_running=False,
+                            last_successful_cycle=MONITORING_LOOP_RUNTIME_STATE.get('last_successful_cycle'),
+                            consecutive_failures=consecutive_db_failures,
+                            next_retry_at=next_retry_at,
+                            backoff_seconds=backoff_seconds,
+                        )
                         warning_state = (classification, backoff_seconds)
                         should_emit_degraded_warning = (
                             not HAS_EMITTED_INITIAL_MONITORING_DB_DEGRADED_EVENT
@@ -1913,6 +1945,7 @@ def ops_dashboard_page_data(request: Request) -> dict[str, Any]:
         'compliance_dashboard': compliance_dashboard(),
         'resilience_dashboard': resilience_dashboard(),
         'workspace_monitoring_summary': runtime_payload.get('workspace_monitoring_summary'),
+        'background_loop_health': runtime_payload.get('background_loop_health'),
     }
 
 
@@ -2088,7 +2121,15 @@ def ops_production_claim_validator() -> dict[str, Any]:
 def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
     try:
         payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
+        background_loop_health = get_background_loop_health()
+        payload['background_loop_health'] = dict(background_loop_health)
+        payload['loop_running'] = bool(background_loop_health.get('loop_running'))
+        payload['last_successful_cycle'] = background_loop_health.get('last_successful_cycle')
+        payload['consecutive_failures'] = int(background_loop_health.get('consecutive_failures') or 0)
+        payload['next_retry_at'] = background_loop_health.get('next_retry_at')
         summary = payload.get('workspace_monitoring_summary') if isinstance(payload.get('workspace_monitoring_summary'), dict) else {}
+        if summary:
+            summary['background_loop_health'] = dict(background_loop_health)
         check_name_aliases = {
             'evidence_chain_completeness': 'linked_fresh_evidence',
             'linked_fresh_evidence_chain': 'linked_fresh_evidence',
@@ -2222,6 +2263,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         return payload
     except Exception as exc:
         logger.exception('ops_monitoring_runtime_status_route_failed')
+        background_loop_health = get_background_loop_health()
         fallback_summary = build_workspace_monitoring_summary_fallback(
             status_reason='runtime_status_route_error',
             workspace_configured=False,
@@ -2240,6 +2282,11 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
                 'type': type(exc).__name__,
                 'message': 'Monitoring runtime endpoint degraded due to unexpected route error.',
             },
+            'background_loop_health': dict(background_loop_health),
+            'loop_running': bool(background_loop_health.get('loop_running')),
+            'last_successful_cycle': background_loop_health.get('last_successful_cycle'),
+            'consecutive_failures': int(background_loop_health.get('consecutive_failures') or 0),
+            'next_retry_at': background_loop_health.get('next_retry_at'),
             'workspace_monitoring_summary': fallback_summary,
             'continuity_status': fallback_summary.get('continuity_status'),
             'continuity_reason_codes': list(fallback_summary.get('continuity_reason_codes') or []),
