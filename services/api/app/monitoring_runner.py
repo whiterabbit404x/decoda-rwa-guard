@@ -113,7 +113,7 @@ _WORKSPACE_COVERAGE_ONLY_STREAK: dict[str, dict[str, Any]] = {}
 
 ENTERPRISE_READY_REMEDIATION_LINKS: dict[str, str] = {
     'continuity_slo_pass': '/threat#continuity-slo',
-    'linked_fresh_evidence_chain': '/threat#telemetry-freshness',
+    'evidence_chain_completeness': '/threat#telemetry-freshness',
     'stable_monitored_systems': '/threat#monitored-system-state',
     'live_action_capability_readiness': '/threat#response-actions',
 }
@@ -125,19 +125,19 @@ def _evaluate_enterprise_ready_gate(
     telemetry_freshness: Any,
     ingestion_freshness: Any,
     detection_pipeline_freshness: Any,
+    proof_chain_status: Any,
     runtime_status: Any,
     monitoring_status: Any,
     reporting_systems_count: int,
     monitored_systems_count: int,
     contradiction_flags: list[str] | None,
     guard_flags: list[str] | None,
-    active_incidents_count: int,
 ) -> dict[str, Any]:
     fresh_states = {'fresh', 'in_window'}
-    live_action_capability_readiness = bool(active_incidents_count > 0)
+    live_action_capability_readiness = False
     try:
         capability = resolve_response_action_capability('freeze_wallet', 'live')
-        live_action_capability_readiness = bool(live_action_capability_readiness and capability.get('supports_mode'))
+        live_action_capability_readiness = bool(capability.get('supports_mode'))
     except Exception:
         live_action_capability_readiness = False
     stable_monitored_systems = (
@@ -151,7 +151,15 @@ def _evaluate_enterprise_ready_gate(
     checks: list[tuple[str, bool]] = [
         ('continuity_slo_pass', bool(continuity_slo_pass)),
         (
+            'evidence_chain_completeness',
+            str(proof_chain_status or '').strip().lower() == 'complete'
+            and str(telemetry_freshness or '').strip().lower() in fresh_states
+            and str(ingestion_freshness or '').strip().lower() in fresh_states
+            and str(detection_pipeline_freshness or '').strip().lower() in fresh_states,
+        ),
+        (
             'linked_fresh_evidence_chain',
+            # Backward-compatible alias used by existing clients.
             str(telemetry_freshness or '').strip().lower() in fresh_states
             and str(ingestion_freshness or '').strip().lower() in fresh_states
             and str(detection_pipeline_freshness or '').strip().lower() in fresh_states,
@@ -159,11 +167,16 @@ def _evaluate_enterprise_ready_gate(
         ('stable_monitored_systems', stable_monitored_systems),
         ('live_action_capability_readiness', live_action_capability_readiness),
     ]
-    failed_checks = [name for name, passed in checks if not passed]
+    canonical_checks: list[tuple[str, bool]] = []
+    for name, passed in checks:
+        if name == 'linked_fresh_evidence_chain':
+            continue
+        canonical_checks.append((name, passed))
+    failed_checks = [name for name, passed in canonical_checks if not passed]
     return {
         'enterprise_ready_pass': len(failed_checks) == 0,
         'failed_checks': failed_checks,
-        'check_results': [{'name': name, 'pass': passed, 'remediation_url': ENTERPRISE_READY_REMEDIATION_LINKS.get(name)} for name, passed in checks],
+        'check_results': [{'name': name, 'pass': passed, 'remediation_url': ENTERPRISE_READY_REMEDIATION_LINKS.get(name)} for name, passed in canonical_checks],
         'remediation_links': {name: ENTERPRISE_READY_REMEDIATION_LINKS[name] for name in failed_checks if name in ENTERPRISE_READY_REMEDIATION_LINKS},
     }
 
@@ -4554,13 +4567,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 telemetry_freshness=summary.get('telemetry_freshness'),
                 ingestion_freshness=summary.get('ingestion_freshness'),
                 detection_pipeline_freshness=summary.get('detection_pipeline_freshness'),
+                proof_chain_status=summary.get('proof_chain_status'),
                 runtime_status=summary.get('runtime_status'),
                 monitoring_status=summary.get('monitoring_status'),
                 reporting_systems_count=int(summary.get('reporting_systems_count') or 0),
                 monitored_systems_count=int(summary.get('monitored_systems_count') or 0),
                 contradiction_flags=list(summary.get('contradiction_flags') or []),
                 guard_flags=list(summary.get('guard_flags') or []),
-                active_incidents_count=int(summary.get('active_incidents_count') or 0),
             )
             payload.update(enterprise_ready_gate)
             payload.update(payload['workspace_monitoring_summary'])
@@ -6249,13 +6262,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             telemetry_freshness=summary.get('telemetry_freshness'),
             ingestion_freshness=summary.get('ingestion_freshness'),
             detection_pipeline_freshness=summary.get('detection_pipeline_freshness'),
+            proof_chain_status=payload.get('proof_chain_status') or summary.get('proof_chain_status'),
             runtime_status=summary.get('runtime_status'),
             monitoring_status=summary.get('monitoring_status'),
             reporting_systems_count=int(summary.get('reporting_systems_count') or 0),
             monitored_systems_count=int(summary.get('monitored_systems_count') or 0),
             contradiction_flags=list(summary.get('contradiction_flags') or []),
             guard_flags=list(summary.get('guard_flags') or []),
-            active_incidents_count=int(payload.get('active_incidents') or summary.get('active_incidents_count') or 0),
         )
         payload.update(enterprise_ready_gate)
         if isinstance(summary, dict):

@@ -13,7 +13,7 @@ test('threat panel renders enterprise readiness gate banner and remediation link
   expect(threat).toContain('Enterprise readiness gate:');
   expect(threat).toContain('ENTERPRISE_GATE_REMEDIATION_LINKS');
   expect(threat).toContain("stable_monitored_systems: 'Stable monitored systems'");
-  expect(threat).toContain("linked_fresh_evidence_chain: 'Linked evidence freshness'");
+  expect(threat).toContain("evidence_chain_completeness: 'Evidence chain completeness'");
   expect(threat).toContain("'/threat#monitored-system-state'");
   expect(threat).toContain("'/threat#response-actions'");
 });
@@ -21,6 +21,8 @@ test('threat panel renders enterprise readiness gate banner and remediation link
 test('dashboard suppresses enterprise-ready claims when gate is false', () => {
   const dashboard = appSource('dashboard-page-content.tsx');
   expect(dashboard).toContain('Enterprise-ready claims:');
+  expect(dashboard).toContain('Allowed');
   expect(dashboard).toContain('Blocked by readiness gate');
   expect(dashboard).toContain('Readiness remediation:');
+  expect(dashboard).toContain('failedEnterpriseChecks.map');
 });

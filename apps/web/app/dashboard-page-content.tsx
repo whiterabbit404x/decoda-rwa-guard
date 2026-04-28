@@ -25,13 +25,13 @@ import { toDashboardBadgeState } from './dashboard-status-presentation';
 
 const ENTERPRISE_GATE_LABELS: Record<string, string> = {
   continuity_slo_pass: 'Continuity SLO pass',
-  linked_fresh_evidence_chain: 'Linked evidence freshness',
+  evidence_chain_completeness: 'Evidence chain completeness',
   stable_monitored_systems: 'Stable monitored systems',
   live_action_capability_readiness: 'Live action capability readiness',
 };
 const ENTERPRISE_GATE_REMEDIATION_LINKS: Record<string, string> = {
   continuity_slo_pass: '/threat#continuity-slo',
-  linked_fresh_evidence_chain: '/threat#telemetry-freshness',
+  evidence_chain_completeness: '/threat#telemetry-freshness',
   stable_monitored_systems: '/threat#monitored-system-state',
   live_action_capability_readiness: '/threat#response-actions',
 };
