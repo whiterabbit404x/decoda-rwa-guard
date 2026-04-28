@@ -18,15 +18,18 @@ class _Result:
 
 
 class _Connection:
-    def __init__(self, row: dict[str, object]):
+    def __init__(self, row: dict[str, object], *, approver_role: str = 'admin'):
         self._row = row
+        self._approver_role = approver_role
         self.executed: list[tuple[str, object]] = []
 
     def execute(self, statement, params=None):
         normalized = ' '.join(str(statement).split())
         self.executed.append((normalized, params))
-        if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
+        if 'FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
             return _Result(self._row)
+        if 'SELECT role FROM workspace_members WHERE workspace_id = %s AND user_id = %s' in normalized:
+            return _Result({'role': self._approver_role})
         return _Result()
 
     def commit(self):
@@ -131,6 +134,45 @@ def test_live_execute_success_persists_provider_artifacts(monkeypatch):
     assert '0xsafehash' in str(update_statement)
     assert 'response_payload_summary' in str(update_statement)
     assert 'final_status' in str(update_statement)
+    assert 'audit_snapshot' in str(update_statement)
+    assert 'provider_id' in str(update_statement)
+
+
+
+def test_live_execute_denies_non_admin_approver_role(monkeypatch):
+    connection = _Connection(_base_live_action(approved_by_user_id='member-1'), approver_role='analyst')
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg(connection))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.execute_enforcement_action('act-live', SimpleNamespace(headers={'x-workspace-id': 'ws-1'}))
+
+    assert exc_info.value.status_code == 403
+    assert 'approval must be granted by owner/admin role' in str(exc_info.value.detail)
+
+
+def test_live_approve_persists_approval_artifacts(monkeypatch):
+    connection = _Connection(_base_live_action())
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg(connection))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-3', 'mfa_enabled': False}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+    monkeypatch.setattr(pilot, 'write_action_history', lambda *_a, **_k: None)
+    monkeypatch.setattr(pilot, 'append_incident_timeline_event', lambda *_a, **_k: None)
+
+    response = pilot.approve_enforcement_action('act-live', SimpleNamespace(headers={'x-workspace-id': 'ws-1'}))
+
+    assert response['status'] == 'pending'
+    assert response['approved_at']
+    assert response['execution_artifacts']['approval']['result_status'] == 'pending'
+
+    update_statement = next(params for statement, params in connection.executed if statement.startswith('UPDATE response_actions SET status = %s, approved_by_user_id = %s'))
+    assert 'approval_provider_id' in str(update_statement)
 
 
 def test_audit_chain_integrity_links_incident_alert_and_action(monkeypatch):

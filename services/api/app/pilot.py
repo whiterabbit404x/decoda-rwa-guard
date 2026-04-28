@@ -10174,6 +10174,35 @@ def _require_live_action_step_up_auth(request: Request, *, user: dict[str, Any])
         detail='Step-up authentication is required for live action execution. Provide x-step-up-verified=true and a recent x-step-up-authenticated-at timestamp.',
     )
 
+def _verify_live_action_approver_role(connection: Any, *, workspace_id: str, approver_user_id: str | None) -> None:
+    if not approver_user_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Live action requires explicit owner/admin approval before execution.')
+    approver_role_row = connection.execute(
+        'SELECT role FROM workspace_members WHERE workspace_id = %s AND user_id = %s',
+        (workspace_id, approver_user_id),
+    ).fetchone()
+    approver_role = _normalize_workspace_role(str((approver_role_row or {}).get('role') or ''))
+    if approver_role not in LIVE_ACTION_APPROVER_ROLES:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action approval must be granted by owner/admin role.')
+
+
+def _execution_artifact_audit_snapshot(*, mode: str, status_value: str, execution_state: str, provider_request_id: str | None, provider_response_id: str | None, tx_hash: str | None, result_code: int | None, failure_reason: str | None = None) -> dict[str, Any]:
+    return _json_safe_value(
+        {
+            'mode': mode,
+            'result_status': status_value,
+            'execution_state': execution_state,
+            'provider_id': provider_response_id or provider_request_id,
+            'provider_request_id': provider_request_id,
+            'provider_response_id': provider_response_id,
+            'tx_hash': tx_hash,
+            'result_code': result_code,
+            'failure_reason': failure_reason,
+            'recorded_at': utc_now_iso(),
+        }
+    )
+
+
 
 def _propose_safe_transaction(action_id: str, *, to: str, data: str, chain_network: str | None = None) -> str:
     service_url = os.getenv('SAFE_TX_SERVICE_URL', '').strip().rstrip('/')
@@ -10405,7 +10434,7 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         row = connection.execute(
-            'SELECT id, status, incident_id, alert_id, action_type, mode, execution_state, execution_artifacts, provider_receipts, safe_tx_hash FROM response_actions WHERE id = %s AND workspace_id = %s',
+            'SELECT id, status, incident_id, alert_id, action_type, mode, execution_state, execution_artifacts, provider_receipts, safe_tx_hash, approved_at, failed_at FROM response_actions WHERE id = %s AND workspace_id = %s',
             (action_id, workspace_context['workspace_id']),
         ).fetchone()
         if row is None:
@@ -10426,9 +10455,19 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
             execution_state=str(row.get('execution_state') or 'proposed'),
             reason='approved',
         )
+        approval_audit = _execution_artifact_audit_snapshot(
+            mode=mode,
+            status_value='pending',
+            execution_state=str(row.get('execution_state') or 'proposed'),
+            provider_request_id=None,
+            provider_response_id=None,
+            tx_hash=str(row.get('safe_tx_hash') or '').strip() or None,
+            result_code=None,
+        )
+        artifacts['approval'] = approval_audit
         connection.execute(
-            'UPDATE response_actions SET status = %s, approved_by_user_id = %s, execution_metadata = execution_metadata || %s::jsonb, execution_artifacts = %s::jsonb, error_code = NULL WHERE id = %s',
-            ('pending', user['id'], _json_dumps({'approved_at': approved_at, 'approved_by_user_id': user['id']}), _json_dumps(artifacts), action_id),
+            'UPDATE response_actions SET status = %s, approved_by_user_id = %s, approved_at = NOW(), execution_metadata = execution_metadata || %s::jsonb, execution_artifacts = %s::jsonb, error_code = NULL, error_reason = NULL WHERE id = %s',
+            ('pending', user['id'], _json_dumps({'approved_at': approved_at, 'approved_by_user_id': user['id'], 'approval_provider_id': approval_audit.get('provider_id')}), _json_dumps(artifacts), action_id),
         )
         write_action_history(
             connection,
@@ -10462,7 +10501,7 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 'status': 'pending',
                 'mode': row.get('mode') or 'simulated',
                 'execution_state': row.get('execution_state') or 'proposed',
-                'execution_artifacts': row.get('execution_artifacts') if isinstance(row.get('execution_artifacts'), dict) else {},
+                'execution_artifacts': artifacts,
                 'provider_receipts': row.get('provider_receipts') if isinstance(row.get('provider_receipts'), list) else [],
                 'safe_tx_hash': row.get('safe_tx_hash'),
                 'error_code': None,
@@ -10499,6 +10538,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         if mode in {'recommended', 'live'} and not action.get('approved_by_user_id'):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Recommended/live action requires owner/admin approval before execution.')
         if mode == 'live':
+            _verify_live_action_approver_role(connection, workspace_id=workspace_context['workspace_id'], approver_user_id=str(action.get('approved_by_user_id') or '') or None)
             if str(action.get('approved_by_user_id')) == str(user.get('id')):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action execution requires a separate approver and executor.')
             metadata['step_up'] = _require_live_action_step_up_auth(request, user=user)
@@ -10713,6 +10753,16 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             'error_reason': error_reason,
             'live_execution_path': capability.get('live_execution_path'),
         }
+        artifacts['audit_snapshot'] = _execution_artifact_audit_snapshot(
+            mode=mode,
+            status_value=next_status,
+            execution_state=execution_state,
+            provider_request_id=provider_request_id,
+            provider_response_id=provider_response_id,
+            tx_hash=execution_tx_hash,
+            result_code=result_code,
+            failure_reason=error_reason,
+        )
         artifacts = _append_execution_attempt(
             artifacts,
             mode=mode,
@@ -10757,7 +10807,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         connection.execute(
             f"""
             UPDATE response_actions
-            SET status = '{next_status}', execution_state = %s, safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, executed_at = CASE WHEN '{next_status}' = 'executed' THEN NOW() ELSE executed_at END, result_summary = COALESCE(result_summary, %s), error_reason = %s, error_code = %s, provider_request_id = COALESCE(%s, provider_request_id), provider_response_id = COALESCE(%s, provider_response_id)
+            SET status = '{next_status}', execution_state = %s, safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, approved_at = CASE WHEN '{next_status}' IN ('pending', 'executed') AND approved_by_user_id IS NOT NULL THEN COALESCE(approved_at, NOW()) ELSE approved_at END, executed_at = CASE WHEN '{next_status}' = 'executed' THEN NOW() ELSE executed_at END, failed_at = CASE WHEN '{next_status}' = 'failed' THEN NOW() ELSE failed_at END, result_summary = COALESCE(result_summary, %s), error_reason = %s, error_code = %s, provider_request_id = COALESCE(%s, provider_request_id), provider_response_id = COALESCE(%s, provider_response_id)
             WHERE id = %s
             """,
             (execution_state, safe_tx_hash, _json_dumps(metadata), _json_dumps(artifacts), _json_dumps(provider_receipts), result_summary, error_reason, error_code, provider_request_id, provider_response_id, action_id),
@@ -10988,7 +11038,7 @@ def list_enforcement_actions(
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, action_type, mode, status, execution_state, result_summary, operator_notes, created_at, executed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, execution_metadata
+            SELECT id, action_type, mode, status, execution_state, result_summary, operator_notes, created_at, approved_at, executed_at, failed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, execution_metadata
                  , execution_artifacts, provider_receipts, provider_request_id, provider_response_id, error_reason, error_code
             FROM response_actions
             WHERE workspace_id = %s
