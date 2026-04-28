@@ -90,6 +90,36 @@ def test_monitoring_reconcile_latest_result_route_returns_result(monkeypatch):
     assert response.json()['result']['state'] == 'success'
 
 
+def test_monitoring_reconcile_result_route_returns_result_for_run(monkeypatch):
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        api_main,
+        'get_workspace_reconcile_result',
+        lambda _request, _reconcile_id: {'workspace': {'id': 'ws-1'}, 'job': {'id': 'run-3', 'status': 'completed'}, 'result': {'state': 'completed'}},
+    )
+
+    response = client.get('/monitoring/systems/reconcile/result/run-3')
+
+    assert response.status_code == 200
+    assert response.json()['job']['id'] == 'run-3'
+    assert response.json()['result']['state'] == 'completed'
+
+
+def test_monitoring_reconcile_result_route_alias_returns_result_for_run(monkeypatch):
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(
+        api_main,
+        'get_workspace_reconcile_result',
+        lambda _request, _reconcile_id: {'workspace': {'id': 'ws-1'}, 'job': {'id': 'run-9', 'status': 'failed'}, 'result': {'state': 'failed'}},
+    )
+
+    response = client.get('/monitoring/systems/reconcile/run-9/result')
+
+    assert response.status_code == 200
+    assert response.json()['job']['id'] == 'run-9'
+    assert response.json()['result']['state'] == 'failed'
+
+
 def test_monitoring_reconcile_start_route_alias_returns_200_for_success(monkeypatch):
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
     monkeypatch.setattr(

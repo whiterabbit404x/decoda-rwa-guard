@@ -84,6 +84,7 @@ from services.api.app.pilot import (
     get_workspace_reconcile_status,
     get_workspace_reconcile_status_by_idempotency_key,
     get_latest_workspace_reconcile_result,
+    get_workspace_reconcile_result,
     get_workspace_reconcile_events,
     get_workspace_subscription,
     list_workspace_members,
@@ -2614,6 +2615,16 @@ def monitoring_systems_reconcile_events(reconcile_id: str, request: Request) -> 
 @app.get('/monitoring/systems/reconcile/latest/result', summary='Get latest monitored systems reconcile result summary')
 def monitoring_systems_reconcile_latest_result(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_latest_workspace_reconcile_result(request))
+
+
+@app.get('/monitoring/systems/reconcile/result/{reconcile_id}', summary='Get monitored systems reconcile result summary')
+def monitoring_systems_reconcile_result(reconcile_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_workspace_reconcile_result(request, reconcile_id))
+
+
+@app.get('/monitoring/systems/reconcile/{reconcile_id}/result', summary='Get monitored systems reconcile result summary')
+def monitoring_systems_reconcile_result_alias(reconcile_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_workspace_reconcile_result(request, reconcile_id))
 
 
 @app.get('/monitoring/systems/reconcile/result/latest', summary='Get latest monitored systems reconcile result summary')
