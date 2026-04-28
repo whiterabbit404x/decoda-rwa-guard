@@ -14,6 +14,9 @@ test('threat panel renders enterprise readiness gate banner and remediation link
   expect(threat).toContain('ENTERPRISE_GATE_REMEDIATION_LINKS');
   expect(threat).toContain("stable_monitored_systems: 'Stable monitored systems'");
   expect(threat).toContain("linked_fresh_evidence: 'Linked fresh evidence'");
+  expect(threat).toContain("criterion_b_continuity_slos: 'Criterion B · Continuity SLOs'");
+  expect(threat).toContain("hidden_architecture: 'Hidden architecture'");
+  expect(threat).toContain('Pass is granted only after measurable evidence is present.');
   expect(threat).toContain("'/threat#monitored-system-state'");
   expect(threat).toContain("'/threat#response-actions'");
 });
@@ -24,5 +27,5 @@ test('dashboard suppresses enterprise-ready claims when gate is false', () => {
   expect(dashboard).toContain('Allowed');
   expect(dashboard).toContain('Blocked by readiness gate');
   expect(dashboard).toContain('Readiness remediation:');
-  expect(dashboard).toContain('failedEnterpriseChecks.map');
+  expect(dashboard).toContain('remediationChecks.map');
 });

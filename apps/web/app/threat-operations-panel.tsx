@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { MonitoringPresentationStatus } from './monitoring-status-presentation';
-import type { MonitoringInvestigationTimeline, MonitoringLoopHealth, MonitoringRuntimeStatus } from './monitoring-status-contract';
+import type { EnterpriseCriterionCheck, MonitoringInvestigationTimeline, MonitoringLoopHealth, MonitoringRuntimeStatus } from './monitoring-status-contract';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from './response-action-capabilities';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
@@ -32,6 +32,14 @@ const ENTERPRISE_GATE_REMEDIATION_COPY: Record<string, string> = {
   linked_fresh_evidence: 'Relink and refresh evidence so the chain stays complete and current.',
   stable_monitored_systems: 'Bring monitored systems back to live reporting without contradiction or guard flags.',
   live_action_capability_readiness: 'Validate at least one live action path from threat to response execution.',
+};
+const ENTERPRISE_CRITERIA_LABELS: Record<string, string> = {
+  criterion_b_continuity_slos: 'Criterion B · Continuity SLOs',
+  criterion_c_reconcile_stability: 'Criterion C · Reconcile stability',
+  criterion_d_evidence_chain_hydration: 'Criterion D · Evidence-chain hydration',
+  criterion_e_live_action_governance: 'Criterion E · Live action governance',
+  criterion_f_state_model_ux: 'Criterion F · State-model UX',
+  hidden_architecture: 'Hidden architecture',
 };
 
 type TargetRow = {
@@ -1696,6 +1704,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const remediationChecks = failedEnterpriseChecks.length > 0
     ? failedEnterpriseChecks
     : Object.keys(ENTERPRISE_GATE_LABELS);
+  const enterpriseCriteriaChecks: EnterpriseCriterionCheck[] = Array.isArray(runtimeStatusSnapshot?.enterprise_criteria)
+    ? runtimeStatusSnapshot.enterprise_criteria
+    : Array.isArray(runtimeSummary?.enterprise_criteria)
+      ? (runtimeSummary.enterprise_criteria ?? [])
+      : [];
   const openAlerts = Number(runtimeStatusSnapshot?.open_alerts ?? runtimeSummary?.active_alerts_count ?? 0);
   const activeIncidents = Number(runtimeStatusSnapshot?.active_incidents ?? runtimeSummary?.active_incidents_count ?? 0);
   const truth = feed.monitoring.truth;
@@ -2855,6 +2868,22 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   <Link href={ENTERPRISE_GATE_REMEDIATION_LINKS[check] ?? '/threat'} prefetch={false}>Open remediation</Link>
                 </li>
               ))}
+            </ul>
+          ) : null}
+          {enterpriseCriteriaChecks.length > 0 ? (
+            <ul className="tableMeta">
+              {enterpriseCriteriaChecks.map((criterion, index) => {
+                const criterionName = String(criterion.name ?? `criterion-${index}`);
+                return (
+                  <li key={criterionName}>
+                    {ENTERPRISE_CRITERIA_LABELS[criterionName] ?? criterionName}: {criterion.pass ? 'PASS' : 'FAIL'} ·
+                    {' '}
+                    {criterion.requires_measurable_evidence
+                      ? 'Pass is granted only after measurable evidence is present.'
+                      : 'Evidence requirement unspecified.'}
+                  </li>
+                );
+              })}
             </ul>
           ) : null}
         </article>
