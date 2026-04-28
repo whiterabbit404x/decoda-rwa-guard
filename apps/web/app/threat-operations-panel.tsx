@@ -1447,6 +1447,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ...(runtimeStatusPayload?.canonical_collections ?? {}),
           ...(investigationTimelinePayload?.canonical_collections ?? {}),
           ...(investigationTimelinePayload?.collections ?? {}),
+          detections: payloadRows<DetectionRow>(detectionsPayload, ['detections']) ?? payloadRows<DetectionRow>(runtimeStatusPayload?.canonical_collections, ['detections']) ?? payloadRows<DetectionRow>(investigationTimelinePayload?.canonical_collections, ['detections']) ?? undefined,
+          alerts: payloadRows<AlertRow>(alertsPayload, ['alerts']) ?? payloadRows<AlertRow>(runtimeStatusPayload?.canonical_collections, ['alerts']) ?? payloadRows<AlertRow>(investigationTimelinePayload?.canonical_collections, ['alerts']) ?? undefined,
+          incidents: payloadRows<IncidentRow>(incidentsPayload, ['incidents']) ?? payloadRows<IncidentRow>(runtimeStatusPayload?.canonical_collections, ['incidents']) ?? payloadRows<IncidentRow>(investigationTimelinePayload?.canonical_collections, ['incidents']) ?? undefined,
+          evidence: payloadRows<EvidenceRow>(evidencePayload, ['evidence']) ?? payloadRows<EvidenceRow>(runtimeStatusPayload?.canonical_collections, ['evidence']) ?? payloadRows<EvidenceRow>(investigationTimelinePayload?.canonical_collections, ['evidence']) ?? undefined,
+          history: payloadRows<ActionHistoryRow>(historyPayload, ['history', 'actions']) ?? payloadRows<ActionHistoryRow>(runtimeStatusPayload?.canonical_collections, ['history', 'actions']) ?? payloadRows<ActionHistoryRow>(investigationTimelinePayload?.canonical_collections, ['history', 'actions']) ?? undefined,
         };
         const timelineAlertId = investigationTimelinePayload?.chain_linked_ids?.alert_id;
         const linkedAlertEvidencePayload = timelineAlertId
@@ -1880,7 +1885,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     && timelineChainLinkedIds?.action_id,
   );
   const hasTimelineLinkedEvidence = Number(investigationTimeline?.linked_evidence_count ?? 0) > 0;
-  const showEvidenceLinkedSignals = hasDetectionTimelineLink && hasEvidenceTimelineLink && hasCompleteTimelineLinkedIds && hasTimelineLinkedEvidence;
+  const hasPersistedTimelineEvidence = Boolean(
+    timelineChainLinkedIds?.detection_id
+    && (coverageIndexes.evidenceByDetectionId.get(normalizeLookup(timelineChainLinkedIds.detection_id))?.length ?? 0) > 0,
+  );
+  const showEvidenceLinkedSignals = hasDetectionTimelineLink
+    && hasEvidenceTimelineLink
+    && hasCompleteTimelineLinkedIds
+    && hasTimelineLinkedEvidence
+    && hasPersistedTimelineEvidence;
 
   const coverageSummary = `${Math.max(reportingSystems, 0)} / ${Math.max(configuredSystems, 0)}`;
   const hasCoverageFromRuntime = workspaceConfigured && (protectedAssetCount > 0 || configuredSystems > 0);
@@ -3298,6 +3311,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                     <p className="sectionEyebrow">Chain proof</p>
                     <h4>Detection created → Alert created → Incident opened → Action logged</h4>
                   </div>
+                  <p className="tableMeta">
+                    <Link href="/alerts" prefetch={false}>Detection</Link> → <Link href="/alerts" prefetch={false}>Alert</Link> → <Link href="/incidents" prefetch={false}>Incident</Link> → <Link href="/history" prefetch={false}>Action</Link>
+                  </p>
                   {threatChainTimeline.orderedTimeline.map((step) => (
                     <div key={step.key} className="overviewListItem">
                       <div>

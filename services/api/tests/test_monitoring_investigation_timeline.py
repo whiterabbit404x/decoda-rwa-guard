@@ -227,3 +227,28 @@ def test_get_monitoring_investigation_timeline_non_empty_evidence_linked_items_s
     assert payload['chain_linked_ids']['alert_id']
     assert payload['chain_linked_ids']['incident_id']
     assert payload['chain_linked_ids']['action_id']
+
+def test_get_monitoring_investigation_timeline_includes_renderable_proof_links_when_evidence_exists(monkeypatch):
+    workspace_id = '11111111-1111-1111-1111-111111111111'
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _FakePgContext(_CompleteTimelineConnection()))
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda connection: None)
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda connection, request: {'id': 'user-1'})
+    monkeypatch.setattr(pilot, 'resolve_workspace', lambda connection, user_id, workspace_id: {'workspace_id': workspace_id})
+
+    payload = pilot.get_monitoring_investigation_timeline(_request(workspace_id))
+
+    assert payload['linked_evidence_count'] > 0
+    chain_ids = payload['chain_linked_ids']
+    assert chain_ids == {
+        'detection_id': 'det-9',
+        'alert_id': 'alert-9',
+        'incident_id': 'inc-9',
+        'action_id': 'act-9',
+    }
+    ordered_link_names = [item['link_name'] for item in payload['items']]
+    assert 'detection' in ordered_link_names
+    assert 'alert' in ordered_link_names
+    assert 'incident' in ordered_link_names
+    assert 'response_action' in ordered_link_names
+    assert ordered_link_names.index('detection') < ordered_link_names.index('alert') < ordered_link_names.index('incident') < ordered_link_names.index('response_action')
