@@ -2328,6 +2328,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const [liveActionConfirm, setLiveActionConfirm] = useState<{ actionType: string; label: string } | null>(null);
   const [liveActionConfirmationText, setLiveActionConfirmationText] = useState<string>('');
   const [liveActionAcknowledged, setLiveActionAcknowledged] = useState<boolean>(false);
+  const [liveActionConfirmationToken, setLiveActionConfirmationToken] = useState<string | null>(null);
   useEffect(() => {
     setSelectedThreatActionContextId((current) => {
       if (!current) return '';
@@ -2636,7 +2637,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     setResponseToast(executionResult.text || `${modeLabel} ${label} could not be completed.`);
   }
 
-  async function runThreatAction(actionType: string, label: string, mode: 'simulated' | 'recommended' | 'live') {
+  async function runThreatAction(actionType: string, label: string, mode: 'simulated' | 'recommended' | 'live', confirmationToken?: string) {
     const guardId: ThreatActionButtonId = mode === 'simulated'
       ? (actionType === 'notify_team' ? 'sim-notify-team' : 'sim-revoke-approval')
       : mode === 'recommended'
@@ -2650,6 +2651,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     if (mode === 'simulated') {
       await runSimulatedThreatAction(actionType, label);
       return;
+    }
+    if (mode === 'live') {
+      if (!confirmationToken || !liveActionConfirmationToken || confirmationToken !== liveActionConfirmationToken) {
+        setResponseToast('LIVE action was blocked because explicit confirmation was not completed in this session.');
+        return;
+      }
+      setLiveActionConfirmationToken(null);
     }
     const create = await fetch(`${apiUrl}/response/actions`, {
       method: 'POST',
@@ -3431,8 +3439,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <p className="sectionEyebrow">LIVE ACTIONS</p>
             <div className="buttonRow">
               <span className="ruleChip">LIVE</span>
-              <button type="button" disabled={threatOperationsViewModel.actionButtons['live-freeze-wallet'].disabled} title={threatOperationsViewModel.actionButtons['live-freeze-wallet'].reason} onClick={() => setLiveActionConfirm({ actionType: 'freeze_wallet', label: 'Freeze wallet' })}>Freeze wallet (LIVE)</button>
-              <button type="button" disabled={threatOperationsViewModel.actionButtons['live-revoke-approval'].disabled} title={threatOperationsViewModel.actionButtons['live-revoke-approval'].reason} onClick={() => setLiveActionConfirm({ actionType: 'revoke_approval', label: 'Revoke approval' })}>Revoke approval (LIVE)</button>
+              <button type="button" disabled={threatOperationsViewModel.actionButtons['live-freeze-wallet'].disabled} title={threatOperationsViewModel.actionButtons['live-freeze-wallet'].reason} onClick={() => { setLiveActionConfirm({ actionType: 'freeze_wallet', label: 'Freeze wallet' }); setLiveActionConfirmationToken(null); }}>Freeze wallet (LIVE)</button>
+              <button type="button" disabled={threatOperationsViewModel.actionButtons['live-revoke-approval'].disabled} title={threatOperationsViewModel.actionButtons['live-revoke-approval'].reason} onClick={() => { setLiveActionConfirm({ actionType: 'revoke_approval', label: 'Revoke approval' }); setLiveActionConfirmationToken(null); }}>Revoke approval (LIVE)</button>
             </div>
             <p className="tableMeta">LIVE actions are fully separated from SIMULATED/RECOMMENDED controls and require linked incident context, explicit confirmation, workspace approval, and persisted execution artifacts (provider ID, tx hash, status, timestamps, failure reason).</p>
             <div className="buttonRow">
@@ -3484,9 +3492,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             I understand this may submit a LIVE workflow, can touch real systems, and will be audit logged.
           </label>
           <div className="buttonRow">
-            <button type="button" className="secondaryCta" onClick={() => { setLiveActionConfirm(null); setLiveActionConfirmationText(''); setLiveActionAcknowledged(false); }}>Cancel</button>
+            <button type="button" className="secondaryCta" onClick={() => { setLiveActionConfirm(null); setLiveActionConfirmationText(''); setLiveActionAcknowledged(false); setLiveActionConfirmationToken(null); }}>Cancel</button>
             <button type="button" disabled={Boolean(confirmLiveActionDisabledReason)} title={deterministicDisabledReason(confirmLiveActionDisabledReason, 'Confirm LIVE action is available.')} onClick={() => {
-              void runThreatAction(liveActionConfirm.actionType, liveActionConfirm.label, 'live');
+              const token = `${Date.now()}-${liveActionConfirm.actionType}`;
+              setLiveActionConfirmationToken(token);
+              void runThreatAction(liveActionConfirm.actionType, liveActionConfirm.label, 'live', token);
               setLiveActionConfirm(null);
               setLiveActionConfirmationText('');
               setLiveActionAcknowledged(false);
