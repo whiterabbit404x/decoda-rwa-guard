@@ -16,6 +16,8 @@ test('snapshot refresh keeps canonical endpoints plus linked collections in para
   expect(threat).toContain("fetch(`${apiUrl}/incidents?limit=50`");
   expect(threat).toContain("fetch(`${apiUrl}/history/actions?limit=50`");
   expect(threat).toContain("fetch(`${apiUrl}/ops/monitoring/evidence?limit=50`");
+  expect(threat).toContain("detections: payloadRows<DetectionRow>(detectionsPayload, ['detections'])");
+  expect(threat).toContain("history: payloadRows<ActionHistoryRow>(historyPayload, ['history', 'actions'])");
   expect(threat).toContain('const timelineAlertId = investigationTimelinePayload?.chain_linked_ids?.alert_id;');
   expect(threat).toContain('fetch(`${apiUrl}/alerts/${encodeURIComponent(String(timelineAlertId))}/evidence?limit=50`');
   expect(threat).toContain('canonical_collections');
@@ -67,6 +69,7 @@ test('incident timeline and evidence rendering blocks assert populated rows', ()
   expect(threat).toContain('formatAbsoluteTime(item.timestamp)');
   expect(threat).toContain('raw evidence refs: evidence_id');
   expect(threat).toContain('threatChainTimeline.orderedTimeline.map((step) => (');
+  expect(threat).toContain('<Link href="/alerts" prefetch={false}>Detection</Link> → <Link href="/alerts" prefetch={false}>Alert</Link> → <Link href="/incidents" prefetch={false}>Incident</Link> → <Link href="/history" prefetch={false}>Action</Link>');
   expect(threat).toContain('<p>{step.label}: {step.id || \'n/a\'}</p>');
   expect(threat).toContain('const latestEvidence = chainPanelSelection.detectionId');
   expect(threat).toContain("timestamp: persistedThreatChain.action?.timestamp ?? null");
@@ -90,7 +93,8 @@ test('timeline evidence gate accepts telemetry/evidence links and complete chain
   expect(threat).toContain("timelineLinkNames.has('telemetry')");
   expect(threat).toContain("timelineLinkNames.has('evidence')");
   expect(threat).toContain('const hasCompleteTimelineLinkedIds = Boolean(');
-  expect(threat).toContain('const showEvidenceLinkedSignals = hasDetectionTimelineLink && hasEvidenceTimelineLink && hasCompleteTimelineLinkedIds && hasTimelineLinkedEvidence;');
+  expect(threat).toContain('const hasPersistedTimelineEvidence = Boolean(');
+  expect(threat).toContain('&& hasPersistedTimelineEvidence;');
 });
 
 test('alerts and incidents tables render non-empty list rows with persisted proof chain fields when data exists', () => {
