@@ -8,6 +8,14 @@ export type MonitoringLoopHealth = {
   updated_at?: string | null;
 };
 
+export type EnterpriseCriterionCheck = {
+  name: string;
+  pass: boolean;
+  requires_measurable_evidence: boolean;
+  evidence_basis?: string[];
+  remediation_url?: string | null;
+};
+
 export type WorkspaceMonitoringSummary = {
   workspace_configured: boolean;
   runtime_status: 'live' | 'degraded' | 'offline' | 'idle';
@@ -87,6 +95,9 @@ export type WorkspaceMonitoringSummary = {
   check_results?: Array<{ name: string; pass: boolean; remediation_url?: string | null }>;
   remediation_links?: Record<string, string>;
   validated_live_action_paths?: string[];
+  enterprise_criteria_pass?: boolean;
+  enterprise_criteria_failed?: string[];
+  enterprise_criteria?: EnterpriseCriterionCheck[];
 };
 
 export type MonitoringRuntimeStatus = {
@@ -206,6 +217,9 @@ export type MonitoringRuntimeStatus = {
   check_results?: Array<{ name: string; pass: boolean; remediation_url?: string | null }>;
   remediation_links?: Record<string, string>;
   validated_live_action_paths?: string[];
+  enterprise_criteria_pass?: boolean;
+  enterprise_criteria_failed?: string[];
+  enterprise_criteria?: EnterpriseCriterionCheck[];
   continuity_slo_pass?: boolean;
   heartbeat_age_seconds?: number | null;
   worker_heartbeat_age_seconds?: number | null;

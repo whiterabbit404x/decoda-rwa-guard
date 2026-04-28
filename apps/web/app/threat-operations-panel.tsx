@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { MonitoringPresentationStatus } from './monitoring-status-presentation';
-import type { MonitoringInvestigationTimeline, MonitoringLoopHealth, MonitoringRuntimeStatus } from './monitoring-status-contract';
+import type { EnterpriseCriterionCheck, MonitoringInvestigationTimeline, MonitoringLoopHealth, MonitoringRuntimeStatus } from './monitoring-status-contract';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from './response-action-capabilities';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
@@ -246,12 +246,6 @@ type SnapshotFailureKey = 'runtime-status' | 'investigation-timeline';
 type SnapshotCollectionKey = 'detections' | 'alerts' | 'incidents' | 'evidence' | 'history' | 'monitoring-runs';
 type SnapshotFreshnessState = 'fresh' | 'stale' | 'unavailable';
 type ReconcileJobStatus = 'queued' | 'running' | 'completed' | 'failed';
-type EnterpriseCriterionCheck = {
-  name?: string | null;
-  pass?: boolean | null;
-  requires_measurable_evidence?: boolean | null;
-  remediation_url?: string | null;
-};
 type ReconcileJobSnapshot = {
   id: string;
   status: ReconcileJobStatus;
@@ -1712,8 +1706,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : Object.keys(ENTERPRISE_GATE_LABELS);
   const enterpriseCriteriaChecks: EnterpriseCriterionCheck[] = Array.isArray(runtimeStatusSnapshot?.enterprise_criteria)
     ? runtimeStatusSnapshot.enterprise_criteria
-    : Array.isArray((runtimeSummary as { enterprise_criteria?: EnterpriseCriterionCheck[] } | null)?.enterprise_criteria)
-      ? (((runtimeSummary as { enterprise_criteria?: EnterpriseCriterionCheck[] } | null)?.enterprise_criteria) ?? [])
+    : Array.isArray(runtimeSummary?.enterprise_criteria)
+      ? (runtimeSummary.enterprise_criteria ?? [])
       : [];
   const openAlerts = Number(runtimeStatusSnapshot?.open_alerts ?? runtimeSummary?.active_alerts_count ?? 0);
   const activeIncidents = Number(runtimeStatusSnapshot?.active_incidents ?? runtimeSummary?.active_incidents_count ?? 0);
