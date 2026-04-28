@@ -75,6 +75,7 @@ export type WorkspaceMonitoringSummary = {
   failed_checks?: string[];
   check_results?: Array<{ name: string; pass: boolean; remediation_url?: string | null }>;
   remediation_links?: Record<string, string>;
+  validated_live_action_paths?: string[];
 };
 
 export type MonitoringRuntimeStatus = {
@@ -191,6 +192,7 @@ export type MonitoringRuntimeStatus = {
   failed_checks?: string[];
   check_results?: Array<{ name: string; pass: boolean; remediation_url?: string | null }>;
   remediation_links?: Record<string, string>;
+  validated_live_action_paths?: string[];
   continuity_slo_pass?: boolean;
   heartbeat_age_seconds?: number | null;
   telemetry_age_seconds?: number | null;

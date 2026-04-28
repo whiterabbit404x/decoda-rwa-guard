@@ -26,6 +26,12 @@ const ENTERPRISE_GATE_REMEDIATION_LINKS: Record<string, string> = {
   stable_monitored_systems: '/threat#monitored-system-state',
   live_action_capability_readiness: '/threat#response-actions',
 };
+const ENTERPRISE_GATE_REMEDIATION_COPY: Record<string, string> = {
+  continuity_slo_pass: 'Restore continuity SLO freshness across heartbeat, telemetry, ingestion, and detection.',
+  linked_fresh_evidence: 'Relink and refresh evidence so the chain stays complete and current.',
+  stable_monitored_systems: 'Bring monitored systems back to live reporting without contradiction or guard flags.',
+  live_action_capability_readiness: 'Validate at least one live action path from threat to response execution.',
+};
 
 type TargetRow = {
   id: string;
@@ -1639,6 +1645,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : Array.isArray(runtimeSummary?.failed_checks)
       ? runtimeSummary.failed_checks
       : [];
+  const remediationChecks = failedEnterpriseChecks.length > 0
+    ? failedEnterpriseChecks
+    : Object.keys(ENTERPRISE_GATE_LABELS);
   const openAlerts = Number(runtimeStatusSnapshot?.open_alerts ?? runtimeSummary?.active_alerts_count ?? 0);
   const activeIncidents = Number(runtimeStatusSnapshot?.active_incidents ?? runtimeSummary?.active_incidents_count ?? 0);
   const truth = feed.monitoring.truth;
@@ -2778,9 +2787,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           </p>
           {!enterpriseReadyPass ? (
             <ul className="tableMeta">
-              {failedEnterpriseChecks.map((check) => (
+              {remediationChecks.map((check) => (
                 <li key={check}>
                   {ENTERPRISE_GATE_LABELS[check] ?? check}
+                  {': '}
+                  {ENTERPRISE_GATE_REMEDIATION_COPY[check] ?? 'Review gate diagnostics and remediate this failed check.'}
                   {' — '}
                   <Link href={ENTERPRISE_GATE_REMEDIATION_LINKS[check] ?? '/threat'} prefetch={false}>Open remediation</Link>
                 </li>

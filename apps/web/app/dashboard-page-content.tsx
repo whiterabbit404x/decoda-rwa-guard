@@ -35,6 +35,12 @@ const ENTERPRISE_GATE_REMEDIATION_LINKS: Record<string, string> = {
   stable_monitored_systems: '/threat#monitored-system-state',
   live_action_capability_readiness: '/threat#response-actions',
 };
+const ENTERPRISE_GATE_REMEDIATION_COPY: Record<string, string> = {
+  continuity_slo_pass: 'Restore continuity SLO freshness across heartbeat, telemetry, ingestion, and detection.',
+  linked_fresh_evidence: 'Relink and refresh evidence so the chain stays complete and current.',
+  stable_monitored_systems: 'Bring monitored systems back to live reporting without contradiction or guard flags.',
+  live_action_capability_readiness: 'Validate at least one live action path from threat to response execution.',
+};
 
 function mapMonitoringStatusToBadgeState(status: MonitoringPresentationStatus): CustomerStatusBadgeState {
   switch (status) {
@@ -107,6 +113,9 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
     : Array.isArray(data.workspaceMonitoringSummary?.failed_checks)
       ? data.workspaceMonitoringSummary.failed_checks
       : [];
+  const remediationChecks = failedEnterpriseChecks.length > 0
+    ? failedEnterpriseChecks
+    : Object.keys(ENTERPRISE_GATE_LABELS);
 
   return (
     <main className="container productPage">
@@ -114,7 +123,11 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
         <div>
           <p className="eyebrow">Operational workspace</p>
           <h1>Tokenized treasury control dashboard</h1>
-          <p className="lede">Monitor threats, compliance posture, and resilience readiness with persistent workspace telemetry and history-backed operations.</p>
+          <p className="lede">
+            {enterpriseReadyPass
+              ? 'Monitor threats, compliance posture, and resilience readiness with persistent workspace telemetry and history-backed operations.'
+              : 'Monitoring and response controls are active. Enterprise-ready copy stays hidden until all runtime gate checks pass.'}
+          </p>
           <div className="heroActionRow">
             <StatusBadge state={mapMonitoringStatusToBadgeState(monitoringPresentation.status)} />
             <span className="ruleChip">Gateway: {diagnostics.endpoints.dashboard.ok ? 'reachable' : 'needs attention'}</span>
@@ -141,11 +154,11 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           {!enterpriseReadyPass ? (
             <p>
               <strong>Readiness remediation:</strong>{' '}
-              {failedEnterpriseChecks.map((check, index) => (
+              {remediationChecks.map((check, index) => (
                 <span key={check}>
                   {index > 0 ? ', ' : ''}
                   <a href={ENTERPRISE_GATE_REMEDIATION_LINKS[check] ?? '/threat'}>
-                    {ENTERPRISE_GATE_LABELS[check] ?? check}
+                    {ENTERPRISE_GATE_LABELS[check] ?? check}: {ENTERPRISE_GATE_REMEDIATION_COPY[check] ?? 'Review gate diagnostics and remediate this failed check.'}
                   </a>
                 </span>
               ))}
