@@ -34,7 +34,7 @@ test('refresh no longer clears collections and marks stale data on partial failu
   expect(threat).toContain('if (canonical.available && canonical.rows) {');
   expect(threat).toContain("if (result.status === 'fulfilled' && result.value.ok && endpoint.available && endpoint.rows) {");
   expect(threat).toContain('setSnapshotStaleCollections(staleCollections)');
-  expect(threat).toContain('Stale collections ${snapshotStaleCollections.join');
+  expect(threat).toContain('Stale collections ${snapshotStaleCollections.map((collection) => `${collection}:${formatAbsoluteTime(collectionLastSuccessfulRefreshAt[collection])}`).join');
   expect(threat).toContain("if (!(result.status === 'fulfilled' && result.value.ok)) {");
   expect(threat).toContain('stale.push(key);');
 });
@@ -42,8 +42,12 @@ test('refresh no longer clears collections and marks stale data on partial failu
 test('chain display uses persisted linkage ids and evidence counts from linked records', () => {
   const threat = appSource('threat-operations-panel.tsx');
 
+  expect(threat).toContain('function resolvePersistedThreatChain(params: {');
+  expect(threat).toContain('const persistedThreatChain = useMemo(() => resolvePersistedThreatChain({');
   expect(threat).toContain('alert.chain_linked_ids?.detection_id');
   expect(threat).toContain('incident.chain_linked_ids?.detection_id');
+  expect(threat).toContain('detectionId: persistedThreatChain.linkedIds.detectionId');
+  expect(threat).toContain('actionId: persistedThreatChain.linkedIds.actionId');
   expect(threat).toContain('evidence {Number(alert.linked_evidence_count');
   expect(threat).toContain('linkedEvidenceCount: latestDetection?.linked_evidence_count');
   expect(threat).toContain('const completeProofChain = Boolean(');
@@ -64,6 +68,8 @@ test('incident timeline and evidence rendering blocks assert populated rows', ()
   expect(threat).toContain('raw evidence refs: evidence_id');
   expect(threat).toContain('threatChainTimeline.orderedTimeline.map((step) => (');
   expect(threat).toContain('<p>{step.label}: {step.id || \'n/a\'}</p>');
+  expect(threat).toContain('const latestEvidence = chainPanelSelection.detectionId');
+  expect(threat).toContain("timestamp: persistedThreatChain.action?.timestamp ?? null");
   expect(threat).toContain('!loadingSnapshot && linkedAlertRows.length === 0 ? (');
   expect(threat).toContain('!loadingSnapshot && incidents.length === 0 ? (');
 });
