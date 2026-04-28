@@ -19,8 +19,12 @@ def test_action_route_response_always_includes_mode_and_audit_metadata() -> None
     )
 
     assert payload['mode'] == 'live'
+    assert payload['execution_mode'] == 'live'
     assert payload['execution_provenance']['mode'] == 'live'
+    assert payload['execution_provenance']['execution_mode'] == 'live'
     assert payload['audit_metadata']['mode'] == 'live'
+    assert payload['audit_metadata']['execution_mode'] == 'live'
+    assert payload['audit_metadata']['route_normalized_at']
     assert payload['audit_metadata']['action_id'] == 'act-1'
     assert payload['audit_metadata']['provider_request_id'] == 'req-1'
     assert payload['audit_metadata']['provider_response_id'] == 'resp-1'
@@ -41,4 +45,5 @@ def test_action_list_route_response_normalizes_each_action_with_audit_metadata()
 
     assert payload['actions'][0]['audit_metadata']['mode'] == 'simulated'
     assert payload['actions'][1]['audit_metadata']['mode'] == 'live'
+    assert payload['actions'][1]['execution_mode'] == 'live'
     assert payload['actions'][1]['execution_provenance']['mode'] == 'live'

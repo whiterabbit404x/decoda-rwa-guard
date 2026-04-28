@@ -10178,6 +10178,27 @@ def _enforce_response_action_policy_for_operation(*, action_type: str, mode: str
     _require_mode_operation_role(mode=mode, operation=operation, workspace_context=workspace_context)
 
 
+def _enforce_action_policy_per_mode(
+    *,
+    mode: str,
+    operation: str,
+    action: dict[str, Any],
+    workspace_context: dict[str, Any],
+    approver_user_id: str | None = None,
+) -> None:
+    _enforce_response_action_policy_for_operation(
+        action_type=str(action.get('action_type') or ''),
+        mode=mode,
+        operation=operation,
+        workspace_context=workspace_context,
+    )
+    if operation == 'execute' and mode in {'recommended', 'live'} and not approver_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f'{mode.capitalize()} action requires owner/admin approval before execution.',
+        )
+
+
 def _fallback_governance_action(payload: dict[str, Any]) -> dict[str, Any]:
     action_type = str(payload.get('action_type') or 'governance_action')
     target_id = str(payload.get('target_id') or payload.get('target_wallet') or 'target')
@@ -10282,6 +10303,25 @@ def _execution_artifact_audit_snapshot(*, mode: str, status_value: str, executio
     )
 
 
+def _build_live_execution_evidence(
+    *,
+    provider_request_id: str | None,
+    tx_hash: str | None,
+    result_status: str,
+    error_reason: str | None,
+    recorded_at: str,
+) -> dict[str, Any]:
+    return _json_safe_value(
+        {
+            'provider_request_id': provider_request_id,
+            'tx_hash': tx_hash,
+            'result_status': result_status,
+            'timestamp': recorded_at,
+            'error_reason': error_reason,
+        }
+    )
+
+
 
 def _propose_safe_transaction(action_id: str, *, to: str, data: str, chain_network: str | None = None) -> str:
     service_url = os.getenv('SAFE_TX_SERVICE_URL', '').strip().rstrip('/')
@@ -10348,7 +10388,12 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
         target_wallet = _normalize_eth_address(params.get('target_wallet'), field='target_wallet')
         mode = _normalize_response_action_mode(payload)
         capability = resolve_response_action_capability(action_type, mode)
-        _enforce_response_action_policy_for_operation(action_type=action_type, mode=mode, operation='create', workspace_context=workspace_context)
+        _enforce_action_policy_per_mode(
+            mode=mode,
+            operation='create',
+            action={'action_type': action_type},
+            workspace_context=workspace_context,
+        )
         if not capability.get('supports_mode'):
             if mode == 'live':
                 raise HTTPException(
@@ -10523,7 +10568,12 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
         mode = str(row.get('mode') or 'simulated')
         if mode not in {'recommended', 'live'}:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Only recommended/live actions require explicit approval.')
-        _enforce_response_action_policy_for_operation(action_type=str(row.get('action_type') or ''), mode=mode, operation='approve', workspace_context=workspace_context)
+        _enforce_action_policy_per_mode(
+            mode=mode,
+            operation='approve',
+            action={'action_type': str(row.get('action_type') or '')},
+            workspace_context=workspace_context,
+        )
         if str(row.get('status')) not in {'pending', 'failed', 'planned'}:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action cannot be approved from current status.')
         approved_at = utc_now_iso()
@@ -10615,9 +10665,13 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         artifacts = action.get('execution_artifacts') if isinstance(action.get('execution_artifacts'), dict) else {}
         provider_receipts = action.get('provider_receipts') if isinstance(action.get('provider_receipts'), list) else []
         mode = str(action.get('mode') or 'simulated')
-        _enforce_response_action_policy_for_operation(action_type=str(action.get('action_type') or ''), mode=mode, operation='execute', workspace_context=workspace_context)
-        if mode in {'recommended', 'live'} and not action.get('approved_by_user_id'):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Recommended/live action requires owner/admin approval before execution.')
+        _enforce_action_policy_per_mode(
+            mode=mode,
+            operation='execute',
+            action=action,
+            workspace_context=workspace_context,
+            approver_user_id=str(action.get('approved_by_user_id') or '') or None,
+        )
         if mode == 'live':
             _verify_live_action_approver_role(connection, workspace_id=workspace_context['workspace_id'], approver_user_id=str(action.get('approved_by_user_id') or '') or None)
             if str(action.get('approved_by_user_id')) == str(user.get('id')):
@@ -10834,6 +10888,14 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             'error_reason': error_reason,
             'live_execution_path': capability.get('live_execution_path'),
         }
+        if mode == 'live':
+            metadata['execution_evidence'] = _build_live_execution_evidence(
+                provider_request_id=provider_request_id,
+                tx_hash=execution_tx_hash or safe_tx_hash,
+                result_status=next_status,
+                error_reason=error_reason,
+                recorded_at=finalized_at,
+            )
         artifacts['audit_snapshot'] = _execution_artifact_audit_snapshot(
             mode=mode,
             status_value=next_status,

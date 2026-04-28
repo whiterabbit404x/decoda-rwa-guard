@@ -3415,13 +3415,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                 {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
               </button>
             </div>
-            <p className="sectionEyebrow">SIMULATED + RECOMMENDED</p>
+            <p className="sectionEyebrow">SIMULATED ACTIONS</p>
             <div className="buttonRow">
               <span className="ruleChip">SIMULATED</span>
               <button type="button" disabled={threatOperationsViewModel.actionButtons['sim-notify-team'].disabled} title={threatOperationsViewModel.actionButtons['sim-notify-team'].reason} onClick={() => void runThreatAction('notify_team', 'Run simulated response', 'simulated')}>Run simulated response</button>
               <button type="button" disabled={threatOperationsViewModel.actionButtons['sim-revoke-approval'].disabled} title={threatOperationsViewModel.actionButtons['sim-revoke-approval'].reason} onClick={() => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated')}>Revoke approval</button>
             </div>
             <p className="tableMeta">SIMULATED actions run immediately and never submit a live transaction or provider call.</p>
+            <p className="sectionEyebrow">RECOMMENDED ACTIONS</p>
             <div className="buttonRow">
               <span className="ruleChip">RECOMMENDED</span>
               <button type="button" disabled={threatOperationsViewModel.actionButtons['rec-freeze-wallet'].disabled} title={threatOperationsViewModel.actionButtons['rec-freeze-wallet'].reason} onClick={() => void runThreatAction('freeze_wallet', 'Freeze wallet', 'recommended')}>Freeze wallet (RECOMMENDED)</button>

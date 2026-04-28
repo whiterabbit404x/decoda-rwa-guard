@@ -769,6 +769,8 @@ def test_execute_live_action_requires_explicit_approval(monkeypatch):
 
 
 def test_execute_live_action_denied_for_unauthorized_workspace_role(monkeypatch):
+    executed: list[str] = []
+
     class _Result:
         def __init__(self, row=None):
             self._row = row
@@ -779,6 +781,7 @@ def test_execute_live_action_denied_for_unauthorized_workspace_role(monkeypatch)
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
+            executed.append(normalized)
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 return _Result(
                     {
@@ -819,6 +822,7 @@ def test_execute_live_action_denied_for_unauthorized_workspace_role(monkeypatch)
     except HTTPException as exc:
         assert exc.status_code == 403
         assert 'Owner or admin role is required' in str(exc.detail)
+    assert not any("UPDATE response_actions SET status = 'pending'" in statement for statement in executed)
 
 
 def test_execute_live_action_requires_step_up_when_available(monkeypatch):
@@ -962,3 +966,92 @@ def test_execute_live_action_success_writes_audit_trail_and_provenance(monkeypat
     assert any(item.get('to_status') == 'pending' for item in payload['execution_artifacts'].get('status_transitions', []))
     assert any('UPDATE response_actions SET status = \'pending\'' in statement for statement, _ in executed)
     assert {'action': 'enforcement.action.execute', 'entity_type': 'enforcement_action'} in audits
+
+
+def test_execute_live_action_persists_execution_evidence_for_approved_path(monkeypatch):
+    executed: list[tuple[str, object]] = []
+
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            executed.append((normalized, params))
+            if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result(
+                    {
+                        'id': 'act-live-evidence',
+                        'status': 'pending',
+                        'mode': 'live',
+                        'action_type': 'revoke_approval',
+                        'execution_metadata': {'approved_at': '2026-04-27T08:00:00+00:00'},
+                        'execution_artifacts': {},
+                        'provider_receipts': [],
+                        'incident_id': 'inc-1',
+                        'alert_id': 'alert-1',
+                        'token_contract': '0x1111111111111111111111111111111111111111',
+                        'calldata': '0x095ea7b3',
+                        'chain_network': 'ethereum',
+                        'approved_by_user_id': 'admin-2',
+                    }
+                )
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(
+        pilot,
+        '_require_workspace_admin',
+        lambda *_: (
+            {'id': 'admin-1', 'mfa_enabled': False},
+            {'workspace_id': 'ws-1', 'role': 'admin'},
+        ),
+    )
+    monkeypatch.setattr(
+        pilot,
+        '_propose_safe_transaction',
+        lambda *_a, **_k: {'safe_tx_hash': '0xaaa', 'external_request_id': 'safe-req-99', 'response_code': 202},
+    )
+    monkeypatch.setattr(
+        pilot,
+        'resolve_response_action_capability',
+        lambda *_a, **_k: {
+            'action_type': 'revoke_approval',
+            'supported_modes': ['simulated', 'recommended', 'live'],
+            'live_execution_path': 'safe',
+            'reason': None,
+            'supports_mode': True,
+            'mode': 'live',
+        },
+    )
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+
+    payload = pilot.execute_enforcement_action('act-live-evidence', SimpleNamespace(headers={'x-workspace-id': 'ws-1'}))
+
+    assert payload['status'] == 'pending'
+    assert payload['execution_evidence']['provider_request_id'] == 'safe-req-99'
+    assert payload['execution_evidence']['tx_hash'] == '0xaaa'
+    update_calls = [
+        params
+        for statement, params in executed
+        if "SET status = 'pending', execution_state = %s" in statement and 'execution_metadata = %s::jsonb' in statement
+    ]
+    assert update_calls
+    serialized_metadata = str(update_calls[0][3])
+    assert 'execution_evidence' in serialized_metadata
+    assert 'safe-req-99' in serialized_metadata
+    assert '0xaaa' in serialized_metadata
+    assert 'result_status' in serialized_metadata
