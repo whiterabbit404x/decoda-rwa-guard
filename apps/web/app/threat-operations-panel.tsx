@@ -247,8 +247,8 @@ type ReconcileJobSnapshot = {
   completed_at?: string | null;
 };
 
-type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale' | 'partial_failure';
-type EndpointProvenanceState = 'live' | 'degraded' | 'stale' | 'partial_failure';
+type MonitoringProvenanceLabel = 'live' | 'degraded' | 'stale_snapshot' | 'partial_failure';
+type EndpointProvenanceState = 'live' | 'degraded' | 'stale_snapshot' | 'partial_failure';
 
 type PageBannerModel = {
   variant: 'explanation' | 'fetch_error';
@@ -310,6 +310,14 @@ type MonitoringViewModel = {
 type ThreatOperationsViewModel = {
   monitoring: MonitoringViewModel;
   actionButtons: Record<ThreatActionButtonId, ThreatActionButtonState>;
+  confirmLiveAction: ThreatActionButtonState;
+  disabledActionGuidance: Array<{
+    key: string;
+    action: string;
+    reason: string;
+    nextStepLabel: string;
+    nextStepHref: string;
+  }>;
 };
 
 const STRUCTURAL_CONFIGURATION_REASON_CODES = new Set([
@@ -684,6 +692,13 @@ function collectMonitoringContradictions(model: Pick<MonitoringViewModel, 'prove
   }
   if (model.provenanceLabel === 'partial_failure' && ![model.endpointProvenance.runtimeStatus, model.endpointProvenance.investigationTimeline].includes('partial_failure')) {
     contradictions.push('Partial failure provenance requires at least one endpoint to report partial_failure.');
+  }
+  if (model.provenanceLabel === 'stale_snapshot'
+    && model.telemetryState !== 'stale'
+    && model.pollState !== 'stale'
+    && model.heartbeatState !== 'stale'
+    && ![model.endpointProvenance.runtimeStatus, model.endpointProvenance.investigationTimeline].includes('stale_snapshot')) {
+    contradictions.push('stale_snapshot provenance requires stale freshness telemetry or an endpoint stale_snapshot marker.');
   }
   return contradictions;
 }
@@ -1912,7 +1927,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const runtimeEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('runtime-status')
       ? 'partial_failure'
       : (telemetryState === 'stale' || pollState === 'stale' || heartbeatState === 'stale')
-        ? 'stale'
+        ? 'stale_snapshot'
         : (pageState === 'degraded_partial' || monitoringPresentation.status === 'degraded')
           ? 'degraded'
         : 'live';
@@ -1933,14 +1948,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const derivedProvenanceLabel: MonitoringProvenanceLabel = snapshotFailedEndpoints.length > 0
       ? 'partial_failure'
       : (telemetryState === 'stale' || pollState === 'stale' || heartbeatState === 'stale')
-        ? 'stale'
+        ? 'stale_snapshot'
         : (pageState === 'degraded_partial' || monitoringPresentation.status === 'degraded')
           ? 'degraded'
           : 'live';
     const provenanceExplanation = derivedProvenanceLabel === 'partial_failure'
       ? `Monitoring snapshot fallback is active because ${snapshotFailedEndpoints.join(', ')} failed in the most recent refresh.`
-      : derivedProvenanceLabel === 'stale'
-        ? 'Runtime snapshot is visible, but at least one freshness timestamp is stale or unavailable.'
+      : derivedProvenanceLabel === 'stale_snapshot'
+        ? 'Runtime snapshot is visible, but at least one freshness timestamp is stale or unavailable; serving stale_snapshot provenance.'
         : derivedProvenanceLabel === 'degraded'
           ? 'Runtime and continuity contract report degraded monitoring health.'
           : 'Runtime and continuity contract confirm live monitoring health.';
@@ -2429,115 +2444,49 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     selectedThreatActionContext?.incidentId,
     shouldBlockThreatActionCreation,
   ]);
-  const actionUnavailableMessages = useMemo<Array<{
-    key: string;
-    action: string;
-    reason: string;
-    nextStepLabel: string;
-    nextStepHref: string;
-  }>>(() => {
-    const messages: Array<{
-      key: string;
-      action: string;
-      reason: string;
-      nextStepLabel: string;
-      nextStepHref: string;
-    }> = [];
+  const threatOperationsViewModel = useMemo<ThreatOperationsViewModel>(() => {
+    const confirmLiveAction: ThreatActionButtonState = {
+      disabled: Boolean(confirmLiveActionDisabledReason),
+      reason: deterministicDisabledReason(confirmLiveActionDisabledReason, 'Confirm LIVE action is available.'),
+      noOpMessage: 'Confirm LIVE action is currently unavailable. No live workflow was started.',
+      nextStepLabel: !selectedThreatActionContext?.incidentId ? 'Open incident queue' : 'Review confirmation steps',
+      nextStepHref: !selectedThreatActionContext?.incidentId ? '/incidents' : '/threat#response-actions',
+    };
+    const disabledActionGuidance: ThreatOperationsViewModel['disabledActionGuidance'] = [];
     const registerDisabledAction = (
       key: string,
       action: string,
-      disabled: boolean,
-      reason: string | null | undefined,
-      nextStepLabel: string,
-      nextStepHref: string,
+      state: ThreatActionButtonState,
     ) => {
-      if (!disabled) return;
-      messages.push({
+      if (!state.disabled) return;
+      disabledActionGuidance.push({
         key,
         action,
-        reason: deterministicDisabledReason(reason, 'Unavailable due to current monitoring state'),
-        nextStepLabel,
-        nextStepHref,
+        reason: deterministicDisabledReason(state.reason, 'Unavailable due to current monitoring state'),
+        nextStepLabel: state.nextStepLabel,
+        nextStepHref: state.nextStepHref,
       });
     };
-    registerDisabledAction(
-      'repair-proof-chain',
-      'Generate simulator proof chain',
-      monitoringViewModel.ctas.generateSimulatorProofChain.disabled,
-      monitoringViewModel.ctas.generateSimulatorProofChain.reason,
-      monitoringViewModel.ctas.generateSimulatorProofChain.nextStepLabel,
-      monitoringViewModel.ctas.generateSimulatorProofChain.nextStepHref,
-    );
-    registerDisabledAction(
-      'sim-notify-team',
-      'Run simulated response',
-      actionButtonStates['sim-notify-team'].disabled,
-      actionButtonStates['sim-notify-team'].reason,
-      actionButtonStates['sim-notify-team'].nextStepLabel,
-      actionButtonStates['sim-notify-team'].nextStepHref,
-    );
-    registerDisabledAction(
-      'sim-revoke-approval',
-      'Revoke approval',
-      actionButtonStates['sim-revoke-approval'].disabled,
-      actionButtonStates['sim-revoke-approval'].reason,
-      actionButtonStates['sim-revoke-approval'].nextStepLabel,
-      actionButtonStates['sim-revoke-approval'].nextStepHref,
-    );
-    registerDisabledAction(
-      'rec-freeze-wallet',
-      'Freeze wallet (RECOMMENDED)',
-      actionButtonStates['rec-freeze-wallet'].disabled,
-      actionButtonStates['rec-freeze-wallet'].reason,
-      actionButtonStates['rec-freeze-wallet'].nextStepLabel,
-      actionButtonStates['rec-freeze-wallet'].nextStepHref,
-    );
-    registerDisabledAction(
-      'rec-disable-monitored-system',
-      'Disable monitored system (RECOMMENDED)',
-      actionButtonStates['rec-disable-monitored-system'].disabled,
-      actionButtonStates['rec-disable-monitored-system'].reason,
-      actionButtonStates['rec-disable-monitored-system'].nextStepLabel,
-      actionButtonStates['rec-disable-monitored-system'].nextStepHref,
-    );
-    registerDisabledAction(
-      'live-freeze-wallet',
-      'Freeze wallet (LIVE)',
-      actionButtonStates['live-freeze-wallet'].disabled,
-      actionButtonStates['live-freeze-wallet'].reason,
-      actionButtonStates['live-freeze-wallet'].nextStepLabel,
-      actionButtonStates['live-freeze-wallet'].nextStepHref,
-    );
-    registerDisabledAction(
-      'live-revoke-approval',
-      'Revoke approval (LIVE)',
-      actionButtonStates['live-revoke-approval'].disabled,
-      actionButtonStates['live-revoke-approval'].reason,
-      actionButtonStates['live-revoke-approval'].nextStepLabel,
-      actionButtonStates['live-revoke-approval'].nextStepHref,
-    );
-    registerDisabledAction(
-      'confirm-live-action',
-      'Confirm LIVE action',
-      Boolean(confirmLiveActionDisabledReason),
-      confirmLiveActionDisabledReason,
-      !selectedThreatActionContext?.incidentId ? 'Open incident queue' : 'Review confirmation steps',
-      !selectedThreatActionContext?.incidentId ? '/incidents' : '/threat#response-actions',
-    );
-    return messages;
+    registerDisabledAction('repair-proof-chain', 'Generate simulator proof chain', monitoringViewModel.ctas.generateSimulatorProofChain);
+    registerDisabledAction('sim-notify-team', 'Run simulated response', actionButtonStates['sim-notify-team']);
+    registerDisabledAction('sim-revoke-approval', 'Revoke approval', actionButtonStates['sim-revoke-approval']);
+    registerDisabledAction('rec-freeze-wallet', 'Freeze wallet (RECOMMENDED)', actionButtonStates['rec-freeze-wallet']);
+    registerDisabledAction('rec-disable-monitored-system', 'Disable monitored system (RECOMMENDED)', actionButtonStates['rec-disable-monitored-system']);
+    registerDisabledAction('live-freeze-wallet', 'Freeze wallet (LIVE)', actionButtonStates['live-freeze-wallet']);
+    registerDisabledAction('live-revoke-approval', 'Revoke approval (LIVE)', actionButtonStates['live-revoke-approval']);
+    registerDisabledAction('confirm-live-action', 'Confirm LIVE action', confirmLiveAction);
+    return {
+      monitoring: monitoringViewModel,
+      actionButtons: actionButtonStates,
+      confirmLiveAction,
+      disabledActionGuidance,
+    };
   }, [
     actionButtonStates,
     confirmLiveActionDisabledReason,
-    monitoringViewModel.ctas.generateSimulatorProofChain.disabled,
-    monitoringViewModel.ctas.generateSimulatorProofChain.nextStepHref,
-    monitoringViewModel.ctas.generateSimulatorProofChain.nextStepLabel,
-    monitoringViewModel.ctas.generateSimulatorProofChain.reason,
+    monitoringViewModel,
     selectedThreatActionContext?.incidentId,
   ]);
-  const threatOperationsViewModel = useMemo<ThreatOperationsViewModel>(() => ({
-    monitoring: monitoringViewModel,
-    actionButtons: actionButtonStates,
-  }), [actionButtonStates, monitoringViewModel]);
 
   useEffect(() => {
     void fetch(`${apiUrl}/response/action-capabilities`, { headers: authHeaders(), cache: 'no-store' })
@@ -3403,9 +3352,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               ? <p className="statusLine">No linked alert/incident context available.</p>
               : <p className="statusLine">Linked detection/alert/incident context selected for action creation.</p>}
             {selectedThreatActionContext && !selectedThreatActionContext.incidentId ? <p className="statusLine">Selected context has no incident link. LIVE action workflow is blocked until an incident is linked.</p> : null}
-            {actionUnavailableMessages.length > 0 ? (
+            {threatOperationsViewModel.disabledActionGuidance.length > 0 ? (
               <div className="stack compactStack" aria-label="Action availability guidance">
-                {actionUnavailableMessages.map((message) => (
+                {threatOperationsViewModel.disabledActionGuidance.map((message) => (
                   <p key={message.key} className="tableMeta">
                     {message.action} unavailable: {message.reason}. Next step:{' '}
                     <Link href={message.nextStepHref} prefetch={false}>{message.nextStepLabel}</Link>
@@ -3493,7 +3442,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           </label>
           <div className="buttonRow">
             <button type="button" className="secondaryCta" onClick={() => { setLiveActionConfirm(null); setLiveActionConfirmationText(''); setLiveActionAcknowledged(false); setLiveActionConfirmationToken(null); }}>Cancel</button>
-            <button type="button" disabled={Boolean(confirmLiveActionDisabledReason)} title={deterministicDisabledReason(confirmLiveActionDisabledReason, 'Confirm LIVE action is available.')} onClick={() => {
+            <button type="button" disabled={threatOperationsViewModel.confirmLiveAction.disabled} title={threatOperationsViewModel.confirmLiveAction.reason} onClick={() => {
               const token = `${Date.now()}-${liveActionConfirm.actionType}`;
               setLiveActionConfirmationToken(token);
               void runThreatAction(liveActionConfirm.actionType, liveActionConfirm.label, 'live', token);
@@ -3502,11 +3451,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               setLiveActionAcknowledged(false);
             }}>Confirm LIVE action</button>
           </div>
-          {Boolean(confirmLiveActionDisabledReason) ? (
+          {threatOperationsViewModel.confirmLiveAction.disabled ? (
             <p className="tableMeta">
-              {confirmLiveActionDisabledReason} Next step:{' '}
-              <Link href={!selectedThreatActionContext?.incidentId ? '/incidents' : '/threat#response-actions'} prefetch={false}>
-                {!selectedThreatActionContext?.incidentId ? 'Open incident queue' : 'Complete confirmation checklist'}
+              {threatOperationsViewModel.confirmLiveAction.reason} Next step:{' '}
+              <Link href={threatOperationsViewModel.confirmLiveAction.nextStepHref} prefetch={false}>
+                {threatOperationsViewModel.confirmLiveAction.nextStepLabel}
               </Link>
             </p>
           ) : null}
