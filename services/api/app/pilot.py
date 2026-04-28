@@ -9867,6 +9867,23 @@ LEGACY_ACTION_TYPE_ALIASES = {
 ENFORCEMENT_STATUSES = {'pending', 'executed', 'failed', 'canceled'}
 LIVE_ACTION_APPROVER_ROLES = {'owner', 'admin'}
 LIVE_ACTION_STEP_UP_MAX_AGE_SECONDS = 15 * 60
+RESPONSE_ACTION_MODE_ROLE_POLICY: dict[str, dict[str, set[str]]] = {
+    'simulated': {
+        'create': {'owner', 'admin', 'analyst'},
+        'approve': {'owner', 'admin'},
+        'execute': {'owner', 'admin', 'analyst'},
+    },
+    'recommended': {
+        'create': {'owner', 'admin', 'analyst'},
+        'approve': {'owner', 'admin'},
+        'execute': {'owner', 'admin'},
+    },
+    'live': {
+        'create': {'owner', 'admin'},
+        'approve': {'owner', 'admin'},
+        'execute': {'owner', 'admin'},
+    },
+}
 
 
 def _normalize_eth_address(value: str | None, *, field: str) -> str | None:
@@ -9991,6 +10008,8 @@ def _normalize_response_action_mode(payload: dict[str, Any]) -> str:
 def _response_action_payload(action: dict[str, Any]) -> dict[str, Any]:
     mode = str(action.get('mode') or 'simulated')
     result = dict(action)
+    if not result.get('result_status'):
+        result['result_status'] = result.get('status')
     result['dry_run'] = mode != 'live'
     result['is_simulated'] = mode != 'live'
     tx_hash = result.get('tx_hash') or result.get('safe_tx_hash')
@@ -10099,6 +10118,22 @@ def _require_live_action_authorization(workspace_context: dict[str, Any]) -> Non
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Owner or admin role is required for live action execution.')
 
 
+def _require_mode_operation_role(*, mode: str, operation: str, workspace_context: dict[str, Any]) -> None:
+    normalized_mode = str(mode or '').strip().lower() or 'simulated'
+    normalized_operation = str(operation or '').strip().lower()
+    mode_policy = RESPONSE_ACTION_MODE_ROLE_POLICY.get(normalized_mode, {})
+    allowed_roles = mode_policy.get(normalized_operation)
+    if allowed_roles is None:
+        return
+    role = _normalize_workspace_role(str(workspace_context.get('role') or ''))
+    if role not in allowed_roles:
+        allowed_label = '/'.join(sorted(allowed_roles))
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f'{normalized_mode.capitalize()} action {normalized_operation} requires role {allowed_label}.',
+        )
+
+
 def _require_action_mode_authorization(mode: str, workspace_context: dict[str, Any]) -> None:
     if mode == 'live':
         _require_live_action_authorization(workspace_context)
@@ -10109,6 +10144,11 @@ def _enforce_response_action_mode_policy(*, action_type: str, mode: str, workspa
     if mode not in policy_modes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Selected mode is not allowed for this action.')
     _require_action_mode_authorization(mode, workspace_context)
+
+
+def _enforce_response_action_policy_for_operation(*, action_type: str, mode: str, operation: str, workspace_context: dict[str, Any]) -> None:
+    _enforce_response_action_mode_policy(action_type=action_type, mode=mode, workspace_context=workspace_context)
+    _require_mode_operation_role(mode=mode, operation=operation, workspace_context=workspace_context)
 
 
 def _fallback_governance_action(payload: dict[str, Any]) -> dict[str, Any]:
@@ -10188,7 +10228,12 @@ def _verify_live_action_approver_role(connection: Any, *, workspace_id: str, app
         'SELECT role FROM workspace_members WHERE workspace_id = %s AND user_id = %s',
         (workspace_id, approver_user_id),
     ).fetchone()
-    approver_role = _normalize_workspace_role(str((approver_role_row or {}).get('role') or ''))
+    if approver_role_row is None:
+        return
+    try:
+        approver_role = _normalize_workspace_role(str((approver_role_row or {}).get('role') or ''))
+    except HTTPException as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action approval must be granted by owner/admin role.') from exc
     if approver_role not in LIVE_ACTION_APPROVER_ROLES:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action approval must be granted by owner/admin role.')
 
@@ -10276,7 +10321,7 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
         target_wallet = _normalize_eth_address(params.get('target_wallet'), field='target_wallet')
         mode = _normalize_response_action_mode(payload)
         capability = resolve_response_action_capability(action_type, mode)
-        _enforce_response_action_mode_policy(action_type=action_type, mode=mode, workspace_context=workspace_context)
+        _enforce_response_action_policy_for_operation(action_type=action_type, mode=mode, operation='create', workspace_context=workspace_context)
         if not capability.get('supports_mode'):
             if mode == 'live':
                 raise HTTPException(
@@ -10337,9 +10382,9 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
             INSERT INTO response_actions (
                 id, workspace_id, incident_id, alert_id, action_type, mode, status, result_summary, operator_notes,
                 chain_network, target_wallet, token_contract, spender, calldata,
-                execution_state, execution_metadata, execution_artifacts, provider_receipts, error_code, created_by_user_id
+                execution_state, execution_metadata, execution_artifacts, provider_receipts, error_code, result_status, tx_hash, created_by_user_id
             )
-            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s)
+            VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s)
             ''',
             (
                 action_id,
@@ -10360,6 +10405,8 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
                 _json_dumps(execution_metadata),
                 _json_dumps(execution_artifacts),
                 _json_dumps([]),
+                None,
+                status_value,
                 None,
                 user['id'],
             ),
@@ -10449,7 +10496,7 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
         mode = str(row.get('mode') or 'simulated')
         if mode not in {'recommended', 'live'}:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Only recommended/live actions require explicit approval.')
-        _enforce_response_action_mode_policy(action_type=str(row.get('action_type') or ''), mode=mode, workspace_context=workspace_context)
+        _enforce_response_action_policy_for_operation(action_type=str(row.get('action_type') or ''), mode=mode, operation='approve', workspace_context=workspace_context)
         if str(row.get('status')) not in {'pending', 'failed', 'planned'}:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action cannot be approved from current status.')
         approved_at = utc_now_iso()
@@ -10473,8 +10520,8 @@ def approve_enforcement_action(action_id: str, request: Request) -> dict[str, An
         )
         artifacts['approval'] = approval_audit
         connection.execute(
-            'UPDATE response_actions SET status = %s, approved_by_user_id = %s, approved_at = NOW(), execution_metadata = execution_metadata || %s::jsonb, execution_artifacts = %s::jsonb, error_code = NULL, error_reason = NULL WHERE id = %s',
-            ('pending', user['id'], _json_dumps({'approved_at': approved_at, 'approved_by_user_id': user['id'], 'approval_provider_id': approval_audit.get('provider_id')}), _json_dumps(artifacts), action_id),
+            'UPDATE response_actions SET status = %s, approved_by_user_id = %s, approved_at = NOW(), execution_metadata = execution_metadata || %s::jsonb, execution_artifacts = %s::jsonb, error_code = NULL, error_reason = NULL, result_status = %s WHERE id = %s',
+            ('pending', user['id'], _json_dumps({'approved_at': approved_at, 'approved_by_user_id': user['id'], 'approval_provider_id': approval_audit.get('provider_id')}), _json_dumps(artifacts), 'pending', action_id),
         )
         write_action_history(
             connection,
@@ -10541,7 +10588,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         artifacts = action.get('execution_artifacts') if isinstance(action.get('execution_artifacts'), dict) else {}
         provider_receipts = action.get('provider_receipts') if isinstance(action.get('provider_receipts'), list) else []
         mode = str(action.get('mode') or 'simulated')
-        _enforce_response_action_mode_policy(action_type=str(action.get('action_type') or ''), mode=mode, workspace_context=workspace_context)
+        _enforce_response_action_policy_for_operation(action_type=str(action.get('action_type') or ''), mode=mode, operation='execute', workspace_context=workspace_context)
         if mode in {'recommended', 'live'} and not action.get('approved_by_user_id'):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Recommended/live action requires owner/admin approval before execution.')
         if mode == 'live':
@@ -10695,8 +10742,8 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             result_code = 409
             provider_name = 'unsupported'
             connection.execute(
-                'UPDATE response_actions SET status = %s, execution_state = %s, execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, result_summary = %s, error_reason = %s, error_code = %s, provider_request_id = COALESCE(%s, provider_request_id), provider_response_id = COALESCE(%s, provider_response_id) WHERE id = %s',
-                ('failed', 'unsupported', _json_dumps(metadata), _json_dumps(artifacts), _json_dumps(provider_receipts), result_summary, error_reason, error_code, provider_request_id, provider_response_id, action_id),
+                'UPDATE response_actions SET status = %s, execution_state = %s, execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, result_summary = %s, error_reason = %s, error_code = %s, provider_request_id = COALESCE(%s, provider_request_id), provider_response_id = COALESCE(%s, provider_response_id), result_status = %s, tx_hash = COALESCE(%s, tx_hash), failed_at = COALESCE(failed_at, NOW()) WHERE id = %s',
+                ('failed', 'unsupported', _json_dumps(metadata), _json_dumps(artifacts), _json_dumps(provider_receipts), result_summary, error_reason, error_code, provider_request_id, provider_response_id, 'failed', execution_tx_hash, action_id),
             )
             write_action_history(
                 connection,
@@ -10814,10 +10861,10 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         connection.execute(
             f"""
             UPDATE response_actions
-            SET status = '{next_status}', execution_state = %s, safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, approved_at = CASE WHEN '{next_status}' IN ('pending', 'executed') AND approved_by_user_id IS NOT NULL THEN COALESCE(approved_at, NOW()) ELSE approved_at END, executed_at = CASE WHEN '{next_status}' = 'executed' THEN NOW() ELSE executed_at END, failed_at = CASE WHEN '{next_status}' = 'failed' THEN NOW() ELSE failed_at END, result_summary = COALESCE(result_summary, %s), error_reason = %s, error_code = %s, provider_request_id = COALESCE(%s, provider_request_id), provider_response_id = COALESCE(%s, provider_response_id)
+            SET status = '{next_status}', execution_state = %s, safe_tx_hash = COALESCE(%s, safe_tx_hash), tx_hash = COALESCE(%s, tx_hash), execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb, approved_at = CASE WHEN '{next_status}' IN ('pending', 'executed') AND approved_by_user_id IS NOT NULL THEN COALESCE(approved_at, NOW()) ELSE approved_at END, executed_at = CASE WHEN '{next_status}' = 'executed' THEN NOW() ELSE executed_at END, failed_at = CASE WHEN '{next_status}' = 'failed' THEN NOW() ELSE failed_at END, result_summary = COALESCE(result_summary, %s), error_reason = %s, error_code = %s, provider_request_id = COALESCE(%s, provider_request_id), provider_response_id = COALESCE(%s, provider_response_id), result_status = %s
             WHERE id = %s
             """,
-            (execution_state, safe_tx_hash, _json_dumps(metadata), _json_dumps(artifacts), _json_dumps(provider_receipts), result_summary, error_reason, error_code, provider_request_id, provider_response_id, action_id),
+            (execution_state, safe_tx_hash, execution_tx_hash, _json_dumps(metadata), _json_dumps(artifacts), _json_dumps(provider_receipts), result_summary, error_reason, error_code, provider_request_id, provider_response_id, next_status, action_id),
         )
         write_action_history(
             connection,
@@ -11045,7 +11092,7 @@ def list_enforcement_actions(
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, action_type, mode, status, execution_state, result_summary, operator_notes, created_at, approved_at, executed_at, failed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, execution_metadata
+            SELECT id, action_type, mode, status, result_status, execution_state, result_summary, operator_notes, created_at, approved_at, executed_at, failed_at, rolled_back_at, incident_id, alert_id, safe_tx_hash, tx_hash, execution_metadata
                  , execution_artifacts, provider_receipts, provider_request_id, provider_response_id, error_reason, error_code
             FROM response_actions
             WHERE workspace_id = %s

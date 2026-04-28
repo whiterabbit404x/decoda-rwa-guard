@@ -426,7 +426,7 @@ def test_execute_live_revoke_approval_returns_proposed_state_with_safe_tx_hash_a
     assert response['safe_tx_hash'] == '0xsafehash'
     assert response['live_execution_path'] == 'safe'
     assert any(
-        "SET status = 'pending', execution_state = %s, safe_tx_hash = COALESCE(%s, safe_tx_hash), execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb" in statement
+        "SET status = 'pending', execution_state = %s, safe_tx_hash = COALESCE(%s, safe_tx_hash), tx_hash = COALESCE(%s, tx_hash), execution_metadata = %s::jsonb, execution_artifacts = %s::jsonb, provider_receipts = %s::jsonb" in statement
         and params[0] == 'proposed'
         and params[1] == '0xsafehash'
         for statement, params in executed
@@ -501,9 +501,9 @@ def test_execute_live_freeze_wallet_writes_governance_metadata_and_timeline(monk
     update_calls = [params for statement, params in executed if 'SET status = \'pending\', execution_state = %s' in statement and 'execution_metadata' in statement]
     assert update_calls
     assert update_calls[0][0] == 'proposed'
-    assert 'gov-123' in str(update_calls[0][2])
-    assert 'attest-123' in str(update_calls[0][2])
-    assert 'Wallet frozen' in str(update_calls[0][2])
+    assert 'gov-123' in str(update_calls[0])
+    assert 'attest-123' in str(update_calls[0])
+    assert 'Wallet frozen' in str(update_calls[0])
     timeline_calls = [params for statement, params in executed if 'INSERT INTO incident_timeline' in statement]
     assert any(params[3] == 'response_action.proposed' for params in timeline_calls)
     assert any('governance_action_id' in str(params[6]) for params in timeline_calls)
