@@ -24,6 +24,18 @@ BEGIN
     END IF;
 END $$;
 
+CREATE OR REPLACE FUNCTION monitoring_reason_codes_jsonb_is_valid(input jsonb)
+RETURNS boolean
+LANGUAGE SQL
+IMMUTABLE
+AS $$
+    SELECT (
+        jsonb_typeof(input) = 'array'
+        AND NOT jsonb_path_exists(input, '$[*] ? (@.type() != "string" || @ == "")')
+        AND NOT jsonb_path_exists(input, '$[*] ? (@ like_regex "^\\s+$")')
+    );
+$$;
+
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -32,15 +44,8 @@ BEGIN
         WHERE conname = 'monitoring_reconcile_runs_reason_codes_array_check'
     ) THEN
         ALTER TABLE monitoring_reconcile_runs
-            ADD CONSTRAINT monitoring_reconcile_runs_reason_codes_array_check CHECK (
-                jsonb_typeof(reason_codes) = 'array'
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM jsonb_array_elements(reason_codes) AS code
-                    WHERE jsonb_typeof(code) <> 'string'
-                       OR length(btrim(code #>> '{}')) = 0
-                )
-            );
+            ADD CONSTRAINT monitoring_reconcile_runs_reason_codes_array_check
+            CHECK (monitoring_reason_codes_jsonb_is_valid(reason_codes));
     END IF;
 END $$;
 
@@ -52,14 +57,7 @@ BEGIN
         WHERE conname = 'monitoring_reconcile_events_reason_codes_array_check'
     ) THEN
         ALTER TABLE monitoring_reconcile_events
-            ADD CONSTRAINT monitoring_reconcile_events_reason_codes_array_check CHECK (
-                jsonb_typeof(reason_codes) = 'array'
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM jsonb_array_elements(reason_codes) AS code
-                    WHERE jsonb_typeof(code) <> 'string'
-                       OR length(btrim(code #>> '{}')) = 0
-                )
-            );
+            ADD CONSTRAINT monitoring_reconcile_events_reason_codes_array_check
+            CHECK (monitoring_reason_codes_jsonb_is_valid(reason_codes));
     END IF;
 END $$;
