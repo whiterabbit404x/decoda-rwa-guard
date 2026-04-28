@@ -16,13 +16,13 @@ const THREAT_PAGE_POLL_VISIBLE_MS = 45000;
 const THREAT_PAGE_POLL_HIDDEN_MS = 60000;
 const ENTERPRISE_GATE_LABELS: Record<string, string> = {
   continuity_slo_pass: 'Continuity SLO pass',
-  evidence_chain_completeness: 'Evidence chain completeness',
+  linked_fresh_evidence: 'Linked fresh evidence',
   stable_monitored_systems: 'Stable monitored systems',
   live_action_capability_readiness: 'Live action capability readiness',
 };
 const ENTERPRISE_GATE_REMEDIATION_LINKS: Record<string, string> = {
   continuity_slo_pass: '/threat#continuity-slo',
-  evidence_chain_completeness: '/threat#telemetry-freshness',
+  linked_fresh_evidence: '/threat#telemetry-freshness',
   stable_monitored_systems: '/threat#monitored-system-state',
   live_action_capability_readiness: '/threat#response-actions',
 };

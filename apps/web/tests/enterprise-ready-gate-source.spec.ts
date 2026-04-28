@@ -13,7 +13,7 @@ test('threat panel renders enterprise readiness gate banner and remediation link
   expect(threat).toContain('Enterprise readiness gate:');
   expect(threat).toContain('ENTERPRISE_GATE_REMEDIATION_LINKS');
   expect(threat).toContain("stable_monitored_systems: 'Stable monitored systems'");
-  expect(threat).toContain("evidence_chain_completeness: 'Evidence chain completeness'");
+  expect(threat).toContain("linked_fresh_evidence: 'Linked fresh evidence'");
   expect(threat).toContain("'/threat#monitored-system-state'");
   expect(threat).toContain("'/threat#response-actions'");
 });
