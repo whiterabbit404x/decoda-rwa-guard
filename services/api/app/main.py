@@ -2071,6 +2071,11 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
     try:
         payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
         summary = payload.get('workspace_monitoring_summary') if isinstance(payload.get('workspace_monitoring_summary'), dict) else {}
+        check_name_aliases = {
+            'evidence_chain_completeness': 'linked_fresh_evidence',
+            'linked_fresh_evidence_chain': 'linked_fresh_evidence',
+            'linked_evidence_freshness': 'linked_fresh_evidence',
+        }
         payload['enterprise_ready_pass'] = bool(
             payload.get('enterprise_ready_pass')
             if payload.get('enterprise_ready_pass') is not None
@@ -2079,15 +2084,32 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         failed_checks = payload.get('failed_checks')
         if not isinstance(failed_checks, list):
             failed_checks = summary.get('failed_checks')
-        payload['failed_checks'] = [str(check) for check in (failed_checks or []) if str(check).strip()]
+        payload['failed_checks'] = [
+            check_name_aliases.get(str(check).strip(), str(check).strip())
+            for check in (failed_checks or [])
+            if str(check).strip()
+        ]
         check_results = payload.get('check_results')
         if not isinstance(check_results, list):
             check_results = summary.get('check_results')
-        payload['check_results'] = list(check_results or [])
+        normalized_check_results = []
+        for check in list(check_results or []):
+            if not isinstance(check, dict):
+                continue
+            normalized = dict(check)
+            normalized_name = str(normalized.get('name') or '').strip()
+            if normalized_name:
+                normalized['name'] = check_name_aliases.get(normalized_name, normalized_name)
+            normalized_check_results.append(normalized)
+        payload['check_results'] = normalized_check_results
         remediation_links = payload.get('remediation_links')
         if not isinstance(remediation_links, dict):
             remediation_links = summary.get('remediation_links')
-        payload['remediation_links'] = dict(remediation_links or {})
+        payload['remediation_links'] = {
+            check_name_aliases.get(str(name).strip(), str(name).strip()): str(url)
+            for name, url in dict(remediation_links or {}).items()
+            if str(name).strip() and str(url).strip()
+        }
         continuity_slo = payload.get('continuity_slo') if isinstance(payload.get('continuity_slo'), dict) else {}
         if not continuity_slo:
             thresholds = dict(payload.get('thresholds_seconds') or summary.get('thresholds_seconds') or {})
@@ -2210,19 +2232,19 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'enterprise_ready_pass': False,
             'failed_checks': [
                 'continuity_slo_pass',
-                'linked_evidence_freshness',
+                'linked_fresh_evidence',
                 'stable_monitored_systems',
                 'live_action_capability_readiness',
             ],
             'check_results': [
                 {'name': 'continuity_slo_pass', 'pass': False, 'remediation_url': '/threat#continuity-slo'},
-                {'name': 'linked_evidence_freshness', 'pass': False, 'remediation_url': '/threat#telemetry-freshness'},
+                {'name': 'linked_fresh_evidence', 'pass': False, 'remediation_url': '/threat#telemetry-freshness'},
                 {'name': 'stable_monitored_systems', 'pass': False, 'remediation_url': '/threat#monitored-system-state'},
                 {'name': 'live_action_capability_readiness', 'pass': False, 'remediation_url': '/threat#response-actions'},
             ],
             'remediation_links': {
                 'continuity_slo_pass': '/threat#continuity-slo',
-                'linked_evidence_freshness': '/threat#telemetry-freshness',
+                'linked_fresh_evidence': '/threat#telemetry-freshness',
                 'stable_monitored_systems': '/threat#monitored-system-state',
                 'live_action_capability_readiness': '/threat#response-actions',
             },

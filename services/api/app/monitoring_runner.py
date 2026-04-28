@@ -113,7 +113,7 @@ _WORKSPACE_COVERAGE_ONLY_STREAK: dict[str, dict[str, Any]] = {}
 
 ENTERPRISE_READY_REMEDIATION_LINKS: dict[str, str] = {
     'continuity_slo_pass': '/threat#continuity-slo',
-    'evidence_chain_completeness': '/threat#telemetry-freshness',
+    'linked_fresh_evidence': '/threat#telemetry-freshness',
     'stable_monitored_systems': '/threat#monitored-system-state',
     'live_action_capability_readiness': '/threat#response-actions',
 }
@@ -151,32 +151,20 @@ def _evaluate_enterprise_ready_gate(
     checks: list[tuple[str, bool]] = [
         ('continuity_slo_pass', bool(continuity_slo_pass)),
         (
-            'evidence_chain_completeness',
+            'linked_fresh_evidence',
             str(proof_chain_status or '').strip().lower() == 'complete'
             and str(telemetry_freshness or '').strip().lower() in fresh_states
-            and str(ingestion_freshness or '').strip().lower() in fresh_states
-            and str(detection_pipeline_freshness or '').strip().lower() in fresh_states,
-        ),
-        (
-            'linked_fresh_evidence_chain',
-            # Backward-compatible alias used by existing clients.
-            str(telemetry_freshness or '').strip().lower() in fresh_states
             and str(ingestion_freshness or '').strip().lower() in fresh_states
             and str(detection_pipeline_freshness or '').strip().lower() in fresh_states,
         ),
         ('stable_monitored_systems', stable_monitored_systems),
         ('live_action_capability_readiness', live_action_capability_readiness),
     ]
-    canonical_checks: list[tuple[str, bool]] = []
-    for name, passed in checks:
-        if name == 'linked_fresh_evidence_chain':
-            continue
-        canonical_checks.append((name, passed))
-    failed_checks = [name for name, passed in canonical_checks if not passed]
+    failed_checks = [name for name, passed in checks if not passed]
     return {
         'enterprise_ready_pass': len(failed_checks) == 0,
         'failed_checks': failed_checks,
-        'check_results': [{'name': name, 'pass': passed, 'remediation_url': ENTERPRISE_READY_REMEDIATION_LINKS.get(name)} for name, passed in canonical_checks],
+        'check_results': [{'name': name, 'pass': passed, 'remediation_url': ENTERPRISE_READY_REMEDIATION_LINKS.get(name)} for name, passed in checks],
         'remediation_links': {name: ENTERPRISE_READY_REMEDIATION_LINKS[name] for name in failed_checks if name in ENTERPRISE_READY_REMEDIATION_LINKS},
     }
 

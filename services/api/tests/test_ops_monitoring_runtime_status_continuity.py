@@ -44,6 +44,40 @@ def _base_payload(runtime_status: str, continuity_pass: bool, continuity_reason_
     }
 
 
+def _enterprise_gate_payload(*, enterprise_ready_pass: bool, failed_checks: list[str]) -> dict[str, object]:
+    base = _base_payload('live', enterprise_ready_pass, [])
+    checks = [
+        {'name': 'continuity_slo_pass', 'pass': 'continuity_slo_pass' not in failed_checks, 'remediation_url': '/threat#continuity-slo'},
+        {'name': 'linked_fresh_evidence', 'pass': 'linked_fresh_evidence' not in failed_checks, 'remediation_url': '/threat#telemetry-freshness'},
+        {'name': 'stable_monitored_systems', 'pass': 'stable_monitored_systems' not in failed_checks, 'remediation_url': '/threat#monitored-system-state'},
+        {'name': 'live_action_capability_readiness', 'pass': 'live_action_capability_readiness' not in failed_checks, 'remediation_url': '/threat#response-actions'},
+    ]
+    base.update(
+        {
+            'enterprise_ready_pass': enterprise_ready_pass,
+            'failed_checks': list(failed_checks),
+            'check_results': checks,
+            'remediation_links': {
+                'continuity_slo_pass': '/threat#continuity-slo',
+                'linked_fresh_evidence': '/threat#telemetry-freshness',
+                'stable_monitored_systems': '/threat#monitored-system-state',
+                'live_action_capability_readiness': '/threat#response-actions',
+            },
+        }
+    )
+    summary = dict(base['workspace_monitoring_summary'])
+    summary.update(
+        {
+            'enterprise_ready_pass': enterprise_ready_pass,
+            'failed_checks': list(failed_checks),
+            'check_results': checks,
+            'remediation_links': base['remediation_links'],
+        }
+    )
+    base['workspace_monitoring_summary'] = summary
+    return base
+
+
 def test_ops_runtime_status_exposes_continuity_fields_for_healthy_stale_degraded_offline(monkeypatch):
     scenarios = {
         'healthy': _base_payload('healthy', True, []),
@@ -80,3 +114,42 @@ def test_ops_runtime_status_exposes_continuity_fields_for_healthy_stale_degraded
         if payload['continuity_slo_pass'] is False:
             assert body['runtime_degraded_reason_codes'][0] == 'continuity_slo_failed'
             assert body['runtime_status_reason_codes'][0] == 'continuity_slo_failed'
+
+
+def test_ops_runtime_status_exposes_enterprise_ready_gate_all_green(monkeypatch):
+    payload = _enterprise_gate_payload(enterprise_ready_pass=True, failed_checks=[])
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: payload)
+    client = TestClient(api_main.app)
+    response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer test', 'x-workspace-id': 'ws-1'})
+    assert response.status_code == 200
+    body = response.json()
+    assert body['enterprise_ready_pass'] is True
+    assert body['failed_checks'] == []
+    assert [check['name'] for check in body['check_results']] == [
+        'continuity_slo_pass',
+        'linked_fresh_evidence',
+        'stable_monitored_systems',
+        'live_action_capability_readiness',
+    ]
+    assert all(check['pass'] is True for check in body['check_results'])
+
+
+def test_ops_runtime_status_exposes_enterprise_ready_gate_all_red(monkeypatch):
+    failed_checks = [
+        'continuity_slo_pass',
+        'linked_fresh_evidence',
+        'stable_monitored_systems',
+        'live_action_capability_readiness',
+    ]
+    payload = _enterprise_gate_payload(enterprise_ready_pass=False, failed_checks=failed_checks)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: payload)
+    client = TestClient(api_main.app)
+    response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer test', 'x-workspace-id': 'ws-1'})
+    assert response.status_code == 200
+    body = response.json()
+    assert body['enterprise_ready_pass'] is False
+    assert body['failed_checks'] == failed_checks
+    assert [check['name'] for check in body['check_results']] == failed_checks
+    assert all(check['pass'] is False for check in body['check_results'])

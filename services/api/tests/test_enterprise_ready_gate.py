@@ -35,7 +35,7 @@ def test_enterprise_ready_gate_fails_linked_fresh_evidence_chain_check():
         guard_flags=[],
     )
     assert payload['enterprise_ready_pass'] is False
-    assert 'evidence_chain_completeness' in payload['failed_checks']
+    assert 'linked_fresh_evidence' in payload['failed_checks']
 
 
 def test_enterprise_ready_gate_fails_stable_monitored_systems_check():
@@ -101,13 +101,13 @@ def test_enterprise_ready_gate_fails_all_red_scenario(monkeypatch):
     assert payload['enterprise_ready_pass'] is False
     assert payload['failed_checks'] == [
         'continuity_slo_pass',
-        'evidence_chain_completeness',
+        'linked_fresh_evidence',
         'stable_monitored_systems',
         'live_action_capability_readiness',
     ]
     assert payload['check_results'] == [
         {'name': 'continuity_slo_pass', 'pass': False, 'remediation_url': '/threat#continuity-slo'},
-        {'name': 'evidence_chain_completeness', 'pass': False, 'remediation_url': '/threat#telemetry-freshness'},
+        {'name': 'linked_fresh_evidence', 'pass': False, 'remediation_url': '/threat#telemetry-freshness'},
         {'name': 'stable_monitored_systems', 'pass': False, 'remediation_url': '/threat#monitored-system-state'},
         {'name': 'live_action_capability_readiness', 'pass': False, 'remediation_url': '/threat#response-actions'},
     ]
@@ -136,7 +136,7 @@ def test_enterprise_ready_gate_passes_all_green_scenario(monkeypatch):
     assert payload['failed_checks'] == []
     assert [check['name'] for check in payload['check_results']] == [
         'continuity_slo_pass',
-        'evidence_chain_completeness',
+        'linked_fresh_evidence',
         'stable_monitored_systems',
         'live_action_capability_readiness',
     ]
