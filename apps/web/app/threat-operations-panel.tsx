@@ -3272,7 +3272,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <article id="response-actions" className="dataCard">
             <p className="sectionEyebrow">Response Actions</p>
             <h3>Operational actions</h3>
-            <p className="muted">Use investigation and escalation workflows to restore healthy monitoring and resolve risk. Modes are labeled as SIMULATED, RECOMMENDED, or LIVE; live execution requires real integration and is never implied by simulator flows.</p>
+            <p className="muted">Use investigation and escalation workflows to restore healthy monitoring and resolve risk. Modes are labeled as SIMULATED, RECOMMENDED, or LIVE. SIMULATED actions never hit live providers. LIVE actions are isolated behind confirmation, approval, and execution audit evidence.</p>
             <label className="fieldLabel" htmlFor="threat-action-context-select">Launch action context</label>
             <select
               id="threat-action-context-select"
@@ -3315,7 +3315,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               <button type="button" disabled={threatOperationsViewModel.actionButtons['sim-notify-team'].disabled} title={threatOperationsViewModel.actionButtons['sim-notify-team'].reason} onClick={() => void runThreatAction('notify_team', 'Run simulated response', 'simulated')}>Run simulated response</button>
               <button type="button" disabled={threatOperationsViewModel.actionButtons['sim-revoke-approval'].disabled} title={threatOperationsViewModel.actionButtons['sim-revoke-approval'].reason} onClick={() => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated')}>Revoke approval</button>
             </div>
-            <p className="tableMeta">SIMULATED actions run immediately and never submit a live transaction.</p>
+            <p className="tableMeta">SIMULATED actions run immediately and never submit a live transaction or provider call.</p>
             <div className="buttonRow">
               <span className="ruleChip">RECOMMENDED</span>
               <button type="button" disabled={threatOperationsViewModel.actionButtons['rec-freeze-wallet'].disabled} title={threatOperationsViewModel.actionButtons['rec-freeze-wallet'].reason} onClick={() => void runThreatAction('freeze_wallet', 'Freeze wallet', 'recommended')}>Freeze wallet (RECOMMENDED)</button>
@@ -3327,7 +3327,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               <button type="button" disabled={threatOperationsViewModel.actionButtons['live-freeze-wallet'].disabled} title={threatOperationsViewModel.actionButtons['live-freeze-wallet'].reason} onClick={() => setLiveActionConfirm({ actionType: 'freeze_wallet', label: 'Freeze wallet' })}>Freeze wallet (LIVE)</button>
               <button type="button" disabled={threatOperationsViewModel.actionButtons['live-revoke-approval'].disabled} title={threatOperationsViewModel.actionButtons['live-revoke-approval'].reason} onClick={() => setLiveActionConfirm({ actionType: 'revoke_approval', label: 'Revoke approval' })}>Revoke approval (LIVE)</button>
             </div>
-            <p className="tableMeta">LIVE actions are separated from simulator actions and require linked incident context, explicit confirmation, workspace approval, and persisted provenance.</p>
+            <p className="tableMeta">LIVE actions are fully separated from SIMULATED/RECOMMENDED controls and require linked incident context, explicit confirmation, workspace approval, and persisted execution artifacts (provider ID, tx hash, status, timestamps, failure reason).</p>
             <div className="buttonRow">
               <Link href="/alerts" prefetch={false}>Review alerts</Link>
               <Link href="/incidents" prefetch={false}>Open incident queue</Link>
@@ -3359,7 +3359,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         <article className="dataCard" role="dialog" aria-label="Confirm live action">
           <p className="sectionEyebrow">LIVE action confirmation</p>
           <h3>{liveActionConfirm.label}</h3>
-          <p className="muted">This will use enterprise approval + execution workflow, requires linked incident context, and records live execution provenance.</p>
+          <p className="muted">This will use enterprise approval + execution workflow, requires linked incident context, and records auditable live execution provenance end-to-end.</p>
           <p className="tableMeta">Incident context: {selectedThreatActionContext?.incidentId || 'missing'}</p>
           <label className="fieldLabel" htmlFor="live-action-confirm-input">Type {liveActionConfirmationPhrase} to confirm</label>
           <input
@@ -3374,7 +3374,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               checked={liveActionAcknowledged}
               onChange={(event) => setLiveActionAcknowledged(event.target.checked)}
             />
-            I understand this may submit a LIVE workflow and will be audit logged.
+            I understand this may submit a LIVE workflow, can touch real systems, and will be audit logged.
           </label>
           <div className="buttonRow">
             <button type="button" className="secondaryCta" onClick={() => { setLiveActionConfirm(null); setLiveActionConfirmationText(''); setLiveActionAcknowledged(false); }}>Cancel</button>
