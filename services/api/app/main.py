@@ -2154,6 +2154,35 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         payload['continuity_thresholds_seconds'] = payload.get('continuity_thresholds_seconds', continuity_slo.get('continuity_thresholds_seconds'))
         payload['continuity_reason_codes'] = list(payload.get('continuity_reason_codes') or continuity_slo.get('reason_codes') or [])
         payload['continuity_slo']['reason_codes'] = list(payload['continuity_reason_codes'])
+        payload['continuity_freshness_ages_seconds'] = dict(
+            payload.get('continuity_freshness_ages_seconds')
+            or continuity_slo.get('freshness_ages_seconds')
+            or summary.get('continuity_freshness_ages_seconds')
+            or {}
+        )
+        payload['continuity_configured_thresholds_seconds'] = dict(
+            payload.get('continuity_configured_thresholds_seconds')
+            or continuity_slo.get('configured_thresholds_seconds')
+            or summary.get('continuity_configured_thresholds_seconds')
+            or payload.get('continuity_thresholds_seconds')
+            or {}
+        )
+        payload['continuity_breach_reasons'] = list(
+            payload.get('continuity_breach_reasons')
+            or continuity_slo.get('breach_reasons')
+            or summary.get('continuity_breach_reasons')
+            or []
+        )
+        payload['continuity'] = {
+            'status': payload.get('continuity_status'),
+            'slo': payload.get('continuity_slo'),
+            'contract': payload.get('continuity_contract'),
+            'signals': dict(payload.get('continuity_signals') or {}),
+            'reason_codes': list(payload.get('continuity_reason_codes') or []),
+            'freshness_ages_seconds': dict(payload.get('continuity_freshness_ages_seconds') or {}),
+            'configured_thresholds_seconds': dict(payload.get('continuity_configured_thresholds_seconds') or {}),
+            'breach_reasons': list(payload.get('continuity_breach_reasons') or []),
+        }
         payload['runtime_degraded_reason_codes'] = list(
             payload.get('runtime_degraded_reason_codes')
             or summary.get('runtime_degraded_reason_codes')
@@ -2190,6 +2219,14 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'continuity_reason_codes': list(fallback_summary.get('continuity_reason_codes') or []),
             'continuity_signals': dict(fallback_summary.get('continuity_signals') or {}),
             'continuity_slo_pass': fallback_summary.get('continuity_slo_pass'),
+            'continuity_freshness_ages_seconds': dict(fallback_summary.get('continuity_freshness_ages_seconds') or {}),
+            'continuity_configured_thresholds_seconds': dict(
+                fallback_summary.get('continuity_configured_thresholds_seconds')
+                or fallback_summary.get('continuity_thresholds_seconds')
+                or fallback_summary.get('required_thresholds_seconds')
+                or {}
+            ),
+            'continuity_breach_reasons': list(fallback_summary.get('continuity_breach_reasons') or []),
             'heartbeat_age_seconds': fallback_summary.get('heartbeat_age_seconds'),
             'telemetry_age_seconds': fallback_summary.get('telemetry_age_seconds'),
             'event_ingestion_age_seconds': fallback_summary.get('event_ingestion_age_seconds'),
@@ -2219,10 +2256,39 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
                 'continuity_thresholds_seconds': dict(fallback_summary.get('continuity_thresholds_seconds') or fallback_summary.get('required_thresholds_seconds') or {}),
                 'reason_codes': list(fallback_summary.get('continuity_reason_codes') or []),
                 'checks': dict((fallback_summary.get('continuity_contract') or {}).get('checks') or {}),
+                'freshness_ages_seconds': dict(fallback_summary.get('continuity_freshness_ages_seconds') or {}),
+                'configured_thresholds_seconds': dict(
+                    fallback_summary.get('continuity_configured_thresholds_seconds')
+                    or fallback_summary.get('continuity_thresholds_seconds')
+                    or fallback_summary.get('required_thresholds_seconds')
+                    or {}
+                ),
+                'breach_reasons': list(fallback_summary.get('continuity_breach_reasons') or []),
             },
             'continuity_contract': {
                 'pass': bool(fallback_summary.get('continuity_slo_pass') is True),
                 'checks': dict((fallback_summary.get('continuity_contract') or {}).get('checks') or {}),
+            },
+            'continuity': {
+                'status': fallback_summary.get('continuity_status'),
+                'slo': {
+                    'pass': bool(fallback_summary.get('continuity_slo_pass') is True),
+                    'reason_codes': list(fallback_summary.get('continuity_reason_codes') or []),
+                },
+                'contract': {
+                    'pass': bool(fallback_summary.get('continuity_slo_pass') is True),
+                    'checks': dict((fallback_summary.get('continuity_contract') or {}).get('checks') or {}),
+                },
+                'signals': dict(fallback_summary.get('continuity_signals') or {}),
+                'reason_codes': list(fallback_summary.get('continuity_reason_codes') or []),
+                'freshness_ages_seconds': dict(fallback_summary.get('continuity_freshness_ages_seconds') or {}),
+                'configured_thresholds_seconds': dict(
+                    fallback_summary.get('continuity_configured_thresholds_seconds')
+                    or fallback_summary.get('continuity_thresholds_seconds')
+                    or fallback_summary.get('required_thresholds_seconds')
+                    or {}
+                ),
+                'breach_reasons': list(fallback_summary.get('continuity_breach_reasons') or []),
             },
             'ingestion_freshness': fallback_summary.get('ingestion_freshness'),
             'detection_pipeline_freshness': fallback_summary.get('detection_pipeline_freshness'),

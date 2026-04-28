@@ -23,6 +23,16 @@ export type WorkspaceMonitoringSummary = {
     checks?: Record<string, unknown>;
   };
   continuity_slo_pass?: boolean;
+  continuity_freshness_ages_seconds?: Record<string, number | null | undefined>;
+  continuity_configured_thresholds_seconds?: Record<string, number | null | undefined>;
+  continuity_breach_reasons?: Array<{
+    code?: string;
+    check?: string;
+    state?: string;
+    age_seconds?: number | null;
+    threshold_seconds?: number | null;
+    reason?: string;
+  }>;
   heartbeat_age_seconds?: number | null;
   telemetry_age_seconds?: number | null;
   event_ingestion_age_seconds?: number | null;
@@ -83,6 +93,9 @@ export type MonitoringRuntimeStatus = {
     continuity_thresholds_seconds?: WorkspaceMonitoringSummary['required_thresholds_seconds'];
     reason_codes?: string[];
     checks?: Record<string, unknown>;
+    freshness_ages_seconds?: Record<string, number | null | undefined>;
+    configured_thresholds_seconds?: Record<string, number | null | undefined>;
+    breach_reasons?: WorkspaceMonitoringSummary['continuity_breach_reasons'];
   };
   continuity_contract?: {
     pass?: boolean;
@@ -188,6 +201,19 @@ export type MonitoringRuntimeStatus = {
   thresholds_seconds?: WorkspaceMonitoringSummary['thresholds_seconds'];
   required_thresholds_seconds?: WorkspaceMonitoringSummary['required_thresholds_seconds'];
   continuity_thresholds_seconds?: WorkspaceMonitoringSummary['required_thresholds_seconds'];
+  continuity_freshness_ages_seconds?: WorkspaceMonitoringSummary['continuity_freshness_ages_seconds'];
+  continuity_configured_thresholds_seconds?: WorkspaceMonitoringSummary['continuity_configured_thresholds_seconds'];
+  continuity_breach_reasons?: WorkspaceMonitoringSummary['continuity_breach_reasons'];
+  continuity?: {
+    status?: WorkspaceMonitoringSummary['continuity_status'];
+    slo?: MonitoringRuntimeStatus['continuity_slo'];
+    contract?: MonitoringRuntimeStatus['continuity_contract'];
+    signals?: WorkspaceMonitoringSummary['continuity_signals'];
+    reason_codes?: string[];
+    freshness_ages_seconds?: WorkspaceMonitoringSummary['continuity_freshness_ages_seconds'];
+    configured_thresholds_seconds?: WorkspaceMonitoringSummary['continuity_configured_thresholds_seconds'];
+    breach_reasons?: WorkspaceMonitoringSummary['continuity_breach_reasons'];
+  };
 };
 
 export type MonitoringTimelineLinkName =

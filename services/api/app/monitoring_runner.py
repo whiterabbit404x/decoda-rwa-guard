@@ -5932,6 +5932,54 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             detection_window_seconds=max(900, MONITOR_POLL_INTERVAL_SECONDS * 10),
         )
         summary.update(continuity_evaluation)
+        continuity_contract_payload = summary.get('continuity_contract') if isinstance(summary.get('continuity_contract'), dict) else {}
+        continuity_checks_payload = continuity_contract_payload.get('checks') if isinstance(continuity_contract_payload.get('checks'), dict) else {}
+        continuity_breach_reasons: list[dict[str, Any]] = []
+        for check_key, check_payload in continuity_checks_payload.items():
+            if not isinstance(check_payload, dict) or bool(check_payload.get('pass')):
+                continue
+            check_state = str(check_payload.get('state') or 'missing').strip().lower() or 'missing'
+            check_code = str(check_key).strip().lower()
+            if check_code == 'telemetry_freshness':
+                check_code = f'event_ingestion_{check_state}'
+            elif check_code == 'detection_freshness':
+                check_code = f'detection_pipeline_{check_state}'
+            elif check_code == 'heartbeat_freshness':
+                check_code = f'heartbeat_{check_state}'
+            continuity_breach_reasons.append(
+                {
+                    'code': check_code,
+                    'check': str(check_key).strip().lower(),
+                    'state': check_state,
+                    'age_seconds': check_payload.get('age_seconds'),
+                    'threshold_seconds': check_payload.get('threshold_seconds'),
+                    'reason': str(check_payload.get('label') or check_key).strip().lower(),
+                }
+            )
+        if not continuity_breach_reasons:
+            for continuity_reason_code in (summary.get('continuity_reason_codes') or []):
+                normalized_code = str(continuity_reason_code).strip()
+                if not normalized_code:
+                    continue
+                continuity_breach_reasons.append(
+                    {
+                        'code': normalized_code,
+                        'check': normalized_code,
+                        'state': 'failed',
+                        'age_seconds': None,
+                        'threshold_seconds': None,
+                        'reason': normalized_code.replace('_', ' '),
+                    }
+                )
+        summary['continuity_breach_reasons'] = continuity_breach_reasons
+        summary['continuity_freshness_ages_seconds'] = {
+            'heartbeat': summary.get('heartbeat_age_seconds'),
+            'telemetry': summary.get('telemetry_age_seconds'),
+            'event_ingestion': summary.get('event_ingestion_age_seconds'),
+            'detection': summary.get('detection_age_seconds'),
+            'detection_pipeline': summary.get('detection_pipeline_age_seconds'),
+            'detection_eval': summary.get('detection_eval_age_seconds'),
+        }
         summary['detection_age_seconds'] = summary.get('detection_eval_age_seconds')
         summary['detection_pipeline_age_seconds'] = summary.get('detection_eval_age_seconds')
         threshold_seconds = dict(summary.get('thresholds_seconds') or {})
@@ -5939,6 +5987,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         summary['telemetry_threshold_seconds'] = summary.get('telemetry_threshold_seconds') or threshold_seconds.get('telemetry') or threshold_seconds.get('event_ingestion')
         summary['detection_threshold_seconds'] = summary.get('detection_threshold_seconds') or threshold_seconds.get('detection_eval')
         summary['continuity_thresholds_seconds'] = dict(summary.get('required_thresholds_seconds') or threshold_seconds)
+        summary['continuity_configured_thresholds_seconds'] = dict(summary.get('continuity_thresholds_seconds') or {})
         continuity_contract = summary.get('continuity_contract') if isinstance(summary.get('continuity_contract'), dict) else {}
         continuity_checks = continuity_contract.get('checks') if isinstance(continuity_contract.get('checks'), dict) else {}
         summary['continuity_contract'] = {
@@ -5949,9 +5998,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         continuity_status = str(summary.get('continuity_status') or '').strip().lower()
         if (
             workspace_configured
+            and live_mode_enabled()
             and runtime_status_summary != 'offline'
-            and continuity_status == 'degraded'
-            and not continuity_slo_pass
+            and (
+                continuity_status == 'degraded'
+                or (runtime_status_summary == 'idle' and not continuity_slo_pass)
+            )
         ):
             continuity_reason_codes = [
                 str(code)
@@ -5981,6 +6033,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     else 'runtime_status_degraded:continuity_slo_failed'
                 )
                 summary['status_reason'] = runtime_status_reason
+            if continuity_status != 'degraded':
+                summary['continuity_status'] = 'degraded'
         if coverage_only_warning_active:
             continuity_reason_codes = list(summary.get('continuity_reason_codes') or [])
             if 'coverage_only_persistent_no_evidence' not in continuity_reason_codes:
@@ -6139,6 +6193,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'continuity_status': summary.get('continuity_status'),
             'continuity_reason_codes': list(summary.get('continuity_reason_codes') or []),
             'continuity_signals': dict(summary.get('continuity_signals') or {}),
+            'continuity_freshness_ages_seconds': dict(summary.get('continuity_freshness_ages_seconds') or {}),
+            'continuity_configured_thresholds_seconds': dict(summary.get('continuity_configured_thresholds_seconds') or {}),
+            'continuity_breach_reasons': list(summary.get('continuity_breach_reasons') or []),
             'continuity_slo': {
                 'pass': bool(summary.get('continuity_slo_pass') is True),
                 'heartbeat_age_seconds': summary.get('heartbeat_age_seconds'),
@@ -6156,6 +6213,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'continuity_thresholds_seconds': dict(summary.get('continuity_thresholds_seconds') or {}),
                 'reason_codes': list(summary.get('continuity_reason_codes') or []),
                 'checks': dict((summary.get('continuity_contract') or {}).get('checks') or {}),
+                'freshness_ages_seconds': dict(summary.get('continuity_freshness_ages_seconds') or {}),
+                'configured_thresholds_seconds': dict(summary.get('continuity_configured_thresholds_seconds') or {}),
+                'breach_reasons': list(summary.get('continuity_breach_reasons') or []),
             },
             'continuity_contract': dict(summary.get('continuity_contract') or {}),
             'field_reason_codes': dict(field_reason_codes),
