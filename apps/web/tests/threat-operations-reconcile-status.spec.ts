@@ -13,6 +13,8 @@ test.describe('threat operations reconcile status copy', () => {
     expect(source).toContain('Target/system linkage is invalid. Run monitored systems reconcile and verify the reconcile status badge reaches COMPLETED.');
     expect(source).toContain('label: `Reconcile ${latestReconcileJob.status.toUpperCase()}`');
     expect(source).toContain('Reconcile progress: scanned ${scanned} targets');
+    expect(source).toContain('Deterministic reconcile state {deterministicRepairState.toUpperCase()}');
+    expect(source).toContain('Failure reason {latestReconcileJob.status === \'failed\'');
     expect(source).toContain('Action required: resolve');
     expect(source).toContain('Reconcile timeout guard reached (120 seconds).');
   });

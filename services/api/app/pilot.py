@@ -4290,7 +4290,7 @@ def _reconcile_job_payload(
         'status': status,
         'retry_count': max(0, int(retry_count or 0)),
         'counts': _json_safe_value(counts),
-        'reason_codes': [str(code) for code in reason_codes if str(code).strip()],
+        'reason_codes': _normalize_reconcile_reason_codes(reason_codes),
         'reason_code': reason_code,
         'reason_detail': reason_detail,
         'affected_systems': [str(value) for value in affected_systems if str(value).strip()],
@@ -4338,6 +4338,13 @@ def _normalize_reconcile_idempotency_key(value: Any) -> str | None:
     return normalized[:160]
 
 
+def _normalize_reconcile_reason_codes(reason_codes: Any) -> list[str]:
+    if not isinstance(reason_codes, list):
+        return []
+    normalized_codes = {str(code or '').strip() for code in reason_codes}
+    return sorted(code for code in normalized_codes if code)
+
+
 def _update_reconcile_run(
     connection: Any,
     *,
@@ -4380,7 +4387,7 @@ def _update_reconcile_run(
             reason_code,
             reason_detail,
             _json_dumps(counts) if counts is not None else None,
-            _json_dumps(reason_codes or []) if reason_codes is not None else None,
+            _json_dumps(_normalize_reconcile_reason_codes(reason_codes)) if reason_codes is not None else None,
             _json_dumps(affected_systems or []) if affected_systems is not None else None,
             _json_dumps(result_summary or {}) if result_summary is not None else None,
             _json_dumps(progress_state or {}) if progress_state is not None else None,
@@ -4422,7 +4429,7 @@ def _append_reconcile_event(
             event_type,
             event_status,
             reason_code,
-            _json_dumps(reason_codes or []),
+            _json_dumps(_normalize_reconcile_reason_codes(reason_codes)),
             attempt_number,
             detail,
             _json_dumps(payload),
@@ -4527,7 +4534,7 @@ def _reconcile_event_payload(item: dict[str, Any]) -> dict[str, Any]:
         'event_type': str(item.get('event_type') or ''),
         'event_status': str(item.get('event_status') or ''),
         'reason_code': str(item.get('reason_code') or '') or None,
-        'reason_codes': [str(code) for code in (item.get('reason_codes') or []) if str(code).strip()],
+        'reason_codes': _normalize_reconcile_reason_codes(item.get('reason_codes') or []),
         'attempt_number': int(item.get('attempt_number') or 0),
         'detail': str(item.get('detail') or '') or None,
         'payload': _json_safe_value(item.get('payload') if isinstance(item.get('payload'), dict) else {}),
@@ -4540,7 +4547,7 @@ def _job_payload_from_run_row(item: dict[str, Any]) -> dict[str, Any]:
         run_id=str(item.get('id') or ''),
         status=str(item.get('status') or 'queued'),
         counts=item.get('counts') if isinstance(item.get('counts'), dict) else {},
-        reason_codes=item.get('reason_codes') if isinstance(item.get('reason_codes'), list) else [],
+        reason_codes=_normalize_reconcile_reason_codes(item.get('reason_codes') or []),
         affected_systems=item.get('affected_systems') if isinstance(item.get('affected_systems'), list) else [],
         last_event_at=(item.get('last_event_at') or item.get('updated_at')).isoformat() if (item.get('last_event_at') or item.get('updated_at')) else None,
         reason_code=str(item.get('status_reason_code') or '') or None,

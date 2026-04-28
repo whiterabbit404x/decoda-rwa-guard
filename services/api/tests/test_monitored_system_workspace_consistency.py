@@ -422,6 +422,67 @@ def test_reconcile_workspace_idempotency_guard_returns_no_op_while_inflight(monk
     assert result['job']['status'] == 'running'
 
 
+def test_reconcile_workspace_repeated_idempotency_key_returns_existing_terminal_job(monkeypatch):
+    conn = _Conn()
+    request = _Request('ws-1')
+    request.headers[pilot.RECONCILE_IDEMPOTENCY_HEADER] = ' idem-key-1 '
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}))
+    monkeypatch.setattr(
+        pilot,
+        '_load_reconcile_run_row_by_idempotency_key',
+        lambda *_a, **_k: {
+            'id': 'rid-stable',
+            'status': 'completed',
+            'counts': {'targets_scanned': 1, 'created_or_updated': 1},
+            'reason_codes': ['missing_asset', 'missing_asset', ''],
+            'affected_systems': ['ms-1'],
+            'result_summary': {'state': 'completed', 'reason_counts': {'invalid': 0, 'skipped': 0}, 'unresolved_reasons': []},
+            'updated_at': datetime.now(timezone.utc),
+            'idempotency_key': 'idem-key-1',
+        },
+    )
+    monkeypatch.setattr(pilot, 'reconcile_enabled_targets_monitored_systems', lambda *_a, **_k: pytest.fail('reconcile should not execute for idempotent replay'))
+
+    result = pilot.reconcile_workspace_monitored_systems(request)
+
+    assert result['state'] == 'completed'
+    assert result['idempotent_replay'] is True
+    assert result['reconcile_id'] == 'rid-stable'
+    assert result['job']['idempotency_key'] == 'idem-key-1'
+    assert result['job']['reason_codes'] == ['missing_asset']
+
+
+def test_reconcile_result_and_status_payloads_keep_reason_codes_stable(monkeypatch):
+    run_row = {
+        'id': 'rid-4',
+        'status': 'failed',
+        'counts': {'targets_scanned': 3, 'created_or_updated': 0},
+        'reason_codes': [' missing_asset ', 'missing_asset', '', 'invalid_target'],
+        'affected_systems': [],
+        'status_reason_code': 'missing_asset',
+        'status_reason_detail': 'Target missing asset',
+        'result_summary': {'state': 'failed', 'reason_counts': {'invalid': 1, 'skipped': 0}, 'unresolved_reasons': []},
+        'updated_at': datetime.now(timezone.utc),
+        'idempotency_key': 'key-1',
+    }
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(_Conn()))
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, {'workspace_id': 'ws-1', 'workspace': {'id': 'ws-1'}}))
+    monkeypatch.setattr(pilot, '_load_reconcile_run_row', lambda *_a, **_k: run_row)
+
+    status_payload = pilot.get_workspace_reconcile_status(_Request('ws-1'), 'rid-4')
+    result_payload = pilot.get_workspace_reconcile_result(_Request('ws-1'), 'rid-4')
+
+    assert status_payload['job']['reason_codes'] == ['invalid_target', 'missing_asset']
+    assert result_payload['job']['reason_codes'] == ['invalid_target', 'missing_asset']
+    assert result_payload['result']['state'] == 'failed'
+
+
 def test_reconcile_workspace_commits_failed_job_lifecycle_when_reconcile_errors(monkeypatch):
     conn = _Conn()
     request = _Request('ws-1')

@@ -2820,7 +2820,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
         {latestReconcileJob ? (
           <p className="tableMeta">
-            Deterministic repair state {deterministicRepairState.toUpperCase()} · {reconcileProgressLabel} · Retry count {Number(latestReconcileJob.retry_count ?? 0)} · Last success {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Reason codes {(latestReconcileJob.reason_codes ?? []).length > 0 ? (latestReconcileJob.reason_codes ?? []).join(', ') : 'none'} · Failure reason {latestReconcileJob.status === 'failed' ? (latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No backend detail returned.') : 'None'}
+            Deterministic reconcile state {deterministicRepairState.toUpperCase()} · {reconcileProgressLabel} · Retry count {Number(latestReconcileJob.retry_count ?? 0)} · Last success {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Reason codes {(latestReconcileJob.reason_codes ?? []).length > 0 ? (latestReconcileJob.reason_codes ?? []).join(', ') : 'none'} · Failure reason {latestReconcileJob.status === 'failed' ? (latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No backend detail returned.') : 'None'}
           </p>
         ) : null}
         {latestReconcileJob?.status === 'failed' ? (
