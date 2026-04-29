@@ -43,7 +43,7 @@ def test_detection_alert_incident_governance_pipeline_chain() -> None:
         incident_id=incident['id'],
         alert_id=alert['id'],
         action_type='block_transaction',
-        action_mode='executed',
+        action_mode='manual_required',
         recommendation='Submit block request via manual runbook.',
     )
 
@@ -55,6 +55,24 @@ def test_detection_alert_incident_governance_pipeline_chain() -> None:
     assert any('INSERT INTO governance_actions' in statement for statement, _ in conn.calls)
     timeline_inserts = [statement for statement, _ in conn.calls if 'INSERT INTO incident_timeline' in statement]
     assert len(timeline_inserts) >= 4
+
+
+def test_governance_executed_requires_integration_capability() -> None:
+    conn = _Conn()
+    try:
+        pilot.create_governance_action_for_incident(
+            conn,
+            workspace_id='ws-1',
+            user_id='user-1',
+            incident_id='00000000-0000-0000-0000-000000000010',
+            alert_id='00000000-0000-0000-0000-000000000011',
+            action_type='block_transaction',
+            action_mode='executed',
+        )
+    except pilot.HTTPException as exc:
+        assert exc.status_code == 409
+    else:
+        raise AssertionError('Expected executed governance action to require integration capability.')
 
 
 def test_alert_not_created_for_low_confidence_detection() -> None:
