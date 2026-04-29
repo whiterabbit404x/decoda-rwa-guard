@@ -3639,6 +3639,128 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
     response_action_history_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-history-response-action:{workspace_id}:{response_action_id}'))
     incident_action_history_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-history-incident-action:{workspace_id}:{response_action_id}'))
     alert_action_history_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-history-alert-action:{workspace_id}:{response_action_id}'))
+    monitoring_config_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-monitoring-config:{workspace_id}:{target_id}'))
+    monitoring_heartbeat_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-monitoring-heartbeat:{workspace_id}:{monitored_system_id}'))
+    monitoring_poll_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-monitoring-poll:{workspace_id}:{target_id}'))
+    telemetry_event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-telemetry-event:{workspace_id}:{target_id}:{tx_hash}'))
+    detection_event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-detection-event:{workspace_id}:{telemetry_event_id}:{dedupe_signature}'))
+    governance_action_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-governance-action:{workspace_id}:{incident_id}:{alert_id}'))
+    poll_started_at = observed_at - timedelta(seconds=30)
+    payload_hash = hashlib.sha256(f'{workspace_id}:{target_id}:{tx_hash}:simulator'.encode('utf-8')).hexdigest()
+    connection.execute(
+        '''
+        INSERT INTO monitoring_configs (id, workspace_id, asset_id, target_id, enabled, cadence_seconds, provider_type, created_at, updated_at)
+        VALUES (%s, %s, %s::uuid, %s::uuid, TRUE, 60, 'simulator', %s, %s)
+        ON CONFLICT (id)
+        DO UPDATE SET
+            asset_id = EXCLUDED.asset_id,
+            target_id = EXCLUDED.target_id,
+            enabled = TRUE,
+            cadence_seconds = EXCLUDED.cadence_seconds,
+            provider_type = EXCLUDED.provider_type,
+            updated_at = EXCLUDED.updated_at
+        ''',
+        (monitoring_config_id, workspace_id, asset_id, target_id, observed_at, observed_at),
+    )
+    connection.execute(
+        '''
+        INSERT INTO monitoring_heartbeats (id, workspace_id, worker_name, last_heartbeat_at, status, metadata)
+        VALUES (%s, %s, %s, %s, 'healthy', %s::jsonb)
+        ON CONFLICT (id)
+        DO UPDATE SET
+            worker_name = EXCLUDED.worker_name,
+            last_heartbeat_at = EXCLUDED.last_heartbeat_at,
+            status = EXCLUDED.status,
+            metadata = EXCLUDED.metadata
+        ''',
+        (
+            monitoring_heartbeat_id,
+            workspace_id,
+            f'demo-seed-worker-{target_id[:8]}',
+            observed_at,
+            _json_dumps({'source': 'seed_demo_workspace', 'evidence_source': 'simulator', 'target_id': target_id}),
+        ),
+    )
+    connection.execute(
+        '''
+        INSERT INTO monitoring_polls (id, workspace_id, target_id, poll_started_at, poll_finished_at, status, error_message, metadata)
+        VALUES (%s, %s, %s::uuid, %s, %s, 'success', NULL, %s::jsonb)
+        ON CONFLICT (id)
+        DO UPDATE SET
+            poll_started_at = EXCLUDED.poll_started_at,
+            poll_finished_at = EXCLUDED.poll_finished_at,
+            status = EXCLUDED.status,
+            error_message = EXCLUDED.error_message,
+            metadata = EXCLUDED.metadata
+        ''',
+        (
+            monitoring_poll_id,
+            workspace_id,
+            target_id,
+            poll_started_at,
+            observed_at,
+            _json_dumps({'source': 'seed_demo_workspace', 'monitoring_config_id': monitoring_config_id, 'evidence_source': 'simulator'}),
+        ),
+    )
+    connection.execute(
+        '''
+        INSERT INTO telemetry_events (id, workspace_id, asset_id, target_id, provider_type, event_type, observed_at, ingested_at, evidence_source, payload_hash, payload_json)
+        VALUES (%s, %s, %s::uuid, %s::uuid, 'simulator', 'transfer_observed', %s, %s, 'simulator', %s, %s::jsonb)
+        ON CONFLICT (id)
+        DO UPDATE SET
+            asset_id = EXCLUDED.asset_id,
+            target_id = EXCLUDED.target_id,
+            provider_type = EXCLUDED.provider_type,
+            event_type = EXCLUDED.event_type,
+            observed_at = EXCLUDED.observed_at,
+            ingested_at = EXCLUDED.ingested_at,
+            evidence_source = EXCLUDED.evidence_source,
+            payload_hash = EXCLUDED.payload_hash,
+            payload_json = EXCLUDED.payload_json
+        ''',
+        (
+            telemetry_event_id,
+            workspace_id,
+            asset_id,
+            target_id,
+            observed_at,
+            observed_at,
+            payload_hash,
+            _json_dumps({'source': 'seed_demo_workspace', 'tx_hash': tx_hash, 'target_id': target_id, 'evidence_source': 'simulator'}),
+        ),
+    )
+    connection.execute(
+        '''
+        INSERT INTO detection_events (
+            id, workspace_id, asset_id, target_id, telemetry_event_id, detection_type, severity, confidence, evidence_summary, evidence_source, created_at
+        )
+        VALUES (
+            %s, %s, %s::uuid, %s::uuid, %s::uuid, 'anomalous_transfer', %s, %s, %s, 'simulator', %s
+        )
+        ON CONFLICT (id)
+        DO UPDATE SET
+            asset_id = EXCLUDED.asset_id,
+            target_id = EXCLUDED.target_id,
+            telemetry_event_id = EXCLUDED.telemetry_event_id,
+            detection_type = EXCLUDED.detection_type,
+            severity = EXCLUDED.severity,
+            confidence = EXCLUDED.confidence,
+            evidence_summary = EXCLUDED.evidence_summary,
+            evidence_source = EXCLUDED.evidence_source,
+            created_at = EXCLUDED.created_at
+        ''',
+        (
+            detection_event_id,
+            workspace_id,
+            asset_id,
+            target_id,
+            telemetry_event_id,
+            proof_severity,
+            proof_risk_score,
+            'Seeded simulator detection event linked to telemetry event.',
+            observed_at,
+        ),
+    )
     connection.execute(
         '''
         INSERT INTO detections (
@@ -3682,15 +3804,17 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
         '''
         INSERT INTO alerts (
             id, workspace_id, user_id, analysis_run_id, alert_type, title, severity, status, source_service, summary, payload, created_at, detection_id,
-            target_id, module_key, source, dedupe_signature, occurrence_count, first_seen_at, last_seen_at, updated_at
+            detection_event_workspace_id, detection_event_id, target_id, module_key, source, dedupe_signature, occurrence_count, first_seen_at, last_seen_at, updated_at
         )
         VALUES (
             %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW(), %s::uuid,
-            %s::uuid, %s, %s, %s, 1, %s, %s, NOW()
+            %s, %s::uuid, %s::uuid, %s, %s, %s, 1, %s, %s, NOW()
         )
         ON CONFLICT (id)
         DO UPDATE SET
             detection_id = EXCLUDED.detection_id,
+            detection_event_workspace_id = EXCLUDED.detection_event_workspace_id,
+            detection_event_id = EXCLUDED.detection_event_id,
             target_id = EXCLUDED.target_id,
             module_key = EXCLUDED.module_key,
             source = EXCLUDED.source,
@@ -3727,6 +3851,8 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
                 }
             ),
             detection_id,
+            workspace_id,
+            detection_event_id,
             target_id,
             'monitoring',
             'simulator',
@@ -3734,6 +3860,16 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
             observed_at,
             observed_at,
         ),
+    )
+    connection.execute(
+        '''
+        UPDATE alerts
+        SET detection_event_workspace_id = %s,
+            detection_event_id = %s::uuid
+        WHERE id = %s::uuid
+          AND workspace_id = %s
+        ''',
+        (workspace_id, detection_event_id, alert_id, workspace_id),
     )
     connection.execute(
         'UPDATE detections SET linked_alert_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid',
@@ -3840,6 +3976,40 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
             alert_id,
             _json_dumps({'target_id': target_id, 'incident_id': incident_id, 'dedupe_signature': dedupe_signature}),
             observed_at,
+        ),
+    )
+    connection.execute(
+        '''
+        INSERT INTO governance_actions (
+            id, workspace_id, user_id, analysis_run_id, action_type, target_type, target_id, status, reason, payload, resulting_action, created_at, updated_at, incident_id, alert_id, action_mode
+        )
+        VALUES (
+            %s, %s, %s, NULL, 'freeze_wallet', 'incident', %s, 'completed', 'Seeded simulator governance action for deterministic monitoring evidence chain.',
+            %s::jsonb, %s::jsonb, %s, %s, %s::uuid, %s::uuid, 'simulation'
+        )
+        ON CONFLICT (id)
+        DO UPDATE SET
+            target_id = EXCLUDED.target_id,
+            status = EXCLUDED.status,
+            reason = EXCLUDED.reason,
+            payload = EXCLUDED.payload,
+            resulting_action = EXCLUDED.resulting_action,
+            updated_at = EXCLUDED.updated_at,
+            incident_id = EXCLUDED.incident_id,
+            alert_id = EXCLUDED.alert_id,
+            action_mode = EXCLUDED.action_mode
+        ''',
+        (
+            governance_action_id,
+            workspace_id,
+            user_id,
+            incident_id,
+            _json_dumps({'source': 'seed_demo_workspace', 'evidence_source': 'simulator', 'incident_id': incident_id, 'alert_id': alert_id}),
+            _json_dumps({'status': 'simulated_completed', 'action_mode': 'simulation'}),
+            observed_at,
+            observed_at,
+            incident_id,
+            alert_id,
         ),
     )
     connection.execute(
@@ -4063,6 +4233,12 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
         'response_action_history_id': response_action_history_id,
         'incident_action_history_id': incident_action_history_id,
         'alert_action_history_id': alert_action_history_id,
+        'monitoring_config_id': monitoring_config_id,
+        'monitoring_heartbeat_id': monitoring_heartbeat_id,
+        'monitoring_poll_id': monitoring_poll_id,
+        'telemetry_event_id': telemetry_event_id,
+        'detection_event_id': detection_event_id,
+        'governance_action_id': governance_action_id,
         'evidence_source': 'simulator',
         'telemetry_event_observed_at': last_event_at.isoformat() if isinstance(last_event_at, datetime) else str(last_event_at),
     }
