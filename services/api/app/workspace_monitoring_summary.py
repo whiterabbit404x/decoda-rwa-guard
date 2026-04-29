@@ -50,6 +50,11 @@ HARD_GUARD_FLAGS = {
     'live_monitoring_without_reporting_systems',
     'live_telemetry_verified_without_timestamp',
     'idle_runtime_with_active_monitoring_claim',
+    'workspace_unconfigured_with_reporting_systems',
+    'evidence_none_with_high_confidence',
+    'heartbeat_only_with_live_claim',
+    'live_evidence_without_live_telemetry_kind',
+    'reporting_coverage_without_target_telemetry',
 }
 HARD_GUARD_PRIORITY = (
     'offline_with_current_telemetry',
@@ -57,6 +62,11 @@ HARD_GUARD_PRIORITY = (
     'live_monitoring_without_reporting_systems',
     'live_telemetry_verified_without_timestamp',
     'idle_runtime_with_active_monitoring_claim',
+    'workspace_unconfigured_with_reporting_systems',
+    'evidence_none_with_high_confidence',
+    'heartbeat_only_with_live_claim',
+    'live_evidence_without_live_telemetry_kind',
+    'reporting_coverage_without_target_telemetry',
 )
 
 
@@ -245,6 +255,26 @@ def build_workspace_monitoring_summary(
     live_telemetry_verified = normalized_evidence == 'live' and confidence_status == 'high'
     if live_telemetry_verified and telemetry_timestamp is None:
         contradiction_flags.append('live_telemetry_verified_without_timestamp')
+    if not workspace_configured and normalized_reporting > 0:
+        contradiction_flags.append('workspace_unconfigured_with_reporting_systems')
+    if normalized_evidence == 'none' and confidence_status == 'high':
+        contradiction_flags.append('evidence_none_with_high_confidence')
+    if (
+        last_heartbeat_at is not None
+        and telemetry_timestamp is None
+        and normalized_runtime in {'live'}
+    ):
+        contradiction_flags.append('heartbeat_only_with_live_claim')
+    if normalized_evidence == 'live' and normalized_telemetry_kind not in {'target_event', 'coverage'}:
+        contradiction_flags.append('live_evidence_without_live_telemetry_kind')
+    if (
+        normalized_reporting > 0
+        and normalized_runtime == 'live'
+        and normalized_evidence == 'live'
+        and normalized_telemetry_kind == 'coverage'
+        and last_telemetry_at is None
+    ):
+        contradiction_flags.append('reporting_coverage_without_target_telemetry')
     normalized_status_reason = str(status_reason).strip() if isinstance(status_reason, str) and status_reason.strip() else None
     db_persistence_is_available = bool(db_persistence_available)
     degraded_reason_explicit = normalized_status_reason is not None and normalized_status_reason.startswith('runtime_status_degraded:')
@@ -306,6 +336,15 @@ def build_workspace_monitoring_summary(
     else:
         normalized_db_failure_reason = None
     prioritized_guard = next((flag for flag in HARD_GUARD_PRIORITY if flag in guard_flags), None)
+    if prioritized_guard:
+        if normalized_runtime == 'live':
+            normalized_runtime = 'degraded'
+        if normalized_monitoring_status == 'live':
+            normalized_monitoring_status = 'limited'
+        if freshness_status == 'fresh':
+            freshness_status = 'stale'
+        confidence_status = 'unavailable'
+        evidence_source_summary = 'none'
     resolved_status_reason = f'guard:{prioritized_guard}' if prioritized_guard else normalized_status_reason
     summary = {
         'workspace_configured': bool(workspace_configured),

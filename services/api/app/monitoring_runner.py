@@ -6032,6 +6032,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if str(health.get('ingestion_mode') or '').strip().lower() in {'demo', 'simulator'}
             else ('live' if evidence_source_live and coverage_fresh else 'replay_or_none')
         )
+        # Guard invariant: coverage_status != 'reporting' or coverage_telemetry_at is None should never be
+        # interpreted as live target telemetry evidence.
         if source_of_evidence == 'live':
             telemetry_kind = 'coverage'
         evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if canonical_last_telemetry_at else 'none'))
