@@ -12,9 +12,10 @@ test('normalized threat operations view model drives badges, banners, and CTA di
   expect(threat).toContain('type MonitoringViewModel = {');
   expect(threat).toContain('const monitoringViewModel = useMemo<MonitoringViewModel>(() => {');
   expect(threat).toContain('...monitoringStatusViewModel,');
+  expect(threat).toContain('const threatOperationsViewModel = useMemo(() => ({');
   expect(threat).toContain('actionButtons: actionButtonStates');
-  expect(threat).toContain('Data provenance ({monitoringViewModel.provenanceLabel})');
-  expect(threat).toContain('<PageStateBanner viewModel={monitoringViewModel} />');
+  expect(threat).toContain('Data provenance ({threatOperationsViewModel.monitoring.provenanceLabel})');
+  expect(threat).toContain('<PageStateBanner viewModel={threatOperationsViewModel.monitoring} />');
   expect(threat).toContain('title={monitoringViewModel.ctas.generateSimulatorProofChain.reason}');
   expect(threat).toContain('title={monitoringViewModel.confirmLiveAction.reason}');
   expect(threat).toContain('Confirm LIVE action is disabled because no incident context is linked.');
