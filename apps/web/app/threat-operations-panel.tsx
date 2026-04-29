@@ -1759,8 +1759,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const monitoringMode = runtimeEvidenceSource;
   const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? runtimeSummary?.runtime_status ?? '').toLowerCase();
   const continuityLive = runtimeStatus === 'live';
+  const runtimeContradictionFlags = Array.isArray(runtimeStatusSnapshot?.contradiction_flags)
+    ? runtimeStatusSnapshot.contradiction_flags
+    : Array.isArray(runtimeSummary?.contradiction_flags)
+      ? runtimeSummary.contradiction_flags
+      : [];
+  const hasRuntimeContradictionFlags = runtimeContradictionFlags.length > 0;
   const presentationStatus: MonitoringPresentationStatus = runtimeStatus === 'live'
-    ? 'live'
+    ? (hasRuntimeContradictionFlags ? 'degraded' : 'live')
     : runtimeStatus === 'offline'
       ? 'offline'
       : 'degraded';
@@ -2878,6 +2884,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             Contradiction guard: {monitoringViewModel.contradictions.join(' ')}
           </p>
         ) : null}
+        {hasRuntimeContradictionFlags ? (
+          <p className="statusLine statusLine-warning">
+            Runtime contradiction flags: {runtimeContradictionFlags.join(', ')}. Healthy presentation is blocked until all contradiction flags clear.
+          </p>
+        ) : null}
         <p className={`statusLine ${enterpriseReadyPass ? 'statusLine-success' : 'statusLine-warning'}`}>
           Enterprise readiness gate: {enterpriseReadyPass ? 'PASS' : 'FAIL'}.
           {enterpriseReadyPass ? ' All readiness checks are green.' : ' Resolve failed checks using the remediation links below.'}
@@ -2962,6 +2973,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         {!canGenerateSimulatorProofChain ? <p className="statusLine">{simulatorProofChainUnavailableCopy}</p> : null}
         <p className="tableMeta">
           Loop health: {loopHealthSignal.state} · Loop running: {loopHealth?.loop_running ? 'yes' : 'no'} · Consecutive failures: {Number(loopHealth?.consecutive_failures ?? 0)} · Last successful cycle: {formatAbsoluteTime(loopHealth?.last_successful_cycle ?? null)} · Retry backoff: {loopHealth?.backoff_seconds ? `${loopHealth.backoff_seconds}s` : 'none'} · Next retry: {formatAbsoluteTime(loopHealth?.next_retry_at ?? null)} · Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {monitoringViewModel.pollLabel} · Last heartbeat: {monitoringViewModel.heartbeatLabel} · Runtime freshness: {String(runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeSummary?.confidence ?? runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
+        </p>
+        <p className="tableMeta">
+          Worker heartbeat: {monitoringViewModel.heartbeatLabel} · Poll loop: {monitoringViewModel.pollLabel} · Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection: {detectionEvalLabel} · Reporting systems: {reportingSystems}/{configuredSystems} · Evidence source: {simulatorMode ? `${monitoringPresentation.evidenceSourceLabel} (SIMULATOR/REPLAY)` : monitoringPresentation.evidenceSourceLabel} · Runtime reason: {runtimeReason}
         </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
