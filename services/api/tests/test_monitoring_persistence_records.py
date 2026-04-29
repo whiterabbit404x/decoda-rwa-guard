@@ -335,3 +335,79 @@ def test_runtime_status_ignores_legacy_demo_fallback_for_live_claims_and_uses_pe
     assert body['target_coverage_records'] == persisted_coverage_records
     assert body['provider_health'] == 'degraded'
     assert body['target_coverage'] == 'none'
+
+
+def test_impossible_reporting_coverage_without_telemetry_is_detectable() -> None:
+    now = datetime.now(timezone.utc)
+    base = dict(
+        now=now,
+        workspace_configured=True,
+        configuration_reason_codes=[],
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
+        monitoring_mode='live',
+        runtime_status='live',
+        configured_systems=1,
+        monitored_systems_count=1,
+        protected_assets=1,
+        status_reason=None,
+        configuration_reason=None,
+        valid_protected_asset_count=1,
+        linked_monitored_system_count=1,
+        persisted_enabled_config_count=1,
+        valid_target_system_link_count=1,
+        telemetry_window_seconds=300,
+    )
+
+    impossible = build_workspace_monitoring_summary(
+        **base,
+        reporting_systems=1,
+        last_poll_at=now,
+        last_heartbeat_at=now,
+        last_telemetry_at=None,
+        last_coverage_telemetry_at=None,
+        telemetry_kind=None,
+        last_detection_at=None,
+        evidence_source='none',
+    )
+    assert impossible['last_telemetry_at'] is None
+    assert impossible['reporting_systems_count'] >= 1
+    assert impossible['evidence_source_summary'] == 'none'
+
+
+def test_simulator_and_replay_evidence_are_never_labeled_live() -> None:
+    now = datetime.now(timezone.utc)
+    common = dict(
+        now=now,
+        workspace_configured=True,
+        configuration_reason_codes=[],
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
+        monitoring_mode='live',
+        runtime_status='degraded',
+        configured_systems=1,
+        monitored_systems_count=1,
+        protected_assets=1,
+        status_reason=None,
+        configuration_reason=None,
+        valid_protected_asset_count=1,
+        linked_monitored_system_count=1,
+        persisted_enabled_config_count=1,
+        valid_target_system_link_count=1,
+        telemetry_window_seconds=300,
+        reporting_systems=1,
+        last_poll_at=now,
+        last_heartbeat_at=now,
+        last_telemetry_at=now,
+        last_coverage_telemetry_at=now,
+        telemetry_kind='coverage',
+        last_detection_at=now,
+    )
+    simulator = build_workspace_monitoring_summary(**common, evidence_source='simulator')
+    replay = build_workspace_monitoring_summary(**common, evidence_source='replay')
+    assert simulator['evidence_source_summary'] == 'simulator'
+    assert replay['evidence_source_summary'] == 'replay'
+    assert simulator['evidence_source_summary'] != 'live'
+    assert replay['evidence_source_summary'] != 'live'
