@@ -5905,9 +5905,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if target_event_ts is not None:
                 telemetry_candidates.append((target_event_ts, 'target_event'))
         telemetry_candidates.sort(key=lambda item: item[0], reverse=True)
-        last_coverage_telemetry_at = max(coverage_telemetry_candidates) if coverage_telemetry_candidates else live_coverage_receipts_workspace_latest
-        last_telemetry_at = telemetry_candidates[0][0] if telemetry_candidates else None
-        telemetry_kind = telemetry_candidates[0][1] if telemetry_candidates else None
+        legacy_last_coverage_telemetry_at = max(coverage_telemetry_candidates) if coverage_telemetry_candidates else live_coverage_receipts_workspace_latest
+        legacy_last_telemetry_at = telemetry_candidates[0][0] if telemetry_candidates else None
+        legacy_telemetry_kind = telemetry_candidates[0][1] if telemetry_candidates else None
+        last_coverage_telemetry_at = live_coverage_receipts_workspace_latest
+        last_telemetry_at = canonical_last_telemetry_at
+        telemetry_kind = 'canonical_telemetry_events' if canonical_last_telemetry_at is not None else None
         latest_target_coverage_rows = connection.execute(
             '''
             SELECT DISTINCT ON (target_id)
@@ -5927,16 +5930,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             for row in (latest_target_coverage_rows or [])
             if str((row or {}).get('target_id') or '').strip()
         }
-        reporting_systems = 0
-        for row in enabled_rows:
-            target_id = str(row.get('target_id') or '').strip()
-            coverage_row = coverage_by_target.get(target_id) or {}
-            coverage_status = str(coverage_row.get('coverage_status') or '').strip().lower()
-            coverage_telemetry_at = _parse_ts(coverage_row.get('last_telemetry_at'))
-            if coverage_status != 'reporting' or coverage_telemetry_at is None:
-                continue
-            if int((now - coverage_telemetry_at).total_seconds()) <= telemetry_window_seconds:
-                reporting_systems += 1
+        reporting_systems = int(receipts_reporting_systems)
         coverage_heartbeat_count = int(reporting_systems)
         real_event_count = int(recent_real_event_count)
         raw_recent_evidence_state = (
@@ -6040,7 +6034,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         )
         if source_of_evidence == 'live':
             telemetry_kind = 'coverage'
-        evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if evidence_at else 'none'))
+        evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if canonical_last_telemetry_at else 'none'))
         latest_provider_rows = connection.execute(
             '''
             SELECT DISTINCT ON (provider_type, COALESCE(target_id, '00000000-0000-0000-0000-000000000000'::uuid))
@@ -6397,12 +6391,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ('response_action_without_incident', response_actions_without_incident_count > 0),
         )
         runtime_contradiction_flags = [flag for flag, condition in contradiction_conditions if condition]
-        inherited_contradiction_flags = [
-            str(flag)
-            for flag in (summary.get('contradiction_flags') or [])
-            if str(flag).strip()
-        ]
-        contradiction_flags = sorted(set(inherited_contradiction_flags + runtime_contradiction_flags))
+        contradiction_flags = sorted(set(runtime_contradiction_flags))
         summary['contradiction_flags'] = contradiction_flags
         impossible_state_detected = any(
             flag in contradiction_flags
@@ -6541,6 +6530,25 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'latest_telemetry_checkpoint': (latest_detection_evaluation_at or evidence_at).isoformat() if (latest_detection_evaluation_at or evidence_at) else None,
             'source_of_evidence': source_of_evidence,
             'evidence_source': evidence_source,
+            'details': {
+                'compatibility': {
+                    'legacy_reporting_systems': len(
+                        [
+                            row
+                            for row in enabled_rows
+                            if (
+                                str((coverage_by_target.get(str(row.get('target_id') or '').strip()) or {}).get('coverage_status') or '').strip().lower() == 'reporting'
+                                and _parse_ts((coverage_by_target.get(str(row.get('target_id') or '').strip()) or {}).get('last_telemetry_at')) is not None
+                                and int((now - _parse_ts((coverage_by_target.get(str(row.get('target_id') or '').strip()) or {}).get('last_telemetry_at'))).total_seconds()) <= telemetry_window_seconds
+                            )
+                        ]
+                    ),
+                    'legacy_last_telemetry_at': legacy_last_telemetry_at.isoformat() if legacy_last_telemetry_at else None,
+                    'legacy_last_coverage_telemetry_at': legacy_last_coverage_telemetry_at.isoformat() if legacy_last_coverage_telemetry_at else None,
+                    'legacy_telemetry_kind': legacy_telemetry_kind,
+                    'legacy_monitored_systems_last_heartbeat_max': last_system_heartbeat.isoformat() if last_system_heartbeat else None,
+                }
+            },
             'provider_health': provider_health,
             'target_coverage': target_coverage,
             'workspace_configured': workspace_configured,
