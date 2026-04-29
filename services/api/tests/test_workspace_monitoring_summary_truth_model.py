@@ -65,6 +65,11 @@ def test_summary_returns_only_strict_contract_fields() -> None:
         'continuity_status',
         'continuity_reason_codes',
         'continuity_signals',
+        'continuity_slo_pass',
+        'heartbeat_age_seconds',
+        'event_ingestion_age_seconds',
+        'detection_eval_age_seconds',
+        'required_thresholds_seconds',
         'ingestion_freshness',
         'detection_pipeline_freshness',
         'worker_heartbeat_freshness',
@@ -99,7 +104,8 @@ def test_coverage_telemetry_can_backfill_last_telemetry_at() -> None:
         telemetry_kind='coverage',
     )
     assert summary['last_telemetry_at'] == (now - timedelta(seconds=45)).isoformat()
-    assert summary['telemetry_freshness'] == 'fresh'
+    assert 'reporting_coverage_without_target_telemetry' in summary['guard_flags']
+    assert summary['telemetry_freshness'] == 'stale'
 
 
 def test_guard_reason_is_exposed_as_status_reason() -> None:
@@ -154,3 +160,35 @@ def test_db_outage_prevents_fresh_without_db_backed_evidence() -> None:
     )
     assert summary['telemetry_freshness'] != 'fresh'
     assert summary['status_reason'] == 'Monitoring loop running without database access'
+
+
+def test_hard_contradictions_fail_closed_semantics() -> None:
+    summary = _build_summary(
+        workspace_configured=False,
+        reporting_systems=2,
+        last_telemetry_at=None,
+        last_coverage_telemetry_at=_now() - timedelta(seconds=30),
+        telemetry_kind='coverage',
+        evidence_source='none',
+    )
+    assert 'workspace_unconfigured_with_reporting_systems' in summary['guard_flags']
+    assert 'workspace_unconfigured_with_coverage' in summary['contradiction_flags']
+    assert summary['runtime_status'] != 'live'
+    assert summary['monitoring_status'] != 'live'
+    assert summary['telemetry_freshness'] != 'fresh'
+    assert summary['confidence'] == 'unavailable'
+    assert summary['evidence_source_summary'] == 'none'
+
+
+def test_heartbeat_only_live_claim_is_hard_guarded() -> None:
+    summary = _build_summary(
+        runtime_status='live',
+        last_telemetry_at=None,
+        last_coverage_telemetry_at=None,
+        telemetry_kind=None,
+        evidence_source='live',
+    )
+    assert 'heartbeat_only_with_live_claim' in summary['guard_flags']
+    assert 'live_evidence_without_live_telemetry_kind' in summary['guard_flags']
+    assert summary['runtime_status'] == 'degraded'
+    assert summary['monitoring_status'] == 'limited'
