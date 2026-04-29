@@ -29,11 +29,13 @@ class _FailureInjectionConn:
         fail_alerts_query: bool = False,
         stale_telemetry: bool = False,
         response_actions_without_incident: int = 0,
+        target_coverage_rows: list[dict] | None = None,
     ) -> None:
         self.now = now
         self.fail_alerts_query = fail_alerts_query
         self.stale_telemetry = stale_telemetry
         self.response_actions_without_incident = response_actions_without_incident
+        self.target_coverage_rows = target_coverage_rows
 
     def execute(self, query, params=None):
         q = ' '.join(str(query).split())
@@ -70,6 +72,8 @@ class _FailureInjectionConn:
             return _Result({'detected_at': detected})
         if 'WITH filtered_receipts AS (' in q:
             return _Result(rows=[])
+        if 'SELECT DISTINCT ON (target_id)' in q and 'FROM target_coverage_records' in q:
+            return _Result(rows=self.target_coverage_rows or [])
         return _Result(None)
 
 
