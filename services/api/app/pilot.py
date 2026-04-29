@@ -8696,6 +8696,103 @@ def list_targets(request: Request) -> dict[str, Any]:
         return {'targets': targets, 'workspace': workspace_context['workspace']}
 
 
+def _sync_canonical_monitoring_target_state(
+    connection: Any,
+    *,
+    workspace_id: str,
+    target_id: str,
+    asset_id: str | None,
+    enabled: bool,
+    monitoring_enabled: bool,
+) -> None:
+    provider_type = 'target_bridge'
+    canonical = connection.execute(
+        '''
+        INSERT INTO monitored_targets (id, workspace_id, asset_id, provider_type, target_identifier, enabled, status, created_at, updated_at)
+        VALUES (%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (workspace_id, provider_type, target_identifier)
+        DO UPDATE SET
+            asset_id = EXCLUDED.asset_id,
+            enabled = EXCLUDED.enabled,
+            status = EXCLUDED.status,
+            updated_at = NOW()
+        RETURNING id
+        ''',
+        (str(uuid.uuid5(uuid.NAMESPACE_URL, f'canonical-target:{workspace_id}:{target_id}')), workspace_id, asset_id, provider_type, target_id, enabled, 'active' if enabled else 'inactive'),
+    ).fetchone()
+    if canonical is None:
+        return
+    canonical_target_id = str(canonical['id'])
+    desired_enabled = bool(enabled and monitoring_enabled)
+    if desired_enabled:
+        active_configs = connection.execute(
+            '''
+            SELECT id
+            FROM monitoring_configs
+            WHERE workspace_id = %s::uuid
+              AND target_id = %s::uuid
+              AND enabled = TRUE
+            ORDER BY updated_at DESC NULLS LAST, created_at DESC, id DESC
+            ''',
+            (workspace_id, canonical_target_id),
+        ).fetchall()
+        primary_config_id = str(active_configs[0]['id']) if active_configs else str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO monitoring_configs (id, workspace_id, asset_id, target_id, enabled, cadence_seconds, provider_type, created_at, updated_at)
+            VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, TRUE, 300, %s, NOW(), NOW())
+            ON CONFLICT (id)
+            DO UPDATE SET
+                asset_id = EXCLUDED.asset_id,
+                enabled = TRUE,
+                provider_type = EXCLUDED.provider_type,
+                updated_at = NOW()
+            ''',
+            (primary_config_id, workspace_id, asset_id, canonical_target_id, provider_type),
+        )
+        connection.execute(
+            '''
+            UPDATE monitoring_configs
+            SET enabled = FALSE,
+                updated_at = NOW()
+            WHERE workspace_id = %s::uuid
+              AND target_id = %s::uuid
+              AND enabled = TRUE
+              AND id <> %s::uuid
+            ''',
+            (workspace_id, canonical_target_id, primary_config_id),
+        )
+    else:
+        connection.execute(
+            '''
+            UPDATE monitoring_configs
+            SET enabled = FALSE,
+                updated_at = NOW()
+            WHERE workspace_id = %s::uuid
+              AND target_id = %s::uuid
+              AND enabled = TRUE
+            ''',
+            (workspace_id, canonical_target_id),
+        )
+
+
+def _load_target_row(connection: Any, *, workspace_id: str, target_id: str) -> dict[str, Any]:
+    row = connection.execute(
+        '''
+        SELECT id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
+               asset_id, chain_id, target_metadata, monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts,
+               auto_create_incidents, notification_channels, last_checked_at, last_run_status, last_run_id, last_alert_at, monitored_by_workspace_id, is_active,
+               created_at, updated_at
+        FROM targets
+        WHERE id = %s::uuid AND workspace_id = %s::uuid AND deleted_at IS NULL
+        ''',
+        (target_id, workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Target not found.')
+    return _json_safe_value(dict(row))
+
+
 def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     validated = _validate_target_payload(payload)
@@ -8760,13 +8857,21 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 'INSERT INTO target_tags (id, workspace_id, target_id, tag) VALUES (%s, %s, %s, %s) ON CONFLICT (target_id, tag) DO NOTHING',
                 (str(uuid.uuid4()), workspace_id, target_id, tag),
             )
+        _sync_canonical_monitoring_target_state(
+            connection,
+            workspace_id=workspace_id,
+            target_id=target_id,
+            asset_id=validated['asset_id'],
+            enabled=bool(validated['enabled']),
+            monitoring_enabled=bool(validated['monitoring_enabled']),
+        )
         if validated['enabled'] and validated['monitoring_enabled']:
             result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id)
             if result.get('status') != 'ok':
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Enabled targets require a valid linked asset before monitoring can start.')
         log_audit(connection, action='target.create', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'target_type': validated['target_type']})
         connection.commit()
-        return {'id': target_id, **validated}
+        return _load_target_row(connection, workspace_id=workspace_id, target_id=target_id)
 
 
 def get_target(target_id: str, request: Request) -> dict[str, Any]:
@@ -8854,6 +8959,14 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
         connection.execute('DELETE FROM target_tags WHERE target_id = %s', (target_id,))
         for tag in validated['tags']:
             connection.execute('INSERT INTO target_tags (id, workspace_id, target_id, tag) VALUES (%s, %s, %s, %s)', (str(uuid.uuid4()), workspace_id, target_id, tag))
+        _sync_canonical_monitoring_target_state(
+            connection,
+            workspace_id=workspace_id,
+            target_id=target_id,
+            asset_id=validated['asset_id'],
+            enabled=bool(validated['enabled']),
+            monitoring_enabled=bool(validated['monitoring_enabled']),
+        )
         if validated['enabled'] and validated['monitoring_enabled']:
             result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id)
             if result.get('status') != 'ok':
@@ -8866,7 +8979,7 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
             reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id)
         log_audit(connection, action='target.update', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={})
         connection.commit()
-        return {'id': target_id, **validated}
+        return _load_target_row(connection, workspace_id=workspace_id, target_id=target_id)
 
 
 def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[str, Any]:
@@ -8891,6 +9004,14 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
             'UPDATE targets SET enabled = %s, monitoring_enabled = %s, updated_by_user_id = %s, updated_at = NOW() WHERE id = %s',
             (enabled, enabled, user['id'], target_id),
         )
+        _sync_canonical_monitoring_target_state(
+            connection,
+            workspace_id=workspace_context['workspace_id'],
+            target_id=target_id,
+            asset_id=str(row.get('asset_id') or '') or None,
+            enabled=enabled,
+            monitoring_enabled=enabled,
+        )
         if enabled:
             result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_context['workspace_id'])
             if result.get('status') != 'ok':
@@ -8912,7 +9033,7 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
             metadata={},
         )
         connection.commit()
-        return {'id': target_id, 'enabled': enabled, 'monitoring_enabled': enabled}
+        return _load_target_row(connection, workspace_id=workspace_context['workspace_id'], target_id=target_id)
 
 
 def delete_target(target_id: str, request: Request) -> dict[str, Any]:
