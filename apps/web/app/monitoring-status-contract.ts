@@ -256,6 +256,7 @@ export type MonitoringRuntimeStatus = {
   last_successful_cycle?: string | null;
   consecutive_failures?: number;
   next_retry_at?: string | null;
+  backoff_seconds?: number | null;
 };
 
 export type MonitoringTimelineLinkName =

@@ -2949,6 +2949,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             Monitoring loop degraded for {Math.floor((loopHealthSignal.degradedSeconds ?? 0) / 60)} minutes (threshold {Math.floor(LOOP_DEGRADED_ALERT_THRESHOLD_SECONDS / 60)}). Check worker dependencies and retry telemetry ingestion.
           </p>
         ) : null}
+        {loopHealthSignal.state === 'recovering' ? (
+          <p className="statusLine statusLine-warning">
+            Monitoring loop is recovering. Failures remain at {Number(loopHealth?.consecutive_failures ?? 0)} until the next successful cycle clears retry state.
+          </p>
+        ) : null}
         {dbPersistenceOutageActive ? (
           <p className="statusLine">
             Persistence outage active: {dbPersistenceOutageReason}. Simulator/demo rows remain visible but are excluded from live-evidence claims.
@@ -2956,7 +2961,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         ) : null}
         {!canGenerateSimulatorProofChain ? <p className="statusLine">{simulatorProofChainUnavailableCopy}</p> : null}
         <p className="tableMeta">
-          Loop health: {loopHealthSignal.state} · Loop running: {loopHealth?.loop_running ? 'yes' : 'no'} · Consecutive failures: {Number(loopHealth?.consecutive_failures ?? 0)} · Last successful cycle: {formatAbsoluteTime(loopHealth?.last_successful_cycle ?? null)} · Next retry: {formatAbsoluteTime(loopHealth?.next_retry_at ?? null)} · Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {monitoringViewModel.pollLabel} · Last heartbeat: {monitoringViewModel.heartbeatLabel} · Runtime freshness: {String(runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeSummary?.confidence ?? runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
+          Loop health: {loopHealthSignal.state} · Loop running: {loopHealth?.loop_running ? 'yes' : 'no'} · Consecutive failures: {Number(loopHealth?.consecutive_failures ?? 0)} · Last successful cycle: {formatAbsoluteTime(loopHealth?.last_successful_cycle ?? null)} · Retry backoff: {loopHealth?.backoff_seconds ? `${loopHealth.backoff_seconds}s` : 'none'} · Next retry: {formatAbsoluteTime(loopHealth?.next_retry_at ?? null)} · Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {monitoringViewModel.pollLabel} · Last heartbeat: {monitoringViewModel.heartbeatLabel} · Runtime freshness: {String(runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeSummary?.confidence ?? runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
         </p>
         {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
         {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}

@@ -2790,3 +2790,28 @@ def test_runtime_status_detection_evaluation_checkpoint_prevents_missing_pipelin
     assert payload['detection_pipeline_freshness'] != 'missing'
     assert 'detection_pipeline_missing' not in (payload.get('continuity_reason_codes') or [])
     assert payload['continuity_status'] != 'degraded'
+
+
+def test_runtime_status_surfaces_loop_health_fields(monkeypatch):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': True, 'last_error': 'db timeout', 'source_type': 'polling', 'worker_running': False},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_Conn(now - timedelta(seconds=30))))
+    monitoring_runner.set_background_loop_health(
+        loop_running=False,
+        last_successful_cycle='2026-04-29T12:00:00Z',
+        consecutive_failures=3,
+        next_retry_at='2026-04-29T12:02:00Z',
+        backoff_seconds=120,
+    )
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    assert payload['loop_running'] is False
+    assert payload['last_successful_cycle'] == '2026-04-29T12:00:00Z'
+    assert payload['consecutive_failures'] == 3
+    assert payload['next_retry_at'] == '2026-04-29T12:02:00Z'
+    assert payload['backoff_seconds'] == 120
