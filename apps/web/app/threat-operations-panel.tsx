@@ -2817,6 +2817,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     if (!latestReconcileJob || latestReconcileJob.status !== 'completed') return null;
     return latestReconcileJob.completed_at || latestReconcileJob.last_event_at || latestReconcileJob.started_at || null;
   }, [latestReconcileJob]);
+
+  const threatOperationsViewModel = useMemo(() => ({
+    monitoring: monitoringViewModel,
+  }), [monitoringViewModel]);
+  const headerStatusChips = monitoringViewModel.headerStatusChips;
+
   const reconcileStateReasonLabel = useMemo(() => {
     if (!latestReconcileJob) return 'No reconcile job has run yet.';
     const reason = latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No reason provided.';
@@ -2854,7 +2860,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           </div>
         </div>
         <div className="chipRow monitoringHeaderChips">
-          {monitoringViewModel.headerStatusChips.map((chip) => (
+          {headerStatusChips.map((chip) => (
             <span
               key={chip.label}
               className={chip.tone === 'status' ? (chip.className ?? 'statusBadge statusBadge-attention') : 'ruleChip'}
@@ -2864,9 +2870,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ))}
         </div>
         <p className="tableMeta">
-          Data provenance ({monitoringViewModel.provenanceLabel}): {monitoringViewModel.provenanceExplanation} /ops/monitoring/runtime-status ({monitoringViewModel.endpointProvenance.runtimeStatus}) · /ops/monitoring/investigation-timeline ({monitoringViewModel.endpointProvenance.investigationTimeline}) · Last successful monitoring refresh: {formatAbsoluteTime(monitoringViewModel.lastSuccessfulRefreshAt)} · Last successful runtime refresh: {formatAbsoluteTime(monitoringViewModel.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: {formatAbsoluteTime(monitoringViewModel.lastSuccessfulTimelineRefreshAt)}
+          Data provenance ({threatOperationsViewModel.monitoring.provenanceLabel}): {threatOperationsViewModel.monitoring.provenanceExplanation} /ops/monitoring/runtime-status ({threatOperationsViewModel.monitoring.endpointProvenance.runtimeStatus}) · /ops/monitoring/investigation-timeline ({threatOperationsViewModel.monitoring.endpointProvenance.investigationTimeline}) · Last successful monitoring refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRefreshAt)} · Last successful runtime refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulTimelineRefreshAt)}
         </p>
-        <PageStateBanner viewModel={monitoringViewModel} />
+        <PageStateBanner viewModel={threatOperationsViewModel.monitoring} />
         {monitoringViewModel.contradictions.length > 0 ? (
           <p className="statusLine statusLine-warning">
             Contradiction guard: {monitoringViewModel.contradictions.join(' ')}
