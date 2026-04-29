@@ -2140,6 +2140,8 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'summary_generated_at': payload.get('summary_generated_at') or datetime.now(timezone.utc).isoformat(),
             'provider_health': str(payload.get('provider_health') or 'unknown'),
             'target_coverage': str(payload.get('target_coverage') or 'unknown'),
+            'provider_health_records': list(payload.get('provider_health_records') or []),
+            'target_coverage_records': list(payload.get('target_coverage_records') or []),
         }
         if _is_production_like_runtime():
             emit_legacy_fields = False
