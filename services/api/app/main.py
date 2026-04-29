@@ -2121,6 +2121,7 @@ def ops_production_claim_validator() -> dict[str, Any]:
 def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
     try:
         payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
+        emit_legacy_fields = str(os.getenv('MONITORING_RUNTIME_LEGACY_FIELDS', '')).strip().lower() in {'1', 'true', 'yes', 'on'}
         canonical_runtime = {
             'workspace_configured': bool(payload.get('workspace_configured')),
             'runtime_status': str(payload.get('runtime_status') or payload.get('runtime_status_summary') or 'offline'),
@@ -2138,6 +2139,8 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'contradiction_flags': list(payload.get('contradiction_flags') or []),
             'summary_generated_at': payload.get('summary_generated_at') or datetime.now(timezone.utc).isoformat(),
         }
+        if not emit_legacy_fields:
+            return canonical_runtime
         payload.update(canonical_runtime)
         payload['canonical_monitoring_runtime'] = dict(canonical_runtime)
         background_loop_health = get_background_loop_health()
