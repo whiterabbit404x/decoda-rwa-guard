@@ -299,8 +299,15 @@ def _resolve_target_coverage_state(
 ) -> tuple[str, datetime | None, str, dict[str, Any]]:
     last_telemetry_at = _parse_ts((telemetry_row or {}).get('observed_at')) if isinstance(telemetry_row, dict) else None
     telemetry_event_id = str((telemetry_row or {}).get('id') or '').strip() if isinstance(telemetry_row, dict) else ''
-    has_real_telemetry = bool(last_telemetry_at and telemetry_event_id)
-    if has_real_telemetry:
+    telemetry_event_cursor = str((telemetry_row or {}).get('event_cursor') or '').strip() if isinstance(telemetry_row, dict) else ''
+    telemetry_idempotency_key = str((telemetry_row or {}).get('telemetry_idempotency_key') or '').strip() if isinstance(telemetry_row, dict) else ''
+    telemetry_kind = str((telemetry_row or {}).get('telemetry_kind') or '').strip().lower() if isinstance(telemetry_row, dict) else ''
+    receipt_kind = str((telemetry_row or {}).get('receipt_kind') or '').strip().lower() if isinstance(telemetry_row, dict) else ''
+    telemetry_basis_present = bool(last_telemetry_at and telemetry_event_id)
+    has_real_telemetry = bool(
+        telemetry_basis_present and telemetry_kind == 'target_event' and receipt_kind == 'target_event'
+    )
+    if has_real_telemetry and telemetry_basis_present:
         coverage_status = 'reporting'
         evidence_source = provider_evidence_source
     else:
@@ -309,10 +316,25 @@ def _resolve_target_coverage_state(
     metadata: dict[str, Any] = {
         'provider_status': provider_status,
         'source_status': source_status,
+        'telemetry_guard_passed': has_real_telemetry,
         'telemetry_basis': (
-            {'kind': 'telemetry_event', 'event_id': telemetry_event_id}
+            {
+                'kind': 'telemetry_event',
+                'event_id': telemetry_event_id,
+                'event_cursor': telemetry_event_cursor or None,
+                'telemetry_idempotency_key': telemetry_idempotency_key or None,
+                'telemetry_kind': telemetry_kind or None,
+                'receipt_kind': receipt_kind or None,
+            }
             if has_real_telemetry
-            else {'kind': 'none'}
+            else {
+                'kind': 'none',
+                'guard_reason': (
+                    'missing_telemetry_basis'
+                    if not telemetry_basis_present
+                    else f'ineligible_telemetry_kind:{telemetry_kind or "unknown"}:{receipt_kind or "unknown"}'
+                ),
+            }
         ),
     }
     return coverage_status, last_telemetry_at, evidence_source, metadata
@@ -2927,7 +2949,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     logger.info('checked target %s %s status=%s runs=%s alerts=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, incidents_created)
     latest_telemetry_row = connection.execute(
         '''
-        SELECT id, observed_at
+        SELECT id, observed_at, event_cursor, telemetry_idempotency_key, telemetry_kind, receipt_kind
         FROM telemetry_events
         WHERE workspace_id = %s::uuid AND target_id = %s::uuid
         ORDER BY observed_at DESC, ingested_at DESC, id DESC
