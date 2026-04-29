@@ -1919,7 +1919,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         && chainLinkedIds?.incident_id
         && chainLinkedIds?.action_id,
       );
-      const hasRealLinkedEvidence = linkedEvidenceCount > 0 && isRealEvidence(linkedEvidence, row);
+      const hasPersistedEvidenceRecord = Boolean(linkedEvidence?.id);
+      const hasRealLinkedEvidence = hasPersistedEvidenceRecord && linkedEvidenceCount > 0 && isRealEvidence(linkedEvidence, row);
       const ageMs = now - new Date(item.timestamp).getTime();
       const telemetryFresh = monitoringPresentation.status === 'live' && monitoringPresentation.hasLiveTelemetry;
       const liveCandidate = telemetryFresh
@@ -3458,6 +3459,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                           <p>{linkName.replaceAll('_', ' ')}</p>
                           <p className="tableMeta">id {item.id} · table {String(item.table_name || 'unknown')} · evidence {sourceLabel}</p>
                           <p className="tableMeta">timeline: timestamp {timelineTimestamp} · source {sourceLabel}</p>
+                          <p className="tableMeta">raw evidence refs: timeline_item {item.id} · link {linkName} · table {String(item.table_name || 'unknown')} · source {sourceLabel}</p>
                           <p className="tableMeta">
                             linked IDs: detection {String(chainIds.detection_id || 'n/a')} · alert {String(chainIds.alert_id || 'n/a')} · incident {String(chainIds.incident_id || 'n/a')} · action {String(chainIds.action_id || 'n/a')}
                           </p>

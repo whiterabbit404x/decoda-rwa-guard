@@ -227,6 +227,8 @@ def test_get_monitoring_investigation_timeline_non_empty_evidence_linked_items_s
     assert payload['chain_linked_ids']['alert_id']
     assert payload['chain_linked_ids']['incident_id']
     assert payload['chain_linked_ids']['action_id']
+    assert all(item['table_name'] for item in evidence_items)
+    assert all(item['evidence_source'] in {'live', 'simulator'} for item in evidence_items)
 
 def test_get_monitoring_investigation_timeline_includes_renderable_proof_links_when_evidence_exists(monkeypatch):
     workspace_id = '11111111-1111-1111-1111-111111111111'
