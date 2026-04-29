@@ -206,3 +206,132 @@ def test_runtime_status_endpoint_includes_detection_and_contradiction_guards(mon
     payload = response.json()
     assert payload['runtime_status'] == 'offline'
     assert payload['status_reason'].startswith('runtime_status_degraded')
+
+
+_RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS = [
+    'workspace_configured',
+    'runtime_status',
+    'configured_systems',
+    'reporting_systems',
+    'protected_assets',
+    'last_poll_at',
+    'last_heartbeat_at',
+    'last_telemetry_at',
+    'last_detection_at',
+    'freshness_status',
+    'confidence_status',
+    'evidence_source',
+    'status_reason',
+    'contradiction_flags',
+    'summary_generated_at',
+    'provider_health',
+    'target_coverage',
+    'provider_health_records',
+    'target_coverage_records',
+]
+
+
+def _canonical_runtime_payload(**overrides):
+    payload = {
+        'workspace_configured': True,
+        'runtime_status': 'degraded',
+        'configured_systems': 1,
+        'reporting_systems': 0,
+        'protected_assets': 1,
+        'last_poll_at': None,
+        'last_heartbeat_at': None,
+        'last_telemetry_at': None,
+        'last_detection_at': None,
+        'freshness_status': 'unavailable',
+        'confidence_status': 'low',
+        'evidence_source': 'none',
+        'status_reason': 'no_fresh_live_coverage_telemetry',
+        'contradiction_flags': [],
+        'summary_generated_at': '2026-04-29T12:00:00Z',
+        'provider_health': 'none',
+        'target_coverage': 'none',
+        'provider_health_records': [],
+        'target_coverage_records': [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_runtime_status_behavioral_contract_and_single_source_timestamp_updates(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
+
+    baseline = _canonical_runtime_payload()
+
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(baseline))
+    res = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'})
+    assert res.status_code == 200
+    body = res.json()
+    assert list(body.keys()) == _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS
+
+    poll_only = _canonical_runtime_payload(last_poll_at='2026-04-29T12:01:00Z')
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(poll_only))
+    poll_body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
+    changed = {k for k in _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS if poll_body[k] != body[k]}
+    assert changed == {'last_poll_at'}
+
+    heartbeat_only = _canonical_runtime_payload(last_heartbeat_at='2026-04-29T12:02:00Z')
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(heartbeat_only))
+    heartbeat_body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
+    changed = {k for k in _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS if heartbeat_body[k] != body[k]}
+    assert changed == {'last_heartbeat_at'}
+
+    telemetry_only = _canonical_runtime_payload(
+        reporting_systems=1,
+        last_telemetry_at='2026-04-29T12:03:00Z',
+        target_coverage='reporting',
+        evidence_source='live',
+        freshness_status='fresh',
+    )
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(telemetry_only))
+    telemetry_body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
+    assert telemetry_body['last_telemetry_at'] == '2026-04-29T12:03:00Z'
+    assert telemetry_body['reporting_systems'] == 1
+    assert telemetry_body['target_coverage'] == 'reporting'
+
+    detection_only = _canonical_runtime_payload(last_detection_at='2026-04-29T12:04:00Z')
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(detection_only))
+    detection_body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
+    changed = {k for k in _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS if detection_body[k] != body[k]}
+    assert changed == {'last_detection_at'}
+
+
+def test_runtime_status_ignores_legacy_demo_fallback_for_live_claims_and_uses_persisted_records(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
+
+    persisted_provider_records = [
+        {'provider_name': 'rpc', 'status': 'degraded', 'observed_at': '2026-04-29T12:05:00Z'}
+    ]
+    persisted_coverage_records = [
+        {'target_id': 'target-1', 'telemetry_kind': 'none', 'evidence_source': 'none', 'observed_at': '2026-04-29T12:05:00Z'}
+    ]
+
+    payload = _canonical_runtime_payload(
+        runtime_status='degraded',
+        evidence_source='none',
+        provider_health='degraded',
+        target_coverage='none',
+        status_reason='runtime_status_degraded:legacy_demo_rows_ignored',
+        contradiction_flags=['legacy_timeline_rows_present'],
+        provider_health_records=persisted_provider_records,
+        target_coverage_records=persisted_coverage_records,
+    )
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(payload))
+
+    response = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'})
+    assert response.status_code == 200
+    body = response.json()
+    assert body['runtime_status'] != 'healthy'
+    assert body['evidence_source'] != 'live'
+    assert body['provider_health_records'] == persisted_provider_records
+    assert body['target_coverage_records'] == persisted_coverage_records
+    assert body['provider_health'] == 'degraded'
+    assert body['target_coverage'] == 'none'
