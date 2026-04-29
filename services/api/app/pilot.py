@@ -1792,6 +1792,8 @@ def create_governance_action_for_incident(
     action_type: str,
     action_mode: str,
     recommendation: str | None = None,
+    integration_capability_enabled: bool = False,
+    integration_capability_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_type = str(action_type or '').strip().lower()
     if normalized_type not in PIPELINE_GOVERNANCE_ACTION_TYPES:
@@ -1800,9 +1802,25 @@ def create_governance_action_for_incident(
     if normalized_mode not in PIPELINE_GOVERNANCE_ACTION_MODES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported governance action_mode.')
     governance_id = str(uuid.uuid4())
-    truthful_mode = normalized_mode if normalized_mode in {'recommendation', 'simulation', 'manual_required'} else 'manual_required'
-    resulting_status = 'recommended' if truthful_mode == 'recommendation' else ('simulated' if truthful_mode == 'simulation' else 'manual_required')
+    capability_metadata = integration_capability_metadata if isinstance(integration_capability_metadata, dict) else {}
+    capability_enabled = bool(integration_capability_enabled)
+    if normalized_mode == 'executed' and not capability_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Governance action_mode "executed" requires enabled integration capability and recorded metadata.',
+        )
+    truthful_mode = normalized_mode
+    resulting_status = 'executed' if truthful_mode == 'executed' else ('recommended' if truthful_mode == 'recommendation' else ('simulated' if truthful_mode == 'simulation' else 'manual_required'))
     safe_recommendation = recommendation or 'Manual review required before any enforcement.'
+    payload = {
+        'mode': truthful_mode,
+        'manual_required': truthful_mode == 'manual_required',
+        'integration_capability': {
+            'enabled': capability_enabled,
+            'recorded_at': utc_now_iso() if capability_enabled else None,
+            'metadata': capability_metadata,
+        },
+    }
     connection.execute(
         '''
         INSERT INTO governance_actions (
@@ -1820,7 +1838,7 @@ def create_governance_action_for_incident(
             incident_id,
             resulting_status,
             'No direct integration available; stored as recommendation/simulation/manual requirement.',
-            _json_dumps({'mode': truthful_mode, 'manual_required': truthful_mode == 'manual_required'}),
+            _json_dumps(payload),
             _json_dumps({'status': resulting_status, 'message': 'No enforcement executed.'}),
             incident_id,
             alert_id,
