@@ -2521,6 +2521,32 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     if checkpoint_block > 0:
         target['monitoring_checkpoint_cursor'] = f"{checkpoint_block}:checkpoint:-1"
     provider_result: ActivityProviderResult = fetch_target_activity_result(target, checkpoint)
+    provider_checked_at = utc_now()
+    provider_error_message = str(provider_result.degraded_reason or '').strip() or None
+    provider_health_status = 'healthy' if provider_result.status == 'live' else ('degraded' if provider_result.status in {'no_evidence', 'degraded'} else 'error')
+    provider_evidence_source = _telemetry_event_evidence_source(provider_result=provider_result, source_type=str(provider_result.source_type or '').strip().lower())
+    if provider_evidence_source not in {'live', 'simulator', 'replay'}:
+        provider_evidence_source = 'none'
+    connection.execute(
+        '''
+        INSERT INTO provider_health_records (
+            id, workspace_id, provider_type, target_id, status, checked_at, latency_ms, error_message, evidence_source, metadata
+        )
+        VALUES (%s::uuid, %s::uuid, %s, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb)
+        ''',
+        (
+            str(uuid.uuid4()),
+            str(target['workspace_id']),
+            str(provider_result.provider_name or provider_result.source_type or 'monitoring_provider'),
+            str(target['id']),
+            provider_health_status,
+            provider_checked_at,
+            None,
+            provider_error_message,
+            provider_evidence_source,
+            _json_dumps({'provider_status': provider_result.status, 'mode': provider_result.mode, 'source_type': provider_result.source_type}),
+        ),
+    )
     events = provider_result.events
     source_type = str(provider_result.source_type or '').strip().lower()
     live_source_eligible = _provider_source_is_live(source_type)
@@ -2891,6 +2917,37 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             or 0
         )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, incidents_created)
+    latest_telemetry_at = connection.execute(
+        'SELECT MAX(observed_at) AS ts FROM telemetry_events WHERE workspace_id = %s::uuid AND target_id = %s::uuid',
+        (str(target['workspace_id']), str(target['id'])),
+    ).fetchone()
+    latest_detection_at_row = connection.execute(
+        'SELECT MAX(created_at) AS ts FROM detection_events WHERE workspace_id = %s::uuid AND target_id = %s::uuid',
+        (str(target['workspace_id']), str(target['id'])),
+    ).fetchone()
+    last_telemetry_at = _parse_ts((latest_telemetry_at or {}).get('ts') if isinstance(latest_telemetry_at, dict) else None)
+    last_detection_at = _parse_ts((latest_detection_at_row or {}).get('ts') if isinstance(latest_detection_at_row, dict) else None)
+    target_coverage_status = 'reporting' if last_telemetry_at is not None else ('stale' if provider_result.status in {'live', 'no_evidence', 'degraded'} else 'unavailable')
+    coverage_evidence_source = provider_evidence_source if last_telemetry_at is not None else 'none'
+    connection.execute(
+        '''
+        INSERT INTO target_coverage_records (
+            id, workspace_id, asset_id, target_id, coverage_status, last_poll_at, last_heartbeat_at, last_telemetry_at, last_detection_at, evidence_source, computed_at, metadata
+        )
+        VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, NOW(), NOW(), %s, %s, %s, NOW(), %s::jsonb)
+        ''',
+        (
+            str(uuid.uuid4()),
+            str(target['workspace_id']),
+            str(target.get('asset_id')) if target.get('asset_id') else None,
+            str(target['id']),
+            target_coverage_status,
+            last_telemetry_at,
+            last_detection_at,
+            coverage_evidence_source,
+            _json_dumps({'provider_status': provider_result.status, 'source_status': source_status}),
+        ),
+    )
     WORKER_STATE['metrics']['live_events_ingested'] += real_event_count
     return {
         'target_id': str(target['id']),
