@@ -2138,7 +2138,11 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'status_reason': str(payload.get('status_reason') or 'unknown'),
             'contradiction_flags': list(payload.get('contradiction_flags') or []),
             'summary_generated_at': payload.get('summary_generated_at') or datetime.now(timezone.utc).isoformat(),
+            'provider_health': str(payload.get('provider_health') or 'unknown'),
+            'target_coverage': str(payload.get('target_coverage') or 'unknown'),
         }
+        if _is_production_like_runtime():
+            emit_legacy_fields = False
         if not emit_legacy_fields:
             return canonical_runtime
         payload.update(canonical_runtime)
