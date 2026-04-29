@@ -104,6 +104,8 @@ def test_ops_runtime_status_exposes_continuity_fields_for_healthy_stale_degraded
     }
 
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: False)
+    monkeypatch.setenv('MONITORING_RUNTIME_LEGACY_FIELDS', '1')
     client = TestClient(api_main.app)
 
     for expected_status, scenario_payload in scenarios.items():
@@ -155,6 +157,8 @@ def test_ops_runtime_status_exposes_continuity_fields_for_healthy_stale_degraded
 def test_ops_runtime_status_exposes_enterprise_ready_gate_all_green(monkeypatch):
     payload = _enterprise_gate_payload(enterprise_ready_pass=True, failed_checks=[])
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: False)
+    monkeypatch.setenv('MONITORING_RUNTIME_LEGACY_FIELDS', '1')
     monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: payload)
     client = TestClient(api_main.app)
     response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer test', 'x-workspace-id': 'ws-1'})
@@ -180,6 +184,8 @@ def test_ops_runtime_status_exposes_enterprise_ready_gate_all_red(monkeypatch):
     ]
     payload = _enterprise_gate_payload(enterprise_ready_pass=False, failed_checks=failed_checks)
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: False)
+    monkeypatch.setenv('MONITORING_RUNTIME_LEGACY_FIELDS', '1')
     monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: payload)
     client = TestClient(api_main.app)
     response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer test', 'x-workspace-id': 'ws-1'})
@@ -189,3 +195,72 @@ def test_ops_runtime_status_exposes_enterprise_ready_gate_all_red(monkeypatch):
     assert body['failed_checks'] == failed_checks
     assert [check['name'] for check in body['check_results']] == failed_checks
     assert all(check['pass'] is False for check in body['check_results'])
+
+
+def test_ops_runtime_status_canonical_contract_includes_provider_and_target_coverage(monkeypatch):
+    payload = _base_payload('healthy', True, [])
+    payload.update(
+        {
+            'workspace_configured': True,
+            'configured_systems': 2,
+            'reporting_systems': 1,
+            'protected_assets': 1,
+            'last_poll_at': '2026-04-29T00:00:00Z',
+            'last_heartbeat_at': '2026-04-29T00:01:00Z',
+            'last_telemetry_at': '2026-04-29T00:02:00Z',
+            'last_detection_at': '2026-04-29T00:03:00Z',
+            'freshness_status': 'fresh',
+            'confidence_status': 'high',
+            'evidence_source': 'live',
+            'status_reason': 'healthy_live_coverage',
+            'contradiction_flags': [],
+            'provider_health': 'healthy',
+            'target_coverage': 'reporting',
+        }
+    )
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: payload)
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
+    client = TestClient(api_main.app)
+    response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer test', 'x-workspace-id': 'ws-1'})
+    assert response.status_code == 200
+    body = response.json()
+    assert sorted(body.keys()) == sorted(
+        [
+            'workspace_configured',
+            'runtime_status',
+            'configured_systems',
+            'reporting_systems',
+            'protected_assets',
+            'last_poll_at',
+            'last_heartbeat_at',
+            'last_telemetry_at',
+            'last_detection_at',
+            'freshness_status',
+            'confidence_status',
+            'evidence_source',
+            'status_reason',
+            'contradiction_flags',
+            'summary_generated_at',
+            'provider_health',
+            'target_coverage',
+        ]
+    )
+    assert body['provider_health'] == 'healthy'
+    assert body['target_coverage'] == 'reporting'
+
+
+def test_ops_runtime_status_production_ignores_legacy_field_flag(monkeypatch):
+    payload = _base_payload('healthy', True, [])
+    payload.update({'provider_health': 'degraded', 'target_coverage': 'none'})
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: payload)
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
+    monkeypatch.setenv('MONITORING_RUNTIME_LEGACY_FIELDS', '1')
+    client = TestClient(api_main.app)
+    response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer test', 'x-workspace-id': 'ws-1'})
+    assert response.status_code == 200
+    body = response.json()
+    assert 'canonical_monitoring_runtime' not in body
+    assert body['provider_health'] == 'degraded'
+    assert body['target_coverage'] == 'none'
