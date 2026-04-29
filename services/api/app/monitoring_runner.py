@@ -294,6 +294,18 @@ def _provider_source_is_live(source_type: Any) -> bool:
     return str(source_type or '').strip().lower() not in NON_LIVE_PROVIDER_SOURCE_TYPES
 
 
+def _telemetry_event_evidence_source(*, provider_result: ActivityProviderResult, source_type: str) -> str:
+    normalized_mode = str(provider_result.mode or '').strip().lower()
+    normalized_source = str(source_type or '').strip().lower()
+    if provider_result.synthetic or normalized_mode in {'demo', 'simulator'}:
+        return 'simulator'
+    if normalized_mode == 'replay' or normalized_source == 'replay':
+        return 'replay'
+    if _provider_source_is_live(normalized_source):
+        return 'live'
+    return 'simulator'
+
+
 def set_background_loop_health(
     *,
     loop_running: bool,
@@ -2530,6 +2542,27 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     logger.info('monitoring target fetched target=%s threshold=%s auto_create_alerts=%s', target.get('id'), str(target.get('severity_threshold') or 'medium'), bool(target.get('auto_create_alerts', True)))
 
     for event in events:
+        telemetry_evidence_source = _telemetry_event_evidence_source(provider_result=provider_result, source_type=source_type)
+        connection.execute(
+            """
+            INSERT INTO telemetry_events (
+                id, workspace_id, asset_id, target_id, provider_type, event_type, observed_at, evidence_source, payload_hash, payload_json
+            )
+            VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb)
+            """,
+            (
+                str(uuid.uuid4()),
+                str(target['workspace_id']),
+                str(target.get('asset_id')) if target.get('asset_id') else None,
+                str(target['id']),
+                str(provider_result.provider_name or 'monitoring_provider'),
+                str(event.kind or 'target_event'),
+                event.observed_at,
+                telemetry_evidence_source,
+                hashlib.sha256(_json_dumps(event.payload if isinstance(event.payload, dict) else {}).encode('utf-8')).hexdigest(),
+                _json_dumps(event.payload if isinstance(event.payload, dict) else {}),
+            ),
+        )
         processed = _process_single_event(
             connection,
             target=target,
@@ -3064,6 +3097,16 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             workspace_id = str((dict(row)).get('workspace_id') or '').strip()
             if workspace_id:
                 cycle_workspace_ids.add(workspace_id)
+        for workspace_id in sorted(cycle_workspace_ids):
+            connection.execute(
+                """
+                INSERT INTO monitoring_heartbeats (id, workspace_id, worker_name, last_heartbeat_at, status, metadata)
+                VALUES (%s::uuid, %s::uuid, %s, NOW(), %s, %s::jsonb)
+                ON CONFLICT (workspace_id, worker_name)
+                DO UPDATE SET last_heartbeat_at = EXCLUDED.last_heartbeat_at, status = EXCLUDED.status, metadata = EXCLUDED.metadata
+                """,
+                (str(uuid.uuid4()), workspace_id, worker_name, 'healthy', _json_dumps({'trigger_type': trigger_type})),
+            )
         now = utc_now()
         global _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT
         should_touch_monitored_heartbeats = (
@@ -3345,6 +3388,15 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             target['monitored_system_id'] = due_system_ids.get(str(target['id']))
             workspace_id = str(target.get('workspace_id') or '').strip()
             try:
+                poll_id = str(uuid.uuid4())
+                poll_started_at = utc_now()
+                connection.execute(
+                    """
+                    INSERT INTO monitoring_polls (id, workspace_id, target_id, poll_started_at, status, metadata)
+                    VALUES (%s::uuid, %s::uuid, %s::uuid, %s, 'running', %s::jsonb)
+                    """,
+                    (poll_id, str(target['workspace_id']), str(target['id']), poll_started_at, _json_dumps({'worker_name': worker_name})),
+                )
                 with connection.transaction():
                     connection.execute(
                         'UPDATE targets SET monitoring_claimed_by = %s, monitoring_claimed_at = NOW() WHERE id = %s AND workspace_id = %s',
@@ -3395,6 +3447,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                             ),
                         )
                         monitored_systems_updated += 1
+                connection.execute("UPDATE monitoring_polls SET poll_finished_at = NOW(), status = %s, error_message = NULL WHERE id = %s::uuid", ('completed', poll_id))
                 alerts_generated += int(result['alerts_generated'])
                 if workspace_id:
                     workspace_systems_checked[workspace_id] += 1
@@ -3437,6 +3490,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         (error_message, monitored_system_id, str(target['workspace_id'])),
                     )
                     monitored_systems_updated += 1
+                connection.execute("UPDATE monitoring_polls SET poll_finished_at = NOW(), status = 'degraded', error_message = %s WHERE id = %s::uuid", (error_message, poll_id))
         for workspace_id, monitoring_run_id in workspace_run_ids.items():
             workspace_note = f'worker_name={worker_name}'
             workspace_error = workspace_errors.get(workspace_id)
