@@ -9,6 +9,7 @@ from services.api.app.activity_providers import ActivityEvent, ActivityProviderR
 class _Result:
     def __init__(self, row=None):
         self._row = row
+        self.rowcount = 0
 
     def fetchone(self):
         return self._row
@@ -284,7 +285,7 @@ def test_process_monitoring_target_persists_live_coverage_without_target_events(
     assert result['detections_created'] == 0
     assert result['source_status'] == 'active'
     assert result['degraded_reason'] is None
-    assert result['status'] == 'no_real_data'
+    assert result['status'] == 'no_evidence'
     assert result['live_coverage_telemetry_at'] is not None
     assert any(str(run.get('analysis_type')) == 'monitoring_detection_evaluation' for run in checkpoint_runs)
     assert any(
@@ -487,4 +488,35 @@ def test_process_monitoring_target_degrades_non_live_provider_source(monkeypatch
     assert result['source_status'] == 'degraded'
     assert result['degraded_reason'] == 'provider_source_not_live:demo'
     assert result['status'] == 'insufficient_real_evidence'
+    assert result['live_coverage_telemetry_at'] is None
+
+
+def test_process_monitoring_target_poll_only_cycle_does_not_insert_telemetry(monkeypatch):
+    class _Conn:
+        def __init__(self):
+            self.telemetry_inserts = 0
+
+        def execute(self, query, params=None):
+            normalized = ' '.join(str(query).split())
+            if 'INSERT INTO telemetry_events' in normalized:
+                self.telemetry_inserts += 1
+            if 'SELECT id, name FROM workspaces' in normalized:
+                return _Result({'id': 'workspace-1', 'name': 'Workspace'})
+            return _Result(None)
+
+    conn = _Conn()
+    target = _target() | {'updated_by_user_id': 'user-1', 'created_by_user_id': 'user-1'}
+    monkeypatch.setattr(
+        monitoring_runner,
+        'fetch_target_activity_result',
+        lambda *_args, **_kwargs: ActivityProviderResult(
+            mode='live', status='no_evidence', evidence_state='NO_EVIDENCE', truthfulness_state='UNKNOWN_RISK',
+            synthetic=False, provider_name='evm_activity_provider', provider_kind='rpc', evidence_present=False,
+            recent_real_event_count=0, last_real_event_at=None, events=[], latest_block=None, checkpoint=None,
+            checkpoint_age_seconds=None, degraded_reason='no_live_events_observed', error_code=None, source_type='rpc_polling',
+            reason_code='NO_PROVIDER_EVIDENCE', claim_safe=False, detection_outcome='NO_EVIDENCE',
+        ),
+    )
+    result = monitoring_runner.process_monitoring_target(conn, target, triggered_by_user_id='user-1')
+    assert conn.telemetry_inserts == 0
     assert result['live_coverage_telemetry_at'] is None
