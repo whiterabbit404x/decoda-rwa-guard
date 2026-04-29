@@ -1629,6 +1629,207 @@ def append_incident_timeline_event(
     )
 
 
+PIPELINE_SEVERITY_LEVELS = ('low', 'medium', 'high', 'critical')
+PIPELINE_GOVERNANCE_ACTION_MODES = ('recommendation', 'simulation', 'manual_required', 'executed')
+PIPELINE_GOVERNANCE_ACTION_TYPES = (
+    'freeze_wallet',
+    'block_transaction',
+    'revoke_permission',
+    'escalate_incident',
+    'apply_compliance_rule',
+)
+
+
+def _normalize_pipeline_severity(raw_value: Any) -> str:
+    normalized = str(raw_value or '').strip().lower()
+    return normalized if normalized in PIPELINE_SEVERITY_LEVELS else 'medium'
+
+
+def _normalize_pipeline_confidence(raw_value: Any) -> float:
+    try:
+        numeric = float(raw_value)
+    except (TypeError, ValueError):
+        return 0.5
+    return max(0.0, min(1.0, numeric))
+
+
+def create_detection_event_from_telemetry(
+    connection: Any,
+    *,
+    workspace_id: str,
+    telemetry_event: dict[str, Any],
+    detection_type: str,
+    severity: str,
+    confidence: float,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    detection_event_id = str(uuid.uuid4())
+    normalized_severity = _normalize_pipeline_severity(severity)
+    normalized_confidence = _normalize_pipeline_confidence(confidence)
+    evidence_summary = str(evidence.get('summary') or evidence.get('message') or 'Detection generated from telemetry event.').strip()
+    if not evidence_summary:
+        evidence_summary = 'Detection generated from telemetry event.'
+    evidence_source = str(telemetry_event.get('evidence_source') or 'simulator').strip().lower()
+    if evidence_source not in {'live', 'simulator', 'replay'}:
+        evidence_source = 'simulator'
+    connection.execute(
+        '''
+        INSERT INTO detection_events (
+            id, workspace_id, asset_id, target_id, telemetry_event_id, detection_type, severity, confidence, evidence_summary, evidence_source, created_at
+        ) VALUES (
+            %s, %s, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, NOW()
+        )
+        ''',
+        (
+            detection_event_id,
+            workspace_id,
+            telemetry_event.get('asset_id'),
+            telemetry_event.get('target_id'),
+            telemetry_event.get('id'),
+            detection_type,
+            normalized_severity,
+            normalized_confidence,
+            evidence_summary,
+            evidence_source,
+        ),
+    )
+    return {
+        'id': detection_event_id,
+        'workspace_id': workspace_id,
+        'telemetry_event_id': telemetry_event.get('id'),
+        'detection_type': detection_type,
+        'severity': normalized_severity,
+        'confidence': normalized_confidence,
+        'evidence_summary': evidence_summary,
+        'evidence_source': evidence_source,
+        'evidence': evidence,
+    }
+
+
+def create_alert_from_detection_event(connection: Any, *, workspace_id: str, user_id: str, detection_event: dict[str, Any]) -> dict[str, Any] | None:
+    severity = _normalize_pipeline_severity(detection_event.get('severity'))
+    confidence = _normalize_pipeline_confidence(detection_event.get('confidence'))
+    if severity not in {'high', 'critical'} or confidence < 0.7:
+        return None
+    alert_id = str(uuid.uuid4())
+    connection.execute(
+        '''
+        INSERT INTO alerts (
+            id, workspace_id, user_id, analysis_run_id, alert_type, title, severity, status, source_service, summary, payload,
+            created_at, detection_event_id, detection_event_workspace_id, target_id, module_key, source
+        ) VALUES (
+            %s, %s, %s, NULL, %s, %s, %s, 'open', 'monitoring_pipeline', %s, %s::jsonb, NOW(), %s::uuid, %s, %s::uuid, 'monitoring', %s
+        )
+        ''',
+        (
+            alert_id,
+            workspace_id,
+            user_id,
+            str(detection_event.get('detection_type') or 'telemetry_detection'),
+            'Detection Alert',
+            severity,
+            str(detection_event.get('evidence_summary') or 'Detection alert created from telemetry pipeline.'),
+            _json_dumps({'detection_event_id': detection_event.get('id'), 'confidence': confidence, 'evidence': detection_event.get('evidence') or {}}),
+            detection_event.get('id'),
+            workspace_id,
+            detection_event.get('target_id'),
+            detection_event.get('evidence_source') or 'simulator',
+        ),
+    )
+    return {'id': alert_id, 'workspace_id': workspace_id, 'detection_event_id': detection_event.get('id')}
+
+
+def create_incident_from_alert(connection: Any, *, workspace_id: str, user_id: str, alert_id: str, summary: str | None = None) -> dict[str, Any]:
+    incident_id = str(uuid.uuid4())
+    now_iso = utc_now_iso()
+    timeline_seed = [{'event': 'incident.created_from_alert', 'at': now_iso, 'alert_id': alert_id}]
+    connection.execute(
+        '''
+        INSERT INTO incidents (
+            id, workspace_id, user_id, analysis_run_id, title, severity, status, workflow_status, summary, linked_alert_ids, timeline,
+            payload, created_at, updated_at, alert_id, alert_workspace_id, source_alert_id
+        ) VALUES (
+            %s, %s, %s, NULL, 'Incident from Alert', 'high', 'open', 'open', %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW(), NOW(), %s::uuid, %s, %s::uuid
+        )
+        ''',
+        (
+            incident_id,
+            workspace_id,
+            user_id,
+            summary or 'Incident created from qualifying alert.',
+            _json_dumps([alert_id]),
+            _json_dumps(timeline_seed),
+            _json_dumps({'source': 'pipeline', 'alert_id': alert_id}),
+            alert_id,
+            workspace_id,
+            alert_id,
+        ),
+    )
+    connection.execute('UPDATE alerts SET incident_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid AND workspace_id = %s', (incident_id, alert_id, workspace_id))
+    append_incident_timeline_event(connection, workspace_id=workspace_id, incident_id=incident_id, event_type='incident.created', message='Incident created from alert.', actor_user_id=user_id, metadata={'alert_id': alert_id})
+    return {'id': incident_id, 'alert_id': alert_id, 'workspace_id': workspace_id}
+
+
+def append_pipeline_incident_status(connection: Any, *, workspace_id: str, incident_id: str, status_value: str, actor_user_id: str) -> None:
+    append_incident_timeline_event(connection, workspace_id=workspace_id, incident_id=incident_id, event_type='incident.status_changed', message=f'Incident status changed to {status_value}.', actor_user_id=actor_user_id, metadata={'status': status_value})
+
+
+def append_pipeline_incident_recommendation(connection: Any, *, workspace_id: str, incident_id: str, recommendation: str, actor_user_id: str) -> None:
+    append_incident_timeline_event(connection, workspace_id=workspace_id, incident_id=incident_id, event_type='incident.recommendation', message='Governance recommendation captured.', actor_user_id=actor_user_id, metadata={'recommendation': recommendation})
+
+
+def append_pipeline_incident_close(connection: Any, *, workspace_id: str, incident_id: str, actor_user_id: str) -> None:
+    append_incident_timeline_event(connection, workspace_id=workspace_id, incident_id=incident_id, event_type='incident.closed', message='Incident closed.', actor_user_id=actor_user_id, metadata={'closed': True})
+
+
+def create_governance_action_for_incident(
+    connection: Any,
+    *,
+    workspace_id: str,
+    user_id: str,
+    incident_id: str,
+    alert_id: str,
+    action_type: str,
+    action_mode: str,
+    recommendation: str | None = None,
+) -> dict[str, Any]:
+    normalized_type = str(action_type or '').strip().lower()
+    if normalized_type not in PIPELINE_GOVERNANCE_ACTION_TYPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported governance action_type.')
+    normalized_mode = str(action_mode or '').strip().lower()
+    if normalized_mode not in PIPELINE_GOVERNANCE_ACTION_MODES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported governance action_mode.')
+    governance_id = str(uuid.uuid4())
+    truthful_mode = normalized_mode if normalized_mode in {'recommendation', 'simulation', 'manual_required'} else 'manual_required'
+    resulting_status = 'recommended' if truthful_mode == 'recommendation' else ('simulated' if truthful_mode == 'simulation' else 'manual_required')
+    safe_recommendation = recommendation or 'Manual review required before any enforcement.'
+    connection.execute(
+        '''
+        INSERT INTO governance_actions (
+            id, workspace_id, user_id, analysis_run_id, action_type, target_type, target_id, status, reason, payload, resulting_action,
+            created_at, updated_at, incident_id, alert_id, action_mode, recommendation, executed_at
+        ) VALUES (
+            %s, %s, %s, NULL, %s, 'incident', %s::uuid, %s, %s, %s::jsonb, %s::jsonb, NOW(), NOW(), %s::uuid, %s::uuid, %s, %s, NULL
+        )
+        ''',
+        (
+            governance_id,
+            workspace_id,
+            user_id,
+            normalized_type,
+            incident_id,
+            resulting_status,
+            'No direct integration available; stored as recommendation/simulation/manual requirement.',
+            _json_dumps({'mode': truthful_mode, 'manual_required': truthful_mode == 'manual_required'}),
+            _json_dumps({'status': resulting_status, 'message': 'No enforcement executed.'}),
+            incident_id,
+            alert_id,
+            truthful_mode,
+            safe_recommendation,
+        ),
+    )
+    append_pipeline_incident_recommendation(connection, workspace_id=workspace_id, incident_id=incident_id, recommendation=safe_recommendation, actor_user_id=user_id)
+    return {'id': governance_id, 'action_mode': truthful_mode, 'status': resulting_status}
 
 
 def _incident_external_references(
