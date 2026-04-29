@@ -6347,6 +6347,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         payload['last_successful_cycle'] = background_loop_health.get('last_successful_cycle')
         payload['consecutive_failures'] = int(background_loop_health.get('consecutive_failures') or 0)
         payload['next_retry_at'] = background_loop_health.get('next_retry_at')
+        payload['backoff_seconds'] = background_loop_health.get('backoff_seconds')
         payload.update(summary)
         if isinstance(payload.get('workspace_monitoring_summary'), dict):
             payload['workspace_monitoring_summary']['background_loop_health'] = dict(background_loop_health)

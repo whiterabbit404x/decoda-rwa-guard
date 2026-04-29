@@ -2127,6 +2127,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         payload['last_successful_cycle'] = background_loop_health.get('last_successful_cycle')
         payload['consecutive_failures'] = int(background_loop_health.get('consecutive_failures') or 0)
         payload['next_retry_at'] = background_loop_health.get('next_retry_at')
+        payload['backoff_seconds'] = background_loop_health.get('backoff_seconds')
         summary = payload.get('workspace_monitoring_summary') if isinstance(payload.get('workspace_monitoring_summary'), dict) else {}
         if summary:
             summary['background_loop_health'] = dict(background_loop_health)
@@ -2296,6 +2297,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'last_successful_cycle': background_loop_health.get('last_successful_cycle'),
             'consecutive_failures': int(background_loop_health.get('consecutive_failures') or 0),
             'next_retry_at': background_loop_health.get('next_retry_at'),
+            'backoff_seconds': background_loop_health.get('backoff_seconds'),
             'workspace_monitoring_summary': fallback_summary,
             'continuity_status': fallback_summary.get('continuity_status'),
             'continuity_reason_codes': list(fallback_summary.get('continuity_reason_codes') or []),
