@@ -2588,6 +2588,13 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             event=event,
         )
         telemetry_evidence_source = _telemetry_event_evidence_source(provider_result=provider_result, source_type=source_type)
+        if telemetry_evidence_source not in {'live', 'simulator', 'replay'}:
+            telemetry_evidence_source = 'simulator'
+        telemetry_idempotency_key = _telemetry_idempotency_key(
+            workspace_id=target.get('workspace_id'),
+            target_id=target.get('id'),
+            event=event,
+        )
         connection.execute(
             """
             INSERT INTO telemetry_events (

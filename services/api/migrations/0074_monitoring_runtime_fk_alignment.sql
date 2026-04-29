@@ -230,6 +230,17 @@ END $$;
 ALTER TABLE governance_actions
     DROP CONSTRAINT IF EXISTS governance_actions_action_mode_check;
 
+UPDATE governance_actions
+SET action_mode = CASE
+    WHEN action_mode IN ('recommendation', 'simulation', 'manual_required', 'executed') THEN action_mode
+    WHEN action_mode IS NULL OR btrim(action_mode) = '' THEN 'manual_required'
+    WHEN lower(action_mode) IN ('manual', 'manual_only', 'pending_manual', 'requires_manual') THEN 'manual_required'
+    WHEN lower(action_mode) IN ('recommended', 'recommend') THEN 'recommendation'
+    WHEN lower(action_mode) IN ('simulate', 'simulated') THEN 'simulation'
+    WHEN lower(action_mode) IN ('execute', 'executing', 'completed') THEN 'executed'
+    ELSE 'manual_required'
+END;
+
 ALTER TABLE governance_actions
     ADD CONSTRAINT governance_actions_action_mode_check
     CHECK (action_mode IN ('recommendation', 'simulation', 'manual_required', 'executed'));
