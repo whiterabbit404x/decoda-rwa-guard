@@ -230,12 +230,35 @@ END $$;
 ALTER TABLE governance_actions
     DROP CONSTRAINT IF EXISTS governance_actions_action_mode_check;
 
+UPDATE governance_actions
+SET action_mode = CASE
+    WHEN action_mode IN ('recommendation', 'simulation', 'manual_required', 'executed') THEN action_mode
+    WHEN action_mode IS NULL OR btrim(action_mode) = '' THEN 'manual_required'
+    WHEN lower(action_mode) IN ('manual', 'manual_only', 'pending_manual', 'requires_manual') THEN 'manual_required'
+    WHEN lower(action_mode) IN ('recommended', 'recommend') THEN 'recommendation'
+    WHEN lower(action_mode) IN ('simulate', 'simulated') THEN 'simulation'
+    WHEN lower(action_mode) IN ('execute', 'executing', 'completed') THEN 'executed'
+    ELSE 'manual_required'
+END;
+
 ALTER TABLE governance_actions
     ADD CONSTRAINT governance_actions_action_mode_check
     CHECK (action_mode IN ('recommendation', 'simulation', 'manual_required', 'executed'));
 
 ALTER TABLE governance_actions
     DROP CONSTRAINT IF EXISTS governance_actions_action_type_check;
+
+UPDATE governance_actions
+SET action_type = CASE
+    WHEN action_type IN ('freeze_wallet', 'block_transaction', 'revoke_permission', 'escalate_incident', 'apply_compliance_rule') THEN action_type
+    WHEN action_type IS NULL OR btrim(action_type) = '' THEN 'escalate_incident'
+    WHEN lower(action_type) IN ('revoke_approval', 'revoke_allowance', 'revoke_access', 'revoke_role') THEN 'revoke_permission'
+    WHEN lower(action_type) IN ('notify_team', 'escalate', 'open_incident') THEN 'escalate_incident'
+    WHEN lower(action_type) IN ('freeze', 'freeze_account', 'freeze_address') THEN 'freeze_wallet'
+    WHEN lower(action_type) IN ('block_tx', 'block_transfer') THEN 'block_transaction'
+    WHEN lower(action_type) IN ('apply_rule', 'compliance_rule') THEN 'apply_compliance_rule'
+    ELSE 'escalate_incident'
+END;
 
 ALTER TABLE governance_actions
     ADD CONSTRAINT governance_actions_action_type_check

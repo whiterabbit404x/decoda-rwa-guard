@@ -306,6 +306,19 @@ def _telemetry_event_evidence_source(*, provider_result: ActivityProviderResult,
     return 'simulator'
 
 
+def _telemetry_idempotency_key(*, workspace_id: Any, target_id: Any, event: ActivityEvent) -> str:
+    workspace_part = str(workspace_id or '').strip().lower()
+    target_part = str(target_id or '').strip().lower()
+    cursor_part = str(event.cursor or '').strip().lower()
+    tx_hash = ''
+    if isinstance(event.payload, dict):
+        tx_hash = str(event.payload.get('tx_hash') or event.payload.get('transaction_hash') or '').strip().lower()
+    event_part = cursor_part or tx_hash or hashlib.sha256(
+        _json_dumps(event.payload if isinstance(event.payload, dict) else {}).encode('utf-8')
+    ).hexdigest()
+    return f'{workspace_part}:{target_part}:{event_part}'
+
+
 def set_background_loop_health(
     *,
     loop_running: bool,
@@ -2567,12 +2580,20 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
 
     for event in events:
         telemetry_evidence_source = _telemetry_event_evidence_source(provider_result=provider_result, source_type=source_type)
+        if telemetry_evidence_source not in {'live', 'simulator', 'replay'}:
+            telemetry_evidence_source = 'simulator'
+        telemetry_idempotency_key = _telemetry_idempotency_key(
+            workspace_id=target.get('workspace_id'),
+            target_id=target.get('id'),
+            event=event,
+        )
         connection.execute(
             """
             INSERT INTO telemetry_events (
-                id, workspace_id, asset_id, target_id, provider_type, event_type, observed_at, evidence_source, payload_hash, payload_json
+                id, workspace_id, asset_id, target_id, provider_type, event_type, observed_at, evidence_source, payload_hash, payload_json, idempotency_key
             )
-            VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb)
+            VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            ON CONFLICT (workspace_id, target_id, idempotency_key) DO NOTHING
             """,
             (
                 str(uuid.uuid4()),
@@ -2585,6 +2606,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
                 telemetry_evidence_source,
                 hashlib.sha256(_json_dumps(event.payload if isinstance(event.payload, dict) else {}).encode('utf-8')).hexdigest(),
                 _json_dumps(event.payload if isinstance(event.payload, dict) else {}),
+                telemetry_idempotency_key,
             ),
         )
         processed = _process_single_event(
@@ -3112,7 +3134,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                    t.is_active
             FROM monitored_systems ms
             JOIN targets t ON t.id = ms.target_id
+            JOIN monitoring_configs mc ON mc.target_id = t.id AND mc.workspace_id = t.workspace_id
             WHERE t.deleted_at IS NULL
+              AND COALESCE(mc.enabled, FALSE) = TRUE
             ORDER BY COALESCE(ms.last_heartbeat, t.last_checked_at, '1970-01-01'::timestamptz) ASC, ms.created_at ASC
             ''',
         ).fetchall()
@@ -3132,32 +3156,6 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 (str(uuid.uuid4()), workspace_id, worker_name, 'healthy', _json_dumps({'trigger_type': trigger_type})),
             )
         now = utc_now()
-        global _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT
-        should_touch_monitored_heartbeats = (
-            _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT is None
-            or int((now - _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT).total_seconds()) >= MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS
-        )
-        if should_touch_monitored_heartbeats:
-            connection.execute(
-                '''
-                UPDATE monitored_systems ms
-                SET last_heartbeat = NOW()
-                FROM targets t
-                WHERE t.id = ms.target_id
-                  AND t.deleted_at IS NULL
-                  AND COALESCE(ms.is_enabled, TRUE) = TRUE
-                  AND t.monitoring_enabled = TRUE
-                  AND t.enabled = TRUE
-                  AND t.is_active = TRUE
-                '''
-            )
-            _LAST_MONITORED_SYSTEM_HEARTBEAT_TOUCH_AT = now
-        else:
-            logger.debug(
-                'monitoring_cycle_skip_heartbeat_touch worker=%s cadence_seconds=%s',
-                worker_name,
-                MONITORED_SYSTEM_HEARTBEAT_TOUCH_SECONDS,
-            )
         max_targets = max(1, min(limit, 200))
         skipped_disabled = 0
         skipped_inactive = 0

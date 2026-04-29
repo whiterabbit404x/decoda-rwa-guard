@@ -76,6 +76,9 @@ MONITORING_RUNTIME_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         'evidence_source',
         'telemetry_kind',
     ),
+    'telemetry_events': (
+        'idempotency_key',
+    ),
 }
 MONITORING_RUNTIME_SCHEMA_MIGRATION_HINTS = ('0036', '0037', '0038', '0039')
 RECONCILE_IDEMPOTENCY_HEADER = 'x-idempotency-key'
