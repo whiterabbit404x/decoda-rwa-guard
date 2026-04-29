@@ -6489,6 +6489,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'latest_telemetry_checkpoint': (latest_detection_evaluation_at or evidence_at).isoformat() if (latest_detection_evaluation_at or evidence_at) else None,
             'source_of_evidence': source_of_evidence,
             'evidence_source': evidence_source,
+            'provider_health': provider_health,
+            'target_coverage': target_coverage,
             'provider_health_records': provider_health,
             'target_coverage_records': target_coverage,
             'workspace_configured': workspace_configured,
