@@ -43,6 +43,12 @@ def test_runtime_status_enterprise_ready_gate_all_green(monkeypatch):
     payload = response.json()
     assert payload['enterprise_ready_pass'] is True
     assert payload['failed_checks'] == []
+    assert [item['name'] for item in payload['check_results']] == [
+        'continuity_slo_pass',
+        'linked_fresh_evidence',
+        'stable_monitored_systems',
+        'live_action_capability_readiness',
+    ]
     assert all(item['pass'] is True for item in payload['check_results'])
 
 
@@ -111,5 +117,6 @@ def test_runtime_status_enterprise_ready_gate_all_red(monkeypatch):
         'stable_monitored_systems',
         'live_action_capability_readiness',
     ]
+    assert all(item['pass'] is False for item in payload['check_results'])
     assert [item['name'] for item in payload['check_results']] == payload['failed_checks']
     assert payload['remediation_links']['linked_fresh_evidence'] == '/threat#telemetry-freshness'
