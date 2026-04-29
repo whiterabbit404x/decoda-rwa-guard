@@ -1632,7 +1632,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const nextReconcileId = (reconcileJob?.id && typeof reconcileJob.id === 'string') ? reconcileJob.id : null;
         const terminal = reconcileJob?.status === 'completed' || reconcileJob?.status === 'failed';
         setActiveReconcileId(terminal ? null : nextReconcileId);
-        if (runtimeStatusResponse) {
+        if (runtimeStatusPayload) {
           setRuntimeStatusSnapshot(runtimeStatusPayload as MonitoringRuntimeStatus);
         }
         if (investigationTimelineResponse) {
