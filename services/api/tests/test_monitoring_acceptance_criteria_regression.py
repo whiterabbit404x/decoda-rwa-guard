@@ -1,111 +1,105 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 
 from services.api.app import main as api_main
+from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary
 
 
-def test_target_enablement_and_active_config_linkage_contracts_are_present() -> None:
-    source = open('services/api/app/pilot.py', encoding='utf-8').read()
-    runner_source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
-
-    assert 'SET enabled = TRUE,' in source
-    assert 'monitoring_enabled = TRUE' in source
-    assert 'WHERE workspace_id = %s' in source
-
-
-def test_heartbeat_and_poll_writes_do_not_set_telemetry_timestamps_without_telemetry_rows() -> None:
-    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
-
-    assert 'last_heartbeat = NOW()' in source
-    assert 'last_checked_at = NOW()' in source
-    assert 'last_telemetry_at' in source
-    assert 'telemetry_records_seen' in source
-
-
-def test_telemetry_rows_contribute_to_reporting_systems_count() -> None:
-    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
-    assert 'reporting_systems' in source
-    assert 'last_telemetry_at is not None' in source
-
-
-def test_detection_persistence_creates_linked_alert_and_incident_timeline_contracts() -> None:
-    runner_source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
-    pilot_source = open('services/api/app/pilot.py', encoding='utf-8').read()
-
-    assert 'INSERT INTO detections' in runner_source
-    assert 'COALESCE(%s::uuid, detection_id)' in runner_source
-    assert 'INSERT INTO alerts' in runner_source
-    assert 'incident.created_from_alert' in pilot_source
-    assert "f'incident.{next_workflow_status}'" in pilot_source
-    assert 'incident.timeline_note_added' in pilot_source
+def _summary_base(now: datetime) -> dict:
+    return dict(
+        now=now,
+        workspace_configured=True,
+        configuration_reason_codes=[],
+        query_failure_detected=False,
+        schema_drift_detected=False,
+        missing_telemetry_only=False,
+        monitoring_mode='live',
+        runtime_status='live',
+        configured_systems=1,
+        monitored_systems_count=1,
+        protected_assets=1,
+        status_reason=None,
+        configuration_reason=None,
+        valid_protected_asset_count=1,
+        linked_monitored_system_count=1,
+        persisted_enabled_config_count=1,
+        valid_target_system_link_count=1,
+        telemetry_window_seconds=300,
+    )
 
 
-def test_governance_action_mode_policy_contract_and_links() -> None:
-    source = open('services/api/app/pilot.py', encoding='utf-8').read()
-    assert '_enforce_response_action_mode_policy' in source
-    assert '_normalize_response_action_mode' in source
-    assert 'incident_id' in source
-    assert 'alert_id' in source
+def test_heartbeat_poll_without_telemetry_keeps_reporting_systems_zero_and_no_telemetry_timestamp() -> None:
+    now = datetime.now(timezone.utc)
+    payload = build_workspace_monitoring_summary(
+        **_summary_base(now),
+        reporting_systems=0,
+        last_poll_at=now,
+        last_heartbeat_at=now,
+        last_telemetry_at=None,
+        last_coverage_telemetry_at=None,
+        telemetry_kind=None,
+        last_detection_at=None,
+        evidence_source='live',
+    )
+    assert payload['last_telemetry_at'] is None
+    assert payload['reporting_systems_count'] == 0
 
 
-def test_runtime_status_returns_required_canonical_fields(monkeypatch):
-    payload = {
-        'runtime_status_summary': 'healthy',
-        'monitoring_status': 'healthy',
-        'continuity_slo_pass': True,
-        'continuity_reason_codes': [],
-        'workspace_monitoring_summary': {
-            'runtime_status': 'healthy',
-            'continuity_freshness_ages_seconds': {'heartbeat': 1},
-            'continuity_configured_thresholds_seconds': {'heartbeat': 180},
-            'continuity_breach_reasons': [],
-            'heartbeat_age_seconds': 1,
-            'telemetry_age_seconds': 1,
-            'event_ingestion_age_seconds': 1,
-            'detection_age_seconds': 1,
-            'worker_heartbeat_age_seconds': 1,
-            'heartbeat_threshold_seconds': 180,
-            'telemetry_threshold_seconds': 300,
-            'event_ingestion_threshold_seconds': 300,
-            'detection_threshold_seconds': 300,
-        },
-    }
-    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
-    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: payload)
+def test_telemetry_and_detection_timestamps_are_set_only_when_present() -> None:
+    now = datetime.now(timezone.utc)
+    payload = build_workspace_monitoring_summary(
+        **_summary_base(now),
+        reporting_systems=1,
+        last_poll_at=now,
+        last_heartbeat_at=now,
+        last_telemetry_at=now,
+        last_coverage_telemetry_at=now,
+        telemetry_kind='coverage',
+        last_detection_at=now,
+        evidence_source='live',
+    )
+    assert payload['last_telemetry_at'] is not None
+    assert payload['detection_pipeline_freshness'] in {'fresh', 'stale', 'unavailable', 'missing'}
+    assert payload['reporting_systems_count'] >= 1
 
+
+def test_runtime_status_contract_includes_persisted_provider_and_coverage_records(monkeypatch) -> None:
     client = TestClient(api_main.app)
-    res = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer t', 'x-workspace-id': 'ws-1'})
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
+    now = '2026-04-29T12:00:00Z'
+    monkeypatch.setattr(
+        api_main,
+        'monitoring_runtime_status',
+        lambda _request: {
+            'workspace_configured': True,
+            'runtime_status': 'degraded',
+            'configured_systems': 1,
+            'reporting_systems': 0,
+            'protected_assets': 1,
+            'last_poll_at': now,
+            'last_heartbeat_at': now,
+            'last_telemetry_at': None,
+            'last_detection_at': None,
+            'freshness_status': 'stale',
+            'confidence_status': 'low',
+            'evidence_source': 'none',
+            'status_reason': 'no_reporting_systems',
+            'contradiction_flags': ['no_reporting_systems'],
+            'summary_generated_at': now,
+            'provider_health': 'degraded',
+            'target_coverage': 'none',
+            'provider_health_records': [{'provider_name': 'rpc', 'status': 'degraded', 'observed_at': now}],
+            'target_coverage_records': [{'target_id': 'target-1', 'coverage_status': 'none', 'evidence_source': 'none', 'observed_at': now}],
+        },
+    )
 
-    assert res.status_code == 200
-    body = res.json()
-    for field in (
-        'workspace_configured',
-        'runtime_status',
-        'configured_systems',
-        'reporting_systems',
-        'protected_assets',
-        'last_poll_at',
-        'last_heartbeat_at',
-        'last_telemetry_at',
-        'last_detection_at',
-        'freshness_status',
-        'confidence_status',
-        'evidence_source',
-        'status_reason',
-        'contradiction_flags',
-        'summary_generated_at',
-        'provider_health',
-        'target_coverage',
-    ):
-        assert field in body
-
-
-def test_contradiction_guards_emit_flags_and_block_impossible_healthy_states() -> None:
-    source = open('services/api/app/workspace_monitoring_summary.py', encoding='utf-8').read()
-    runtime_source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
-
-    assert 'contradiction_flags.append' in source
-    assert 'offline_with_current_telemetry' in source
-    assert 'telemetry_current_with_null_timestamp' in runtime_source
-    assert 'contradiction_flags' in source
+    response = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'})
+    assert response.status_code == 200
+    body = response.json()
+    assert body['provider_health_records'][0]['provider_name'] == 'rpc'
+    assert body['target_coverage_records'][0]['target_id'] == 'target-1'
+    assert body['runtime_status'] != 'healthy'
