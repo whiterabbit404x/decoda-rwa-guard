@@ -55,6 +55,18 @@ export default function MonitoringOverviewPanel() {
     }
     return 'Detection chain verified from evidence through response action.';
   })();
+  const contradictionFlags = runtime?.contradiction_flags ?? truth.contradiction_flags ?? [];
+  const hasContradictions = contradictionFlags.length > 0;
+  const evidenceSource = String(runtime?.evidence_source ?? truth.evidence_source_summary ?? 'none').toLowerCase();
+  const evidenceSourceLabel = evidenceSource === 'simulator' || evidenceSource === 'replay'
+    ? evidenceSource.toUpperCase()
+    : evidenceSource === 'live'
+      ? 'LIVE'
+      : 'NONE';
+  const reportingSystemsLabel = `${truth.reporting_systems_count}/${truth.monitored_systems_count}`;
+  const runtimeReason = runtime?.status_reason ?? truth.status_reason ?? 'Not reported';
+  const lastDetection = runtime?.last_detection_at ?? runtime?.last_detection_evaluation_at ?? null;
+  const statusLabel = hasContradictions ? 'DEGRADED' : (runtime ? presentation.statusLabel : 'PENDING');
 
   return (
     <section className="summaryGrid">
@@ -75,10 +87,11 @@ export default function MonitoringOverviewPanel() {
       </article>
       <article className="metricCard">
         <p className="metricLabel">Monitoring state</p>
-        <p className="metricValue">{runtime ? presentation.statusLabel : 'PENDING'}</p>
+        <p className="metricValue">{statusLabel}</p>
         <p className="metricMeta">{truthCopy}</p>
         <p className="metricMeta">{telemetryDetail}</p>
         <p className="metricMeta">{detectionDetail}</p>
+        {hasContradictions ? <p className="metricMeta">Contradiction flags: {contradictionFlags.join(', ')}</p> : null}
       </article>
       <article className="metricCard">
         <p className="metricLabel">Coverage freshness</p>
@@ -87,6 +100,19 @@ export default function MonitoringOverviewPanel() {
         <p className="metricMeta">
           Last telemetry: {formatTelemetryTimestamp(telemetryProofTimestamp)} · Last heartbeat: {formatTelemetryTimestamp(truth.last_heartbeat_at)} · Last poll: {formatTelemetryTimestamp(truth.last_poll_at)}
         </p>
+      </article>
+      <article className="metricCard">
+        <p className="metricLabel">Runtime status details</p>
+        <p className="metricMeta">Worker heartbeat: {formatTelemetryTimestamp(truth.last_heartbeat_at)}</p>
+        <p className="metricMeta">Poll loop: {formatTelemetryTimestamp(truth.last_poll_at)}</p>
+        <p className="metricMeta">Last telemetry: {formatTelemetryTimestamp(telemetryProofTimestamp)}</p>
+        <p className="metricMeta">Last detection: {formatTelemetryTimestamp(lastDetection)}</p>
+        <p className="metricMeta">Reporting systems: {reportingSystemsLabel}</p>
+        <p className="metricMeta">
+          Evidence source: {evidenceSourceLabel}
+          {evidenceSourceLabel === 'SIMULATOR' || evidenceSourceLabel === 'REPLAY' ? ' (simulated/non-live)' : ''}
+        </p>
+        <p className="metricMeta">Runtime reason: {runtimeReason}</p>
       </article>
     </section>
   );
