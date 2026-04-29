@@ -80,12 +80,23 @@ def test_runtime_status_returns_required_canonical_fields(monkeypatch):
     assert res.status_code == 200
     body = res.json()
     for field in (
-        'runtime_status_summary',
-        'monitoring_status',
-        'continuity_slo_pass',
-        'continuity_reason_codes',
-        'continuity_slo',
-        'continuity',
+        'workspace_configured',
+        'runtime_status',
+        'configured_systems',
+        'reporting_systems',
+        'protected_assets',
+        'last_poll_at',
+        'last_heartbeat_at',
+        'last_telemetry_at',
+        'last_detection_at',
+        'freshness_status',
+        'confidence_status',
+        'evidence_source',
+        'status_reason',
+        'contradiction_flags',
+        'summary_generated_at',
+        'provider_health',
+        'target_coverage',
     ):
         assert field in body
 
