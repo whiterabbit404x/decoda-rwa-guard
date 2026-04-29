@@ -126,3 +126,47 @@ def test_governance_action_links_incident_and_alert_and_contradiction_guards_exi
     assert 'incident_id' in source
     assert 'alert_id' in source
     assert 'contradiction_flags' in summary_source
+
+
+def test_coverage_reporting_is_downgraded_without_real_telemetry_basis() -> None:
+    coverage_status, last_telemetry_at, evidence_source, metadata = monitoring_runner._resolve_target_coverage_state(
+        provider_status='live',
+        telemetry_row=None,
+        provider_evidence_source='websocket',
+        source_status='healthy',
+    )
+
+    assert coverage_status == 'stale'
+    assert last_telemetry_at is None
+    assert evidence_source == 'none'
+    assert metadata['telemetry_basis'] == {'kind': 'none'}
+
+
+def test_coverage_reporting_requires_telemetry_event_id_and_timestamp() -> None:
+    now = datetime.now(timezone.utc)
+    coverage_status, last_telemetry_at, evidence_source, metadata = monitoring_runner._resolve_target_coverage_state(
+        provider_status='live',
+        telemetry_row={'id': None, 'observed_at': now},
+        provider_evidence_source='polling',
+        source_status='healthy',
+    )
+
+    assert coverage_status == 'stale'
+    assert last_telemetry_at == now
+    assert evidence_source == 'none'
+    assert metadata['telemetry_basis'] == {'kind': 'none'}
+
+
+def test_coverage_reporting_succeeds_with_real_telemetry_event_basis() -> None:
+    now = datetime.now(timezone.utc)
+    coverage_status, last_telemetry_at, evidence_source, metadata = monitoring_runner._resolve_target_coverage_state(
+        provider_status='live',
+        telemetry_row={'id': 'evt-123', 'observed_at': now},
+        provider_evidence_source='websocket',
+        source_status='healthy',
+    )
+
+    assert coverage_status == 'reporting'
+    assert last_telemetry_at == now
+    assert evidence_source == 'websocket'
+    assert metadata['telemetry_basis'] == {'kind': 'telemetry_event', 'event_id': 'evt-123'}
