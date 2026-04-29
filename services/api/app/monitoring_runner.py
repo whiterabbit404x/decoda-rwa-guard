@@ -497,26 +497,6 @@ def _normalize_monitoring_runtime_contract(payload: dict[str, Any]) -> dict[str,
     normalized['count_reason_codes'] = count_reason_codes
     normalized['configuration_reason_codes'] = configuration_reason_codes
     normalized['field_reason_codes'] = field_reason_codes
-    canonical_fields = (
-        'workspace_configured',
-        'runtime_status',
-        'configured_systems',
-        'reporting_systems',
-        'protected_assets',
-        'last_poll_at',
-        'last_heartbeat_at',
-        'last_telemetry_at',
-        'last_detection_at',
-        'freshness_status',
-        'confidence_status',
-        'evidence_source',
-        'status_reason',
-        'contradiction_flags',
-        'summary_generated_at',
-    )
-    for key in canonical_fields:
-        if key not in normalized and key in summary:
-            normalized[key] = summary.get(key)
     if not normalized.get('runtime_status'):
         normalized['runtime_status'] = normalized.get('runtime_status_summary') or summary.get('runtime_status') or 'offline'
     if not normalized.get('summary_generated_at'):
@@ -5863,7 +5843,42 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if isinstance(latest_detection_metadata, dict)
             else None
         )
-        last_poll_at = _parse_ts(health.get('last_cycle_at') or health.get('updated_at') or health.get('last_heartbeat_at'))
+        canonical_last_poll_row = connection.execute(
+            '''
+            SELECT MAX(COALESCE(poll_finished_at, poll_started_at)) AS ts
+            FROM monitoring_polls
+            WHERE workspace_id = %s::uuid
+            ''',
+            (workspace_id,),
+        ).fetchone()
+        last_poll_at = _parse_ts((canonical_last_poll_row or {}).get('ts') if isinstance(canonical_last_poll_row, dict) else None)
+        canonical_last_heartbeat_row = connection.execute(
+            '''
+            SELECT MAX(last_heartbeat_at) AS ts
+            FROM monitoring_heartbeats
+            WHERE workspace_id = %s::uuid
+            ''',
+            (workspace_id,),
+        ).fetchone()
+        canonical_last_heartbeat_at = _parse_ts((canonical_last_heartbeat_row or {}).get('ts') if isinstance(canonical_last_heartbeat_row, dict) else None)
+        canonical_last_telemetry_row = connection.execute(
+            '''
+            SELECT MAX(created_at) AS ts
+            FROM telemetry_events
+            WHERE workspace_id = %s::uuid
+            ''',
+            (workspace_id,),
+        ).fetchone()
+        canonical_last_telemetry_at = _parse_ts((canonical_last_telemetry_row or {}).get('ts') if isinstance(canonical_last_telemetry_row, dict) else None)
+        canonical_last_detection_row = connection.execute(
+            '''
+            SELECT MAX(created_at) AS ts
+            FROM detection_events
+            WHERE workspace_id = %s::uuid
+            ''',
+            (workspace_id,),
+        ).fetchone()
+        canonical_last_detection_at = _parse_ts((canonical_last_detection_row or {}).get('ts') if isinstance(canonical_last_detection_row, dict) else None)
         telemetry_candidates: list[tuple[datetime, str]] = []
         coverage_telemetry_candidates: list[datetime] = []
         receipts_reporting_systems = 0
@@ -6183,11 +6198,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             reporting_systems=int(reporting_systems),
             protected_assets=int(protected_assets_count),
             last_poll_at=last_poll_at,
-            last_heartbeat_at=last_heartbeat,
-            last_telemetry_at=last_telemetry_at,
+            last_heartbeat_at=canonical_last_heartbeat_at,
+            last_telemetry_at=canonical_last_telemetry_at,
             last_coverage_telemetry_at=last_coverage_telemetry_at,
             telemetry_kind=telemetry_kind,
-            last_detection_at=detection_pipeline_checkpoint_at,
+            last_detection_at=canonical_last_detection_at,
             evidence_source=evidence_source,
             status_reason=runtime_status_reason,
             configuration_reason=configuration_reason,
@@ -6538,15 +6553,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'enabled_configs': persisted_enabled_config_count,
             'valid_link_count': valid_target_system_link_count,
             'configuration_diagnostics': dict(configuration_diagnostics),
-            'last_poll_at': summary['last_poll_at'],
-            'last_telemetry_at': summary['last_telemetry_at'],
+            'last_poll_at': last_poll_at.isoformat() if last_poll_at else None,
+            'last_heartbeat_at': canonical_last_heartbeat_at.isoformat() if canonical_last_heartbeat_at else None,
+            'last_telemetry_at': canonical_last_telemetry_at.isoformat() if canonical_last_telemetry_at else None,
             'last_coverage_telemetry_at': last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None,
             'coverage_receipts_last_at': live_coverage_receipts_workspace_latest.isoformat() if live_coverage_receipts_workspace_latest else None,
             'coverage_receipts_workspace_count': int(live_coverage_receipts_persisted_count),
             'stale_heartbeat': stale_heartbeat,
             'provider_degraded_flag': provider_degraded_or_unreachable,
             'telemetry_kind': telemetry_kind,
-            'last_detection_at': latest_detection_at.isoformat() if latest_detection_at else None,
+            'last_detection_at': canonical_last_detection_at.isoformat() if canonical_last_detection_at else None,
             'proof_chain_status': proof_chain_status,
             'proof_chain_correlation_id': proof_chain_correlation_id,
             'contradiction_flags': list(summary.get('contradiction_flags') or []),
@@ -6596,6 +6612,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         payload['next_retry_at'] = background_loop_health.get('next_retry_at')
         payload['backoff_seconds'] = background_loop_health.get('backoff_seconds')
         payload.update(summary)
+        payload['last_poll_at'] = last_poll_at.isoformat() if last_poll_at else None
+        payload['last_heartbeat_at'] = canonical_last_heartbeat_at.isoformat() if canonical_last_heartbeat_at else None
+        payload['last_telemetry_at'] = canonical_last_telemetry_at.isoformat() if canonical_last_telemetry_at else None
+        payload['last_detection_at'] = canonical_last_detection_at.isoformat() if canonical_last_detection_at else None
         if isinstance(payload.get('workspace_monitoring_summary'), dict):
             payload['workspace_monitoring_summary']['background_loop_health'] = dict(background_loop_health)
         logger.info(
