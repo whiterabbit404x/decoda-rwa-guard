@@ -2778,6 +2778,16 @@ def monitoring_systems_reconcile_latest_status(request: Request) -> dict[str, An
     return with_auth_schema_json(lambda: get_latest_workspace_reconcile_run(request))
 
 
+@app.get('/monitoring/systems/reconcile/status/result', summary='Latest monitored systems reconcile status and result')
+def monitoring_systems_reconcile_status_result(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: {
+            'job': get_latest_workspace_reconcile_run(request).get('job'),
+            'result': get_latest_workspace_reconcile_result(request).get('result'),
+        }
+    )
+
+
 @app.get('/monitoring/systems/reconcile/{reconcile_id}', summary='Get monitored systems reconcile job status')
 def monitoring_systems_reconcile_status(reconcile_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_workspace_reconcile_status(request, reconcile_id))

@@ -2816,6 +2816,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     if (!latestReconcileJob || latestReconcileJob.status !== 'completed') return null;
     return latestReconcileJob.completed_at || latestReconcileJob.last_event_at || latestReconcileJob.started_at || null;
   }, [latestReconcileJob]);
+  const reconcileStateReasonLabel = useMemo(() => {
+    if (!latestReconcileJob) return 'No reconcile job has run yet.';
+    const reason = latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No reason provided.';
+    return `State ${reconcileUiState.toUpperCase()} · Reason: ${reason}`;
+  }, [latestReconcileJob, reconcileUiState]);
 
   return (
     <section className="stack monitoringConsoleStack">
@@ -2910,7 +2915,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
         {latestReconcileJob ? (
           <p className="tableMeta">
-            Reconcile job state {reconcileUiState.toUpperCase()} · {reconcileProgressLabel} · Retry count {Number(latestReconcileJob.retry_count ?? 0)} · Last success {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Reason codes {(latestReconcileJob.reason_codes ?? []).length > 0 ? (latestReconcileJob.reason_codes ?? []).join(', ') : 'none'} · Failure reason {latestReconcileJob.status === 'failed' ? (latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No backend detail returned.') : 'None'}
+            Reconcile job state {reconcileUiState.toUpperCase()} · {reconcileProgressLabel} · Retry count {Number(latestReconcileJob.retry_count ?? 0)} · Last success {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Reason codes {(latestReconcileJob.reason_codes ?? []).length > 0 ? (latestReconcileJob.reason_codes ?? []).join(', ') : 'none'} · {reconcileStateReasonLabel}
           </p>
         ) : null}
         {latestReconcileJob?.status === 'failed' ? (

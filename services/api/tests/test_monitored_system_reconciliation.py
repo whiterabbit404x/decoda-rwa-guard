@@ -398,6 +398,17 @@ def test_reconcile_repeated_runs_do_not_flap_enabled_or_disabled_runtime_states(
         assert str(conn.monitored_systems['target-monitoring-disabled']['status']) == baseline_disabled_status
 
 
+def test_reconcile_repeated_runs_keep_post_reconcile_counts_stable():
+    conn = _Conn()
+    first = pilot.reconcile_enabled_targets_monitored_systems(conn)
+    for _ in range(3):
+        repeated = pilot.reconcile_enabled_targets_monitored_systems(conn)
+        assert repeated['enabled_valid_targets_found'] == first['enabled_valid_targets_found']
+        assert repeated['final_workspace_monitored_system_count'] == first['final_workspace_monitored_system_count']
+        assert repeated['invalid_reasons'] == first['invalid_reasons']
+        assert repeated['skipped_reasons'] == first['skipped_reasons']
+
+
 def test_reconcile_repairs_healthy_targets_after_broken_target_is_disabled():
     conn = _Conn()
     conn.targets['target-missing-asset']['enabled'] = False
