@@ -16,6 +16,7 @@ test('dashboard blocks enterprise-ready product copy and includes actionable rem
 test('threat page renders actionable remediation copy when enterprise gate fails', () => {
   const threat = read('app/threat-operations-panel.tsx');
   expect(threat).toContain('Enterprise-readiness checks failed. Enterprise-ready copy is hidden until all checks pass.');
+  expect(threat).toContain('Enterprise-readiness checks passed. Live claims can be shown.');
   expect(threat).toContain('Validate at least one live action path from threat to response execution.');
   expect(threat).toContain('Open remediation');
 });

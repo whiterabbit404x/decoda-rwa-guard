@@ -28,4 +28,6 @@ test('dashboard suppresses enterprise-ready claims when gate is false', () => {
   expect(dashboard).toContain('Blocked by readiness gate');
   expect(dashboard).toContain('Readiness remediation:');
   expect(dashboard).toContain('remediationChecks.map');
+  expect(dashboard).toContain("enterpriseReadyPass ? 'PASS' : 'FAIL'");
+  expect(dashboard).toContain("enterpriseReadyPass ? ' All enterprise checks are green.' : ' Claims remain blocked until the failed checks are remediated.'");
 });
