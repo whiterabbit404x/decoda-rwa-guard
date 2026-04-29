@@ -1968,7 +1968,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   });
 
   const runtimeReason = String(runtimeStatusSnapshot?.status_reason ?? 'not_reported');
-  const proofChainStatus = String(runtimeStatusSnapshot?.proof_chain_status ?? investigationTimeline?.proof_chain_status ?? 'incomplete');
+  const proofChainStatus = String(runtimeStatusSnapshot?.proof_chain_status ?? 'incomplete');
   const timelineItems = Array.isArray(investigationTimeline?.items) ? investigationTimeline.items : [];
   const missingTimelineLinks = Array.isArray(investigationTimeline?.missing) ? investigationTimeline.missing : [];
   const timelineLinkNames = new Set(timelineItems.map((item) => String(item.link_name || '')));

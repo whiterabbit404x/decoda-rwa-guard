@@ -20,7 +20,7 @@ test('renders runtime summary fallback when runtime coverage exists without rows
 
 test('decouples telemetry timestamp display from strict live telemetry badge logic', () => {
   const threat = readThreatPanel();
-  expect(threat).toContain('const coverageTelemetryAt = truth.last_coverage_telemetry_at ?? monitoringPresentation.lastTelemetryAt;');
+  expect(threat).toContain('const coverageTelemetryAt = monitoringPresentation.lastTelemetryAt;');
   expect(threat).toContain('const hasTelemetryTimestamp = Boolean(coverageTelemetryAt);');
   expect(threat).toContain('const telemetryDisplayLabel = formatRelativeTime(coverageTelemetryAt);');
   expect(threat).toContain('{showLiveTelemetry ? `Live telemetry ${telemetryLabel}` : \'Current telemetry unavailable\'}');
