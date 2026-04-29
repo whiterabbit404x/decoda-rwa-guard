@@ -5144,16 +5144,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     f'''
                     SELECT COUNT(*) AS c
                     FROM alerts a
-                    JOIN detections d
-                      ON d.id = a.detection_id
-                     AND d.workspace_id = a.workspace_id
+                    JOIN detection_events de
+                      ON de.workspace_id = a.workspace_id
+                     AND de.id = a.detection_event_id
+                    JOIN telemetry_events te
+                      ON te.workspace_id = de.workspace_id
+                     AND te.id = de.telemetry_event_id
                     WHERE a.status IN ('open','acknowledged','investigating')
-                      AND EXISTS (
-                          SELECT 1
-                          FROM detection_evidence de
-                          WHERE de.workspace_id = d.workspace_id
-                            AND de.detection_id = d.id
-                      )
                       {'AND a.workspace_id = %s' if workspace_id else ''}
                     ''',
                     scoped_params,
@@ -5169,6 +5166,32 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 )
                 open_alerts = {'c': 0}
                 open_alerts_without_evidence_count = int(raw_open_alerts_count)
+            legacy_open_alerts_without_evidence_count = 0
+            try:
+                legacy_open_alerts_row = connection.execute(
+                    f'''
+                    SELECT COUNT(*) AS c
+                    FROM alerts a
+                    JOIN detections d
+                      ON d.id = a.detection_id
+                     AND d.workspace_id = a.workspace_id
+                    WHERE a.status IN ('open','acknowledged','investigating')
+                      AND EXISTS (
+                          SELECT 1
+                          FROM detection_evidence de
+                          WHERE de.workspace_id = d.workspace_id
+                            AND de.detection_id = d.id
+                      )
+                      {'AND a.workspace_id = %s' if workspace_id else ''}
+                    ''',
+                    scoped_params,
+                ).fetchone()
+                legacy_open_alerts_without_evidence_count = max(
+                    raw_open_alerts_count - int((legacy_open_alerts_row or {}).get('c') or 0),
+                    0,
+                )
+            except Exception:
+                legacy_open_alerts_without_evidence_count = int(raw_open_alerts_count)
             _mark_query_checkpoint('count_open_incidents_raw')
             raw_open_incidents_count = 0
             if use_precomputed_active_counts:
@@ -5196,16 +5219,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     WITH proof_chain_alerts AS (
                         SELECT a.id, a.incident_id
                         FROM alerts a
-                        JOIN detections d
-                          ON d.id = a.detection_id
-                         AND d.workspace_id = a.workspace_id
+                        JOIN detection_events de
+                          ON de.workspace_id = a.workspace_id
+                         AND de.id = a.detection_event_id
+                        JOIN telemetry_events te
+                          ON te.workspace_id = de.workspace_id
+                         AND te.id = de.telemetry_event_id
                         WHERE a.status IN ('open','acknowledged','investigating')
-                          AND EXISTS (
-                              SELECT 1
-                              FROM detection_evidence de
-                              WHERE de.workspace_id = d.workspace_id
-                                AND de.detection_id = d.id
-                          )
                           {'AND a.workspace_id = %s' if workspace_id else ''}
                     )
                     SELECT COUNT(DISTINCT i.id) AS c
@@ -6009,19 +6029,16 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         _mark_query_checkpoint('select_proof_chain_last_detection')
         try:
             linked_detection_row = connection.execute(
-                f'''
-                SELECT MAX(d.detected_at) AS detected_at
+                    f'''
+                SELECT MAX(COALESCE(de.detected_at, de.created_at, te.created_at)) AS detected_at
                 FROM alerts a
-                JOIN detections d
-                  ON d.id = a.detection_id
-                 AND d.workspace_id = a.workspace_id
+                JOIN detection_events de
+                  ON de.workspace_id = a.workspace_id
+                 AND de.id = a.detection_event_id
+                JOIN telemetry_events te
+                  ON te.workspace_id = de.workspace_id
+                 AND te.id = de.telemetry_event_id
                 WHERE a.status IN ('open','acknowledged','investigating')
-                  AND EXISTS (
-                      SELECT 1
-                      FROM detection_evidence de
-                      WHERE de.workspace_id = d.workspace_id
-                        AND de.detection_id = d.id
-                  )
                   {'AND a.workspace_id = %s' if workspace_id else ''}
                 ''',
                 scoped_params,
@@ -6040,9 +6057,38 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         linked_last_detection_at = _parse_ts(linked_detection_row_payload.get('detected_at'))
         if linked_last_detection_at is not None:
             latest_detection_at = linked_last_detection_at
+        legacy_proof_chain_gaps_count = 0
+        try:
+            legacy_chain_row = connection.execute(
+                f'''
+                SELECT COUNT(*) AS c
+                FROM alerts a
+                WHERE a.status IN ('open','acknowledged','investigating')
+                  AND {'a.workspace_id = %s AND' if workspace_id else ''}
+                  (
+                    a.detection_id IS NULL
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM detections d
+                        WHERE d.workspace_id = a.workspace_id
+                          AND d.id = a.detection_id
+                          AND EXISTS (
+                              SELECT 1
+                              FROM detection_evidence dev
+                              WHERE dev.workspace_id = d.workspace_id
+                                AND dev.detection_id = d.id
+                          )
+                    )
+                  )
+                ''',
+                scoped_params,
+            ).fetchone()
+            legacy_proof_chain_gaps_count = int((legacy_chain_row or {}).get('c') or 0)
+        except Exception:
+            legacy_proof_chain_gaps_count = 0
         proof_chain_missing_reason_codes: list[str] = []
         if raw_open_alerts_count > chain_open_alerts_count:
-            proof_chain_missing_reason_codes.append('alerts_without_detection_evidence')
+            proof_chain_missing_reason_codes.append('alerts_without_canonical_detection_event')
         if raw_open_incidents_count > chain_open_incidents_count:
             proof_chain_missing_reason_codes.append('incidents_without_proof_chain_alert')
         if chain_open_alerts_count > 0 and linked_detection_timestamp_reported and latest_detection_at is None:
@@ -6209,9 +6255,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         if workspace_configured and open_alerts_without_evidence_count > 0:
             proof_chain_status = 'incomplete'
             runtime_status_summary = 'degraded'
-            runtime_status_reason = 'alerts_without_detection_evidence'
-            if 'alerts_without_detection_evidence' not in proof_chain_missing_reason_codes:
-                proof_chain_missing_reason_codes.append('alerts_without_detection_evidence')
+            runtime_status_reason = 'alerts_without_canonical_detection_event'
+            if 'alerts_without_canonical_detection_event' not in proof_chain_missing_reason_codes:
+                proof_chain_missing_reason_codes.append('alerts_without_canonical_detection_event')
         if workspace_configured and proof_chain_missing_reason_codes:
             runtime_status_summary = 'degraded'
             if not runtime_status_reason:
@@ -6557,6 +6603,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'raw_open_alerts': int(raw_open_alerts_count),
             'raw_open_incidents': int(raw_open_incidents_count),
             'open_alerts_without_detection_evidence': int(open_alerts_without_evidence_count),
+            'open_alerts_without_canonical_detection_event': int(open_alerts_without_evidence_count),
             'evidence_freshness_seconds': evidence_freshness,
             'degraded_reason': degraded_reason,
             'runtime_error_code': runtime_error_code,
@@ -6604,6 +6651,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     'legacy_last_coverage_telemetry_at': legacy_last_coverage_telemetry_at.isoformat() if legacy_last_coverage_telemetry_at else None,
                     'legacy_telemetry_kind': legacy_telemetry_kind,
                     'legacy_monitored_systems_last_heartbeat_max': last_system_heartbeat.isoformat() if last_system_heartbeat else None,
+                    'legacy_open_alerts_without_detection_evidence': int(legacy_open_alerts_without_evidence_count),
+                    'legacy_proof_chain_gaps_count': int(legacy_proof_chain_gaps_count),
                     'canonical_reporting_targets_from_events': len(canonical_reporting_targets_from_events),
                     'canonical_reporting_targets_from_coverage': len(canonical_reporting_targets_from_coverage),
                 }
