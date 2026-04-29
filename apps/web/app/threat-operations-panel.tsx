@@ -253,7 +253,7 @@ export type PageOperationalState =
   | 'unconfigured_workspace'
   | 'fetch_error';
 
-type SnapshotFailureKey = 'runtime-status' | 'investigation-timeline';
+type SnapshotFailureKey = 'runtime-status';
 type SnapshotCollectionKey = 'detections' | 'alerts' | 'incidents' | 'evidence' | 'history' | 'monitoring-runs';
 type SnapshotFreshnessState = 'fresh' | 'stale' | 'unavailable';
 type ReconcileJobStatus = 'queued' | 'running' | 'completed' | 'failed';
@@ -310,7 +310,6 @@ type MonitoringViewModel = {
   provenanceExplanation: string;
   endpointProvenance: {
     runtimeStatus: EndpointProvenanceState;
-    investigationTimeline: EndpointProvenanceState;
   };
   lastSuccessfulRuntimeRefreshAt: string | null;
   lastSuccessfulTimelineRefreshAt: string | null;
@@ -718,14 +717,14 @@ export function collectMonitoringContradictions(model: Pick<MonitoringViewModel,
   if (model.provenanceLabel === 'live' && model.presentationStatus !== 'live') {
     contradictions.push('Live provenance requires presentation status to be live.');
   }
-  if (model.provenanceLabel === 'partial_failure' && ![model.endpointProvenance.runtimeStatus, model.endpointProvenance.investigationTimeline].includes('partial_failure')) {
+  if (model.provenanceLabel === 'partial_failure' && model.endpointProvenance.runtimeStatus !== 'partial_failure') {
     contradictions.push('Partial failure provenance requires at least one endpoint to report partial_failure.');
   }
   if (model.provenanceLabel === 'stale_snapshot'
     && model.telemetryState !== 'stale'
     && model.pollState !== 'stale'
     && model.heartbeatState !== 'stale'
-    && ![model.endpointProvenance.runtimeStatus, model.endpointProvenance.investigationTimeline].includes('stale_snapshot')) {
+    && model.endpointProvenance.runtimeStatus !== 'stale_snapshot') {
     contradictions.push('stale_snapshot provenance requires stale freshness telemetry or an endpoint stale_snapshot marker.');
   }
   return contradictions;
@@ -1216,9 +1215,6 @@ export function formatSystemsPanelWarning(failedEndpoints: SnapshotFailureKey[])
   if (failedEndpoints.includes('runtime-status')) {
     return 'Runtime status unavailable';
   }
-  if (failedEndpoints.includes('investigation-timeline')) {
-    return 'Investigation timeline unavailable';
-  }
   return null;
 }
 
@@ -1485,7 +1481,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           : null;
         const failedEndpoints: SnapshotFailureKey[] = [];
         if (!runtimeStatusPayload) failedEndpoints.push('runtime-status');
-        if (!investigationTimelineResponse) failedEndpoints.push('investigation-timeline');
         const investigationTimelinePayload = await safeJson(investigationTimelineResponse);
 
         const detectionsResponse = detectionsResult.status === 'fulfilled' && detectionsResult.value.ok ? detectionsResult.value : null;
@@ -1649,7 +1644,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         if (active) {
           setSnapshotError('Monitoring snapshot refresh failed');
           setSystemsPanelWarning('Systems list unavailable');
-          setSnapshotFailedEndpoints(['runtime-status', 'investigation-timeline']);
+          setSnapshotFailedEndpoints(['runtime-status']);
           setSnapshotStaleCollections(['detections', 'alerts', 'incidents', 'evidence', 'history', 'monitoring-runs']);
         }
       } finally {
@@ -2022,11 +2017,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         : (pageState === 'degraded_partial' || monitoringPresentation.status === 'degraded')
           ? 'degraded'
         : 'live';
-    const timelineEndpointState: EndpointProvenanceState = snapshotFailedEndpoints.includes('investigation-timeline')
-      ? 'partial_failure'
-      : (pageState === 'degraded_partial' || monitoringPresentation.status === 'degraded')
-        ? 'degraded'
-      : 'live';
     const lastSuccessfulRuntimeRefreshAt = runtimeStatusSnapshot?.last_poll_at
       ?? runtimeSummary?.last_poll_at
       ?? runtimeStatusSnapshot?.last_telemetry_at
@@ -2133,7 +2123,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       heartbeatState,
       endpointProvenance: {
         runtimeStatus: runtimeEndpointState,
-        investigationTimeline: timelineEndpointState,
       },
       presentationStatus: monitoringPresentation.status,
     });
@@ -2161,7 +2150,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       provenanceExplanation,
       endpointProvenance: {
         runtimeStatus: runtimeEndpointState,
-        investigationTimeline: timelineEndpointState,
       },
       lastSuccessfulRuntimeRefreshAt,
       lastSuccessfulTimelineRefreshAt,
@@ -2869,7 +2857,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ))}
         </div>
         <p className="tableMeta">
-          Data provenance ({threatOperationsViewModel.monitoring.provenanceLabel}): {threatOperationsViewModel.monitoring.provenanceExplanation} /ops/monitoring/runtime-status ({threatOperationsViewModel.monitoring.endpointProvenance.runtimeStatus}) · /ops/monitoring/investigation-timeline ({threatOperationsViewModel.monitoring.endpointProvenance.investigationTimeline}) · Last successful monitoring refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRefreshAt)} · Last successful runtime refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulTimelineRefreshAt)}
+          Data provenance ({threatOperationsViewModel.monitoring.provenanceLabel}): {threatOperationsViewModel.monitoring.provenanceExplanation} /ops/monitoring/runtime-status ({threatOperationsViewModel.monitoring.endpointProvenance.runtimeStatus}) · Last successful monitoring refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRefreshAt)} · Last successful runtime refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulTimelineRefreshAt)}
         </p>
         <PageStateBanner viewModel={threatOperationsViewModel.monitoring} />
         {monitoringViewModel.contradictions.length > 0 ? (
