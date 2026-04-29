@@ -5971,9 +5971,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             )
             runtime_status_summary = 'offline'
         elif evidence_source != 'live':
-            runtime_status_summary = 'idle'
+            runtime_status_summary = 'degraded'
         elif reporting_systems <= 0 or not coverage_fresh:
-            runtime_status_summary = 'idle'
+            runtime_status_summary = 'degraded'
         elif degraded_signal:
             runtime_status_summary = 'degraded'
         else:
@@ -6297,6 +6297,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if runtime_status_reason is None:
                 runtime_status_reason = 'no_fresh_live_coverage_telemetry'
                 summary['status_reason'] = runtime_status_reason
+        if runtime_status_summary not in {'healthy', 'degraded', 'offline', 'fail'}:
+            runtime_status_summary = 'degraded' if workspace_configured else 'offline'
+            summary['runtime_status'] = runtime_status_summary
+            summary['monitoring_status'] = 'limited' if workspace_configured else 'offline'
+            runtime_status_reason = runtime_status_reason or 'runtime_status_normalized_from_noncanonical_state'
+            summary['status_reason'] = runtime_status_reason
         if workspace_configured and runtime_status_summary == 'idle' and runtime_status_reason:
             logger.info(
                 'monitoring_runtime_limited_coverage workspace_id=%s chosen_evidence_source=%s status_reason=%s reporting_systems=%s coverage_fresh=%s',
@@ -6390,6 +6396,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'worker_last_error': health.get('last_error'),
             'latest_telemetry_checkpoint': (latest_detection_evaluation_at or evidence_at).isoformat() if (latest_detection_evaluation_at or evidence_at) else None,
             'source_of_evidence': source_of_evidence,
+            'evidence_source': evidence_source,
             'workspace_configured': workspace_configured,
             'configuration_reason': configuration_reason,
             'configuration_reason_codes': list(configuration_reason_codes),
