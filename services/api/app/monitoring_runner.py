@@ -290,6 +290,34 @@ def _workspace_coverage_only_state(
     }
 
 
+def _resolve_target_coverage_state(
+    *,
+    provider_status: str,
+    telemetry_row: dict[str, Any] | None,
+    provider_evidence_source: str,
+    source_status: str,
+) -> tuple[str, datetime | None, str, dict[str, Any]]:
+    last_telemetry_at = _parse_ts((telemetry_row or {}).get('observed_at')) if isinstance(telemetry_row, dict) else None
+    telemetry_event_id = str((telemetry_row or {}).get('id') or '').strip() if isinstance(telemetry_row, dict) else ''
+    has_real_telemetry = bool(last_telemetry_at and telemetry_event_id)
+    if has_real_telemetry:
+        coverage_status = 'reporting'
+        evidence_source = provider_evidence_source
+    else:
+        coverage_status = 'stale' if provider_status in {'live', 'no_evidence', 'degraded'} else 'unavailable'
+        evidence_source = 'none'
+    metadata: dict[str, Any] = {
+        'provider_status': provider_status,
+        'source_status': source_status,
+        'telemetry_basis': (
+            {'kind': 'telemetry_event', 'event_id': telemetry_event_id}
+            if has_real_telemetry
+            else {'kind': 'none'}
+        ),
+    }
+    return coverage_status, last_telemetry_at, evidence_source, metadata
+
+
 def _provider_source_is_live(source_type: Any) -> bool:
     return str(source_type or '').strip().lower() not in NON_LIVE_PROVIDER_SOURCE_TYPES
 
@@ -2917,18 +2945,27 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             or 0
         )
     logger.info('checked target %s %s status=%s runs=%s alerts=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, incidents_created)
-    latest_telemetry_at = connection.execute(
-        'SELECT MAX(observed_at) AS ts FROM telemetry_events WHERE workspace_id = %s::uuid AND target_id = %s::uuid',
+    latest_telemetry_row = connection.execute(
+        '''
+        SELECT id, observed_at
+        FROM telemetry_events
+        WHERE workspace_id = %s::uuid AND target_id = %s::uuid
+        ORDER BY observed_at DESC, ingested_at DESC, id DESC
+        LIMIT 1
+        ''',
         (str(target['workspace_id']), str(target['id'])),
     ).fetchone()
     latest_detection_at_row = connection.execute(
         'SELECT MAX(created_at) AS ts FROM detection_events WHERE workspace_id = %s::uuid AND target_id = %s::uuid',
         (str(target['workspace_id']), str(target['id'])),
     ).fetchone()
-    last_telemetry_at = _parse_ts((latest_telemetry_at or {}).get('ts') if isinstance(latest_telemetry_at, dict) else None)
     last_detection_at = _parse_ts((latest_detection_at_row or {}).get('ts') if isinstance(latest_detection_at_row, dict) else None)
-    target_coverage_status = 'reporting' if last_telemetry_at is not None else ('stale' if provider_result.status in {'live', 'no_evidence', 'degraded'} else 'unavailable')
-    coverage_evidence_source = provider_evidence_source if last_telemetry_at is not None else 'none'
+    target_coverage_status, last_telemetry_at, coverage_evidence_source, coverage_metadata = _resolve_target_coverage_state(
+        provider_status=provider_result.status,
+        telemetry_row=latest_telemetry_row if isinstance(latest_telemetry_row, dict) else None,
+        provider_evidence_source=provider_evidence_source,
+        source_status=source_status,
+    )
     connection.execute(
         '''
         INSERT INTO target_coverage_records (
@@ -2945,7 +2982,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
             last_telemetry_at,
             last_detection_at,
             coverage_evidence_source,
-            _json_dumps({'provider_status': provider_result.status, 'source_status': source_status}),
+            _json_dumps(coverage_metadata),
         ),
     )
     WORKER_STATE['metrics']['live_events_ingested'] += real_event_count
