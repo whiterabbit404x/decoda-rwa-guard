@@ -2578,8 +2578,8 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     degraded_reason: str | None = provider_result.degraded_reason
     logger.info('monitoring target fetched target=%s threshold=%s auto_create_alerts=%s', target.get('id'), str(target.get('severity_threshold') or 'medium'), bool(target.get('auto_create_alerts', True)))
 
-    telemetry_evidence_source = _telemetry_event_evidence_source(provider_result=provider_result, source_type=source_type)
     for event in events:
+        telemetry_evidence_source = _telemetry_event_evidence_source(provider_result=provider_result, source_type=source_type)
         if telemetry_evidence_source not in {'live', 'simulator', 'replay'}:
             telemetry_evidence_source = 'simulator'
         telemetry_idempotency_key = _telemetry_idempotency_key(
