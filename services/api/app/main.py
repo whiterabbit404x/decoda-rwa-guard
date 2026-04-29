@@ -2121,6 +2121,25 @@ def ops_production_claim_validator() -> dict[str, Any]:
 def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
     try:
         payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
+        canonical_runtime = {
+            'workspace_configured': bool(payload.get('workspace_configured')),
+            'runtime_status': str(payload.get('runtime_status') or payload.get('runtime_status_summary') or 'offline'),
+            'configured_systems': int(payload.get('configured_systems') or 0),
+            'reporting_systems': int(payload.get('reporting_systems') or 0),
+            'protected_assets': int(payload.get('protected_assets') or payload.get('protected_assets_count') or 0),
+            'last_poll_at': payload.get('last_poll_at'),
+            'last_heartbeat_at': payload.get('last_heartbeat_at'),
+            'last_telemetry_at': payload.get('last_telemetry_at'),
+            'last_detection_at': payload.get('last_detection_at'),
+            'freshness_status': str(payload.get('freshness_status') or 'unavailable'),
+            'confidence_status': str(payload.get('confidence_status') or 'unavailable'),
+            'evidence_source': str(payload.get('evidence_source') or 'none'),
+            'status_reason': str(payload.get('status_reason') or 'unknown'),
+            'contradiction_flags': list(payload.get('contradiction_flags') or []),
+            'summary_generated_at': payload.get('summary_generated_at') or datetime.now(timezone.utc).isoformat(),
+        }
+        payload.update(canonical_runtime)
+        payload['canonical_monitoring_runtime'] = dict(canonical_runtime)
         background_loop_health = get_background_loop_health()
         payload['background_loop_health'] = dict(background_loop_health)
         payload['loop_running'] = bool(background_loop_health.get('loop_running'))

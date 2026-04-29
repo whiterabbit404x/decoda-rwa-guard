@@ -456,6 +456,30 @@ def _normalize_monitoring_runtime_contract(payload: dict[str, Any]) -> dict[str,
     normalized['count_reason_codes'] = count_reason_codes
     normalized['configuration_reason_codes'] = configuration_reason_codes
     normalized['field_reason_codes'] = field_reason_codes
+    canonical_fields = (
+        'workspace_configured',
+        'runtime_status',
+        'configured_systems',
+        'reporting_systems',
+        'protected_assets',
+        'last_poll_at',
+        'last_heartbeat_at',
+        'last_telemetry_at',
+        'last_detection_at',
+        'freshness_status',
+        'confidence_status',
+        'evidence_source',
+        'status_reason',
+        'contradiction_flags',
+        'summary_generated_at',
+    )
+    for key in canonical_fields:
+        if key not in normalized and key in summary:
+            normalized[key] = summary.get(key)
+    if not normalized.get('runtime_status'):
+        normalized['runtime_status'] = normalized.get('runtime_status_summary') or summary.get('runtime_status') or 'offline'
+    if not normalized.get('summary_generated_at'):
+        normalized['summary_generated_at'] = utc_now().isoformat()
     normalized['workspace_monitoring_summary'] = summary
     return normalized
 
@@ -6210,8 +6234,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 continuity_reason_codes.append('coverage_only_persistent_no_evidence')
             summary['continuity_reason_codes'] = continuity_reason_codes
         contradiction_conditions = (
-            ('offline_with_live_telemetry', runtime_status_summary == 'offline' and evidence_source == 'live'),
-            ('healthy_without_reporting_systems', runtime_status_summary == 'healthy' and reporting_systems <= 0),
+            ('offline_with_live_telemetry_recently', runtime_status_summary == 'offline' and evidence_source == 'live' and coverage_fresh),
+            ('reporting_systems_zero_with_healthy', runtime_status_summary == 'healthy' and reporting_systems <= 0),
+            ('telemetry_unavailable_with_current_telemetry', summary_freshness_status == 'unavailable' and coverage_fresh),
+            ('workspace_unconfigured_with_monitored_systems_present', (not workspace_configured) and enabled_system_count > 0),
+            ('evidence_source_none_with_high_confidence', evidence_source == 'none' and summary_confidence_status == 'high'),
+            ('heartbeat_exists_while_poll_and_telemetry_null_ui_active_claim', last_heartbeat is not None and summary.get('last_poll_at') is None and summary.get('last_telemetry_at') is None and monitoring_status == 'active'),
             ('telemetry_current_with_null_timestamp', coverage_fresh and last_telemetry_at is None),
             ('open_alerts_without_detection_evidence', open_alerts_without_evidence_count > 0),
             ('proof_chain_link_missing', bool(proof_chain_missing_reason_codes)),
@@ -6226,6 +6254,25 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         ]
         contradiction_flags = sorted(set(inherited_contradiction_flags + runtime_contradiction_flags))
         summary['contradiction_flags'] = contradiction_flags
+        impossible_state_detected = any(
+            flag in contradiction_flags
+            for flag in (
+                'offline_with_live_telemetry_recently',
+                'reporting_systems_zero_with_healthy',
+                'telemetry_unavailable_with_current_telemetry',
+                'workspace_unconfigured_with_monitored_systems_present',
+                'evidence_source_none_with_high_confidence',
+                'heartbeat_exists_while_poll_and_telemetry_null_ui_active_claim',
+            )
+        )
+        if impossible_state_detected:
+            runtime_status_summary = 'fail'
+            runtime_status = 'Fail'
+            monitoring_status = 'offline'
+            summary['runtime_status'] = 'fail'
+            summary['monitoring_status'] = 'offline'
+            runtime_status_reason = runtime_status_reason or 'impossible_contradiction_state'
+            summary['status_reason'] = runtime_status_reason
         summary_freshness_status = str(summary.get('telemetry_freshness') or '').strip().lower()
         summary_confidence_status = str(summary.get('confidence') or '').strip().lower()
         strict_live_healthy_proof = bool(
@@ -6341,6 +6388,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'configuration_reason': configuration_reason,
             'configuration_reason_codes': list(configuration_reason_codes),
             'status_reason': runtime_status_reason,
+            'runtime_status': runtime_status_summary,
             'valid_protected_assets': valid_protected_asset_count,
             'linked_monitored_systems': linked_monitored_system_count,
             'enabled_configs': persisted_enabled_config_count,
@@ -6359,6 +6407,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'proof_chain_correlation_id': proof_chain_correlation_id,
             'contradiction_flags': list(summary.get('contradiction_flags') or []),
             'workspace_monitoring_summary': summary,
+            'summary_generated_at': now.isoformat(),
             'continuity_status': summary.get('continuity_status'),
             'continuity_reason_codes': list(summary.get('continuity_reason_codes') or []),
             'continuity_signals': dict(summary.get('continuity_signals') or {}),
