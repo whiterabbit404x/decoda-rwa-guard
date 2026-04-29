@@ -2124,10 +2124,10 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         emit_legacy_fields = str(os.getenv('MONITORING_RUNTIME_LEGACY_FIELDS', '')).strip().lower() in {'1', 'true', 'yes', 'on'}
         canonical_runtime = {
             'workspace_configured': bool(payload.get('workspace_configured')),
-            'runtime_status': str(payload.get('runtime_status') or payload.get('runtime_status_summary') or 'offline'),
+            'runtime_status': str(payload.get('runtime_status') or 'offline'),
             'configured_systems': int(payload.get('configured_systems') or 0),
             'reporting_systems': int(payload.get('reporting_systems') or 0),
-            'protected_assets': int(payload.get('protected_assets') or payload.get('protected_assets_count') or 0),
+            'protected_assets': int(payload.get('protected_assets') or 0),
             'last_poll_at': payload.get('last_poll_at'),
             'last_heartbeat_at': payload.get('last_heartbeat_at'),
             'last_telemetry_at': payload.get('last_telemetry_at'),
