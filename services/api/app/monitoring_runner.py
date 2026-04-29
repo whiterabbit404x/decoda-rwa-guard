@@ -6649,6 +6649,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             {
                 'mode': mode,
                 'provider_health': provider_health,
+                'target_coverage': target_coverage,
+                'provider_health_records': provider_health,
+                'target_coverage_records': target_coverage,
                 'provider_reachable': bool((claim_validator.get('checks') or {}).get('evm_rpc_reachable')),
                 'evidence_state': str(payload.get('recent_evidence_state') or 'missing'),
                 'truthfulness_state': str(claim_validator.get('recent_truthfulness_state') or payload.get('recent_truthfulness_state') or 'unknown_risk'),

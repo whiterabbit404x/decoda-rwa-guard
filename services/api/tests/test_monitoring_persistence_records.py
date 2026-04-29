@@ -64,3 +64,5 @@ def test_process_monitoring_target_persists_provider_health_and_target_coverage(
     sql = '\n'.join(q for q, _ in conn.calls)
     assert 'INSERT INTO provider_health_records' in sql
     assert 'INSERT INTO target_coverage_records' in sql
+    assert 'SELECT MAX(observed_at) AS ts FROM telemetry_events' in sql
+    assert 'SELECT MAX(created_at) AS ts FROM detection_events' in sql
