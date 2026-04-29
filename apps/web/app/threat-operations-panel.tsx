@@ -1716,12 +1716,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const activeIncidents = Number(runtimeStatusSnapshot?.active_incidents ?? runtimeSummary?.active_incidents_count ?? 0);
   const truth = feed.monitoring.truth;
   const canonicalPresentation = feed.monitoring.presentation;
-  const runtimeEvidenceSource = String(
-    runtimeStatusSnapshot?.evidence_source
-    ?? runtimeStatusSnapshot?.monitoring_mode
-    ?? runtimeSummary?.evidence_source_summary
-    ?? 'none',
-  ).toLowerCase();
+  const runtimeEvidenceSource = String(runtimeStatusSnapshot?.evidence_source ?? 'none').toLowerCase();
   const simulatorMode = isSimulatorEvidenceMode(runtimeEvidenceSource);
   const simulatorProofChainCapability = Boolean(
     (runtimeStatusSnapshot as { can_generate_simulator_proof_chain?: boolean } | null)?.can_generate_simulator_proof_chain
@@ -1732,7 +1727,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const protectedAssetCount = Number(runtimeStatusSnapshot?.protected_assets_count ?? runtimeSummary?.protected_assets_count ?? 0);
   const workspaceConfigured = Boolean(runtimeStatusSnapshot?.workspace_configured ?? runtimeSummary?.workspace_configured ?? false);
   const configuredSystems = Number(runtimeStatusSnapshot?.monitored_systems_count ?? runtimeSummary?.monitored_systems_count ?? 0);
-  const reportingSystems = Number(runtimeStatusSnapshot?.reporting_systems ?? runtimeSummary?.reporting_systems_count ?? 0);
+  const reportingSystems = Number(runtimeStatusSnapshot?.reporting_systems ?? 0);
   const summaryConfigurationReason = runtimeSummary?.configuration_reason ?? null;
   const summaryConfigurationReasonCodes = Array.isArray(runtimeSummary?.configuration_reason_codes)
     ? runtimeSummary.configuration_reason_codes
@@ -1746,13 +1741,16 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     ? runtimeStatusSnapshot.configuration_reason_codes
     : summaryConfigurationReasonCodes;
   const monitoringMode = runtimeEvidenceSource;
-  const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? runtimeSummary?.runtime_status ?? '').toLowerCase();
+  const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? '').toLowerCase();
+  const runtimeMonitoringStatusForPageState: 'live' | 'limited' | 'offline' = runtimeStatus === 'live'
+    ? 'live'
+    : runtimeStatus === 'offline'
+      ? 'offline'
+      : 'limited';
   const continuityLive = runtimeStatus === 'live';
   const runtimeContradictionFlags = Array.isArray(runtimeStatusSnapshot?.contradiction_flags)
     ? runtimeStatusSnapshot.contradiction_flags
-    : Array.isArray(runtimeSummary?.contradiction_flags)
-      ? runtimeSummary.contradiction_flags
-      : [];
+    : [];
   const hasRuntimeContradictionFlags = runtimeContradictionFlags.length > 0;
   const presentationStatus: MonitoringPresentationStatus = runtimeStatus === 'live'
     ? (hasRuntimeContradictionFlags ? 'degraded' : 'live')
@@ -1770,14 +1768,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     statusLabel: presentationStatusLabel,
     summary: canonicalPresentation.summary,
     evidenceSourceLabel: runtimeEvidenceSource,
-    lastTelemetryAt: runtimeStatusSnapshot?.last_telemetry_at ?? runtimeSummary?.last_telemetry_at ?? null,
-    lastHeartbeatAt: runtimeStatusSnapshot?.last_heartbeat_at ?? runtimeSummary?.last_heartbeat_at ?? null,
-    lastPollAt: runtimeStatusSnapshot?.last_poll_at ?? runtimeSummary?.last_poll_at ?? null,
-    telemetryLabel: formatRelativeTime(runtimeStatusSnapshot?.last_telemetry_at ?? runtimeSummary?.last_telemetry_at ?? null),
-    heartbeatLabel: formatRelativeTime(runtimeStatusSnapshot?.last_heartbeat_at ?? runtimeSummary?.last_heartbeat_at ?? null),
-    pollLabel: formatRelativeTime(runtimeStatusSnapshot?.last_poll_at ?? runtimeSummary?.last_poll_at ?? null),
+    lastTelemetryAt: runtimeStatusSnapshot?.last_telemetry_at ?? null,
+    lastHeartbeatAt: runtimeStatusSnapshot?.last_heartbeat_at ?? null,
+    lastPollAt: runtimeStatusSnapshot?.last_poll_at ?? null,
+    telemetryLabel: formatRelativeTime(runtimeStatusSnapshot?.last_telemetry_at ?? null),
+    heartbeatLabel: formatRelativeTime(runtimeStatusSnapshot?.last_heartbeat_at ?? null),
+    pollLabel: formatRelativeTime(runtimeStatusSnapshot?.last_poll_at ?? null),
     hasLiveTelemetry: continuityLive
-      && String(runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable') === 'fresh'
+      && String(runtimeStatusSnapshot?.freshness_status ?? 'unavailable') === 'fresh'
       && reportingSystems > 0
       && runtimeEvidenceSource === 'live',
   };
@@ -1950,26 +1948,26 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     targets,
     liveDetections: categorizedDetections.live,
     workspaceConfigured,
-    freshnessStatus: runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable',
-    monitoringStatus: runtimeStatusSnapshot?.monitoring_status ?? runtimeSummary?.monitoring_status ?? 'offline',
+    freshnessStatus: runtimeStatusSnapshot?.freshness_status ?? 'unavailable',
+    monitoringStatus: runtimeMonitoringStatusForPageState,
     reportingSystems,
     runtimeStatus,
     monitoredSystems: configuredSystems,
     hasLiveTelemetry: showLiveTelemetry,
-    statusReason: runtimeStatusSnapshot?.status_reason ?? runtimeSummary?.status_reason ?? null,
+    statusReason: runtimeStatusSnapshot?.status_reason ?? null,
     configurationReason: runtimeConfigurationReason,
     configurationReasonCodes: runtimeConfigurationReasonCodes,
-    runtimeMonitoringStatus: runtimeStatusSnapshot?.monitoring_status ?? runtimeSummary?.monitoring_status ?? 'offline',
+    runtimeMonitoringStatus: runtimeStatus,
     runtimeErrorCode: null,
     runtimeDegradedReason: null,
     fieldReasonCodes: null,
-    summaryStatusReason: runtimeStatusSnapshot?.status_reason ?? runtimeSummary?.status_reason ?? null,
+    summaryStatusReason: runtimeStatusSnapshot?.status_reason ?? null,
     summaryConfigurationReason,
     summaryConfigurationReasonCodes,
     continuityStatus: runtimeSummary?.continuity_status ?? null,
   });
 
-  const runtimeReason = String(runtimeStatusSnapshot?.status_reason ?? runtimeSummary?.status_reason ?? 'not_reported');
+  const runtimeReason = String(runtimeStatusSnapshot?.status_reason ?? 'not_reported');
   const proofChainStatus = String(runtimeStatusSnapshot?.proof_chain_status ?? investigationTimeline?.proof_chain_status ?? 'incomplete');
   const timelineItems = Array.isArray(investigationTimeline?.items) ? investigationTimeline.items : [];
   const missingTimelineLinks = Array.isArray(investigationTimeline?.missing) ? investigationTimeline.missing : [];
@@ -2018,9 +2016,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           ? 'degraded'
         : 'live';
     const lastSuccessfulRuntimeRefreshAt = runtimeStatusSnapshot?.last_poll_at
-      ?? runtimeSummary?.last_poll_at
       ?? runtimeStatusSnapshot?.last_telemetry_at
-      ?? runtimeSummary?.last_telemetry_at
       ?? null;
     const lastSuccessfulTimelineRefreshAt = (investigationTimeline as Record<string, any> | null)?.generated_at
       ?? (investigationTimeline as Record<string, any> | null)?.created_at
@@ -2203,8 +2199,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     reportingSystems,
     runtimeReason,
     runtimeSummary?.continuity_status,
-    runtimeSummary?.last_poll_at,
-    runtimeSummary?.last_telemetry_at,
     runtimeStatusSnapshot?.last_poll_at,
     runtimeStatusSnapshot?.last_telemetry_at,
     investigationTimeline,
@@ -2953,7 +2947,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         ) : null}
         {!canGenerateSimulatorProofChain ? <p className="statusLine">{simulatorProofChainUnavailableCopy}</p> : null}
         <p className="tableMeta">
-          Loop health: {loopHealthSignal.state} · Loop running: {loopHealth?.loop_running ? 'yes' : 'no'} · Consecutive failures: {Number(loopHealth?.consecutive_failures ?? 0)} · Last successful cycle: {formatAbsoluteTime(loopHealth?.last_successful_cycle ?? null)} · Retry backoff: {loopHealth?.backoff_seconds ? `${loopHealth.backoff_seconds}s` : 'none'} · Next retry: {formatAbsoluteTime(loopHealth?.next_retry_at ?? null)} · Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {monitoringViewModel.pollLabel} · Last heartbeat: {monitoringViewModel.heartbeatLabel} · Runtime freshness: {String(runtimeSummary?.telemetry_freshness ?? runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeSummary?.confidence ?? runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
+          Loop health: {loopHealthSignal.state} · Loop running: {loopHealth?.loop_running ? 'yes' : 'no'} · Consecutive failures: {Number(loopHealth?.consecutive_failures ?? 0)} · Last successful cycle: {formatAbsoluteTime(loopHealth?.last_successful_cycle ?? null)} · Retry backoff: {loopHealth?.backoff_seconds ? `${loopHealth.backoff_seconds}s` : 'none'} · Next retry: {formatAbsoluteTime(loopHealth?.next_retry_at ?? null)} · Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {monitoringViewModel.pollLabel} · Last heartbeat: {monitoringViewModel.heartbeatLabel} · Runtime freshness: {String(runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
         </p>
         <p className="tableMeta">
           Worker heartbeat: {monitoringViewModel.heartbeatLabel} · Poll loop: {monitoringViewModel.pollLabel} · Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection: {detectionEvalLabel} · Reporting systems: {reportingSystems}/{configuredSystems} · Evidence source: {simulatorMode ? `${monitoringPresentation.evidenceSourceLabel} (SIMULATOR/REPLAY)` : monitoringPresentation.evidenceSourceLabel} · Runtime reason: {runtimeReason}
