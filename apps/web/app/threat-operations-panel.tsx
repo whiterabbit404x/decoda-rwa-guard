@@ -1742,6 +1742,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : summaryConfigurationReasonCodes;
   const monitoringMode = runtimeEvidenceSource;
   const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? '').toLowerCase();
+  const runtimeMonitoringStatusForPageState: 'live' | 'limited' | 'offline' = runtimeStatus === 'live'
+    ? 'live'
+    : runtimeStatus === 'offline'
+      ? 'offline'
+      : 'limited';
   const continuityLive = runtimeStatus === 'live';
   const runtimeContradictionFlags = Array.isArray(runtimeStatusSnapshot?.contradiction_flags)
     ? runtimeStatusSnapshot.contradiction_flags
@@ -1944,7 +1949,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     liveDetections: categorizedDetections.live,
     workspaceConfigured,
     freshnessStatus: runtimeStatusSnapshot?.freshness_status ?? 'unavailable',
-    monitoringStatus: runtimeStatusSnapshot?.runtime_status ?? 'offline',
+    monitoringStatus: runtimeMonitoringStatusForPageState,
     reportingSystems,
     runtimeStatus,
     monitoredSystems: configuredSystems,
@@ -1952,7 +1957,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     statusReason: runtimeStatusSnapshot?.status_reason ?? null,
     configurationReason: runtimeConfigurationReason,
     configurationReasonCodes: runtimeConfigurationReasonCodes,
-    runtimeMonitoringStatus: runtimeStatusSnapshot?.runtime_status ?? 'offline',
+    runtimeMonitoringStatus: runtimeStatus,
     runtimeErrorCode: null,
     runtimeDegradedReason: null,
     fieldReasonCodes: null,
