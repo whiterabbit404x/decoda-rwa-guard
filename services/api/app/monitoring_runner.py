@@ -5918,7 +5918,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 coverage_status,
                 last_telemetry_at,
                 evidence_source,
-                computed_at
+                computed_at,
+                metadata
             FROM target_coverage_records
             WHERE workspace_id = %s::uuid
             ORDER BY target_id, computed_at DESC
@@ -5930,7 +5931,60 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             for row in (latest_target_coverage_rows or [])
             if str((row or {}).get('target_id') or '').strip()
         }
-        reporting_systems = int(receipts_reporting_systems)
+        canonical_reporting_event_rows = connection.execute(
+            '''
+            SELECT DISTINCT te.target_id
+            FROM telemetry_events te
+            JOIN monitored_targets mt
+              ON mt.workspace_id = te.workspace_id
+             AND mt.id = te.target_id
+             AND mt.enabled = TRUE
+            WHERE te.workspace_id = %s::uuid
+              AND te.created_at >= %s
+            ''',
+            (workspace_id, now - timedelta(seconds=telemetry_window_seconds)),
+        ).fetchall()
+        canonical_reporting_targets_from_events: set[str] = {
+            str((row or {}).get('target_id') or '').strip()
+            for row in (canonical_reporting_event_rows or [])
+            if str((row or {}).get('target_id') or '').strip()
+        }
+        canonical_reporting_coverage_rows = connection.execute(
+            '''
+            WITH latest_coverage AS (
+                SELECT DISTINCT ON (tcr.target_id)
+                    tcr.target_id,
+                    tcr.metadata,
+                    tcr.computed_at
+                FROM target_coverage_records tcr
+                JOIN monitored_targets mt
+                  ON mt.workspace_id = tcr.workspace_id
+                 AND mt.id = tcr.target_id
+                 AND mt.enabled = TRUE
+                WHERE tcr.workspace_id = %s::uuid
+                  AND tcr.coverage_status = 'reporting'
+                  AND tcr.last_telemetry_at IS NOT NULL
+                ORDER BY tcr.target_id, tcr.computed_at DESC
+            )
+            SELECT lc.target_id
+            FROM latest_coverage lc
+            JOIN telemetry_events te
+              ON te.workspace_id = %s::uuid
+             AND te.target_id = lc.target_id
+             AND te.id::text = (lc.metadata->'telemetry_basis'->>'event_id')
+            WHERE lc.computed_at >= %s
+              AND COALESCE(lc.metadata->'telemetry_basis'->>'kind', '') = 'telemetry_event'
+              AND COALESCE(lc.metadata->'telemetry_basis'->>'event_id', '') <> ''
+            ''',
+            (workspace_id, workspace_id, now - timedelta(seconds=telemetry_window_seconds)),
+        ).fetchall()
+        canonical_reporting_targets_from_coverage: set[str] = {
+            str((row or {}).get('target_id') or '').strip()
+            for row in (canonical_reporting_coverage_rows or [])
+            if str((row or {}).get('target_id') or '').strip()
+        }
+        canonical_reporting_targets = canonical_reporting_targets_from_events | canonical_reporting_targets_from_coverage
+        reporting_systems = int(len(canonical_reporting_targets))
         coverage_heartbeat_count = int(reporting_systems)
         real_event_count = int(recent_real_event_count)
         raw_recent_evidence_state = (
@@ -6534,6 +6588,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'evidence_source': evidence_source,
             'details': {
                 'compatibility': {
+                    'legacy_receipts_reporting_systems': int(receipts_reporting_systems),
                     'legacy_reporting_systems': len(
                         [
                             row
@@ -6549,6 +6604,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     'legacy_last_coverage_telemetry_at': legacy_last_coverage_telemetry_at.isoformat() if legacy_last_coverage_telemetry_at else None,
                     'legacy_telemetry_kind': legacy_telemetry_kind,
                     'legacy_monitored_systems_last_heartbeat_max': last_system_heartbeat.isoformat() if last_system_heartbeat else None,
+                    'canonical_reporting_targets_from_events': len(canonical_reporting_targets_from_events),
+                    'canonical_reporting_targets_from_coverage': len(canonical_reporting_targets_from_coverage),
                 }
             },
             'provider_health': provider_health,
