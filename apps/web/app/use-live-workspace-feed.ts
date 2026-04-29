@@ -46,9 +46,6 @@ const DEFAULT_COUNTS: LiveWorkspaceCounts = {
 const FEED_REQUEST_FRESHNESS_MS = 60_000;
 type WorkspaceFeedSnapshot = {
   statusPayload: MonitoringRuntimeStatus | null;
-  historyCount: number;
-  openAlerts: number;
-  openIncidents: number;
   fetchedAt: number;
 };
 const inflightFeedSnapshotByWorkspace = new Map<string, Promise<WorkspaceFeedSnapshot>>();
@@ -143,17 +140,6 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
-    async function safeJson(response: Response | null): Promise<any> {
-      if (!response?.ok) {
-        return {};
-      }
-      try {
-        return await response.json();
-      } catch {
-        return {};
-      }
-    }
-
     async function fetchWorkspaceSnapshot(
       cycleHeaders: Record<string, string>,
       forceRefresh = false,
@@ -171,23 +157,8 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
       }
       const request = (async (): Promise<WorkspaceFeedSnapshot> => {
         const statusPayload = await fetchRuntimeStatusDeduped(cycleHeaders, { forceRefresh });
-        const ancillaryResults = await Promise.allSettled([
-          fetch(`${apiUrl}/pilot/history?limit=20`, { headers: cycleHeaders, cache: 'no-store' }),
-          fetch(`${apiUrl}/alerts?status_value=open`, { headers: cycleHeaders, cache: 'no-store' }),
-          fetch(`${apiUrl}/incidents?status_value=open`, { headers: cycleHeaders, cache: 'no-store' }),
-        ]);
-        const historyRes = ancillaryResults[0].status === 'fulfilled' ? ancillaryResults[0].value : null;
-        const alertsRes = ancillaryResults[1].status === 'fulfilled' ? ancillaryResults[1].value : null;
-        const incidentsRes = ancillaryResults[2].status === 'fulfilled' ? ancillaryResults[2].value : null;
-        const historyPayload = await safeJson(historyRes);
-        const alertsPayload = await safeJson(alertsRes);
-        const incidentsPayload = await safeJson(incidentsRes);
-        const historyCount = Number(historyPayload?.counts?.analysis_runs ?? (historyPayload.analysis_runs ?? []).length ?? 0);
         const snapshot: WorkspaceFeedSnapshot = {
           statusPayload,
-          historyCount,
-          openAlerts: Array.isArray(alertsPayload?.alerts) ? alertsPayload.alerts.length : 0,
-          openIncidents: Array.isArray(incidentsPayload?.incidents) ? incidentsPayload.incidents.length : 0,
           fetchedAt: Date.now(),
         };
         recentFeedSnapshotByWorkspace.set(cacheKey, snapshot);
@@ -224,9 +195,9 @@ export function useLiveWorkspaceFeed(intervalMs = 30000): LiveWorkspaceFeed {
           protectedAssets: Number(truth?.protected_assets_count ?? 0),
           monitoredSystems: Number(truth?.monitored_systems_count ?? 0),
           activeSystems: Number(truth?.reporting_systems_count ?? 0),
-          openAlerts: snapshot.openAlerts,
-          openIncidents: snapshot.openIncidents,
-          historyRecords: snapshot.historyCount,
+          openAlerts: Number(truth?.active_alerts_count ?? 0),
+          openIncidents: Number(truth?.active_incidents_count ?? 0),
+          historyRecords: 0,
         };
         if (shouldLogLiveWorkspaceFeedDebug()) {
           console.debug('useLiveWorkspaceFeed refresh-result', {

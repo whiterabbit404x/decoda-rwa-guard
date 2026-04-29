@@ -8,6 +8,7 @@ import type { EnterpriseCriterionCheck, MonitoringInvestigationTimeline, Monitor
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from './response-action-capabilities';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
+import { fetchRuntimeStatusDeduped } from './runtime-status-client';
 import ThreatChainPanel from './threat-chain-panel';
 
 type Props = { apiUrl: string };
@@ -1466,7 +1467,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           reconcileLatestResult,
           activeReconcileStatusResult,
         ] = await Promise.allSettled([
-          fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' }),
+          Promise.resolve(fetchRuntimeStatusDeduped(authHeaders(), { forceRefresh: true })),
           fetch(`${apiUrl}/ops/monitoring/investigation-timeline`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/detections?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
           fetch(`${apiUrl}/alerts?limit=50`, { headers: authHeaders(), cache: 'no-store' }),
@@ -1478,21 +1479,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           activeReconcileId ? fetch(`${apiUrl}/monitoring/systems/reconcile/${encodeURIComponent(activeReconcileId)}`, { headers: authHeaders(), cache: 'no-store' }) : Promise.resolve(new Response('{}', { status: 204 })),
         ]);
         if (!active) return;
-        const responseEntries: [SnapshotFailureKey, PromiseSettledResult<Response>][] = [
-          ['runtime-status', runtimeStatusResult],
-          ['investigation-timeline', investigationTimelineResult],
-        ];
-        const failedEndpoints = responseEntries
-          .filter(([, result]) => !(result.status === 'fulfilled' && result.value.ok))
-          .map(([key]) => key);
-        const responses = responseEntries.map(([, result]) => (
-          result.status === 'fulfilled' && result.value.ok ? result.value : null
-        ));
-        const [runtimeStatusResponse, investigationTimelineResponse] = responses;
-        const [runtimeStatusPayload, investigationTimelinePayload] = await Promise.all([
-          safeJson(runtimeStatusResponse),
-          safeJson(investigationTimelineResponse),
-        ]);
+        const runtimeStatusPayload = runtimeStatusResult.status === 'fulfilled' ? runtimeStatusResult.value : null;
+        const investigationTimelineResponse = investigationTimelineResult.status === 'fulfilled' && investigationTimelineResult.value.ok
+          ? investigationTimelineResult.value
+          : null;
+        const failedEndpoints: SnapshotFailureKey[] = [];
+        if (!runtimeStatusPayload) failedEndpoints.push('runtime-status');
+        if (!investigationTimelineResponse) failedEndpoints.push('investigation-timeline');
+        const investigationTimelinePayload = await safeJson(investigationTimelineResponse);
 
         const detectionsResponse = detectionsResult.status === 'fulfilled' && detectionsResult.value.ok ? detectionsResult.value : null;
         const alertsResponse = alertsResult.status === 'fulfilled' && alertsResult.value.ok ? alertsResult.value : null;
@@ -1638,7 +1632,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         const nextReconcileId = (reconcileJob?.id && typeof reconcileJob.id === 'string') ? reconcileJob.id : null;
         const terminal = reconcileJob?.status === 'completed' || reconcileJob?.status === 'failed';
         setActiveReconcileId(terminal ? null : nextReconcileId);
-        if (runtimeStatusResponse) {
+        if (runtimeStatusPayload) {
           setRuntimeStatusSnapshot(runtimeStatusPayload as MonitoringRuntimeStatus);
         }
         if (investigationTimelineResponse) {
@@ -2770,12 +2764,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         setResponseToast('Failed to generate simulator proof chain.');
         return;
       }
-      const [runtimeStatusResponse, investigationTimelineResponse] = await Promise.all([
-        fetch(`${apiUrl}/ops/monitoring/runtime-status`, { headers: authHeaders(), cache: 'no-store' }),
+      const [runtimePayload, investigationTimelineResponse] = await Promise.all([
+        Promise.resolve(fetchRuntimeStatusDeduped(authHeaders(), { forceRefresh: true })),
         fetch(`${apiUrl}/ops/monitoring/investigation-timeline`, { headers: authHeaders(), cache: 'no-store' }),
       ]);
-      if (runtimeStatusResponse.ok) {
-        const runtimePayload = await runtimeStatusResponse.json().catch(() => ({}));
+      if (runtimePayload) {
         setRuntimeStatusSnapshot(runtimePayload as MonitoringRuntimeStatus);
       }
       if (investigationTimelineResponse.ok) {

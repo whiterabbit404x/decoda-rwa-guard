@@ -98,6 +98,7 @@ export type WorkspaceMonitoringSummary = {
   enterprise_criteria_pass?: boolean;
   enterprise_criteria_failed?: string[];
   enterprise_criteria?: EnterpriseCriterionCheck[];
+  canonical_collections?: Record<string, unknown>;
 };
 
 export type MonitoringRuntimeStatus = {
@@ -222,6 +223,7 @@ export type MonitoringRuntimeStatus = {
   enterprise_criteria_pass?: boolean;
   enterprise_criteria_failed?: string[];
   enterprise_criteria?: EnterpriseCriterionCheck[];
+  canonical_collections?: Record<string, unknown>;
   continuity_slo_pass?: boolean;
   heartbeat_age_seconds?: number | null;
   worker_heartbeat_age_seconds?: number | null;
