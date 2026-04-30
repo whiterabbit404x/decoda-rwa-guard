@@ -144,6 +144,16 @@ ENTERPRISE_READY_LIVE_ACTION_TYPES: tuple[str, ...] = (
 ENTERPRISE_READY_VALIDATED_LIVE_PATHS: set[str] = {'safe', 'governance', 'manual_only'}
 
 
+
+
+def is_canonical_runtime_truth_enabled() -> bool:
+    """Whether monitoring runtime status should derive truth fields from canonical sources only."""
+    raw = os.getenv('CANONICAL_RUNTIME_TRUTH_ENABLED')
+    if raw is not None:
+        return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
+    return bool(live_mode_enabled())
+
+
 def _evaluate_enterprise_ready_gate(
     *,
     continuity_slo_pass: bool,
@@ -4422,6 +4432,7 @@ def production_claim_validator() -> dict[str, Any]:
 
 
 def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
+    canonical_runtime_truth_enabled = is_canonical_runtime_truth_enabled()
     last_query_checkpoint = 'not_started'
     resolved_workspace_id: str | None = None
     resolved_workspace_slug: str | None = None
@@ -4813,6 +4824,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'proof_chain_correlation_id': None,
                 'contradiction_flags': list(summary.get('contradiction_flags') or []),
                 'workspace_monitoring_summary': summary,
+                'canonical_runtime_truth_enabled': bool(canonical_runtime_truth_enabled),
             }
             enterprise_ready_gate = _evaluate_enterprise_ready_gate(
                 continuity_slo_pass=bool(summary.get('continuity_slo_pass') is True),
@@ -6011,7 +6023,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if str((row or {}).get('target_id') or '').strip()
         }
         canonical_reporting_target_ids = canonical_reporting_targets_from_events | canonical_reporting_targets_from_coverage
-        reporting_systems = int(len(canonical_reporting_target_ids))
+        canonical_reporting_systems = int(len(canonical_reporting_target_ids))
+        reporting_systems = canonical_reporting_systems if canonical_runtime_truth_enabled else int(max(canonical_reporting_systems, receipts_reporting_systems))
         coverage_heartbeat_count = int(reporting_systems)
         real_event_count = int(recent_real_event_count)
         raw_recent_evidence_state = (
@@ -6642,6 +6655,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 reporting_systems,
                 final_status_reason or ','.join(downgrade_reason_tokens) or 'unknown',
             )
+        runtime_last_telemetry_at = canonical_last_telemetry_at if canonical_runtime_truth_enabled else (canonical_last_telemetry_at or legacy_last_telemetry_at)
+        runtime_last_detection_at = canonical_last_detection_at if canonical_runtime_truth_enabled else (canonical_last_detection_at or latest_detection_at)
+
         legacy_diagnostics = {
             'legacy_last_telemetry_at': canonical_last_telemetry_at.isoformat() if canonical_last_telemetry_at else None,
             'legacy_last_coverage_telemetry_at': last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None,
@@ -6660,8 +6676,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'freshness_status': summary_freshness_status,
             'confidence_status': summary_confidence_status,
             'evidence_source': evidence_source,
-            'last_telemetry_at': canonical_last_telemetry_at.isoformat() if canonical_last_telemetry_at else None,
-            'last_detection_at': canonical_last_detection_at.isoformat() if canonical_last_detection_at else None,
+            'last_telemetry_at': runtime_last_telemetry_at.isoformat() if runtime_last_telemetry_at else None,
+            'last_detection_at': runtime_last_detection_at.isoformat() if runtime_last_detection_at else None,
             'contradiction_flags': list(contradiction_flags),
         }
 
@@ -6741,6 +6757,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     'legacy_proof_chain_gaps_count': int(legacy_proof_chain_gaps_count),
                     'canonical_reporting_targets_from_events': len(canonical_reporting_targets_from_events),
                     'canonical_reporting_targets_from_coverage': len(canonical_reporting_targets_from_coverage),
+                    'canonical_runtime_truth_enabled': bool(canonical_runtime_truth_enabled),
                 }
             },
             'legacy_diagnostics': legacy_diagnostics,
@@ -6758,18 +6775,19 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'configuration_diagnostics': dict(configuration_diagnostics),
             'last_poll_at': last_poll_at.isoformat() if last_poll_at else None,
             'last_heartbeat_at': canonical_last_heartbeat_at.isoformat() if canonical_last_heartbeat_at else None,
-            'last_telemetry_at': canonical_last_telemetry_at.isoformat() if canonical_last_telemetry_at else None,
+            'last_telemetry_at': runtime_last_telemetry_at.isoformat() if runtime_last_telemetry_at else None,
             'last_coverage_telemetry_at': last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None,
             'coverage_receipts_last_at': live_coverage_receipts_workspace_latest.isoformat() if live_coverage_receipts_workspace_latest else None,
             'coverage_receipts_workspace_count': int(live_coverage_receipts_persisted_count),
             'stale_heartbeat': stale_heartbeat,
             'provider_degraded_flag': provider_degraded_or_unreachable,
             'telemetry_kind': telemetry_kind,
-            'last_detection_at': canonical_last_detection_at.isoformat() if canonical_last_detection_at else None,
+            'last_detection_at': runtime_last_detection_at.isoformat() if runtime_last_detection_at else None,
             'proof_chain_status': proof_chain_status,
             'proof_chain_correlation_id': proof_chain_correlation_id,
             'contradiction_flags': list(summary.get('contradiction_flags') or []),
             'workspace_monitoring_summary': summary,
+            'canonical_runtime_truth_enabled': bool(canonical_runtime_truth_enabled),
             'summary_generated_at': now.isoformat(),
             'continuity_status': summary.get('continuity_status'),
             'continuity_reason_codes': list(summary.get('continuity_reason_codes') or []),
@@ -6817,8 +6835,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         payload.update(summary)
         payload['last_poll_at'] = last_poll_at.isoformat() if last_poll_at else None
         payload['last_heartbeat_at'] = canonical_last_heartbeat_at.isoformat() if canonical_last_heartbeat_at else None
-        payload['last_telemetry_at'] = canonical_last_telemetry_at.isoformat() if canonical_last_telemetry_at else None
-        payload['last_detection_at'] = canonical_last_detection_at.isoformat() if canonical_last_detection_at else None
+        payload['last_telemetry_at'] = runtime_last_telemetry_at.isoformat() if runtime_last_telemetry_at else None
+        payload['last_detection_at'] = runtime_last_detection_at.isoformat() if runtime_last_detection_at else None
         if isinstance(payload.get('workspace_monitoring_summary'), dict):
             payload['workspace_monitoring_summary']['background_loop_health'] = dict(background_loop_health)
         logger.info(
