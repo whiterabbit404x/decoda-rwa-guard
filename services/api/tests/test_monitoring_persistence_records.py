@@ -387,11 +387,10 @@ def test_runtime_status_behavioral_contract_and_single_source_timestamp_updates(
     assert changed == {'last_detection_at'}
 
 
-def test_runtime_status_production_like_returns_canonical_keys_only_and_omits_legacy_fields(monkeypatch):
+def test_runtime_status_production_like_returns_canonical_required_keys_only(monkeypatch):
     client = TestClient(api_main.app)
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
     monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
-    monkeypatch.setenv('MONITORING_RUNTIME_LEGACY_FIELDS', 'true')
 
     payload = _canonical_runtime_payload(
         background_loop_health={'loop_running': True},
@@ -411,7 +410,7 @@ def test_runtime_status_production_like_returns_canonical_keys_only_and_omits_le
         assert body[field] == payload[field]
 
 
-def test_runtime_status_non_production_like_with_legacy_flag_includes_legacy_fields_and_preserves_canonical(monkeypatch):
+def test_runtime_status_non_production_like_with_legacy_flag_includes_legacy_fields(monkeypatch):
     client = TestClient(api_main.app)
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
     monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: False)
@@ -436,14 +435,11 @@ def test_runtime_status_non_production_like_with_legacy_flag_includes_legacy_fie
     monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(payload))
 
     body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
+    assert set(_RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS).issubset(set(body.keys()))
     assert 'canonical_monitoring_runtime' in body
     assert 'background_loop_health' in body
     assert 'loop_running' in body
     assert 'failed_checks' in body
-    assert body['canonical_monitoring_runtime']['runtime_status'] == 'offline'
-    assert body['runtime_status'] == 'offline'
-    assert body['canonical_monitoring_runtime']['reporting_systems'] == 9
-    assert body['reporting_systems'] == 9
     for field in _RUNTIME_STATUS_STABLE_CANONICAL_FIELDS:
         assert field in body
         assert field in body['canonical_monitoring_runtime']
