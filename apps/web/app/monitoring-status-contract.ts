@@ -23,6 +23,7 @@ export type WorkspaceMonitoringSummary = {
   last_poll_at: string | null;
   last_heartbeat_at: string | null;
   last_telemetry_at: string | null;
+  last_detection_at?: string | null;
   telemetry_freshness: 'fresh' | 'stale' | 'unavailable';
   confidence: 'high' | 'medium' | 'low' | 'unavailable';
   reporting_systems_count: number;

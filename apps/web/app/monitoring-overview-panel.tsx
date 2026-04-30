@@ -55,17 +55,17 @@ export default function MonitoringOverviewPanel() {
     }
     return 'Detection chain verified from evidence through response action.';
   })();
-  const contradictionFlags = runtime?.contradiction_flags ?? truth.contradiction_flags ?? [];
+  const contradictionFlags = truth.contradiction_flags ?? [];
   const hasContradictions = contradictionFlags.length > 0;
-  const evidenceSource = String(runtime?.evidence_source ?? truth.evidence_source_summary ?? 'none').toLowerCase();
+  const evidenceSource = String(truth.evidence_source_summary ?? 'none').toLowerCase();
   const evidenceSourceLabel = evidenceSource === 'simulator' || evidenceSource === 'replay'
     ? evidenceSource.toUpperCase()
     : evidenceSource === 'live'
       ? 'LIVE'
       : 'NONE';
   const reportingSystemsLabel = `${truth.reporting_systems_count}/${truth.monitored_systems_count}`;
-  const runtimeReason = runtime?.status_reason ?? truth.status_reason ?? 'Not reported';
-  const lastDetection = runtime?.last_detection_at ?? runtime?.last_detection_evaluation_at ?? null;
+  const runtimeReason = truth.status_reason ?? 'Not reported';
+  const lastDetection = truth.last_detection_at ?? null;
   const statusLabel = hasContradictions ? 'DEGRADED' : (runtime ? presentation.statusLabel : 'PENDING');
 
   return (
