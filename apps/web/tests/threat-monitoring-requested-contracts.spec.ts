@@ -12,6 +12,14 @@ test('threat monitoring cards source status exclusively from runtime-status', ()
   expect(threat).toContain('fetchRuntimeStatusDeduped');
   expect(threat).toContain('<PageStateBanner viewModel={threatOperationsViewModel.monitoring} />');
   expect(threat).toContain('const headerStatusChips = monitoringViewModel.headerStatusChips;');
+
+  expect(threat).toContain("const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? '').toLowerCase();");
+  expect(threat).toContain('const reportingSystems = Number(runtimeStatusSnapshot?.reporting_systems ?? 0);');
+  expect(threat).toContain("freshnessStatus: runtimeStatusSnapshot?.freshness_status ?? 'unavailable',");
+  expect(threat).toContain("Runtime confidence: {String(runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}");
+  expect(threat).toContain("const runtimeEvidenceSource = String(runtimeStatusSnapshot?.evidence_source ?? 'none').toLowerCase();");
+  expect(threat).toContain('const runtimeContradictionFlags = Array.isArray(runtimeStatusSnapshot?.contradiction_flags)');
+  expect(threat).toContain("/ops/monitoring/runtime-status ({threatOperationsViewModel.monitoring.endpointProvenance.runtimeStatus})");
 });
 
 test('no independent card-level status contradiction source exists', () => {
