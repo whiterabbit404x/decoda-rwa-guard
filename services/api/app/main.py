@@ -2122,6 +2122,8 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
     try:
         payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
         emit_legacy_fields = str(os.getenv('MONITORING_RUNTIME_LEGACY_FIELDS', '')).strip().lower() in {'1', 'true', 'yes', 'on'}
+        provider_health = payload.get('provider_health')
+        target_coverage = payload.get('target_coverage')
         canonical_runtime = {
             'workspace_configured': bool(payload.get('workspace_configured')),
             'runtime_status': str(payload.get('runtime_status') or 'offline'),
@@ -2138,10 +2140,12 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'status_reason': str(payload.get('status_reason') or 'unknown'),
             'contradiction_flags': list(payload.get('contradiction_flags') or []),
             'summary_generated_at': payload.get('summary_generated_at') or datetime.now(timezone.utc).isoformat(),
-            'provider_health': str(payload.get('provider_health') or 'unknown'),
-            'target_coverage': str(payload.get('target_coverage') or 'unknown'),
+            'provider_health': provider_health if provider_health is not None else [],
+            'target_coverage': target_coverage if target_coverage is not None else [],
             'provider_health_records': list(payload.get('provider_health_records') or []),
             'target_coverage_records': list(payload.get('target_coverage_records') or []),
+            'provider_health_status': str(payload.get('provider_health_status') or provider_health) if isinstance(provider_health, (str, int, float, bool)) else str(payload.get('provider_health_status') or 'unknown'),
+            'target_coverage_status': str(payload.get('target_coverage_status') or target_coverage) if isinstance(target_coverage, (str, int, float, bool)) else str(payload.get('target_coverage_status') or 'unknown'),
         }
         if _is_production_like_runtime():
             emit_legacy_fields = False
