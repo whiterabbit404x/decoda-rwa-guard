@@ -214,8 +214,33 @@ def test_ops_runtime_status_canonical_contract_includes_provider_and_target_cove
             'evidence_source': 'live',
             'status_reason': 'healthy_live_coverage',
             'contradiction_flags': [],
-            'provider_health': [{'provider_name': 'rpc', 'status': 'healthy'}],
-            'target_coverage': [{'target_id': 'target-1', 'coverage_status': 'reporting'}],
+            'provider_health': [
+                {
+                    'provider_name': 'rpc',
+                    'status': 'healthy',
+                    'provider_type': 'rpc',
+                    'checked_at': '2026-04-29T00:00:30Z',
+                    'evidence_source': 'live',
+                    'metadata': {},
+                }
+            ],
+            'target_coverage': [
+                {
+                    'target_id': 'target-1',
+                    'coverage_status': 'reporting',
+                    'last_poll_at': '2026-04-29T00:00:00Z',
+                    'last_heartbeat_at': '2026-04-29T00:01:00Z',
+                    'last_telemetry_at': '2026-04-29T00:02:00Z',
+                    'last_detection_at': '2026-04-29T00:03:00Z',
+                    'computed_at': '2026-04-29T00:04:00Z',
+                    'telemetry_basis': 'telemetry',
+                    'telemetry_event_id': 'te-1',
+                    'evidence_source': 'live',
+                    'metadata': {},
+                }
+            ],
+            'provider_health_status': 'healthy',
+            'target_coverage_status': 'reporting',
         }
     )
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
@@ -250,10 +275,18 @@ def test_ops_runtime_status_canonical_contract_includes_provider_and_target_cove
             'target_coverage_status',
         ]
     )
-    assert body['provider_health'] == [{'provider_name': 'rpc', 'status': 'healthy'}]
-    assert body['target_coverage'] == [{'target_id': 'target-1', 'coverage_status': 'reporting'}]
-    assert body['provider_health_status'] == 'unknown'
-    assert body['target_coverage_status'] == 'unknown'
+    assert isinstance(body['provider_health'], list)
+    assert body['provider_health'][0]['provider_type'] == 'rpc'
+    assert body['provider_health'][0]['checked_at'] == '2026-04-29T00:00:30Z'
+    assert body['provider_health'][0]['metadata'] == {}
+    assert isinstance(body['target_coverage'], list)
+    assert body['target_coverage'][0]['coverage_status'] == 'reporting'
+    assert body['target_coverage'][0]['telemetry_basis'] == 'telemetry'
+    assert body['target_coverage'][0]['telemetry_event_id'] == 'te-1'
+    assert body['target_coverage'][0]['last_telemetry_at'] == '2026-04-29T00:02:00Z'
+    assert body['target_coverage'][0]['last_detection_at'] == '2026-04-29T00:03:00Z'
+    assert body['provider_health_status'] == 'healthy'
+    assert body['target_coverage_status'] == 'reporting'
 
 
 def test_ops_runtime_status_production_ignores_legacy_field_flag(monkeypatch):

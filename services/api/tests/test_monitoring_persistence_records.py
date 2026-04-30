@@ -22,8 +22,29 @@ def _seed_runtime_chain_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(
         '''
-        CREATE TABLE provider_health_records (id TEXT PRIMARY KEY, provider_name TEXT, status TEXT, observed_at TEXT);
-        CREATE TABLE target_coverage_records (id TEXT PRIMARY KEY, target_id TEXT, telemetry_kind TEXT, observed_at TEXT, evidence_source TEXT);
+        CREATE TABLE provider_health_records (
+            id TEXT PRIMARY KEY,
+            provider_name TEXT,
+            status TEXT,
+            provider_type TEXT,
+            checked_at TEXT,
+            evidence_source TEXT,
+            metadata TEXT
+        );
+        CREATE TABLE target_coverage_records (
+            id TEXT PRIMARY KEY,
+            target_id TEXT,
+            coverage_status TEXT,
+            last_poll_at TEXT,
+            last_heartbeat_at TEXT,
+            last_telemetry_at TEXT,
+            last_detection_at TEXT,
+            computed_at TEXT,
+            telemetry_basis TEXT,
+            telemetry_event_id TEXT,
+            evidence_source TEXT,
+            metadata TEXT
+        );
         CREATE TABLE telemetry_events (id TEXT PRIMARY KEY, observed_at TEXT, kind TEXT, source TEXT);
         CREATE TABLE detection_events (id TEXT PRIMARY KEY, telemetry_event_id TEXT, created_at TEXT);
         CREATE TABLE alerts (id TEXT PRIMARY KEY, detection_event_id TEXT, status TEXT);
@@ -40,22 +61,37 @@ def test_provider_and_target_loops_write_records_with_real_inserts():
     now = datetime.now(timezone.utc).isoformat()
 
     conn.execute(
-        'INSERT INTO provider_health_records (id, provider_name, status, observed_at) VALUES (?, ?, ?, ?)',
-        ('phr-1', 'rpc', 'live', now),
+        'INSERT INTO provider_health_records (id, provider_name, status, provider_type, checked_at, evidence_source, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ('phr-1', 'rpc', 'live', 'rpc', now, 'live', '{}'),
     )
     conn.execute(
-        'INSERT INTO target_coverage_records (id, target_id, telemetry_kind, observed_at, evidence_source) VALUES (?, ?, ?, ?, ?)',
-        ('tcr-1', 'target-1', 'coverage', now, 'live'),
+        'INSERT INTO target_coverage_records (id, target_id, coverage_status, last_poll_at, last_heartbeat_at, last_telemetry_at, last_detection_at, computed_at, telemetry_basis, telemetry_event_id, evidence_source, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ('tcr-1', 'target-1', 'reporting', now, now, now, now, now, 'telemetry', 'te-1', 'live', '{}'),
     )
 
-    provider_row = conn.execute('SELECT provider_name, status FROM provider_health_records WHERE id = ?', ('phr-1',)).fetchone()
-    coverage_row = conn.execute('SELECT target_id, telemetry_kind, evidence_source FROM target_coverage_records WHERE id = ?', ('tcr-1',)).fetchone()
+    provider_row = conn.execute(
+        'SELECT provider_name, status, provider_type, checked_at, evidence_source, metadata FROM provider_health_records WHERE id = ?',
+        ('phr-1',),
+    ).fetchone()
+    coverage_row = conn.execute(
+        'SELECT target_id, coverage_status, last_poll_at, last_heartbeat_at, last_telemetry_at, last_detection_at, computed_at, evidence_source, metadata FROM target_coverage_records WHERE id = ?',
+        ('tcr-1',),
+    ).fetchone()
 
     assert provider_row['provider_name'] == 'rpc'
     assert provider_row['status'] == 'live'
     assert coverage_row['target_id'] == 'target-1'
-    assert coverage_row['telemetry_kind'] == 'coverage'
+    assert coverage_row['coverage_status'] == 'reporting'
     assert coverage_row['evidence_source'] == 'live'
+    assert provider_row['provider_type'] == 'rpc'
+    assert provider_row['checked_at'] == now
+    assert provider_row['metadata'] == '{}'
+    assert coverage_row['last_poll_at'] == now
+    assert coverage_row['last_heartbeat_at'] == now
+    assert coverage_row['last_telemetry_at'] == now
+    assert coverage_row['last_detection_at'] == now
+    assert coverage_row['computed_at'] == now
+    assert coverage_row['metadata'] == '{}'
 
 
 def test_full_fk_chain_persists_end_to_end_ids():
@@ -303,6 +339,83 @@ def test_runtime_status_behavioral_contract_and_single_source_timestamp_updates(
     detection_body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
     changed = {k for k in _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS if detection_body[k] != body[k]}
     assert changed == {'last_detection_at'}
+
+
+def test_runtime_status_reporting_systems_zero_with_only_heartbeat(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
+    payload = _canonical_runtime_payload(last_heartbeat_at='2026-04-29T12:10:00Z')
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(payload))
+    body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
+    assert body['reporting_systems'] == 0
+    assert body['last_heartbeat_at'] == '2026-04-29T12:10:00Z'
+    assert body['last_poll_at'] is None
+    assert body['last_telemetry_at'] is None
+
+
+def test_runtime_status_reporting_systems_zero_with_only_poll(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
+    payload = _canonical_runtime_payload(last_poll_at='2026-04-29T12:11:00Z')
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(payload))
+    body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
+    assert body['reporting_systems'] == 0
+    assert body['last_poll_at'] == '2026-04-29T12:11:00Z'
+    assert body['last_heartbeat_at'] is None
+    assert body['last_telemetry_at'] is None
+
+
+def test_runtime_status_reporting_stated_without_telemetry_link_keeps_reporting_systems_zero(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
+    payload = _canonical_runtime_payload(
+        reporting_systems=0,
+        target_coverage=[{'target_id': 'target-1', 'coverage_status': 'reporting', 'telemetry_basis': 'telemetry', 'telemetry_event_id': None}],
+        target_coverage_status='reporting',
+    )
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(payload))
+    body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
+    assert body['target_coverage_status'] == 'reporting'
+    assert body['reporting_systems'] == 0
+
+
+def test_runtime_status_reporting_systems_requires_telemetry_basis_and_event_link(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
+    payload = _canonical_runtime_payload(
+        reporting_systems=1,
+        evidence_source='live',
+        target_coverage=[{'target_id': 'target-1', 'coverage_status': 'reporting', 'telemetry_basis': 'telemetry', 'telemetry_event_id': 'te-9'}],
+        target_coverage_records=[{'target_id': 'target-1', 'coverage_status': 'reporting', 'telemetry_basis': 'telemetry', 'telemetry_event_id': 'te-9'}],
+        last_telemetry_at='2026-04-29T12:12:00Z',
+    )
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(payload))
+    body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
+    assert body['reporting_systems'] >= 1
+    assert body['target_coverage'][0]['telemetry_basis'] == 'telemetry'
+    assert body['target_coverage'][0]['telemetry_event_id'] == 'te-9'
+
+
+def test_runtime_status_canonical_event_timestamps_and_non_live_simulator_replay(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
+    payload = _canonical_runtime_payload(
+        last_telemetry_at='2026-04-29T12:13:00Z',
+        last_detection_at='2026-04-29T12:14:00Z',
+        evidence_source='simulator',
+        target_coverage=[{'target_id': 'target-1', 'coverage_status': 'reporting', 'last_telemetry_at': '2026-04-29T12:13:00Z', 'last_detection_at': '2026-04-29T12:14:00Z', 'evidence_source': 'replay'}],
+    )
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(payload))
+    body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
+    assert body['last_telemetry_at'] == '2026-04-29T12:13:00Z'
+    assert body['last_detection_at'] == '2026-04-29T12:14:00Z'
+    assert body['evidence_source'] in {'simulator', 'replay'}
+    assert body['evidence_source'] != 'live'
 
 
 def test_runtime_status_ignores_legacy_demo_fallback_for_live_claims_and_uses_persisted_records(monkeypatch):
