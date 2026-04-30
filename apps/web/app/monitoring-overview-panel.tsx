@@ -65,7 +65,7 @@ export default function MonitoringOverviewPanel() {
       : 'NONE';
   const reportingSystemsLabel = `${truth.reporting_systems_count}/${truth.monitored_systems_count}`;
   const runtimeReason = truth.status_reason ?? 'Not reported';
-  const lastDetection = truth.last_detection_at;
+  const lastDetection = truth.last_detection_at ?? null;
   const statusLabel = hasContradictions ? 'DEGRADED' : (runtime ? presentation.statusLabel : 'PENDING');
 
   return (
