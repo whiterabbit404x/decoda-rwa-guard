@@ -374,6 +374,63 @@ def test_runtime_status_behavioral_contract_and_single_source_timestamp_updates(
     assert changed == {'last_detection_at'}
 
 
+def test_runtime_status_production_like_returns_canonical_keys_only_and_omits_legacy_fields(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
+    monkeypatch.setenv('MONITORING_RUNTIME_LEGACY_FIELDS', 'true')
+
+    payload = _canonical_runtime_payload(
+        background_loop_health={'loop_running': True},
+        loop_running=True,
+        canonical_monitoring_runtime={'runtime_status': 'should_not_leak'},
+        failed_checks=['linked_fresh_evidence'],
+    )
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(payload))
+
+    body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
+    assert set(body.keys()) == set(_RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS)
+    assert 'canonical_monitoring_runtime' not in body
+    assert 'background_loop_health' not in body
+    assert 'loop_running' not in body
+    assert 'failed_checks' not in body
+
+
+def test_runtime_status_non_production_like_with_legacy_flag_includes_legacy_fields_and_preserves_canonical(monkeypatch):
+    client = TestClient(api_main.app)
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: False)
+    monkeypatch.setenv('MONITORING_RUNTIME_LEGACY_FIELDS', 'true')
+    monkeypatch.setattr(
+        api_main,
+        'get_background_loop_health',
+        lambda: {
+            'loop_running': True,
+            'last_successful_cycle': '2026-04-29T12:20:00Z',
+            'consecutive_failures': 0,
+            'next_retry_at': None,
+            'backoff_seconds': 0,
+        },
+    )
+
+    payload = _canonical_runtime_payload(
+        runtime_status='offline',
+        reporting_systems=9,
+        workspace_monitoring_summary={'failed_checks': ['linked_evidence_freshness']},
+    )
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(payload))
+
+    body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
+    assert 'canonical_monitoring_runtime' in body
+    assert 'background_loop_health' in body
+    assert 'loop_running' in body
+    assert 'failed_checks' in body
+    assert body['canonical_monitoring_runtime']['runtime_status'] == 'offline'
+    assert body['runtime_status'] == 'offline'
+    assert body['canonical_monitoring_runtime']['reporting_systems'] == 9
+    assert body['reporting_systems'] == 9
+
+
 def test_runtime_status_reporting_systems_zero_with_only_heartbeat(monkeypatch):
     client = TestClient(api_main.app)
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
