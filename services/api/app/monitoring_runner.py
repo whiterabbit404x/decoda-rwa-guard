@@ -6043,7 +6043,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if str((coverage_row or {}).get('coverage_status') or '').strip().lower() != 'reporting':
                 continue
             target_reporting_without_telemetry_count += 1
-        reporting_systems = canonical_reporting_systems if canonical_runtime_truth_enabled else int(max(canonical_reporting_systems, receipts_reporting_systems))
+        reporting_systems = canonical_reporting_systems
         coverage_heartbeat_count = int(reporting_systems)
         real_event_count = int(recent_real_event_count)
         raw_recent_evidence_state = (
@@ -6619,6 +6619,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         telemetry_timestamp_noncanonical = bool(runtime_last_telemetry_at is not None and runtime_last_telemetry_source != 'telemetry_events')
         detection_timestamp_noncanonical = bool(runtime_last_detection_at is not None and runtime_last_detection_source != 'detection_events')
 
+        summary_freshness_status = str(summary.get('telemetry_freshness') or '').strip().lower()
+        summary_confidence_status = str(summary.get('confidence') or '').strip().lower()
         contradiction_conditions = (
             ('offline_with_live_telemetry_recently', runtime_status_summary == 'offline' and evidence_source == 'live' and coverage_fresh),
             ('reporting_systems_zero_with_healthy', healthy_without_reporting_systems),
@@ -6700,8 +6702,6 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             summary['monitoring_status'] = 'limited'
             runtime_status_reason = runtime_status_reason or 'canonical_guard_noncanonical_timestamp'
             summary['status_reason'] = runtime_status_reason
-        summary_freshness_status = str(summary.get('telemetry_freshness') or '').strip().lower()
-        summary_confidence_status = str(summary.get('confidence') or '').strip().lower()
         strict_live_healthy_proof = bool(
             workspace_configured
             and evidence_source == 'live'

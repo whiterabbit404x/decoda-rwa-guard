@@ -1783,7 +1783,7 @@ def test_runtime_status_live_with_fresh_coverage_telemetry_without_target_events
     assert summary['last_detection_at'] is not None
 
 
-def test_runtime_status_live_uses_fresh_coverage_receipts_fallback(monkeypatch):
+def test_runtime_status_receipts_only_keeps_reporting_systems_zero(monkeypatch):
     now = datetime.now(timezone.utc)
 
     class _CoverageReceiptsFallbackConn(_Conn):
@@ -1829,32 +1829,18 @@ def test_runtime_status_live_uses_fresh_coverage_receipts_fallback(monkeypatch):
 
     payload = monitoring_runner.monitoring_runtime_status()
     summary = payload['workspace_monitoring_summary']
-    assert summary['runtime_status'] == 'healthy'
-    assert summary['evidence_source'] == 'live'
-    assert summary['reporting_systems'] > 0
-    assert summary['telemetry_kind'] == 'coverage'
-    assert payload['status'] != 'Offline'
-    assert summary['runtime_status'] not in {'offline', 'idle'}
+    reporting_systems = payload.get('reporting_systems', summary.get('reporting_systems', payload.get('legacy_diagnostics', {}).get('reporting_systems')))
+    assert reporting_systems == 0
+    assert payload['legacy_diagnostics']['legacy_reporting_systems'] == 1
+    assert payload['details']['compatibility']['legacy_receipts_reporting_systems'] == 1
 
 
-def test_runtime_status_live_counts_target_event_receipts_for_coverage_compat(monkeypatch):
+def test_runtime_status_poll_only_keeps_reporting_systems_zero(monkeypatch):
     now = datetime.now(timezone.utc)
 
-    class _TargetEventCoverageCompatConn(_Conn):
+    class _PollOnlyConn(_Conn):
         def execute(self, query, params=None):
             q = ' '.join(str(query).split())
-            if 'FROM monitoring_event_receipts e' in q and "e.evidence_source = 'live'" in q and "e.telemetry_kind = 'coverage'" in q:
-                return _Result(
-                    rows=[
-                        {
-                            'latest_processed_at': (now - timedelta(seconds=10)).isoformat(),
-                            'workspace_latest_processed_at': (now - timedelta(seconds=10)).isoformat(),
-                            'workspace_receipt_count': 1,
-                            'receipt_count': 1,
-                            'monitored_system_id': 'sys-1',
-                        }
-                    ]
-                )
             if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
                 return _Result(rows=[{
                     'id': 'sys-1',
@@ -1862,8 +1848,8 @@ def test_runtime_status_live_counts_target_event_receipts_for_coverage_compat(mo
                     'asset_id': 'asset-1',
                     'target_id': 'target-1',
                     'is_enabled': True,
-                    'runtime_status': 'healthy',
-                    'last_heartbeat': now.isoformat(),
+                    'runtime_status': 'idle',
+                    'last_heartbeat': None,
                     'last_coverage_telemetry_at': None,
                     'last_event_at': None,
                     'monitoring_interval_seconds': 30,
@@ -1877,17 +1863,50 @@ def test_runtime_status_live_counts_target_event_receipts_for_coverage_compat(mo
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 0, 'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}}})
             return super().execute(query, params)
 
-    monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True})
+    monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'last_heartbeat_at': None, 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True})
     monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
-    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_TargetEventCoverageCompatConn(None)))
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_PollOnlyConn(None)))
 
     payload = monitoring_runner.monitoring_runtime_status()
     summary = payload['workspace_monitoring_summary']
-    assert summary['reporting_systems'] > 0
-    assert summary['evidence_source'] == 'live'
-    assert summary['runtime_status'] == 'healthy'
-    assert summary['telemetry_kind'] == 'coverage'
-    assert summary['last_coverage_telemetry_at'] is not None
+    reporting_systems = payload.get('reporting_systems', summary.get('reporting_systems', payload.get('legacy_diagnostics', {}).get('reporting_systems')))
+    assert reporting_systems == 0
+
+
+def test_runtime_status_heartbeat_only_keeps_reporting_systems_zero(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _HeartbeatOnlyConn(_Conn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            if 'FROM monitored_systems ms' in q and 'ORDER BY ms.created_at DESC' in q:
+                return _Result(rows=[{
+                    'id': 'sys-1',
+                    'workspace_id': 'ws-1',
+                    'asset_id': 'asset-1',
+                    'target_id': 'target-1',
+                    'is_enabled': True,
+                    'runtime_status': 'idle',
+                    'last_heartbeat': now.isoformat(),
+                    'last_coverage_telemetry_at': None,
+                    'last_event_at': None,
+                    'monitoring_interval_seconds': 30,
+                    'created_at': now.isoformat(),
+                }])
+            if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
+                return _Result({'target_count': 1, 'asset_count': 1})
+            if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
+                return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
+            return super().execute(query, params)
+
+    monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': None, 'degraded': False, 'last_error': None, 'source_type': 'polling', 'worker_running': True})
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(_HeartbeatOnlyConn(None)))
+
+    payload = monitoring_runner.monitoring_runtime_status()
+    summary = payload['workspace_monitoring_summary']
+    reporting_systems = payload.get('reporting_systems', summary.get('reporting_systems', payload.get('legacy_diagnostics', {}).get('reporting_systems')))
+    assert reporting_systems == 0
 
 
 def test_runtime_status_treats_null_enabled_system_as_enabled_for_live_coverage(monkeypatch):
