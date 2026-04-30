@@ -134,27 +134,33 @@ def _runtime_payload(monkeypatch, **conn_flags):
 def _assert_canonical_guardrails(payload):
     summary = payload['workspace_monitoring_summary']
     assert payload['reporting_systems_count'] == 0
+    assert summary['reporting_systems_count'] == 0
     assert payload['last_telemetry_at'] is None
     assert payload['last_detection_at'] is None
+    assert summary['last_telemetry_at'] is None
+    assert summary.get('last_detection_at') is None
     assert summary['runtime_status'] == payload['runtime_status']
     assert payload.get('evidence_source') == 'none'
     assert payload.get('confidence_status') == 'unavailable'
     assert payload.get('contradiction_flags', []) == summary.get('contradiction_flags', [])
 
 
-def test_runtime_status_receipts_only_do_not_drive_canonical_reporting(monkeypatch):
-    payload = _runtime_payload(monkeypatch, receipts=True)
-    _assert_canonical_guardrails(payload)
+def test_runtime_status_noncanonical_rows_do_not_promote_canonical_fields(monkeypatch):
+    baseline = _runtime_payload(monkeypatch)
+    scenarios = (
+        {'name': 'receipts_only', 'conn_flags': {'receipts': True}},
+        {'name': 'monitored_last_coverage_only', 'conn_flags': {'monitored_last_coverage': True}},
+        {'name': 'target_evaluation_only', 'conn_flags': {'target_evaluations': True}},
+        {'name': 'legacy_detection_evidence_only', 'conn_flags': {'legacy_detection': True}},
+    )
 
-
-def test_runtime_status_monitored_last_coverage_only_does_not_drive_canonical_reporting(monkeypatch):
-    payload = _runtime_payload(monkeypatch, monitored_last_coverage=True)
-    _assert_canonical_guardrails(payload)
-
-
-def test_runtime_status_target_evaluation_only_does_not_drive_canonical_reporting(monkeypatch):
-    payload = _runtime_payload(monkeypatch, target_evaluations=True)
-    _assert_canonical_guardrails(payload)
+    for scenario in scenarios:
+        payload = _runtime_payload(monkeypatch, **scenario['conn_flags'])
+        _assert_canonical_guardrails(payload)
+        assert payload['runtime_status'] == baseline['runtime_status'], scenario['name']
+        assert payload['evidence_source'] == baseline['evidence_source'], scenario['name']
+        assert payload['confidence_status'] == baseline['confidence_status'], scenario['name']
+        assert payload['contradiction_flags'] == baseline['contradiction_flags'], scenario['name']
 
 
 def test_runtime_status_legacy_detection_diagnostics_do_not_control_canonical_top_level(monkeypatch):
