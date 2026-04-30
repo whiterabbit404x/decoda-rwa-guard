@@ -5991,7 +5991,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
              AND mt.id = te.target_id
              AND mt.enabled = TRUE
             WHERE te.workspace_id = %s::uuid
-              AND te.created_at >= %s
+              AND te.ingested_at >= %s
             ''',
             (workspace_id, now - timedelta(seconds=telemetry_window_seconds)),
         ).fetchall()
