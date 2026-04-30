@@ -752,6 +752,87 @@ def test_canonical_reporting_requires_real_telemetry_link(case, coverage_status,
     assert ("target_reporting_without_telemetry_event_link" in contradiction_flags) is expect_contradiction, case
 
 
+@pytest.mark.parametrize(
+    ("case", "coverage_record", "telemetry_events", "expected_live_allowed"),
+    [
+        (
+            "live_coverage_requires_live_linked_event",
+            {
+                "target_id": "target-1",
+                "coverage_status": "reporting",
+                "evidence_source": "live",
+                "metadata": {"telemetry_basis": {"kind": "telemetry_event", "event_id": "te-live"}},
+            },
+            [{"id": "te-live", "evidence_source": "live"}],
+            True,
+        ),
+        (
+            "live_coverage_blocked_when_linked_event_not_live",
+            {
+                "target_id": "target-1",
+                "coverage_status": "reporting",
+                "evidence_source": "live",
+                "metadata": {"telemetry_basis": {"kind": "telemetry_event", "event_id": "te-replay"}},
+            },
+            [{"id": "te-replay", "evidence_source": "replay"}],
+            False,
+        ),
+        (
+            "simulator_coverage_never_live",
+            {
+                "target_id": "target-1",
+                "coverage_status": "reporting",
+                "evidence_source": "simulator",
+                "metadata": {"telemetry_basis": {"kind": "telemetry_event", "event_id": "te-sim"}},
+            },
+            [{"id": "te-sim", "evidence_source": "live"}],
+            False,
+        ),
+        (
+            "replay_coverage_never_live",
+            {
+                "target_id": "target-1",
+                "coverage_status": "reporting",
+                "evidence_source": "replay",
+                "metadata": {"telemetry_basis": {"kind": "telemetry_event", "event_id": "te-replay"}},
+            },
+            [{"id": "te-replay", "evidence_source": "live"}],
+            False,
+        ),
+    ],
+)
+def test_reporting_coverage_evidence_source_requires_live_linked_telemetry_event(case, coverage_record, telemetry_events, expected_live_allowed):
+    telemetry_by_id = {str(row.get("id")): row for row in telemetry_events}
+    basis = (coverage_record.get("metadata") or {}).get("telemetry_basis") or {}
+    event_id = str(basis.get("event_id") or "").strip()
+    linked_event = telemetry_by_id.get(event_id) if event_id else None
+
+    coverage_source = str(coverage_record.get("evidence_source") or "").strip().lower()
+    linked_source = str((linked_event or {}).get("evidence_source") or "").strip().lower()
+    live_allowed = coverage_source == "live" and linked_source == "live"
+
+    assert live_allowed is expected_live_allowed, case
+
+
+def test_target_coverage_records_shape_keeps_telemetry_basis_in_metadata_only():
+    coverage_record = {
+        "target_id": "target-1",
+        "coverage_status": "reporting",
+        "evidence_source": "live",
+        "metadata": {
+            "telemetry_basis": {
+                "kind": "telemetry_event",
+                "event_id": "te-real",
+            }
+        },
+    }
+
+    assert "telemetry_basis" in coverage_record["metadata"]
+    assert "telemetry_basis" not in coverage_record
+    assert "telemetry_event_id" not in coverage_record
+    assert coverage_record["metadata"]["telemetry_basis"]["event_id"] == "te-real"
+
+
 def test_resolve_target_coverage_state_live_source_requires_live_linked_telemetry_event():
     provider_status = "live"
     source_status = "ok"
