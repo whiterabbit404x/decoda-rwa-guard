@@ -70,3 +70,33 @@ def test_runtime_status_target_coverage_reporting_without_telemetry_guard_presen
     source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
     assert "coverage_status != 'reporting' or coverage_telemetry_at is None" in source
     assert 'reporting_systems_zero_with_healthy' in source
+
+
+
+def test_runtime_status_contradiction_guards_have_reason_tokens_and_severity_overrides():
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+    required_guards = {
+        'legacy_reporting_without_canonical_telemetry': "('degraded', 'runtime_contradiction_legacy_reporting_without_canonical_telemetry')",
+        'target_reporting_without_telemetry_event_link': "('fail', 'runtime_contradiction_target_reporting_without_telemetry_event_link')",
+        'live_evidence_without_live_events': "('fail', 'runtime_contradiction_live_evidence_without_live_events')",
+        'reporting_systems_zero_with_healthy': "('fail', 'runtime_contradiction_healthy_without_reporting_systems')",
+        'heartbeat_or_poll_without_telemetry_live_claim': "('degraded', 'runtime_contradiction_heartbeat_or_poll_without_telemetry_live_claim')",
+        'last_telemetry_not_from_telemetry_events': "('degraded', 'runtime_contradiction_last_telemetry_not_from_telemetry_events')",
+        'last_detection_not_from_detection_events': "('degraded', 'runtime_contradiction_last_detection_not_from_detection_events')",
+    }
+    for guard_flag, override in required_guards.items():
+        assert guard_flag in source
+        assert override in source
+
+
+
+def test_runtime_status_contradiction_guard_conditions_present_for_canonical_sources_and_reporting_basis():
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+    assert 'reporting_systems > 0' in source
+    assert 'canonical_last_telemetry_at is None' in source
+    assert 'target_reporting_without_telemetry_count > 0' in source
+    assert "evidence_source == 'live'" in source
+    assert "runtime_status_summary == 'healthy' and reporting_systems <= 0" in source
+    assert '(last_heartbeat is not None or last_poll_at is not None)' in source
+    assert "runtime_last_telemetry_source != 'telemetry_events'" in source
+    assert "runtime_last_detection_source != 'detection_events'" in source
