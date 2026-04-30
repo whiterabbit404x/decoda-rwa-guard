@@ -24,15 +24,21 @@ def _seed_runtime_chain_db() -> sqlite3.Connection:
         '''
         CREATE TABLE provider_health_records (
             id TEXT PRIMARY KEY,
+            workspace_id TEXT,
             provider_name TEXT,
             status TEXT,
             provider_type TEXT,
+            target_id TEXT,
             checked_at TEXT,
+            latency_ms INTEGER,
+            error_message TEXT,
             evidence_source TEXT,
             metadata TEXT
         );
         CREATE TABLE target_coverage_records (
             id TEXT PRIMARY KEY,
+            workspace_id TEXT,
+            asset_id TEXT,
             target_id TEXT,
             coverage_status TEXT,
             last_poll_at TEXT,
@@ -45,8 +51,33 @@ def _seed_runtime_chain_db() -> sqlite3.Connection:
             evidence_source TEXT,
             metadata TEXT
         );
-        CREATE TABLE telemetry_events (id TEXT PRIMARY KEY, observed_at TEXT, kind TEXT, source TEXT);
-        CREATE TABLE detection_events (id TEXT PRIMARY KEY, telemetry_event_id TEXT, created_at TEXT);
+        CREATE TABLE telemetry_events (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT,
+            asset_id TEXT,
+            target_id TEXT,
+            provider_type TEXT,
+            event_type TEXT,
+            observed_at TEXT,
+            evidence_source TEXT,
+            payload_hash TEXT,
+            payload_json TEXT,
+            idempotency_key TEXT,
+            kind TEXT,
+            source TEXT
+        );
+        CREATE TABLE detection_events (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT,
+            telemetry_event_id TEXT,
+            target_id TEXT,
+            provider_type TEXT,
+            event_hash TEXT,
+            detected_at TEXT,
+            created_at TEXT,
+            evidence_source TEXT,
+            payload_json TEXT
+        );
         CREATE TABLE alerts (id TEXT PRIMARY KEY, detection_event_id TEXT, status TEXT);
         CREATE TABLE incidents (id TEXT PRIMARY KEY, alert_id TEXT, status TEXT);
         CREATE TABLE incident_timeline (id TEXT PRIMARY KEY, incident_id TEXT, event_type TEXT);
