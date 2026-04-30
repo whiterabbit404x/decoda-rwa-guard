@@ -100,3 +100,33 @@ def test_runtime_status_contradiction_guard_conditions_present_for_canonical_sou
     assert '(last_heartbeat is not None or last_poll_at is not None)' in source
     assert "runtime_last_telemetry_source != 'telemetry_events'" in source
     assert "runtime_last_detection_source != 'detection_events'" in source
+
+
+def test_runtime_status_reporting_system_derivation_and_timestamp_provenance_guards_present():
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+
+    assert 'receipts_reporting_systems += 1' in source
+    assert 'reporting_systems = canonical_reporting_systems' in source
+    assert 'runtime_last_telemetry_at = canonical_last_telemetry_at' in source
+    assert 'runtime_last_detection_at = canonical_last_detection_at' in source
+    assert 'runtime_last_telemetry_source = canonical_last_telemetry_source' in source
+    assert 'runtime_last_detection_source = canonical_last_detection_source' in source
+
+
+def test_runtime_status_telemetry_freshness_and_display_timestamp_sources_are_distinct():
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+
+    assert 'te.ingested_at >= %s' in source
+    assert 'canonical_last_telemetry_source = \'telemetry_events.observed_at\'' in source
+    assert 'SELECT MAX(observed_at) AS ts' in source
+
+
+def test_runtime_status_proof_chain_includes_full_evidence_path_queries():
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+
+    assert 'FROM telemetry_events te' in source
+    assert 'JOIN detections d' in source
+    assert 'FROM alerts a' in source
+    assert 'FROM incidents i' in source
+    assert 'FROM incident_timeline it' in source
+    assert 'FROM governance_actions ga' in source
