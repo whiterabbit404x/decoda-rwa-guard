@@ -6086,11 +6086,77 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             legacy_proof_chain_gaps_count = int((legacy_chain_row or {}).get('c') or 0)
         except Exception:
             legacy_proof_chain_gaps_count = 0
+        canonical_incident_timeline_gap_count = 0
+        try:
+            canonical_incident_timeline_gap_row = connection.execute(
+                f'''
+                SELECT COUNT(*) AS c
+                FROM incidents i
+                WHERE i.status IN ('open','acknowledged')
+                  AND {'i.workspace_id = %s AND' if workspace_id else ''}
+                  NOT EXISTS (
+                      SELECT 1
+                      FROM incident_timeline it
+                      WHERE it.workspace_id = i.workspace_id
+                        AND it.incident_id = i.id
+                  )
+                ''',
+                scoped_params,
+            ).fetchone()
+            canonical_incident_timeline_gap_count = int((canonical_incident_timeline_gap_row or {}).get('c') or 0)
+        except Exception:
+            canonical_incident_timeline_gap_count = 0
+        canonical_governance_alert_gap_count = 0
+        try:
+            canonical_governance_alert_gap_row = connection.execute(
+                f'''
+                SELECT COUNT(*) AS c
+                FROM governance_actions ga
+                WHERE ga.alert_id IS NOT NULL
+                  AND {'ga.workspace_id = %s AND' if workspace_id else ''}
+                  NOT EXISTS (
+                      SELECT 1
+                      FROM alerts a
+                      WHERE a.workspace_id = ga.workspace_id
+                        AND a.id = ga.alert_id
+                  )
+                ''',
+                scoped_params,
+            ).fetchone()
+            canonical_governance_alert_gap_count = int((canonical_governance_alert_gap_row or {}).get('c') or 0)
+        except Exception:
+            canonical_governance_alert_gap_count = 0
+        canonical_governance_incident_gap_count = 0
+        try:
+            canonical_governance_incident_gap_row = connection.execute(
+                f'''
+                SELECT COUNT(*) AS c
+                FROM governance_actions ga
+                WHERE ga.incident_id IS NOT NULL
+                  AND {'ga.workspace_id = %s AND' if workspace_id else ''}
+                  NOT EXISTS (
+                      SELECT 1
+                      FROM incidents i
+                      WHERE i.workspace_id = ga.workspace_id
+                        AND i.id = ga.incident_id
+                  )
+                ''',
+                scoped_params,
+            ).fetchone()
+            canonical_governance_incident_gap_count = int((canonical_governance_incident_gap_row or {}).get('c') or 0)
+        except Exception:
+            canonical_governance_incident_gap_count = 0
         proof_chain_missing_reason_codes: list[str] = []
         if raw_open_alerts_count > chain_open_alerts_count:
             proof_chain_missing_reason_codes.append('alerts_without_canonical_detection_event')
         if raw_open_incidents_count > chain_open_incidents_count:
             proof_chain_missing_reason_codes.append('incidents_without_proof_chain_alert')
+        if canonical_incident_timeline_gap_count > 0:
+            proof_chain_missing_reason_codes.append('incidents_without_timeline_linkage')
+        if canonical_governance_alert_gap_count > 0:
+            proof_chain_missing_reason_codes.append('governance_actions_without_alert_linkage')
+        if canonical_governance_incident_gap_count > 0:
+            proof_chain_missing_reason_codes.append('governance_actions_without_incident_linkage')
         if chain_open_alerts_count > 0 and linked_detection_timestamp_reported and latest_detection_at is None:
             proof_chain_missing_reason_codes.append('missing_linked_detection_timestamp')
         proof_chain_status = 'incomplete' if proof_chain_missing_reason_codes else 'complete'
