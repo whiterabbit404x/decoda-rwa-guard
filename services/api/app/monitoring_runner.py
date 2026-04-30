@@ -6569,6 +6569,29 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 reporting_systems,
                 final_status_reason or ','.join(downgrade_reason_tokens) or 'unknown',
             )
+        legacy_diagnostics = {
+            'legacy_last_telemetry_at': canonical_last_telemetry_at.isoformat() if canonical_last_telemetry_at else None,
+            'legacy_last_coverage_telemetry_at': last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None,
+            'legacy_reporting_systems': int(reporting_systems),
+            'legacy_telemetry_kind': (
+                telemetry_kind
+                if telemetry_kind is not None
+                else (
+                    'coverage'
+                    if evidence_source == 'live' and last_coverage_telemetry_at is not None
+                    else ('detection' if canonical_last_detection_at is not None else None)
+                )
+            ),
+            'runtime_status': runtime_status_summary,
+            'reporting_systems': int(reporting_systems),
+            'freshness_status': summary_freshness_status,
+            'confidence_status': summary_confidence_status,
+            'evidence_source': evidence_source,
+            'last_telemetry_at': canonical_last_telemetry_at.isoformat() if canonical_last_telemetry_at else None,
+            'last_detection_at': canonical_last_detection_at.isoformat() if canonical_last_detection_at else None,
+            'contradiction_flags': list(contradiction_flags),
+        }
+
         payload = {
             'workspace_id': workspace_id,
             'workspace_slug': workspace_slug,
@@ -6636,20 +6659,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'details': {
                 'compatibility': {
                     'legacy_receipts_reporting_systems': int(receipts_reporting_systems),
-                    'legacy_reporting_systems': len(
-                        [
-                            row
-                            for row in enabled_rows
-                            if (
-                                str((coverage_by_target.get(str(row.get('target_id') or '').strip()) or {}).get('coverage_status') or '').strip().lower() == 'reporting'
-                                and _parse_ts((coverage_by_target.get(str(row.get('target_id') or '').strip()) or {}).get('last_telemetry_at')) is not None
-                                and int((now - _parse_ts((coverage_by_target.get(str(row.get('target_id') or '').strip()) or {}).get('last_telemetry_at'))).total_seconds()) <= telemetry_window_seconds
-                            )
-                        ]
-                    ),
-                    'legacy_last_telemetry_at': legacy_last_telemetry_at.isoformat() if legacy_last_telemetry_at else None,
-                    'legacy_last_coverage_telemetry_at': legacy_last_coverage_telemetry_at.isoformat() if legacy_last_coverage_telemetry_at else None,
-                    'legacy_telemetry_kind': legacy_telemetry_kind,
+                    'legacy_reporting_systems': legacy_diagnostics['legacy_reporting_systems'],
+                    'legacy_last_telemetry_at': legacy_diagnostics['legacy_last_telemetry_at'],
+                    'legacy_last_coverage_telemetry_at': legacy_diagnostics['legacy_last_coverage_telemetry_at'],
+                    'legacy_telemetry_kind': legacy_diagnostics['legacy_telemetry_kind'],
                     'legacy_monitored_systems_last_heartbeat_max': last_system_heartbeat.isoformat() if last_system_heartbeat else None,
                     'legacy_open_alerts_without_detection_evidence': int(legacy_open_alerts_without_evidence_count),
                     'legacy_proof_chain_gaps_count': int(legacy_proof_chain_gaps_count),
@@ -6657,6 +6670,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     'canonical_reporting_targets_from_coverage': len(canonical_reporting_targets_from_coverage),
                 }
             },
+            'legacy_diagnostics': legacy_diagnostics,
             'provider_health': provider_health,
             'target_coverage': target_coverage,
             'workspace_configured': workspace_configured,
