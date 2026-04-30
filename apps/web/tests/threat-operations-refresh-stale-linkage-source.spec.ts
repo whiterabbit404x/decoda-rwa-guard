@@ -9,7 +9,8 @@ function appSource(fileName: string): string {
 test('snapshot refresh keeps canonical endpoints plus linked collections in parallel', () => {
   const threat = appSource('threat-operations-panel.tsx');
 
-  expect(threat).toContain("fetch(`${apiUrl}/ops/monitoring/runtime-status`");
+  expect(threat).not.toContain("fetch(`${apiUrl}/ops/monitoring/runtime-status`");
+  expect(threat).toContain('fetchRuntimeStatusDeduped(authHeaders(), { forceRefresh: true })');
   expect(threat).toContain("fetch(`${apiUrl}/ops/monitoring/investigation-timeline`");
   expect(threat).toContain("fetch(`${apiUrl}/detections?limit=50`");
   expect(threat).toContain("fetch(`${apiUrl}/alerts?limit=50`");
@@ -21,6 +22,9 @@ test('snapshot refresh keeps canonical endpoints plus linked collections in para
   expect(threat).toContain('const timelineAlertId = investigationTimelinePayload?.chain_linked_ids?.alert_id;');
   expect(threat).toContain('fetch(`${apiUrl}/alerts/${encodeURIComponent(String(timelineAlertId))}/evidence?limit=50`');
   expect(threat).toContain('canonical_collections');
+  expect(threat).toContain('const timelineItems = Array.isArray(investigationTimeline?.items) ? investigationTimeline.items : [];');
+  expect(threat).toContain("const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? '').toLowerCase();");
+  expect(threat).not.toContain('investigationTimeline?.runtime_status');
 });
 
 test('refresh no longer clears collections and marks stale data on partial failures', () => {
