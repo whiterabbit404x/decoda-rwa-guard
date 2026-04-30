@@ -214,8 +214,8 @@ def test_ops_runtime_status_canonical_contract_includes_provider_and_target_cove
             'evidence_source': 'live',
             'status_reason': 'healthy_live_coverage',
             'contradiction_flags': [],
-            'provider_health': 'healthy',
-            'target_coverage': 'reporting',
+            'provider_health': [{'provider_name': 'rpc', 'status': 'healthy'}],
+            'target_coverage': [{'target_id': 'target-1', 'coverage_status': 'reporting'}],
         }
     )
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
@@ -244,15 +244,21 @@ def test_ops_runtime_status_canonical_contract_includes_provider_and_target_cove
             'summary_generated_at',
             'provider_health',
             'target_coverage',
+            'provider_health_records',
+            'target_coverage_records',
+            'provider_health_status',
+            'target_coverage_status',
         ]
     )
-    assert body['provider_health'] == 'healthy'
-    assert body['target_coverage'] == 'reporting'
+    assert body['provider_health'] == [{'provider_name': 'rpc', 'status': 'healthy'}]
+    assert body['target_coverage'] == [{'target_id': 'target-1', 'coverage_status': 'reporting'}]
+    assert body['provider_health_status'] == 'unknown'
+    assert body['target_coverage_status'] == 'unknown'
 
 
 def test_ops_runtime_status_production_ignores_legacy_field_flag(monkeypatch):
     payload = _base_payload('healthy', True, [])
-    payload.update({'provider_health': 'degraded', 'target_coverage': 'none'})
+    payload.update({'provider_health': [{'provider_name': 'rpc', 'status': 'degraded'}], 'target_coverage': [{'target_id': 'target-1', 'coverage_status': 'none'}], 'provider_health_status': 'degraded', 'target_coverage_status': 'none'})
     monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
     monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: payload)
     monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
@@ -262,5 +268,7 @@ def test_ops_runtime_status_production_ignores_legacy_field_flag(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert 'canonical_monitoring_runtime' not in body
-    assert body['provider_health'] == 'degraded'
-    assert body['target_coverage'] == 'none'
+    assert body['provider_health'] == [{'provider_name': 'rpc', 'status': 'degraded'}]
+    assert body['target_coverage'] == [{'target_id': 'target-1', 'coverage_status': 'none'}]
+    assert body['provider_health_status'] == 'degraded'
+    assert body['target_coverage_status'] == 'none'

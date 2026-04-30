@@ -228,6 +228,8 @@ _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS = [
     'target_coverage',
     'provider_health_records',
     'target_coverage_records',
+    'provider_health_status',
+    'target_coverage_status',
 ]
 
 
@@ -294,6 +296,7 @@ def test_runtime_status_behavioral_contract_and_single_source_timestamp_updates(
     assert telemetry_body['last_telemetry_at'] == '2026-04-29T12:03:00Z'
     assert telemetry_body['reporting_systems'] == 1
     assert telemetry_body['target_coverage'] == 'reporting'
+    assert telemetry_body['target_coverage_status'] == 'reporting'
 
     detection_only = _canonical_runtime_payload(last_detection_at='2026-04-29T12:04:00Z')
     monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(detection_only))
@@ -317,8 +320,10 @@ def test_runtime_status_ignores_legacy_demo_fallback_for_live_claims_and_uses_pe
     payload = _canonical_runtime_payload(
         runtime_status='degraded',
         evidence_source='none',
-        provider_health='degraded',
-        target_coverage='none',
+        provider_health=[{'provider_name': 'rpc', 'status': 'degraded', 'observed_at': '2026-04-29T12:05:00Z'}],
+        target_coverage=[{'target_id': 'target-1', 'coverage_status': 'none', 'evidence_source': 'none', 'observed_at': '2026-04-29T12:05:00Z'}],
+        provider_health_status='degraded',
+        target_coverage_status='none',
         status_reason='runtime_status_degraded:legacy_demo_rows_ignored',
         contradiction_flags=['legacy_timeline_rows_present'],
         provider_health_records=persisted_provider_records,
@@ -333,8 +338,10 @@ def test_runtime_status_ignores_legacy_demo_fallback_for_live_claims_and_uses_pe
     assert body['evidence_source'] != 'live'
     assert body['provider_health_records'] == persisted_provider_records
     assert body['target_coverage_records'] == persisted_coverage_records
-    assert body['provider_health'] == 'degraded'
-    assert body['target_coverage'] == 'none'
+    assert body['provider_health'] == [{'provider_name': 'rpc', 'status': 'degraded', 'observed_at': '2026-04-29T12:05:00Z'}]
+    assert body['target_coverage'] == [{'target_id': 'target-1', 'coverage_status': 'none', 'evidence_source': 'none', 'observed_at': '2026-04-29T12:05:00Z'}]
+    assert body['provider_health_status'] == 'degraded'
+    assert body['target_coverage_status'] == 'none'
 
 
 def test_impossible_reporting_coverage_without_telemetry_is_detectable() -> None:
