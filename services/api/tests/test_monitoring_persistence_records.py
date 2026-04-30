@@ -300,6 +300,19 @@ _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS = [
     'target_coverage_status',
 ]
 
+_RUNTIME_STATUS_STABLE_CANONICAL_FIELDS = [
+    'runtime_status',
+    'configured_systems',
+    'reporting_systems',
+    'last_poll_at',
+    'last_heartbeat_at',
+    'last_telemetry_at',
+    'last_detection_at',
+    'evidence_source',
+    'confidence_status',
+    'contradiction_flags',
+]
+
 
 def _canonical_runtime_payload(**overrides):
     payload = {
@@ -394,6 +407,8 @@ def test_runtime_status_production_like_returns_canonical_keys_only_and_omits_le
     assert 'background_loop_health' not in body
     assert 'loop_running' not in body
     assert 'failed_checks' not in body
+    for field in _RUNTIME_STATUS_STABLE_CANONICAL_FIELDS:
+        assert body[field] == payload[field]
 
 
 def test_runtime_status_non_production_like_with_legacy_flag_includes_legacy_fields_and_preserves_canonical(monkeypatch):
@@ -429,6 +444,10 @@ def test_runtime_status_non_production_like_with_legacy_flag_includes_legacy_fie
     assert body['runtime_status'] == 'offline'
     assert body['canonical_monitoring_runtime']['reporting_systems'] == 9
     assert body['reporting_systems'] == 9
+    for field in _RUNTIME_STATUS_STABLE_CANONICAL_FIELDS:
+        assert field in body
+        assert field in body['canonical_monitoring_runtime']
+        assert body[field] == body['canonical_monitoring_runtime'][field]
 
 
 def test_runtime_status_reporting_systems_zero_with_only_heartbeat(monkeypatch):
