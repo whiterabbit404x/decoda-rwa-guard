@@ -149,9 +149,19 @@ ENTERPRISE_READY_VALIDATED_LIVE_PATHS: set[str] = {'safe', 'governance', 'manual
 def is_canonical_runtime_truth_enabled() -> bool:
     """Whether monitoring runtime status should derive truth fields from canonical sources only."""
     raw = os.getenv('CANONICAL_RUNTIME_TRUTH_ENABLED')
-    if raw is not None:
-        return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
-    return bool(live_mode_enabled())
+    if raw is None:
+        return True
+
+    runtime_live_or_production = bool(live_mode_enabled()) or not _runtime_status_debug_enabled()
+    if runtime_live_or_production:
+        return True
+
+    normalized = raw.strip().lower()
+    if normalized in {'0', 'false', 'no', 'off'}:
+        return False
+    if normalized in {'1', 'true', 'yes', 'on'}:
+        return True
+    return True
 
 
 def _evaluate_enterprise_ready_gate(
