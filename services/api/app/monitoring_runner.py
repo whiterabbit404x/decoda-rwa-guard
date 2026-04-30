@@ -6003,8 +6003,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             for row in (canonical_reporting_coverage_rows or [])
             if str((row or {}).get('target_id') or '').strip()
         }
-        canonical_reporting_targets = canonical_reporting_targets_from_events | canonical_reporting_targets_from_coverage
-        reporting_systems = int(len(canonical_reporting_targets))
+        canonical_reporting_target_ids = canonical_reporting_targets_from_events | canonical_reporting_targets_from_coverage
+        reporting_systems = int(len(canonical_reporting_target_ids))
         coverage_heartbeat_count = int(reporting_systems)
         real_event_count = int(recent_real_event_count)
         raw_recent_evidence_state = (
@@ -6572,7 +6572,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         legacy_diagnostics = {
             'legacy_last_telemetry_at': canonical_last_telemetry_at.isoformat() if canonical_last_telemetry_at else None,
             'legacy_last_coverage_telemetry_at': last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None,
-            'legacy_reporting_systems': int(reporting_systems),
+            'legacy_reporting_systems': int(receipts_reporting_systems),
             'legacy_telemetry_kind': (
                 telemetry_kind
                 if telemetry_kind is not None
