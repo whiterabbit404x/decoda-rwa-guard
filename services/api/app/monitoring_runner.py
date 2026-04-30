@@ -5900,18 +5900,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             (workspace_id,),
         ).fetchone()
         canonical_last_heartbeat_at = _parse_ts((canonical_last_heartbeat_row or {}).get('ts') if isinstance(canonical_last_heartbeat_row, dict) else None)
+        canonical_last_telemetry_source = 'telemetry_events.observed_at'
         canonical_last_telemetry_row = connection.execute(
             '''
-            SELECT MAX(created_at) AS ts
+            SELECT MAX(observed_at) AS ts
             FROM telemetry_events
             WHERE workspace_id = %s::uuid
             ''',
             (workspace_id,),
         ).fetchone()
         canonical_last_telemetry_at = _parse_ts((canonical_last_telemetry_row or {}).get('ts') if isinstance(canonical_last_telemetry_row, dict) else None)
+        canonical_last_detection_source = 'detection_events.detected_at'
         canonical_last_detection_row = connection.execute(
             '''
-            SELECT MAX(created_at) AS ts
+            SELECT MAX(detected_at) AS ts
             FROM detection_events
             WHERE workspace_id = %s::uuid
             ''',
@@ -6565,6 +6567,17 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if 'coverage_only_persistent_no_evidence' not in continuity_reason_codes:
                 continuity_reason_codes.append('coverage_only_persistent_no_evidence')
             summary['continuity_reason_codes'] = continuity_reason_codes
+        runtime_last_telemetry_at = canonical_last_telemetry_at if canonical_runtime_truth_enabled else (canonical_last_telemetry_at or legacy_last_telemetry_at)
+        runtime_last_detection_at = canonical_last_detection_at if canonical_runtime_truth_enabled else (canonical_last_detection_at or latest_detection_at)
+        runtime_last_telemetry_source = canonical_last_telemetry_source if runtime_last_telemetry_at is not None else None
+        runtime_last_detection_source = canonical_last_detection_source if runtime_last_detection_at is not None else None
+        canonical_guard_noncanonical_timestamp = bool(
+            canonical_runtime_truth_enabled
+            and (
+                (runtime_last_telemetry_at is not None and runtime_last_telemetry_at != canonical_last_telemetry_at)
+                or (runtime_last_detection_at is not None and runtime_last_detection_at != canonical_last_detection_at)
+            )
+        )
         contradiction_conditions = (
             ('offline_with_live_telemetry_recently', runtime_status_summary == 'offline' and evidence_source == 'live' and coverage_fresh),
             ('reporting_systems_zero_with_healthy', runtime_status_summary == 'healthy' and reporting_systems <= 0),
@@ -6579,6 +6592,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ('response_action_without_incident', response_actions_without_incident_count > 0),
         )
         runtime_contradiction_flags = [flag for flag, condition in contradiction_conditions if condition]
+        if canonical_guard_noncanonical_timestamp:
+            runtime_contradiction_flags.append('canonical_guard_noncanonical_timestamp')
         contradiction_flags = sorted(set(runtime_contradiction_flags))
         summary['contradiction_flags'] = contradiction_flags
         impossible_state_detected = any(
@@ -6599,6 +6614,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             summary['runtime_status'] = 'fail'
             summary['monitoring_status'] = 'offline'
             runtime_status_reason = runtime_status_reason or 'impossible_contradiction_state'
+            summary['status_reason'] = runtime_status_reason
+        if canonical_guard_noncanonical_timestamp:
+            runtime_status_summary = 'degraded'
+            runtime_status = 'Degraded'
+            monitoring_status = 'limited'
+            summary['runtime_status'] = 'degraded'
+            summary['monitoring_status'] = 'limited'
+            runtime_status_reason = runtime_status_reason or 'canonical_guard_noncanonical_timestamp'
             summary['status_reason'] = runtime_status_reason
         summary_freshness_status = str(summary.get('telemetry_freshness') or '').strip().lower()
         summary_confidence_status = str(summary.get('confidence') or '').strip().lower()
@@ -6655,9 +6678,6 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 reporting_systems,
                 final_status_reason or ','.join(downgrade_reason_tokens) or 'unknown',
             )
-        runtime_last_telemetry_at = canonical_last_telemetry_at if canonical_runtime_truth_enabled else (canonical_last_telemetry_at or legacy_last_telemetry_at)
-        runtime_last_detection_at = canonical_last_detection_at if canonical_runtime_truth_enabled else (canonical_last_detection_at or latest_detection_at)
-
         legacy_diagnostics = {
             'legacy_last_telemetry_at': canonical_last_telemetry_at.isoformat() if canonical_last_telemetry_at else None,
             'legacy_last_coverage_telemetry_at': last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None,
@@ -6678,6 +6698,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'evidence_source': evidence_source,
             'last_telemetry_at': runtime_last_telemetry_at.isoformat() if runtime_last_telemetry_at else None,
             'last_detection_at': runtime_last_detection_at.isoformat() if runtime_last_detection_at else None,
+            'last_telemetry_source': runtime_last_telemetry_source,
+            'last_detection_source': runtime_last_detection_source,
             'contradiction_flags': list(contradiction_flags),
         }
 
@@ -6776,6 +6798,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'last_poll_at': last_poll_at.isoformat() if last_poll_at else None,
             'last_heartbeat_at': canonical_last_heartbeat_at.isoformat() if canonical_last_heartbeat_at else None,
             'last_telemetry_at': runtime_last_telemetry_at.isoformat() if runtime_last_telemetry_at else None,
+            'last_telemetry_source': runtime_last_telemetry_source,
             'last_coverage_telemetry_at': last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None,
             'coverage_receipts_last_at': live_coverage_receipts_workspace_latest.isoformat() if live_coverage_receipts_workspace_latest else None,
             'coverage_receipts_workspace_count': int(live_coverage_receipts_persisted_count),
@@ -6783,6 +6806,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'provider_degraded_flag': provider_degraded_or_unreachable,
             'telemetry_kind': telemetry_kind,
             'last_detection_at': runtime_last_detection_at.isoformat() if runtime_last_detection_at else None,
+            'last_detection_source': runtime_last_detection_source,
             'proof_chain_status': proof_chain_status,
             'proof_chain_correlation_id': proof_chain_correlation_id,
             'contradiction_flags': list(summary.get('contradiction_flags') or []),
@@ -6836,7 +6860,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         payload['last_poll_at'] = last_poll_at.isoformat() if last_poll_at else None
         payload['last_heartbeat_at'] = canonical_last_heartbeat_at.isoformat() if canonical_last_heartbeat_at else None
         payload['last_telemetry_at'] = runtime_last_telemetry_at.isoformat() if runtime_last_telemetry_at else None
+        payload['last_telemetry_source'] = runtime_last_telemetry_source
         payload['last_detection_at'] = runtime_last_detection_at.isoformat() if runtime_last_detection_at else None
+        payload['last_detection_source'] = runtime_last_detection_source
         if isinstance(payload.get('workspace_monitoring_summary'), dict):
             payload['workspace_monitoring_summary']['background_loop_health'] = dict(background_loop_health)
         logger.info(
