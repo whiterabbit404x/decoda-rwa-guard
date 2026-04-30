@@ -299,12 +299,19 @@ def _resolve_target_coverage_state(
 ) -> tuple[str, datetime | None, str, dict[str, Any]]:
     last_telemetry_at = _parse_ts((telemetry_row or {}).get('observed_at')) if isinstance(telemetry_row, dict) else None
     telemetry_event_id = str((telemetry_row or {}).get('id') or '').strip() if isinstance(telemetry_row, dict) else ''
+    telemetry_event_source = str((telemetry_row or {}).get('evidence_source') or '').strip().lower() if isinstance(telemetry_row, dict) else ''
     has_real_telemetry = bool(last_telemetry_at and telemetry_event_id)
     if has_real_telemetry:
         coverage_status = 'reporting'
-        evidence_source = provider_evidence_source
+        evidence_source = telemetry_event_source if telemetry_event_source in {'live', 'simulator', 'replay'} else provider_evidence_source
     else:
-        coverage_status = 'stale' if provider_status in {'live', 'no_evidence', 'degraded'} else 'unavailable'
+        last_telemetry_at = None
+        if provider_status == 'no_evidence':
+            coverage_status = 'silent'
+        elif provider_status in {'live', 'degraded'}:
+            coverage_status = 'stale'
+        else:
+            coverage_status = 'unavailable'
         evidence_source = 'none'
     metadata: dict[str, Any] = {
         'provider_status': provider_status,
@@ -2927,7 +2934,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
     logger.info('checked target %s %s status=%s runs=%s alerts=%s incidents=%s', target['id'], target.get('name') or 'unknown', last_status, len(run_ids), alerts_generated, incidents_created)
     latest_telemetry_row = connection.execute(
         '''
-        SELECT id, observed_at
+        SELECT id, observed_at, evidence_source
         FROM telemetry_events
         WHERE workspace_id = %s::uuid AND target_id = %s::uuid
         ORDER BY observed_at DESC, ingested_at DESC, id DESC
