@@ -2124,6 +2124,14 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         emit_legacy_fields = str(os.getenv('MONITORING_RUNTIME_LEGACY_FIELDS', '')).strip().lower() in {'1', 'true', 'yes', 'on'}
         provider_health = payload.get('provider_health')
         target_coverage = payload.get('target_coverage')
+        provider_health_status = payload.get('provider_health_status')
+        target_coverage_status = payload.get('target_coverage_status')
+        if isinstance(provider_health, (str, int, float, bool)) and provider_health_status is None:
+            provider_health_status = str(provider_health)
+            provider_health = []
+        if isinstance(target_coverage, (str, int, float, bool)) and target_coverage_status is None:
+            target_coverage_status = str(target_coverage)
+            target_coverage = []
         canonical_runtime = {
             'workspace_configured': bool(payload.get('workspace_configured')),
             'runtime_status': str(payload.get('runtime_status') or 'offline'),
@@ -2144,8 +2152,8 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'target_coverage': target_coverage if target_coverage is not None else [],
             'provider_health_records': list(payload.get('provider_health_records') or []),
             'target_coverage_records': list(payload.get('target_coverage_records') or []),
-            'provider_health_status': str(payload.get('provider_health_status') or provider_health) if isinstance(provider_health, (str, int, float, bool)) else str(payload.get('provider_health_status') or 'unknown'),
-            'target_coverage_status': str(payload.get('target_coverage_status') or target_coverage) if isinstance(target_coverage, (str, int, float, bool)) else str(payload.get('target_coverage_status') or 'unknown'),
+            'provider_health_status': str(provider_health_status or 'unknown'),
+            'target_coverage_status': str(target_coverage_status or 'unknown'),
         }
         if _is_production_like_runtime():
             emit_legacy_fields = False
