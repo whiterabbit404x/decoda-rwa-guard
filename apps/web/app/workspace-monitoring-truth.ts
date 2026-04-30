@@ -115,6 +115,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   const lastCoverageTelemetryAt = asTimestamp((summary as Record<string, unknown>).last_coverage_telemetry_at);
   const telemetryKind = null;
   const lastTelemetryAt = asTimestamp(summary.last_telemetry_at);
+  const lastDetectionAt = asTimestamp(summary.last_detection_at);
   const reportingSystemsCount = asCount(summary.reporting_systems_count ?? (summary as Record<string, unknown>).reporting_systems);
   const monitoredSystemsCount = asCount(summary.monitored_systems_count ?? (summary as Record<string, unknown>).configured_systems);
   const protectedAssetsCount = asCount(summary.protected_assets_count ?? (summary as Record<string, unknown>).protected_assets);
@@ -237,7 +238,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     last_telemetry_at: lastTelemetryAt,
     last_coverage_telemetry_at: lastCoverageTelemetryAt,
     telemetry_kind: telemetryKind,
-    last_detection_at: null,
+    last_detection_at: lastDetectionAt,
     active_alerts_count: Number(summary.active_alerts_count ?? 0),
     active_incidents_count: Number(summary.active_incidents_count ?? 0),
     evidence_source_summary: normalizedEvidenceSource,

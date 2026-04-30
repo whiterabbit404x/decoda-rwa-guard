@@ -82,4 +82,27 @@ test.describe('monitoring runtime-status source contracts', () => {
     expect(panel).toContain("['simulator', 'synthetic', 'demo', 'fallback', 'test', 'lab', 'replay']");
     expect(contract).toContain("evidence_source_summary: 'live' | 'simulator' | 'replay' | 'none'");
   });
+
+  test('monitoring overview summary cards read summary truth only', async () => {
+    const overview = fs.readFileSync(path.join(__dirname, '..', 'app', 'monitoring-overview-panel.tsx'), 'utf8');
+
+    expect(overview).toContain('const contradictionFlags = truth.contradiction_flags ?? [];');
+    expect(overview).toContain("const evidenceSource = String(truth.evidence_source_summary ?? 'none').toLowerCase();");
+    expect(overview).toContain("const runtimeReason = truth.status_reason ?? 'Not reported';");
+    expect(overview).toContain('const lastDetection = truth.last_detection_at;');
+
+    expect(overview).not.toContain('runtime?.evidence_source');
+    expect(overview).not.toContain('runtime?.status_reason');
+    expect(overview).not.toContain('runtime?.last_detection_at');
+    expect(overview).not.toContain('runtime?.contradiction_flags');
+  });
+
+  test('dashboard summary counts for alerts/incidents bind to runtime summary truth', async () => {
+    const dashboardData = fs.readFileSync(path.join(__dirname, '..', 'app', 'dashboard-data.ts'), 'utf8');
+
+    expect(dashboardData).toContain('const openAlerts = monitoringTruth.active_alerts_count;');
+    expect(dashboardData).toContain('const openIncidents = monitoringTruth.active_incidents_count;');
+    expect(dashboardData).not.toContain('riskDashboard.summary.high_alert_count + threatDashboard.summary.critical_or_high_alerts');
+    expect(dashboardData).not.toContain('resilienceDashboard.summary.incident_count');
+  });
 });

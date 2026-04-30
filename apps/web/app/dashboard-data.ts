@@ -1863,8 +1863,8 @@ export function buildDashboardViewModel(
     complianceDashboard: diagnostics.endpoints.complianceDashboard.presentationState,
     resilienceDashboard: diagnostics.endpoints.resilienceDashboard.presentationState,
   } as const;
-  const openAlerts = riskDashboard.summary.high_alert_count + threatDashboard.summary.critical_or_high_alerts;
-  const openIncidents = resilienceDashboard.summary.incident_count;
+  const openAlerts = monitoringTruth.active_alerts_count;
+  const openIncidents = monitoringTruth.active_incidents_count;
   const monitoringPresentationState = mapMonitoringStatusToDashboardPresentation(monitoringPresentation.status);
   const workspaceMonitoring = {
     presentationState: monitoringPresentationState,
@@ -1912,7 +1912,7 @@ export function buildDashboardViewModel(
     {
       label: 'Resilience status',
       value: `${resilienceDashboard.summary.reconciliation_status}/${resilienceDashboard.summary.backstop_decision}`,
-      meta: `${resilienceDashboard.summary.incident_count} incidents tracked · ${formatSourceLabel(diagnostics.endpoints.resilienceDashboard.payloadState)}`
+      meta: `${monitoringTruth.active_incidents_count} incidents tracked · ${formatSourceLabel(diagnostics.endpoints.resilienceDashboard.payloadState)}`
     }
   ];
   const backendBanner = monitoringPresentation.summary;
