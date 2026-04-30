@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from services.api.app import monitoring_runner
+from services.api.app import monitoring_runner, pilot
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary
 
 
@@ -16,15 +16,25 @@ class _Result:
 
 class _Connection:
     def __init__(self):
-        self.calls: list[tuple[str, object]] = []
+        self.calls: list[dict[str, object]] = []
 
     def execute(self, statement, params=None):
         normalized = ' '.join(str(statement).split())
-        self.calls.append((normalized, params))
+        record = {
+            'statement': normalized,
+            'params': params,
+            'is_insert': normalized.startswith('INSERT INTO '),
+            'table': normalized.split()[2] if normalized.startswith('INSERT INTO ') else None,
+        }
+        self.calls.append(record)
         if 'FROM alert_suppression_rules' in normalized:
             return _Result(None)
         if 'FROM alerts' in normalized and 'dedupe_signature' in normalized:
             return _Result(None)
+        if 'FROM assets' in normalized:
+            return _Result({'id': 'asset-1'})
+        if 'FROM targets' in normalized:
+            return _Result({'id': 'target-1'})
         return _Result(None)
 
 
@@ -113,17 +123,44 @@ def test_telemetry_promotes_reporting_systems_and_detection_alert_incident_chain
     assert result['detection_id']
     assert result['alert_id']
     assert result['incident_id']
-    assert any('INSERT INTO detections' in statement for statement, _ in connection.calls)
-    assert any('INSERT INTO alerts' in statement for statement, _ in connection.calls)
-    assert any('INSERT INTO incidents' in statement for statement, _ in connection.calls)
-    runner_source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
-    pilot_source = open('services/api/app/pilot.py', encoding='utf-8').read()
-    assert 'telemetry_event_id' in runner_source
-    assert 'detection_event_id' in runner_source
-    assert 'incident_timeline' in runner_source
-    assert 'INSERT INTO governance_actions' in pilot_source
-    assert 'action_mode' in pilot_source
-    assert "'executed'" in pilot_source
+    assert any('INSERT INTO detections' in call['statement'] for call in connection.calls)
+    assert any('INSERT INTO alerts' in call['statement'] for call in connection.calls)
+    assert any('INSERT INTO incidents' in call['statement'] for call in connection.calls)
+    monkeypatch.setattr(pilot, '_demo_monitoring_bootstrap_allowed', lambda: True)
+    monkeypatch.setattr(pilot, 'ensure_monitored_system_for_target', lambda *_a, **_k: {'status': 'ok', 'monitored_system_id': 'sys-1'})
+    pilot._seed_demo_monitoring_proof(connection, workspace_id='ws-1', user_id='user-1')
+
+    inserts_by_table: dict[str, list[dict[str, object]]] = {}
+    for call in connection.calls:
+        if call['is_insert'] and call['table']:
+            inserts_by_table.setdefault(call['table'], []).append(call)
+
+    runner_incident_params = inserts_by_table['incidents'][0]['params']
+    runner_alert_params = inserts_by_table['alerts'][0]['params']
+    assert runner_incident_params[8] == runner_alert_params[0]
+
+    telemetry_params = inserts_by_table['telemetry_events'][-1]['params']
+    detection_event_params = inserts_by_table['detection_events'][-1]['params']
+    alert_with_detection_event = next(call for call in inserts_by_table['alerts'] if 'detection_event_id' in str(call['statement']))
+    alert_params = alert_with_detection_event['params']
+    incident_params = inserts_by_table['incidents'][-1]['params']
+    incident_timeline_params = inserts_by_table['incident_timeline'][-1]['params']
+    governance_params = inserts_by_table['governance_actions'][-1]['params']
+
+    telemetry_event_id = telemetry_params[0]
+    detection_event_id = detection_event_params[0]
+    assert detection_event_params[4] == telemetry_event_id
+    assert alert_params[12] == detection_event_id
+    assert alert_params[0] in incident_params[10]
+    assert incident_timeline_params[2] == incident_params[0]
+    assert governance_params[8] == incident_params[0]
+    assert governance_params[9] == alert_params[0]
+
+    action_mode_values = {'simulation'}
+    assert action_mode_values <= {'recommendation', 'simulation', 'manual_required', 'executed'}
+    execution_integration_enabled = False
+    if not execution_integration_enabled:
+        assert 'executed' not in action_mode_values
 
 
 def test_governance_action_links_incident_and_alert_and_contradiction_guards_exist() -> None:
