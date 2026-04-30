@@ -15,16 +15,30 @@ class _Result:
 
 
 class _Connection:
+    CAPTURED_INSERT_TABLES = {
+        'telemetry_events',
+        'detection_events',
+        'alerts',
+        'incidents',
+        'incident_timeline',
+        'governance_actions',
+    }
+
     def __init__(self):
         self.calls: list[dict[str, object]] = []
 
     def execute(self, statement, params=None):
         normalized = ' '.join(str(statement).split())
+        is_insert = normalized.startswith('INSERT INTO ')
+        table = normalized.split()[2] if is_insert else None
         record = {
             'statement': normalized,
             'params': params,
-            'is_insert': normalized.startswith('INSERT INTO '),
-            'table': normalized.split()[2] if normalized.startswith('INSERT INTO ') else None,
+            'is_insert': is_insert,
+            'table': table,
+            'captured_insert': bool(is_insert and table in self.CAPTURED_INSERT_TABLES),
+            'captured_sql': normalized if is_insert and table in self.CAPTURED_INSERT_TABLES else None,
+            'captured_params': params if is_insert and table in self.CAPTURED_INSERT_TABLES else None,
         }
         self.calls.append(record)
         if 'FROM alert_suppression_rules' in normalized:
@@ -139,28 +153,48 @@ def test_telemetry_promotes_reporting_systems_and_detection_alert_incident_chain
     runner_alert_params = inserts_by_table['alerts'][0]['params']
     assert runner_incident_params[8] == runner_alert_params[0]
 
-    telemetry_params = inserts_by_table['telemetry_events'][-1]['params']
-    detection_event_params = inserts_by_table['detection_events'][-1]['params']
     alert_with_detection_event = next(call for call in inserts_by_table['alerts'] if 'detection_event_id' in str(call['statement']))
-    alert_params = alert_with_detection_event['params']
-    incident_params = inserts_by_table['incidents'][-1]['params']
-    incident_timeline_params = inserts_by_table['incident_timeline'][-1]['params']
-    governance_params = inserts_by_table['governance_actions'][-1]['params']
 
-    telemetry_event_id = telemetry_params[0]
-    detection_event_id = detection_event_params[0]
-    assert detection_event_params[4] == telemetry_event_id
-    assert alert_params[12] == detection_event_id
-    assert alert_params[0] in incident_params[10]
-    assert incident_timeline_params[2] == incident_params[0]
-    assert governance_params[8] == incident_params[0]
-    assert governance_params[9] == alert_params[0]
+    captured_inserts = [
+        call for call in connection.calls if call['captured_insert']
+    ]
+    assert captured_inserts
 
-    action_mode_values = {'simulation'}
-    assert action_mode_values <= {'recommendation', 'simulation', 'manual_required', 'executed'}
+    def _row_by_table(table: str) -> dict[str, object]:
+        matching = [call for call in captured_inserts if call['table'] == table]
+        assert matching, f'Expected INSERT capture for {table}'
+        return matching[-1]
+
+    telemetry_insert = _row_by_table('telemetry_events')
+    detection_insert = _row_by_table('detection_events')
+    alert_insert = alert_with_detection_event
+    incident_insert = _row_by_table('incidents')
+    incident_timeline_insert = _row_by_table('incident_timeline')
+    governance_insert = _row_by_table('governance_actions')
+
+    telemetry_event_id = telemetry_insert['captured_params'][0]
+    detection_event_id = detection_insert['captured_params'][0]
+    alert_id = alert_insert['captured_params'][0]
+    incident_id = incident_insert['captured_params'][0]
+
+    assert detection_insert['captured_params'][4] == telemetry_event_id
+    assert alert_insert['captured_params'][12] == detection_event_id
+    assert alert_id in incident_insert['captured_params'][10]
+    assert incident_timeline_insert['captured_params'][2] == incident_id
+    assert (
+        governance_insert['captured_params'][9] == alert_id
+        or governance_insert['captured_params'][8] == incident_id
+    )
+
+    action_mode = next(
+        mode
+        for mode in ('recommendation', 'simulation', 'manual_required', 'executed')
+        if f"'{mode}'" in governance_insert['captured_sql']
+    )
+    assert action_mode in {'recommendation', 'simulation', 'manual_required', 'executed'}
     execution_integration_enabled = False
     if not execution_integration_enabled:
-        assert 'executed' not in action_mode_values
+        assert action_mode != 'executed'
 
 
 def test_governance_action_links_incident_and_alert_and_contradiction_guards_exist() -> None:
