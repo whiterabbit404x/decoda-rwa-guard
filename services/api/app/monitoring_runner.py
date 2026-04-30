@@ -6599,7 +6599,6 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             reporting_systems > 0
             and canonical_last_telemetry_at is None
             and canonical_last_detection_at is None
-            and evidence_source != 'live'
         )
         target_reporting_without_telemetry_events = bool(
             target_reporting_without_telemetry_count > 0
