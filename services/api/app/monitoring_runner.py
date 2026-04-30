@@ -5969,41 +5969,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             for row in (canonical_reporting_event_rows or [])
             if str((row or {}).get('target_id') or '').strip()
         }
-        canonical_reporting_coverage_rows = connection.execute(
-            '''
-            WITH latest_coverage AS (
-                SELECT DISTINCT ON (tcr.target_id)
-                    tcr.target_id,
-                    tcr.metadata,
-                    tcr.computed_at
-                FROM target_coverage_records tcr
-                JOIN monitored_targets mt
-                  ON mt.workspace_id = tcr.workspace_id
-                 AND mt.id = tcr.target_id
-                 AND mt.enabled = TRUE
-                WHERE tcr.workspace_id = %s::uuid
-                  AND tcr.coverage_status = 'reporting'
-                  AND tcr.last_telemetry_at IS NOT NULL
-                ORDER BY tcr.target_id, tcr.computed_at DESC
-            )
-            SELECT lc.target_id
-            FROM latest_coverage lc
-            JOIN telemetry_events te
-              ON te.workspace_id = %s::uuid
-             AND te.target_id = lc.target_id
-             AND te.id::text = (lc.metadata->'telemetry_basis'->>'event_id')
-            WHERE lc.computed_at >= %s
-              AND COALESCE(lc.metadata->'telemetry_basis'->>'kind', '') = 'telemetry_event'
-              AND COALESCE(lc.metadata->'telemetry_basis'->>'event_id', '') <> ''
-            ''',
-            (workspace_id, workspace_id, now - timedelta(seconds=telemetry_window_seconds)),
-        ).fetchall()
-        canonical_reporting_targets_from_coverage: set[str] = {
-            str((row or {}).get('target_id') or '').strip()
-            for row in (canonical_reporting_coverage_rows or [])
-            if str((row or {}).get('target_id') or '').strip()
-        }
-        canonical_reporting_target_ids = canonical_reporting_targets_from_events | canonical_reporting_targets_from_coverage
+        canonical_reporting_targets_from_coverage: set[str] = set()
+        canonical_reporting_target_ids = canonical_reporting_targets_from_events
         reporting_systems = int(len(canonical_reporting_target_ids))
         coverage_heartbeat_count = int(reporting_systems)
         real_event_count = int(recent_real_event_count)
@@ -6106,8 +6073,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             )
         )
         coverage_fresh = bool(
-            last_coverage_telemetry_at is not None
-            and int((now - last_coverage_telemetry_at).total_seconds()) <= telemetry_window_seconds
+            canonical_last_telemetry_at is not None
+            and int((now - canonical_last_telemetry_at).total_seconds()) <= telemetry_window_seconds
         )
         provider_reachable = bool(
             (claim_validator.get('checks') or {}).get('provider_reachable_or_backfilling')
@@ -6520,7 +6487,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             workspace_configured
             and evidence_source == 'live'
             and reporting_systems > 0
-            and last_coverage_telemetry_at is not None
+            and canonical_last_telemetry_at is not None
             and coverage_fresh
             and summary_freshness_status not in {'', 'unavailable'}
             and summary_confidence_status not in {'', 'unavailable'}
