@@ -89,7 +89,7 @@ test.describe('monitoring runtime-status source contracts', () => {
     expect(overview).toContain('const contradictionFlags = truth.contradiction_flags ?? [];');
     expect(overview).toContain("const evidenceSource = String(truth.evidence_source_summary ?? 'none').toLowerCase();");
     expect(overview).toContain("const runtimeReason = truth.status_reason ?? 'Not reported';");
-    expect(overview).toContain('const lastDetection = truth.last_detection_at;');
+    expect(overview).toContain('const lastDetection = truth.last_detection_at ?? null;');
 
     expect(overview).not.toContain('runtime?.evidence_source');
     expect(overview).not.toContain('runtime?.status_reason');

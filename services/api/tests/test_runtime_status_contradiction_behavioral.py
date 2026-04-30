@@ -100,3 +100,13 @@ def test_runtime_status_contradiction_guard_conditions_present_for_canonical_sou
     assert '(last_heartbeat is not None or last_poll_at is not None)' in source
     assert "runtime_last_telemetry_source != 'telemetry_events'" in source
     assert "runtime_last_detection_source != 'detection_events'" in source
+
+
+def test_runtime_status_legacy_inputs_cannot_control_canonical_runtime_truth_fields():
+    source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+    assert 'legacy_reporting_without_canonical_telemetry' in source
+    assert 'runtime_last_telemetry_source' in source
+    assert 'runtime_last_detection_source' in source
+    assert 'target_reporting_without_telemetry_event_link' in source
+    assert 'live_evidence_without_live_events' in source
+    assert 'reporting_systems_zero_with_healthy' in source

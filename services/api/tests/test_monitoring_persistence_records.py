@@ -25,10 +25,9 @@ def _seed_runtime_chain_db() -> sqlite3.Connection:
         CREATE TABLE provider_health_records (
             id TEXT PRIMARY KEY,
             workspace_id TEXT,
-            provider_name TEXT,
-            status TEXT,
             provider_type TEXT,
             target_id TEXT,
+            status TEXT,
             checked_at TEXT,
             latency_ms INTEGER,
             error_message TEXT,
@@ -45,10 +44,8 @@ def _seed_runtime_chain_db() -> sqlite3.Connection:
             last_heartbeat_at TEXT,
             last_telemetry_at TEXT,
             last_detection_at TEXT,
-            computed_at TEXT,
-            telemetry_basis TEXT,
-            telemetry_event_id TEXT,
             evidence_source TEXT,
+            computed_at TEXT,
             metadata TEXT
         );
         CREATE TABLE telemetry_events (
@@ -91,16 +88,16 @@ def test_provider_and_target_loops_write_records_with_real_inserts():
     now = datetime.now(timezone.utc).isoformat()
 
     conn.execute(
-        'INSERT INTO provider_health_records (id, provider_name, status, provider_type, checked_at, evidence_source, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        ('phr-1', 'rpc', 'live', 'rpc', now, 'live', '{}'),
+        'INSERT INTO provider_health_records (id, workspace_id, provider_type, target_id, status, checked_at, latency_ms, error_message, evidence_source, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ('phr-1', 'ws-1', 'rpc', 'target-1', 'healthy', now, 12, None, 'live', '{}'),
     )
     conn.execute(
-        'INSERT INTO target_coverage_records (id, target_id, coverage_status, last_poll_at, last_heartbeat_at, last_telemetry_at, last_detection_at, computed_at, telemetry_basis, telemetry_event_id, evidence_source, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        ('tcr-1', 'target-1', 'reporting', now, now, now, now, now, 'telemetry', 'te-1', 'live', '{}'),
+        'INSERT INTO target_coverage_records (id, workspace_id, asset_id, target_id, coverage_status, last_poll_at, last_heartbeat_at, last_telemetry_at, last_detection_at, evidence_source, computed_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ('tcr-1', 'ws-1', 'asset-1', 'target-1', 'reporting', now, now, now, now, 'live', now, '{"telemetry_basis":{"kind":"telemetry_event","event_id":"te-1"}}'),
     )
 
     provider_row = conn.execute(
-        'SELECT provider_name, status, provider_type, checked_at, evidence_source, metadata FROM provider_health_records WHERE id = ?',
+        'SELECT workspace_id, target_id, status, provider_type, checked_at, evidence_source, metadata FROM provider_health_records WHERE id = ?',
         ('phr-1',),
     ).fetchone()
     coverage_row = conn.execute(
@@ -108,8 +105,8 @@ def test_provider_and_target_loops_write_records_with_real_inserts():
         ('tcr-1',),
     ).fetchone()
 
-    assert provider_row['provider_name'] == 'rpc'
-    assert provider_row['status'] == 'live'
+    assert provider_row['workspace_id'] == 'ws-1'
+    assert provider_row['status'] == 'healthy'
     assert coverage_row['target_id'] == 'target-1'
     assert coverage_row['coverage_status'] == 'reporting'
     assert coverage_row['evidence_source'] == 'live'
@@ -121,7 +118,7 @@ def test_provider_and_target_loops_write_records_with_real_inserts():
     assert coverage_row['last_telemetry_at'] == now
     assert coverage_row['last_detection_at'] == now
     assert coverage_row['computed_at'] == now
-    assert coverage_row['metadata'] == '{}'
+    assert '"telemetry_basis"' in coverage_row['metadata']
 
 
 def test_full_fk_chain_persists_end_to_end_ids():
@@ -356,7 +353,7 @@ def test_runtime_status_behavioral_contract_and_single_source_timestamp_updates(
     telemetry_only = _canonical_runtime_payload(
         reporting_systems=1,
         last_telemetry_at='2026-04-29T12:03:00Z',
-        target_coverage=[{'target_id': 'target-1', 'coverage_status': 'reporting', 'telemetry_basis': 'telemetry', 'telemetry_event_id': 'te-3'}],
+        target_coverage=[{'target_id': 'target-1', 'coverage_status': 'reporting', 'metadata': {'telemetry_basis': {'kind': 'telemetry_event', 'event_id': 'te-3'}}}],
         target_coverage_status='reporting',
         evidence_source='live',
         freshness_status='fresh',
@@ -407,7 +404,7 @@ def test_runtime_status_reporting_stated_without_telemetry_link_keeps_reporting_
     monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
     payload = _canonical_runtime_payload(
         reporting_systems=0,
-        target_coverage=[{'target_id': 'target-1', 'coverage_status': 'reporting', 'telemetry_basis': 'telemetry', 'telemetry_event_id': None}],
+        target_coverage=[{'target_id': 'target-1', 'coverage_status': 'reporting', 'metadata': {'telemetry_basis': {'kind': 'telemetry_event', 'event_id': None}}}],
         target_coverage_status='reporting',
     )
     monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(payload))
@@ -415,7 +412,7 @@ def test_runtime_status_reporting_stated_without_telemetry_link_keeps_reporting_
     assert body['target_coverage_status'] == 'reporting'
     assert body['reporting_systems'] == 0
     assert body['target_coverage'][0]['coverage_status'] == 'reporting'
-    assert body['target_coverage'][0]['telemetry_event_id'] is None
+    assert body['target_coverage'][0]['metadata']['telemetry_basis']['event_id'] is None
 
 
 def test_runtime_status_reporting_systems_requires_telemetry_basis_and_event_link(monkeypatch):
@@ -425,15 +422,15 @@ def test_runtime_status_reporting_systems_requires_telemetry_basis_and_event_lin
     payload = _canonical_runtime_payload(
         reporting_systems=1,
         evidence_source='live',
-        target_coverage=[{'target_id': 'target-1', 'coverage_status': 'reporting', 'telemetry_basis': 'telemetry', 'telemetry_event_id': 'te-9'}],
-        target_coverage_records=[{'target_id': 'target-1', 'coverage_status': 'reporting', 'telemetry_basis': 'telemetry', 'telemetry_event_id': 'te-9'}],
+        target_coverage=[{'target_id': 'target-1', 'coverage_status': 'reporting', 'metadata': {'telemetry_basis': {'kind': 'telemetry_event', 'event_id': 'te-9'}}}],
+        target_coverage_records=[{'target_id': 'target-1', 'coverage_status': 'reporting', 'metadata': {'telemetry_basis': {'kind': 'telemetry_event', 'event_id': 'te-9'}}}],
         last_telemetry_at='2026-04-29T12:12:00Z',
     )
     monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: dict(payload))
     body = client.get('/ops/monitoring/runtime-status', headers={'x-workspace-id': 'ws-1'}).json()
     assert body['reporting_systems'] >= 1
-    assert body['target_coverage'][0]['telemetry_basis'] == 'telemetry'
-    assert body['target_coverage'][0]['telemetry_event_id'] == 'te-9'
+    assert body['target_coverage'][0]['metadata']['telemetry_basis']['kind'] == 'telemetry_event'
+    assert body['target_coverage'][0]['metadata']['telemetry_basis']['event_id'] == 'te-9'
 
 
 def test_runtime_status_canonical_event_timestamps_and_non_live_simulator_replay(monkeypatch):

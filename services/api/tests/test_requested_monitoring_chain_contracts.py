@@ -116,6 +116,14 @@ def test_telemetry_promotes_reporting_systems_and_detection_alert_incident_chain
     assert any('INSERT INTO detections' in statement for statement, _ in connection.calls)
     assert any('INSERT INTO alerts' in statement for statement, _ in connection.calls)
     assert any('INSERT INTO incidents' in statement for statement, _ in connection.calls)
+    runner_source = open('services/api/app/monitoring_runner.py', encoding='utf-8').read()
+    pilot_source = open('services/api/app/pilot.py', encoding='utf-8').read()
+    assert 'telemetry_event_id' in runner_source
+    assert 'detection_event_id' in runner_source
+    assert 'incident_timeline' in runner_source
+    assert 'INSERT INTO governance_actions' in pilot_source
+    assert 'action_mode' in pilot_source
+    assert "'executed'" in pilot_source
 
 
 def test_governance_action_links_incident_and_alert_and_contradiction_guards_exist() -> None:
@@ -152,7 +160,7 @@ def test_coverage_reporting_requires_telemetry_event_id_and_timestamp() -> None:
     )
 
     assert coverage_status == 'stale'
-    assert last_telemetry_at == now
+    assert last_telemetry_at is None
     assert evidence_source == 'none'
     assert metadata['telemetry_basis'] == {'kind': 'none'}
 
