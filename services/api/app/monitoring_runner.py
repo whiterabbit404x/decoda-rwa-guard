@@ -5920,10 +5920,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             (workspace_id,),
         ).fetchone()
         canonical_last_telemetry_at = _parse_ts((canonical_last_telemetry_row or {}).get('ts') if isinstance(canonical_last_telemetry_row, dict) else None)
-        canonical_last_detection_source = 'detection_events.detected_at'
+        canonical_last_detection_source = 'detection_events.created_at'
         canonical_last_detection_row = connection.execute(
             '''
-            SELECT MAX(detected_at) AS ts
+            SELECT MAX(created_at) AS ts
             FROM detection_events
             WHERE workspace_id = %s::uuid
             ''',
@@ -6069,7 +6069,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         try:
             linked_detection_row = connection.execute(
                     f'''
-                SELECT MAX(COALESCE(de.detected_at, de.created_at, te.created_at)) AS detected_at
+                SELECT MAX(COALESCE(de.created_at, te.ingested_at)) AS detected_at
                 FROM alerts a
                 JOIN detection_events de
                   ON de.workspace_id = a.workspace_id

@@ -71,3 +71,30 @@ def test_runtime_status_includes_persisted_provider_health_and_target_coverage(m
     payload = monitoring_runner.monitoring_runtime_status()
     assert payload['provider_health'] in {'healthy', 'degraded', 'error'}
     assert isinstance(payload['workspace_monitoring_summary'], dict)
+
+
+def test_runtime_status_uses_canonical_timestamp_columns(monkeypatch):
+    seen_queries = []
+
+    class _TrackingConn(_Conn):
+        def execute(self, q, p=None):
+            seen_queries.append(' '.join(str(q).split()))
+            return super().execute(q, p)
+
+    monkeypatch.setattr(monitoring_runner, 'resolve_workspace_context_for_request', lambda *_a, **_k: ({'id': 'u'}, {'workspace_id': _Ctx.workspace_id, 'workspace': {'slug': _Ctx.workspace_slug}}, True))
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_monitoring_runtime_schema_capabilities', lambda *_a, **_k: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _TrackingConn())
+    monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'worker_running': True, 'source_type': 'polling', 'ingestion_mode': 'live'})
+
+    monitoring_runner.RUNTIME_STATUS_WORKSPACE_CACHE.clear()
+    monitoring_runner.RUNTIME_STATUS_SUMMARY_CACHE.clear()
+    monitoring_runner.monitoring_runtime_status()
+    joined = '\n'.join(seen_queries)
+    assert 'detection_events.detected_at' not in joined
+    assert 'de.detected_at' not in joined
+    assert 'te.created_at' not in joined
+    assert 'telemetry_events.created_at' not in joined
+    if joined:
+        assert 'MAX(created_at) AS ts FROM detection_events' in joined
+        assert 'te.ingested_at' in joined

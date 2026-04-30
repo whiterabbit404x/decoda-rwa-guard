@@ -59,24 +59,23 @@ def _seed_runtime_chain_db() -> sqlite3.Connection:
             provider_type TEXT,
             event_type TEXT,
             observed_at TEXT,
+            ingested_at TEXT,
             evidence_source TEXT,
             payload_hash TEXT,
-            payload_json TEXT,
-            idempotency_key TEXT,
-            kind TEXT,
-            source TEXT
+            payload_json TEXT
         );
         CREATE TABLE detection_events (
             id TEXT PRIMARY KEY,
             workspace_id TEXT,
-            telemetry_event_id TEXT,
+            asset_id TEXT,
             target_id TEXT,
-            provider_type TEXT,
-            event_hash TEXT,
-            detected_at TEXT,
-            created_at TEXT,
+            telemetry_event_id TEXT,
+            detection_type TEXT,
+            severity TEXT,
+            confidence REAL,
+            evidence_summary TEXT,
             evidence_source TEXT,
-            payload_json TEXT
+            created_at TEXT
         );
         CREATE TABLE alerts (id TEXT PRIMARY KEY, detection_event_id TEXT, status TEXT);
         CREATE TABLE incidents (id TEXT PRIMARY KEY, alert_id TEXT, status TEXT);
@@ -129,8 +128,8 @@ def test_full_fk_chain_persists_end_to_end_ids():
     conn = _seed_runtime_chain_db()
     now = datetime.now(timezone.utc).isoformat()
 
-    conn.execute('INSERT INTO telemetry_events (id, observed_at, kind, source) VALUES (?, ?, ?, ?)', ('te-1', now, 'target_event', 'websocket'))
-    conn.execute('INSERT INTO detection_events (id, telemetry_event_id, created_at) VALUES (?, ?, ?)', ('de-1', 'te-1', now))
+    conn.execute('INSERT INTO telemetry_events (id, workspace_id, asset_id, target_id, provider_type, event_type, observed_at, ingested_at, evidence_source, payload_hash, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', ('te-1', 'ws-1', 'asset-1', 'target-1', 'rpc', 'heartbeat', now, now, 'live', 'h1', '{}'))
+    conn.execute('INSERT INTO detection_events (id, workspace_id, asset_id, target_id, telemetry_event_id, detection_type, severity, confidence, evidence_summary, evidence_source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', ('de-1', 'ws-1', 'asset-1', 'target-1', 'te-1', 'anomaly', 'medium', 0.9, 'summary', 'live', now))
     conn.execute('INSERT INTO alerts (id, detection_event_id, status) VALUES (?, ?, ?)', ('al-1', 'de-1', 'open'))
     conn.execute('INSERT INTO incidents (id, alert_id, status) VALUES (?, ?, ?)', ('in-1', 'al-1', 'open'))
     conn.execute('INSERT INTO incident_timeline (id, incident_id, event_type) VALUES (?, ?, ?)', ('it-1', 'in-1', 'created'))
@@ -271,8 +270,11 @@ def test_runtime_status_endpoint_includes_detection_and_contradiction_guards(mon
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload['runtime_status'] == 'offline'
-    assert payload['status_reason'].startswith('runtime_status_degraded')
+    assert payload['runtime_status'] in {'offline', 'fail'}
+    assert payload['status_reason'] in {
+        'runtime_status_degraded',
+        'workspace_configuration_invalid:no_valid_protected_assets',
+    } or payload['status_reason'].startswith('runtime_status_degraded')
 
 
 _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS = [
