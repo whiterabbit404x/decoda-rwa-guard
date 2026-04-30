@@ -131,40 +131,55 @@ def _runtime_payload(monkeypatch, **conn_flags):
     return monitoring_runner.monitoring_runtime_status()
 
 
+def _assert_canonical_guardrails(payload):
+    summary = payload['workspace_monitoring_summary']
+    assert payload['reporting_systems_count'] == 0
+    assert payload['last_telemetry_at'] is None
+    assert payload['last_detection_at'] is None
+    assert summary['runtime_status'] == payload['runtime_status']
+    assert payload.get('evidence_source') == 'none'
+    assert payload.get('confidence_status') == 'unavailable'
+    assert payload.get('contradiction_flags', []) == summary.get('contradiction_flags', [])
+
+
 def test_runtime_status_receipts_only_do_not_drive_canonical_reporting(monkeypatch):
     payload = _runtime_payload(monkeypatch, receipts=True)
-    assert payload['reporting_systems_count'] == 0
+    _assert_canonical_guardrails(payload)
 
 
 def test_runtime_status_monitored_last_coverage_only_does_not_drive_canonical_reporting(monkeypatch):
     payload = _runtime_payload(monkeypatch, monitored_last_coverage=True)
-    assert payload['reporting_systems_count'] == 0
+    _assert_canonical_guardrails(payload)
 
 
 def test_runtime_status_target_evaluation_only_does_not_drive_canonical_reporting(monkeypatch):
     payload = _runtime_payload(monkeypatch, target_evaluations=True)
-    assert payload['reporting_systems_count'] == 0
+    _assert_canonical_guardrails(payload)
 
 
 def test_runtime_status_legacy_detection_diagnostics_do_not_control_canonical_top_level(monkeypatch):
     payload = _runtime_payload(monkeypatch, legacy_detection=True)
-    assert payload['last_detection_at'] is None
+    _assert_canonical_guardrails(payload)
     assert payload.get('workspace_monitoring_summary', {}).get('last_detection_at') is None
     assert payload['legacy_diagnostics']['last_detection_at'] is None
     assert isinstance(payload['legacy_diagnostics'], dict)
-    for guarded_field in ('runtime_status', 'reporting_systems_count', 'last_telemetry_at', 'last_detection_at', 'evidence_source', 'confidence', 'contradiction_flags'):
+    for guarded_field in ('runtime_status', 'reporting_systems_count', 'last_telemetry_at', 'last_detection_at', 'evidence_source', 'confidence_status', 'contradiction_flags'):
         assert guarded_field in payload
 
 
-def test_runtime_status_reporting_requires_canonical_telemetry_or_resolved_coverage_basis(monkeypatch):
-    from_events = _runtime_payload(monkeypatch, telemetry_events=True)
-    assert from_events['reporting_systems_count'] >= 1
+def test_runtime_status_reporting_increases_with_canonical_telemetry_events(monkeypatch):
+    payload = _runtime_payload(monkeypatch, telemetry_events=True)
+    assert payload['reporting_systems_count'] >= 1
 
-    from_resolved_coverage = _runtime_payload(monkeypatch, coverage_with_resolved_basis=True)
-    assert from_resolved_coverage['reporting_systems_count'] >= 1
 
-    no_canonical = _runtime_payload(monkeypatch, receipts=True, monitored_last_coverage=True, target_evaluations=True)
-    assert no_canonical['reporting_systems_count'] == 0
+def test_runtime_status_reporting_increases_with_coverage_basis_resolved_to_real_telemetry_event(monkeypatch):
+    payload = _runtime_payload(monkeypatch, coverage_with_resolved_basis=True)
+    assert payload['reporting_systems_count'] >= 1
+
+
+def test_runtime_status_reporting_does_not_increase_when_only_legacy_signals_exist(monkeypatch):
+    payload = _runtime_payload(monkeypatch, receipts=True, monitored_last_coverage=True, target_evaluations=True)
+    _assert_canonical_guardrails(payload)
 
 
 def test_runtime_status_includes_persisted_provider_health_and_target_coverage(monkeypatch):
