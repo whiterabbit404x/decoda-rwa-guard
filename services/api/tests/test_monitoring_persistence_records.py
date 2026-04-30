@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from services.api.app import main as api_main
@@ -623,3 +625,121 @@ def test_simulator_and_replay_evidence_are_never_labeled_live() -> None:
     assert replay['evidence_source_summary'] == 'replay'
     assert simulator['evidence_source_summary'] != 'live'
     assert replay['evidence_source_summary'] != 'live'
+
+
+@pytest.mark.parametrize(
+    ("case", "coverage_status", "metadata", "telemetry_events", "expected_reporting", "expect_contradiction"),
+    [
+        (
+            "reporting_without_event_id",
+            "reporting",
+            {"telemetry_basis": {"kind": "telemetry_event"}},
+            [],
+            False,
+            True,
+        ),
+        (
+            "reporting_with_missing_event_row",
+            "reporting",
+            {"telemetry_basis": {"kind": "telemetry_event", "event_id": "te-missing"}},
+            [],
+            False,
+            True,
+        ),
+        (
+            "reporting_with_linked_event",
+            "reporting",
+            {"telemetry_basis": {"kind": "telemetry_event", "event_id": "te-real"}},
+            [
+                {
+                    "id": "te-real",
+                    "workspace_id": "ws-1",
+                    "asset_id": "asset-1",
+                    "target_id": "target-1",
+                    "provider_type": "rpc",
+                    "event_type": "heartbeat",
+                    "observed_at": "2026-04-29T12:00:00Z",
+                    "ingested_at": "2026-04-29T12:00:02Z",
+                    "evidence_source": "live",
+                    "payload_hash": "hash-1",
+                    "payload_json": "{}",
+                }
+            ],
+            True,
+            False,
+        ),
+    ],
+)
+def test_canonical_reporting_requires_real_telemetry_link(case, coverage_status, metadata, telemetry_events, expected_reporting, expect_contradiction):
+    coverage_record = {
+        "target_id": "target-1",
+        "coverage_status": coverage_status,
+        "metadata": metadata,
+    }
+    telemetry_by_id = {str(row.get("id")): row for row in telemetry_events}
+    basis = (coverage_record.get("metadata") or {}).get("telemetry_basis") or {}
+    event_id = str(basis.get("event_id") or "").strip()
+    linked_event = telemetry_by_id.get(event_id) if event_id else None
+
+    counts_as_reporting = bool(
+        str(coverage_record.get("coverage_status") or "").strip().lower() == "reporting"
+        and basis.get("kind") == "telemetry_event"
+        and event_id
+        and linked_event
+    )
+    contradiction_flags = []
+    if str(coverage_record.get("coverage_status") or "").strip().lower() == "reporting" and not counts_as_reporting:
+        contradiction_flags.append("target_reporting_without_telemetry_event_link")
+
+    assert counts_as_reporting is expected_reporting, case
+    assert ("target_reporting_without_telemetry_event_link" in contradiction_flags) is expect_contradiction, case
+
+
+def test_resolve_target_coverage_state_live_source_requires_live_linked_telemetry_event():
+    provider_status = "live"
+    source_status = "ok"
+
+    coverage_status, _last_telemetry_at, evidence_source, metadata = monitoring_runner._resolve_target_coverage_state(
+        provider_status=provider_status,
+        telemetry_row={
+            "id": "te-sim",
+            "observed_at": "2026-04-29T12:20:00Z",
+            "evidence_source": "simulator",
+        },
+        provider_evidence_source="live",
+        source_status=source_status,
+    )
+    assert coverage_status == "reporting"
+    assert evidence_source == "simulator"
+    assert metadata["telemetry_basis"]["event_id"] == "te-sim"
+
+    coverage_status_live, _last_live, evidence_source_live, metadata_live = monitoring_runner._resolve_target_coverage_state(
+        provider_status=provider_status,
+        telemetry_row={
+            "id": "te-live",
+            "observed_at": "2026-04-29T12:21:00Z",
+            "evidence_source": "live",
+        },
+        provider_evidence_source="live",
+        source_status=source_status,
+    )
+    assert coverage_status_live == "reporting"
+    assert evidence_source_live == "live"
+    assert metadata_live["telemetry_basis"]["event_id"] == "te-live"
+
+
+def test_resolve_target_coverage_state_replay_never_promoted_to_live():
+    coverage_status, _last_telemetry_at, evidence_source, metadata = monitoring_runner._resolve_target_coverage_state(
+        provider_status="live",
+        telemetry_row={
+            "id": "te-replay",
+            "observed_at": "2026-04-29T12:22:00Z",
+            "evidence_source": "replay",
+        },
+        provider_evidence_source="live",
+        source_status="ok",
+    )
+    assert coverage_status == "reporting"
+    assert evidence_source == "replay"
+    assert evidence_source != "live"
+    assert metadata["telemetry_basis"]["kind"] == "telemetry_event"
