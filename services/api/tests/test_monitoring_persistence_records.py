@@ -704,14 +704,14 @@ def test_simulator_and_replay_evidence_are_never_labeled_live() -> None:
 
 
 @pytest.mark.parametrize(
-    ("case", "coverage_status", "metadata", "telemetry_events", "expected_reporting", "expect_contradiction"),
+    ("case", "coverage_status", "metadata", "telemetry_events", "expected_reporting_systems", "expect_contradiction"),
     [
         (
             "reporting_without_event_id",
             "reporting",
             {"telemetry_basis": {"kind": "telemetry_event"}},
             [],
-            False,
+            0,
             True,
         ),
         (
@@ -719,7 +719,7 @@ def test_simulator_and_replay_evidence_are_never_labeled_live() -> None:
             "reporting",
             {"telemetry_basis": {"kind": "telemetry_event", "event_id": "te-missing"}},
             [],
-            False,
+            0,
             True,
         ),
         (
@@ -741,12 +741,12 @@ def test_simulator_and_replay_evidence_are_never_labeled_live() -> None:
                     "payload_json": "{}",
                 }
             ],
-            True,
+            1,
             False,
         ),
     ],
 )
-def test_canonical_reporting_requires_real_telemetry_link(case, coverage_status, metadata, telemetry_events, expected_reporting, expect_contradiction):
+def test_canonical_reporting_requires_real_telemetry_link(case, coverage_status, metadata, telemetry_events, expected_reporting_systems, expect_contradiction):
     coverage_record = {
         "target_id": "target-1",
         "coverage_status": coverage_status,
@@ -763,12 +763,13 @@ def test_canonical_reporting_requires_real_telemetry_link(case, coverage_status,
         and event_id
         and linked_event
     )
+    reporting_systems = 1 if counts_as_reporting else 0
     contradiction_flags = []
     if str(coverage_record.get("coverage_status") or "").strip().lower() == "reporting" and not counts_as_reporting:
-        contradiction_flags.append("target_reporting_without_telemetry_event_link")
+        contradiction_flags.append("target_reporting_without_canonical_telemetry_evidence")
 
-    assert counts_as_reporting is expected_reporting, case
-    assert ("target_reporting_without_telemetry_event_link" in contradiction_flags) is expect_contradiction, case
+    assert reporting_systems == expected_reporting_systems, case
+    assert ("target_reporting_without_canonical_telemetry_evidence" in contradiction_flags) is expect_contradiction, case
 
 
 @pytest.mark.parametrize(
