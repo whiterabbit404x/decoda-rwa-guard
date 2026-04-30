@@ -89,6 +89,39 @@ def test_runtime_status_idle_when_worker_healthy_without_recent_evidence(monkeyp
     assert payload['status'] == 'Idle'
 
 
+
+
+def test_runtime_status_canonical_reporting_window_uses_ingested_at(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class _CaptureConn(_Conn):
+        def __init__(self):
+            super().__init__(now)
+            self.queries: list[str] = []
+
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            self.queries.append(q)
+            return super().execute(query, params)
+
+    conn = _CaptureConn()
+    monkeypatch.setattr(
+        monitoring_runner,
+        'get_monitoring_health',
+        lambda: {'last_heartbeat_at': now.isoformat(), 'last_cycle_at': now.isoformat(), 'degraded': False, 'last_error': None, 'source_type': 'websocket'},
+    )
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(conn))
+
+    monitoring_runner.monitoring_runtime_status()
+
+    canonical_query = next(
+        q for q in conn.queries
+        if 'SELECT DISTINCT te.target_id' in q and 'FROM telemetry_events te' in q
+    )
+    assert 'te.ingested_at >= %s' in canonical_query
+    assert 'te.created_at >= %s' not in canonical_query
+
 def test_runtime_status_active_with_recent_evidence(monkeypatch):
     now = datetime.now(timezone.utc)
     monkeypatch.setattr(
