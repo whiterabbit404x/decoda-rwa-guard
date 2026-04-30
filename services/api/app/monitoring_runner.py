@@ -6026,6 +6026,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         }
         canonical_reporting_target_ids = canonical_reporting_targets_from_events | canonical_reporting_targets_from_coverage
         canonical_reporting_systems = int(len(canonical_reporting_target_ids))
+        target_reporting_without_telemetry_count = 0
+        for target_id, coverage_row in coverage_by_target.items():
+            if target_id in canonical_reporting_target_ids:
+                continue
+            if str((coverage_row or {}).get('coverage_status') or '').strip().lower() != 'reporting':
+                continue
+            target_reporting_without_telemetry_count += 1
         reporting_systems = canonical_reporting_systems if canonical_runtime_truth_enabled else int(max(canonical_reporting_systems, receipts_reporting_systems))
         coverage_heartbeat_count = int(reporting_systems)
         real_event_count = int(recent_real_event_count)
@@ -6578,9 +6585,33 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 or (runtime_last_detection_at is not None and runtime_last_detection_at != canonical_last_detection_at)
             )
         )
+        legacy_only_reporting_without_canonical = bool(
+            reporting_systems > 0
+            and canonical_last_telemetry_at is None
+            and canonical_last_detection_at is None
+            and evidence_source != 'live'
+        )
+        target_reporting_without_telemetry_events = bool(
+            target_reporting_without_telemetry_count > 0
+        )
+        live_evidence_without_canonical_events = bool(
+            evidence_source == 'live'
+            and canonical_last_telemetry_at is None
+            and canonical_last_detection_at is None
+            and last_coverage_telemetry_at is not None
+        )
+        healthy_without_reporting_systems = bool(runtime_status_summary == 'healthy' and reporting_systems <= 0)
+        heartbeat_or_poll_without_telemetry_live_claim = bool(
+            (last_heartbeat is not None or last_poll_at is not None)
+            and canonical_last_telemetry_at is None
+            and (runtime_status_summary == 'healthy' or evidence_source == 'live')
+        )
+        telemetry_timestamp_noncanonical = bool(runtime_last_telemetry_at is not None and runtime_last_telemetry_source != 'telemetry_events')
+        detection_timestamp_noncanonical = bool(runtime_last_detection_at is not None and runtime_last_detection_source != 'detection_events')
+
         contradiction_conditions = (
             ('offline_with_live_telemetry_recently', runtime_status_summary == 'offline' and evidence_source == 'live' and coverage_fresh),
-            ('reporting_systems_zero_with_healthy', runtime_status_summary == 'healthy' and reporting_systems <= 0),
+            ('reporting_systems_zero_with_healthy', healthy_without_reporting_systems),
             ('telemetry_unavailable_with_current_telemetry', summary_freshness_status == 'unavailable' and coverage_fresh),
             ('workspace_unconfigured_with_monitored_systems_present', (not workspace_configured) and enabled_system_count > 0),
             ('evidence_source_none_with_high_confidence', evidence_source == 'none' and summary_confidence_status == 'high'),
@@ -6590,12 +6621,48 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ('proof_chain_link_missing', bool(proof_chain_missing_reason_codes)),
             ('incident_without_alert', incidents_without_alert_count > 0),
             ('response_action_without_incident', response_actions_without_incident_count > 0),
+            ('legacy_reporting_without_canonical_telemetry', legacy_only_reporting_without_canonical),
+            ('target_reporting_without_telemetry_event_link', target_reporting_without_telemetry_events),
+            ('live_evidence_without_live_events', live_evidence_without_canonical_events),
+            ('heartbeat_or_poll_without_telemetry_live_claim', heartbeat_or_poll_without_telemetry_live_claim),
+            ('last_telemetry_not_from_telemetry_events', telemetry_timestamp_noncanonical),
+            ('last_detection_not_from_detection_events', detection_timestamp_noncanonical),
         )
         runtime_contradiction_flags = [flag for flag, condition in contradiction_conditions if condition]
         if canonical_guard_noncanonical_timestamp:
             runtime_contradiction_flags.append('canonical_guard_noncanonical_timestamp')
         contradiction_flags = sorted(set(runtime_contradiction_flags))
         summary['contradiction_flags'] = contradiction_flags
+        contradiction_reason_overrides: dict[str, tuple[str, str]] = {
+            'legacy_reporting_without_canonical_telemetry': ('degraded', 'runtime_contradiction_legacy_reporting_without_canonical_telemetry'),
+            'target_reporting_without_telemetry_event_link': ('fail', 'runtime_contradiction_target_reporting_without_telemetry_event_link'),
+            'live_evidence_without_live_events': ('fail', 'runtime_contradiction_live_evidence_without_live_events'),
+            'reporting_systems_zero_with_healthy': ('fail', 'runtime_contradiction_healthy_without_reporting_systems'),
+            'heartbeat_or_poll_without_telemetry_live_claim': ('degraded', 'runtime_contradiction_heartbeat_or_poll_without_telemetry_live_claim'),
+            'last_telemetry_not_from_telemetry_events': ('degraded', 'runtime_contradiction_last_telemetry_not_from_telemetry_events'),
+            'last_detection_not_from_detection_events': ('degraded', 'runtime_contradiction_last_detection_not_from_detection_events'),
+        }
+        contradiction_severity = 'healthy'
+        contradiction_reason_token: str | None = None
+        for flag in contradiction_flags:
+            override = contradiction_reason_overrides.get(flag)
+            if not override:
+                continue
+            severity, reason_token = override
+            if contradiction_reason_token is None:
+                contradiction_reason_token = reason_token
+            if severity == 'fail':
+                contradiction_severity = 'fail'
+                break
+            if contradiction_severity != 'fail':
+                contradiction_severity = 'degraded'
+        if contradiction_reason_token:
+            runtime_status_reason = contradiction_reason_token
+            summary['status_reason'] = runtime_status_reason
+            runtime_reason_codes = [str(code).strip() for code in (summary.get('runtime_status_reason_codes') or []) if str(code).strip()]
+            if contradiction_reason_token not in runtime_reason_codes:
+                runtime_reason_codes.append(contradiction_reason_token)
+            summary['runtime_status_reason_codes'] = runtime_reason_codes
         impossible_state_detected = any(
             flag in contradiction_flags
             for flag in (
@@ -6607,7 +6674,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'heartbeat_exists_while_poll_and_telemetry_null_ui_active_claim',
             )
         )
-        if impossible_state_detected:
+        if impossible_state_detected or contradiction_severity == 'fail':
             runtime_status_summary = 'fail'
             runtime_status = 'Fail'
             monitoring_status = 'offline'
@@ -6615,7 +6682,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             summary['monitoring_status'] = 'offline'
             runtime_status_reason = runtime_status_reason or 'impossible_contradiction_state'
             summary['status_reason'] = runtime_status_reason
-        if canonical_guard_noncanonical_timestamp:
+        if canonical_guard_noncanonical_timestamp or contradiction_severity == 'degraded':
             runtime_status_summary = 'degraded'
             runtime_status = 'Degraded'
             monitoring_status = 'limited'
