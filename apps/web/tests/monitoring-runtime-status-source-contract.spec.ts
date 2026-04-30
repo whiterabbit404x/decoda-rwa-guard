@@ -26,10 +26,23 @@ test.describe('monitoring runtime-status source contracts', () => {
     expect(panel).not.toContain('runtimeStatusSnapshot?.status_reason ?? runtimeSummary?.status_reason');
   });
 
-  test('runtime summary-card fields are sourced from runtime-status snapshot fields only', async () => {
+  test('runtime summary cards source core fields from runtimeStatusSnapshot and never from timeline/detail payloads', async () => {
     const panel = fs.readFileSync(path.join(__dirname, '..', 'app', 'threat-operations-panel.tsx'), 'utf8');
 
-    const summaryCardRuntimeFields = [
+    expect(panel).toContain("const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? '').toLowerCase();");
+    expect(panel).toContain('const configuredSystems = Number(runtimeStatusSnapshot?.monitored_systems_count ?? runtimeSummary?.monitored_systems_count ?? 0);');
+    expect(panel).toContain('const reportingSystems = Number(runtimeStatusSnapshot?.reporting_systems ?? 0);');
+    expect(panel).toContain('lastPollAt: runtimeStatusSnapshot?.last_poll_at ?? null,');
+    expect(panel).toContain('lastHeartbeatAt: runtimeStatusSnapshot?.last_heartbeat_at ?? null,');
+    expect(panel).toContain('lastTelemetryAt: runtimeStatusSnapshot?.last_telemetry_at ?? null,');
+    expect(panel).toContain('const detectionEvalLabel = formatRelativeTime(runtimeStatusSnapshot?.last_detection_at ?? monitoringPresentation.lastTelemetryAt);');
+    expect(panel).toContain("const runtimeEvidenceSource = String(runtimeStatusSnapshot?.evidence_source ?? 'none').toLowerCase();");
+    expect(panel).toContain("Runtime freshness: {String(runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}");
+    expect(panel).toContain('const runtimeContradictionFlags = Array.isArray(runtimeStatusSnapshot?.contradiction_flags)');
+    expect(panel).toContain('const loopHealth = (runtimeStatusSnapshot?.background_loop_health ?? runtimeSummary?.background_loop_health ?? null) as MonitoringLoopHealth | null;');
+    expect(panel).toContain('const hasCoverageFromRuntime = workspaceConfigured && (protectedAssetCount > 0 || configuredSystems > 0);');
+
+    const guardedFields = [
       'runtime_status',
       'configured_systems',
       'reporting_systems',
@@ -44,32 +57,21 @@ test.describe('monitoring runtime-status source contracts', () => {
       'target_coverage',
     ] as const;
 
-    expect(panel).toContain("const runtimeStatus = String(runtimeStatusSnapshot?.runtime_status ?? '').toLowerCase();");
-    expect(panel).toContain('const configuredSystems = Number(runtimeStatusSnapshot?.monitored_systems_count ?? runtimeSummary?.monitored_systems_count ?? 0);');
-    expect(panel).toContain('const reportingSystems = Number(runtimeStatusSnapshot?.reporting_systems ?? 0);');
-    expect(panel).toContain('lastPollAt: runtimeStatusSnapshot?.last_poll_at ?? null,');
-    expect(panel).toContain('lastHeartbeatAt: runtimeStatusSnapshot?.last_heartbeat_at ?? null,');
-    expect(panel).toContain('lastTelemetryAt: runtimeStatusSnapshot?.last_telemetry_at ?? null,');
-    expect(panel).toContain('const detectionEvalLabel = formatRelativeTime(runtimeStatusSnapshot?.last_detection_at ?? monitoringPresentation.lastTelemetryAt);');
-    expect(panel).toContain("const runtimeEvidenceSource = String(runtimeStatusSnapshot?.evidence_source ?? 'none').toLowerCase();");
-    expect(panel).toContain("Runtime freshness: {String(runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}");
-    expect(panel).toContain('const runtimeContradictionFlags = Array.isArray(runtimeStatusSnapshot?.contradiction_flags)');
-
-    for (const field of summaryCardRuntimeFields) {
-      expect(panel).not.toContain(`investigationTimeline?.${field} ?? runtimeStatusSnapshot?.${field}`);
-      expect(panel).not.toContain(`runtimeSummary?.${field} ?? runtimeStatusSnapshot?.${field}`);
-      expect(panel).not.toContain(`dashboardData?.${field} ?? runtimeStatusSnapshot?.${field}`);
-      expect(panel).not.toContain(`monitoringTruth?.${field} ?? runtimeStatusSnapshot?.${field}`);
-      expect(panel).not.toContain(`runtime?.${field} ?? runtimeStatusSnapshot?.${field}`);
-      expect(panel).not.toContain(`runtimeStatusSnapshot?.${field} ?? investigationTimeline?.${field}`);
-      expect(panel).not.toContain(`runtimeStatusSnapshot?.${field} ?? runtimeSummary?.${field}`);
-      expect(panel).not.toContain(`runtimeStatusSnapshot?.${field} ?? monitoringTruth?.${field}`);
-      expect(panel).not.toContain(`runtimeStatusSnapshot?.${field} ?? dashboardData?.${field}`);
-      expect(panel).not.toContain(`runtimeStatusSnapshot?.${field} ?? runtime?.${field}`);
+    const detailRoots = ['investigationTimeline', 'timelinePayload', 'evidencePayload', 'alertsPayload', 'incidentsPayload', 'historyPayload'];
+    for (const field of guardedFields) {
+      for (const detailRoot of detailRoots) {
+        expect(panel).not.toContain(`${detailRoot}?.${field} ?? runtimeStatusSnapshot?.${field}`);
+        expect(panel).not.toContain(`runtimeStatusSnapshot?.${field} ?? ${detailRoot}?.${field}`);
+      }
     }
+
+    expect(panel).not.toContain('monitoringPresentation.lastPollAt ?? investigationTimeline?.last_poll_at');
+    expect(panel).not.toContain('monitoringPresentation.lastHeartbeatAt ?? investigationTimeline?.last_heartbeat_at');
+    expect(panel).not.toContain('monitoringPresentation.lastTelemetryAt ?? investigationTimeline?.last_telemetry_at');
+    expect(panel).not.toContain('runtimeStatusSnapshot?.last_detection_at ?? investigationTimeline?.last_detection_at');
   });
 
-  test('detail endpoints stay scoped to detail panels and do not overwrite summary-card fields', async () => {
+  test('detail endpoint usage assertions stay scoped to detail panels only', async () => {
     const panel = fs.readFileSync(path.join(__dirname, '..', 'app', 'threat-operations-panel.tsx'), 'utf8');
     const runtimeClient = fs.readFileSync(path.join(__dirname, '..', 'app', 'runtime-status-client.ts'), 'utf8');
 
@@ -80,11 +82,9 @@ test.describe('monitoring runtime-status source contracts', () => {
     expect(panel).toContain('Alert details not loaded in this panel');
     expect(panel).toContain('Incident details not loaded in this panel');
 
-    expect(panel).not.toContain('runtimeStatusSnapshot?.runtime_status ?? investigationTimeline?.runtime_status');
-    expect(panel).not.toContain('runtimeStatusSnapshot?.configured_systems ?? investigationTimeline?.configured_systems');
-    expect(panel).not.toContain('runtimeStatusSnapshot?.reporting_systems ?? investigationTimeline?.reporting_systems');
-    expect(panel).not.toContain('runtimeStatusSnapshot?.provider_health ?? investigationTimeline?.provider_health');
-    expect(panel).not.toContain('runtimeStatusSnapshot?.target_coverage ?? investigationTimeline?.target_coverage');
+    expect(panel).toContain('const investigationTimelineItems = useMemo(() => (');
+    expect(panel).toContain('Linked evidence count: {Number(investigationTimeline?.linked_evidence_count ?? 0)}');
+    expect(panel).toContain('const missingTimelineLinks = Array.isArray(investigationTimeline?.missing) ? investigationTimeline.missing : [];');
   });
 
 
