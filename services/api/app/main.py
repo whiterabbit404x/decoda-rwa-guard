@@ -2536,8 +2536,18 @@ def workspace_api_keys_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_workspace_api_keys(request))
 
 
+@app.get('/api-keys', summary='List workspace API keys')
+def api_keys_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_workspace_api_keys(request))
+
+
 @app.post('/workspace/api-keys', summary='Create workspace API key')
 def workspace_api_keys_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: create_workspace_api_key(payload, request))
+
+
+@app.post('/api-keys', summary='Create workspace API key')
+def api_keys_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: create_workspace_api_key(payload, request))
 
 
@@ -2546,8 +2556,18 @@ def workspace_api_keys_rotate(api_key_id: str, request: Request) -> dict[str, An
     return with_auth_schema_json(lambda: rotate_workspace_api_key(api_key_id, request))
 
 
+@app.post('/api-keys/{api_key_id}/rotate', summary='Rotate workspace API key')
+def api_keys_rotate(api_key_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: rotate_workspace_api_key(api_key_id, request))
+
+
 @app.delete('/workspace/api-keys/{api_key_id}', summary='Revoke workspace API key')
 def workspace_api_keys_revoke(api_key_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: revoke_workspace_api_key(api_key_id, request))
+
+
+@app.post('/api-keys/{api_key_id}/revoke', summary='Revoke workspace API key')
+def api_keys_revoke(api_key_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: revoke_workspace_api_key(api_key_id, request))
 
 
