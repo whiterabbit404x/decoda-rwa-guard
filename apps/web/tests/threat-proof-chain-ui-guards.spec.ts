@@ -14,7 +14,7 @@ test('threat page only enables evidence-linked signals when detection+evidence t
   const threatPage = appSource('threat-operations-panel.tsx');
 
   expect(threatPage).toContain("const hasDetectionTimelineLink = timelineLinkNames.has('detection');");
-  expect(threatPage).toContain("const hasEvidenceTimelineLink = timelineLinkNames.has('telemetry_event') || timelineLinkNames.has('detection_evidence');");
+  expect(threatPage).toContain("const hasEvidenceTimelineLink = timelineLinkNames.has('telemetry_event') || timelineLinkNames.has('detection_evidence')");
   expect(threatPage).toContain('const showEvidenceLinkedSignals = hasDetectionTimelineLink && hasEvidenceTimelineLink;');
   expect(threatPage).toContain('No evidence-linked threat signals');
 });
