@@ -54,15 +54,15 @@ test('chain display uses persisted linkage ids and evidence counts from linked r
 
   expect(threat).toContain('function resolvePersistedThreatChain(params: {');
   expect(threat).toContain('const persistedThreatChain = useMemo(() => resolvePersistedThreatChain({');
-  expect(threat).toContain('alert.chain_linked_ids?.detection_id');
-  expect(threat).toContain('incident.chain_linked_ids?.detection_id');
+  expect(threat).toContain('detection?.chain_linked_ids?.detection_id');
+  expect(threat).toContain('incident?.chain_linked_ids?.detection_id');
   expect(threat).toContain('detectionId: persistedThreatChain.linkedIds.detectionId');
   expect(threat).toContain('actionId: persistedThreatChain.linkedIds.actionId');
-  expect(threat).toContain('evidence {Number(alert.linked_evidence_count');
+  expect(threat).toContain('evidence records {Number(alert.linked_evidence_count');
   expect(threat).toContain('linkedEvidenceCount: latestDetection?.linked_evidence_count');
   expect(threat).toContain('const chainLinkedIds = row?.chain_linked_ids');
   expect(threat).toContain('const hasLinkedChainIds = Boolean(');
-  expect(threat).toContain('const hasRealLinkedEvidence = linkedEvidenceCount > 0 && isRealEvidence(linkedEvidence, row);');
+  expect(threat).toContain('const hasRealLinkedEvidence = hasPersistedEvidenceRecord && linkedEvidenceCount > 0 && isRealEvidence(linkedEvidence, row);');
   expect(threat).toContain('&& hasLinkedChainIds');
   expect(threat).toContain('&& hasRealLinkedEvidence');
 });
@@ -91,7 +91,7 @@ test('live signal labeling requires linked chain IDs and real linked evidence fo
 
   expect(threat).toContain('const chainLinkedIds = row?.chain_linked_ids');
   expect(threat).toContain('const hasLinkedChainIds = Boolean(');
-  expect(threat).toContain('const hasRealLinkedEvidence = linkedEvidenceCount > 0 && isRealEvidence(linkedEvidence, row);');
+  expect(threat).toContain('const hasRealLinkedEvidence = hasPersistedEvidenceRecord && linkedEvidenceCount > 0 && isRealEvidence(linkedEvidence, row);');
   expect(threat).toContain('&& hasLinkedChainIds');
   expect(threat).toContain('&& hasRealLinkedEvidence');
 });
@@ -121,7 +121,7 @@ test('alerts and incidents tables render non-empty list rows with persisted proo
 
   expect(threat).toContain('linkedAlertRows.map(({ alert, linkedDetection }) => (');
   expect(threat).toContain('incidents.slice(0, 6).map((incident) => (');
-  expect(threat).toContain('Chain: detection {alert.chain_linked_ids?.detection_id || alert.detection_id');
-  expect(threat).toContain('Chain: detection {incident.chain_linked_ids?.detection_id || incident.linked_detection_id');
+  expect(threat).toContain('Alert: id {alert.chain_linked_ids?.alert_id || alert.id} · status {alert.status || \'Needs review\'}');
+  expect(threat).toContain('Linked incident: id {incident.chain_linked_ids?.incident_id || incident.id} · status {incident.status || \'Needs review\'}');
   expect(threat).toContain('linked IDs: detection {String(chainIds.detection_id || \'n/a\')}');
 });
