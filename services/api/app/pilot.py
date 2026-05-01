@@ -1575,11 +1575,12 @@ def _workspace_api_key_secret_prefix(secret: str) -> str:
 
 def list_workspace_api_keys(request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
-        _user, workspace_context = _require_workspace_admin(connection, request)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, label, created_by_user_id, secret_prefix, created_at, last_used_at, revoked_at
-            FROM workspace_api_keys
+            SELECT id, label, created_by_user_id, secret_prefix, scopes, created_at, last_used_at, revoked_at
+            FROM api_keys
             WHERE workspace_id = %s
             ORDER BY created_at DESC
             ''',
@@ -1594,6 +1595,7 @@ def _serialize_workspace_api_key_row(row: dict[str, Any]) -> dict[str, Any]:
         'label': str(row['label']),
         'created_by': str(row['created_by_user_id']),
         'secret_prefix': str(row['secret_prefix'] or ''),
+        'scopes': row.get('scopes') if isinstance(row.get('scopes'), list) else [],
         'created_at': row['created_at'].isoformat() if row['created_at'] else None,
         'last_used_at': row['last_used_at'].isoformat() if row['last_used_at'] else None,
         'revoked_at': row['revoked_at'].isoformat() if row['revoked_at'] else None,
@@ -1608,26 +1610,27 @@ def create_workspace_api_key(payload: dict[str, Any], request: Request) -> dict[
         user, workspace_context = _require_workspace_admin(connection, request)
         key_id = str(uuid.uuid4())
         secret = _generate_workspace_api_key_secret()
+        scopes = payload.get('scopes') if isinstance(payload.get('scopes'), list) else []
         connection.execute(
             '''
-            INSERT INTO workspace_api_keys (id, workspace_id, label, secret_hash, secret_prefix, created_by_user_id, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            INSERT INTO api_keys (id, workspace_id, label, secret_hash, secret_prefix, created_by_user_id, scopes, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
             ''',
-            (key_id, workspace_context['workspace_id'], label, _hash_workspace_api_key_secret(secret), _workspace_api_key_secret_prefix(secret), user['id']),
+            (key_id, workspace_context['workspace_id'], label, _hash_workspace_api_key_secret(secret), _workspace_api_key_secret_prefix(secret), user['id'], _json_dumps(scopes)),
         )
         log_audit(connection, action='workspace.api_key.create', entity_type='workspace_api_key', entity_id=key_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'label': label})
         write_action_history(connection, workspace_id=workspace_context['workspace_id'], actor_type='user', actor_id=user['id'], object_type='workspace_api_key', object_id=key_id, action_type='workspace.api_key.create', details={'label': label})
         connection.commit()
-        return {'api_key': {'id': key_id, 'label': label, 'secret_prefix': _workspace_api_key_secret_prefix(secret)}, 'secret': secret}
+        return {'api_key': {'id': key_id, 'label': label, 'secret_prefix': _workspace_api_key_secret_prefix(secret), 'scopes': scopes}, 'secret': secret}
 
 
 def revoke_workspace_api_key(api_key_id: str, request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
         user, workspace_context = _require_workspace_admin(connection, request)
-        row = connection.execute('SELECT id FROM workspace_api_keys WHERE id = %s AND workspace_id = %s', (api_key_id, workspace_context['workspace_id'])).fetchone()
+        row = connection.execute('SELECT id FROM api_keys WHERE id = %s AND workspace_id = %s', (api_key_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='API key not found.')
-        connection.execute('UPDATE workspace_api_keys SET revoked_at = NOW() WHERE id = %s AND workspace_id = %s', (api_key_id, workspace_context['workspace_id']))
+        connection.execute('UPDATE api_keys SET revoked_at = NOW() WHERE id = %s AND workspace_id = %s', (api_key_id, workspace_context['workspace_id']))
         log_audit(connection, action='workspace.api_key.revoke', entity_type='workspace_api_key', entity_id=api_key_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
         write_action_history(connection, workspace_id=workspace_context['workspace_id'], actor_type='user', actor_id=user['id'], object_type='workspace_api_key', object_id=api_key_id, action_type='workspace.api_key.revoke', details={})
         connection.commit()
@@ -1637,18 +1640,39 @@ def revoke_workspace_api_key(api_key_id: str, request: Request) -> dict[str, Any
 def rotate_workspace_api_key(api_key_id: str, request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
         user, workspace_context = _require_workspace_admin(connection, request)
-        row = connection.execute('SELECT id, label FROM workspace_api_keys WHERE id = %s AND workspace_id = %s', (api_key_id, workspace_context['workspace_id'])).fetchone()
+        row = connection.execute('SELECT id, label FROM api_keys WHERE id = %s AND workspace_id = %s', (api_key_id, workspace_context['workspace_id'])).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='API key not found.')
         secret = _generate_workspace_api_key_secret()
         connection.execute(
-            'UPDATE workspace_api_keys SET secret_hash = %s, secret_prefix = %s, revoked_at = NULL, last_used_at = NULL WHERE id = %s AND workspace_id = %s',
+            'UPDATE api_keys SET secret_hash = %s, secret_prefix = %s, revoked_at = NULL, last_used_at = NULL WHERE id = %s AND workspace_id = %s',
             (_hash_workspace_api_key_secret(secret), _workspace_api_key_secret_prefix(secret), api_key_id, workspace_context['workspace_id']),
         )
         log_audit(connection, action='workspace.api_key.rotate', entity_type='workspace_api_key', entity_id=api_key_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
         write_action_history(connection, workspace_id=workspace_context['workspace_id'], actor_type='user', actor_id=user['id'], object_type='workspace_api_key', object_id=api_key_id, action_type='workspace.api_key.rotate', details={})
         connection.commit()
         return {'api_key': {'id': api_key_id, 'label': str(row['label']), 'secret_prefix': _workspace_api_key_secret_prefix(secret)}, 'secret': secret}
+
+
+def validate_workspace_api_key_secret(*, connection: Any, raw_secret: str) -> dict[str, Any]:
+    secret_hash = _hash_workspace_api_key_secret(raw_secret)
+    row = connection.execute(
+        '''
+        SELECT id, workspace_id, label, scopes, revoked_at
+        FROM api_keys
+        WHERE secret_hash = %s
+        ''',
+        (secret_hash,),
+    ).fetchone()
+    if row is None or row.get('revoked_at') is not None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid API key.')
+    connection.execute('UPDATE api_keys SET last_used_at = NOW() WHERE id = %s', (row['id'],))
+    return {
+        'id': str(row['id']),
+        'workspace_id': str(row['workspace_id']),
+        'label': str(row['label']),
+        'scopes': row.get('scopes') if isinstance(row.get('scopes'), list) else [],
+    }
 
 
 def _normalize_incident_status(value: str | None) -> str:
