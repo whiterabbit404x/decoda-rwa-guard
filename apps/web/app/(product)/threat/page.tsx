@@ -11,9 +11,9 @@ export default async function ThreatPage() {
       <section className="hero compactHero">
         <div>
           <p className="eyebrow">Threat monitoring</p>
-          <h1>Threat Monitoring Console</h1>
+          <h1>Threat Monitoring</h1>
           <p className="lede">
-            Continuous protection status, active threat signals, and investigation workflows for the current workspace.
+            Continuous monitoring for protected assets, detections, alerts, and response workflows.
           </p>
         </div>
       </section>

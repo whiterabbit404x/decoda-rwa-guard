@@ -2802,8 +2802,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const threatOperationsViewModel = useMemo(() => ({
     monitoring: monitoringViewModel,
   }), [monitoringViewModel]);
-  const headerStatusChips = monitoringViewModel.headerStatusChips;
-
   const reconcileStateReasonLabel = useMemo(() => {
     if (!latestReconcileJob) return 'No reconcile job has run yet.';
     const reason = latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No reason provided.';
@@ -2815,8 +2813,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       <article className="dataCard monitoringHeaderCard">
         <div className="monitoringHeaderTop">
           <div>
-            <p className="sectionEyebrow">Threat monitoring command center</p>
-            <h2>{user?.current_workspace?.name ?? 'Workspace monitoring console'}</h2>
+            <p className="sectionEyebrow">Threat monitoring</p>
+            <h2>Protect your monitored assets with continuous detection and response.</h2>
           </div>
           <div className="monitoringHeaderActions">
             <button
@@ -2840,120 +2838,72 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <Link href="/monitored-systems" prefetch={false} className="secondaryCta">Manage monitored systems</Link>
           </div>
         </div>
-        <div className="chipRow monitoringHeaderChips">
-          {headerStatusChips.map((chip) => (
-            <span
-              key={chip.label}
-              className={chip.tone === 'status' ? (chip.className ?? 'statusBadge statusBadge-attention') : 'ruleChip'}
-            >
-              {chip.label}
-            </span>
-          ))}
-        </div>
-        <p className="tableMeta">
-          Data provenance ({threatOperationsViewModel.monitoring.provenanceLabel}): {threatOperationsViewModel.monitoring.provenanceExplanation} /ops/monitoring/runtime-status ({threatOperationsViewModel.monitoring.endpointProvenance.runtimeStatus}) · Last successful monitoring refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRefreshAt)} · Last successful runtime refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulTimelineRefreshAt)}
-        </p>
-        <PageStateBanner viewModel={threatOperationsViewModel.monitoring} />
-        {monitoringViewModel.contradictions.length > 0 ? (
-          <p className="statusLine statusLine-warning">
-            Contradiction guard: {monitoringViewModel.contradictions.join(' ')}
-          </p>
-        ) : null}
-        {hasRuntimeContradictionFlags ? (
-          <p className="statusLine statusLine-warning">
-            Runtime contradiction flags: {runtimeContradictionFlags.join(', ')}. Healthy presentation is blocked until all contradiction flags clear.
-          </p>
-        ) : null}
-        <p className={`statusLine ${enterpriseReadyPass ? 'statusLine-success' : 'statusLine-warning'}`}>
-          Enterprise readiness gate: {enterpriseReadyPass ? 'PASS' : 'FAIL'}.
-          {enterpriseReadyPass ? ' All readiness checks are green.' : ' Resolve failed checks using the remediation links below.'}
-        </p>
-        <article className="dataCard">
-          <p className="sectionEyebrow">Enterprise readiness gate</p>
-          <p className="kpiValue">{enterpriseReadyPass ? 'PASS' : 'FAIL'}</p>
+        <p className="tableMeta">Recommended next action: <Link href="/alerts" prefetch={false}>Review alerts</Link> to triage active detections and confirm response workflow readiness.</p>
+
+        <details className="tableMeta">
+          <summary>Technical runtime details</summary>
           <p className="tableMeta">
-            {enterpriseReadyPass
-              ? 'Enterprise-readiness checks passed. Live claims can be shown.'
-              : 'Enterprise-readiness checks failed. Enterprise-ready copy is hidden until all checks pass.'}
+            Data provenance ({threatOperationsViewModel.monitoring.provenanceLabel}): {threatOperationsViewModel.monitoring.provenanceExplanation} /ops/monitoring/runtime-status ({threatOperationsViewModel.monitoring.endpointProvenance.runtimeStatus}) · Last successful monitoring refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRefreshAt)} · Last successful runtime refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulTimelineRefreshAt)}
           </p>
-          {!enterpriseReadyPass ? (
-            <ul className="tableMeta">
-              {remediationChecks.map((check) => (
-                <li key={check}>
-                  {ENTERPRISE_GATE_LABELS[check] ?? check}
-                  {': '}
-                  {ENTERPRISE_GATE_REMEDIATION_COPY[check] ?? 'Review gate diagnostics and remediate this failed check.'}
-                  {' — '}
-                  <Link href={ENTERPRISE_GATE_REMEDIATION_LINKS[check] ?? '/threat'} prefetch={false}>Open remediation</Link>
-                </li>
-              ))}
-            </ul>
+          {monitoringViewModel.contradictions.length > 0 ? (
+            <p className="statusLine statusLine-warning">
+              Contradiction guard: {monitoringViewModel.contradictions.join(' ')}
+            </p>
           ) : null}
-          {enterpriseCriteriaChecks.length > 0 ? (
-            <ul className="tableMeta">
-              {enterpriseCriteriaChecks.map((criterion, index) => {
-                const criterionName = String(criterion.name ?? `criterion-${index}`);
-                return (
-                  <li key={criterionName}>
-                    {ENTERPRISE_CRITERIA_LABELS[criterionName] ?? criterionName}: {criterion.pass ? 'PASS' : 'FAIL'} ·
-                    {' '}
-                    {criterion.requires_measurable_evidence
-                      ? 'Pass is granted only after measurable evidence is present.'
-                      : 'Evidence requirement unspecified.'}
-                  </li>
-                );
-              })}
-            </ul>
+          {hasRuntimeContradictionFlags ? (
+            <p className="statusLine statusLine-warning">
+              Runtime contradiction flags: {runtimeContradictionFlags.join(', ')}. Healthy presentation is blocked until all contradiction flags clear.
+            </p>
           ) : null}
-        </article>
-        {latestReconcileJob ? (
+          {latestReconcileJob ? (
+            <p className="tableMeta">
+              Reconcile job state {reconcileUiState.toUpperCase()} · {reconcileProgressLabel} · Retry count {Number(latestReconcileJob.retry_count ?? 0)} · Last success {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Reason codes {(latestReconcileJob.reason_codes ?? []).length > 0 ? (latestReconcileJob.reason_codes ?? []).join(', ') : 'none'} · {reconcileStateReasonLabel}
+            </p>
+          ) : null}
+          {latestReconcileJob?.status === 'failed' ? (
+            <p className="tableMeta">
+              Failure reason: {latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No backend detail returned.'}
+              {(latestReconcileJob.reason_codes ?? []).length > 0 ? ` Reason codes: ${(latestReconcileJob.reason_codes ?? []).join(', ')}` : ''}
+            </p>
+          ) : null}
+          {latestReconcileJob?.status === 'failed' ? (
+            <p className="statusLine">
+              Reconcile failed: {latestReconcileJob.reason_detail || 'No backend detail returned.'} {(latestReconcileJob.reason_codes ?? []).length > 0 ? `Reason codes: ${(latestReconcileJob.reason_codes ?? []).join(', ')}.` : ''}
+            </p>
+          ) : null}
+          {reconcileActionableError ? (
+            <p className="statusLine">{reconcileActionableError}</p>
+          ) : null}
+          {reconcileTimeoutExceeded ? (
+            <p className="statusLine">
+              Reconcile timeout guard reached (120 seconds). Keep this page open for job polling, then open /monitored-systems to confirm persisted state before retrying.
+            </p>
+          ) : null}
+          {loopHealthSignal.shouldAlert ? (
+            <p className="statusLine statusLine-warning">
+              Monitoring loop degraded for {Math.floor((loopHealthSignal.degradedSeconds ?? 0) / 60)} minutes (threshold {Math.floor(LOOP_DEGRADED_ALERT_THRESHOLD_SECONDS / 60)}). Check worker dependencies and retry telemetry ingestion.
+            </p>
+          ) : null}
+          {loopHealthSignal.state === 'recovering' ? (
+            <p className="statusLine statusLine-warning">
+              Monitoring loop is recovering. Failures remain at {Number(loopHealth?.consecutive_failures ?? 0)} until the next successful cycle clears retry state.
+            </p>
+          ) : null}
+          {dbPersistenceOutageActive ? (
+            <p className="statusLine">
+              Persistence outage active: {dbPersistenceOutageReason}. Simulator/demo rows remain visible but are excluded from live-evidence claims.
+            </p>
+          ) : null}
+          {!canGenerateSimulatorProofChain ? <p className="statusLine">{simulatorProofChainUnavailableCopy}</p> : null}
           <p className="tableMeta">
-            Reconcile job state {reconcileUiState.toUpperCase()} · {reconcileProgressLabel} · Retry count {Number(latestReconcileJob.retry_count ?? 0)} · Last success {formatAbsoluteTime(lastSuccessfulReconcileAt)} · Last event {formatAbsoluteTime(latestReconcileJob.last_event_at || latestReconcileJob.completed_at || latestReconcileJob.started_at)} · Reason codes {(latestReconcileJob.reason_codes ?? []).length > 0 ? (latestReconcileJob.reason_codes ?? []).join(', ') : 'none'} · {reconcileStateReasonLabel}
+            Loop health: {loopHealthSignal.state} · Loop running: {loopHealth?.loop_running ? 'yes' : 'no'} · Consecutive failures: {Number(loopHealth?.consecutive_failures ?? 0)} · Last successful cycle: {formatAbsoluteTime(loopHealth?.last_successful_cycle ?? null)} · Retry backoff: {loopHealth?.backoff_seconds ? `${loopHealth.backoff_seconds}s` : 'none'} · Next retry: {formatAbsoluteTime(loopHealth?.next_retry_at ?? null)} · Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {monitoringViewModel.pollLabel} · Last heartbeat: {monitoringViewModel.heartbeatLabel} · Runtime freshness: {String(runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
           </p>
-        ) : null}
-        {latestReconcileJob?.status === 'failed' ? (
           <p className="tableMeta">
-            Failure reason: {latestReconcileJob.reason_detail || latestReconcileJob.reason_code || 'No backend detail returned.'}
-            {(latestReconcileJob.reason_codes ?? []).length > 0 ? ` Reason codes: ${(latestReconcileJob.reason_codes ?? []).join(', ')}` : ''}
+            Worker heartbeat: {monitoringViewModel.heartbeatLabel} · Poll loop: {monitoringViewModel.pollLabel} · Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection: {detectionEvalLabel} · Reporting systems: {reportingSystems}/{configuredSystems} · Evidence source: {simulatorMode ? `${monitoringPresentation.evidenceSourceLabel} (SIMULATOR/REPLAY)` : monitoringPresentation.evidenceSourceLabel} · Runtime reason: {runtimeReason}
           </p>
-        ) : null}
-        {latestReconcileJob?.status === 'failed' ? (
-          <p className="statusLine">
-            Reconcile failed: {latestReconcileJob.reason_detail || 'No backend detail returned.'} {(latestReconcileJob.reason_codes ?? []).length > 0 ? `Reason codes: ${(latestReconcileJob.reason_codes ?? []).join(', ')}.` : ''}
-          </p>
-        ) : null}
-        {reconcileActionableError ? (
-          <p className="statusLine">{reconcileActionableError}</p>
-        ) : null}
-        {reconcileTimeoutExceeded ? (
-          <p className="statusLine">
-            Reconcile timeout guard reached (120 seconds). Keep this page open for job polling, then open /monitored-systems to confirm persisted state before retrying.
-          </p>
-        ) : null}
-        {loopHealthSignal.shouldAlert ? (
-          <p className="statusLine statusLine-warning">
-            Monitoring loop degraded for {Math.floor((loopHealthSignal.degradedSeconds ?? 0) / 60)} minutes (threshold {Math.floor(LOOP_DEGRADED_ALERT_THRESHOLD_SECONDS / 60)}). Check worker dependencies and retry telemetry ingestion.
-          </p>
-        ) : null}
-        {loopHealthSignal.state === 'recovering' ? (
-          <p className="statusLine statusLine-warning">
-            Monitoring loop is recovering. Failures remain at {Number(loopHealth?.consecutive_failures ?? 0)} until the next successful cycle clears retry state.
-          </p>
-        ) : null}
-        {dbPersistenceOutageActive ? (
-          <p className="statusLine">
-            Persistence outage active: {dbPersistenceOutageReason}. Simulator/demo rows remain visible but are excluded from live-evidence claims.
-          </p>
-        ) : null}
-        {!canGenerateSimulatorProofChain ? <p className="statusLine">{simulatorProofChainUnavailableCopy}</p> : null}
-        <p className="tableMeta">
-          Loop health: {loopHealthSignal.state} · Loop running: {loopHealth?.loop_running ? 'yes' : 'no'} · Consecutive failures: {Number(loopHealth?.consecutive_failures ?? 0)} · Last successful cycle: {formatAbsoluteTime(loopHealth?.last_successful_cycle ?? null)} · Retry backoff: {loopHealth?.backoff_seconds ? `${loopHealth.backoff_seconds}s` : 'none'} · Next retry: {formatAbsoluteTime(loopHealth?.next_retry_at ?? null)} · Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection evaluation: {detectionEvalLabel} · Last poll: {monitoringViewModel.pollLabel} · Last heartbeat: {monitoringViewModel.heartbeatLabel} · Runtime freshness: {String(runtimeStatusSnapshot?.freshness_status ?? 'unavailable')} · Runtime confidence: {String(runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
-        </p>
-        <p className="tableMeta">
-          Worker heartbeat: {monitoringViewModel.heartbeatLabel} · Poll loop: {monitoringViewModel.pollLabel} · Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'} · Last detection: {detectionEvalLabel} · Reporting systems: {reportingSystems}/{configuredSystems} · Evidence source: {simulatorMode ? `${monitoringPresentation.evidenceSourceLabel} (SIMULATOR/REPLAY)` : monitoringPresentation.evidenceSourceLabel} · Runtime reason: {runtimeReason}
-        </p>
-        {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
-        {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
+          {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
+          {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
+        </details>
       </article>
 
       <section className="monitoringKpiGrid" aria-label="Monitoring KPIs">
