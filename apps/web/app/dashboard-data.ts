@@ -55,6 +55,16 @@ export type RiskQueueItem = {
   explanation: string;
   updated_at: string;
   source: 'live' | 'fallback';
+  normalized_risk: NormalizedRisk;
+};
+
+export type NormalizedRisk = {
+  asset_criticality_score: number;
+  exposure_severity: 'low' | 'medium' | 'high' | 'critical';
+  market_confidence_impact: number;
+  redemption_liquidity_stress: number;
+  contagion_risk_label: string;
+  regulatory_evidence_priority: 'low' | 'medium' | 'high';
 };
 
 export type RiskAlert = {
@@ -67,6 +77,7 @@ export type RiskAlert = {
   explanation: string;
   tx_hash: string;
   status: string;
+  normalized_risk: NormalizedRisk;
 };
 
 export type ContractScanResult = {
@@ -79,6 +90,7 @@ export type ContractScanResult = {
   triggered_rules: string[];
   explanation: string;
   source: 'live' | 'fallback';
+  normalized_risk: NormalizedRisk;
 };
 
 export type DecisionLogEntry = {
@@ -91,6 +103,7 @@ export type DecisionLogEntry = {
   triggered_rules: string[];
   explanation: string;
   source: 'live' | 'fallback';
+  normalized_risk: NormalizedRisk;
 };
 
 export type RiskDashboardResponse = {
@@ -251,6 +264,7 @@ export type ResilienceIncident = {
   fingerprint: string;
   source?: 'live' | 'fallback';
   degraded?: boolean;
+  normalized_risk?: NormalizedRisk;
 };
 
 export type ResilienceLedgerAssessment = {
@@ -1892,7 +1906,7 @@ export function buildDashboardViewModel(
     {
       label: 'Average risk score',
       value: `${riskDashboard.summary.avg_risk_score}`,
-      meta: formatSourceLabel(diagnostics.endpoints.riskDashboard.payloadState)
+      meta: `${riskDashboard.transaction_queue[0]?.normalized_risk?.exposure_severity ?? 'n/a'} exposure · confidence impact ${riskDashboard.transaction_queue[0]?.normalized_risk?.market_confidence_impact ?? 0}`
     },
     {
       label: 'Threat posture',
@@ -1912,7 +1926,10 @@ export function buildDashboardViewModel(
     {
       label: 'Resilience status',
       value: `${resilienceDashboard.summary.reconciliation_status}/${resilienceDashboard.summary.backstop_decision}`,
-      meta: `${monitoringTruth.active_incidents_count} incidents tracked · ${formatSourceLabel(diagnostics.endpoints.resilienceDashboard.payloadState)}`
+      meta:
+        resilienceDashboard.latest_incidents[0]?.normalized_risk
+          ? `${resilienceDashboard.latest_incidents[0].normalized_risk?.contagion_risk_label} · regulatory evidence ${resilienceDashboard.latest_incidents[0].normalized_risk?.regulatory_evidence_priority}`
+          : `${monitoringTruth.active_incidents_count} incidents tracked · ${formatSourceLabel(diagnostics.endpoints.resilienceDashboard.payloadState)}`
     }
   ];
   const backendBanner = monitoringPresentation.summary;

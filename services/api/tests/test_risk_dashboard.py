@@ -116,6 +116,8 @@ class ApiRiskDashboardTests(unittest.TestCase):
         self.assertEqual(body['risk_engine']['mode'], 'embedded_local')
         self.assertEqual(body['risk_engine']['fallback_items'], 0)
         self.assertTrue(all(item['source'] == 'live' for item in body['transaction_queue']))
+        self.assertTrue(all('normalized_risk' in item for item in body['transaction_queue']))
+        self.assertTrue(all(item['normalized_risk']['contagion_risk_label'] != 'guarded_due_to_stale_telemetry' for item in body['transaction_queue']))
         self.assertEqual(self.client.get('/health/details').json()['dependencies']['risk_engine']['last_used_mode'], 'embedded_local')
 
     def test_risk_dashboard_uses_remote_proxy_when_real_service_url_is_configured(self) -> None:
@@ -159,6 +161,8 @@ class ApiRiskDashboardTests(unittest.TestCase):
         self.assertEqual(body['risk_engine']['live_items'], 0)
         self.assertEqual(body['risk_engine']['fallback_items'], 4)
         self.assertTrue(all(item['source'] == 'fallback' for item in body['transaction_queue']))
+        self.assertTrue(all(item['normalized_risk']['contagion_risk_label'] == 'guarded_due_to_stale_telemetry' for item in body['transaction_queue']))
+        self.assertTrue(all(item['normalized_risk']['regulatory_evidence_priority'] == 'high' for item in body['transaction_queue']))
         self.assertIn('message', body)
         self.assertIn('summary', body)
         self.assertIn('risk_alerts', body)
@@ -245,6 +249,44 @@ class ApiThreatGatewayTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 503)
+
+
+class ApiResilienceGatewayTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+
+    def test_resilience_dashboard_incidents_include_normalized_risk_fields(self) -> None:
+        payload = api_main.fallback_resilience_dashboard()
+        payload['latest_incidents'] = [
+            {
+                'event_id': 'evt-1',
+                'created_at': '2026-03-19T10:00:00Z',
+                'event_type': 'supply_divergence',
+                'trigger_source': 'telemetry',
+                'related_asset_id': 'asset_1',
+                'affected_assets': ['asset_1'],
+                'affected_ledgers': ['ethereum'],
+                'severity': 'critical',
+                'status': 'open',
+                'summary': 'Deterministic stale telemetry incident.',
+                'metadata': {},
+                'attestation_hash': 'hash',
+                'fingerprint': 'fingerprint',
+                'source': 'fallback',
+                'degraded': True,
+            }
+        ]
+        with patch.object(api_main, 'fetch_resilience_dashboard', return_value=payload):
+            response = self.client.get('/resilience/dashboard')
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn('latest_incidents', body)
+        self.assertTrue(body['latest_incidents'])
+        normalized = body['latest_incidents'][0]['normalized_risk']
+        self.assertEqual(
+            sorted(normalized.keys()),
+            sorted(['asset_criticality_score', 'exposure_severity', 'market_confidence_impact', 'redemption_liquidity_stress', 'contagion_risk_label', 'regulatory_evidence_priority']),
+        )
 
 
 if __name__ == '__main__':

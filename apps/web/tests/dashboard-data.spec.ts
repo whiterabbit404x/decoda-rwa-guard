@@ -209,6 +209,8 @@ test.describe('dashboard production API flow', () => {
       expect(data.diagnostics.fallbackTriggered).toBe(false);
       expect(data.diagnostics.failedEndpoints).toEqual([]);
       expect(data.diagnostics.endpoints.riskDashboard.source).toBe('live');
+      expect(viewModel.summaryCards.find((card) => card.label === 'Average risk score')?.meta).toContain('confidence impact');
+      expect(viewModel.summaryCards.find((card) => card.label === 'Resilience status')?.meta).toMatch(/regulatory evidence|incidents tracked/);
       expect(requestedUrls).toEqual([
         'https://railway.example/ops/dashboard-page-data',
         'https://railway.example/dashboard',

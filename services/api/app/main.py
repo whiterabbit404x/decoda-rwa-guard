@@ -1930,9 +1930,9 @@ def compliance_create_governance_action(payload: dict[str, Any]) -> dict[str, An
 def resilience_dashboard() -> dict[str, Any]:
     payload = fetch_resilience_dashboard()
     if payload is not None:
-        return payload
+        return with_resilience_normalized_risk(payload)
     record_dependency_runtime('reconciliation_service', 'fallback', 'Resilience dashboard request failed; serving fallback dashboard.', payload_source='fallback', degraded=True, detail='Resilience dashboard fallback active')
-    return attach_dependency_diagnostics(fallback_resilience_dashboard(), 'reconciliation_service', fallback_reason='Resilience dashboard fell back after embedded or remote execution failed.')
+    return attach_dependency_diagnostics(with_resilience_normalized_risk(fallback_resilience_dashboard()), 'reconciliation_service', fallback_reason='Resilience dashboard fell back after embedded or remote execution failed.')
 
 
 @app.get(
@@ -1974,17 +1974,18 @@ def resilience_record_incident(payload: dict[str, Any]) -> dict[str, Any]:
 @app.get('/resilience/incidents', summary='Feature 4 resilience incident list', description='Returns resilience incidents from the reconciliation-service or fallback incident ledger rows when unavailable.')
 def resilience_incidents() -> list[dict[str, Any]]:
     response = proxy_resilience_get('incidents')
-    return response or fallback_resilience_dashboard()['latest_incidents']
+    incidents = response or fallback_resilience_dashboard()['latest_incidents']
+    return [with_resilience_incident_normalized_risk(incident) for incident in incidents]
 
 
 @app.get('/resilience/incidents/{event_id}', summary='Feature 4 resilience incident detail', description='Returns one resilience incident from the reconciliation-service or fallback data when unavailable.')
 def resilience_incident(event_id: str) -> dict[str, Any]:
     response = proxy_resilience_get(f'incidents/{event_id}')
     if response is not None:
-        return response
+        return with_resilience_incident_normalized_risk(response)
     for incident in fallback_resilience_dashboard()['latest_incidents']:
         if incident['event_id'] == event_id:
-            return incident
+            return with_resilience_incident_normalized_risk(incident)
     return {'detail': f'Unknown event_id: {event_id}', 'source': 'fallback', 'degraded': True}
 
 
@@ -4568,6 +4569,7 @@ def serialize_queue_item(item: dict[str, Any]) -> dict[str, Any]:
         'explanation': evaluation['explanation'],
         'updated_at': item['updated_at'],
         'source': 'live' if item['live_data'] else 'fallback',
+        'normalized_risk': build_normalized_risk(item['evaluation'], degraded=not item['live_data']),
     }
 
 
@@ -4588,6 +4590,7 @@ def build_risk_alerts(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 'explanation': item['evaluation']['explanation'],
                 'tx_hash': item['request']['transaction_payload']['tx_hash'],
                 'status': 'Open' if item['evaluation']['recommendation'] == 'BLOCK' else 'Reviewing',
+                'normalized_risk': build_normalized_risk(item['evaluation'], degraded=not item['live_data']),
             }
         )
     return alerts
@@ -4605,6 +4608,7 @@ def build_contract_scan_results(queue: list[dict[str, Any]]) -> list[dict[str, A
             'triggered_rules': [rule['summary'] for rule in item['evaluation'].get('triggered_rules', [])],
             'explanation': item['evaluation']['explanation'],
             'source': 'live' if item['live_data'] else 'fallback',
+            'normalized_risk': build_normalized_risk(item['evaluation'], degraded=not item['live_data']),
         }
         for item in queue
     ]
@@ -4622,9 +4626,59 @@ def build_decisions_log(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
             'triggered_rules': [rule['summary'] for rule in item['evaluation'].get('triggered_rules', [])],
             'explanation': item['evaluation']['explanation'],
             'source': 'live' if item['live_data'] else 'fallback',
+            'normalized_risk': build_normalized_risk(item['evaluation'], degraded=not item['live_data']),
         }
         for item in reversed(queue)
     ]
+
+
+def build_normalized_risk(evaluation: dict[str, Any], degraded: bool) -> dict[str, Any]:
+    risk_score = max(0, min(100, int(evaluation.get('risk_score', 0))))
+    recommendation = str(evaluation.get('recommendation', 'REVIEW')).upper()
+    asset_criticality_score = max(1, min(100, risk_score if recommendation != 'ALLOW' else max(1, risk_score // 2)))
+    exposure_severity = 'critical' if risk_score >= 85 else 'high' if risk_score >= 65 else 'medium' if risk_score >= 40 else 'low'
+    market_confidence_impact = max(0, min(100, risk_score + (15 if degraded else 0)))
+    redemption_liquidity_stress = max(0, min(100, risk_score + (20 if recommendation == 'BLOCK' else 8 if recommendation == 'REVIEW' else -20)))
+    if degraded:
+        contagion_risk_label = 'guarded_due_to_stale_telemetry'
+        regulatory_evidence_priority = 'high'
+    elif recommendation == 'BLOCK':
+        contagion_risk_label = 'elevated'
+        regulatory_evidence_priority = 'high'
+    elif recommendation == 'REVIEW':
+        contagion_risk_label = 'contained'
+        regulatory_evidence_priority = 'medium'
+    else:
+        contagion_risk_label = 'isolated'
+        regulatory_evidence_priority = 'low'
+    return {
+        'asset_criticality_score': asset_criticality_score,
+        'exposure_severity': exposure_severity,
+        'market_confidence_impact': market_confidence_impact,
+        'redemption_liquidity_stress': redemption_liquidity_stress,
+        'contagion_risk_label': contagion_risk_label,
+        'regulatory_evidence_priority': regulatory_evidence_priority,
+    }
+
+
+def with_resilience_incident_normalized_risk(incident: dict[str, Any]) -> dict[str, Any]:
+    severity = str(incident.get('severity', 'medium')).lower()
+    status = str(incident.get('status', 'open')).lower()
+    severity_score_map = {'low': 25, 'medium': 50, 'high': 75, 'critical': 92}
+    risk_score = severity_score_map.get(severity, 50)
+    evaluation = {
+        'risk_score': risk_score,
+        'recommendation': 'BLOCK' if severity in {'critical', 'high'} or status in {'open', 'active'} else 'REVIEW',
+    }
+    normalized = build_normalized_risk(evaluation, degraded=bool(incident.get('degraded')))
+    return {**incident, 'normalized_risk': normalized}
+
+
+def with_resilience_normalized_risk(payload: dict[str, Any]) -> dict[str, Any]:
+    incidents = payload.get('latest_incidents')
+    if isinstance(incidents, list):
+        payload = {**payload, 'latest_incidents': [with_resilience_incident_normalized_risk(item) for item in incidents if isinstance(item, dict)]}
+    return payload
 
 
 def recommendation_severity(recommendation: str) -> str:
