@@ -1558,6 +1558,99 @@ def log_audit(
     )
 
 
+def _generate_workspace_api_key_secret() -> str:
+    return f"decoda_wk_{secrets.token_urlsafe(32)}"
+
+
+def _hash_workspace_api_key_secret(secret: str) -> str:
+    normalized = str(secret or '').strip()
+    if not normalized:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='API key secret is required.')
+    return f"sha256:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()}"
+
+
+def _workspace_api_key_secret_prefix(secret: str) -> str:
+    return str(secret or '')[:12]
+
+
+def list_workspace_api_keys(request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        _user, workspace_context = _require_workspace_admin(connection, request)
+        rows = connection.execute(
+            '''
+            SELECT id, label, created_by_user_id, secret_prefix, created_at, last_used_at, revoked_at
+            FROM workspace_api_keys
+            WHERE workspace_id = %s
+            ORDER BY created_at DESC
+            ''',
+            (workspace_context['workspace_id'],),
+        ).fetchall()
+        return {'items': [_serialize_workspace_api_key_row(row) for row in rows]}
+
+
+def _serialize_workspace_api_key_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'id': str(row['id']),
+        'label': str(row['label']),
+        'created_by': str(row['created_by_user_id']),
+        'secret_prefix': str(row['secret_prefix'] or ''),
+        'created_at': row['created_at'].isoformat() if row['created_at'] else None,
+        'last_used_at': row['last_used_at'].isoformat() if row['last_used_at'] else None,
+        'revoked_at': row['revoked_at'].isoformat() if row['revoked_at'] else None,
+    }
+
+
+def create_workspace_api_key(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    label = str(payload.get('label', '')).strip()
+    if not label:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='API key label is required.')
+    with pg_connection() as connection:
+        user, workspace_context = _require_workspace_admin(connection, request)
+        key_id = str(uuid.uuid4())
+        secret = _generate_workspace_api_key_secret()
+        connection.execute(
+            '''
+            INSERT INTO workspace_api_keys (id, workspace_id, label, secret_hash, secret_prefix, created_by_user_id, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            ''',
+            (key_id, workspace_context['workspace_id'], label, _hash_workspace_api_key_secret(secret), _workspace_api_key_secret_prefix(secret), user['id']),
+        )
+        log_audit(connection, action='workspace.api_key.create', entity_type='workspace_api_key', entity_id=key_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'label': label})
+        write_action_history(connection, workspace_id=workspace_context['workspace_id'], actor_type='user', actor_id=user['id'], object_type='workspace_api_key', object_id=key_id, action_type='workspace.api_key.create', details={'label': label})
+        connection.commit()
+        return {'api_key': {'id': key_id, 'label': label, 'secret_prefix': _workspace_api_key_secret_prefix(secret)}, 'secret': secret}
+
+
+def revoke_workspace_api_key(api_key_id: str, request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        user, workspace_context = _require_workspace_admin(connection, request)
+        row = connection.execute('SELECT id FROM workspace_api_keys WHERE id = %s AND workspace_id = %s', (api_key_id, workspace_context['workspace_id'])).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='API key not found.')
+        connection.execute('UPDATE workspace_api_keys SET revoked_at = NOW() WHERE id = %s AND workspace_id = %s', (api_key_id, workspace_context['workspace_id']))
+        log_audit(connection, action='workspace.api_key.revoke', entity_type='workspace_api_key', entity_id=api_key_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        write_action_history(connection, workspace_id=workspace_context['workspace_id'], actor_type='user', actor_id=user['id'], object_type='workspace_api_key', object_id=api_key_id, action_type='workspace.api_key.revoke', details={})
+        connection.commit()
+        return {'revoked': True, 'id': api_key_id}
+
+
+def rotate_workspace_api_key(api_key_id: str, request: Request) -> dict[str, Any]:
+    with pg_connection() as connection:
+        user, workspace_context = _require_workspace_admin(connection, request)
+        row = connection.execute('SELECT id, label FROM workspace_api_keys WHERE id = %s AND workspace_id = %s', (api_key_id, workspace_context['workspace_id'])).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='API key not found.')
+        secret = _generate_workspace_api_key_secret()
+        connection.execute(
+            'UPDATE workspace_api_keys SET secret_hash = %s, secret_prefix = %s, revoked_at = NULL, last_used_at = NULL WHERE id = %s AND workspace_id = %s',
+            (_hash_workspace_api_key_secret(secret), _workspace_api_key_secret_prefix(secret), api_key_id, workspace_context['workspace_id']),
+        )
+        log_audit(connection, action='workspace.api_key.rotate', entity_type='workspace_api_key', entity_id=api_key_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={})
+        write_action_history(connection, workspace_id=workspace_context['workspace_id'], actor_type='user', actor_id=user['id'], object_type='workspace_api_key', object_id=api_key_id, action_type='workspace.api_key.rotate', details={})
+        connection.commit()
+        return {'api_key': {'id': api_key_id, 'label': str(row['label']), 'secret_prefix': _workspace_api_key_secret_prefix(secret)}, 'secret': secret}
+
+
 def _normalize_incident_status(value: str | None) -> str:
     normalized = str(value or '').strip().lower().replace('_', '-')
     if normalized in {'investigating', 'in-progress', 'triaged'}:
