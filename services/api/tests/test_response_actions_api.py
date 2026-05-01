@@ -713,6 +713,20 @@ def test_list_response_action_capabilities_returns_workspace_scoped_payload(monk
     assert capabilities['disable_monitored_system']['reason'] == 'Manual-only in live mode'
     assert capabilities['revoke_approval']['live_execution_path'] == 'safe'
     assert capabilities['freeze_wallet']['live_execution_path'] == 'governance'
+    assert capabilities['freeze_wallet']['action_intent'] == 'freeze recommendation'
+    assert capabilities['pause_mint_redeem']['action_intent'] == 'pause mint/redeem recommendation'
+    assert capabilities['notify_compliance_team']['action_intent'] == 'notify compliance team'
+
+
+def test_recommended_actions_for_context_is_deterministic() -> None:
+    incident_actions = pilot.recommended_actions_for_context(incident_id='inc-1', alert_id=None, action_type='unknown')
+    assert incident_actions == ['freeze_wallet', 'pause_mint_redeem', 'notify_compliance_team', 'escalate_to_issuer', 'generate_regulator_auditor_package']
+
+    alert_actions = pilot.recommended_actions_for_context(incident_id=None, alert_id='alert-1', action_type='unknown')
+    assert alert_actions == ['revoke_approval', 'notify_compliance_team']
+
+    explicit_action = pilot.recommended_actions_for_context(incident_id='inc-1', alert_id='alert-1', action_type='revoke_approval')
+    assert explicit_action == ['revoke_approval']
 
 
 def test_execute_live_action_requires_explicit_approval(monkeypatch):

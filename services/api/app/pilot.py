@@ -10541,34 +10541,57 @@ def append_incident_timeline_note(incident_id: str, payload: dict[str, Any], req
 
 RESPONSE_ACTION_TYPES = {
     'freeze_wallet',
+    'pause_mint_redeem',
     'block_transaction',
     'revoke_approval',
+    'escalate_to_issuer',
+    'notify_compliance_team',
+    'generate_regulator_auditor_package',
     'disable_monitored_system',
     'suppress_rule',
     'notify_team',
 }
 RESPONSE_ACTION_SUPPORTED_MODES = ('simulated', 'recommended', 'live')
 RESPONSE_ACTION_MODE_POLICY: dict[str, tuple[str, ...]] = {
-    'notify_team': ('simulated', 'recommended', 'live'),
+    'notify_compliance_team': ('simulated', 'recommended', 'live'),
+    'escalate_to_issuer': ('simulated', 'recommended', 'live'),
+    'generate_regulator_auditor_package': ('simulated', 'recommended', 'live'),
     'revoke_approval': ('simulated', 'recommended', 'live'),
     'freeze_wallet': ('simulated', 'recommended', 'live'),
+    'pause_mint_redeem': ('simulated', 'recommended', 'live'),
     'disable_monitored_system': ('simulated', 'recommended', 'live'),
     'suppress_rule': ('simulated', 'recommended', 'live'),
+    'notify_team': ('simulated', 'recommended', 'live'),
     'block_transaction': ('simulated', 'recommended', 'live'),
 }
 RESPONSE_ACTION_LIVE_EXECUTION_PATHS = {'safe', 'governance', 'manual_only', 'unsupported'}
 RESPONSE_ACTION_LIVE_EXECUTION_DEFAULTS: dict[str, tuple[str, str | None]] = {
-    'notify_team': ('governance', None),
+    'notify_compliance_team': ('governance', None),
+    'escalate_to_issuer': ('governance', None),
+    'generate_regulator_auditor_package': ('manual_only', 'Manual-only in live mode'),
+    'pause_mint_redeem': ('manual_only', 'Manual-only in live mode'),
     'disable_monitored_system': ('manual_only', 'Manual-only in live mode'),
     'suppress_rule': ('manual_only', 'Manual-only in live mode'),
+    'notify_team': ('governance', None),
     'freeze_wallet': ('governance', None),
     'block_transaction': ('unsupported', 'Unsupported live action'),
 }
 LEGACY_ACTION_TYPE_ALIASES = {
     'revoke_erc20_approval': 'revoke_approval',
-    'pause_asset': 'disable_monitored_system',
-    'notify_only': 'notify_team',
+    'pause_asset': 'pause_mint_redeem',
+    'notify_only': 'notify_compliance_team',
     'compensating_reapprove_erc20_approval': 'revoke_approval',
+}
+RESPONSE_ACTION_INTENTS: dict[str, str] = {
+    'freeze_wallet': 'freeze recommendation',
+    'pause_mint_redeem': 'pause mint/redeem recommendation',
+    'revoke_approval': 'revoke approval',
+    'escalate_to_issuer': 'escalate to issuer',
+    'notify_compliance_team': 'notify compliance team',
+    'generate_regulator_auditor_package': 'generate regulator/auditor package',
+    'block_transaction': 'block transaction recommendation',
+    'disable_monitored_system': 'pause mint/redeem recommendation',
+    'notify_team': 'notify compliance team',
 }
 ENFORCEMENT_STATUSES = {'pending', 'executed', 'failed', 'canceled'}
 LIVE_ACTION_APPROVER_ROLES = {'owner', 'admin'}
@@ -10642,10 +10665,21 @@ def response_action_capability(action_type: str) -> dict[str, Any]:
 
     return {
         'action_type': normalized_action_type,
+        'action_intent': RESPONSE_ACTION_INTENTS.get(normalized_action_type, normalized_action_type.replace('_', ' ')),
         'supported_modes': supported_modes,
         'live_execution_path': live_execution_path,
         'reason': reason,
     }
+
+
+def recommended_actions_for_context(*, incident_id: str | None, alert_id: str | None, action_type: str) -> list[str]:
+    if action_type in RESPONSE_ACTION_INTENTS:
+        return [action_type]
+    if incident_id:
+        return ['freeze_wallet', 'pause_mint_redeem', 'notify_compliance_team', 'escalate_to_issuer', 'generate_regulator_auditor_package']
+    if alert_id:
+        return ['revoke_approval', 'notify_compliance_team']
+    return ['notify_compliance_team']
 
 
 def resolve_response_action_capability(action_type: str, mode: str | None = None) -> dict[str, Any]:
@@ -11093,6 +11127,8 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
         execution_metadata = {
             'params': params,
             'created_via': 'api',
+            'action_intent': RESPONSE_ACTION_INTENTS.get(action_type, action_type.replace('_', ' ')),
+            'recommended_actions': recommended_actions_for_context(incident_id=incident_id, alert_id=alert_id, action_type=action_type),
             'evidence_source': 'live' if mode == 'live' else 'simulator',
             'chain_linked_ids': {
                 'incident_id': incident_id,
