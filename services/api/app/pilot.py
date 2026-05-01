@@ -1746,6 +1746,41 @@ def append_incident_timeline_event(
     )
 
 
+
+CANONICAL_DETECTOR_CODES: dict[str, str] = {
+    'oracle_divergence': 'oracle_divergence',
+    'reserve_mismatch': 'reserve_mismatch',
+    'unauthorized_mint_burn': 'unauthorized_mint_burn',
+    'abnormal_redemption_activity': 'abnormal_redemption_activity',
+    'contract_upgrade_anomaly': 'contract_upgrade_anomaly',
+    'custody_transfer_anomaly': 'custody_transfer_anomaly',
+    'compliance_exposure': 'compliance_exposure',
+    'monitoring_coverage_gap': 'monitoring_coverage_gap',
+}
+
+_DETECTOR_CODE_ALIASES: dict[str, str] = {
+    'oracle-divergence': 'oracle_divergence',
+    'oracle_integrity': 'oracle_divergence',
+    'reserve-mismatch': 'reserve_mismatch',
+    'unauthorized-mint-burn': 'unauthorized_mint_burn',
+    'abnormal-redemption-activity': 'abnormal_redemption_activity',
+    'contract-upgrade-anomaly': 'contract_upgrade_anomaly',
+    'custody-transfer-anomaly': 'custody_transfer_anomaly',
+    'compliance-exposure': 'compliance_exposure',
+    'monitoring-coverage-gap': 'monitoring_coverage_gap',
+}
+
+
+def canonical_detector_code(*values: Any) -> str | None:
+    for value in values:
+        normalized = str(value or '').strip().lower().replace('-', '_')
+        if not normalized:
+            continue
+        mapped = _DETECTOR_CODE_ALIASES.get(normalized, normalized)
+        if mapped in CANONICAL_DETECTOR_CODES:
+            return mapped
+    return None
+
 PIPELINE_SEVERITY_LEVELS = ('low', 'medium', 'high', 'critical')
 PIPELINE_GOVERNANCE_ACTION_MODES = ('recommendation', 'simulation', 'manual_required', 'executed')
 PIPELINE_GOVERNANCE_ACTION_TYPES = (
@@ -1810,11 +1845,12 @@ def create_detection_event_from_telemetry(
             evidence_source,
         ),
     )
+    detector_code = canonical_detector_code((evidence or {}).get('detector_kind'), (evidence or {}).get('detector_family'), detection_type)
     return {
         'id': detection_event_id,
         'workspace_id': workspace_id,
         'telemetry_event_id': telemetry_event.get('id'),
-        'detection_type': detection_type,
+        'detection_type': detector_code or detection_type,
         'severity': normalized_severity,
         'confidence': normalized_confidence,
         'evidence_summary': evidence_summary,
@@ -1842,11 +1878,11 @@ def create_alert_from_detection_event(connection: Any, *, workspace_id: str, use
             alert_id,
             workspace_id,
             user_id,
-            str(detection_event.get('detection_type') or 'telemetry_detection'),
+            str(canonical_detector_code(detection_event.get('detection_type')) or detection_event.get('detection_type') or 'telemetry_detection'),
             'Detection Alert',
             severity,
             str(detection_event.get('evidence_summary') or 'Detection alert created from telemetry pipeline.'),
-            _json_dumps({'detection_event_id': detection_event.get('id'), 'confidence': confidence, 'evidence': detection_event.get('evidence') or {}}),
+            _json_dumps({'detection_event_id': detection_event.get('id'), 'confidence': confidence, 'detector_kind': canonical_detector_code(detection_event.get('detection_type')) or detection_event.get('detection_type'), 'evidence': detection_event.get('evidence') or {}}),
             detection_event.get('id'),
             workspace_id,
             detection_event.get('target_id'),
@@ -9617,7 +9653,7 @@ def list_detections(
             item = _json_safe_value(dict(row))
             item['tx_hash'] = item.get('chain_tx_hash') or item.get('tx_hash')
             item['block_number'] = item.get('chain_block_number') or item.get('block_number')
-            item['detector_kind'] = item.get('chain_detector_kind') or item.get('detector_kind')
+            item['detector_kind'] = canonical_detector_code(item.get('chain_detector_kind'), item.get('detector_kind'), item.get('detection_type')) or item.get('chain_detector_kind') or item.get('detector_kind')
             item['evidence_source'] = item.get('evidence_source') or item.get('last_evidence_source')
             item['evidence_origin'] = item.get('evidence_origin') or item.get('last_evidence_origin')
             item['evidence_origin_label'] = detection_evidence_origin_label(item.get('evidence_source') or item.get('evidence_origin'))
@@ -9808,7 +9844,7 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
             item['origin'] = item.get('evidence_origin')
             item['tx_hash'] = item.get('tx_hash')
             item['block_number'] = item.get('block_number')
-            item['detector_kind'] = item.get('detector_kind')
+            item['detector_kind'] = canonical_detector_code(item.get('detector_kind'), item.get('alert_type')) or item.get('detector_kind')
             item['linked_detection_id'] = item.get('detection_id')
             item['linked_alert_id'] = item.get('id')
             item['linked_incident_id'] = item.get('incident_id')
@@ -9852,7 +9888,7 @@ def get_alert(alert_id: str, request: Request) -> dict[str, Any]:
         alert_payload['tx_hash'] = latest_evidence_payload.get('tx_hash')
         alert_payload['block_number'] = latest_evidence_payload.get('block_number')
         latest_raw_payload = latest_evidence_payload.get('raw_payload_json') if isinstance(latest_evidence_payload.get('raw_payload_json'), dict) else {}
-        alert_payload['detector_kind'] = latest_raw_payload.get('detector_kind') or latest_raw_payload.get('detector_family')
+        alert_payload['detector_kind'] = canonical_detector_code(latest_raw_payload.get('detector_kind'), latest_raw_payload.get('detector_family'), alert_payload.get('alert_type')) or latest_raw_payload.get('detector_kind') or latest_raw_payload.get('detector_family')
         alert_payload['linked_detection_id'] = alert_payload.get('detection_id')
         alert_payload['linked_alert_id'] = alert_payload.get('id')
         alert_payload['linked_incident_id'] = alert_payload.get('incident_id')
@@ -9976,14 +10012,14 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         alert = connection.execute(
-            'SELECT id, target_id, analysis_run_id, title, severity, summary, detection_id FROM alerts WHERE id = %s AND workspace_id = %s',
+            'SELECT id, target_id, analysis_run_id, title, severity, summary, detection_id, alert_type, findings FROM alerts WHERE id = %s AND workspace_id = %s',
             (alert_id, workspace_context['workspace_id']),
         ).fetchone()
         if alert is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found.')
         latest_evidence = connection.execute(
             '''
-            SELECT id, tx_hash, observed_at
+            SELECT id, tx_hash, observed_at, raw_payload_json
             FROM evidence
             WHERE workspace_id = %s
               AND alert_id = %s::uuid
@@ -9992,6 +10028,10 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
             ''',
             (workspace_context['workspace_id'], alert_id),
         ).fetchone()
+        detector_code = canonical_detector_code((alert.get('findings') or {}).get('detector_kind') if isinstance(alert.get('findings'), dict) else None, (alert.get('findings') or {}).get('detector_family') if isinstance(alert.get('findings'), dict) else None, alert.get('alert_type'))
+        if detector_code is None and latest_evidence is not None:
+            raw_payload = latest_evidence.get('raw_payload_json') if isinstance(latest_evidence.get('raw_payload_json'), dict) else {}
+            detector_code = canonical_detector_code(raw_payload.get('detector_kind'), raw_payload.get('detector_family'))
         incident_id = str(uuid.uuid4())
         title = str(payload.get('title') or f"Escalated alert: {alert.get('title') or alert_id}")
         summary = str(payload.get('summary') or alert.get('summary') or 'Escalated from alert')
@@ -10024,7 +10064,7 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
                 summary,
                 _json_dumps([alert_id]),
                 _json_dumps([{'event': 'incident.created_from_alert', 'at': datetime.now(timezone.utc).isoformat(), 'alert_id': alert_id}]),
-                _json_dumps({'source': 'alert_escalation', 'alert_id': alert_id, 'detection_id': alert.get('detection_id')}),
+                _json_dumps({'source': 'alert_escalation', 'alert_id': alert_id, 'detection_id': alert.get('detection_id'), 'detector_kind': detector_code}),
                 alert_id,
                 workspace_context['workspace_id'],
             ),
@@ -10040,7 +10080,7 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
             object_type='alert',
             object_id=alert_id,
             action_type='alert.escalated_to_incident',
-            details={'incident_id': incident_id, 'detection_id': alert.get('detection_id')},
+            details={'incident_id': incident_id, 'detection_id': alert.get('detection_id'), 'detector_kind': detector_code},
         )
         write_action_history(
             connection,
@@ -10050,7 +10090,7 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
             object_type='incident',
             object_id=incident_id,
             action_type='incident.created_from_alert',
-            details={'alert_id': alert_id, 'detection_id': alert.get('detection_id')},
+            details={'alert_id': alert_id, 'detection_id': alert.get('detection_id'), 'detector_kind': detector_code},
         )
         write_action_history(
             connection,
@@ -10060,7 +10100,7 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
             object_type='incident',
             object_id=incident_id,
             action_type='incident.action_recorded',
-            details={'source_alert_id': alert_id, 'incident_id': incident_id, 'detection_id': alert.get('detection_id')},
+            details={'source_alert_id': alert_id, 'incident_id': incident_id, 'detection_id': alert.get('detection_id'), 'detector_kind': detector_code},
         )
         append_incident_timeline_event(
             connection,
@@ -10072,6 +10112,7 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
             metadata={
                 'alert_id': alert_id,
                 'detection_id': alert.get('detection_id'),
+                'detector_kind': detector_code,
                 'external_references': _incident_external_references(
                     safe_tx_hash=latest_evidence.get('tx_hash') if latest_evidence is not None else None,
                 ),
@@ -10093,6 +10134,8 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
                 metadata={
                     'alert_id': alert_id,
                     'detection_id': alert.get('detection_id'),
+                    'detector_kind': detector_code,
+                'detector_kind': detector_code,
                     'external_references': _incident_external_references(
                         safe_tx_hash=latest_evidence.get('tx_hash'),
                     ),
