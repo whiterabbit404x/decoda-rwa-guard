@@ -3049,23 +3049,23 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       </DetectionFeed>
 
       <AlertIncidentChain
-        alert={linkedAlertRows[0] ? {
-          id: linkedAlertRows[0].alert.chain_linked_ids?.alert_id || linkedAlertRows[0].alert.id,
-          label: linkedAlertRows[0].alert.title,
-          status: linkedAlertRows[0].alert.status || 'Needs review',
-          detail: `Severity ${severityLabel(linkedAlertRows[0].alert.severity)}`,
+        alert={persistedThreatChain.alert ? {
+          id: persistedThreatChain.alert.chain_linked_ids?.alert_id || persistedThreatChain.alert.id,
+          label: persistedThreatChain.alert.title,
+          status: persistedThreatChain.alert.status || 'Needs review',
+          detail: `Severity ${severityLabel(persistedThreatChain.alert.severity)}`,
         } : null}
-        incident={linkedIncidentRows[0] ? {
-          id: linkedIncidentRows[0].incident.chain_linked_ids?.incident_id || linkedIncidentRows[0].incident.id,
-          label: linkedIncidentRows[0].incident.title || linkedIncidentRows[0].incident.event_type || 'Incident',
-          status: linkedIncidentRows[0].incident.status || 'Needs review',
-          detail: `Severity ${severityLabel(linkedIncidentRows[0].incident.severity)}`,
+        incident={persistedThreatChain.incident ? {
+          id: persistedThreatChain.incident.chain_linked_ids?.incident_id || persistedThreatChain.incident.id,
+          label: persistedThreatChain.incident.title || persistedThreatChain.incident.event_type || 'Incident',
+          status: persistedThreatChain.incident.status || 'Needs review',
+          detail: `Severity ${severityLabel(persistedThreatChain.incident.severity)}`,
         } : null}
-        responseAction={linkedActionRows[0] ? {
-          id: linkedActionRows[0].id,
-          label: linkedActionRows[0].action_type || 'Response action',
-          status: linkedActionRows[0].details_json?.status ? String(linkedActionRows[0].details_json?.status) : 'Tracked',
-          detail: linkedActionRows[0].timestamp ? `Updated ${formatAbsoluteTime(linkedActionRows[0].timestamp)}` : undefined,
+        responseAction={persistedThreatChain.action ? {
+          id: persistedThreatChain.action.id,
+          label: persistedThreatChain.action.action_type || 'Response action',
+          status: persistedThreatChain.action.details_json?.status ? String(persistedThreatChain.action.details_json?.status) : 'Tracked',
+          detail: persistedThreatChain.action.timestamp ? `Updated ${formatAbsoluteTime(persistedThreatChain.action.timestamp)}` : undefined,
         } : null}
       />
 
