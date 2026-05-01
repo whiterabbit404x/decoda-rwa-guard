@@ -64,7 +64,7 @@ test('auth context and operational module pages use live customer workflow langu
   expect(authContext).toContain('safeAuthFailureMessage');
   expect(threatPanel).toContain('Threat monitoring command center');
   expect(threatPanel).not.toContain('monitoring_scenario');
-  expect(nav).toContain('Targets');
+  expect(nav).toContain('Monitoring Sources');
   expect(nav).toContain('Integrations');
 });
 
@@ -81,7 +81,7 @@ test('onboarding wizard and help/legal pages are present for self-serve setup', 
   expect(onboarding).toContain('/onboarding/progress');
   expect(help).toContain('self-serve workspace onboarding');
   expect(nav).toContain("{ href: '/onboarding', label: 'Onboarding' }");
-  expect(nav).toContain("{ href: '/help', label: 'Help' }");
+  expect(nav).toContain("{ href: '/response-actions', label: 'Response Actions' }");
   expect(security).toContain('workspace-scoped access control');
   expect(settingsPage).toContain('href="/settings/security"');
   expect(settingsPage).toContain('billingDisabledMessage(billingRuntime)');
