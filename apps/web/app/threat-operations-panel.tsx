@@ -2106,24 +2106,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     if (!workspaceConfigured) {
       headerStatusChips.push({ label: 'Workspace not configured', tone: 'chip' });
     }
-    if (latestReconcileJob) {
-      headerStatusChips.push({
-        label: `Reconcile ${latestReconcileJob.status.toUpperCase()}`,
-        tone: 'status',
-        className: `statusBadge statusBadge-${reconcileStatusBadgeTone(latestReconcileJob.status)}`,
-      });
-    }
     if (systemsPanelWarning) {
       headerStatusChips.push({ label: systemsPanelWarning, tone: 'status', className: 'statusBadge statusBadge-attention' });
     }
-    if (snapshotStaleCollections.length > 0) {
-      headerStatusChips.push({
-        label: `Stale collections ${snapshotStaleCollections.map((collection) => `${collection}:${formatAbsoluteTime(collectionLastSuccessfulRefreshAt[collection])}`).join(', ')}`,
-        tone: 'status',
-        className: 'statusBadge statusBadge-attention',
-      });
-    }
-
     const contradictions = collectMonitoringContradictions({
       provenanceLabel: derivedProvenanceLabel,
       telemetryState,
@@ -2134,14 +2119,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       },
       presentationStatus: monitoringPresentation.status,
     });
-    if (contradictions.length > 0) {
-      headerStatusChips.push({
-        label: `Contradiction guard active (${contradictions.length})`,
-        tone: 'status',
-        className: 'statusBadge statusBadge-offline',
-      });
-    }
-
     return {
       presentationStatus: monitoringPresentation.status,
       presentationStatusLabel: monitoringPresentation.statusLabel,
