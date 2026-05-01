@@ -2828,7 +2828,22 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       `Last successful runtime refresh: ${formatAbsoluteTime(monitoringViewModel.lastSuccessfulRuntimeRefreshAt)}`,
       `Last successful timeline refresh: ${formatAbsoluteTime(monitoringViewModel.lastSuccessfulTimelineRefreshAt)}`,
     ],
-  }), [monitoringViewModel]);
+    continuityChecks: continuityFailedCheckList.map((item) => item.label),
+    reconcileInternals: [
+      `state=${reconcileUiState}`,
+      `active_reconcile_id=${activeReconcileId ?? 'none'}`,
+      `last_successful_reconcile_at=${formatAbsoluteTime(lastSuccessfulReconcileAt)}`,
+    ],
+    loopHealthInternals: [
+      `loop_state=${loopHealthSignal.state}`,
+      `consecutive_failures=${loopHealth?.consecutive_failures ?? 0}`,
+      `last_successful_cycle=${formatAbsoluteTime(loopHealth?.last_successful_cycle ?? null)}`,
+    ],
+    proofChainInternals: [
+      `ensuring=${ensuringProofChain ? 'yes' : 'no'}`,
+      `proof_chain_enabled=${monitoringViewModel.ctas.generateSimulatorProofChain.disabled ? 'no' : 'yes'}`,
+    ],
+  }), [activeReconcileId, continuityFailedCheckList, ensuringProofChain, lastSuccessfulReconcileAt, loopHealth, loopHealthSignal.state, monitoringViewModel, reconcileUiState]);
 
   const responseActionCapabilities = useMemo(() => Object.entries(actionCapabilities).filter(([, enabled]) => enabled).map(([key]) => key.replaceAll('_', ' ')), [actionCapabilities]);
   const responseActions = useMemo<ResponseAction[]>(() => [
@@ -2894,6 +2909,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         failedEndpoints={snapshotFailedEndpoints}
         staleCollections={snapshotStaleCollections}
         diagnostics={technicalDetails.diagnostics}
+        continuityChecks={technicalDetails.continuityChecks}
+        reconcileInternals={technicalDetails.reconcileInternals}
+        loopHealthInternals={technicalDetails.loopHealthInternals}
+        proofChainInternals={technicalDetails.proofChainInternals}
       />
     </section>
   );
