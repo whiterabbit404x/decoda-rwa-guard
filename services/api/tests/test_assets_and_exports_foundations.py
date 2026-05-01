@@ -116,3 +116,44 @@ def test_generate_export_artifact_proof_bundle_contains_expected_files(monkeypat
     assert sorted(row.keys()) == ['alerts.json', 'detection_metrics.json', 'evidence.json', 'incidents.json', 'summary.json']
     assert row['summary.json']['incident_id'] == 'inc-1'
     assert connection.storage_update_called is True
+
+
+def test_generate_export_artifact_report_template_includes_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _ReportConnection(_FakeConnection):
+        def execute(self, query, params=None):
+            normalized = ' '.join(str(query).split())
+            if 'FROM export_jobs WHERE id = %s AND workspace_id = %s' in normalized:
+                return _FakeRow({'id': 'exp-2', 'export_type': 'report', 'format': 'json', 'filters': {'report_template': 'oracle_integrity_report', 'evidence_refs': [{'kind': 'alert', 'id': 'alert-1'}]}})
+            if 'FROM analysis_runs WHERE workspace_id = %s' in normalized:
+                return _FakeRow([{'id': 'run-1', 'analysis_type': 'oracle', 'status': 'completed', 'title': 'Oracle variance', 'summary': 'ok', 'created_at': '2026-01-01T00:00:00Z'}])
+            return super().execute(query, params)
+
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _ReportConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-1', export_id='exp-2')
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    row = payload['rows'][0]
+    metadata = row['metadata.json']
+    assert metadata['workspace_scope']['workspace_id'] == 'ws-1'
+    assert metadata['artifact_type'] == 'oracle_integrity'
+    assert metadata['report_template'] == 'oracle_integrity_report'
+    assert metadata['provenance']['export_job_id'] == 'exp-2'
+    assert metadata['provenance']['evidence_references'][0]['id'] == 'alert-1'
+
+
+def test_create_export_job_requires_supported_report_template(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.create_export_job('report', {'format': 'json', 'filters': {'report_template': 'unsupported'}}, request=None)
+    assert exc_info.value.status_code == 400
+
+
+def test_report_template_artifact_types_cover_required_exports() -> None:
+    assert set(pilot.REPORT_TEMPLATE_ARTIFACT_TYPES.keys()) == {
+        'treasury_security_posture_report',
+        'rwa_incident_timeline',
+        'oracle_integrity_report',
+        'custody_evidence_report',
+        'compliance_audit_export',
+    }
