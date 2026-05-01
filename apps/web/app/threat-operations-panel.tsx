@@ -3278,9 +3278,17 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                         {formatAbsoluteTime(alert.created_at)}
                       </p>
                       <p className="tableMeta">
-                        Linked detection: {linkedDetection?.title || linkedDetection?.id || 'Not linked'} · severity {severityLabel(alert.severity)}
+                        Alert: id {alert.chain_linked_ids?.alert_id || alert.id} · status {alert.status || 'Needs review'}
                       </p>
-                      <p className="tableMeta">Chain: detection {alert.chain_linked_ids?.detection_id || alert.detection_id || linkedDetection?.chain_linked_ids?.detection_id || linkedDetection?.id || 'n/a'} · alert {alert.chain_linked_ids?.alert_id || alert.id} · incident {alert.chain_linked_ids?.incident_id || alert.incident_id || 'n/a'} · action {alert.chain_linked_ids?.action_id || alert.linked_action_id || 'n/a'} · evidence {Number(alert.linked_evidence_count ?? linkedDetection?.linked_evidence_count ?? 0)}</p>
+                      <p className="tableMeta">
+                        Linked incident: id {alert.chain_linked_ids?.incident_id || alert.incident_id || 'No incident linked yet'} · status {linkedDetection?.linked_incident_id || alert.incident_id ? 'In incident queue' : 'Not created yet'}
+                      </p>
+                      <p className="tableMeta">
+                        Linked response action: id {alert.chain_linked_ids?.action_id || alert.linked_action_id || 'No response action linked yet'} · status {alert.linked_action_id || alert.chain_linked_ids?.action_id ? 'Tracked' : 'Pending assignment'} · mode {alert.response_action_mode || 'Mode not set'}
+                      </p>
+                      <p className="tableMeta">
+                        Linked detection: {linkedDetection?.title || linkedDetection?.id || 'No detection linked yet'} · severity {severityLabel(alert.severity)} · evidence records {Number(alert.linked_evidence_count ?? linkedDetection?.linked_evidence_count ?? 0)}
+                      </p>
                     </div>
                     <div className="signalActions">
                       <Link href="/alerts" prefetch={false}>Open</Link>
@@ -3327,7 +3335,18 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                         <span className="statusBadge statusBadge-low">Audit</span>{' '}
                         {formatAbsoluteTime(incident.created_at)}
                       </p>
-                      <p className="tableMeta">Chain: detection {incident.chain_linked_ids?.detection_id || incident.linked_detection_id || 'n/a'} · alert {incident.chain_linked_ids?.alert_id || incident.source_alert_id || 'n/a'} · incident {incident.chain_linked_ids?.incident_id || incident.id} · action {incident.chain_linked_ids?.action_id || incident.linked_action_id || 'n/a'} · evidence {Number(incident.linked_evidence_count ?? 0)}</p>
+                      <p className="tableMeta">
+                        Alert: id {incident.chain_linked_ids?.alert_id || incident.source_alert_id || 'No alert linked yet'} · status {incident.source_alert_id || incident.chain_linked_ids?.alert_id ? 'Alert linked' : 'Alert link pending'}
+                      </p>
+                      <p className="tableMeta">
+                        Linked incident: id {incident.chain_linked_ids?.incident_id || incident.id} · status {incident.status || 'Needs review'}
+                      </p>
+                      <p className="tableMeta">
+                        Linked response action: id {incident.chain_linked_ids?.action_id || incident.linked_action_id || 'No response action linked yet'} · status {incident.linked_action_id || incident.chain_linked_ids?.action_id ? 'Tracked' : 'Pending assignment'} · mode {incident.response_action_mode || 'Mode not set'}
+                      </p>
+                      <p className="tableMeta">
+                        Linked detection id {incident.chain_linked_ids?.detection_id || incident.linked_detection_id || 'No detection linked yet'} · evidence records {Number(incident.linked_evidence_count ?? 0)}
+                      </p>
                     </div>
                     <Link href="/incidents" prefetch={false}>Open</Link>
                   </div>
