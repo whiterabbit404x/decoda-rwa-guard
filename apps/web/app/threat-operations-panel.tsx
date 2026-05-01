@@ -2930,86 +2930,19 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </TechnicalRuntimeDetails>
       </article>
 
-      <ThreatOverviewCard securityStatus={securityStatus}>
-      <section className="monitoringKpiGrid" aria-label="Monitoring KPIs">
-        <article id="continuity-slo" className="dataCard kpiCard">
-          <p className="sectionEyebrow">Continuity SLO</p>
-          <p className="kpiValue">{continuitySlo.statusLabel}</p>
-          <p className="tableMeta">
-            {continuitySlo.pass
-              ? 'SLO PASS: heartbeat, telemetry, and detection checks are within thresholds.'
-              : `SLO FAIL (${continuitySloFailingDimensions(continuitySlo)}): ${continuitySloFailureReasons(continuitySlo)}`}
-          </p>
-          {!continuitySlo.pass ? (
-            <p className="tableMeta">
-              Failed checks: {continuityFailedCheckList.map((item) => `${item.code} (${item.label}${item.detail ? `: ${item.detail}` : ''})`).join(', ')}
-            </p>
-          ) : null}
-          {!continuitySlo.pass && continuityRemediationActions.length > 0 ? (
-            <ul className="tableMeta">
-              {continuityRemediationActions.map((action) => (
-                <li key={`${action.href}-${action.label}`}>
-                  {action.label} {' — '}
-                  <Link href={action.href} prefetch={false}>Open remediation</Link>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          <p className="tableMeta">
-            Continuity decision: <strong>{continuitySlo.statusLabel}</strong>{' '}
-            {continuitySlo.pass ? 'because all monitored dimensions are within SLO bounds.' : `because ${continuitySloFailureReasons(continuitySlo)}.`}
-          </p>
-          <ul className="tableMeta">
-            {continuitySlo.dimensions.map((dimension) => (
-              <li key={dimension.key}>
-                {dimension.label}: {dimension.pass ? 'PASS' : 'FAIL'} (age {formatSloDuration(dimension.ageSeconds)} / threshold {formatSloDuration(dimension.thresholdSeconds)})
-                {!dimension.pass && dimension.reason ? ` — ${dimension.reason}` : ''}
-              </li>
-            ))}
-          </ul>
-        </article>
-        <article className="dataCard kpiCard">
-          <p className="sectionEyebrow">Monitoring Status</p>
-          <p className="kpiValue">{monitoringPresentation.statusLabel}</p>
-          <p className="tableMeta">Continuous monitoring state for this workspace. Open technical details for internal diagnostics.</p>
-        </article>
-        <article id="telemetry-freshness" className="dataCard kpiCard">
-          <p className="sectionEyebrow">Telemetry Freshness</p>
-          <p className="kpiValue">{hasTelemetryTimestamp ? telemetryDisplayLabel : 'Unavailable'}</p>
-          <p className="tableMeta">Shows when live telemetry was last observed. Poll/heartbeat timestamps are excluded.</p>
-        </article>
-        <article className="dataCard kpiCard">
-          <p className="sectionEyebrow">Protected Assets</p>
-          <p className="kpiValue">{loadingSnapshot ? '—' : protectedAssetCount}</p>
-          <p className="tableMeta">Assets with monitoring definitions.</p>
-        </article>
-        <article className="dataCard kpiCard">
-          <p className="sectionEyebrow">Open Alerts</p>
-          <p className="kpiValue">{loadingSnapshot ? '—' : openAlerts}</p>
-          <p className="tableMeta"><Link href="/alerts" prefetch={false}>Review alert queue</Link></p>
-        </article>
-        <article className="dataCard kpiCard">
-          <p className="sectionEyebrow">Active Incidents</p>
-          <p className="kpiValue">{loadingSnapshot ? '—' : activeIncidents}</p>
-          <p className="tableMeta"><Link href="/incidents" prefetch={false}>Open incident queue</Link></p>
-        </article>
-        <article className="dataCard kpiCard">
-          <p className="sectionEyebrow">Latest Risk Score</p>
-          <p className="kpiValue">{latestRiskScore.value}</p>
-          <p className="tableMeta">{latestRiskScore.tier} · {riskFreshness}</p>
-        </article>
-        <article id="monitored-system-state" className="dataCard kpiCard">
-          <p className="sectionEyebrow">Coverage State</p>
-          <p className="kpiValue">{coverageSummary}</p>
-          <p className="tableMeta">Systems reporting telemetry.</p>
-        </article>
-        <article id="proof-chain-status" className="dataCard kpiCard">
-          <p className="sectionEyebrow">Proof Chain Status</p>
-          <p className="kpiValue">{proofChainStatus.toUpperCase()}</p>
-          <p className="tableMeta">Missing links: {missingTimelineLinks.length === 0 ? 'none' : missingTimelineLinks.join(', ')}</p>
-        </article>
-      </section>
-      </ThreatOverviewCard>
+      <ThreatOverviewCard securityStatus={securityStatus} />
+
+      <MonitoringHealthCard
+        heartbeatLabel={monitoringPresentation.heartbeatLabel}
+        pollLabel={monitoringViewModel.pollLabel}
+        telemetryLabel={hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'}
+        reportingSystems={reportingSystems}
+        configuredSystems={configuredSystems}
+        freshnessStatus={String(runtimeStatusSnapshot?.freshness_status ?? 'unavailable')}
+        confidenceStatus={String(runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
+      />
+
+      <DetectionFeed>
 
       <article className="dataCard">
         <div className="listHeader">
@@ -3113,6 +3046,32 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </div>
         ) : null}
       </article>
+      </DetectionFeed>
+
+      <AlertIncidentChain
+        alert={persistedThreatChain.alert ? {
+          id: persistedThreatChain.alert.chain_linked_ids?.alert_id || persistedThreatChain.alert.id,
+          label: persistedThreatChain.alert.title,
+          status: persistedThreatChain.alert.status || 'Needs review',
+          detail: `Severity ${severityLabel(persistedThreatChain.alert.severity)}`,
+        } : null}
+        incident={persistedThreatChain.incident ? {
+          id: persistedThreatChain.incident.chain_linked_ids?.incident_id || persistedThreatChain.incident.id,
+          label: persistedThreatChain.incident.title || persistedThreatChain.incident.event_type || 'Incident',
+          status: persistedThreatChain.incident.status || 'Needs review',
+          detail: `Severity ${severityLabel(persistedThreatChain.incident.severity)}`,
+        } : null}
+        responseAction={persistedThreatChain.action ? {
+          id: persistedThreatChain.action.id,
+          label: persistedThreatChain.action.action_type || 'Response action',
+          status: persistedThreatChain.action.details_json?.status ? String(persistedThreatChain.action.details_json?.status) : 'Tracked',
+          detail: persistedThreatChain.action.timestamp ? `Updated ${formatAbsoluteTime(persistedThreatChain.action.timestamp)}` : undefined,
+        } : null}
+      />
+
+      <ResponseActionPanel>
+        <p className="tableMeta">Use the action queue below to execute or review response workflows.</p>
+      </ResponseActionPanel>
 
       <section className="twoColumnSection monitoringLowerGrid">
         <article className="dataCard">
