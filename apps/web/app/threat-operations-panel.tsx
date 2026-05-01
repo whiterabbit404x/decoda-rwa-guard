@@ -10,6 +10,12 @@ import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode,
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import { fetchRuntimeStatusDeduped } from './runtime-status-client';
 import ThreatChainPanel from './threat-chain-panel';
+import ThreatOverviewCard from './threat/threat-overview-card';
+import MonitoringHealthCard from './threat/monitoring-health-card';
+import DetectionFeed from './threat/detection-feed';
+import AlertIncidentChain from './threat/alert-incident-chain';
+import ResponseActionPanel from './threat/response-action-panel';
+import ThreatEmptyState from './threat/threat-empty-state';
 
 type Props = { apiUrl: string };
 // Temporary backoff while runtime-status latency is elevated; re-evaluate when p95 is back under threshold.
@@ -1263,7 +1269,7 @@ export function pageStatePrimaryCopy(
 function PageStateBanner({ viewModel }: { viewModel: MonitoringViewModel }) {
   if (viewModel.pageBanner.variant === 'fetch_error') {
     return (
-      <div className="emptyStatePanel">
+      <ThreatEmptyState>
         <h4>{viewModel.pageBanner.headline || 'Telemetry retrieval degraded'}</h4>
         <p className="muted">{viewModel.pageBanner.primaryCopy}</p>
         {viewModel.pageBanner.metaLines.map((line) => <p key={line} className="tableMeta">{line}</p>)}
@@ -1272,7 +1278,7 @@ function PageStateBanner({ viewModel }: { viewModel: MonitoringViewModel }) {
           <Link href="/integrations" prefetch={false}>Inspect backend integration status</Link>
           <Link href="/history" prefetch={false}>Review recent runtime history</Link>
         </div>
-      </div>
+      </ThreatEmptyState>
     );
   }
   return <p className="explanation">{viewModel.pageBanner.primaryCopy}</p>;
@@ -3181,6 +3187,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </article>
 
         <div className="stack compactStack">
+          <ResponseActionPanel>
           <article id="response-actions" className="dataCard">
             <div className="listHeader">
               <div>
@@ -3232,6 +3239,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
               </div>
             )}
           </article>
+          </ResponseActionPanel>
 
           <article id="response-actions" className="dataCard">
             <div className="listHeader">
