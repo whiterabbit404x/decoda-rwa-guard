@@ -16,6 +16,7 @@ import DetectionFeed from './threat/detection-feed';
 import AlertIncidentChain from './threat/alert-incident-chain';
 import ResponseActionPanel from './threat/response-action-panel';
 import ThreatEmptyState from './threat/threat-empty-state';
+import TechnicalRuntimeDetails from './threat/technical-runtime-details';
 
 type Props = { apiUrl: string };
 // Temporary backoff while runtime-status latency is elevated; re-evaluate when p95 is back under threshold.
@@ -2846,11 +2847,19 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </div>
         <p className="tableMeta">Recommended next action: <Link href="/alerts" prefetch={false}>Review alerts</Link> to triage active detections and confirm response workflow readiness.</p>
 
-        <details className="tableMeta">
-          <summary>Technical runtime details</summary>
-          <p className="tableMeta">
-            Data provenance ({threatOperationsViewModel.monitoring.provenanceLabel}): {threatOperationsViewModel.monitoring.provenanceExplanation} /ops/monitoring/runtime-status ({threatOperationsViewModel.monitoring.endpointProvenance.runtimeStatus}) · Last successful monitoring refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRefreshAt)} · Last successful runtime refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: {formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulTimelineRefreshAt)}
-          </p>
+        <TechnicalRuntimeDetails
+          summaryLine={`Data provenance (${threatOperationsViewModel.monitoring.provenanceLabel}): ${threatOperationsViewModel.monitoring.provenanceExplanation} /ops/monitoring/runtime-status (${threatOperationsViewModel.monitoring.endpointProvenance.runtimeStatus}) · Last successful monitoring refresh: ${formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRefreshAt)} · Last successful runtime refresh: ${formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulRuntimeRefreshAt)} · Last successful timeline refresh: ${formatAbsoluteTime(threatOperationsViewModel.monitoring.lastSuccessfulTimelineRefreshAt)}`}
+          runtimeStatus={runtimeStatusSnapshot?.runtime_status}
+          monitoringStatus={monitoringPresentation.status}
+          telemetryFreshness={runtimeStatusSnapshot?.freshness_status}
+          confidence={runtimeStatusSnapshot?.confidence_status}
+          contradictionFlags={runtimeContradictionFlags}
+          guardFlags={Array.isArray(runtimeStatusSnapshot?.guard_flags) ? runtimeStatusSnapshot.guard_flags : []}
+          dbFailureClassification={runtimeStatusSnapshot?.db_failure_classification}
+          statusReason={runtimeStatusSnapshot?.status_reason}
+          failedEndpoints={snapshotFailedEndpoints}
+          staleCollections={snapshotStaleCollections}
+        >
           {monitoringViewModel.contradictions.length > 0 ? (
             <p className="statusLine statusLine-warning">
               Contradiction guard: {monitoringViewModel.contradictions.join(' ')}
@@ -2909,7 +2918,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           </p>
           {feed.loading ? <p className="statusLine">Loading monitoring state…</p> : null}
           {feed.refreshing ? <p className="statusLine">Refreshing monitoring state…</p> : null}
-        </details>
+        </TechnicalRuntimeDetails>
       </article>
 
       <section className="monitoringKpiGrid" aria-label="Monitoring KPIs">
@@ -2952,12 +2961,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         <article className="dataCard kpiCard">
           <p className="sectionEyebrow">Monitoring Status</p>
           <p className="kpiValue">{monitoringPresentation.statusLabel}</p>
-          <p className="tableMeta">{runtimeReason}</p>
+          <p className="tableMeta">Continuous monitoring state for this workspace. Open technical details for internal diagnostics.</p>
         </article>
         <article id="telemetry-freshness" className="dataCard kpiCard">
           <p className="sectionEyebrow">Telemetry Freshness</p>
           <p className="kpiValue">{hasTelemetryTimestamp ? telemetryDisplayLabel : 'Unavailable'}</p>
-          <p className="tableMeta">Detection evaluation {detectionEvalLabel}. Polling and heartbeat timestamps never count as telemetry.</p>
+          <p className="tableMeta">Shows when live telemetry was last observed. Poll/heartbeat timestamps are excluded.</p>
         </article>
         <article className="dataCard kpiCard">
           <p className="sectionEyebrow">Protected Assets</p>
