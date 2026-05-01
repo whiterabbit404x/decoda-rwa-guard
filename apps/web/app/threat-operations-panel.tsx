@@ -2952,18 +2952,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           </div>
           <Link href="/alerts" prefetch={false}>Review alerts</Link>
         </div>
-        <div className="chipRow">
-          <span className="ruleChip">Category: Telemetry Events</span>
-          <span className="ruleChip">Category: Detections</span>
-          <span className="ruleChip">Category: Alerts</span>
-          <span className="ruleChip">Category: Incidents</span>
-          <span className="ruleChip">Category: Actions</span>
-        </div>
         {loadingSnapshot ? <p className="muted">Loading detection records…</p> : null}
         {!loadingSnapshot && !showEvidenceLinkedSignals ? (
           <div className="emptyStatePanel">
             <h4>No evidence-linked threat signals</h4>
-            <p className="muted">missing[] links: [{missingTimelineLinks.join(', ')}]</p>
+            <p className="muted">We are still building the full timeline across detections, alerts, incidents, and actions for this workspace.</p>
             <div className="buttonRow">
               <button
                 type="button"
@@ -2989,11 +2982,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <p className="muted">
               {pageState === 'configured_no_signals'
                 ? (monitoringPresentation.evidenceSourceLabel === 'live' || monitoringPresentation.evidenceSourceLabel === 'hybrid')
-                  ? 'LIVE/HYBRID degraded state: monitoring is configured, but no persisted evidence is linked to active detections yet.'
-                  : 'Monitoring is configured, but no persisted evidence is currently linked to active detections.'
+                  ? 'Monitoring is active, but we have not yet linked persisted evidence to current detections.'
+                  : 'Monitoring is active, but we have not yet linked persisted evidence to current detections.'
                 : pageState === 'unconfigured_workspace'
                   ? 'Workspace not configured: monitoring setup is incomplete.'
-                  : 'No persisted or linked detections are available for display at this time.'}
+                  : 'No detections are available to review right now. We will show new signals here as monitoring finds them.'}
             </p>
             <div className="buttonRow">
               <Link href="/monitored-systems" prefetch={false}>Manage monitored systems</Link>
@@ -3016,12 +3009,16 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
                   {signal.liveEvidenceEligible === false ? ' · Simulator/demo evidence (not live)' : ''}
                   {dbPersistenceOutageActive ? ' · Excluded from live evidence during persistence outage' : ''}
                 </p>
-                <p className="tableMeta">{signal.rawEvidenceReference || 'raw evidence refs: unavailable'} · observed {formatAbsoluteTime(signal.rawEvidenceObservedAt || signal.timestamp)}</p>
                 <p className="tableMeta">
-                  {formatAbsoluteTime(signal.timestamp)} · {formatRelativeTime(signal.timestamp)} · Source: {signal.source}
+                  {formatAbsoluteTime(signal.timestamp)} · {formatRelativeTime(signal.timestamp)}
                 </p>
-                <p className="tableMeta">tx: {signal.txHash || 'n/a'} · block: {signal.blockNumber || 'n/a'} · counterparty: {signal.counterparty || 'n/a'} · amount: {signal.amount || 'n/a'} · contract/token: {signal.tokenOrContract || 'n/a'} · rule: {signal.ruleId || 'n/a'} · target: {signal.targetName || 'n/a'} · provider: {signal.sourceProvider || 'n/a'}</p>
-                <p className="tableMeta">Chain: detection {signal.detectionId || 'n/a'} · alert {signal.alertId || 'n/a'} · incident {signal.incidentId || 'n/a'} · action {signal.actionId || 'n/a'}</p>
+                <details>
+                  <summary className="tableMeta">Technical runtime details</summary>
+                  <p className="tableMeta">{signal.rawEvidenceReference || 'raw evidence refs: unavailable'} · observed {formatAbsoluteTime(signal.rawEvidenceObservedAt || signal.timestamp)}</p>
+                  <p className="tableMeta">Source: {signal.source}</p>
+                  <p className="tableMeta">tx: {signal.txHash || 'n/a'} · block: {signal.blockNumber || 'n/a'} · counterparty: {signal.counterparty || 'n/a'} · amount: {signal.amount || 'n/a'} · contract/token: {signal.tokenOrContract || 'n/a'} · rule: {signal.ruleId || 'n/a'} · target: {signal.targetName || 'n/a'} · provider: {signal.sourceProvider || 'n/a'}</p>
+                  <p className="tableMeta">Chain: detection {signal.detectionId || 'n/a'} · alert {signal.alertId || 'n/a'} · incident {signal.incidentId || 'n/a'} · action {signal.actionId || 'n/a'}</p>
+                </details>
               </div>
               <div className="signalActions">
                 <span className={`statusBadge statusBadge-${stateTone(signal.state)}`}>{signal.state}</span>
