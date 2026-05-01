@@ -124,6 +124,19 @@ export type RiskDashboardResponse = {
   decisions_log: DecisionLogEntry[];
 };
 
+const fallbackNormalizedRisk = (input: {
+  recommendation: 'ALLOW' | 'REVIEW' | 'BLOCK';
+  risk_score: number;
+  stale?: boolean;
+}): NormalizedRisk => ({
+  asset_criticality_score: Math.max(1, Math.min(100, input.recommendation === 'ALLOW' ? Math.max(1, Math.floor(input.risk_score / 2)) : input.risk_score)),
+  exposure_severity: input.risk_score >= 85 ? 'critical' : input.risk_score >= 65 ? 'high' : input.risk_score >= 40 ? 'medium' : 'low',
+  market_confidence_impact: Math.max(0, Math.min(100, input.risk_score + (input.stale ? 15 : 0))),
+  redemption_liquidity_stress: Math.max(0, Math.min(100, input.risk_score + (input.recommendation === 'BLOCK' ? 20 : input.recommendation === 'REVIEW' ? 8 : -20))),
+  contagion_risk_label: input.stale ? 'guarded_due_to_stale_telemetry' : input.recommendation === 'BLOCK' ? 'elevated' : input.recommendation === 'REVIEW' ? 'contained' : 'isolated',
+  regulatory_evidence_priority: input.stale || input.recommendation === 'BLOCK' ? 'high' : input.recommendation === 'REVIEW' ? 'medium' : 'low',
+});
+
 export type ThreatCard = {
   label: string;
   value: string;
@@ -373,7 +386,8 @@ export const fallbackRiskDashboard: RiskDashboardResponse = {
       ],
       explanation: 'Aggregate score 100 produced recommendation BLOCK. Primary drivers: flash-loan routing, severe liquidity drain, and weak wallet reputation.',
       updated_at: '2026-03-18T09:00:00Z',
-      source: 'fallback'
+      source: 'fallback',
+      normalized_risk: fallbackNormalizedRisk({ recommendation: 'BLOCK', risk_score: 100, stale: true }),
     },
     {
       id: 'txn-002',
@@ -389,7 +403,8 @@ export const fallbackRiskDashboard: RiskDashboardResponse = {
       triggered_rules: [],
       explanation: 'Known-safe treasury settlement has verified contract metadata and no defensive heuristics triggered.',
       updated_at: '2026-03-18T09:01:00Z',
-      source: 'fallback'
+      source: 'fallback',
+      normalized_risk: fallbackNormalizedRisk({ recommendation: 'ALLOW', risk_score: 6, stale: true }),
     },
     {
       id: 'txn-003',
@@ -409,7 +424,8 @@ export const fallbackRiskDashboard: RiskDashboardResponse = {
       ],
       explanation: 'Aggregate score 52 produced recommendation REVIEW. Primary drivers: privileged arguments, weak wallet reputation, and unaudited proxy behavior.',
       updated_at: '2026-03-18T09:02:00Z',
-      source: 'fallback'
+      source: 'fallback',
+      normalized_risk: fallbackNormalizedRisk({ recommendation: 'REVIEW', risk_score: 52, stale: true }),
     },
     {
       id: 'txn-004',
@@ -429,7 +445,8 @@ export const fallbackRiskDashboard: RiskDashboardResponse = {
       ],
       explanation: 'Mixer-associated sweep touches laundering indicators and elevated market anomalies, so the engine recommends BLOCK.',
       updated_at: '2026-03-18T09:03:00Z',
-      source: 'fallback'
+      source: 'fallback',
+      normalized_risk: fallbackNormalizedRisk({ recommendation: 'BLOCK', risk_score: 93, stale: true }),
     }
   ],
   risk_alerts: [
@@ -442,7 +459,8 @@ export const fallbackRiskDashboard: RiskDashboardResponse = {
       rule: 'Observed recent liquidity contraction matches flash-loan drain behavior.',
       explanation: 'Flash-loan routing and market anomalies indicate a high-confidence drain attempt.',
       tx_hash: '0xphase1sample',
-      status: 'Open'
+      status: 'Open',
+      normalized_risk: fallbackNormalizedRisk({ recommendation: 'BLOCK', risk_score: 100, stale: true }),
     },
     {
       id: 'alert-txn-003',
@@ -453,7 +471,8 @@ export const fallbackRiskDashboard: RiskDashboardResponse = {
       rule: 'Call arguments include privileged control fields.',
       explanation: 'Proxy + privileged parameters require analyst confirmation before release.',
       tx_hash: '0xphase1review',
-      status: 'Reviewing'
+      status: 'Reviewing',
+      normalized_risk: fallbackNormalizedRisk({ recommendation: 'REVIEW', risk_score: 52, stale: true }),
     },
     {
       id: 'alert-txn-004',
@@ -464,7 +483,8 @@ export const fallbackRiskDashboard: RiskDashboardResponse = {
       rule: 'Contract category is associated with obfuscation or laundering workflows.',
       explanation: 'Mixer screening rules triggered alongside high-value withdrawal activity.',
       tx_hash: '0xphase1block',
-      status: 'Open'
+      status: 'Open',
+      normalized_risk: fallbackNormalizedRisk({ recommendation: 'BLOCK', risk_score: 93, stale: true }),
     }
   ],
   contract_scan_results: [],
@@ -480,7 +500,8 @@ fallbackRiskDashboard.contract_scan_results = fallbackRiskDashboard.transaction_
   recommendation: item.recommendation,
   triggered_rules: item.triggered_rules,
   explanation: item.explanation,
-  source: 'fallback'
+  source: 'fallback',
+  normalized_risk: item.normalized_risk
 }));
 
 fallbackRiskDashboard.decisions_log = [...fallbackRiskDashboard.transaction_queue]
@@ -494,7 +515,8 @@ fallbackRiskDashboard.decisions_log = [...fallbackRiskDashboard.transaction_queu
     recommendation: item.recommendation,
     triggered_rules: item.triggered_rules,
     explanation: item.explanation,
-    source: 'fallback'
+    source: 'fallback',
+    normalized_risk: item.normalized_risk
   }));
 
 export const fallbackComplianceDashboard: ComplianceDashboardResponse = {
