@@ -15,6 +15,17 @@ export default function SecuritySettingsPageClient() {
   const [disableCode, setDisableCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
   const [recoveryCodesAcknowledged, setRecoveryCodesAcknowledged] = useState(false);
+  const [apiKeys, setApiKeys] = useState<Array<{ id: string; label: string; secret_prefix: string; revoked_at: string | null }>>([]);
+  const [apiKeyLabel, setApiKeyLabel] = useState('');
+  const [revealedSecret, setRevealedSecret] = useState('');
+  const canManageApiKeys = ['owner', 'admin', 'workspace_owner', 'workspace_admin'].includes(String((user as any)?.role ?? user?.memberships?.[0]?.role ?? ''));
+
+  async function loadApiKeys() {
+    const response = await fetch('/api/workspace/api-keys', { headers: authHeaders() });
+    if (!response.ok) return;
+    const payload = await response.json();
+    setApiKeys(Array.isArray(payload.items) ? payload.items : []);
+  }
 
   async function signOutAllSessions() {
     setSubmitting(true);
@@ -76,9 +87,46 @@ export default function SecuritySettingsPageClient() {
       setSubmitting(false);
     }
   }
+  async function createApiKey() {
+    setSubmitting(true);
+    setMessage('');
+    const response = await fetch('/api/workspace/api-keys', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ label: apiKeyLabel }) });
+    const payload = await response.json();
+    if (!response.ok) setMessage(payload.detail ?? 'Unable to create API key.');
+    else {
+      setRevealedSecret(payload.secret ?? '');
+      setApiKeyLabel('');
+      setMessage('API key created. Secret is shown once—copy it now.');
+      await loadApiKeys();
+    }
+    setSubmitting(false);
+  }
 
   return (
     <main className="productPage">
+      <section className="featureSection">
+        <div className="sectionHeader"><div><p className="eyebrow">Workspace</p><h2>API keys</h2></div></div>
+        <article className="dataCard">
+          <p className="muted">Create workspace API keys for automation. Secrets are revealed once and never stored in raw form.</p>
+          {canManageApiKeys ? (
+            <>
+              <div className="buttonRow">
+                <input placeholder="Key label" value={apiKeyLabel} onChange={(event) => setApiKeyLabel(event.target.value)} />
+                <button type="button" onClick={() => void createApiKey()} disabled={submitting || apiKeyLabel.trim().length < 2}>Create key</button>
+                <button type="button" onClick={() => void loadApiKeys()} disabled={submitting}>Refresh</button>
+              </div>
+              {revealedSecret ? <pre>{revealedSecret}</pre> : null}
+              <ul>{apiKeys.map((key) => (
+                <li key={key.id}>
+                  <code>{key.secret_prefix}…</code> {key.label} {key.revoked_at ? '(revoked)' : ''}
+                  <button type="button" onClick={async () => { await fetch(`/api/workspace/api-keys/${key.id}/rotate`, { method: 'POST', headers: authHeaders() }); await loadApiKeys(); }}>Rotate</button>
+                  <button type="button" onClick={async () => { await fetch(`/api/workspace/api-keys/${key.id}`, { method: 'DELETE', headers: authHeaders() }); await loadApiKeys(); }}>Revoke</button>
+                </li>
+              ))}</ul>
+            </>
+          ) : <p className="muted">Owner or admin role is required to manage workspace API keys.</p>}
+        </article>
+      </section>
       <section className="featureSection">
         <div className="sectionHeader">
           <div>
