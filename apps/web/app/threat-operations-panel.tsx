@@ -13,7 +13,7 @@ import { buildSecurityWorkspaceStatus } from './security-workspace-status';
 import ThreatChainPanel from './threat-chain-panel';
 import ThreatOverviewCard from './threat/threat-overview-card';
 import MonitoringHealthCard from './threat/monitoring-health-card';
-import DetectionFeed from './threat/detection-feed';
+import DetectionFeed, { type DetectionRecord } from './threat/detection-feed';
 import AlertIncidentChain from './threat/alert-incident-chain';
 import ResponseActionPanel from './threat/response-action-panel';
 import ThreatEmptyState from './threat/threat-empty-state';
@@ -2307,6 +2307,18 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : `last known score from ${detectionEvalLabel}; current telemetry unavailable`;
 
   const detectionsToRender = pageState === 'healthy_live' ? categorizedDetections.live : categorizedDetections.historical;
+  const detectionRecords = useMemo<DetectionRecord[]>(() => {
+    return detectionsToRender.map((item) => ({
+      id: item.id,
+      time: formatAbsoluteTime(item.timestamp),
+      asset: item.assetName,
+      detection: item.title,
+      severity: item.severity,
+      confidence: item.monitoringStatus,
+      evidence: item.evidenceSummary,
+      status: item.state,
+    }));
+  }, [detectionsToRender]);
   const linkedAlertRows = alerts.slice(0, 10).map((alert) => {
     const linkedDetection = detections.find((item) => item.linked_alert_id === alert.id) ?? null;
     return { alert, linkedDetection };
@@ -2844,7 +2856,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         freshnessStatus={String(runtimeStatusSnapshot?.freshness_status ?? 'unavailable')}
         confidenceStatus={String(runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
       />
-      <DetectionFeed detections={detectionsToRender} loading={loadingSnapshot} />
+      <DetectionFeed detections={detectionRecords} loading={loadingSnapshot} />
       <AlertIncidentChain
         alert={chainSummary.alert}
         incident={chainSummary.incident}
