@@ -1,24 +1,13 @@
+import Link from 'next/link';
 import type { ReactNode } from 'react';
 
-type Props = {
-  title?: string;
-  message?: string;
-  action?: ReactNode;
-  children?: ReactNode;
-};
-
-export default function ThreatEmptyState({
-  title = 'Nothing to show right now',
-  message,
-  action,
-  children,
-}: Props) {
+export default function ThreatEmptyState({ children }: { children?: ReactNode }) {
+  if (children) return <div className="emptyStatePanel">{children}</div>;
   return (
-    <section className="emptyStatePanel" role="status" aria-live="polite">
-      <h3>{title}</h3>
-      {message ? <p className="tableMeta">{message}</p> : null}
-      {children}
-      {action ? <div style={{ marginTop: '0.75rem' }}>{action}</div> : null}
-    </section>
+    <div className="emptyStatePanel">
+      <h4>Threat workspace is ready for setup</h4>
+      <p className="muted">Connect Treasury-backed assets, custody wallets, issuer contracts, and oracle/NAV feeds to begin continuous monitoring.</p>
+      <div className="buttonRow"><Link href="/monitored-systems" prefetch={false}>Configure monitoring</Link></div>
+    </div>
   );
 }
