@@ -12045,9 +12045,46 @@ def list_finding_decisions(request: Request) -> dict[str, Any]:
         return {'decisions': [_json_safe_value(dict(row)) for row in rows]}
 
 
+
+
+REPORT_TEMPLATE_ARTIFACT_TYPES: dict[str, str] = {
+    'treasury_security_posture_report': 'treasury_security_posture',
+    'rwa_incident_timeline': 'rwa_incident_timeline',
+    'oracle_integrity_report': 'oracle_integrity',
+    'custody_evidence_report': 'custody_evidence',
+    'compliance_audit_export': 'compliance_audit',
+}
+
+
+def _normalize_report_template(value: Any) -> str:
+    normalized = str(value or '').strip().lower()
+    if not normalized:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='report_template is required for report exports.')
+    if normalized not in REPORT_TEMPLATE_ARTIFACT_TYPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported report_template value.')
+    return normalized
+
+
+def _report_provenance_metadata(*, workspace_id: str, export_id: str, report_template: str, filters: dict[str, Any]) -> dict[str, Any]:
+    evidence_refs = filters.get('evidence_refs') if isinstance(filters.get('evidence_refs'), list) else []
+    return {
+        'workspace_scope': {'workspace_id': workspace_id},
+        'artifact_type': REPORT_TEMPLATE_ARTIFACT_TYPES[report_template],
+        'report_template': report_template,
+        'provenance': {
+            'export_job_id': export_id,
+            'generated_at': utc_now_iso(),
+            'filters_applied': _json_safe_value(filters),
+            'evidence_references': [_json_safe_value(item) for item in evidence_refs],
+        },
+    }
+
 def create_export_job(export_type: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     fmt = str(payload.get('format', 'csv')).strip().lower()
+    filters = payload.get('filters') if isinstance(payload.get('filters'), dict) else {}
+    if export_type == 'report':
+        filters = {**filters, 'report_template': _normalize_report_template(filters.get('report_template'))}
     if fmt not in {'csv', 'json', 'pdf'}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export format.')
     with pg_connection() as connection:
@@ -12064,7 +12101,7 @@ def create_export_job(export_type: str, payload: dict[str, Any], request: Reques
             INSERT INTO export_jobs (id, workspace_id, requested_by_user_id, export_type, format, filters, status, output_path, storage_backend, storage_object_key)
             VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'queued', %s, %s, %s)
             ''',
-            (job_id, workspace_context['workspace_id'], user['id'], export_type, fmt, _json_dumps(payload.get('filters') if isinstance(payload.get('filters'), dict) else {}), output_path, 'pending', output_path),
+            (job_id, workspace_context['workspace_id'], user['id'], export_type, fmt, _json_dumps(filters), output_path, 'pending', output_path),
         )
         _generate_export_artifact(connection, workspace_id=workspace_context['workspace_id'], export_id=job_id)
         log_audit(connection, action='export.generate', entity_type='export_job', entity_id=job_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'export_type': export_type, 'format': fmt})
@@ -12170,8 +12207,15 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, analysis_type, service_name, status, title, summary, created_at FROM analysis_runs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
         case 'alerts':
             rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, alert_type, title, severity, status, module_key, target_id, created_at FROM alerts WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
-        case 'findings' | 'report':
+        case 'findings':
             rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, analysis_type, status, title, summary, created_at FROM analysis_runs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
+        case 'report':
+            report_template = _normalize_report_template(filters.get('report_template'))
+            report_rows = [_json_safe_value(dict(row)) for row in connection.execute('SELECT id, analysis_type, status, title, summary, created_at FROM analysis_runs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1000', (workspace_id,)).fetchall()]
+            rows = [{
+                'metadata.json': _report_provenance_metadata(workspace_id=workspace_id, export_id=str(export_id), report_template=report_template, filters=filters),
+                'report.json': report_rows,
+            }]
         case 'feature1_evidence':
             target_id = str(filters.get('target_id', '')).strip() or None
             target = connection.execute(
