@@ -1,17 +1,16 @@
-import type { ReactNode } from 'react';
+import Link from 'next/link';
 
-type Props = { capabilityLabels?: string[]; message?: string; children?: ReactNode };
+type ActionItem = { id: string; label: string; disabled?: boolean; reason?: string; onClick?: () => void };
+type Props = { capabilities?: string[]; actions?: ActionItem[] };
 
-export default function ResponseActionPanel({ capabilityLabels, message, children }: Props) {
-  if (children) return <section aria-label="Response Actions">{children}</section>;
+export default function ResponseActionPanel({ capabilities = [], actions = [] }: Props) {
   return (
     <article className="dataCard" aria-label="Response Actions">
       <p className="sectionEyebrow">Response actions</p>
-      <h3>Action capability and workflow state</h3>
-      <div className="chipRow">
-        {(capabilityLabels ?? ['Simulation only', 'Manual recommendation', 'Live executable', 'Approval required', 'Executed', 'Failed', 'Rolled back']).map((label) => <span className="ruleChip" key={label}>{label}</span>)}
-      </div>
-      {message ? <p className="tableMeta">{message}</p> : null}
+      <h3>Operational actions</h3>
+      <div className="chipRow">{capabilities.map((label) => <span className="ruleChip" key={label}>{label}</span>)}</div>
+      <div className="buttonRow">{actions.map((action) => <button key={action.id} type="button" disabled={action.disabled} title={action.reason} onClick={action.onClick}>{action.label}</button>)}</div>
+      <div className="buttonRow"><Link href="/alerts" prefetch={false}>Review alerts</Link><Link href="/incidents" prefetch={false}>Open incident queue</Link></div>
     </article>
   );
 }
