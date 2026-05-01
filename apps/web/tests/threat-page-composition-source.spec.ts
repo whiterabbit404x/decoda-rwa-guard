@@ -33,3 +33,14 @@ test('alert -> incident -> response chain and focused posture/action rendering a
   expect(overview).toContain('aria-label="Security Overview"');
 
 });
+
+test('threat composition components do not independently claim live/healthy status copy', () => {
+  const healthCard = appSource('threat/monitoring-health-card.tsx');
+  const overview = appSource('threat/threat-overview-card.tsx');
+  const emptyState = appSource('threat/threat-empty-state.tsx');
+
+  expect(healthCard.toLowerCase()).not.toContain('monitoring is active and operating normally');
+  expect(healthCard.toLowerCase()).not.toContain('live monitoring is healthy');
+  expect(overview.toLowerCase()).not.toContain('live monitoring is healthy');
+  expect(emptyState.toLowerCase()).not.toContain('live monitoring is healthy');
+});
