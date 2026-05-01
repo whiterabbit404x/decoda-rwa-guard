@@ -2807,7 +2807,13 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         <div className="monitoringHeaderTop">
           <div>
             <p className="sectionEyebrow">Threat monitoring</p>
-            <h2>Protect your monitored assets with continuous detection and response.</h2>
+            <h2>Threat Monitoring</h2>
+            <p className="tableMeta">Continuous monitoring for protected RWA assets, detections, alerts, incidents, and response workflows.</p>
+            <p className="tableMeta">
+              {showLiveTelemetry
+                ? 'Live telemetry currently supports oversight of treasury-backed assets and tokenized debt infrastructure, including oracle/NAV integrity checks, custody and redemption-path monitoring, and compliance exposure controls.'
+                : 'When telemetry is available, this workspace can support oversight of treasury-backed assets and tokenized debt infrastructure with oracle/NAV checks, custody and redemption-path monitoring, and compliance exposure review.'}
+            </p>
           </div>
           <div className="monitoringHeaderActions">
             <button
