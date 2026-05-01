@@ -15,7 +15,7 @@ import ThreatOverviewCard from './threat/threat-overview-card';
 import MonitoringHealthCard from './threat/monitoring-health-card';
 import DetectionFeed, { type DetectionRecord } from './threat/detection-feed';
 import AlertIncidentChain from './threat/alert-incident-chain';
-import ResponseActionPanel from './threat/response-action-panel';
+import ResponseActionPanel, { type ResponseAction } from './threat/response-action-panel';
 import ThreatEmptyState from './threat/threat-empty-state';
 import TechnicalRuntimeDetails from './threat/technical-runtime-details';
 import ThreatPageHeader from './threat/threat-page-header';
@@ -2831,9 +2831,23 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }), [monitoringViewModel]);
 
   const responseActionCapabilities = useMemo(() => Object.entries(actionCapabilities).filter(([, enabled]) => enabled).map(([key]) => key.replaceAll('_', ' ')), [actionCapabilities]);
-  const responseActions = useMemo(() => [
-    { id: 'sim-notify-team', label: 'Run simulated response', disabled: monitoringViewModel.actionButtons['sim-notify-team'].disabled, reason: monitoringViewModel.actionButtons['sim-notify-team'].reason, onClick: () => void runThreatAction('notify_team', 'Run simulated response', 'simulated') },
-    { id: 'sim-revoke-approval', label: 'Revoke approval', disabled: monitoringViewModel.actionButtons['sim-revoke-approval'].disabled, reason: monitoringViewModel.actionButtons['sim-revoke-approval'].reason, onClick: () => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated') },
+  const responseActions = useMemo<ResponseAction[]>(() => [
+    {
+      id: 'sim-notify-team',
+      label: 'Run simulated response',
+      state: 'simulation_only',
+      disabled: monitoringViewModel.actionButtons['sim-notify-team'].disabled,
+      reason: monitoringViewModel.actionButtons['sim-notify-team'].reason,
+      onClick: () => void runThreatAction('notify_team', 'Run simulated response', 'simulated'),
+    },
+    {
+      id: 'sim-revoke-approval',
+      label: 'Revoke approval',
+      state: 'manual_recommendation',
+      disabled: monitoringViewModel.actionButtons['sim-revoke-approval'].disabled,
+      reason: monitoringViewModel.actionButtons['sim-revoke-approval'].reason,
+      onClick: () => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated'),
+    },
   ], [monitoringViewModel.actionButtons]);
 
   return (
@@ -2865,6 +2879,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       <ResponseActionPanel
         capabilities={responseActionCapabilities}
         actions={responseActions}
+        loading={loadingSnapshot}
       />
       <TechnicalRuntimeDetails
         summaryLine={technicalDetails.summaryLine}
