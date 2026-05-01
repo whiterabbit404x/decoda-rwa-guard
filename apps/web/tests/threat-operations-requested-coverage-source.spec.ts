@@ -6,6 +6,10 @@ function appSource(fileName: string): string {
   return fs.readFileSync(path.join(__dirname, '..', 'app', fileName), 'utf-8');
 }
 
+function threatSource(fileName: string): string {
+  return fs.readFileSync(path.join(__dirname, '..', 'app', 'threat', fileName), 'utf-8');
+}
+
 test('uses shared monitoring truth object across dashboard and threat page', () => {
   const dashboard = appSource('dashboard-page-content.tsx');
   const threat = appSource('threat-operations-panel.tsx');
@@ -58,8 +62,8 @@ test('threat quick actions require explicit linked context and block unrelated f
   expect(threat).toContain('const shouldBlockThreatActionCreation = noLinkedActionContextAvailable || !selectedThreatActionContext;');
   expect(threat).toContain('if (shouldBlockThreatActionCreation) {');
   expect(threat).toContain("setResponseToast('No linked alert/incident context available.');");
-  expect(threat).toContain("if (mode === 'live' && !selectedThreatActionContext?.incidentId) {");
-  expect(threat).toContain("setResponseToast('LIVE actions require linked incident context.');");
+  expect(threat).toContain("const confirmLiveActionDisabledReason = !selectedThreatActionContext?.incidentId");
+  expect(threat).toContain("? 'Confirm LIVE action is disabled because no incident context is linked.'");
   expect(threat).toContain('incident_id: selectedThreatActionContext.incidentId');
   expect(threat).toContain('alert_id: selectedThreatActionContext.alertId');
   expect(threat).toContain('<option value="" disabled>Select linked detection/alert/incident context</option>');
@@ -68,4 +72,43 @@ test('threat quick actions require explicit linked context and block unrelated f
   expect(threat).toContain('Confirm LIVE action');
   expect(threat).not.toContain('Unlinked action (manual follow-up required)');
   expect(threat).toContain('No linked alert/incident context available.');
+});
+
+test('enforces requested customer-safe threat operations source contracts', () => {
+  const panel = appSource('threat-operations-panel.tsx');
+  const overview = threatSource('threat-overview-card.tsx');
+  const technical = threatSource('technical-runtime-details.tsx');
+  const detectionFeed = threatSource('detection-feed.tsx');
+  const chain = threatSource('alert-incident-chain.tsx');
+  const responseActions = threatSource('response-action-panel.tsx');
+
+  expect(panel).toContain("import { buildSecurityWorkspaceStatus } from './security-workspace-status';");
+  expect(panel).toContain('buildSecurityWorkspaceStatus(runtimeStatusSnapshot, detections, alerts, incidents, evidence)');
+
+  expect(overview).toContain("import type { SecurityWorkspaceStatus } from '../security-workspace-status';");
+  expect(overview).toContain('status?: SecurityWorkspaceStatus;');
+  expect(overview).toContain('loading?: boolean;');
+
+  expect(panel).not.toContain('mainCustomerSections.includes(\'contradiction_flags\')');
+  expect(panel).not.toContain('mainCustomerSections.includes(\'guard_flags\')');
+  expect(panel).not.toContain('mainCustomerSections.includes(\'db_failure_classification\')');
+
+  const securityStatus = appSource('security-workspace-status.ts');
+  expect(securityStatus).toContain("if (!telemetryAt) return 'No live signal received yet';");
+
+  expect(securityStatus).not.toContain('All monitored systems reporting healthy live telemetry.');
+  expect(securityStatus).toContain("if (reportingSystems === 0) return 'No active monitoring source';");
+
+  expect(technical).toContain('<details className="tableMeta">');
+  expect(technical).not.toContain('<details className="tableMeta" open>');
+
+  expect(detectionFeed).toContain('Detections will appear here once monitoring captures customer-safe evidence.');
+
+  expect(chain).toContain('Alert → Incident → Response Action');
+
+  expect(responseActions).toContain("simulation_only: 'Simulation only'");
+  expect(responseActions).toContain("manual_recommendation: 'Manual recommendation'");
+  expect(responseActions).toContain("live_executable: 'Live executable'");
+  expect(responseActions).toContain("approval_required: 'Approval required'");
+  expect(responseActions).not.toContain('operator override');
 });
