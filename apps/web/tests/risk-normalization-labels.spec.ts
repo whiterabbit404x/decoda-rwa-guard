@@ -1,7 +1,7 @@
+import { expect, test } from '@playwright/test';
 import { renderRiskLabel } from '../app/risk-normalization-labels';
 
-describe('risk normalization labels', () => {
-  it('uses guarded stale telemetry copy when guards disagree', () => {
+test('risk normalization labels use guarded stale telemetry copy when guards disagree', () => {
     expect(
       renderRiskLabel({
         asset_criticality_score: 15,
@@ -12,6 +12,5 @@ describe('risk normalization labels', () => {
         regulatory_evidence_priority: 'high',
       })
     ).toBe('Guarded state (telemetry stale)');
-  });
 });
 

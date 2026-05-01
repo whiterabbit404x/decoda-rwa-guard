@@ -1,3 +1,4 @@
+import { expect, test } from '@playwright/test';
 import { detectorKindLabel } from '../app/threat/detector-labels';
 
 test('maps canonical detector codes to customer-readable labels', () => {

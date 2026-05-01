@@ -22,7 +22,9 @@
     "test:frontend:feature4-smoke": "playwright test apps/web/tests/feature4-smoke.spec.ts",
     "smoke:feature4": "python scripts/smoke_feature4.py",
     "evidence:staging": "python scripts/staging/run_evidence_flow.py",
-    "test:frontend:staging-evidence": "playwright test apps/web/tests/staging-evidence-flow.spec.ts"
+    "test:frontend:staging-evidence": "playwright test apps/web/tests/staging-evidence-flow.spec.ts",
+    "test": "node scripts/run-web-tests.mjs",
+    "build": "npm run build --workspace apps/web"
   },
   "devDependencies": {
     "@playwright/test": "1.53.2",
