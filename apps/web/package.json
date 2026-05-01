@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "NEXT_PUBLIC_LIVE_MODE_ENABLED=${NEXT_PUBLIC_LIVE_MODE_ENABLED:-false} API_URL=${API_URL:-https://api.example.com} next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "playwright test"
   },
   "dependencies": {
     "next": "15.5.9",
