@@ -1,10 +1,12 @@
 import { redirect } from 'next/navigation';
 
+type LegacySearchParams = Record<string, string | string[] | undefined>;
+
 type LegacyRouteProps = {
-  searchParams?: Record<string, string | string[] | undefined>;
+  searchParams?: Promise<LegacySearchParams>;
 };
 
-function serializeSearchParams(searchParams: LegacyRouteProps['searchParams']) {
+function serializeSearchParams(searchParams: LegacySearchParams | undefined) {
   const params = new URLSearchParams();
   if (!searchParams) return '';
 
@@ -20,6 +22,7 @@ function serializeSearchParams(searchParams: LegacyRouteProps['searchParams']) {
   return query ? `?${query}` : '';
 }
 
-export default function MonitoredSystemsPage({ searchParams }: LegacyRouteProps) {
-  redirect(`/monitoring-sources/monitored-systems${serializeSearchParams(searchParams)}`);
+export default async function MonitoredSystemsPage({ searchParams }: LegacyRouteProps) {
+  const resolvedSearchParams = await searchParams;
+  redirect(`/monitoring-sources/monitored-systems${serializeSearchParams(resolvedSearchParams)}`);
 }
