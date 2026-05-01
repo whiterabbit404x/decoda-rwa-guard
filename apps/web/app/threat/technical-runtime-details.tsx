@@ -11,12 +11,33 @@ type Props = {
   failedEndpoints?: string[];
   staleCollections?: string[];
   diagnostics?: string[];
+  continuityChecks?: string[];
+  reconcileInternals?: string[];
+  loopHealthInternals?: string[];
+  proofChainInternals?: string[];
 };
 
 const renderValue = (value?: string | number | null) => (value === null || value === undefined || value === '' ? 'unavailable' : String(value));
 
 export default function TechnicalRuntimeDetails(props: Props) {
-  const { summaryLine, runtimeStatus, monitoringStatus, telemetryFreshness, confidence, contradictionFlags = [], guardFlags = [], dbFailureClassification, statusReason, failedEndpoints = [], staleCollections = [], diagnostics = [] } = props;
+  const {
+    summaryLine,
+    runtimeStatus,
+    monitoringStatus,
+    telemetryFreshness,
+    confidence,
+    contradictionFlags = [],
+    guardFlags = [],
+    dbFailureClassification,
+    statusReason,
+    failedEndpoints = [],
+    staleCollections = [],
+    diagnostics = [],
+    continuityChecks = [],
+    reconcileInternals = [],
+    loopHealthInternals = [],
+    proofChainInternals = [],
+  } = props;
   return (
     <details className="tableMeta">
       <summary>View technical details</summary>
@@ -28,6 +49,11 @@ export default function TechnicalRuntimeDetails(props: Props) {
         <li>failed endpoints: {failedEndpoints.length > 0 ? failedEndpoints.join(', ') : 'none'}</li><li>stale collections: {staleCollections.length > 0 ? staleCollections.join(', ') : 'none'}</li>
       </ul>
       {diagnostics.length > 0 ? <div className="stack compactStack">{diagnostics.map((d, i) => <p className="tableMeta" key={`${d}-${i}`}>{d}</p>)}</div> : null}
+
+      {continuityChecks.length > 0 ? <p className="tableMeta">continuity checks: {continuityChecks.join(' · ')}</p> : null}
+      {reconcileInternals.length > 0 ? <p className="tableMeta">reconcile internals: {reconcileInternals.join(' · ')}</p> : null}
+      {loopHealthInternals.length > 0 ? <p className="tableMeta">loop health internals: {loopHealthInternals.join(' · ')}</p> : null}
+      {proofChainInternals.length > 0 ? <p className="tableMeta">proof-chain internals: {proofChainInternals.join(' · ')}</p> : null}
     </details>
   );
 }
