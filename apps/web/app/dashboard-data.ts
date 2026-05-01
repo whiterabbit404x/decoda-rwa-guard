@@ -7,6 +7,7 @@ import {
 import { normalizeMonitoringPresentation } from './monitoring-status-presentation';
 import type { MonitoringRuntimeStatus } from './monitoring-status-contract';
 import { resolveWorkspaceMonitoringTruthFromSummary } from './workspace-monitoring-truth';
+import { renderRiskLabel } from './risk-normalization-labels';
 
 export type DashboardCard = {
   title: string;
@@ -1928,7 +1929,7 @@ export function buildDashboardViewModel(
     {
       label: 'Average risk score',
       value: `${riskDashboard.summary.avg_risk_score}`,
-      meta: `${riskDashboard.transaction_queue[0]?.normalized_risk?.exposure_severity ?? 'n/a'} exposure · confidence impact ${riskDashboard.transaction_queue[0]?.normalized_risk?.market_confidence_impact ?? 0}`
+      meta: `${renderRiskLabel(riskDashboard.transaction_queue[0]?.normalized_risk)} · confidence impact ${riskDashboard.transaction_queue[0]?.normalized_risk?.market_confidence_impact ?? 0}`
     },
     {
       label: 'Threat posture',

@@ -288,6 +288,22 @@ class ApiResilienceGatewayTests(unittest.TestCase):
             sorted(['asset_criticality_score', 'exposure_severity', 'market_confidence_impact', 'redemption_liquidity_stress', 'contagion_risk_label', 'regulatory_evidence_priority']),
         )
 
+    def test_canonical_risk_response_stays_type_stable(self) -> None:
+        normalized = api_main.build_normalized_risk({'risk_score': 91, 'recommendation': 'BLOCK'}, degraded=False)
+        self.assertIsInstance(normalized['asset_criticality_score'], int)
+        self.assertIsInstance(normalized['market_confidence_impact'], int)
+        self.assertIsInstance(normalized['redemption_liquidity_stress'], int)
+        self.assertIn(normalized['exposure_severity'], {'low', 'medium', 'high', 'critical'})
+        self.assertIn(normalized['regulatory_evidence_priority'], {'low', 'medium', 'high'})
+
+    def test_contradiction_safe_guard_overrides_allow_confidence(self) -> None:
+        normalized = api_main.build_normalized_risk(
+            {'risk_score': 12, 'recommendation': 'ALLOW', 'telemetry_guard_disagrees': True},
+            degraded=False,
+        )
+        self.assertEqual(normalized['contagion_risk_label'], 'guarded_due_to_stale_telemetry')
+        self.assertEqual(normalized['regulatory_evidence_priority'], 'high')
+
 
 if __name__ == '__main__':
     unittest.main()

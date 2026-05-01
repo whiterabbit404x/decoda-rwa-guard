@@ -14,7 +14,7 @@ from copy import deepcopy
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request as UrlRequest, urlopen
@@ -4652,14 +4652,15 @@ def build_decisions_log(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def build_normalized_risk(evaluation: dict[str, Any], degraded: bool) -> dict[str, Any]:
+def build_normalized_risk(evaluation: dict[str, Any], degraded: bool) -> CanonicalRiskResponse:
     risk_score = max(0, min(100, int(evaluation.get('risk_score', 0))))
     recommendation = str(evaluation.get('recommendation', 'REVIEW')).upper()
+    telemetry_guard_disagrees = degraded or bool(evaluation.get('telemetry_guard_disagrees'))
     asset_criticality_score = max(1, min(100, risk_score if recommendation != 'ALLOW' else max(1, risk_score // 2)))
     exposure_severity = 'critical' if risk_score >= 85 else 'high' if risk_score >= 65 else 'medium' if risk_score >= 40 else 'low'
-    market_confidence_impact = max(0, min(100, risk_score + (15 if degraded else 0)))
-    redemption_liquidity_stress = max(0, min(100, risk_score + (20 if recommendation == 'BLOCK' else 8 if recommendation == 'REVIEW' else -20)))
-    if degraded:
+    market_confidence_impact = max(0, min(100, risk_score + (15 if telemetry_guard_disagrees else 0)))
+    redemption_liquidity_stress = max(0, min(100, risk_score + (20 if recommendation == 'BLOCK' else 8 if recommendation == 'REVIEW' else -20) + (10 if telemetry_guard_disagrees else 0)))
+    if telemetry_guard_disagrees:
         contagion_risk_label = 'guarded_due_to_stale_telemetry'
         regulatory_evidence_priority = 'high'
     elif recommendation == 'BLOCK':
@@ -4690,6 +4691,7 @@ def with_resilience_incident_normalized_risk(incident: dict[str, Any]) -> dict[s
         'risk_score': risk_score,
         'recommendation': 'BLOCK' if severity in {'critical', 'high'} or status in {'open', 'active'} else 'REVIEW',
     }
+    evaluation['telemetry_guard_disagrees'] = bool(incident.get('degraded')) or str(incident.get('source', '')).lower() == 'fallback'
     normalized = build_normalized_risk(evaluation, degraded=bool(incident.get('degraded')))
     return {**incident, 'normalized_risk': normalized}
 
@@ -4733,3 +4735,10 @@ def load_json_file(data_dir: Path, filename: str, default: Any | None = None) ->
     if default is None:
         return {}
     return deepcopy(default)
+class CanonicalRiskResponse(TypedDict):
+    asset_criticality_score: int
+    exposure_severity: Literal['low', 'medium', 'high', 'critical']
+    market_confidence_impact: int
+    redemption_liquidity_stress: int
+    contagion_risk_label: str
+    regulatory_evidence_priority: Literal['low', 'medium', 'high']
