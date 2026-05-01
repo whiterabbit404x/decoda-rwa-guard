@@ -9,6 +9,7 @@ import { usePilotAuth } from 'app/pilot-auth-context';
 import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from './response-action-capabilities';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import { fetchRuntimeStatusDeduped } from './runtime-status-client';
+import { buildSecurityWorkspaceStatus } from './security-workspace-status';
 import ThreatChainPanel from './threat-chain-panel';
 import ThreatOverviewCard from './threat/threat-overview-card';
 import MonitoringHealthCard from './threat/monitoring-health-card';
@@ -1808,6 +1809,10 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const pollState = deriveSnapshotFreshnessState(monitoringPresentation.lastPollAt, POLL_STALE_MS);
   const heartbeatState = deriveSnapshotFreshnessState(monitoringPresentation.lastHeartbeatAt, HEARTBEAT_STALE_MS);
   const hasCanonicalSnapshot = Boolean(runtimeStatusSnapshot || investigationTimeline);
+  const securityStatus = useMemo(
+    () => buildSecurityWorkspaceStatus(runtimeStatusSnapshot, detections, alerts, incidents, evidence),
+    [runtimeStatusSnapshot, detections, alerts, incidents, evidence],
+  );
 
   const targetById = useMemo(() => {
     return new Map(targets.map((target) => [target.id, target] as const));
@@ -2307,13 +2312,17 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     });
   }, [coverageIndexes, monitoredSystems]);
   const latestRiskScore = useMemo(() => {
-    if (activeIncidents > 0) return { value: 'High', tier: `${activeIncidents} active incident${activeIncidents === 1 ? '' : 's'}` };
-    if (openAlerts > 0) return { value: 'Elevated', tier: `${openAlerts} open alert${openAlerts === 1 ? '' : 's'}` };
-    if (runtimeStatus === 'live') return { value: 'Low', tier: 'No active alerts or incidents' };
-    if (runtimeStatus === 'degraded') return { value: 'Guarded', tier: 'Runtime degraded; investigate telemetry continuity' };
-    if (runtimeStatus === 'offline') return { value: 'Unknown', tier: 'Runtime offline; live risk score unavailable' };
+    if (securityStatus.activeIncidents > 0) {
+      return { value: 'High', tier: `${securityStatus.activeIncidents} active incident${securityStatus.activeIncidents === 1 ? '' : 's'}` };
+    }
+    if (securityStatus.openAlerts > 0) {
+      return { value: 'Elevated', tier: `${securityStatus.openAlerts} open alert${securityStatus.openAlerts === 1 ? '' : 's'}` };
+    }
+    if (securityStatus.posture === 'healthy') return { value: 'Low', tier: 'No active alerts or incidents' };
+    if (securityStatus.posture === 'degraded') return { value: 'Guarded', tier: 'Runtime degraded; investigate telemetry continuity' };
+    if (securityStatus.posture === 'offline') return { value: 'Unknown', tier: 'Runtime offline; live risk score unavailable' };
     return { value: 'Unknown', tier: 'Awaiting runtime signal' };
-  }, [activeIncidents, openAlerts, runtimeStatus]);
+  }, [securityStatus]);
 
   const riskFreshness = pageState === 'healthy_live' || (pageState === 'configured_no_signals' && reportingSystems > 0)
     ? `last evaluated ${detectionEvalLabel} across ${Math.max(configuredSystems, 0)} monitored systems`
@@ -2921,6 +2930,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         </TechnicalRuntimeDetails>
       </article>
 
+      <ThreatOverviewCard securityStatus={securityStatus}>
       <section className="monitoringKpiGrid" aria-label="Monitoring KPIs">
         <article id="continuity-slo" className="dataCard kpiCard">
           <p className="sectionEyebrow">Continuity SLO</p>
@@ -2999,6 +3009,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           <p className="tableMeta">Missing links: {missingTimelineLinks.length === 0 ? 'none' : missingTimelineLinks.join(', ')}</p>
         </article>
       </section>
+      </ThreatOverviewCard>
 
       <article className="dataCard">
         <div className="listHeader">
