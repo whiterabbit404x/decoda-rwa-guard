@@ -1,8 +1,25 @@
-import { resolveApiUrl } from '../../dashboard-data';
-import TargetsManager from '../../targets-manager';
+import { redirect } from 'next/navigation';
 
-export const dynamic = 'force-dynamic';
+type LegacyRouteProps = {
+  searchParams?: Record<string, string | string[] | undefined>;
+};
 
-export default async function TargetsPage() {
-  return <main className="productPage"><TargetsManager apiUrl={resolveApiUrl()} /></main>;
+function serializeSearchParams(searchParams: LegacyRouteProps['searchParams']) {
+  const params = new URLSearchParams();
+  if (!searchParams) return '';
+
+  for (const [key, value] of Object.entries(searchParams)) {
+    if (Array.isArray(value)) {
+      value.forEach((entry) => params.append(key, entry));
+    } else if (typeof value === 'string') {
+      params.set(key, value);
+    }
+  }
+
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+export default function TargetsPage({ searchParams }: LegacyRouteProps) {
+  redirect(`/monitoring-sources/targets${serializeSearchParams(searchParams)}`);
 }

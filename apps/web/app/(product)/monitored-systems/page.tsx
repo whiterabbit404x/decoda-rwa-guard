@@ -1,8 +1,25 @@
-import { resolveApiUrl } from '../../dashboard-data';
-import MonitoredSystemsManager from '../../monitored-systems-manager';
+import { redirect } from 'next/navigation';
 
-export const dynamic = 'force-dynamic';
+type LegacyRouteProps = {
+  searchParams?: Record<string, string | string[] | undefined>;
+};
 
-export default async function MonitoredSystemsPage() {
-  return <main className="productPage"><MonitoredSystemsManager apiUrl={resolveApiUrl()} /></main>;
+function serializeSearchParams(searchParams: LegacyRouteProps['searchParams']) {
+  const params = new URLSearchParams();
+  if (!searchParams) return '';
+
+  for (const [key, value] of Object.entries(searchParams)) {
+    if (Array.isArray(value)) {
+      value.forEach((entry) => params.append(key, entry));
+    } else if (typeof value === 'string') {
+      params.set(key, value);
+    }
+  }
+
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+export default function MonitoredSystemsPage({ searchParams }: LegacyRouteProps) {
+  redirect(`/monitoring-sources/monitored-systems${serializeSearchParams(searchParams)}`);
 }

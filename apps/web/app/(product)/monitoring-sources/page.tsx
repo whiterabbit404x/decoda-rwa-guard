@@ -13,12 +13,12 @@ export default function MonitoringSourcesPage() {
           <article className="dataCard">
             <h2>Monitoring Targets</h2>
             <p className="muted">Define what activity should be monitored for each protected asset.</p>
-            <Link href="/targets" prefetch={false}>Open targets</Link>
+            <Link href="/monitoring-sources/targets" prefetch={false}>Open targets</Link>
           </article>
           <article className="dataCard">
             <h2>Monitored Systems</h2>
             <p className="muted">Review and repair workspace systems generated from enabled monitoring targets.</p>
-            <Link href="/monitored-systems" prefetch={false}>Open monitored systems</Link>
+            <Link href="/monitoring-sources/monitored-systems" prefetch={false}>Open monitored systems</Link>
           </article>
         </div>
       </section>
