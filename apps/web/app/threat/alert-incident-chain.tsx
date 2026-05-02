@@ -1,3 +1,5 @@
+import { THREAT_COPY } from './threat-copy';
+
 type ChainItem = { id: string; label: string; status: string; detail?: string };
 
 type Props = {
@@ -25,15 +27,15 @@ export default function AlertIncidentChain({ alert, incident, responseAction }: 
             </thead>
             <tbody>
               <tr>
-                <td>{alert?.label ?? 'No alert linked yet'}</td>
-                <td>{incident?.label ?? 'No incident linked yet'}</td>
-                <td>{responseAction?.label ?? 'No response action linked yet'}</td>
+                <td>{alert?.label ?? THREAT_COPY.noAlertLinkedYet}</td>
+                <td>{incident?.label ?? THREAT_COPY.noIncidentLinkedYet}</td>
+                <td>{responseAction?.label ?? THREAT_COPY.noResponseActionLinkedYet}</td>
               </tr>
             </tbody>
           </table>
         </div>
       ) : (
-        <p>No active incident chain yet. Alerts that require investigation will appear here.</p>
+        <p>{THREAT_COPY.noActiveIncidentChain}</p>
       )}
     </article>
   );
