@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { THREAT_COPY } from './threat-copy';
 
 type Props = {
   showLiveTelemetry: boolean;
@@ -22,7 +23,7 @@ export default function ThreatPageHeader({ showLiveTelemetry, ensuringProofChain
         <div className="monitoringHeaderActions">
           <button type="button" className="secondaryCta" onClick={onRefreshNow}>Refresh now</button>
           <button type="button" className="secondaryCta" disabled={proofChainDisabled} onClick={onGenerateProofChain} title={proofChainReason}>
-            {ensuringProofChain ? 'Generating simulator proof chain…' : 'Generate simulator proof chain'}
+            {ensuringProofChain ? THREAT_COPY.generatingEvidencePackage : THREAT_COPY.generateEvidencePackage}
           </button>
           <Link href="/alerts" prefetch={false} className="secondaryCta">Review alerts</Link>
           <Link href="/incidents" prefetch={false} className="secondaryCta">Open incident queue</Link>

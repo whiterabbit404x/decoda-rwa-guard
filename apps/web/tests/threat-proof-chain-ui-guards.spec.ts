@@ -19,14 +19,14 @@ test('threat page only enables evidence-linked signals when detection+evidence t
   expect(threatPage).toContain('No evidence-linked threat signals');
 });
 
-test('simulator-generated proof chain is visibly labeled simulated in the threat UI', () => {
+test('simulator-generated evidence package is visibly labeled simulated in the threat UI', () => {
   const threatPage = appSource('threat-operations-panel.tsx');
 
   expect(threatPage).toContain('const canGenerateSimulatorProofChain = simulatorMode || simulatorProofChainCapability;');
   expect(threatPage).toContain('Simulator-only action unavailable in live mode');
   expect(threatPage).toContain('if (!canGenerateSimulatorProofChain) {');
-  expect(threatPage).toContain('Generate simulator proof chain');
-  expect(threatPage).toContain('Simulator proof chain generated and monitoring status refreshed.');
+  expect(threatPage).toContain('generateEvidencePackage');
+  expect(threatPage).toContain('evidencePackageGenerated');
   expect(threatPage).toContain('SIMULATOR MODE');
   expect(threatPage).toContain("mode: 'simulated'");
 });

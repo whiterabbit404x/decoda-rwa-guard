@@ -2176,11 +2176,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           disabled: ensuringProofChain || !canGenerateSimulatorProofChain,
           reason: deterministicDisabledReason(
             ensuringProofChain
-              ? 'Simulator proof chain generation is already running.'
+              ? THREAT_COPY.evidencePackageAlreadyRunning
               : simulatorProofChainUnavailableCopy,
-            'Simulator proof chain generation is unavailable in the current state.',
+            THREAT_COPY.evidencePackageUnavailable,
           ),
-          noOpMessage: 'Generate simulator proof chain is currently unavailable.',
+          noOpMessage: THREAT_COPY.generateEvidencePackageUnavailable,
           nextStepLabel: 'Inspect integration health',
           nextStepHref: '/integrations',
         },
@@ -2572,7 +2572,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         nextStepHref: state.nextStepHref,
       });
     };
-    registerDisabledAction('repair-proof-chain', 'Generate simulator proof chain', monitoringStatusViewModel.ctas.generateSimulatorProofChain);
+    registerDisabledAction('repair-proof-chain', THREAT_COPY.generateEvidencePackage, monitoringStatusViewModel.ctas.generateSimulatorProofChain);
     registerDisabledAction('sim-notify-team', 'Run simulated response', actionButtonStates['sim-notify-team']);
     registerDisabledAction('sim-revoke-approval', 'Revoke approval', actionButtonStates['sim-revoke-approval']);
     registerDisabledAction('rec-freeze-wallet', 'Freeze wallet (RECOMMENDED)', actionButtonStates['rec-freeze-wallet']);
@@ -2763,7 +2763,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     try {
       const ensureResponse = await fetch(`${apiUrl}/ops/monitoring/proof-chain/ensure`, { method: 'POST', headers: authHeaders() });
       if (!ensureResponse.ok) {
-        setResponseToast('Failed to generate simulator proof chain.');
+        setResponseToast(THREAT_COPY.failedToGenerateEvidencePackage);
         return;
       }
       const [runtimePayload, investigationTimelineResponse] = await Promise.all([
@@ -2781,9 +2781,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
           missing: Array.isArray(timelinePayload?.missing) ? timelinePayload.missing : [],
         } as MonitoringInvestigationTimeline);
       }
-      setResponseToast('Simulator proof chain generated and monitoring status refreshed.');
+      setResponseToast(THREAT_COPY.evidencePackageGenerated);
     } catch {
-      setResponseToast('Failed to generate simulator proof chain.');
+      setResponseToast(THREAT_COPY.failedToGenerateEvidencePackage);
     } finally {
       setEnsuringProofChain(false);
     }
