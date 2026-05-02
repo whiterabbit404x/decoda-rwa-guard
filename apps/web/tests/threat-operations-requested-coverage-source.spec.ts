@@ -82,8 +82,11 @@ test('enforces requested customer-safe threat operations source contracts', () =
   const chain = threatSource('alert-incident-chain.tsx');
   const responseActions = threatSource('response-action-panel.tsx');
 
-  expect(panel).toContain("import { buildSecurityWorkspaceStatus } from './security-workspace-status';");
-  expect(panel).toContain('buildSecurityWorkspaceStatus(runtimeStatusSnapshot, detections, alerts, incidents, evidence)');
+  const monitoringModel = threatSource('build-monitoring-health-model.ts');
+  expect(panel).not.toContain("import { buildSecurityWorkspaceStatus } from './security-workspace-status';");
+  expect(panel).not.toContain('buildSecurityWorkspaceStatus(runtimeStatusSnapshot, detections, alerts, incidents, evidence)');
+  expect(monitoringModel).toContain("import { buildSecurityWorkspaceStatus } from '../security-workspace-status';");
+  expect(monitoringModel).toContain('buildSecurityWorkspaceStatus(');
 
   expect(overview).toContain("import type { SecurityWorkspaceStatus } from '../security-workspace-status';");
   expect(overview).toContain('status?: SecurityWorkspaceStatus;');

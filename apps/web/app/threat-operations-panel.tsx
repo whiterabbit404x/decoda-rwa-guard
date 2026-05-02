@@ -9,7 +9,6 @@ import { usePilotAuth } from 'app/pilot-auth-context';
 import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from './response-action-capabilities';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import { fetchRuntimeStatusDeduped } from './runtime-status-client';
-import { buildSecurityWorkspaceStatus } from './security-workspace-status';
 import ThreatChainPanel from './threat-chain-panel';
 import ThreatOverviewCard from './threat/threat-overview-card';
 import MonitoringHealthCard from './threat/monitoring-health-card';
@@ -1816,10 +1815,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const pollState = deriveSnapshotFreshnessState(monitoringPresentation.lastPollAt, POLL_STALE_MS);
   const heartbeatState = deriveSnapshotFreshnessState(monitoringPresentation.lastHeartbeatAt, HEARTBEAT_STALE_MS);
   const hasCanonicalSnapshot = Boolean(runtimeStatusSnapshot || investigationTimeline);
-  const securityStatus = useMemo(
-    () => buildSecurityWorkspaceStatus(runtimeStatusSnapshot, detections, alerts, incidents, evidence),
-    [runtimeStatusSnapshot, detections, alerts, incidents, evidence],
-  );
   const monitoringHealthModel = useMemo(() => buildMonitoringHealthModel({
     runtimeStatusSnapshot,
     detections,
@@ -2308,17 +2303,17 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     });
   }, [coverageIndexes, monitoredSystems]);
   const latestRiskScore = useMemo(() => {
-    if (securityStatus.activeIncidents > 0) {
-      return { value: 'High', tier: `${securityStatus.activeIncidents} active incident${securityStatus.activeIncidents === 1 ? '' : 's'}` };
+    if (monitoringHealthModel.securityStatus.activeIncidents > 0) {
+      return { value: 'High', tier: `${monitoringHealthModel.securityStatus.activeIncidents} active incident${monitoringHealthModel.securityStatus.activeIncidents === 1 ? '' : 's'}` };
     }
-    if (securityStatus.openAlerts > 0) {
-      return { value: 'Elevated', tier: `${securityStatus.openAlerts} open alert${securityStatus.openAlerts === 1 ? '' : 's'}` };
+    if (monitoringHealthModel.securityStatus.openAlerts > 0) {
+      return { value: 'Elevated', tier: `${monitoringHealthModel.securityStatus.openAlerts} open alert${monitoringHealthModel.securityStatus.openAlerts === 1 ? '' : 's'}` };
     }
-    if (securityStatus.posture === 'healthy') return { value: 'Low', tier: 'No active alerts or incidents' };
-    if (securityStatus.posture === 'degraded') return { value: 'Guarded', tier: 'Runtime degraded; investigate telemetry continuity' };
-    if (securityStatus.posture === 'offline') return { value: 'Unknown', tier: 'Runtime offline; live risk score unavailable' };
+    if (monitoringHealthModel.securityStatus.posture === 'healthy') return { value: 'Low', tier: 'No active alerts or incidents' };
+    if (monitoringHealthModel.securityStatus.posture === 'degraded') return { value: 'Guarded', tier: 'Runtime degraded; investigate telemetry continuity' };
+    if (monitoringHealthModel.securityStatus.posture === 'offline') return { value: 'Unknown', tier: 'Runtime offline; live risk score unavailable' };
     return { value: 'Unknown', tier: 'Awaiting runtime signal' };
-  }, [securityStatus]);
+  }, [monitoringHealthModel.securityStatus]);
 
   const riskFreshness = pageState === 'healthy_live' || (pageState === 'configured_no_signals' && reportingSystems > 0)
     ? `last evaluated ${detectionEvalLabel} across ${Math.max(configuredSystems, 0)} monitored systems`
@@ -2872,7 +2867,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         onRefreshNow={() => window.dispatchEvent(new Event('pilot-history-refresh'))}
         onGenerateProofChain={() => void ensureSimulatorProofChain()}
       />
-      <ThreatOverviewCard securityStatus={securityStatus} />
+      <ThreatOverviewCard securityStatus={monitoringHealthModel.securityStatus} />
       <MonitoringHealthCard
         heartbeatLabel={monitoringPresentation.heartbeatLabel}
         pollLabel={monitoringViewModel.pollLabel}
