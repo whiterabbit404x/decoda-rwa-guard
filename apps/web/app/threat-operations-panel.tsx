@@ -1256,12 +1256,12 @@ export function pageStatePrimaryCopy(
       ? ` Remediation: ${Array.from(new Set(remediationTargets)).join(' · ')}.`
       : '';
     if (continuityStatus === 'continuous_no_evidence') {
-      return `Continuity SLO FAIL. Failed checks: ${failedReasons}.${remediationCopy}`;
+      return `Monitoring continuity needs attention: ${failedReasons}.${remediationCopy}`;
     }
     if (continuityStatus === 'continuous_live') {
       return 'Continuous live monitoring proven. No active detections are currently open.';
     }
-    return `Continuity SLO FAIL. Failed checks: ${failedReasons}.${remediationCopy}`;
+    return `Monitoring continuity needs attention: ${failedReasons}.${remediationCopy}`;
   }
   if (state === 'unconfigured_workspace') {
     return `Workspace is not configured: ${configurationReasonMessage(configurationReason)} Live threat detection starts only after persisted linkage is valid.`;
@@ -2842,6 +2842,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     lastSuccessfulRuntimeRefreshAt: monitoringViewModel.lastSuccessfulRuntimeRefreshAt,
     lastSuccessfulTimelineRefreshAt: monitoringViewModel.lastSuccessfulTimelineRefreshAt,
     continuityChecks: continuityFailedCheckList.map((item) => item.label),
+    customerContinuitySummary: pageStatePrimaryCopy(pageState, configurationReason, runtimeSummary?.continuity_status ?? null, continuitySlo, continuityFailedCheckList, remediationLinks),
     reconcileUiState,
     activeReconcileId,
     lastSuccessfulReconcileAt,
@@ -2918,6 +2919,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         failedEndpoints={snapshotFailedEndpoints}
         staleCollections={snapshotStaleCollections}
         diagnostics={technicalDetails.diagnostics}
+        customerContinuitySummary={technicalDetails.customerContinuitySummary}
         continuityChecks={technicalDetails.continuityChecks}
         reconcileInternals={technicalDetails.reconcileInternals}
         loopHealthInternals={technicalDetails.loopHealthInternals}

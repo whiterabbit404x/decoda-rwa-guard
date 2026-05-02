@@ -58,7 +58,7 @@ test('LIVE/HYBRID no-evidence wording stays degraded and does not imply healthy 
   const threatOperationsPanel = read('threat-operations-panel.tsx').toLowerCase();
 
   expect(chainPanel).toContain('degraded evidence state: live/hybrid monitoring is active but this chain has no persisted evidence yet.');
-  expect(threatOperationsPanel).toContain('continuity slo fail. failed checks:');
+  expect(threatOperationsPanel).toContain('monitoring continuity needs attention:');
   expect(threatOperationsPanel).toContain('remediation:');
   expect(threatOperationsPanel).not.toContain('telemetry continuity is healthy');
   expect(alertsPage).not.toContain('all clear');

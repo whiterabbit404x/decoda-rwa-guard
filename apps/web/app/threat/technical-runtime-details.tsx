@@ -12,6 +12,7 @@ type Props = {
   staleCollections?: string[];
   diagnostics?: string[];
   continuityChecks?: string[];
+  customerContinuitySummary?: string | null;
   reconcileInternals?: string[];
   loopHealthInternals?: string[];
   proofChainInternals?: string[];
@@ -34,6 +35,7 @@ export default function TechnicalRuntimeDetails(props: Props) {
     staleCollections = [],
     diagnostics = [],
     continuityChecks = [],
+    customerContinuitySummary,
     reconcileInternals = [],
     loopHealthInternals = [],
     proofChainInternals = [],
@@ -50,6 +52,7 @@ export default function TechnicalRuntimeDetails(props: Props) {
       </ul>
       {diagnostics.length > 0 ? <div className="stack compactStack">{diagnostics.map((d, i) => <p className="tableMeta" key={`${d}-${i}`}>{d}</p>)}</div> : null}
 
+      {customerContinuitySummary ? <p className="tableMeta">customer continuity summary: {customerContinuitySummary}</p> : null}
       {continuityChecks.length > 0 ? <p className="tableMeta">continuity checks: {continuityChecks.join(' · ')}</p> : null}
       {reconcileInternals.length > 0 ? <p className="tableMeta">reconcile internals: {reconcileInternals.join(' · ')}</p> : null}
       {loopHealthInternals.length > 0 ? <p className="tableMeta">loop health internals: {loopHealthInternals.join(' · ')}</p> : null}
