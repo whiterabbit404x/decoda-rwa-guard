@@ -19,6 +19,12 @@ import ResponseActionPanel, { type ResponseAction } from './threat/response-acti
 import ThreatEmptyState from './threat/threat-empty-state';
 import TechnicalRuntimeDetails from './threat/technical-runtime-details';
 import ThreatPageHeader from './threat/threat-page-header';
+import { buildDetectionRecords } from './threat/build-detection-records';
+import { buildMonitoringHealthModel } from './threat/build-monitoring-health-model';
+import { buildAlertIncidentChain } from './threat/build-alert-incident-chain';
+import { buildResponseActionsModel } from './threat/build-response-actions';
+import { buildTechnicalRuntimeDetails } from './threat/build-technical-runtime-details';
+import { THREAT_COPY, formatRawEvidenceReference } from './threat/threat-copy';
 
 type Props = { apiUrl: string };
 // Temporary backoff while runtime-status latency is elevated; re-evaluate when p95 is back under threshold.
@@ -1814,6 +1820,18 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     () => buildSecurityWorkspaceStatus(runtimeStatusSnapshot, detections, alerts, incidents, evidence),
     [runtimeStatusSnapshot, detections, alerts, incidents, evidence],
   );
+  const monitoringHealthModel = useMemo(() => buildMonitoringHealthModel({
+    runtimeStatusSnapshot,
+    detections,
+    alerts,
+    incidents,
+    evidence,
+    telemetryAt: monitoringPresentation.lastTelemetryAt,
+    heartbeatAt: monitoringPresentation.lastHeartbeatAt,
+    pollAt: monitoringPresentation.lastPollAt,
+    contradictionFlags: runtimeContradictionFlags,
+    continuityChecks: continuityFailedCheckList.map((item) => item.code),
+  }), [alerts, continuityFailedCheckList, detections, evidence, incidents, monitoringPresentation.lastHeartbeatAt, monitoringPresentation.lastPollAt, monitoringPresentation.lastTelemetryAt, runtimeContradictionFlags, runtimeStatusSnapshot]);
 
   const targetById = useMemo(() => {
     return new Map(targets.map((target) => [target.id, target] as const));
@@ -2307,18 +2325,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : `last known score from ${detectionEvalLabel}; current telemetry unavailable`;
 
   const detectionsToRender = pageState === 'healthy_live' ? categorizedDetections.live : categorizedDetections.historical;
-  const detectionRecords = useMemo<DetectionRecord[]>(() => {
-    return detectionsToRender.map((item) => ({
-      id: item.id,
-      time: formatAbsoluteTime(item.timestamp),
-      asset: item.assetName,
-      detection: item.title,
-      severity: item.severity,
-      confidence: item.monitoringStatus,
-      evidence: item.evidenceSummary,
-      status: item.state,
-    }));
-  }, [detectionsToRender]);
+  const detectionRecords = useMemo<DetectionRecord[]>(() => (
+    buildDetectionRecords(detectionsToRender.map((item) => ({ ...item, timestamp: formatAbsoluteTime(item.timestamp) })))
+  ), [detectionsToRender]);
   const linkedAlertRows = alerts.slice(0, 10).map((alert) => {
     const linkedDetection = detections.find((item) => item.linked_alert_id === alert.id) ?? null;
     return { alert, linkedDetection };
@@ -2404,7 +2413,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
       { key: 'incident', label: 'Incident', id: chainPanelSelection.incidentId, timestamp: incidents.find((item) => item.id === chainPanelSelection.incidentId)?.created_at ?? null, href: '/incidents' },
       { key: 'action', label: 'Action', id: chainPanelSelection.actionId, timestamp: persistedThreatChain.action?.timestamp ?? null, href: '/history' },
     ];
-    const rawEvidenceReference = `raw evidence refs: evidence_id ${latestEvidence?.id || 'n/a'} · tx ${latestEvidence?.tx_hash || chainPanelSelection.txHash || 'n/a'} · block ${latestEvidence?.block_number ?? chainPanelSelection.blockNumber ?? 'n/a'} · provider ${latestEvidence?.source_provider || chainPanelSelection.evidenceOrigin || 'n/a'}`;
+    const rawEvidenceReference = formatRawEvidenceReference({
+      evidenceId: latestEvidence?.id || 'n/a',
+      txHash: latestEvidence?.tx_hash || chainPanelSelection.txHash || 'n/a',
+      blockNumber: latestEvidence?.block_number ?? chainPanelSelection.blockNumber ?? null,
+      provider: latestEvidence?.source_provider || chainPanelSelection.evidenceOrigin || 'n/a',
+    });
     return { orderedTimeline, rawEvidenceReference };
   }, [alerts, chainPanelSelection.alertId, chainPanelSelection.blockNumber, chainPanelSelection.detectionId, chainPanelSelection.evidenceOrigin, chainPanelSelection.incidentId, chainPanelSelection.txHash, coverageIndexes.evidenceByDetectionId, detections, incidents, persistedThreatChain.action?.timestamp]);
 
@@ -2636,7 +2650,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
   async function runSimulatedThreatAction(actionType: string, label: string) {
     if (shouldBlockThreatActionCreation) {
-      setResponseToast('No linked alert/incident context available.');
+      setResponseToast(THREAT_COPY.noLinkedContext);
       return;
     }
     const contextLabel = selectedThreatActionContext
@@ -2815,37 +2829,32 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   }, [latestReconcileJob, reconcileUiState]);
 
 
-  const chainSummary = useMemo(() => ({
-    alert: linkedAlertRows[0] ? { id: linkedAlertRows[0].alert.id, label: linkedAlertRows[0].alert.title, status: linkedAlertRows[0].alert.status || 'open' } : null,
-    incident: incidents[0] ? { id: incidents[0].id, label: incidents[0].title || incidents[0].event_type || incidents[0].id, status: incidents[0].status || 'open' } : null,
-    responseAction: actionHistory[0] ? { id: actionHistory[0].id, label: String(actionHistory[0].action_type || 'Action logged'), status: 'tracked' } : null,
+  const chainSummary = useMemo(() => buildAlertIncidentChain({
+    alerts: linkedAlertRows.map((row) => row.alert),
+    incidents,
+    actionHistory,
   }), [linkedAlertRows, incidents, actionHistory]);
 
-  const technicalDetails = useMemo(() => ({
-    summaryLine: `Data provenance (${monitoringViewModel.provenanceLabel}): ${monitoringViewModel.provenanceExplanation}`,
-    diagnostics: [
-      `Last successful monitoring refresh: ${formatAbsoluteTime(monitoringViewModel.lastSuccessfulRefreshAt)}`,
-      `Last successful runtime refresh: ${formatAbsoluteTime(monitoringViewModel.lastSuccessfulRuntimeRefreshAt)}`,
-      `Last successful timeline refresh: ${formatAbsoluteTime(monitoringViewModel.lastSuccessfulTimelineRefreshAt)}`,
-    ],
+  const technicalDetails = useMemo(() => buildTechnicalRuntimeDetails({
+    provenanceLabel: monitoringViewModel.provenanceLabel,
+    provenanceExplanation: monitoringViewModel.provenanceExplanation,
+    lastSuccessfulRefreshAt: monitoringViewModel.lastSuccessfulRefreshAt,
+    lastSuccessfulRuntimeRefreshAt: monitoringViewModel.lastSuccessfulRuntimeRefreshAt,
+    lastSuccessfulTimelineRefreshAt: monitoringViewModel.lastSuccessfulTimelineRefreshAt,
     continuityChecks: continuityFailedCheckList.map((item) => item.label),
-    reconcileInternals: [
-      `state=${reconcileUiState}`,
-      `active_reconcile_id=${activeReconcileId ?? 'none'}`,
-      `last_successful_reconcile_at=${formatAbsoluteTime(lastSuccessfulReconcileAt)}`,
-    ],
-    loopHealthInternals: [
-      `loop_state=${loopHealthSignal.state}`,
-      `consecutive_failures=${loopHealth?.consecutive_failures ?? 0}`,
-      `last_successful_cycle=${formatAbsoluteTime(loopHealth?.last_successful_cycle ?? null)}`,
-    ],
-    proofChainInternals: [
-      `ensuring=${ensuringProofChain ? 'yes' : 'no'}`,
-      `proof_chain_enabled=${monitoringViewModel.ctas.generateSimulatorProofChain.disabled ? 'no' : 'yes'}`,
-    ],
+    reconcileUiState,
+    activeReconcileId,
+    lastSuccessfulReconcileAt,
+    loopState: loopHealthSignal.state,
+    consecutiveFailures: loopHealth?.consecutive_failures ?? 0,
+    lastSuccessfulCycle: loopHealth?.last_successful_cycle ?? null,
+    ensuringProofChain,
+    proofChainEnabled: !monitoringViewModel.ctas.generateSimulatorProofChain.disabled,
+    formatAbsoluteTime,
   }), [activeReconcileId, continuityFailedCheckList, ensuringProofChain, lastSuccessfulReconcileAt, loopHealth, loopHealthSignal.state, monitoringViewModel, reconcileUiState]);
 
-  const responseActionCapabilities = useMemo(() => Object.entries(actionCapabilities).filter(([, enabled]) => enabled).map(([key]) => key.replaceAll('_', ' ')), [actionCapabilities]);
+  const responseActionsModel = useMemo(() => buildResponseActionsModel(actionCapabilities), [actionCapabilities]);
+  const responseActionCapabilities = responseActionsModel.responseActionCapabilities;
   const responseActions = useMemo<ResponseAction[]>(() => [
     {
       id: 'sim-notify-team',
@@ -2902,7 +2911,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         monitoringStatus={monitoringPresentation.status}
         telemetryFreshness={runtimeStatusSnapshot?.freshness_status}
         confidence={runtimeStatusSnapshot?.confidence_status}
-        contradictionFlags={runtimeContradictionFlags}
+        contradictionFlags={monitoringHealthModel.contradictionFlags}
         guardFlags={Array.isArray(runtimeStatusSnapshot?.guard_flags) ? runtimeStatusSnapshot.guard_flags : []}
         dbFailureClassification={runtimeStatusSnapshot?.db_failure_classification}
         statusReason={runtimeStatusSnapshot?.status_reason}

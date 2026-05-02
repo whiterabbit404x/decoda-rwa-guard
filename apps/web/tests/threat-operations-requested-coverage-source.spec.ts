@@ -61,7 +61,7 @@ test('threat quick actions require explicit linked context and block unrelated f
   expect(threat).not.toContain('alert_id: alerts[0]?.id');
   expect(threat).toContain('const shouldBlockThreatActionCreation = noLinkedActionContextAvailable || !selectedThreatActionContext;');
   expect(threat).toContain('if (shouldBlockThreatActionCreation) {');
-  expect(threat).toContain("setResponseToast('No linked alert/incident context available.');");
+  expect(threat).toContain('setResponseToast(THREAT_COPY.noLinkedContext);');
   expect(threat).toContain("const confirmLiveActionDisabledReason = !selectedThreatActionContext?.incidentId");
   expect(threat).toContain("? 'Confirm LIVE action is disabled because no incident context is linked.'");
   expect(threat).toContain('incident_id: selectedThreatActionContext.incidentId');
