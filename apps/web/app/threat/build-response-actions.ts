@@ -1,4 +1,5 @@
 import type { ResponseActionCapability } from '../response-action-capabilities';
+import type { ResponseAction } from './response-action-panel';
 
 type ThreatActionButtonState = {
   disabled: boolean;
@@ -23,4 +24,25 @@ export function buildResponseActionsModel(actionCapabilities: Record<string, Res
 
   const actionButtons = {} as Record<ThreatActionButtonId, ThreatActionButtonState>;
   return { responseActionCapabilities, actionButtons };
+}
+
+export function buildResponseActionList(params: {
+  actionButtons: Record<ThreatActionButtonId, ThreatActionButtonState>;
+}): Array<Omit<ResponseAction, 'onClick'>> {
+  return [
+    {
+      id: 'sim-notify-team',
+      label: 'Run simulated response',
+      state: 'simulation_only',
+      disabled: params.actionButtons['sim-notify-team'].disabled,
+      reason: params.actionButtons['sim-notify-team'].reason,
+    },
+    {
+      id: 'sim-revoke-approval',
+      label: 'Revoke approval',
+      state: 'manual_recommendation',
+      disabled: params.actionButtons['sim-revoke-approval'].disabled,
+      reason: params.actionButtons['sim-revoke-approval'].reason,
+    },
+  ];
 }

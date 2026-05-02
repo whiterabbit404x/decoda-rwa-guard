@@ -22,7 +22,7 @@ import ThreatPageHeader from './threat/threat-page-header';
 import { buildDetectionRecords } from './threat/build-detection-records';
 import { buildMonitoringHealthModel } from './threat/build-monitoring-health-model';
 import { buildAlertIncidentChain } from './threat/build-alert-incident-chain';
-import { buildResponseActionsModel } from './threat/build-response-actions';
+import { buildResponseActionList, buildResponseActionsModel } from './threat/build-response-actions';
 import { buildTechnicalRuntimeDetails } from './threat/build-technical-runtime-details';
 import { THREAT_COPY, formatRawEvidenceReference } from './threat/threat-copy';
 
@@ -2326,12 +2326,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
   const detectionsToRender = pageState === 'healthy_live' ? categorizedDetections.live : categorizedDetections.historical;
   const detectionRecords = useMemo<DetectionRecord[]>(() => (
-    buildDetectionRecords(detectionsToRender.map((item) => ({ ...item, timestamp: formatAbsoluteTime(item.timestamp) })))
+    buildDetectionRecords(detectionsToRender)
   ), [detectionsToRender]);
-  const linkedAlertRows = alerts.slice(0, 10).map((alert) => {
-    const linkedDetection = detections.find((item) => item.linked_alert_id === alert.id) ?? null;
-    return { alert, linkedDetection };
-  });
   const investigationTimelineItems = useMemo(() => (
     timelineItems.slice().sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime())
   ), [timelineItems]);
@@ -2830,10 +2826,11 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
 
   const chainSummary = useMemo(() => buildAlertIncidentChain({
-    alerts: linkedAlertRows.map((row) => row.alert),
+    alerts,
     incidents,
     actionHistory,
-  }), [linkedAlertRows, incidents, actionHistory]);
+    detections,
+  }), [alerts, incidents, actionHistory, detections]);
 
   const technicalDetails = useMemo(() => buildTechnicalRuntimeDetails({
     provenanceLabel: monitoringViewModel.provenanceLabel,
@@ -2856,24 +2853,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
 
   const responseActionsModel = useMemo(() => buildResponseActionsModel(actionCapabilities), [actionCapabilities]);
   const responseActionCapabilities = responseActionsModel.responseActionCapabilities;
-  const responseActions = useMemo<ResponseAction[]>(() => [
-    {
-      id: 'sim-notify-team',
-      label: 'Run simulated response',
-      state: 'simulation_only',
-      disabled: monitoringViewModel.actionButtons['sim-notify-team'].disabled,
-      reason: monitoringViewModel.actionButtons['sim-notify-team'].reason,
-      onClick: () => void runThreatAction('notify_team', 'Run simulated response', 'simulated'),
-    },
-    {
-      id: 'sim-revoke-approval',
-      label: 'Revoke approval',
-      state: 'manual_recommendation',
-      disabled: monitoringViewModel.actionButtons['sim-revoke-approval'].disabled,
-      reason: monitoringViewModel.actionButtons['sim-revoke-approval'].reason,
-      onClick: () => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated'),
-    },
-  ], [monitoringViewModel.actionButtons]);
+  const responseActions = useMemo<ResponseAction[]>(() => (
+    buildResponseActionList({ actionButtons: monitoringViewModel.actionButtons }).map((action) => ({
+      ...action,
+      onClick: action.id === 'sim-notify-team'
+        ? () => void runThreatAction('notify_team', 'Run simulated response', 'simulated')
+        : () => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated'),
+    }))
+  ), [monitoringViewModel.actionButtons]);
 
   return (
     <section className="stack monitoringConsoleStack">
