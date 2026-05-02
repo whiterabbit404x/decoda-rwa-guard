@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { THREAT_COPY } from './threat-copy';
 
 export type DetectionRecord = {
   id: string;
@@ -18,7 +19,7 @@ export default function DetectionFeed({ detections, loading }: Props) {
     <article className="dataCard" aria-label="Detection Feed">
       <div className="listHeader"><div><p className="sectionEyebrow">Detection feed</p><h3>Detection records from monitoring rules</h3></div><Link href="/alerts" prefetch={false}>Review alerts</Link></div>
       {loading ? <p className="muted">Loading detection records…</p> : null}
-      {!loading && detections.length === 0 ? <p className="muted">No detections yet. Monitoring will show detections here once telemetry matches a rule.</p> : null}
+      {!loading && detections.length === 0 ? <p className="muted">{THREAT_COPY.noDetectionRecords}</p> : null}
       {detections.length > 0 ? (
         <div className="tableWrap">
           <table>
