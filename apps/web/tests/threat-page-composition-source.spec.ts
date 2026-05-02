@@ -31,7 +31,7 @@ test('alert -> incident -> response chain and focused posture/action rendering a
   expect(chain).toContain('aria-label="Alert Incident Response Chain"');
   expect(response).toContain('aria-label="Response Actions"');
   expect(overview).toContain('aria-label="Security Overview"');
-
+  expect(operations.indexOf('<ResponseActionPanel')).toBeLessThan(operations.indexOf('<TechnicalRuntimeDetails'));
 });
 
 test('threat composition components do not independently claim live/healthy status copy', () => {
