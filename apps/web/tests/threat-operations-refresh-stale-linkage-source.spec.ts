@@ -76,7 +76,7 @@ test('incident timeline and evidence rendering blocks assert populated rows', ()
   expect(threat).toContain('timeline: timestamp {timelineTimestamp} · source {sourceLabel}');
   expect(threat).toContain('linked IDs: detection {String(chainIds.detection_id || \'n/a\')}');
   expect(threat).toContain('formatAbsoluteTime(item.timestamp)');
-  expect(threat).toContain('raw evidence refs: evidence_id');
+  expect(threat).toContain('formatRawEvidenceReference({');
   expect(threat).toContain('threatChainTimeline.orderedTimeline.map((step) => (');
   expect(threat).toContain('<Link href="/alerts" prefetch={false}>Detection</Link> → <Link href="/alerts" prefetch={false}>Alert</Link> → <Link href="/incidents" prefetch={false}>Incident</Link> → <Link href="/history" prefetch={false}>Action</Link>');
   expect(threat).toContain('<p>{step.label}: {step.id || \'n/a\'}</p>');
@@ -100,8 +100,8 @@ test('detection rows surface raw evidence references and observed timestamps', (
   const threat = appSource('threat-operations-panel.tsx');
 
   expect(threat).toContain('rawEvidenceReference');
-  expect(threat).toContain('raw evidence refs: evidence_id');
-  expect(threat).toContain('raw evidence refs: detection');
+  expect(threat).toContain('formatRawEvidenceReference({');
+  expect(threat).toContain('evidenceId: latestEvidence?.id || 'n/a'');
   expect(threat).toContain('rawEvidenceObservedAt');
   expect(threat).toContain('observed {formatAbsoluteTime(signal.rawEvidenceObservedAt || signal.timestamp)}');
 });
