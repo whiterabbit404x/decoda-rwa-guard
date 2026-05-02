@@ -1,6 +1,6 @@
 type AlertChainInput = { id: string; title: string; status?: string };
 type IncidentChainInput = { id: string; title?: string; event_type?: string; status?: string };
-type ActionChainInput = { id: string; action_type?: string };
+type ActionChainInput = { id: string; action_type?: string | null };
 
 export function buildAlertIncidentChain(params: {
   alerts: AlertChainInput[];

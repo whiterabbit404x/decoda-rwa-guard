@@ -2416,7 +2416,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     const rawEvidenceReference = formatRawEvidenceReference({
       evidenceId: latestEvidence?.id || 'n/a',
       txHash: latestEvidence?.tx_hash || chainPanelSelection.txHash || 'n/a',
-      blockNumber: latestEvidence?.block_number ?? chainPanelSelection.blockNumber ?? 'n/a',
+      blockNumber: latestEvidence?.block_number ?? chainPanelSelection.blockNumber ?? null,
       provider: latestEvidence?.source_provider || chainPanelSelection.evidenceOrigin || 'n/a',
     });
     return { orderedTimeline, rawEvidenceReference };
