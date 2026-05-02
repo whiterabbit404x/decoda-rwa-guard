@@ -9,11 +9,15 @@ function appSource(fileName: string): string {
 }
 
 test.describe('threat operations panel requested contracts (source)', () => {
-  test('buildSecurityWorkspaceStatus remains wired in threat flow', () => {
+  test('buildMonitoringHealthModel is canonical owner of security workspace derivation', () => {
     const panel = appSource('threat-operations-panel.tsx');
 
-    expect(panel).toContain("import { buildSecurityWorkspaceStatus } from './security-workspace-status';");
-    expect(panel).toContain('buildSecurityWorkspaceStatus(runtimeStatusSnapshot, detections, alerts, incidents, evidence)');
+    const monitoringModel = appSource('threat/build-monitoring-health-model.ts');
+
+    expect(panel).not.toContain("import { buildSecurityWorkspaceStatus } from './security-workspace-status';");
+    expect(panel).not.toContain('buildSecurityWorkspaceStatus(runtimeStatusSnapshot, detections, alerts, incidents, evidence)');
+    expect(monitoringModel).toContain("import { buildSecurityWorkspaceStatus } from '../security-workspace-status';");
+    expect(monitoringModel).toContain('buildSecurityWorkspaceStatus(');
   });
 
   test('renders TechnicalRuntimeDetails after ResponseActionPanel and keeps technical details collapsed by default', () => {

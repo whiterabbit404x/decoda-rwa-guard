@@ -9,10 +9,12 @@ describe('threat saas refactor source contracts', () => {
   const chain = fs.readFileSync(path.join(process.cwd(), 'app/threat/alert-incident-chain.tsx'), 'utf8');
   const action = fs.readFileSync(path.join(process.cwd(), 'app/threat/response-action-panel.tsx'), 'utf8');
 
-  it('uses buildSecurityWorkspaceStatus in panel', () => {
-    expect(panel).toContain("import { buildSecurityWorkspaceStatus }");
-    expect(panel).toContain('const securityStatus = useMemo(');
-    expect(panel).toContain('buildSecurityWorkspaceStatus(runtimeStatusSnapshot, detections, alerts, incidents, evidence)');
+  it('keeps buildSecurityWorkspaceStatus owned by monitoring model builder', () => {
+    const monitoringModel = fs.readFileSync(path.join(process.cwd(), 'app/threat/build-monitoring-health-model.ts'), 'utf8');
+    expect(panel).not.toContain("import { buildSecurityWorkspaceStatus }");
+    expect(panel).not.toContain('const securityStatus = useMemo(');
+    expect(monitoringModel).toContain("import { buildSecurityWorkspaceStatus } from '../security-workspace-status';");
+    expect(monitoringModel).toContain('buildSecurityWorkspaceStatus(');
   });
 
   it('ThreatOverviewCard accepts SecurityWorkspaceStatus', () => {
