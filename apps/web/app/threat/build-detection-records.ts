@@ -12,9 +12,15 @@ type DetectionInput = {
 };
 
 export function buildDetectionRecords(detections: DetectionInput[]): DetectionRecord[] {
+  const formatAbsoluteTime = (value?: string | null): string => {
+    if (!value) return 'Not available';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? 'Not available' : date.toLocaleString();
+  };
+
   return detections.map((item) => ({
     id: item.id,
-    time: item.timestamp,
+    time: formatAbsoluteTime(item.timestamp),
     asset: item.assetName,
     detection: item.title,
     severity: item.severity,
