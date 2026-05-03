@@ -2833,7 +2833,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     lastSuccessfulRefreshAt: monitoringViewModel.lastSuccessfulRefreshAt,
     lastSuccessfulRuntimeRefreshAt: monitoringViewModel.lastSuccessfulRuntimeRefreshAt,
     lastSuccessfulTimelineRefreshAt: monitoringViewModel.lastSuccessfulTimelineRefreshAt,
-    continuityChecks: continuityFailedCheckList.map((item) => item.label),
+    continuityChecks: continuityFailedCheckList,
     customerContinuitySummary: pageStatePrimaryCopy(pageState, configurationReason, runtimeSummary?.continuity_status ?? null, continuitySlo, continuityFailedCheckList, remediationLinks),
     reconcileUiState,
     activeReconcileId,
@@ -2849,13 +2849,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const responseActionsModel = useMemo(() => buildResponseActionsModel(actionCapabilities), [actionCapabilities]);
   const responseActionCapabilities = responseActionsModel.responseActionCapabilities;
   const responseActions = useMemo<ResponseAction[]>(() => (
-    buildResponseActionList({ actionButtons: monitoringViewModel.actionButtons }).map((action) => ({
-      ...action,
-      onClick: action.id === 'sim-notify-team'
-        ? () => void runThreatAction('notify_team', 'Run simulated response', 'simulated')
-        : () => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated'),
-    }))
-  ), [monitoringViewModel.actionButtons]);
+    buildResponseActionList({
+      actionButtons: monitoringViewModel.actionButtons,
+      onSimNotifyTeam: () => void runThreatAction('notify_team', 'Run simulated response', 'simulated'),
+      onSimRevokeApproval: () => void runThreatAction('revoke_approval', 'Revoke approval', 'simulated'),
+    })
+  ), [monitoringViewModel.actionButtons, runThreatAction]);
 
   return (
     <section className="stack monitoringConsoleStack">

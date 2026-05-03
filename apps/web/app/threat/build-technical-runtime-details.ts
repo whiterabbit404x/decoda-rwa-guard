@@ -4,7 +4,7 @@ export function buildTechnicalRuntimeDetails(params: {
   lastSuccessfulRefreshAt: string | null;
   lastSuccessfulRuntimeRefreshAt: string | null;
   lastSuccessfulTimelineRefreshAt: string | null;
-  continuityChecks: string[];
+  continuityChecks: Array<{ label: string }>;
   customerContinuitySummary?: string | null;
   reconcileUiState: string;
   activeReconcileId: string | null;
@@ -23,7 +23,7 @@ export function buildTechnicalRuntimeDetails(params: {
       `Last successful runtime refresh: ${params.formatAbsoluteTime(params.lastSuccessfulRuntimeRefreshAt)}`,
       `Last successful timeline refresh: ${params.formatAbsoluteTime(params.lastSuccessfulTimelineRefreshAt)}`,
     ],
-    continuityChecks: params.continuityChecks,
+    continuityChecks: params.continuityChecks.map((item) => item.label),
     customerContinuitySummary: params.customerContinuitySummary ?? null,
     reconcileInternals: [
       `state=${params.reconcileUiState}`,
