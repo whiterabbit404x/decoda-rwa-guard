@@ -8,6 +8,7 @@ export function buildAlertIncidentChain(params: {
   incidents: IncidentChainInput[];
   actionHistory: ActionChainInput[];
   detections: DetectionChainInput[];
+  domainLabels?: string[];
 }) {
   const linkedAlerts = params.alerts.slice(0, 10).map((alert) => {
     const linkedDetection = params.detections.find((item) => item.linked_alert_id === alert.id) ?? null;
@@ -23,5 +24,5 @@ export function buildAlertIncidentChain(params: {
     ? { id: params.actionHistory[0].id, label: String(params.actionHistory[0].action_type || 'Action logged'), status: 'tracked' }
     : null;
 
-  return { alert, incident, responseAction, linkedAlerts };
+  return { alert, incident, responseAction, linkedAlerts, domainLabels: params.domainLabels ?? [] };
 }

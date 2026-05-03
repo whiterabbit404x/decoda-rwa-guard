@@ -6,9 +6,10 @@ type Props = {
   alert?: ChainItem | null;
   incident?: ChainItem | null;
   responseAction?: ChainItem | null;
+  domainLabels?: string[];
 };
 
-export default function AlertIncidentChain({ alert, incident, responseAction }: Props) {
+export default function AlertIncidentChain({ alert, incident, responseAction, domainLabels = [] }: Props) {
   const hasActiveChain = Boolean(alert || incident || responseAction);
 
   return (
@@ -37,6 +38,7 @@ export default function AlertIncidentChain({ alert, incident, responseAction }: 
       ) : (
         <p>{THREAT_COPY.noActiveIncidentChain}</p>
       )}
+      {domainLabels.length > 0 ? <p className="tableMeta">Monitored domain entities: {domainLabels.join(' · ')}</p> : null}
     </article>
   );
 }
