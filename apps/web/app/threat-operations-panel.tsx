@@ -1781,7 +1781,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     tone: monitoringTone(presentationStatus),
     statusLabel: presentationStatusLabel,
     summary: canonicalPresentation.summary,
-    evidenceSourceLabel: runtimeEvidenceSource,
+    evidenceSourceLabel: runtimeEvidenceSource === 'live' ? 'Live evidence' : 'Simulator evidence',
     lastTelemetryAt: runtimeStatusSnapshot?.last_telemetry_at ?? null,
     lastHeartbeatAt: runtimeStatusSnapshot?.last_heartbeat_at ?? null,
     lastPollAt: runtimeStatusSnapshot?.last_poll_at ?? null,
@@ -1869,7 +1869,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         : (reconcileTerminal ? 'Status unavailable' : (matchedTarget?.monitoring_enabled ? 'Monitored' : 'Status unavailable'));
       const normalizedEvidenceSource = String(item.evidence_source ?? '').toLowerCase();
       const simulatorEvidence = ['simulator', 'demo', 'synthetic', 'fallback', 'replay'].includes(normalizedEvidenceSource);
-      const evidenceSourceLabel = simulatorEvidence ? 'simulator/demo' : 'live';
+      const normalizedDetectionEvidenceSource = simulatorEvidence ? 'simulator' : 'live';
+      const evidenceSourceLabel = simulatorEvidence ? 'Simulator evidence' : 'Live evidence';
       return {
         id: `detection-${item.id}`,
         timestamp: item.detected_at || new Date(0).toISOString(),
@@ -1888,7 +1889,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         sourceProvider: evidenceSourceLabel,
         liveEvidenceEligible: !simulatorEvidence,
         targetName: monitoredSystem?.target_name ?? matchedTarget?.name ?? null,
-        rawEvidenceReference: `raw evidence refs: detection ${item.id} · tx ${rawEvent.tx_hash ?? responsePayload.observed_evidence?.tx_hash ?? item.tx_hash ?? 'n/a'} · block ${rawEvent.block_number ?? responsePayload.observed_evidence?.block_number ?? item.block_number ?? 'n/a'} · provider ${item.evidence_origin ?? item.evidence_source ?? 'n/a'}`,
+        rawEvidenceReference: `raw evidence refs: detection ${item.id} · tx ${rawEvent.tx_hash ?? responsePayload.observed_evidence?.tx_hash ?? item.tx_hash ?? 'n/a'} · block ${rawEvent.block_number ?? responsePayload.observed_evidence?.block_number ?? item.block_number ?? 'n/a'} · provider ${item.evidence_origin ?? normalizedDetectionEvidenceSource}`,
         rawEvidenceObservedAt: item.last_evidence_at ?? item.detected_at ?? null,
         state: isTest ? ('Test' as const) : ('Live' as const),
         href: item.linked_alert_id ? '/alerts' : '/threat',
