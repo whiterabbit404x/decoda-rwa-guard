@@ -2,69 +2,72 @@
 
 Last reconciled: **2026-05-03**.
 
-This checklist is **fail-closed**: readiness is granted only by passing gates with verifiable evidence, and never by fallback assumptions.
+This checklist is **fail-closed**: readiness is granted only by passing gates with verifiable evidence, never by fallback/demo assumptions.
 
-## Launch validation commands and artifacts
+## Validation commands, checklists, and artifact paths
 
-- `make validate-no-billing-launch` → pilot launch gate (billing intentionally disabled).
-- `make validate-launch` → strict broad self-serve gate (includes provider + staging requirements).
-- `make proof-no-billing-launch` → deterministic no-billing proof bundle at `artifacts/launch-proof/latest/{summary.json,summary.md}`.
-- `python scripts/staging/run_no_billing_launch_proof.py` → direct runner for no-billing proof workflow.
-- `python services/api/scripts/validate_production_readiness.py` → API readiness validator used by launch checks.
+### Primary release gates
+- `make validate-no-billing-launch` → pilot gate orchestration.
+- `make validate-launch` → broad self-serve gate orchestration.
+- `python services/api/scripts/validate_production_readiness.py` → core API readiness validator consumed by launch checks.
+- `python services/api/scripts/validate_staging.py` → staging/runtime evidence validator.
 
-Related truth-model implementation/tests:
-- `services/api/app/monitoring_truth.py`
-- `apps/web/app/workspace-monitoring-truth.ts`
-- `services/api/tests/test_monitoring_truthful_fail_closed.py`
-- `services/api/tests/test_workspace_monitoring_summary_truth_model.py`
-- `apps/web/tests/workspace-monitoring-truth.spec.ts`
+### Proof / evidence generators
+- `make proof-no-billing-launch` → writes deterministic pilot proof bundle at `artifacts/launch-proof/latest/{summary.json,summary.md}`.
+- `python scripts/staging/run_no_billing_launch_proof.py` → direct pilot proof runner.
+- `python scripts/staging/run_evidence_flow.py` and `python services/api/scripts/run_live_evidence_flow.py` → live evidence generation flow.
+- `python services/api/scripts/export_live_proof_artifact_set.py` → packaged proof export.
 
-Both launch validation commands emit machine-readable JSON and category summaries. Browser runtime checks are required by default. In no-billing pilot mode only, browser checks can be recorded as `SKIP` when Chromium download is blocked by runner network policy (or when `ALLOW_BROWSER_RUNTIME_SKIP=true` is set explicitly).
+### Automated source-of-truth checks
+- `scripts/check_frontend_runtime_alignment.py`.
+- `scripts/verify_monitoring_runtime_truth.py`.
+- `services/api/scripts/check_runtime_status_release_gate.py`.
+- `services/api/scripts/check_monitoring_runtime_live_gate.py`.
+- `services/api/scripts/verify_monitoring_runtime.py`.
 
-## Validation categories
+### Existing checklist / audit artifacts
+- `docs/staging-readiness-audit-2026-04-02.md`.
+- `services/api/artifacts/qa_failure_injection_matrix.md`.
+- `services/api/artifacts/monitoring_runtime_audit_2026-04-17.md`.
+- `services/api/artifacts/monitoring_runtime_audit_2026-04-22.md`.
 
-1. `local_repo_integrity`
-2. `frontend_build_reproducibility`
-3. `browser_e2e_runtime`
-4. `api_runtime_readiness`
-5. `live_provider_configuration`
-6. `staging_evidence`
+### Live artifact locations to attach to release decisions
+- `artifacts/launch-proof/latest/`.
+- `artifacts/proof-pack-live-actions-2026-04-22.json`.
+- `services/api/artifacts/live_evidence/latest/{summary.json,report.md,evidence.json,alerts.json,incidents.json,runs.json}`.
+- `services/api/artifacts/live_evidence/latest/live_proof/`.
 
 ## Pilot readiness
 
-Pilot is ready only when all pilot gates pass:
-
-- `make validate-no-billing-launch` passes.
+Pilot is ready only when **all** pilot gates pass:
+- `make validate-no-billing-launch` passes with no fail-closed violations.
 - Proof confirms `BILLING_PROVIDER=none` (`00_assert_no_billing_mode`).
-- Billing may be `not_configured` **only** when `BILLING_PROVIDER=none`.
-- Auth/session/workspace/runtime checks pass with fail-closed truth semantics.
-- Public/legal/support/trust pages are present and coherent for no-billing pilot positioning.
-- Integrations are self-serve via webhook/bot setup, with optional Slack OAuth install+callback when `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, and `SLACK_OAUTH_REDIRECT_URI` are configured.
+- Billing may be `not_configured` only in no-billing mode.
+- Auth/session/workspace/runtime checks pass and no demo/fallback state is treated as success.
+- Required pilot artifacts are present under `artifacts/launch-proof/latest/` and/or `services/api/artifacts/live_evidence/latest/`.
 
 ## Broad self-serve readiness
 
-Broad self-serve is ready only when all broad gates pass:
-
+Broad self-serve is ready only when **all** broad gates pass:
 - `make validate-launch` passes.
-- Billing/email/Redis/provider checks are fully verified in deployed staging.
-- Staging evidence artifacts are generated and archived.
-- Monitoring and workspace truth signals remain fail-closed with no demo/fallback path treated as live success.
+- Billing gate passes (configured + validated, not deferred/no-billing).
+- Email gate passes.
+- Live provider gate passes.
+- Staging validation gate passes with evidence artifacts archived.
+- Monitoring/workspace truth remains fail-closed end-to-end (no fallback path treated as live success).
 
-> **Hard rule:** Do **not** mark broad self-serve ready until **every** broad self-serve gate above passes.
+> **Explicit release rule:** Broad self-serve **cannot be marked ready** until **every broad gate passes**, including **billing, email, provider, and staging** validations.
 
 ## Enterprise procurement readiness
 
-Enterprise procurement readiness requires all broad self-serve gates **plus**:
-
-- Formal compliance/control evidence package.
+Enterprise procurement readiness requires broad self-serve readiness **plus** all of the following:
+- Formal compliance/control evidence package linked to current runtime checks.
 - Procurement artifacts (security questionnaire responses, legal/commercial terms, operational commitments).
-- Traceable evidence linking runtime truth checks to documented controls.
+- Traceable mapping from controls to concrete artifacts in `services/api/artifacts/` and `artifacts/launch-proof/latest/`.
+- Reproducible validation run logs demonstrating fail-closed behavior.
 
-## Current repository status
+## Current repository posture
 
-- **Pilot launch:** ready when `BILLING_PROVIDER=none` and no-billing validation passes.
-- **Public marketing traffic:** ready (site copy and legal/commercial pages align with pilot mode).
-- **Broad paid self-serve:** **not ready yet** (billing enablement intentionally deferred).
-- **Enterprise procurement posture:** **not ready yet** (depends on broad self-serve plus procurement/compliance package).
-- **Slack OAuth app install/callback:** supported when `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, and `SLACK_OAUTH_REDIRECT_URI` are configured.
-- **Slack interactivity endpoints:** **not yet** in this pass; manual webhook/bot posting remains the default supported alerting path.
+- **Pilot launch:** conditionally ready in no-billing mode once pilot gates pass.
+- **Broad self-serve:** not ready unless full broad gates (billing/email/provider/staging included) pass.
+- **Enterprise procurement:** not ready until broad self-serve is ready and procurement/compliance evidence is complete.
