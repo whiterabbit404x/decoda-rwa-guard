@@ -12570,8 +12570,36 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 reason_codes.append('no_worker_generated_runs')
             if not normalized_alerts:
                 reason_codes.append('no_alerts_found')
+            if not normalized_incidents:
+                reason_codes.append('no_incidents_found')
             if normalized_alerts and not strict_anomaly:
                 reason_codes.append('alerts_failed_strict_real_anomaly_checks')
+
+            linked_run_ids = {str(item.get('id')) for item in worker_runs if str(item.get('id') or '').strip()}
+            linked_alert_ids = {str(item.get('id')) for item in normalized_alerts if str(item.get('id') or '').strip()}
+            linked_alert_run_count = sum(1 for item in normalized_alerts if str(item.get('analysis_run_id') or '').strip() in linked_run_ids)
+            linked_incident_alert_count = sum(
+                1
+                for incident in normalized_incidents
+                for alert_id in (incident.get('linked_alert_ids') or [])
+                if str(alert_id or '').strip() in linked_alert_ids
+            )
+            if linked_alert_run_count == 0:
+                reason_codes.append('alerts_not_linked_to_worker_runs')
+            if linked_incident_alert_count == 0:
+                reason_codes.append('incidents_not_linked_to_alerts')
+            if reason_codes:
+                reason_payload = {
+                    'reason_codes': sorted(set(reason_codes)),
+                    'run_count': len(normalized_runs),
+                    'worker_run_count': len(worker_runs),
+                    'alert_count': len(normalized_alerts),
+                    'incident_count': len(normalized_incidents),
+                    'linked_alert_run_count': linked_alert_run_count,
+                    'linked_incident_alert_count': linked_incident_alert_count,
+                }
+                raise RuntimeError(f"FEATURE1_EVIDENCE_CHAIN_INCOMPLETE::{json.dumps(reason_payload, sort_keys=True)}")
+
             rows = [{
                 'generated_at': utc_now_iso(),
                 'workspace_id': workspace_id,

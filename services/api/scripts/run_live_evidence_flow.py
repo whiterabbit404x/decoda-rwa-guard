@@ -89,6 +89,36 @@ def _missing_target_fields(target_identity: dict) -> list[str]:
     return missing
 
 
+def _fail_fast(reason_code: str, message: str, *, details: dict | None = None) -> int:
+    payload = {'status': 'monitoring_execution_failed', 'reason_code': reason_code, 'message': message}
+    if details:
+        payload['details'] = details
+    print(json.dumps(payload, indent=2, default=str), file=sys.stderr)
+    return 3
+
+
+def _validate_export_cardinality(*, alert_rows: list[dict], incident_rows: list[dict], run_rows: list[dict], worker_runs: list[dict]) -> tuple[bool, dict[str, Any]]:
+    linked_run_ids = {str(item.get('id')) for item in worker_runs if str(item.get('id') or '').strip()}
+    linked_alert_ids = {str(item.get('id')) for item in alert_rows if str(item.get('id') or '').strip()}
+    alert_run_links = [str(item.get('analysis_run_id')) for item in alert_rows if str(item.get('analysis_run_id') or '').strip() in linked_run_ids]
+    incident_alert_links = [
+        str(alert_id)
+        for incident in incident_rows
+        for alert_id in ((incident.get('linked_alert_ids') or []) if isinstance(incident, dict) else [])
+        if str(alert_id or '').strip() in linked_alert_ids
+    ]
+    chain_complete = bool(linked_run_ids) and bool(alert_run_links) and bool(incident_alert_links)
+    return chain_complete, {
+        'run_count': len(run_rows),
+        'run_empty_justification': None if run_rows else 'intentionally_empty_not_allowed_for_live_evidence',
+        'worker_run_count': len(worker_runs),
+        'alert_count': len(alert_rows),
+        'incident_count': len(incident_rows),
+        'linked_run_ids': sorted(linked_run_ids),
+        'alert_run_link_count': len(alert_run_links),
+        'incident_alert_link_count': len(incident_alert_links),
+    }
+
 def _lifecycle_execution_details(*, status: str, lifecycle_checks_performed: list[str], worker_monitoring_executed: bool, missing_fields: list[str]) -> tuple[bool, str | None]:
     if lifecycle_checks_performed:
         return True, None
@@ -362,6 +392,19 @@ def main() -> int:
         'enterprise_claim_eligibility': bool(enterprise_claim_eligibility),
     }
 
+    chain_complete, chain_details = _validate_export_cardinality(
+        alert_rows=alert_rows,
+        incident_rows=incident_rows,
+        run_rows=run_rows,
+        worker_runs=worker_runs,
+    )
+    if not chain_complete:
+        return _fail_fast(
+            'CHAIN_PERSISTENCE_INCOMPLETE',
+            'Guided monitoring chain did not persist run->alert->incident links required for export.',
+            details=chain_details,
+        )
+
     summary = {
         'protected_asset_context': protected_asset_context,
         'protected_asset': protected_asset_context,
@@ -464,6 +507,14 @@ def main() -> int:
             'enterprise_claim_eligibility': bool(payload.get('enterprise_claim_eligibility')),
             'claim_ineligibility_reasons': payload.get('claim_ineligibility_reasons') or [],
         })
+
+
+    if not alert_rows:
+        return _fail_fast('ALERTS_EMPTY', 'alerts.json must be non-empty for live evidence export.', details=chain_details)
+    if not incident_rows:
+        return _fail_fast('INCIDENTS_EMPTY', 'incidents.json must be non-empty for live evidence export.', details=chain_details)
+    if not run_rows:
+        return _fail_fast('RUNS_EMPTY', 'runs.json is empty and no intentional-empty justification is permitted for guided live evidence.', details=chain_details)
 
     (artifacts_dir / 'summary.json').write_text(json.dumps(summary, indent=2))
     (artifacts_dir / 'alerts.json').write_text(json.dumps(alert_rows, indent=2, default=str))
