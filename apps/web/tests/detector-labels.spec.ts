@@ -2,6 +2,9 @@ import { expect, test } from '@playwright/test';
 import { detectorKindLabel } from '../app/threat/detector-labels';
 
 test('maps canonical detector codes to customer-readable labels', () => {
+  expect(detectorKindLabel('oracle_nav_divergence')).toBe('Oracle NAV divergence');
+  expect(detectorKindLabel('proof_of_reserve_stale')).toBe('Proof of reserve stale');
+  expect(detectorKindLabel('custody_wallet_movement_anomaly')).toBe('Custody wallet movement anomaly');
   expect(detectorKindLabel('oracle_divergence')).toBe('Oracle divergence');
   expect(detectorKindLabel('reserve_mismatch')).toBe('Reserve mismatch');
   expect(detectorKindLabel('unauthorized_mint_burn')).toBe('Unauthorized mint/burn');

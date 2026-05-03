@@ -5,12 +5,11 @@ from app import pilot
 
 def test_canonical_detector_codes_are_emittable():
     expected = {
-        'oracle_divergence',
-        'reserve_mismatch',
+        'oracle_nav_divergence',
+        'proof_of_reserve_stale',
         'unauthorized_mint_burn',
         'abnormal_redemption_activity',
-        'contract_upgrade_anomaly',
-        'custody_transfer_anomaly',
+        'custody_wallet_movement_anomaly',
         'compliance_exposure',
         'monitoring_coverage_gap',
     }
@@ -60,4 +59,4 @@ def test_escalation_preserves_detector_kind_in_timeline(monkeypatch):
 
     pilot.escalate_alert_to_incident('a1', {}, SimpleNamespace(headers={}))
     escalation = next(item for item in timeline if item.get('alert_id') == 'a1')
-    assert escalation['detector_kind'] == 'reserve_mismatch'
+    assert escalation['detector_kind'] == 'proof_of_reserve_stale'

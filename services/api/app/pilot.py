@@ -3993,6 +3993,9 @@ def _seed_demo_domain_targets(connection: Any, *, workspace_id: str, asset_id: s
     target_specs = (
         ('Demo Seed Issuer Contract', 'contract', '0x00000000000000000000000000000000000000c1', None, 'contract', 'Issuer contract'),
         ('Demo Seed Custody Wallet', 'wallet', None, '0x00000000000000000000000000000000000000c2', 'wallet', 'Custody wallet'),
+        ('Demo Seed Oracle Feed', 'contract', '0x00000000000000000000000000000000000000c3', None, 'oracle', 'Oracle/NAV feed'),
+        ('Demo Seed Redemption Path', 'wallet', None, '0x00000000000000000000000000000000000000c4', 'wallet', 'Redemption path'),
+        ('Demo Seed Compliance Source', 'contract', '0x00000000000000000000000000000000000000c5', None, 'service', 'Compliance source'),
     )
     created: list[dict[str, str]] = []
     for name, target_type, contract_identifier, wallet_address, asset_type, domain_label in target_specs:
@@ -4045,6 +4048,7 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
         return {'bootstrapped': False, 'reason': 'production_runtime'}
     proof_severity = 'high'
     proof_risk_score = 0.92
+    seeded_rule_identifier = 'oracle_nav_divergence'
     asset_row = connection.execute(
         '''
         SELECT id
@@ -4332,13 +4336,13 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
             workspace_id,
             monitored_system_id,
             asset_id,
-            'anomalous_transfer',
+            seeded_rule_identifier,
             proof_severity,
             proof_risk_score,
             'Demo Seed Monitoring Detection',
             'Seeded detection persisted for deterministic demo workflow visibility.',
             'simulator',
-            'seed.demo.monitoring.rule',
+            seeded_rule_identifier,
             observed_at,
             _json_dumps({'source': 'seed_demo_workspace', 'target_id': target_id, 'tx_hash': tx_hash}),
         ),
@@ -4377,8 +4381,8 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
             alert_id,
             workspace_id,
             user_id,
-            'monitoring.seed_demo_detection',
-            'Demo Seed Monitoring Alert',
+            seeded_rule_identifier,
+            'Demo Seed Monitoring Alert (Oracle NAV divergence)',
             proof_severity,
             'open',
             'simulator',
@@ -4455,7 +4459,7 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
             'Seeded incident created from deterministic demo monitoring alert.',
             _json_dumps([alert_id]),
             _json_dumps([{'event': 'incident.created_from_alert', 'at': observed_at.isoformat(), 'alert_id': alert_id}]),
-            _json_dumps({'source': 'seed_demo_workspace', 'alert_id': alert_id, 'target_id': target_id}),
+            _json_dumps({'source': 'seed_demo_workspace', 'alert_id': alert_id, 'target_id': target_id, 'rule_identifier': seeded_rule_identifier}),
         ),
     )
     connection.execute(
