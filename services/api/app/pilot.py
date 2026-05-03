@@ -12392,11 +12392,51 @@ def create_incident_report_export(payload: dict[str, Any], request: Request) -> 
 
 def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     normalized = dict(payload or {})
+
+    requested_mode = str(normalized.get('guided_mode') or normalized.get('evidence_mode') or normalized.get('mode') or '').strip().lower()
+    runtime_mode = str(runtime_mode_config_summary().get('resolved_app_mode') or '').strip().lower()
+    mode_hint = str(normalized.get('monitoring_mode') or normalized.get('execution_mode') or '').strip().lower()
+    generated_chain = bool(normalized.get('generated_chain_data', True))
+
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         workspace_id = workspace_context['workspace_id']
+
+        provenance_run_id = str(normalized.get('monitoring_run_id') or normalized.get('run_id') or '').strip()
+        has_live_provenance = False
+        if provenance_run_id:
+            receipt = connection.execute(
+                '''
+                SELECT evidence_source
+                FROM monitoring_event_receipts
+                WHERE workspace_id = %s
+                  AND monitoring_run_id = %s::uuid
+                  AND evidence_source = 'live'
+                ORDER BY created_at DESC
+                LIMIT 1
+                ''',
+                (workspace_id, provenance_run_id),
+            ).fetchone()
+            has_live_provenance = receipt is not None
+
+        requested_live = requested_mode == 'live' or mode_hint == 'live'
+        runtime_live = runtime_mode == 'live'
+        guided_mode = 'live' if requested_live and runtime_live and has_live_provenance and not generated_chain else 'simulator'
+        evidence_source = 'live' if guided_mode == 'live' else 'guided_simulator'
+        if requested_live and evidence_source != 'live':
+            logger.warning(
+                'guided_workflow_live_source_downgraded workspace_id=%s requested_mode=%s runtime_mode=%s generated_chain=%s has_live_provenance=%s',
+                workspace_id,
+                requested_mode or mode_hint or 'unspecified',
+                runtime_mode or 'unknown',
+                generated_chain,
+                has_live_provenance,
+            )
+
+        evidence_label = detection_evidence_origin_label('simulator' if evidence_source != 'live' else 'live')
+
         asset = create_asset({'name': str(normalized.get('asset_name') or 'Guided Protected Asset'), 'asset_type': 'tokenized_fund', 'symbol': 'GUIDE'}, request)
         target = create_target({'name': str(normalized.get('monitored_system_name') or 'Guided Monitoring Source'), 'type': 'contract', 'asset_id': asset['asset']['id']}, request)
         enabled_target = set_target_enabled(target['target']['id'], True, request)
@@ -12405,16 +12445,16 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
         detection_id = str(uuid.uuid4())
         alert_id = str(uuid.uuid4())
         connection.execute(
-            "INSERT INTO telemetry_events (id, workspace_id, asset_id, target_id, provider_type, event_type, observed_at, ingested_at, evidence_source, payload_hash, payload_json) VALUES (%s, %s, %s::uuid, %s::uuid, 'guided_workflow', 'transfer_observed', %s, %s, 'live', %s, %s::jsonb)",
-            (telemetry_event_id, workspace_id, asset['asset']['id'], target['target']['id'], observed_at, observed_at, hashlib.sha256(telemetry_event_id.encode('utf-8')).hexdigest(), _json_dumps({'stage': 'first_telemetry_ingestion'})),
+            "INSERT INTO telemetry_events (id, workspace_id, asset_id, target_id, provider_type, event_type, observed_at, ingested_at, evidence_source, payload_hash, payload_json) VALUES (%s, %s, %s::uuid, %s::uuid, 'guided_workflow', 'transfer_observed', %s, %s, %s, %s, %s::jsonb)",
+            (telemetry_event_id, workspace_id, asset['asset']['id'], target['target']['id'], observed_at, observed_at, evidence_source, hashlib.sha256(telemetry_event_id.encode('utf-8')).hexdigest(), _json_dumps({'stage': 'first_telemetry_ingestion', 'guided_mode': guided_mode, 'runtime_mode': runtime_mode, 'evidence_source': evidence_source, 'has_live_provenance': has_live_provenance, 'evidence_label': evidence_label})),
         )
         connection.execute(
-            "INSERT INTO detections (id, workspace_id, monitored_system_id, protected_asset_id, detection_type, severity, confidence, title, evidence_summary, evidence_source, source_rule, status, detected_at, raw_evidence_json, linked_alert_id, created_at, updated_at) VALUES (%s, %s, %s::uuid, %s::uuid, 'guided_monitoring_chain', 'high', 0.95, %s, %s, 'live', 'guided.workflow.rule', 'open', %s, %s::jsonb, NULL, NOW(), NOW())",
-            (detection_id, workspace_id, target['target']['id'], asset['asset']['id'], 'Guided workflow detection', 'Rule evaluation and detection creation from first telemetry ingestion.', observed_at, _json_dumps({'telemetry_event_id': telemetry_event_id})),
+            "INSERT INTO detections (id, workspace_id, monitored_system_id, protected_asset_id, detection_type, severity, confidence, title, evidence_summary, evidence_source, source_rule, status, detected_at, raw_evidence_json, linked_alert_id, created_at, updated_at) VALUES (%s, %s, %s::uuid, %s::uuid, 'guided_monitoring_chain', 'high', 0.95, %s, %s, %s, 'guided.workflow.rule', 'open', %s, %s::jsonb, NULL, NOW(), NOW())",
+            (detection_id, workspace_id, target['target']['id'], asset['asset']['id'], 'Guided workflow detection', f'Rule evaluation and detection creation from first telemetry ingestion ({evidence_label or evidence_source}).', evidence_source, observed_at, _json_dumps({'telemetry_event_id': telemetry_event_id, 'guided_mode': guided_mode, 'runtime_mode': runtime_mode, 'evidence_source': evidence_source, 'has_live_provenance': has_live_provenance, 'generated_chain_data': generated_chain})),
         )
         connection.execute(
-            "INSERT INTO alerts (id, workspace_id, user_id, analysis_run_id, alert_type, title, severity, status, source_service, summary, payload, created_at, detection_id, detection_event_workspace_id, detection_event_id, target_id, module_key, source, dedupe_signature, occurrence_count, first_seen_at, last_seen_at, updated_at) VALUES (%s, %s, %s, NULL, 'guided_monitoring_alert', 'Guided workflow alert', 'high', 'open', 'guided-workflow', %s, %s::jsonb, NOW(), %s::uuid, %s, NULL, %s::uuid, 'monitoring', 'live', %s, 1, %s, %s, NOW())",
-            (alert_id, workspace_id, user['id'], 'Alert created from guided workflow detection.', _json_dumps({'detection_id': detection_id, 'telemetry_event_id': telemetry_event_id}), detection_id, workspace_id, target['target']['id'], f'guided:{detection_id}', observed_at, observed_at),
+            "INSERT INTO alerts (id, workspace_id, user_id, analysis_run_id, alert_type, title, severity, status, source_service, summary, payload, created_at, detection_id, detection_event_workspace_id, detection_event_id, target_id, module_key, source, dedupe_signature, occurrence_count, first_seen_at, last_seen_at, updated_at) VALUES (%s, %s, %s, NULL, 'guided_monitoring_alert', 'Guided workflow alert', 'high', 'open', 'guided-workflow', %s, %s::jsonb, NOW(), %s::uuid, %s, NULL, %s::uuid, 'monitoring', %s, %s, 1, %s, %s, NOW())",
+            (alert_id, workspace_id, user['id'], f'Alert created from guided workflow detection ({evidence_label or evidence_source}).', _json_dumps({'detection_id': detection_id, 'telemetry_event_id': telemetry_event_id, 'guided_mode': guided_mode, 'runtime_mode': runtime_mode, 'evidence_source': evidence_source, 'has_live_provenance': has_live_provenance, 'generated_chain_data': generated_chain}), detection_id, workspace_id, target['target']['id'], evidence_source, f'guided:{detection_id}:{evidence_source}', observed_at, observed_at),
         )
         connection.execute('UPDATE detections SET linked_alert_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid AND workspace_id = %s', (alert_id, detection_id, workspace_id))
         connection.commit()
@@ -12433,10 +12473,18 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
             'first_telemetry_ingestion': {'status': 'ingested', 'telemetry_event_id': telemetry_event_id},
             'rule_evaluation_detection_creation': {'status': 'created', 'detection_id': detection_id},
             'alert_creation': {'status': 'created', 'alert_id': alert_id},
-            'incident_creation': {'status': 'created', 'incident_id': incident['incident']['id']},
-            'response_action_recommendation_execution': {'status': executed_action['action']['status'], 'action_id': executed_action['action']['id']},
-            'evidence_package_generation_export': {'status': evidence_export.get('status'), 'export_job_id': evidence_export.get('export_job_id')},
-        }
+            'incident_creation': {'status': 'created', 'incident_id': incident['incident']['id'], 'evidence_source': evidence_source},
+            'response_action_recommendation_execution': {'status': executed_action['action']['status'], 'action_id': executed_action['action']['id'], 'evidence_source': evidence_source},
+            'evidence_package_generation_export': {'status': evidence_export.get('status'), 'export_job_id': evidence_export.get('export_job_id'), 'evidence_source': evidence_source},
+        },
+        'metadata': {
+            'guided_mode': guided_mode,
+            'runtime_mode': runtime_mode,
+            'requested_mode': requested_mode or mode_hint or 'unspecified',
+            'evidence_source': evidence_source,
+            'generated_chain_data': generated_chain,
+            'has_live_provenance': has_live_provenance,
+        },
     }
 
 
