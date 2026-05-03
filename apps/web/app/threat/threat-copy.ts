@@ -21,8 +21,8 @@ export const THREAT_COPY = {
 } as const;
 
 export const EVIDENCE_LABELS = {
-  rawEvidenceRefs: 'raw evidence refs',
-  evidenceId: 'evidence_id',
+  rawEvidenceRefs: 'raw evidence references',
+  evidenceId: 'evidence ID',
   provider: 'provider',
 } as const;
 
