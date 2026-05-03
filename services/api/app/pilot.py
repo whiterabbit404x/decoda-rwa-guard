@@ -802,6 +802,18 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
         expected_artifacts = ['alerts.json', 'evidence.json', 'incidents.json', 'report.md', 'runs.json', 'summary.json']
         artifact_status = {name: (artifact_dir / name).exists() for name in expected_artifacts}
         staging_artifacts_exist = all(artifact_status.values())
+        production_validation_proof_bundle_complete = staging_artifacts_exist and alerts_exists and incidents_exists and response_actions_exists
+        billing_email_provider_checks_passing = bool(billing_verified and email_verified and redis_provider_ready and provider_healthy and staging_artifacts_exist)
+
+        gate_aggregation = {
+            'billing': {'pass': billing_verified, 'reason_code': None if billing_verified else 'billing_runtime_unavailable'},
+            'email': {'pass': email_verified, 'reason_code': None if email_verified else 'email_not_verified'},
+            'provider': {'pass': redis_provider_ready and provider_healthy, 'reason_code': None if redis_provider_ready and provider_healthy else 'provider_dependencies_unhealthy'},
+            'staging': {'pass': staging_artifacts_exist, 'reason_code': None if staging_artifacts_exist else 'staging_evidence_artifacts_incomplete'},
+        }
+        gate_failure_reason_codes = [gate['reason_code'] for gate in gate_aggregation.values() if gate['reason_code']]
+        if not production_validation_proof_bundle_complete:
+            gate_failure_reason_codes.append('production_validation_proof_bundle_incomplete')
 
         check_inputs = [
             {'key': 'auth', 'label': 'Auth', 'pass': auth_verified, 'blocking': True, 'pass_reason': 'Authenticated workspace admin session is active.', 'fail_reason': 'Authentication is required. Sign in again and ensure the workspace admin session is active.'},
@@ -814,10 +826,12 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
             {'key': 'incident_exists', 'label': 'Incident exists', 'pass': incidents_exists, 'blocking': True, 'pass_reason': 'At least one incident exists.', 'fail_reason': 'No incidents found. Triage alerts into incidents.'},
             {'key': 'response_action_exists', 'label': 'Response action exists', 'pass': response_actions_exists, 'blocking': True, 'pass_reason': 'At least one response action is recorded.', 'fail_reason': 'No response actions found. Plan or execute a response action from an alert or incident.'},
             {'key': 'evidence_package_exists', 'label': 'Evidence package exists', 'pass': evidence_packages_exists, 'blocking': True, 'pass_reason': 'Evidence package records are present.', 'fail_reason': 'No evidence package records found. Generate evidence from detections/incidents.'},
-            {'key': 'billing_verified', 'label': 'Billing verified', 'pass': billing_verified, 'blocking': True, 'pass_reason': 'Billing provider runtime is available.', 'fail_reason': 'Billing provider is unavailable. Configure billing credentials and provider mode.'},
-            {'key': 'email_verified', 'label': 'Email verified', 'pass': email_verified, 'blocking': True, 'pass_reason': 'Current admin email is verified.', 'fail_reason': 'Verify the current admin email before enabling broad self-serve access.'},
-            {'key': 'redis_provider_checks_pass', 'label': 'Redis/provider checks pass', 'pass': redis_provider_ready and provider_healthy, 'blocking': True, 'pass_reason': 'Redis and provider health checks are healthy.', 'fail_reason': 'Redis/provider checks are unhealthy. Configure REDIS_URL and email provider credentials.'},
+            {'key': 'billing_verified', 'label': 'Billing verified', 'pass': billing_verified, 'blocking': True, 'pass_reason': 'Billing provider runtime is available.', 'fail_reason': 'Billing provider is unavailable. Configure billing credentials and provider mode.', 'reason_code': 'billing_runtime_unavailable'},
+            {'key': 'email_verified', 'label': 'Email verified', 'pass': email_verified, 'blocking': True, 'pass_reason': 'Current admin email is verified.', 'fail_reason': 'Verify the current admin email before enabling broad self-serve access.', 'reason_code': 'email_not_verified'},
+            {'key': 'redis_provider_checks_pass', 'label': 'Redis/provider checks pass', 'pass': redis_provider_ready and provider_healthy, 'blocking': True, 'pass_reason': 'Redis and provider health checks are healthy.', 'fail_reason': 'Redis/provider checks are unhealthy. Configure REDIS_URL and email provider credentials.', 'reason_code': 'provider_dependencies_unhealthy'},
             {'key': 'staging_evidence_artifacts_exist', 'label': 'Staging evidence artifacts exist', 'pass': staging_artifacts_exist, 'blocking': True, 'pass_reason': 'All expected staging evidence artifacts are present.', 'fail_reason': 'Staging evidence artifacts are incomplete. Regenerate artifacts under artifacts/live_evidence/latest.'},
+            {'key': 'billing_email_provider_checks_passing', 'label': 'Billing/email/provider checks passing', 'pass': billing_email_provider_checks_passing, 'blocking': True, 'pass_reason': 'Billing, email, provider, and staging gates all pass.', 'fail_reason': 'One or more required billing/email/provider/staging gates failed.', 'reason_code': 'billing_email_provider_checks_failed'},
+            {'key': 'production_validation_proof_bundle_complete', 'label': 'Production validation proof bundle complete', 'pass': production_validation_proof_bundle_complete, 'blocking': True, 'pass_reason': 'Alerts, incidents, runs, and linked evidence artifacts are complete.', 'fail_reason': 'Production validation proof bundle is incomplete. Ensure alerts/incidents/runs artifacts and required links are present.', 'reason_code': 'production_validation_proof_bundle_incomplete'},
         ]
         checks = [
             {
@@ -826,16 +840,22 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
                 'pass': check['pass'],
                 'blocking': check['blocking'],
                 'reason': check['pass_reason'] if check['pass'] else check['fail_reason'],
+                'reason_code': None if check['pass'] else check.get('reason_code', f"{check['key']}_failed"),
             }
             for check in check_inputs
         ]
         blocking_failures = [check['key'] for check in checks if check['blocking'] and not check['pass']]
+        blocking_failure_reason_codes = [check['reason_code'] for check in checks if check['blocking'] and not check['pass'] and check.get('reason_code')]
+        hard_gate_failure = bool(gate_failure_reason_codes or blocking_failure_reason_codes)
         return {
             'workspace': workspace_context['workspace'],
             'checked_by': user['id'],
             'checked_at': utc_now_iso(),
             'status': 'pass' if not blocking_failures else 'fail',
             'blocking_failures': blocking_failures,
+            'blocking_failure_reason_codes': sorted(set(blocking_failure_reason_codes + gate_failure_reason_codes)),
+            'hard_gates_pass': not hard_gate_failure,
+            'enterprise_broad_self_serve_ready': not hard_gate_failure,
             'checks': checks,
             'details': {
                 'counts': {
@@ -853,6 +873,9 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
                     'email': provider_checks.get('email'),
                     'auth_rate_limiter': provider_checks.get('auth_rate_limiter'),
                 },
+                'gate_aggregation': gate_aggregation,
+                'billing_email_provider_checks_passing': billing_email_provider_checks_passing,
+                'production_validation_proof_bundle_complete': production_validation_proof_bundle_complete,
                 'staging_evidence_artifacts': artifact_status,
             },
         }
