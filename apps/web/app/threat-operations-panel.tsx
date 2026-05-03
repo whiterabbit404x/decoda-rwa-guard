@@ -1797,9 +1797,6 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
   const dbPersistenceOutageReason = truth.db_failure_reason || null;
   const dbPersistenceOutageActive = Boolean(dbPersistenceOutageReason);
   const telemetryLabel = monitoringPresentation.telemetryLabel;
-  const coverageTelemetryAt = monitoringPresentation.lastTelemetryAt;
-  const hasTelemetryTimestamp = Boolean(coverageTelemetryAt);
-  const telemetryDisplayLabel = formatRelativeTime(coverageTelemetryAt);
   const pollLabel = monitoringPresentation.pollLabel;
   const detectionEvalLabel = formatRelativeTime(runtimeStatusSnapshot?.last_detection_at ?? monitoringPresentation.lastTelemetryAt);
   const continuitySlo = evaluateContinuitySlo(runtimeSummary, runtimeStatusSnapshot?.continuity_slo);
@@ -2866,15 +2863,15 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         onRefreshNow={() => window.dispatchEvent(new Event('pilot-history-refresh'))}
         onGenerateProofChain={() => void ensureSimulatorProofChain()}
       />
-      <ThreatOverviewCard securityStatus={monitoringHealthModel.securityStatus} />
+      <ThreatOverviewCard status={monitoringHealthModel.securityStatus} />
       <MonitoringHealthCard
         heartbeatLabel={monitoringPresentation.heartbeatLabel}
         pollLabel={monitoringViewModel.pollLabel}
-        telemetryLabel={hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'}
-        reportingSystems={reportingSystems}
-        configuredSystems={configuredSystems}
-        freshnessStatus={String(runtimeStatusSnapshot?.freshness_status ?? 'unavailable')}
-        confidenceStatus={String(runtimeStatusSnapshot?.confidence_status ?? 'unavailable')}
+        telemetryLabel={monitoringHealthModel.telemetryAt ? formatRelativeTime(monitoringHealthModel.telemetryAt) : 'Not available'}
+        reportingSystems={monitoringHealthModel.reportingSystems}
+        configuredSystems={monitoringHealthModel.configuredSystems}
+        freshnessStatus={monitoringHealthModel.freshnessStatus}
+        confidenceStatus={monitoringHealthModel.confidenceStatus}
       />
       <DetectionFeed detections={detectionRecords} loading={loadingSnapshot} />
       <AlertIncidentChain
