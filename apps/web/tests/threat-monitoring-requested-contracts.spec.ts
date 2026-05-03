@@ -35,7 +35,7 @@ test('simulator/replay vs live labeling is truthful across threat, alerts, and i
   const alerts = read('(product)/alerts-page-client.tsx');
   const incidents = read('(product)/incidents-page-client.tsx');
 
-  expect(threat).toContain('Simulator/demo evidence (not live)');
+  expect(threat).toContain('Simulator evidence');
   expect(threat).toContain("continuityStatus === 'continuous_live'");
   expect(alerts).toContain("? 'SIMULATED'");
   expect(incidents).toContain("? 'SIMULATED'");

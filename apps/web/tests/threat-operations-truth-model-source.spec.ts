@@ -73,7 +73,7 @@ test('threat panel keeps telemetry and healthy monitoring copy guarded by truth 
 
   expect(threat).toContain("showLiveTelemetry ? `Live telemetry ${telemetryLabel}` : 'Current telemetry unavailable'");
   expect(threat).toContain('Persistence outage active: {dbPersistenceOutageReason}.');
-  expect(threat).toContain("simulatorEvidence ? 'simulator/demo' : 'live'");
+  expect(threat).toContain("simulatorEvidence ? 'Simulator evidence' : 'Live evidence'");
   expect(threat).toContain('item.liveEvidenceEligible !== false');
   expect(threat).toContain("Last telemetry: {hasTelemetryTimestamp ? telemetryDisplayLabel : 'Not available'}");
   expect(threat).toContain('runtimeStatus === \'offline\'');

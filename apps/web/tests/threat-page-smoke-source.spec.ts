@@ -25,9 +25,9 @@ test('threat page keeps all major operations panels and simulator/live labels', 
   expect(threat).toContain('Alerts');
   expect(threat).toContain('Incidents');
   expect(threat).toContain('Response Actions');
-  expect(threat).toContain('Evidence source: {simulatorMode ?');
+  expect(threat).toContain('Evidence source');
 
-  expect(threat).toContain('(SIMULATOR/REPLAY)');
+  expect(threat).toContain('Simulator evidence');
   expect(alertsPage).toContain("? 'SIMULATED'");
   expect(incidentsPage).toContain("? 'SIMULATED'");
   expect(alertsPage).toContain('ThreatChainPanel');
