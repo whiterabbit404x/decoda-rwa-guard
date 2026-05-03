@@ -11,6 +11,7 @@ This checklist is **fail-closed**: readiness is granted only by passing gates wi
 - `make validate-launch` → broad self-serve gate orchestration.
 - `python services/api/scripts/validate_production_readiness.py` → core API readiness validator consumed by launch checks.
 - `python services/api/scripts/validate_staging.py` → staging/runtime evidence validator.
+- `GitHub Actions: CI Release Gates` (`.github/workflows/ci-release-gates.yml`) → required CI quality gates that run `npm test` + `npm run build` and fail-closed on any gate error.
 
 ### Proof / evidence generators
 - `make proof-no-billing-launch` → writes deterministic pilot proof bundle at `artifacts/launch-proof/latest/{summary.json,summary.md}`.
@@ -33,6 +34,7 @@ This checklist is **fail-closed**: readiness is granted only by passing gates wi
 
 ### Live artifact locations to attach to release decisions
 - `artifacts/launch-proof/latest/`.
+- `artifacts/release-proof/latest/{ci-required-gates.md,ci-required-gates.json}` from CI workflow runs (and matching uploaded GitHub Actions artifact bundle).
 - `artifacts/proof-pack-live-actions-2026-04-22.json`.
 - `services/api/artifacts/live_evidence/latest/{summary.json,report.md,evidence.json,alerts.json,incidents.json,runs.json}`.
 - `services/api/artifacts/live_evidence/latest/live_proof/`.
@@ -49,6 +51,8 @@ Pilot is ready only when **all** pilot gates pass:
 ## Broad self-serve readiness
 
 Broad self-serve is ready only when **all** broad gates pass:
+- CI required gates pass in GitHub Actions: `npm test` and `npm run build` must both succeed.
+- CI release proof artifacts (`ci-required-gates.md/.json`) must be attached to the release evidence bundle.
 - `make validate-launch` passes.
 - Billing gate passes (configured + validated, not deferred/no-billing).
 - Email gate passes.
