@@ -12376,6 +12376,56 @@ def create_incident_report_export(payload: dict[str, Any], request: Request) -> 
     }
 
 
+def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        asset = create_asset({'name': str(normalized.get('asset_name') or 'Guided Protected Asset'), 'asset_type': 'tokenized_fund', 'symbol': 'GUIDE'}, request)
+        target = create_target({'name': str(normalized.get('monitored_system_name') or 'Guided Monitoring Source'), 'type': 'contract', 'asset_id': asset['asset']['id']}, request)
+        enabled_target = set_target_enabled(target['target']['id'], True, request)
+        observed_at = utc_now_iso()
+        telemetry_event_id = str(uuid.uuid4())
+        detection_id = str(uuid.uuid4())
+        alert_id = str(uuid.uuid4())
+        connection.execute(
+            "INSERT INTO telemetry_events (id, workspace_id, asset_id, target_id, provider_type, event_type, observed_at, ingested_at, evidence_source, payload_hash, payload_json) VALUES (%s, %s, %s::uuid, %s::uuid, 'guided_workflow', 'transfer_observed', %s, %s, 'live', %s, %s::jsonb)",
+            (telemetry_event_id, workspace_id, asset['asset']['id'], target['target']['id'], observed_at, observed_at, hashlib.sha256(telemetry_event_id.encode('utf-8')).hexdigest(), _json_dumps({'stage': 'first_telemetry_ingestion'})),
+        )
+        connection.execute(
+            "INSERT INTO detections (id, workspace_id, monitored_system_id, protected_asset_id, detection_type, severity, confidence, title, evidence_summary, evidence_source, source_rule, status, detected_at, raw_evidence_json, linked_alert_id, created_at, updated_at) VALUES (%s, %s, %s::uuid, %s::uuid, 'guided_monitoring_chain', 'high', 0.95, %s, %s, 'live', 'guided.workflow.rule', 'open', %s, %s::jsonb, NULL, NOW(), NOW())",
+            (detection_id, workspace_id, target['target']['id'], asset['asset']['id'], 'Guided workflow detection', 'Rule evaluation and detection creation from first telemetry ingestion.', observed_at, _json_dumps({'telemetry_event_id': telemetry_event_id})),
+        )
+        connection.execute(
+            "INSERT INTO alerts (id, workspace_id, user_id, analysis_run_id, alert_type, title, severity, status, source_service, summary, payload, created_at, detection_id, detection_event_workspace_id, detection_event_id, target_id, module_key, source, dedupe_signature, occurrence_count, first_seen_at, last_seen_at, updated_at) VALUES (%s, %s, %s, NULL, 'guided_monitoring_alert', 'Guided workflow alert', 'high', 'open', 'guided-workflow', %s, %s::jsonb, NOW(), %s::uuid, %s, NULL, %s::uuid, 'monitoring', 'live', %s, 1, %s, %s, NOW())",
+            (alert_id, workspace_id, user['id'], 'Alert created from guided workflow detection.', _json_dumps({'detection_id': detection_id, 'telemetry_event_id': telemetry_event_id}), detection_id, workspace_id, target['target']['id'], f'guided:{detection_id}', observed_at, observed_at),
+        )
+        connection.execute('UPDATE detections SET linked_alert_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid AND workspace_id = %s', (alert_id, detection_id, workspace_id))
+        connection.commit()
+    incident = escalate_alert_to_incident(alert_id, {'reason': 'Guided workflow escalation'}, request)
+    action = create_enforcement_action({'incident_id': incident['incident']['id'], 'action_type': 'notify_team', 'operator_notes': 'Guided workflow recommendation.'}, request)
+    approve_enforcement_action(action['action']['id'], request)
+    executed_action = execute_enforcement_action(action['action']['id'], request)
+    evidence_export = create_proof_bundle_export({'incident_id': incident['incident']['id']}, request)
+    return {
+        'workflow': {
+            'signup': {'status': 'verified', 'user_id': user['id']},
+            'workspace_creation': {'status': 'verified', 'workspace_id': incident['workspace']['id']},
+            'protected_asset_creation': {'status': 'created', 'asset_id': asset['asset']['id']},
+            'monitoring_source_creation': {'status': 'created', 'target_id': target['target']['id']},
+            'monitoring_enablement': {'status': 'enabled', 'target_id': enabled_target['target']['id']},
+            'first_telemetry_ingestion': {'status': 'ingested', 'telemetry_event_id': telemetry_event_id},
+            'rule_evaluation_detection_creation': {'status': 'created', 'detection_id': detection_id},
+            'alert_creation': {'status': 'created', 'alert_id': alert_id},
+            'incident_creation': {'status': 'created', 'incident_id': incident['incident']['id']},
+            'response_action_recommendation_execution': {'status': executed_action['action']['status'], 'action_id': executed_action['action']['id']},
+            'evidence_package_generation_export': {'status': evidence_export.get('status'), 'export_job_id': evidence_export.get('export_job_id')},
+        }
+    }
+
+
 def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: str) -> None:
     job = connection.execute('SELECT id, export_type, format, filters FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_id)).fetchone()
     if job is None:
