@@ -23,8 +23,30 @@ export function buildMonitoringHealthModel(input: BuildMonitoringHealthModelInpu
     input.evidence,
   );
 
+  const runtimeFreshness = String(input.runtimeStatusSnapshot?.freshness_status ?? 'unavailable');
+  const runtimeConfidence = String(input.runtimeStatusSnapshot?.confidence_status ?? 'unavailable');
+  const reportingSystems = Number(
+    input.runtimeStatusSnapshot?.reporting_systems
+    ?? 0,
+  );
+  const configuredSystems = Number(input.runtimeStatusSnapshot?.monitored_systems_count ?? 0);
+  const statusLabel = securityStatus.posture === 'healthy'
+    ? 'LIVE'
+    : securityStatus.posture === 'offline'
+      ? 'OFFLINE'
+      : securityStatus.posture === 'setup_required'
+        ? 'SETUP REQUIRED'
+        : 'DEGRADED';
+  const healthClaim = securityStatus.customerMessage;
+
   return {
     securityStatus,
+    statusLabel,
+    healthClaim,
+    reportingSystems,
+    configuredSystems,
+    freshnessStatus: runtimeFreshness,
+    confidenceStatus: runtimeConfidence,
     telemetryAt: input.telemetryAt,
     heartbeatAt: input.heartbeatAt,
     pollAt: input.pollAt,
