@@ -1823,9 +1823,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     pollAt: monitoringPresentation.lastPollAt,
     contradictionFlags: runtimeContradictionFlags,
     continuityChecks: continuityFailedCheckList.map((item) => item.code),
-    assets,
     targets,
-  }), [alerts, assets, continuityFailedCheckList, detections, evidence, incidents, monitoringPresentation.lastHeartbeatAt, monitoringPresentation.lastPollAt, monitoringPresentation.lastTelemetryAt, runtimeContradictionFlags, runtimeStatusSnapshot, targets]);
+  }), [alerts, continuityFailedCheckList, detections, evidence, incidents, monitoringPresentation.lastHeartbeatAt, monitoringPresentation.lastPollAt, monitoringPresentation.lastTelemetryAt, runtimeContradictionFlags, runtimeStatusSnapshot, targets]);
 
   const targetById = useMemo(() => {
     return new Map(targets.map((target) => [target.id, target] as const));
