@@ -289,6 +289,79 @@ def main() -> int:
             'expected_oracle_freshness_seconds': asset.get('expected_oracle_freshness_seconds'),
             'expected_oracle_update_cadence_seconds': asset.get('expected_oracle_update_cadence_seconds'),
     }
+    telemetry_source_candidates = {
+        str(value).strip().lower()
+        for value in [
+            *[
+                ((item.get('response_payload') or {}).get('evidence_source'))
+                for item in worker_runs
+            ],
+            *[
+                ((item.get('payload') or {}).get('evidence_source'))
+                for item in alert_rows
+            ],
+        ]
+        if str(value or '').strip()
+    }
+    telemetry_evidence_source = 'live' if 'live' in telemetry_source_candidates else (
+        next(iter(sorted(telemetry_source_candidates))) if telemetry_source_candidates else None
+    )
+
+    telemetry_ids = {
+        str(value)
+        for value in [
+            *[
+                ((item.get('response_payload') or {}).get('telemetry_event_id'))
+                for item in worker_runs
+            ],
+            *[
+                ((item.get('payload') or {}).get('telemetry_event_id'))
+                for item in alert_rows
+            ],
+        ]
+        if str(value or '').strip()
+    }
+    detection_ids = {
+        str(value)
+        for value in [
+            *[
+                ((item.get('response_payload') or {}).get('detection_id'))
+                for item in worker_runs
+            ],
+            *[
+                ((item.get('payload') or {}).get('detection_id'))
+                for item in alert_rows
+            ],
+            *[
+                ((item.get('payload') or {}).get('detection_event_id'))
+                for item in alert_rows
+            ],
+        ]
+        if str(value or '').strip()
+    }
+    alert_ids = {str(item.get('id')) for item in alert_rows if str(item.get('id') or '').strip()}
+    incident_ids = {str(item.get('id')) for item in incident_rows if str(item.get('id') or '').strip()}
+    linked_incident_alert_ids = {
+        str(alert_id)
+        for incident in incident_rows
+        for alert_id in ((incident.get('linked_alert_ids') or []) if isinstance(incident, dict) else [])
+        if str(alert_id or '').strip()
+    }
+    response_action_recommendation_present = any(
+        str(((item.get('payload') or {}).get('recommended_action') or '')).strip()
+        for item in alert_rows
+        if isinstance(item, dict)
+    )
+
+    runtime_gate_checks = {
+        'worker_monitoring_executed': bool(worker_runs),
+        'lifecycle_checks_executed': bool(lifecycle_checks_executed),
+        'real_provider_observations_present': bool(real_provider_observations_present),
+        'market_claim_eligible': bool(market_claim_eligible),
+        'oracle_claim_eligible': bool(oracle_claim_eligible),
+        'enterprise_claim_eligibility': bool(enterprise_claim_eligibility),
+    }
+
     summary = {
         'protected_asset_context': protected_asset_context,
         'protected_asset': protected_asset_context,
@@ -328,7 +401,34 @@ def main() -> int:
         'missing_asset_context_fields': missing_fields,
         'missing_target_identity_fields': missing_target_fields,
         'execution_failure_reasons': execution_failure_reasons,
+        'runtime_gate_checks': runtime_gate_checks,
+        # New readiness-gating schema (authoritative).
+        'live_successful_monitoring_demo': bool(worker_runs) and status_value in {'live_coverage_confirmed', 'live_coverage_denied'},
+        'telemetry_event_present': bool(telemetry_ids),
+        'telemetry_evidence_source': telemetry_evidence_source,
+        'detection_generated_from_telemetry': bool(telemetry_ids) and bool(detection_ids),
+        'alert_generated_from_detection': bool(detection_ids) and bool(alert_ids),
+        'incident_opened_from_alert': bool(incident_ids) and bool(linked_incident_alert_ids.intersection(alert_ids)),
+        'response_action_recommended_or_executed': bool(response_action_recommendation_present),
+        'evidence_package_exported': False,
+        'billing_email_provider_checks_passing': False,
+        'onboarding_to_first_signal_complete': bool(worker_runs) and bool(alert_ids),
+        'production_validation_proof_bundle_complete': False,
     }
+    summary['evidence_package_exported'] = all(
+        (artifacts_dir / filename).exists()
+        for filename in ('alerts.json', 'incidents.json', 'evidence.json', 'runs.json', 'report.md')
+    )
+    summary['production_validation_proof_bundle_complete'] = all([
+        summary['live_successful_monitoring_demo'],
+        summary['telemetry_event_present'],
+        summary['detection_generated_from_telemetry'],
+        summary['alert_generated_from_detection'],
+        summary['incident_opened_from_alert'],
+        summary['onboarding_to_first_signal_complete'],
+        summary['runtime_gate_checks']['worker_monitoring_executed'],
+        summary['runtime_gate_checks']['lifecycle_checks_executed'],
+    ])
 
     evidence_rows: list[dict] = [{
         'record_type': 'coverage_evaluation',
@@ -379,6 +479,11 @@ def main() -> int:
         f"- oracle_coverage_status: `{summary['oracle_coverage_status']}`\n"
         f"- claim_ineligibility_reasons: `{summary['claim_ineligibility_reasons']}`\n"
     )
+    summary['evidence_package_exported'] = all(
+        (artifacts_dir / filename).exists()
+        for filename in ('summary.json', 'alerts.json', 'incidents.json', 'evidence.json', 'runs.json', 'report.md')
+    )
+    (artifacts_dir / 'summary.json').write_text(json.dumps(summary, indent=2))
     print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2, default=str))
     return 0 if summary['status'] in {'live_coverage_confirmed', 'live_coverage_denied'} else 3
 
