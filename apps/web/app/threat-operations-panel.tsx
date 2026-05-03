@@ -1823,7 +1823,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     pollAt: monitoringPresentation.lastPollAt,
     contradictionFlags: runtimeContradictionFlags,
     continuityChecks: continuityFailedCheckList.map((item) => item.code),
-  }), [alerts, continuityFailedCheckList, detections, evidence, incidents, monitoringPresentation.lastHeartbeatAt, monitoringPresentation.lastPollAt, monitoringPresentation.lastTelemetryAt, runtimeContradictionFlags, runtimeStatusSnapshot]);
+    targets,
+  }), [alerts, continuityFailedCheckList, detections, evidence, incidents, monitoringPresentation.lastHeartbeatAt, monitoringPresentation.lastPollAt, monitoringPresentation.lastTelemetryAt, runtimeContradictionFlags, runtimeStatusSnapshot, targets]);
 
   const targetById = useMemo(() => {
     return new Map(targets.map((target) => [target.id, target] as const));
@@ -2822,7 +2823,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     incidents,
     actionHistory,
     detections,
-  }), [alerts, incidents, actionHistory, detections]);
+    domainLabels: monitoringHealthModel.domainLabels,
+  }), [alerts, incidents, actionHistory, detections, monitoringHealthModel.domainLabels]);
 
   const technicalDetails = useMemo(() => buildTechnicalRuntimeDetails({
     provenanceLabel: monitoringViewModel.provenanceLabel,
@@ -2872,12 +2874,14 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         configuredSystems={monitoringHealthModel.configuredSystems}
         freshnessStatus={monitoringHealthModel.freshnessStatus}
         confidenceStatus={monitoringHealthModel.confidenceStatus}
+        domainLabels={monitoringHealthModel.domainLabels}
       />
       <DetectionFeed detections={detectionRecords} loading={loadingSnapshot} />
       <AlertIncidentChain
         alert={chainSummary.alert}
         incident={chainSummary.incident}
         responseAction={chainSummary.responseAction}
+        domainLabels={chainSummary.domainLabels}
       />
       <ResponseActionPanel
         capabilities={responseActionCapabilities}

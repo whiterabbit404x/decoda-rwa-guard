@@ -12,6 +12,7 @@ type BuildMonitoringHealthModelInput = {
   pollAt: string | null;
   contradictionFlags: string[];
   continuityChecks: string[];
+  targets?: any[];
 };
 
 export function buildMonitoringHealthModel(input: BuildMonitoringHealthModelInput) {
@@ -38,6 +39,15 @@ export function buildMonitoringHealthModel(input: BuildMonitoringHealthModelInpu
         ? 'SETUP REQUIRED'
         : 'DEGRADED';
   const healthClaim = securityStatus.customerMessage;
+  const targetRows = input.targets ?? [];
+  const treasuryAssetLabel = targetRows.find((target) => String(target?.name ?? '').includes('Wallet Monitor'))?.name
+    ? 'Treasury-backed asset'
+    : null;
+  const issuerContractLabel = targetRows.find((target) => String(target?.name ?? '').includes('Issuer Contract'))?.name ?? null;
+  const custodyWalletLabel = targetRows.find((target) => String(target?.name ?? '').includes('Custody Wallet'))?.name ?? null;
+  const oracleNavLabel = 'Oracle/NAV feed source';
+  const redemptionPathLabel = 'Redemption path metadata';
+  const complianceSourceLabel = 'Compliance source metadata';
 
   return {
     securityStatus,
@@ -52,5 +62,6 @@ export function buildMonitoringHealthModel(input: BuildMonitoringHealthModelInpu
     pollAt: input.pollAt,
     contradictionFlags: input.contradictionFlags,
     continuityChecks: input.continuityChecks,
+    domainLabels: [treasuryAssetLabel, issuerContractLabel, custodyWalletLabel, oracleNavLabel, redemptionPathLabel, complianceSourceLabel].filter(Boolean) as string[],
   };
 }

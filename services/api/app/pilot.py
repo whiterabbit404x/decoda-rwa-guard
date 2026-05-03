@@ -3873,6 +3873,57 @@ def ensure_monitoring_proof_chain(workspace_id: str, request_context: Request) -
         }
 
 
+def _seed_demo_domain_targets(connection: Any, *, workspace_id: str, asset_id: str, user_id: str) -> list[dict[str, str]]:
+    target_specs = (
+        ('Demo Seed Issuer Contract', 'contract', '0x00000000000000000000000000000000000000c1', None, 'contract', 'Issuer contract'),
+        ('Demo Seed Custody Wallet', 'wallet', None, '0x00000000000000000000000000000000000000c2', 'wallet', 'Custody wallet'),
+    )
+    created: list[dict[str, str]] = []
+    for name, target_type, contract_identifier, wallet_address, asset_type, domain_label in target_specs:
+        row = connection.execute(
+            '''
+            SELECT id FROM targets
+            WHERE workspace_id = %s AND deleted_at IS NULL AND name = %s
+            ORDER BY created_at ASC LIMIT 1
+            ''',
+            (workspace_id, name),
+        ).fetchone()
+        if row is None:
+            target_id = str(uuid.uuid4())
+            connection.execute(
+                '''
+                INSERT INTO targets (
+                    id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
+                    asset_id, chain_id, target_metadata, monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts,
+                    auto_create_incidents, notification_channels, monitored_by_workspace_id, is_active, created_by_user_id, updated_by_user_id
+                ) VALUES (
+                    %s, %s, %s, %s, 'ethereum-mainnet', %s, %s, %s, %s, 'medium', TRUE,
+                    %s::uuid, 1, %s::jsonb, TRUE, 'poll', 60, 'high', TRUE, TRUE, %s::jsonb, %s, TRUE, %s, %s
+                )
+                ''',
+                (
+                    target_id,
+                    workspace_id,
+                    name,
+                    target_type,
+                    contract_identifier,
+                    wallet_address,
+                    asset_type,
+                    f'{domain_label} seeded for simulator demo monitoring coverage.',
+                    asset_id,
+                    _json_dumps({'domain_label': domain_label, 'bootstrap_source': 'seed_demo_workspace', 'evidence_source': 'simulator'}),
+                    _json_dumps(['email']),
+                    workspace_id,
+                    user_id,
+                    user_id,
+                ),
+            )
+        else:
+            target_id = str(row['id'])
+        created.append({'id': target_id, 'name': name, 'domain_label': domain_label})
+    return created
+
+
 def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: str) -> dict[str, Any]:
     if not _demo_monitoring_bootstrap_allowed():
         return {'bootstrapped': False, 'reason': 'production_runtime'}
@@ -3903,7 +3954,7 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
                 normalized_identifier, verification_status, verification_summary, verification_checked_at,
                 created_by_user_id, updated_by_user_id
             ) VALUES (
-                %s, %s, 'Demo Seed Protected Asset', 'Seeded simulator-backed protected asset for non-production monitoring proof.',
+                %s, %s, 'Demo Seed Treasury-backed Asset', 'Seeded simulator-backed treasury-backed protected asset for non-production monitoring proof.',
                 'wallet', 'ethereum-mainnet', %s, 'rwa', 'medium', 'security', 'Created by seed bootstrap.',
                 TRUE, 'Decoda Demo', 'DSA', 'demo-seed-asset', '0x0000000000000000000000000000000000000001',
                 %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb,
@@ -3917,16 +3968,16 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
                 'demo-seed-wallet-monitor',
                 _json_dumps(['0x0000000000000000000000000000000000000001']),
                 _json_dumps(['0x0000000000000000000000000000000000000002']),
-                _json_dumps(['chainlink']),
+                _json_dumps([{'provider': 'chainlink', 'feed_name': 'USDC NAV', 'domain_label': 'Oracle/NAV feed source'}]),
                 _json_dumps(['demo-dex']),
                 _json_dumps(['0x00000000000000000000000000000000000000aa']),
-                _json_dumps([{'source_class': 'treasury', 'destination_class': 'venue'}]),
+                _json_dumps([{'source_class': 'treasury', 'destination_class': 'redeemer', 'domain_label': 'Redemption path metadata'}]),
                 _json_dumps({'approval_contracts': ['0x00000000000000000000000000000000000000bb']}),
                 _json_dumps({'expected_daily_volume_usd': 100000}),
                 300,
                 300,
-                _json_dumps(['demo']),
-                _json_dumps(['us']),
+                _json_dumps(['demo', 'treasury-backed']),
+                _json_dumps(['us', 'compliance_source:ofac-screening']),
                 0.9,
                 0.9,
                 'demo-seed-wallet-monitor',
@@ -3994,6 +4045,7 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
             ''',
             (asset_id, target_id),
         )
+    seeded_domain_targets = _seed_demo_domain_targets(connection, workspace_id=workspace_id, asset_id=asset_id, user_id=user_id)
     monitor_bridge = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id)
     monitored_system_id = str(monitor_bridge.get('monitored_system_id') or '')
     if monitor_bridge.get('status') != 'ok' or not monitored_system_id:
@@ -4615,6 +4667,7 @@ def _seed_demo_monitoring_proof(connection: Any, *, workspace_id: str, user_id: 
         'detection_event_id': detection_event_id,
         'governance_action_id': governance_action_id,
         'evidence_source': 'simulator',
+        'seeded_domain_targets': seeded_domain_targets,
         'telemetry_event_observed_at': last_event_at.isoformat() if isinstance(last_event_at, datetime) else str(last_event_at),
     }
 

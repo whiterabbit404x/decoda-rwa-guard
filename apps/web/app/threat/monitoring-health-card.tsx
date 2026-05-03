@@ -7,6 +7,7 @@ type Props = {
   freshnessStatus: string;
   confidenceStatus: string;
   providerHealthLabel?: string;
+  domainLabels?: string[];
 };
 
 export default function MonitoringHealthCard(props: Props) {
@@ -23,6 +24,9 @@ export default function MonitoringHealthCard(props: Props) {
         <li>Confidence: {props.confidenceStatus}</li>
       </ul>
       <p className="tableMeta">Provider health: {props.providerHealthLabel ?? "Unavailable"}</p>
+      {props.domainLabels && props.domainLabels.length > 0 ? (
+        <p className="tableMeta">Domain coverage: {props.domainLabels.join(' · ')}</p>
+      ) : null}
     </article>
   );
 }
