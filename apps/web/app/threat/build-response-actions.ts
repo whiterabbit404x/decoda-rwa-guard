@@ -28,7 +28,9 @@ export function buildResponseActionsModel(actionCapabilities: Record<string, Res
 
 export function buildResponseActionList(params: {
   actionButtons: Record<ThreatActionButtonId, ThreatActionButtonState>;
-}): Array<Omit<ResponseAction, 'onClick'>> {
+  onSimNotifyTeam: () => void;
+  onSimRevokeApproval: () => void;
+}): Array<ResponseAction> {
   return [
     {
       id: 'sim-notify-team',
@@ -36,6 +38,7 @@ export function buildResponseActionList(params: {
       state: 'simulation_only',
       disabled: params.actionButtons['sim-notify-team'].disabled,
       reason: params.actionButtons['sim-notify-team'].reason,
+      onClick: params.onSimNotifyTeam,
     },
     {
       id: 'sim-revoke-approval',
@@ -43,6 +46,7 @@ export function buildResponseActionList(params: {
       state: 'manual_recommendation',
       disabled: params.actionButtons['sim-revoke-approval'].disabled,
       reason: params.actionButtons['sim-revoke-approval'].reason,
+      onClick: params.onSimRevokeApproval,
     },
   ];
 }
