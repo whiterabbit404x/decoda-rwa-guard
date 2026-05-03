@@ -1868,8 +1868,9 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         ? 'Disabled'
         : (reconcileTerminal ? 'Status unavailable' : (matchedTarget?.monitoring_enabled ? 'Monitored' : 'Status unavailable'));
       const normalizedEvidenceSource = String(item.evidence_source ?? '').toLowerCase();
-      const simulatorEvidence = ['simulator', 'demo', 'synthetic', 'fallback', 'replay'].includes(normalizedEvidenceSource);
-      const normalizedDetectionEvidenceSource = simulatorEvidence ? 'simulator' : 'live';
+      const replayEvidence = normalizedEvidenceSource === 'replay';
+      const simulatorEvidence = replayEvidence || ['simulator', 'demo', 'synthetic', 'fallback'].includes(normalizedEvidenceSource);
+      const normalizedDetectionEvidenceSource = simulatorEvidence ? (replayEvidence ? 'replay' : 'simulator') : 'live';
       const evidenceSourceLabel = simulatorEvidence ? 'Simulator evidence' : 'Live evidence';
       return {
         id: `detection-${item.id}`,
