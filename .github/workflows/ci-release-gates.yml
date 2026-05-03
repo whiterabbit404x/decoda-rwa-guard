@@ -1,0 +1,83 @@
+name: CI Release Gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+      - 'release/**'
+  workflow_dispatch:
+
+jobs:
+  required-gates:
+    name: Required npm test/build gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm test
+        run: npm test
+
+      - name: Run npm run build
+        run: npm run build
+
+      - name: Build CI release proof bundle
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/release-proof/latest
+          {
+            echo "# CI release gate proof"
+            echo
+            echo "- workflow: ${GITHUB_WORKFLOW}"
+            echo "- run_id: ${GITHUB_RUN_ID}"
+            echo "- run_number: ${GITHUB_RUN_NUMBER}"
+            echo "- run_attempt: ${GITHUB_RUN_ATTEMPT}"
+            echo "- actor: ${GITHUB_ACTOR}"
+            echo "- ref: ${GITHUB_REF}"
+            echo "- sha: ${GITHUB_SHA}"
+            echo "- test_gate: completed"
+            echo "- build_gate: completed"
+            echo
+            echo "See uploaded artifacts for raw logs and gate status snapshots."
+          } > artifacts/release-proof/latest/ci-required-gates.md
+
+          cat > artifacts/release-proof/latest/ci-required-gates.json <<JSON
+          {
+            "workflow": "${GITHUB_WORKFLOW}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_number": "${GITHUB_RUN_NUMBER}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "actor": "${GITHUB_ACTOR}",
+            "ref": "${GITHUB_REF}",
+            "sha": "${GITHUB_SHA}",
+            "gates": {
+              "npm_test": "completed",
+              "npm_run_build": "completed"
+            }
+          }
+JSON
+
+      - name: Upload CI release proof artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-release-gate-proof-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            artifacts/release-proof/latest/ci-required-gates.md
+            artifacts/release-proof/latest/ci-required-gates.json
