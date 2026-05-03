@@ -181,6 +181,7 @@ from services.api.app.pilot import (
     create_monitored_system,
     patch_monitored_system,
     delete_monitored_system,
+    run_guided_threat_workflow,
 )
 from services.api.app.monitoring_runner import (
     get_background_loop_health,
@@ -3016,6 +3017,11 @@ def targets_disable(target_id: str, request: Request) -> dict[str, Any]:
 @app.post('/monitoring/run-once/{target_id}', summary='Debug-only: trigger one manual monitoring run for target (not enterprise-proof eligible)')
 def monitoring_run_once(target_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: run_monitoring_once(target_id, request))
+
+
+@app.post('/workflow/guided-threat-chain', summary='Run guided end-to-end threat workflow chain')
+def workflow_guided_threat_chain(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: run_guided_threat_workflow(payload, request))
 
 
 @app.get('/assets', summary='List workspace assets')
