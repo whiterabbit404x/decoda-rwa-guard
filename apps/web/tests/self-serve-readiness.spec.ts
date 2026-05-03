@@ -84,7 +84,15 @@ test('onboarding wizard and help/legal pages are present for self-serve setup', 
   expect(nav).toContain("{ href: '/response-actions', label: 'Response Actions' }");
   expect(security).toContain('workspace-scoped access control');
   expect(settingsPage).toContain('href="/settings/security"');
+  expect(settingsPage).toContain('Self-serve launch gate');
+  expect(settingsPage).toContain('check.reason ??');
   expect(settingsPage).toContain('billingDisabledMessage(billingRuntime)');
   expect(settingsPage).toContain('const billingAvailable = billingEnabled(billingRuntime);');
   expect(securitySettingsRoute).toContain('SecuritySettingsPageClient');
+});
+
+test('threat page links operators to readiness gate when self-serve is blocked', async () => {
+  const threat = read('(product)/threat/page.tsx');
+  expect(threat).toContain('Broad self-serve remains blocked until all readiness checks pass.');
+  expect(threat).toContain('/settings');
 });

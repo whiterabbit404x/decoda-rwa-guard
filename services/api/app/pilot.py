@@ -803,21 +803,31 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
         artifact_status = {name: (artifact_dir / name).exists() for name in expected_artifacts}
         staging_artifacts_exist = all(artifact_status.values())
 
+        check_inputs = [
+            {'key': 'auth', 'label': 'Auth', 'pass': auth_verified, 'blocking': True, 'pass_reason': 'Authenticated workspace admin session is active.', 'fail_reason': 'Authentication is required. Sign in again and ensure the workspace admin session is active.'},
+            {'key': 'workspace_creation', 'label': 'Workspace creation', 'pass': workspace_created, 'blocking': True, 'pass_reason': 'Workspace context is present for this user.', 'fail_reason': 'No workspace is selected. Create or select a workspace before continuing.'},
+            {'key': 'asset_creation', 'label': 'Asset creation', 'pass': _workspace_count('assets') > 0, 'blocking': True, 'pass_reason': 'At least one protected asset exists.', 'fail_reason': 'Create at least one protected asset to enable monitoring and detections.'},
+            {'key': 'monitoring_source_creation', 'label': 'Monitoring source creation', 'pass': monitoring_sources > 0, 'blocking': True, 'pass_reason': 'Monitoring sources are configured for this workspace.', 'fail_reason': 'Create a monitoring source and enable it for an asset.'},
+            {'key': 'telemetry_exists', 'label': 'Telemetry exists', 'pass': telemetry_exists, 'blocking': True, 'pass_reason': 'Telemetry events are present.', 'fail_reason': 'No telemetry events found. Verify ingestion and rerun monitoring.'},
+            {'key': 'detection_exists', 'label': 'Detection exists', 'pass': detections_exists, 'blocking': True, 'pass_reason': 'At least one detection exists in the workspace chain.', 'fail_reason': 'No detections found. Validate rules and run detection evaluation.'},
+            {'key': 'alert_exists', 'label': 'Alert exists', 'pass': alerts_exists, 'blocking': True, 'pass_reason': 'At least one alert exists.', 'fail_reason': 'No alerts found. Confirm detections are linked to alert generation.'},
+            {'key': 'incident_exists', 'label': 'Incident exists', 'pass': incidents_exists, 'blocking': True, 'pass_reason': 'At least one incident exists.', 'fail_reason': 'No incidents found. Triage alerts into incidents.'},
+            {'key': 'response_action_exists', 'label': 'Response action exists', 'pass': response_actions_exists, 'blocking': True, 'pass_reason': 'At least one response action is recorded.', 'fail_reason': 'No response actions found. Plan or execute a response action from an alert or incident.'},
+            {'key': 'evidence_package_exists', 'label': 'Evidence package exists', 'pass': evidence_packages_exists, 'blocking': True, 'pass_reason': 'Evidence package records are present.', 'fail_reason': 'No evidence package records found. Generate evidence from detections/incidents.'},
+            {'key': 'billing_verified', 'label': 'Billing verified', 'pass': billing_verified, 'blocking': True, 'pass_reason': 'Billing provider runtime is available.', 'fail_reason': 'Billing provider is unavailable. Configure billing credentials and provider mode.'},
+            {'key': 'email_verified', 'label': 'Email verified', 'pass': email_verified, 'blocking': True, 'pass_reason': 'Current admin email is verified.', 'fail_reason': 'Verify the current admin email before enabling broad self-serve access.'},
+            {'key': 'redis_provider_checks_pass', 'label': 'Redis/provider checks pass', 'pass': redis_provider_ready and provider_healthy, 'blocking': True, 'pass_reason': 'Redis and provider health checks are healthy.', 'fail_reason': 'Redis/provider checks are unhealthy. Configure REDIS_URL and email provider credentials.'},
+            {'key': 'staging_evidence_artifacts_exist', 'label': 'Staging evidence artifacts exist', 'pass': staging_artifacts_exist, 'blocking': True, 'pass_reason': 'All expected staging evidence artifacts are present.', 'fail_reason': 'Staging evidence artifacts are incomplete. Regenerate artifacts under artifacts/live_evidence/latest.'},
+        ]
         checks = [
-            {'key': 'auth', 'label': 'Auth', 'pass': auth_verified, 'blocking': True},
-            {'key': 'workspace_creation', 'label': 'Workspace creation', 'pass': workspace_created, 'blocking': True},
-            {'key': 'asset_creation', 'label': 'Asset creation', 'pass': _workspace_count('assets') > 0, 'blocking': True},
-            {'key': 'monitoring_source_creation', 'label': 'Monitoring source creation', 'pass': monitoring_sources > 0, 'blocking': True},
-            {'key': 'telemetry_exists', 'label': 'Telemetry exists', 'pass': telemetry_exists, 'blocking': True},
-            {'key': 'detection_exists', 'label': 'Detection exists', 'pass': detections_exists, 'blocking': True},
-            {'key': 'alert_exists', 'label': 'Alert exists', 'pass': alerts_exists, 'blocking': True},
-            {'key': 'incident_exists', 'label': 'Incident exists', 'pass': incidents_exists, 'blocking': True},
-            {'key': 'response_action_exists', 'label': 'Response action exists', 'pass': response_actions_exists, 'blocking': True},
-            {'key': 'evidence_package_exists', 'label': 'Evidence package exists', 'pass': evidence_packages_exists, 'blocking': True},
-            {'key': 'billing_verified', 'label': 'Billing verified', 'pass': billing_verified, 'blocking': True},
-            {'key': 'email_verified', 'label': 'Email verified', 'pass': email_verified, 'blocking': True},
-            {'key': 'redis_provider_checks_pass', 'label': 'Redis/provider checks pass', 'pass': redis_provider_ready and provider_healthy, 'blocking': True},
-            {'key': 'staging_evidence_artifacts_exist', 'label': 'Staging evidence artifacts exist', 'pass': staging_artifacts_exist, 'blocking': True},
+            {
+                'key': check['key'],
+                'label': check['label'],
+                'pass': check['pass'],
+                'blocking': check['blocking'],
+                'reason': check['pass_reason'] if check['pass'] else check['fail_reason'],
+            }
+            for check in check_inputs
         ]
         blocking_failures = [check['key'] for check in checks if check['blocking'] and not check['pass']]
         return {
