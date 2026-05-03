@@ -1855,7 +1855,43 @@ def _require_threat_response(kind: str, normalized: dict[str, Any]) -> dict[str,
     response = proxy_threat(kind, normalized)
     if response is None:
         raise HTTPException(status_code=503, detail={'code': 'THREAT_ENGINE_UNAVAILABLE', 'analysis_type': kind, 'message': 'Live threat provider unavailable; fallback payloads are disabled in production.'})
-    return response
+    return _attach_rule_evidence_catalog(response)
+
+
+THREAT_RULE_IDENTIFIER_CATALOG: tuple[tuple[str, str], ...] = (
+    ('oracle_nav_divergence', 'Oracle NAV divergence'),
+    ('proof_of_reserve_stale', 'Proof of reserve stale'),
+    ('custody_wallet_movement_anomaly', 'Custody wallet movement anomaly'),
+    ('unauthorized_mint_burn', 'Unauthorized mint/burn'),
+    ('abnormal_redemption_activity', 'Abnormal redemption activity'),
+    ('compliance_exposure', 'Compliance exposure'),
+    ('monitoring_coverage_gap', 'Monitoring coverage gap'),
+)
+
+
+def _attach_rule_evidence_catalog(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    evidence_source = str(normalized.get('evidence_source') or normalized.get('source') or 'unknown').strip().lower() or 'unknown'
+    active_rule_ids: set[str] = set()
+    for candidate in (normalized.get('triggered_rule_ids'), normalized.get('rule_ids'), normalized.get('triggered_rules')):
+        if isinstance(candidate, list):
+            for value in candidate:
+                key = str(value or '').strip().lower()
+                if key:
+                    active_rule_ids.add(key)
+    if isinstance(normalized.get('rule_id'), str):
+        active_rule_ids.add(str(normalized.get('rule_id')).strip().lower())
+    normalized['rule_catalog'] = [
+        {
+            'id': rule_id,
+            'label': label,
+            'status': 'triggered' if rule_id in active_rule_ids else 'visible_stub',
+            'evidence_source': evidence_source,
+            'provenance': 'threat_engine_response',
+        }
+        for rule_id, label in THREAT_RULE_IDENTIFIER_CATALOG
+    ]
+    return normalized
 
 
 @app.post('/threat/analyze/contract', summary='Feature 2 contract analysis', description='Proxies a contract analysis request to the threat-engine and falls back to a conservative local rule summary if the engine is unavailable.')

@@ -6,6 +6,7 @@ export type DetectionRecord = {
   time: string;
   asset: string;
   detection: string;
+  ruleLabel?: string;
   severity: string;
   confidence: string;
   evidence: string;
@@ -28,6 +29,7 @@ export default function DetectionFeed({ detections, loading }: Props) {
                 <th>Time</th>
                 <th>Asset</th>
                 <th>Detection</th>
+                <th>Rule</th>
                 <th>Severity</th>
                 <th>Confidence</th>
                 <th>Evidence</th>
@@ -40,6 +42,7 @@ export default function DetectionFeed({ detections, loading }: Props) {
                   <td>{d.time}</td>
                   <td>{d.asset}</td>
                   <td>{d.detection}</td>
+                  <td>{d.ruleLabel || 'n/a'}</td>
                   <td>{d.severity}</td>
                   <td>{d.confidence}</td>
                   <td>{d.evidence}</td>

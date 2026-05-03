@@ -1748,27 +1748,63 @@ def append_incident_timeline_event(
 
 
 CANONICAL_DETECTOR_CODES: dict[str, str] = {
-    'oracle_divergence': 'oracle_divergence',
-    'reserve_mismatch': 'reserve_mismatch',
+    'oracle_nav_divergence': 'oracle_nav_divergence',
+    'proof_of_reserve_stale': 'proof_of_reserve_stale',
+    'custody_wallet_movement_anomaly': 'custody_wallet_movement_anomaly',
     'unauthorized_mint_burn': 'unauthorized_mint_burn',
     'abnormal_redemption_activity': 'abnormal_redemption_activity',
-    'contract_upgrade_anomaly': 'contract_upgrade_anomaly',
-    'custody_transfer_anomaly': 'custody_transfer_anomaly',
     'compliance_exposure': 'compliance_exposure',
     'monitoring_coverage_gap': 'monitoring_coverage_gap',
+    'oracle_divergence': 'oracle_divergence',
+    'reserve_mismatch': 'reserve_mismatch',
+    'contract_upgrade_anomaly': 'contract_upgrade_anomaly',
+    'custody_transfer_anomaly': 'custody_transfer_anomaly',
 }
 
 _DETECTOR_CODE_ALIASES: dict[str, str] = {
+    'oracle_nav_divergence': 'oracle_nav_divergence',
+    'oracle_nav-divergence': 'oracle_nav_divergence',
     'oracle-divergence': 'oracle_divergence',
     'oracle_integrity': 'oracle_divergence',
+    'proof_of_reserve_stale': 'proof_of_reserve_stale',
+    'proof_of_reserve-stale': 'proof_of_reserve_stale',
     'reserve-mismatch': 'reserve_mismatch',
+    'custody_wallet_movement_anomaly': 'custody_wallet_movement_anomaly',
+    'custody_wallet_movement-anomaly': 'custody_wallet_movement_anomaly',
     'unauthorized-mint-burn': 'unauthorized_mint_burn',
     'abnormal-redemption-activity': 'abnormal_redemption_activity',
     'contract-upgrade-anomaly': 'contract_upgrade_anomaly',
     'custody-transfer-anomaly': 'custody_transfer_anomaly',
     'compliance-exposure': 'compliance_exposure',
     'monitoring-coverage-gap': 'monitoring_coverage_gap',
+    'oracle_divergence': 'oracle_nav_divergence',
+    'oracle_integrity': 'oracle_nav_divergence',
+    'reserve_mismatch': 'proof_of_reserve_stale',
+    'custody_transfer_anomaly': 'custody_wallet_movement_anomaly',
+    'monitoring_coverage_gap': 'monitoring_coverage_gap',
 }
+
+
+RULE_LABELS: dict[str, str] = {
+    'oracle_nav_divergence': 'Oracle NAV divergence',
+    'proof_of_reserve_stale': 'Proof of reserve stale',
+    'custody_wallet_movement_anomaly': 'Custody wallet movement anomaly',
+    'unauthorized_mint_burn': 'Unauthorized mint/burn',
+    'abnormal_redemption_activity': 'Abnormal redemption activity',
+    'compliance_exposure': 'Compliance exposure',
+    'monitoring_coverage_gap': 'Monitoring coverage gap',
+}
+
+
+def resolve_rule_identifier(*values: Any) -> str | None:
+    return canonical_detector_code(*values)
+
+
+def rule_label(rule_identifier: str | None) -> str | None:
+    key = str(rule_identifier or '').strip().lower()
+    if not key:
+        return None
+    return RULE_LABELS.get(key, key.replace('_', ' ').title())
 
 
 def canonical_detector_code(*values: Any) -> str | None:
@@ -9707,6 +9743,8 @@ def list_detections(
             item['tx_hash'] = item.get('chain_tx_hash') or item.get('tx_hash')
             item['block_number'] = item.get('chain_block_number') or item.get('block_number')
             item['detector_kind'] = canonical_detector_code(item.get('chain_detector_kind'), item.get('detector_kind'), item.get('detection_type')) or item.get('chain_detector_kind') or item.get('detector_kind')
+            item['rule_identifier'] = resolve_rule_identifier(item.get('source_rule'), item.get('detector_kind'), item.get('detection_type'))
+            item['rule_label'] = rule_label(item.get('rule_identifier'))
             item['evidence_source'] = item.get('evidence_source') or item.get('last_evidence_source')
             item['evidence_origin'] = item.get('evidence_origin') or item.get('last_evidence_origin')
             item['evidence_origin_label'] = detection_evidence_origin_label(item.get('evidence_source') or item.get('evidence_origin'))
@@ -9760,7 +9798,10 @@ def get_detection(detection_id: str, request: Request) -> dict[str, Any]:
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Detection not found.')
-        return {'detection': _json_safe_value(dict(row))}
+        detection = _json_safe_value(dict(row))
+        detection['rule_identifier'] = resolve_rule_identifier(detection.get('source_rule'), detection.get('detection_type'))
+        detection['rule_label'] = rule_label(detection.get('rule_identifier'))
+        return {'detection': detection}
 
 
 def get_detection_evidence(detection_id: str, request: Request) -> dict[str, Any]:
@@ -9898,6 +9939,8 @@ def list_alerts(request: Request, *, severity: str | None = None, module: str | 
             item['tx_hash'] = item.get('tx_hash')
             item['block_number'] = item.get('block_number')
             item['detector_kind'] = canonical_detector_code(item.get('detector_kind'), item.get('alert_type')) or item.get('detector_kind')
+            item['rule_identifier'] = resolve_rule_identifier(item.get('detector_kind'), item.get('alert_type'))
+            item['rule_label'] = rule_label(item.get('rule_identifier'))
             item['linked_detection_id'] = item.get('detection_id')
             item['linked_alert_id'] = item.get('id')
             item['linked_incident_id'] = item.get('incident_id')
@@ -9942,6 +9985,8 @@ def get_alert(alert_id: str, request: Request) -> dict[str, Any]:
         alert_payload['block_number'] = latest_evidence_payload.get('block_number')
         latest_raw_payload = latest_evidence_payload.get('raw_payload_json') if isinstance(latest_evidence_payload.get('raw_payload_json'), dict) else {}
         alert_payload['detector_kind'] = canonical_detector_code(latest_raw_payload.get('detector_kind'), latest_raw_payload.get('detector_family'), alert_payload.get('alert_type')) or latest_raw_payload.get('detector_kind') or latest_raw_payload.get('detector_family')
+        alert_payload['rule_identifier'] = resolve_rule_identifier(alert_payload.get('detector_kind'), alert_payload.get('alert_type'))
+        alert_payload['rule_label'] = rule_label(alert_payload.get('rule_identifier'))
         alert_payload['linked_detection_id'] = alert_payload.get('detection_id')
         alert_payload['linked_alert_id'] = alert_payload.get('id')
         alert_payload['linked_incident_id'] = alert_payload.get('incident_id')
@@ -10384,6 +10429,8 @@ def list_incidents(request: Request, *, severity: str | None = None, target_id: 
             item['tx_hash'] = item.get('tx_hash')
             item['block_number'] = item.get('block_number')
             item['detector_kind'] = item.get('detector_kind')
+            item['rule_identifier'] = resolve_rule_identifier(item.get('detector_kind'), item.get('event_type'))
+            item['rule_label'] = rule_label(item.get('rule_identifier'))
             item['linked_alert_id'] = item.get('source_alert_id')
             item['linked_incident_id'] = item.get('id')
             item['linked_action_id'] = item.get('linked_action_id')

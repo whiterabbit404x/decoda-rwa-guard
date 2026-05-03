@@ -5,6 +5,7 @@ type DetectionInput = {
   timestamp: string;
   assetName: string;
   title: string;
+  ruleLabel?: string;
   severity: string;
   monitoringStatus: string;
   evidenceSummary: string;
@@ -23,6 +24,7 @@ export function buildDetectionRecords(detections: DetectionInput[]): DetectionRe
     time: formatAbsoluteTime(item.timestamp),
     asset: item.assetName,
     detection: item.title,
+    ruleLabel: item.ruleLabel,
     severity: item.severity,
     confidence: item.monitoringStatus,
     evidence: item.evidenceSummary,
