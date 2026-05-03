@@ -9,7 +9,7 @@ import { BillingRuntime, billingDisabledMessage, billingEnabled } from './billin
 type Member = { id: string; user_id: string; email: string; full_name: string; role: 'owner' | 'admin' | 'analyst' | 'viewer'; created_at: string };
 type Invitation = { id: string; email: string; role: 'owner' | 'admin' | 'analyst' | 'viewer'; status: string; expires_at: string; created_at: string; updated_at: string };
 type SeatSummary = { used: number; limit: number; plan_key?: string };
-type ReadinessCheck = { key: string; label: string; pass: boolean; blocking: boolean };
+type ReadinessCheck = { key: string; label: string; pass: boolean; blocking: boolean; reason?: string };
 type WorkspaceReadiness = { status: 'pass' | 'fail'; blocking_failures: string[]; checks: ReadinessCheck[]; checked_at: string };
 
 export default function SettingsPageClient() {
@@ -161,7 +161,7 @@ export default function SettingsPageClient() {
             <p className="sectionEyebrow">Required checks</p>
             {(readiness?.checks ?? []).map((check) => (
               <p key={check.key} className={check.pass ? 'muted' : 'statusLine'}>
-                {check.pass ? 'PASS' : 'FAIL'} · {check.label}{check.blocking ? ' (blocking)' : ''}
+                {check.pass ? 'PASS' : 'FAIL'} · {check.label}{check.blocking ? ' (blocking)' : ''} — {check.reason ?? (check.pass ? 'Requirement satisfied.' : 'Requirement not satisfied.')}
               </p>
             ))}
           </article>

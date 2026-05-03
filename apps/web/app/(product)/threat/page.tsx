@@ -18,6 +18,10 @@ export default async function ThreatPage() {
             Continuous monitoring for protected assets, detections, alerts, and response workflows.
           </p>
           <p className="muted">Current customer-safe risk label: {renderRiskLabel(topQueueRisk)}</p>
+          <p className="muted">
+            Broad self-serve remains blocked until all readiness checks pass. Review pass/fail reasons in{' '}
+            <a href="/settings">Settings → Self-serve launch gate</a>.
+          </p>
         </div>
       </section>
       <ThreatOperationsPanel apiUrl={data.apiUrl} />
