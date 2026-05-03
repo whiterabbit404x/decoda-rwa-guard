@@ -14,7 +14,7 @@ export default function ThreatOverviewCard({ status, securityStatus, loading = f
     <article className="dataCard" aria-label="Security Overview">
       <p className="sectionEyebrow">Security overview</p>
       <h3>Strategic Infrastructure Guard posture</h3>
-      <p className="kpiValue">{loading ? 'Loading…' : resolved.posture.replace('_', ' ')}</p>
+      <p className="kpiValue">{loading ? 'Loading…' : resolved.posture.replaceAll('_', ' ')}</p>
       <p className="tableMeta">{resolved.customerMessage}</p>
       <p className="tableMeta">{THREAT_COPY.overviewCoverageSummary}</p>
       <div className="monitoringKpiGrid" style={{ marginTop: 12 }}>
