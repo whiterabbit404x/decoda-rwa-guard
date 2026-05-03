@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test';
 
+import { buildSecurityWorkspaceStatus } from '../app/security-workspace-status';
+import { buildMonitoringHealthModel } from '../app/threat/build-monitoring-health-model';
 import TechnicalRuntimeDetails from '../app/threat/technical-runtime-details';
 
 type NodeLike = { type?: unknown; props?: Record<string, unknown> };
@@ -27,6 +29,34 @@ function findNode(root: unknown, predicate: (node: NodeLike) => boolean): NodeLi
 }
 
 test.describe('threat composition rendering behavior', () => {
+  test('threat status flow stays wired through buildSecurityWorkspaceStatus via monitoring health model', () => {
+    const runtimeStatusSnapshot = {
+      runtime_status: 'healthy',
+      reporting_systems_count: 0,
+      monitored_systems_count: 2,
+      protected_assets_count: 2,
+      last_telemetry_at: '2026-05-01T00:00:00Z',
+    };
+
+    const model = buildMonitoringHealthModel({
+      runtimeStatusSnapshot,
+      detections: [],
+      alerts: [],
+      incidents: [],
+      evidence: [],
+      telemetryAt: runtimeStatusSnapshot.last_telemetry_at,
+      heartbeatAt: null,
+      pollAt: null,
+      contradictionFlags: [],
+      continuityChecks: [],
+    });
+
+    const direct = buildSecurityWorkspaceStatus(runtimeStatusSnapshot, [], [], [], []);
+
+    expect(model.securityStatus).toEqual(direct);
+    expect(model.healthClaim).toBe(direct.customerMessage);
+  });
+
   test('technical runtime details are collapsed by default', () => {
     const tree = TechnicalRuntimeDetails({
       summaryLine: 'Diagnostics available',
@@ -66,5 +96,22 @@ test.describe('threat composition rendering behavior', () => {
     expect(customerText).not.toContain('contradiction_flags');
     expect(customerText).not.toContain('guard_flags');
     expect(customerText).not.toContain('db_failure_classification');
+  });
+
+  test('customer-facing continuity summary keeps exact missing telemetry copy', () => {
+    const technical = TechnicalRuntimeDetails({
+      summaryLine: 'Diagnostics available',
+      contradictionFlags: [],
+      guardFlags: [],
+      dbFailureClassification: null,
+      customerContinuitySummary: 'No live signal received yet',
+    });
+
+    const customerSummary = findNode(technical, (node) => node.type === 'p' && String(node.props?.children).includes('customer continuity summary:'));
+    const customerText = JSON.stringify(customerSummary);
+
+    expect(customerText).toContain('No live signal received yet');
+    expect(customerText).not.toContain('live telemetry');
+    expect(customerText).not.toContain('healthy');
   });
 });
