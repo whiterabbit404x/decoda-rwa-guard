@@ -9,6 +9,8 @@ import { BillingRuntime, billingDisabledMessage, billingEnabled } from './billin
 type Member = { id: string; user_id: string; email: string; full_name: string; role: 'owner' | 'admin' | 'analyst' | 'viewer'; created_at: string };
 type Invitation = { id: string; email: string; role: 'owner' | 'admin' | 'analyst' | 'viewer'; status: string; expires_at: string; created_at: string; updated_at: string };
 type SeatSummary = { used: number; limit: number; plan_key?: string };
+type ReadinessCheck = { key: string; label: string; pass: boolean; blocking: boolean };
+type WorkspaceReadiness = { status: 'pass' | 'fail'; blocking_failures: string[]; checks: ReadinessCheck[]; checked_at: string };
 
 export default function SettingsPageClient() {
   const { apiUrl, authHeaders, error, liveModeConfigured, loading, selectWorkspace, user } = usePilotAuth();
@@ -18,6 +20,7 @@ export default function SettingsPageClient() {
   const [subscription, setSubscription] = useState<any>(null);
   const [billingRuntime, setBillingRuntime] = useState<BillingRuntime>({ provider: 'none', available: false });
   const [seatSummary, setSeatSummary] = useState<SeatSummary | null>(null);
+  const [readiness, setReadiness] = useState<WorkspaceReadiness | null>(null);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('viewer');
   const [message, setMessage] = useState('');
@@ -33,12 +36,13 @@ export default function SettingsPageClient() {
 
   async function loadAll() {
     if (!apiUrl || !resolvedWorkspace?.id) return;
-    const [membersResponse, inviteResponse, seatsResponse, subscriptionResponse, plansResponse] = await Promise.all([
+    const [membersResponse, inviteResponse, seatsResponse, subscriptionResponse, plansResponse, readinessResponse] = await Promise.all([
       call('/workspace/members'),
       call('/workspace/invitations'),
       call('/team/seats'),
       call('/billing/subscription'),
       call('/billing/plans'),
+      call('/system/readiness'),
     ]);
     if (membersResponse.ok) setMembers((await membersResponse.json()).members ?? []);
     if (inviteResponse.ok) setInvitations((await inviteResponse.json()).invitations ?? []);
@@ -49,6 +53,7 @@ export default function SettingsPageClient() {
       setBillingRuntime(payload.billing ?? { provider: 'none', available: false });
     }
     if (plansResponse.ok) setPlans((await plansResponse.json()).plans ?? []);
+    if (readinessResponse.ok) setReadiness(await readinessResponse.json());
   }
 
   useEffect(() => { void loadAll(); }, [apiUrl, resolvedWorkspace?.id]);
@@ -135,6 +140,30 @@ export default function SettingsPageClient() {
             <div className="buttonRow">
               <Link href="/settings/security" prefetch={false}>Open security settings</Link>
             </div>
+          </article>
+        </div>
+      </section>
+
+      <section className="featureSection">
+        <div className="sectionHeader"><div><p className="eyebrow">Readiness</p><h2>Self-serve launch gate</h2><p className="lede">Broad self-serve remains blocked until every required check passes.</p></div></div>
+        <div className="threeColumnSection">
+          <article className="dataCard">
+            <p className="sectionEyebrow">Current gate</p>
+            <h2>{readiness?.status === 'pass' ? 'PASS' : 'FAIL'}</h2>
+            <p className="muted">Blocking failures: {readiness?.blocking_failures?.length ?? 0}</p>
+            <p className="muted">Last checked: {readiness?.checked_at ? new Date(readiness.checked_at).toLocaleString() : 'not available'}</p>
+            <div className="buttonRow">
+              <button type="button" onClick={() => void loadAll()}>Refresh readiness</button>
+              <Link href="/threat" prefetch={false}>Open threat operations</Link>
+            </div>
+          </article>
+          <article className="dataCard" style={{ gridColumn: 'span 2' }}>
+            <p className="sectionEyebrow">Required checks</p>
+            {(readiness?.checks ?? []).map((check) => (
+              <p key={check.key} className={check.pass ? 'muted' : 'statusLine'}>
+                {check.pass ? 'PASS' : 'FAIL'} · {check.label}{check.blocking ? ' (blocking)' : ''}
+              </p>
+            ))}
           </article>
         </div>
       </section>

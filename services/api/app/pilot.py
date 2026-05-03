@@ -768,6 +768,86 @@ def get_integration_health(request: Request) -> dict[str, Any]:
         return health
 
 
+def get_workspace_readiness(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace']['id']
+
+        def _workspace_count(table: str) -> int:
+            row = connection.execute(f'SELECT COUNT(*) AS count FROM {table} WHERE workspace_id = %s', (workspace_id,)).fetchone()
+            return int((row or {}).get('count') or 0)
+
+        auth_verified = bool(user.get('id'))
+        workspace_created = bool(workspace_context.get('workspace', {}).get('id'))
+        email_verified = bool(user.get('email_verified_at'))
+        billing_status = billing_runtime_status()
+        billing_verified = bool(billing_status.get('available'))
+        monitoring_sources = _workspace_count('monitoring_configs')
+        telemetry_exists = _workspace_count('telemetry_events') > 0
+        detections_exists = _workspace_count('detections') > 0 or _workspace_count('detection_events') > 0
+        alerts_exists = _workspace_count('alerts') > 0
+        incidents_exists = _workspace_count('incidents') > 0
+        response_actions_exists = _workspace_count('response_actions') > 0
+        evidence_packages_exists = _workspace_count('evidence') > 0 or _workspace_count('detection_evidence') > 0
+        redis_provider_ready = bool(os.getenv('REDIS_URL', '').strip())
+        provider_checks = integration_health_snapshot(connection)
+        provider_healthy = all(
+            str(provider_checks.get(name, {}).get('status', 'warning')).lower() in {'healthy', 'ok'}
+            for name in ('email', 'auth_rate_limiter')
+        )
+        repo_root = Path(__file__).resolve().parents[2]
+        artifact_dir = repo_root / 'artifacts' / 'live_evidence' / 'latest'
+        expected_artifacts = ['alerts.json', 'evidence.json', 'incidents.json', 'report.md', 'runs.json', 'summary.json']
+        artifact_status = {name: (artifact_dir / name).exists() for name in expected_artifacts}
+        staging_artifacts_exist = all(artifact_status.values())
+
+        checks = [
+            {'key': 'auth', 'label': 'Auth', 'pass': auth_verified, 'blocking': True},
+            {'key': 'workspace_creation', 'label': 'Workspace creation', 'pass': workspace_created, 'blocking': True},
+            {'key': 'asset_creation', 'label': 'Asset creation', 'pass': _workspace_count('assets') > 0, 'blocking': True},
+            {'key': 'monitoring_source_creation', 'label': 'Monitoring source creation', 'pass': monitoring_sources > 0, 'blocking': True},
+            {'key': 'telemetry_exists', 'label': 'Telemetry exists', 'pass': telemetry_exists, 'blocking': True},
+            {'key': 'detection_exists', 'label': 'Detection exists', 'pass': detections_exists, 'blocking': True},
+            {'key': 'alert_exists', 'label': 'Alert exists', 'pass': alerts_exists, 'blocking': True},
+            {'key': 'incident_exists', 'label': 'Incident exists', 'pass': incidents_exists, 'blocking': True},
+            {'key': 'response_action_exists', 'label': 'Response action exists', 'pass': response_actions_exists, 'blocking': True},
+            {'key': 'evidence_package_exists', 'label': 'Evidence package exists', 'pass': evidence_packages_exists, 'blocking': True},
+            {'key': 'billing_verified', 'label': 'Billing verified', 'pass': billing_verified, 'blocking': True},
+            {'key': 'email_verified', 'label': 'Email verified', 'pass': email_verified, 'blocking': True},
+            {'key': 'redis_provider_checks_pass', 'label': 'Redis/provider checks pass', 'pass': redis_provider_ready and provider_healthy, 'blocking': True},
+            {'key': 'staging_evidence_artifacts_exist', 'label': 'Staging evidence artifacts exist', 'pass': staging_artifacts_exist, 'blocking': True},
+        ]
+        blocking_failures = [check['key'] for check in checks if check['blocking'] and not check['pass']]
+        return {
+            'workspace': workspace_context['workspace'],
+            'checked_by': user['id'],
+            'checked_at': utc_now_iso(),
+            'status': 'pass' if not blocking_failures else 'fail',
+            'blocking_failures': blocking_failures,
+            'checks': checks,
+            'details': {
+                'counts': {
+                    'assets': _workspace_count('assets'),
+                    'monitoring_sources': monitoring_sources,
+                    'telemetry_events': _workspace_count('telemetry_events'),
+                    'detections': _workspace_count('detections') + _workspace_count('detection_events'),
+                    'alerts': _workspace_count('alerts'),
+                    'incidents': _workspace_count('incidents'),
+                    'response_actions': _workspace_count('response_actions'),
+                    'evidence_records': _workspace_count('evidence') + _workspace_count('detection_evidence'),
+                },
+                'billing': billing_status,
+                'provider_health': {
+                    'email': provider_checks.get('email'),
+                    'auth_rate_limiter': provider_checks.get('auth_rate_limiter'),
+                },
+                'staging_evidence_artifacts': artifact_status,
+            },
+        }
+
+
 def test_integration_email(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
