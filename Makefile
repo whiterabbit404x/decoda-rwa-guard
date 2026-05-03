@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts local-bootstrap-happy-path
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path
 
 up:
 	docker compose up -d
@@ -87,6 +87,10 @@ validate-feature1-live-artifacts:
 proof-feature1-live:
 	python services/api/scripts/run_feature1_live_proof.py
 	$(MAKE) validate-feature1-live-artifacts
+
+validate-readiness-proof:
+	GUIDED_PROOF_ENV=staging API_URL=${API_URL:-http://localhost:8000} python services/api/scripts/run_live_evidence_flow.py
+	python services/api/scripts/validate_readiness_proof.py --summary-path services/api/artifacts/live_evidence/latest/summary.json --environment $${GUIDED_PROOF_ENV:-staging}
 
 local-bootstrap-happy-path:
 	@echo "Step 1/5: migrate local Postgres"
