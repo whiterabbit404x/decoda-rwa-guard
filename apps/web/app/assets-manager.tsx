@@ -6,6 +6,7 @@ import { usePilotAuth } from './pilot-auth-context';
 import { parseTagInput } from './policy-builders';
 import { classifyApiTransportError } from './auth-diagnostics';
 import { normalizeApiBaseUrl, isValidApiBaseUrl } from './api-config';
+import { DataTable, EmptyStateBlocker, StatusPill } from './components/ui-primitives';
 
 type Props = { apiUrl: string };
 type Asset = any;
@@ -216,8 +217,8 @@ async function load() {
             <option value="treasury-linked asset">Treasury-linked asset</option>
           </select>
         </div>
-        {filtered.length === 0 ? <div className="emptyStatePanel"><h4>No assets yet</h4><p className="muted">No assets match this view. Add the first wallet or contract you want to protect.</p><button type="button" onClick={() => { document.getElementById('asset-create-form')?.scrollIntoView({ behavior: 'smooth' }); }}>Add asset</button></div> : (
-          <div className="tableWrap"><table><thead><tr><th>Name</th><th>Type</th><th>Chain</th><th>Identifier</th><th>Status</th></tr></thead><tbody>{filtered.map((asset) => <tr key={asset.id}><td>{asset.name}</td><td>{asset.asset_type}</td><td>{asset.chain_network}</td><td><p>{asset.identifier}</p><p className="tableMeta">Normalized: {asset.normalized_identifier || asset.identifier}</p></td><td><div className="chipRow"><span className="ruleChip">{asset.verification_status === 'verified' ? 'Verified' : asset.verification_status === 'pending' ? 'Pending verification' : 'Needs attention'}</span><span className="ruleChip">{asset.verification_summary?.recent_activity || 'recent activity unknown'}</span><span className="ruleChip">{monitoringLinkStatusLabel(asset)}</span></div></td></tr>)}</tbody></table></div>
+        {filtered.length === 0 ? <EmptyStateBlocker title="No assets yet" body="No assets match this view. Add the first wallet or contract you want to protect." /> : (
+          <DataTable headers={['Name', 'Type', 'Chain', 'Identifier', 'Status']}>{filtered.map((asset) => <tr key={asset.id}><td>{asset.name}</td><td>{asset.asset_type}</td><td>{asset.chain_network}</td><td><p>{asset.identifier}</p><p className="tableMeta">Normalized: {asset.normalized_identifier || asset.identifier}</p></td><td><div className="chipRow"><StatusPill label={asset.verification_status === 'verified' ? 'Verified' : asset.verification_status === 'pending' ? 'Pending verification' : 'Needs attention'} /><StatusPill label={asset.verification_summary?.recent_activity || 'recent activity unknown'} /><StatusPill label={monitoringLinkStatusLabel(asset)} /></div></td></tr>)}</DataTable>
         )}
       </section>
 

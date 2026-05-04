@@ -22,6 +22,7 @@ import {
   statusTone,
 } from './dashboard-data';
 import { toDashboardBadgeState } from './dashboard-status-presentation';
+import { RuntimeBanner, StatusPill } from './components/ui-primitives';
 
 const ENTERPRISE_GATE_LABELS: Record<string, string> = {
   continuity_slo_pass: 'Continuity SLO pass',
@@ -130,15 +131,15 @@ export default function DashboardPageContent({ data, gatewayReachableOverride = 
           </p>
           <div className="heroActionRow">
             <StatusBadge state={mapMonitoringStatusToBadgeState(monitoringPresentation.status)} />
-            <span className="ruleChip">Gateway: {diagnostics.endpoints.dashboard.ok ? 'reachable' : 'needs attention'}</span>
-            <span className="ruleChip">API: {apiUrl || 'Not configured'}</span>
+            <StatusPill label={`Gateway: ${diagnostics.endpoints.dashboard.ok ? 'reachable' : 'needs attention'}`} />
+            <StatusPill label={`API: ${apiUrl || 'Not configured'}`} />
           </div>
         </div>
         <div className="heroPanel">
-          <p className={`statusLine ${enterpriseReadyPass ? 'statusLine-success' : 'statusLine-warning'}`}>
-            Enterprise readiness gate: {enterpriseReadyPass ? 'PASS' : 'FAIL'}.
-            {enterpriseReadyPass ? ' All enterprise checks are green.' : ' Claims remain blocked until the failed checks are remediated.'}
-          </p>
+          <RuntimeBanner
+            title={`Enterprise readiness gate: ${enterpriseReadyPass ? 'PASS' : 'FAIL'}.`}
+            detail={enterpriseReadyPass ? 'All enterprise checks are green.' : 'Claims remain blocked until the failed checks are remediated.'}
+          />
           <p><strong>Platform state:</strong> {backendState === 'online' ? 'Live services connected' : backendState === 'degraded' ? 'Coverage degraded' : 'Telemetry offline'}</p>
           <p><strong>Runtime status:</strong> {runtimeStatusLabel}</p>
           <p><strong>Freshness:</strong> {freshnessLabel}</p>
