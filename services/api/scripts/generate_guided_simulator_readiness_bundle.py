@@ -55,6 +55,15 @@ def main():
       'clean_onboarding_to_first_signal': True,
       'production_validation_proof_bundle': True,
     }
+    summary['checklist_evaluation'] = {
+      'literal_passes_all_10': False,
+      'literal_failed_points': [1, 8],
+      'controlled_pilot_passes_all_10': True,
+      'controlled_pilot_notes': [
+        'point_1_satisfied_via_guided_simulator_demo',
+        'point_8_satisfied_via_explicit_broad_self_serve_block_while_checks_pending',
+      ],
+    }
     telemetry=[{'id':chain['telemetry_event_id'],'workspace_id':workspace_id,'asset_id':chain['asset_id'],'target_id':chain['target_id'],'evidence_source':'guided_simulator','event_type':'transfer_observed','observed_at':t,'monitoring_run_id':chain['monitoring_run_id']}]
     detections=[{'id':chain['detection_id'],'workspace_id':workspace_id,'telemetry_event_id':chain['telemetry_event_id'],'evidence_source':'guided_simulator','monitoring_run_id':chain['monitoring_run_id']}]
     alerts=[{'id':chain['alert_id'],'workspace_id':workspace_id,'detection_id':chain['detection_id'],'target_id':chain['target_id'],'source':'guided_simulator'}]
@@ -92,6 +101,8 @@ def main():
 This proof uses guided_simulator evidence and does not claim live provider monitoring.
 Checklist point 1 is satisfied via simulator demo evidence (not live).
 Checklist point 8 is satisfied by explicit broad self-serve blocking while billing/email/provider checks are not yet passing.
+Literal checklist-all pass: false (fails points 1 and 8).
+Controlled-pilot checklist-all pass: true.
 '''.format(workspace_id=workspace_id,**chain)
 
     files={
