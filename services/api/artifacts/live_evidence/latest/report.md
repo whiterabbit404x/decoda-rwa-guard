@@ -1,15 +1,15 @@
 # Decoda RWA Guard Readiness Proof
 
-- Workspace: `c7b6c9f2-2efb-414f-a500-99aa1d05109c`
-- Protected RWA/Treasury-backed asset: `bf1cd899-57f2-476e-90fe-8937806ff33b`
-- Monitoring source: `0d587adf-39b3-46ba-96c1-c71fe14b409d`
-- Monitoring run: `7d3cc528-4ddf-45f9-a9cb-2dc8017aad69`
-- Telemetry event: `63701a6f-5cbd-4467-bc89-7814c82bb64f`
-- Detection: `a42f8103-30d1-49a8-aa61-019019a25e66`
-- Alert: `1cf15e70-b28e-48f2-ba4b-c108b2089247`
-- Incident: `5584e9a0-b215-4f4f-b7c3-c9257d737e29`
-- Response action: `0cb043b7-5210-4080-a081-b7dfda8b5ec6`
-- Evidence package: `c67030ad-3de3-434e-81ed-7dba69481a70`
+- Workspace: `1eda140f-e6f4-47a7-9a44-08485ed17b25`
+- Protected RWA/Treasury-backed asset: `426d8b50-3c3e-4390-b788-7e0859517437`
+- Monitoring source: `3a3429c6-1c5f-4231-a777-42dc878496d4`
+- Monitoring run: `97257091-d454-4713-8a3a-c3312316c6ff`
+- Telemetry event: `47561820-a460-4fd1-aa63-9b7ff8505308`
+- Detection: `4a820bee-c05a-4081-b650-114de09cc9af`
+- Alert: `dd5a5c3b-d265-443a-b7fa-33307c509d9b`
+- Incident: `d7f6beff-365f-47d5-84fa-b0b65a523a53`
+- Response action: `bd552229-3ada-43f7-b4d3-bfd1ad5b2fc2`
+- Evidence package: `86ada10b-cb23-4e31-8f1d-a673bc41a36b`
 - Evidence source: guided_simulator
 - Controlled pilot ready: true
 - Broad self-serve ready: false
@@ -18,3 +18,4 @@
 This proof uses guided_simulator evidence and does not claim live provider monitoring.
 Checklist point 1 is satisfied via simulator demo evidence (not live).
 Checklist point 8 is satisfied by explicit broad self-serve blocking while billing/email/provider checks are not yet passing.
+Literal checklist status: point 1 = false (no live demo), point 8 = false (checks not passing).

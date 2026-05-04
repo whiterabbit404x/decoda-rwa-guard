@@ -1,6 +1,6 @@
 {
-  "workspace_id": "c7b6c9f2-2efb-414f-a500-99aa1d05109c",
-  "generated_at": "2026-05-04T13:24:40.247361+00:00",
+  "workspace_id": "1eda140f-e6f4-47a7-9a44-08485ed17b25",
+  "generated_at": "2026-05-04T13:30:18.169667+00:00",
   "live_successful_monitoring_demo": false,
   "simulator_successful_monitoring_demo": true,
   "telemetry_event_present": true,
@@ -20,7 +20,7 @@
   "claim_ineligibility_reasons": [
     "billing_email_provider_checks_missing_or_not_verified"
   ],
-  "checklist": {
+  "controlled_pilot_checklist": {
     "monitoring_demo_live_or_simulator": true,
     "telemetry_event_present": true,
     "detection_generated_from_telemetry": true,
@@ -31,5 +31,17 @@
     "billing_email_provider_checks_passing_or_broad_self_serve_blocked": true,
     "onboarding_to_first_signal_complete": true,
     "production_validation_proof_bundle_complete": true
+  },
+  "literal_checklist": {
+    "live_successful_monitoring_demo": false,
+    "real_or_simulator_labeled_telemetry_event": true,
+    "detection_generated_from_telemetry": true,
+    "alert_generated_from_detection": true,
+    "incident_opened_from_alert": true,
+    "response_action_recommended_or_executed": true,
+    "evidence_package_export": true,
+    "billing_email_provider_checks_passing": false,
+    "clean_onboarding_to_first_signal": true,
+    "production_validation_proof_bundle": true
   }
 }
