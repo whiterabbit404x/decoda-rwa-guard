@@ -79,6 +79,8 @@ def test_workspace_readiness_exposes_gate_aggregation_and_ready_claim(monkeypatc
     assert payload['enterprise_procurement_ready'] is True
     assert payload['enterprise_broad_self_serve_ready'] is True
     assert payload['hard_gates_pass'] is True
+    assert payload['details']['full_controlled_chain_exists_and_linked'] is True
+    assert all(payload['details']['checklist'].values()) is True
     assert payload['details']['gate_aggregation']['billing']['pass'] is True
     assert payload['details']['billing_email_provider_checks_passing'] is True
     assert payload['details']['production_validation_proof_bundle_complete'] is True
@@ -112,6 +114,9 @@ def test_workspace_readiness_fails_gate_reasons_deterministically(monkeypatch) -
     assert payload['enterprise_procurement_ready'] is False
     assert payload['enterprise_broad_self_serve_ready'] is False
     assert payload['hard_gates_pass'] is False
+    assert payload['details']['full_controlled_chain_exists_and_linked'] is False
+    assert payload['details']['checklist']['alert_exists'] is False
+    assert payload['details']['gate_blocked_reasons']['controlled_pilot_ready']
     assert payload['details']['billing_email_provider_checks_passing'] is False
     assert payload['details']['production_validation_proof_bundle_complete'] is False
     assert payload['details']['gate_aggregation']['billing']['reason_code'] == 'billing_runtime_unavailable'
