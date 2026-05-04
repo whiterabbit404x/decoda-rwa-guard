@@ -846,16 +846,68 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
         ]
         blocking_failures = [check['key'] for check in checks if check['blocking'] and not check['pass']]
         blocking_failure_reason_codes = [check['reason_code'] for check in checks if check['blocking'] and not check['pass'] and check.get('reason_code')]
+
+        check_lookup = {check['key']: check for check in checks}
+
+        controlled_pilot_required = (
+            'auth',
+            'workspace_creation',
+            'asset_creation',
+            'monitoring_source_creation',
+            'telemetry_exists',
+            'detection_exists',
+            'alert_exists',
+            'incident_exists',
+            'response_action_exists',
+            'evidence_package_exists',
+        )
+        broad_self_serve_required = (
+            'billing_verified',
+            'email_verified',
+            'redis_provider_checks_pass',
+            'billing_email_provider_checks_passing',
+        )
+        enterprise_procurement_required = (
+            'staging_evidence_artifacts_exist',
+            'production_validation_proof_bundle_complete',
+            'alert_exists',
+            'incident_exists',
+            'response_action_exists',
+            'evidence_package_exists',
+        )
+
+        def _failing_reasons(keys: tuple[str, ...]) -> list[str]:
+            reasons = [
+                str((check_lookup.get(key) or {}).get('reason_code') or f'{key}_failed')
+                for key in keys
+                if not bool((check_lookup.get(key) or {}).get('pass'))
+            ]
+            return sorted(set(reasons))
+
+        controlled_pilot_blocking_reasons = _failing_reasons(controlled_pilot_required)
+        broad_self_serve_blocking_reasons = _failing_reasons(broad_self_serve_required)
+        enterprise_procurement_blocking_reasons = _failing_reasons(enterprise_procurement_required)
+
+        controlled_pilot_ready = not controlled_pilot_blocking_reasons
+        broad_self_serve_ready = not broad_self_serve_blocking_reasons
+        enterprise_procurement_ready = not enterprise_procurement_blocking_reasons
+
         hard_gate_failure = bool(gate_failure_reason_codes or blocking_failure_reason_codes)
         return {
             'workspace': workspace_context['workspace'],
             'checked_by': user['id'],
             'checked_at': utc_now_iso(),
             'status': 'pass' if not blocking_failures else 'fail',
+            'controlled_pilot_ready': controlled_pilot_ready,
+            'controlled_pilot_blocking_reason_codes': controlled_pilot_blocking_reasons,
+            'broad_self_serve_ready': broad_self_serve_ready,
+            'broad_self_serve_blocking_reason_codes': broad_self_serve_blocking_reasons,
+            'enterprise_procurement_ready': enterprise_procurement_ready,
+            'enterprise_procurement_blocking_reason_codes': enterprise_procurement_blocking_reasons,
             'blocking_failures': blocking_failures,
             'blocking_failure_reason_codes': sorted(set(blocking_failure_reason_codes + gate_failure_reason_codes)),
             'hard_gates_pass': not hard_gate_failure,
-            'enterprise_broad_self_serve_ready': not hard_gate_failure,
+            'enterprise_broad_self_serve_ready': broad_self_serve_ready,
             'checks': checks,
             'details': {
                 'counts': {
