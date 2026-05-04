@@ -25,6 +25,20 @@ const QUICK_PRESETS = [
 
 const ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 
+export function monitoringLinkStatusLabel(asset: Asset): string {
+  switch (asset?.monitoring_link_status) {
+    case 'attached':
+      return 'Monitoring attached';
+    case 'system_missing':
+      return 'Monitoring not configured';
+    case 'target_missing':
+      return 'Target missing';
+    case 'not_configured':
+    default:
+      return 'No targets yet';
+  }
+}
+
 export default function AssetsManager({ apiUrl }: Props) {
   const { authHeaders, signOut } = usePilotAuth();
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -203,7 +217,7 @@ async function load() {
           </select>
         </div>
         {filtered.length === 0 ? <div className="emptyStatePanel"><h4>No assets yet</h4><p className="muted">No assets match this view. Add the first wallet or contract you want to protect.</p><button type="button" onClick={() => { document.getElementById('asset-create-form')?.scrollIntoView({ behavior: 'smooth' }); }}>Add asset</button></div> : (
-          <div className="tableWrap"><table><thead><tr><th>Name</th><th>Type</th><th>Chain</th><th>Identifier</th><th>Status</th></tr></thead><tbody>{filtered.map((asset) => <tr key={asset.id}><td>{asset.name}</td><td>{asset.asset_type}</td><td>{asset.chain_network}</td><td><p>{asset.identifier}</p><p className="tableMeta">Normalized: {asset.normalized_identifier || asset.identifier}</p></td><td><div className="chipRow"><span className="ruleChip">{asset.verification_status === 'verified' ? 'Verified' : asset.verification_status === 'pending' ? 'Pending verification' : 'Needs attention'}</span><span className="ruleChip">{asset.verification_summary?.recent_activity || 'recent activity unknown'}</span><span className="ruleChip">{asset.monitoring_target_count > 0 ? 'Monitoring attached' : 'No targets yet'}</span></div></td></tr>)}</tbody></table></div>
+          <div className="tableWrap"><table><thead><tr><th>Name</th><th>Type</th><th>Chain</th><th>Identifier</th><th>Status</th></tr></thead><tbody>{filtered.map((asset) => <tr key={asset.id}><td>{asset.name}</td><td>{asset.asset_type}</td><td>{asset.chain_network}</td><td><p>{asset.identifier}</p><p className="tableMeta">Normalized: {asset.normalized_identifier || asset.identifier}</p></td><td><div className="chipRow"><span className="ruleChip">{asset.verification_status === 'verified' ? 'Verified' : asset.verification_status === 'pending' ? 'Pending verification' : 'Needs attention'}</span><span className="ruleChip">{asset.verification_summary?.recent_activity || 'recent activity unknown'}</span><span className="ruleChip">{monitoringLinkStatusLabel(asset)}</span></div></td></tr>)}</tbody></table></div>
         )}
       </section>
 

@@ -8973,6 +8973,57 @@ def list_assets(request: Request) -> dict[str, Any]:
                    baseline_status, baseline_source, baseline_updated_at, baseline_confidence, baseline_coverage,
                    normalized_identifier, verification_status, verification_summary, verification_checked_at,
                    (SELECT COUNT(*) FROM targets t WHERE t.workspace_id = assets.workspace_id AND t.asset_id = assets.id AND t.deleted_at IS NULL) AS monitoring_target_count,
+                   EXISTS(
+                       SELECT 1
+                       FROM targets t
+                       WHERE t.workspace_id = assets.workspace_id
+                         AND t.asset_id = assets.id
+                         AND t.deleted_at IS NULL
+                   ) AS has_monitoring_target,
+                   EXISTS(
+                       SELECT 1
+                       FROM targets t
+                       JOIN monitored_systems ms
+                         ON ms.workspace_id = t.workspace_id
+                        AND ms.target_id = t.id
+                        AND ms.asset_id = t.asset_id
+                       WHERE t.workspace_id = assets.workspace_id
+                         AND t.asset_id = assets.id
+                         AND t.deleted_at IS NULL
+                   ) AS has_linked_monitored_system,
+                   CASE
+                       WHEN NOT EXISTS(
+                           SELECT 1
+                           FROM targets t
+                           WHERE t.workspace_id = assets.workspace_id
+                             AND t.asset_id = assets.id
+                             AND t.deleted_at IS NULL
+                       ) AND EXISTS(
+                           SELECT 1
+                           FROM monitored_systems ms
+                           WHERE ms.workspace_id = assets.workspace_id
+                             AND ms.asset_id = assets.id
+                       ) THEN 'target_missing'
+                       WHEN NOT EXISTS(
+                           SELECT 1
+                           FROM targets t
+                           WHERE t.workspace_id = assets.workspace_id
+                             AND t.asset_id = assets.id
+                             AND t.deleted_at IS NULL
+                       ) THEN 'not_configured'
+                       WHEN EXISTS(
+                           SELECT 1
+                           FROM targets t
+                           JOIN monitored_systems ms
+                             ON ms.workspace_id = t.workspace_id
+                            AND ms.target_id = t.id
+                            AND ms.asset_id = t.asset_id
+                           WHERE t.workspace_id = assets.workspace_id
+                             AND t.asset_id = assets.id
+                             AND t.deleted_at IS NULL
+                       ) THEN 'attached'
+                       ELSE 'system_missing'
+                   END AS monitoring_link_status,
                    created_at, updated_at
             FROM assets
             WHERE workspace_id = %s AND deleted_at IS NULL
