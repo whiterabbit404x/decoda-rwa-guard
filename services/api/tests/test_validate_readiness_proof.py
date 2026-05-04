@@ -5,7 +5,7 @@ import json
 from services.api.scripts import validate_readiness_proof
 
 
-def _write_chain_artifacts(base, *, evidence_source: str = 'guided_simulator', telemetry_source: str = 'guided_simulator') -> None:
+def _write_chain_artifacts(base, *, telemetry_source: str = 'guided_simulator') -> None:
     summary = {
         'live_successful_monitoring_demo': True,
         'simulator_successful_monitoring_demo': True,
@@ -16,12 +16,12 @@ def _write_chain_artifacts(base, *, evidence_source: str = 'guided_simulator', t
         'response_action_recommended_or_executed': True,
         'evidence_package_exported': True,
         'billing_email_provider_checks_passing': True,
+        'controlled_pilot_ready': True,
         'broad_self_serve_ready': True,
         'broad_self_serve_blocked_reason': None,
+        'enterprise_procurement_ready': True,
         'onboarding_to_first_signal_complete': True,
         'production_validation_proof_bundle_complete': True,
-        'enterprise_claim_eligibility': False,
-        'evidence_source': evidence_source,
         'telemetry_evidence_source': telemetry_source,
         'claim_ineligibility_reasons': [],
     }
@@ -49,7 +49,7 @@ def test_validator_requires_all_summary_readiness_fields(tmp_path, monkeypatch) 
 
 
 def test_validator_fails_on_empty_artifacts_and_simulator_mislabeled_live(tmp_path, monkeypatch) -> None:
-    _write_chain_artifacts(tmp_path, evidence_source='live', telemetry_source='live')
+    _write_chain_artifacts(tmp_path, telemetry_source='live')
     (tmp_path / 'runs.json').write_text('[]', encoding='utf-8')
 
     monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json')])
@@ -69,7 +69,7 @@ def test_validator_blocks_broad_self_serve_when_billing_email_provider_checks_fa
 
 
 def test_validator_passes_controlled_pilot_with_full_guided_simulator_chain(tmp_path, monkeypatch) -> None:
-    _write_chain_artifacts(tmp_path, evidence_source='guided_simulator', telemetry_source='guided_simulator')
+    _write_chain_artifacts(tmp_path, telemetry_source='guided_simulator')
 
     monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json'), '--environment', 'test'])
     assert validate_readiness_proof.main() == 0

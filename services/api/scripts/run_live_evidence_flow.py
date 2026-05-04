@@ -532,6 +532,9 @@ def main() -> int:
         'broad_self_serve_blocked_reason': broad_self_serve_blocked_reason,
         'onboarding_to_first_signal_complete': bool(worker_runs) and bool(alert_ids),
         'production_validation_proof_bundle_complete': False,
+        'controlled_pilot_ready': False,
+        'broad_self_serve_ready': billing_email_provider_checks_passing,
+        'enterprise_procurement_ready': False,
     }
     summary['evidence_package_exported'] = all(
         (artifacts_dir / filename).exists()
@@ -546,6 +549,22 @@ def main() -> int:
         summary['onboarding_to_first_signal_complete'],
         summary['runtime_gate_checks']['worker_monitoring_executed'],
         summary['runtime_gate_checks']['lifecycle_checks_executed'],
+    ])
+
+    summary['controlled_pilot_ready'] = all([
+        summary['simulator_successful_monitoring_demo'],
+        summary['telemetry_event_present'],
+        summary['detection_generated_from_telemetry'],
+        summary['alert_generated_from_detection'],
+        summary['incident_opened_from_alert'],
+        summary['response_action_recommended_or_executed'],
+        summary['evidence_package_exported'],
+        summary['onboarding_to_first_signal_complete'],
+    ])
+    summary['enterprise_procurement_ready'] = all([
+        summary['controlled_pilot_ready'],
+        summary['broad_self_serve_ready'],
+        summary['production_validation_proof_bundle_complete'],
     ])
 
     evidence_rows: list[dict] = [{
