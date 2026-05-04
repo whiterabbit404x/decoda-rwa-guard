@@ -12421,6 +12421,8 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
     mode_hint = str(normalized.get('monitoring_mode') or normalized.get('execution_mode') or '').strip().lower()
     generated_chain = bool(normalized.get('generated_chain_data', True))
 
+    monitoring_config_id: str | None = None
+
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
@@ -12464,6 +12466,20 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
         asset = create_asset({'name': str(normalized.get('asset_name') or 'Guided Protected Asset'), 'asset_type': 'tokenized_fund', 'symbol': 'GUIDE'}, request)
         target = create_target({'name': str(normalized.get('monitored_system_name') or 'Guided Monitoring Source'), 'type': 'contract', 'asset_id': asset['asset']['id']}, request)
         enabled_target = set_target_enabled(target['target']['id'], True, request)
+        monitoring_config_id = str(enabled_target.get('target', {}).get('monitoring_config_id') or '').strip() or None
+        if not monitoring_config_id:
+            monitoring_config = connection.execute(
+                '''
+                SELECT id
+                FROM monitoring_configs
+                WHERE workspace_id = %s
+                  AND target_id = %s::uuid
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1
+                ''',
+                (workspace_id, target['target']['id']),
+            ).fetchone()
+            monitoring_config_id = str((monitoring_config or {}).get('id') or '').strip() or None
         observed_at = utc_now_iso()
         telemetry_event_id = str(uuid.uuid4())
         detection_id = str(uuid.uuid4())
@@ -12487,7 +12503,19 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
     approve_enforcement_action(action['action']['id'], request)
     executed_action = execute_enforcement_action(action['action']['id'], request)
     evidence_export = create_proof_bundle_export({'incident_id': incident['incident']['id']}, request)
+    evidence_package_id = evidence_export.get('export_job_id')
     return {
+        'workspace_id': incident['workspace']['id'],
+        'asset_id': asset['asset']['id'],
+        'target_id': target['target']['id'],
+        'monitoring_config_id': monitoring_config_id,
+        'telemetry_event_id': telemetry_event_id,
+        'detection_id': detection_id,
+        'alert_id': alert_id,
+        'incident_id': incident['incident']['id'],
+        'response_action_id': executed_action['action']['id'],
+        'evidence_package_id': evidence_package_id,
+        'evidence_source': evidence_source,
         'workflow': {
             'signup': {'status': 'verified', 'user_id': user['id']},
             'workspace_creation': {'status': 'verified', 'workspace_id': incident['workspace']['id']},
@@ -12499,7 +12527,7 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
             'alert_creation': {'status': 'created', 'alert_id': alert_id},
             'incident_creation': {'status': 'created', 'incident_id': incident['incident']['id'], 'evidence_source': evidence_source},
             'response_action_recommendation_execution': {'status': executed_action['action']['status'], 'action_id': executed_action['action']['id'], 'evidence_source': evidence_source},
-            'evidence_package_generation_export': {'status': evidence_export.get('status'), 'export_job_id': evidence_export.get('export_job_id'), 'evidence_source': evidence_source},
+            'evidence_package_generation_export': {'status': evidence_export.get('status'), 'export_job_id': evidence_package_id, 'evidence_source': evidence_source},
         },
         'metadata': {
             'guided_mode': guided_mode,
