@@ -40,9 +40,9 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
         {error ? <p className="statusLine">{error}</p> : null}
       </aside>
       <div className="appShellContent">
-        {topBanner}
+        <header className="appShellTop">{topBanner}</header>
         <WorkspaceOwnershipBar />
-        {children}
+        <main className="appShellPage">{children}</main>
       </div>
     </div>
   );
