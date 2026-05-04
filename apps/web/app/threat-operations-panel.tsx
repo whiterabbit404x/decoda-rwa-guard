@@ -2731,7 +2731,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         incident_id: selectedThreatActionContext?.incidentId,
         alert_id: selectedThreatActionContext?.alertId,
         result_summary: `${mode.toUpperCase()} ${label} created from threat operations panel`,
-        evidence_source: mode === 'simulated' ? 'simulator' : 'live_provider',
+        evidence_source: 'live_provider',
       }),
     });
     if (!create.ok) {
