@@ -52,6 +52,20 @@ CANONICAL_SUMMARY_KEYS = (
     'status_reason',
     'db_failure_classification',
     'db_failure_reason',
+    'runtime_setup_chain',
+)
+
+RUNTIME_SETUP_STEP_ORDER = (
+    'asset_created',
+    'asset_verified',
+    'target_created',
+    'monitored_system_created',
+    'worker_reporting',
+    'telemetry_received',
+    'detection_created',
+    'alert_created',
+    'incident_opened',
+    'response_ready',
 )
 HARD_GUARD_FLAGS = {
     'offline_with_current_telemetry',
@@ -185,8 +199,50 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'status_reason': str(payload.get('status_reason')).strip() if isinstance(payload.get('status_reason'), str) and str(payload.get('status_reason')).strip() else None,
         'db_failure_classification': str(payload.get('db_failure_classification')).strip() if isinstance(payload.get('db_failure_classification'), str) and str(payload.get('db_failure_classification')).strip() else None,
         'db_failure_reason': str(payload.get('db_failure_reason')).strip() if isinstance(payload.get('db_failure_reason'), str) and str(payload.get('db_failure_reason')).strip() else None,
+        'runtime_setup_chain': dict(payload.get('runtime_setup_chain') or {}),
     }
     return {key: canonical[key] for key in CANONICAL_SUMMARY_KEYS}
+
+
+def build_runtime_setup_chain(*, counters: dict[str, int], timestamps: dict[str, str | None]) -> dict[str, Any]:
+    steps: list[dict[str, str]] = []
+    for step_id in RUNTIME_SETUP_STEP_ORDER:
+        status = 'pending'
+        reason = 'Awaiting prerequisite canonical records.'
+        if step_id == 'asset_created':
+            status = 'complete' if counters.get('assets_count', 0) > 0 else 'pending'
+            reason = 'Protected assets exist in assets table.' if status == 'complete' else 'No assets found yet.'
+        elif step_id == 'asset_verified':
+            status = 'complete' if counters.get('verified_assets_count', 0) > 0 else ('blocked' if counters.get('assets_count', 0) > 0 else 'pending')
+            reason = 'At least one asset has canonical verification status.' if status == 'complete' else ('Assets exist but none are verified yet.' if status == 'blocked' else 'Create an asset before verification.')
+        elif step_id == 'target_created':
+            status = 'complete' if counters.get('targets_count', 0) > 0 else ('blocked' if counters.get('assets_count', 0) > 0 else 'pending')
+            reason = 'Targets exist in targets table.' if status == 'complete' else ('Add at least one target linked to the workspace.' if status == 'blocked' else 'Create assets first.')
+        elif step_id == 'monitored_system_created':
+            status = 'complete' if counters.get('monitored_systems_count', 0) > 0 else ('blocked' if counters.get('targets_count', 0) > 0 else 'pending')
+            reason = 'Monitored systems exist in monitored_systems table.' if status == 'complete' else ('Targets exist but monitored systems are not configured.' if status == 'blocked' else 'Create a target first.')
+        elif step_id == 'worker_reporting':
+            status = 'complete' if timestamps.get('last_heartbeat_at') else ('blocked' if counters.get('monitored_systems_count', 0) > 0 else 'pending')
+            reason = 'Worker heartbeat/poll timestamps are present.' if status == 'complete' else ('Monitored systems exist but no worker heartbeat yet.' if status == 'blocked' else 'Configure monitored systems first.')
+        elif step_id == 'telemetry_received':
+            status = 'complete' if timestamps.get('last_telemetry_at') else ('blocked' if timestamps.get('last_heartbeat_at') else 'pending')
+            reason = 'Telemetry events recorded in telemetry_events table.' if status == 'complete' else ('Worker is reporting but telemetry events are missing.' if status == 'blocked' else 'Await worker reporting first.')
+        elif step_id == 'detection_created':
+            status = 'complete' if counters.get('detections_count', 0) > 0 else ('blocked' if timestamps.get('last_telemetry_at') else 'pending')
+            reason = 'Detections exist in detections table.' if status == 'complete' else ('Telemetry exists but no detections were created yet.' if status == 'blocked' else 'Await telemetry first.')
+        elif step_id == 'alert_created':
+            status = 'complete' if counters.get('alerts_count', 0) > 0 else ('blocked' if counters.get('detections_count', 0) > 0 else 'pending')
+            reason = 'Alerts exist in alerts table.' if status == 'complete' else ('Detections exist but no alerts are open/recorded yet.' if status == 'blocked' else 'Await detection creation first.')
+        elif step_id == 'incident_opened':
+            status = 'complete' if counters.get('incidents_count', 0) > 0 else ('blocked' if counters.get('alerts_count', 0) > 0 else 'pending')
+            reason = 'Incidents exist in incidents table.' if status == 'complete' else ('Alerts exist but no incident is opened yet.' if status == 'blocked' else 'Await alert creation first.')
+        elif step_id == 'response_ready':
+            ready = counters.get('response_actions_count', 0) > 0 or counters.get('evidence_count', 0) > 0
+            status = 'complete' if ready else ('blocked' if counters.get('incidents_count', 0) > 0 else 'pending')
+            reason = 'Response actions/evidence are available.' if status == 'complete' else ('Incident is open but response action/evidence is missing.' if status == 'blocked' else 'Open an incident first.')
+        steps.append({'id': step_id, 'status': status, 'reason': reason})
+    current_step = next((step['id'] for step in steps if step['status'] != 'complete'), RUNTIME_SETUP_STEP_ORDER[-1])
+    return {'current_step': current_step, 'steps': steps}
 
 
 def build_workspace_monitoring_summary(
