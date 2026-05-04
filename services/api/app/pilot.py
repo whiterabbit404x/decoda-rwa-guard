@@ -180,6 +180,7 @@ def runtime_allows_simulator_proof_chain(runtime_status_payload: dict[str, Any] 
         payload.get('evidence_source'),
         payload.get('monitoring_mode'),
         payload.get('source_of_evidence'),
+        (summary.get('summary_v2') or {}).get('evidence_source'),
         summary.get('evidence_source_summary'),
         summary.get('monitoring_mode'),
     ]

@@ -2175,10 +2175,12 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         if isinstance(target_coverage, (str, int, float, bool)) and target_coverage_status is None:
             target_coverage_status = str(target_coverage)
             target_coverage = []
+        summary = payload.get('workspace_monitoring_summary') if isinstance(payload.get('workspace_monitoring_summary'), dict) else {}
+        summary_v2 = summary.get('summary_v2') if isinstance(summary.get('summary_v2'), dict) else {}
         canonical_runtime = {
             'workspace_configured': bool(payload.get('workspace_configured')),
             'runtime_status': str(payload.get('runtime_status') or 'offline'),
-            'monitoring_status': str(payload.get('monitoring_status') or 'offline'),
+            'monitoring_status': str(summary_v2.get('monitoring_status') or payload.get('monitoring_status') or 'offline'),
             'configured_systems': int(payload.get('configured_systems') or 0),
             'reporting_systems': int(payload.get('reporting_systems') or 0),
             'protected_assets': int(payload.get('protected_assets') or 0),
@@ -2187,13 +2189,13 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'last_heartbeat_at': payload.get('last_heartbeat_at'),
             'last_telemetry_at': payload.get('last_telemetry_at'),
             'last_detection_at': payload.get('last_detection_at'),
-            'freshness_status': str(payload.get('freshness_status') or 'unavailable'),
-            'confidence_status': str(payload.get('confidence_status') or 'unavailable'),
-            'evidence_source': str(payload.get('evidence_source') or 'none'),
+            'freshness_status': str(summary_v2.get('freshness_status') or payload.get('freshness_status') or 'unavailable'),
+            'confidence_status': str(summary_v2.get('confidence_status') or payload.get('confidence_status') or 'unavailable'),
+            'evidence_source': str(summary_v2.get('evidence_source') or payload.get('evidence_source') or 'none'),
             'status_reason': str(payload.get('status_reason') or 'unknown'),
             'reason_codes': list(payload.get('reason_codes') or payload.get('continuity_reason_codes') or []),
             'next_required_action': str(payload.get('next_required_action') or 'review_reason_codes'),
-            'contradiction_flags': list(payload.get('contradiction_flags') or []),
+            'contradiction_flags': list(summary_v2.get('contradiction_flags') or payload.get('contradiction_flags') or []),
             'summary_generated_at': payload.get('summary_generated_at') or datetime.now(timezone.utc).isoformat(),
             'provider_health': provider_health if provider_health is not None else [],
             'target_coverage': target_coverage if target_coverage is not None else [],
@@ -2215,7 +2217,6 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         payload['consecutive_failures'] = int(background_loop_health.get('consecutive_failures') or 0)
         payload['next_retry_at'] = background_loop_health.get('next_retry_at')
         payload['backoff_seconds'] = background_loop_health.get('backoff_seconds')
-        summary = payload.get('workspace_monitoring_summary') if isinstance(payload.get('workspace_monitoring_summary'), dict) else {}
         if summary:
             summary['background_loop_health'] = dict(background_loop_health)
         check_name_aliases = {
