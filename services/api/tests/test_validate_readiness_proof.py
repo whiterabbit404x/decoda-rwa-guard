@@ -32,10 +32,29 @@ def _write_chain_artifacts(base, *, telemetry_source: str = 'guided_simulator') 
     (base / 'incidents.json').write_text(json.dumps([{'id': 'inc-1', 'alert_id': 'al-1'}]), encoding='utf-8')
     (base / 'response_actions.json').write_text(json.dumps([{'id': 'ra-1', 'incident_id': 'inc-1'}]), encoding='utf-8')
     (base / 'runs.json').write_text(json.dumps([{'id': 'run-1'}]), encoding='utf-8')
-    (base / 'evidence.json').write_text(
-        json.dumps([{'id': 'ev-1', 'telemetry_event_id': 'te-1', 'detection_id': 'det-1', 'alert_id': 'al-1', 'incident_id': 'inc-1', 'response_action_id': 'ra-1'}]),
-        encoding='utf-8',
-    )
+    (base / 'evidence.json').write_text(json.dumps({
+        'workspace_id': 'ws-1',
+        'evidence_source': telemetry_source,
+        'chain': {
+            'asset_id': 'asset-1',
+            'target_id': 'target-1',
+            'monitoring_config_id': 'cfg-1',
+            'monitoring_run_id': 'run-1',
+            'telemetry_event_id': 'te-1',
+            'detection_id': 'det-1',
+            'alert_id': 'al-1',
+            'incident_id': 'inc-1',
+            'response_action_id': 'ra-1',
+            'evidence_package_id': 'pkg-1',
+        },
+        'assertions': {
+            'telemetry_linked': True,
+            'detection_linked': True,
+            'alert_linked': True,
+            'incident_linked': True,
+            'response_linked': True,
+        },
+    }), encoding='utf-8')
 
 
 def test_validator_requires_all_summary_readiness_fields(tmp_path, monkeypatch) -> None:
@@ -82,6 +101,19 @@ def test_validator_fails_when_proof_bundle_artifacts_are_empty(tmp_path, monkeyp
     summary = json.loads((tmp_path / 'summary.json').read_text(encoding='utf-8'))
     summary['production_validation_proof_bundle_complete'] = False
     (tmp_path / 'summary.json').write_text(json.dumps(summary), encoding='utf-8')
+
+    monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json')])
+    assert validate_readiness_proof.main() == 2
+
+
+def test_validator_rejects_partial_top_level_evidence_refs_without_chain_structure(tmp_path, monkeypatch) -> None:
+    _write_chain_artifacts(tmp_path)
+    (tmp_path / 'evidence.json').write_text(json.dumps({
+        'workspace_id': 'ws-1',
+        'evidence_source': 'guided_simulator',
+        'telemetry_event_id': 'te-1',
+        'detection_id': 'det-1',
+    }), encoding='utf-8')
 
     monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json')])
     assert validate_readiness_proof.main() == 2
