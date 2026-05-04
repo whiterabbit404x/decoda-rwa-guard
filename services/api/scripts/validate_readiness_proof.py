@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-REQUIRED_TRUE_FIELDS = (
+REQUIRED_SUMMARY_PRESENCE_FIELDS = (
     'live_successful_monitoring_demo',
     'simulator_successful_monitoring_demo',
     'telemetry_event_present',
@@ -20,11 +20,26 @@ REQUIRED_TRUE_FIELDS = (
     'production_validation_proof_bundle_complete',
     'controlled_pilot_ready',
     'enterprise_procurement_ready',
-)
-
-REQUIRED_SUMMARY_FIELDS = REQUIRED_TRUE_FIELDS + (
+    'broad_self_serve_ready',
     'broad_self_serve_blocked_reason',
     'telemetry_evidence_source',
+)
+
+REQUIRED_SUMMARY_BOOLEAN_FIELDS = (
+    'live_successful_monitoring_demo',
+    'simulator_successful_monitoring_demo',
+    'telemetry_event_present',
+    'detection_generated_from_telemetry',
+    'alert_generated_from_detection',
+    'incident_opened_from_alert',
+    'response_action_recommended_or_executed',
+    'evidence_package_exported',
+    'billing_email_provider_checks_passing',
+    'onboarding_to_first_signal_complete',
+    'production_validation_proof_bundle_complete',
+    'controlled_pilot_ready',
+    'enterprise_procurement_ready',
+    'broad_self_serve_ready',
 )
 
 CHAIN_ARTIFACTS = {
@@ -129,16 +144,57 @@ def main() -> int:
 
     checks: list[tuple[str, bool, str]] = []
 
-    for field in REQUIRED_SUMMARY_FIELDS:
+    for field in REQUIRED_SUMMARY_PRESENCE_FIELDS:
         exists = field in summary
         checks.append((f'summary_has_{field}', exists, 'missing required summary field'))
 
-    for field in REQUIRED_TRUE_FIELDS:
+    for field in REQUIRED_SUMMARY_BOOLEAN_FIELDS:
         value = summary.get(field)
-        ok = _truthy(value)
-        checks.append((field, ok, f'expected true, got {value!r}'))
+        ok = isinstance(value, bool)
+        checks.append((f'{field}_boolean', ok, f'expected boolean, got {value!r}'))
 
     telemetry_source = str(summary.get('telemetry_evidence_source') or '').strip().lower()
+
+
+    # Mode-specific summary truth constraints
+    controlled_pilot_mode = telemetry_source == 'guided_simulator'
+    if controlled_pilot_mode:
+        checks.append((
+            'controlled_pilot_ready_true_for_guided_simulator',
+            summary.get('controlled_pilot_ready') is True,
+            'controlled pilot mode requires controlled_pilot_ready=true',
+        ))
+        checks.append((
+            'simulator_successful_monitoring_demo_true_for_guided_simulator',
+            summary.get('simulator_successful_monitoring_demo') is True,
+            'controlled pilot mode requires simulator_successful_monitoring_demo=true',
+        ))
+        checks.append((
+            'telemetry_evidence_source_guided_simulator_for_controlled_pilot',
+            telemetry_source == 'guided_simulator',
+            'controlled pilot mode requires telemetry_evidence_source=guided_simulator',
+        ))
+
+    billing_checks_passing = summary.get('billing_email_provider_checks_passing') is True
+    broad_self_serve_ready = summary.get('broad_self_serve_ready') is True
+    checks.append((
+        'broad_self_serve_false_when_billing_checks_fail',
+        billing_checks_passing or not broad_self_serve_ready,
+        'broad_self_serve_ready must be false when billing_email_provider_checks_passing is false',
+    ))
+
+    enterprise_prereqs_satisfied = (
+        telemetry_source == 'live'
+        and summary.get('live_successful_monitoring_demo') is True
+        and summary.get('billing_email_provider_checks_passing') is True
+        and summary.get('onboarding_to_first_signal_complete') is True
+        and summary.get('production_validation_proof_bundle_complete') is True
+    )
+    checks.append((
+        'enterprise_procurement_requires_live_staging_provider_prereqs',
+        (summary.get('enterprise_procurement_ready') is False) or enterprise_prereqs_satisfied,
+        'enterprise_procurement_ready must be false unless live/staging/provider prerequisites are satisfied',
+    ))
 
     full_chain_loaded = True
     artifacts: dict[str, list[dict[str, Any]]] = {}
@@ -333,8 +389,6 @@ def main() -> int:
     ))
 
     blocking_reasons = [str(reason).lower() for reason in summary.get('claim_ineligibility_reasons') or [] if reason]
-    broad_self_serve_ready = summary.get('broad_self_serve_ready') is True
-    billing_checks_passing = summary.get('billing_email_provider_checks_passing') is True
     readiness_gate_ok = not broad_self_serve_ready or billing_checks_passing
     reasons_block_self_serve = any(
         'billing' in reason or 'email' in reason or 'provider' in reason
