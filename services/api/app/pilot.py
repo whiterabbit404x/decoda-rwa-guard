@@ -12446,19 +12446,20 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
 
         requested_live = requested_mode == 'live' or mode_hint == 'live'
         runtime_live = runtime_mode == 'live'
-        guided_mode = 'live' if requested_live and runtime_live and has_live_provenance and not generated_chain else 'simulator'
-        evidence_source = 'live' if guided_mode == 'live' else 'guided_simulator'
-        if requested_live and evidence_source != 'live':
+        guided_mode = 'simulator'
+        evidence_source = 'guided_simulator'
+        if requested_live:
             logger.warning(
-                'guided_workflow_live_source_downgraded workspace_id=%s requested_mode=%s runtime_mode=%s generated_chain=%s has_live_provenance=%s',
+                'guided_workflow_live_source_downgraded workspace_id=%s requested_mode=%s runtime_mode=%s generated_chain=%s has_live_provenance=%s runtime_live=%s',
                 workspace_id,
                 requested_mode or mode_hint or 'unspecified',
                 runtime_mode or 'unknown',
                 generated_chain,
                 has_live_provenance,
+                runtime_live,
             )
 
-        evidence_label = detection_evidence_origin_label('simulator' if evidence_source != 'live' else 'live')
+        evidence_label = detection_evidence_origin_label('simulator')
 
         asset = create_asset({'name': str(normalized.get('asset_name') or 'Guided Protected Asset'), 'asset_type': 'tokenized_fund', 'symbol': 'GUIDE'}, request)
         target = create_target({'name': str(normalized.get('monitored_system_name') or 'Guided Monitoring Source'), 'type': 'contract', 'asset_id': asset['asset']['id']}, request)
