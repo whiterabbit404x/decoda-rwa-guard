@@ -12633,6 +12633,18 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
         request,
     )
     evidence_package_id = evidence_export.get('export_job_id')
+    _export_guided_workflow_live_evidence_artifacts(
+        workspace_id=incident['workspace']['id'],
+        chain_ids={
+            'monitoring_run_id': monitoring_run_id,
+            'telemetry_event_id': telemetry_event_id,
+            'detection_id': detection_id,
+            'alert_id': alert_id,
+            'incident_id': incident['incident']['id'],
+            'response_action_id': executed_action['action']['id'],
+            'evidence_package_id': str(evidence_package_id or ''),
+        },
+    )
     return {
         'mode': 'controlled_pilot',
         'workspace_id': incident['workspace']['id'],
@@ -12672,6 +12684,133 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
         },
     }
 
+
+def _export_guided_workflow_live_evidence_artifacts(*, workspace_id: str, chain_ids: dict[str, str]) -> None:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        datasets: dict[str, Any] = {
+            'summary.json': {
+                'workspace_id': workspace_id,
+                'generated_at': utc_now_iso(),
+                'chain_ids': {key: str(value or '') for key, value in chain_ids.items()},
+            },
+            'telemetry_events.json': [
+                _json_safe_value(dict(row))
+                for row in connection.execute(
+                    '''
+                    SELECT *
+                    FROM telemetry_events
+                    WHERE workspace_id = %s
+                      AND id = %s::uuid
+                    ORDER BY observed_at DESC
+                    ''',
+                    (workspace_id, chain_ids['telemetry_event_id']),
+                ).fetchall()
+            ],
+            'detections.json': [
+                _json_safe_value(dict(row))
+                for row in connection.execute(
+                    'SELECT * FROM detections WHERE workspace_id = %s AND id = %s::uuid ORDER BY detected_at DESC',
+                    (workspace_id, chain_ids['detection_id']),
+                ).fetchall()
+            ],
+            'alerts.json': [
+                _json_safe_value(dict(row))
+                for row in connection.execute(
+                    'SELECT * FROM alerts WHERE workspace_id = %s AND id = %s::uuid ORDER BY created_at DESC',
+                    (workspace_id, chain_ids['alert_id']),
+                ).fetchall()
+            ],
+            'incidents.json': [
+                _json_safe_value(dict(row))
+                for row in connection.execute(
+                    'SELECT * FROM incidents WHERE workspace_id = %s AND id = %s::uuid ORDER BY created_at DESC',
+                    (workspace_id, chain_ids['incident_id']),
+                ).fetchall()
+            ],
+            'response_actions.json': [
+                _json_safe_value(dict(row))
+                for row in connection.execute(
+                    'SELECT * FROM response_actions WHERE workspace_id = %s AND id = %s::uuid ORDER BY created_at DESC',
+                    (workspace_id, chain_ids['response_action_id']),
+                ).fetchall()
+            ],
+            'runs.json': [
+                _json_safe_value(dict(row))
+                for row in connection.execute(
+                    'SELECT * FROM monitoring_runs WHERE workspace_id = %s AND id = %s::uuid ORDER BY started_at DESC',
+                    (workspace_id, chain_ids['monitoring_run_id']),
+                ).fetchall()
+            ],
+            'evidence.json': [
+                _json_safe_value(dict(row))
+                for row in connection.execute(
+                    '''
+                    SELECT *
+                    FROM export_jobs
+                    WHERE workspace_id = %s
+                      AND id = %s::uuid
+                    ORDER BY created_at DESC
+                    ''',
+                    (workspace_id, chain_ids['evidence_package_id']),
+                ).fetchall()
+            ],
+        }
+    datasets['report.md'] = '\n'.join(
+        [
+            '# Guided Threat Workflow Live Evidence',
+            '',
+            f"- workspace_id: `{workspace_id}`",
+            f"- monitoring_run_id: `{chain_ids['monitoring_run_id']}`",
+            f"- telemetry_event_id: `{chain_ids['telemetry_event_id']}`",
+            f"- detection_id: `{chain_ids['detection_id']}`",
+            f"- alert_id: `{chain_ids['alert_id']}`",
+            f"- incident_id: `{chain_ids['incident_id']}`",
+            f"- response_action_id: `{chain_ids['response_action_id']}`",
+            f"- evidence_package_id: `{chain_ids['evidence_package_id']}`",
+            '',
+            '## Artifact row counts',
+            f"- telemetry_events: {len(datasets['telemetry_events.json'])}",
+            f"- detections: {len(datasets['detections.json'])}",
+            f"- alerts: {len(datasets['alerts.json'])}",
+            f"- incidents: {len(datasets['incidents.json'])}",
+            f"- response_actions: {len(datasets['response_actions.json'])}",
+            f"- runs: {len(datasets['runs.json'])}",
+            f"- evidence: {len(datasets['evidence.json'])}",
+        ]
+    ).strip() + '\n'
+
+    required_artifacts = (
+        'summary.json',
+        'evidence.json',
+        'telemetry_events.json',
+        'detections.json',
+        'alerts.json',
+        'incidents.json',
+        'response_actions.json',
+        'runs.json',
+        'report.md',
+    )
+    for artifact_name in required_artifacts:
+        value = datasets.get(artifact_name)
+        if isinstance(value, list) and not value:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f'guided workflow artifact {artifact_name} is empty')
+        if isinstance(value, dict) and not value:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f'guided workflow artifact {artifact_name} is empty')
+        if isinstance(value, str) and not value.strip():
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f'guided workflow artifact {artifact_name} is empty')
+
+    artifact_dir = Path(__file__).resolve().parents[1] / 'artifacts' / 'live_evidence' / 'latest'
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    for artifact_name in required_artifacts:
+        path = artifact_dir / artifact_name
+        value = datasets[artifact_name]
+        if artifact_name.endswith('.json'):
+            path.write_text(json.dumps(_json_safe_value(value), indent=2), encoding='utf-8')
+        else:
+            path.write_text(str(value), encoding='utf-8')
+        if not path.exists() or path.stat().st_size <= 0:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f'guided workflow artifact {artifact_name} is missing or empty')
 
 def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: str) -> None:
     job = connection.execute('SELECT id, export_type, format, filters FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_id)).fetchone()
