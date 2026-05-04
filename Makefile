@@ -100,6 +100,8 @@ validate-readiness-proof:
 		python services/api/scripts/validate_readiness_proof.py --summary-path $$ARTIFACT_DIR/summary.json --environment $$GUIDED_PROOF_ENV; \
 		echo "[validate-readiness-proof] Readiness flags:"; \
 		python -c "import json; s=json.load(open('$$ARTIFACT_DIR/summary.json')); print(f'controlled_pilot_ready: {s.get(\"controlled_pilot_ready\")}'); print(f'broad_self_serve_ready: {s.get(\"broad_self_serve_ready\")}'); print(f'enterprise_procurement_ready: {s.get(\"enterprise_procurement_ready\")}')"; \
+		echo "[validate-readiness-proof] Verifying required artifacts are non-empty arrays..."; \
+		python services/api/scripts/assert_readiness_artifacts_non_empty.py --artifacts-dir $$ARTIFACT_DIR; \
 		echo "[validate-readiness-proof] Readiness proof passed."; \
 	'
 
