@@ -98,7 +98,7 @@ validate-readiness-proof:
 		echo "[validate-readiness-proof] Validating readiness proof summary..."; \
 		python services/api/scripts/validate_readiness_proof.py --summary-path $$ARTIFACT_DIR/summary.json --environment $$GUIDED_PROOF_ENV; \
 		echo "[validate-readiness-proof] Readiness flags:"; \
-		ARTIFACT_DIR=$$ARTIFACT_DIR python -c "import json, os, pathlib; p=pathlib.Path(os.environ[\"ARTIFACT_DIR\"]) / \"summary.json\"; s=json.loads(p.read_text()); print(\"controlled_pilot_ready:\", s.get(\"controlled_pilot_ready\")); print(\"broad_self_serve_ready:\", s.get(\"broad_self_serve_ready\")); print(\"enterprise_procurement_ready:\", s.get(\"enterprise_procurement_ready\"))"; \
+		python services/api/scripts/print_readiness_flags.py --summary-path $$ARTIFACT_DIR/summary.json; \
 		echo "[validate-readiness-proof] Verifying required artifacts are non-empty arrays..."; \
 		python services/api/scripts/assert_readiness_artifacts_non_empty.py --artifacts-dir $$ARTIFACT_DIR; \
 		echo "[validate-readiness-proof] Readiness proof passed."; \
