@@ -99,6 +99,10 @@ HARD_GUARD_FLAGS = {
     'ui_protected_assets_positive_but_runtime_zero',
     'ui_live_monitoring_claim_without_telemetry',
     'ui_healthy_claim_with_zero_reporting_systems',
+    'simulator_evidence_claimed_as_live_provider',
+    'alert_exists_without_detection',
+    'incident_exists_without_alert',
+    'response_action_exists_without_incident',
 }
 HARD_GUARD_PRIORITY = (
     'offline_with_current_telemetry',
@@ -115,6 +119,10 @@ HARD_GUARD_PRIORITY = (
     'ui_protected_assets_positive_but_runtime_zero',
     'ui_live_monitoring_claim_without_telemetry',
     'ui_healthy_claim_with_zero_reporting_systems',
+    'simulator_evidence_claimed_as_live_provider',
+    'alert_exists_without_detection',
+    'incident_exists_without_alert',
+    'response_action_exists_without_incident',
 )
 
 
@@ -373,6 +381,7 @@ def build_workspace_monitoring_summary(
     telemetry_window_seconds: int,
     active_alerts_count: int = 0,
     active_incidents_count: int = 0,
+    response_actions_count: int = 0,
     db_persistence_available: bool = True,
     db_persistence_reason: str | None = None,
 ) -> dict[str, Any]:
@@ -488,6 +497,22 @@ def build_workspace_monitoring_summary(
         )
     ):
         contradiction_flags.append('workspace_configured_missing_required_links')
+    if normalized_assets > 0 and normalized_monitored <= 0:
+        contradiction_flags.append('asset_monitoring_attached_but_no_monitored_systems')
+    if normalized_assets <= 0 and protected_assets > 0:
+        contradiction_flags.append('ui_protected_assets_positive_but_runtime_zero')
+    if normalized_reporting == 0 and normalized_runtime == 'live':
+        contradiction_flags.append('ui_healthy_claim_with_zero_reporting_systems')
+    if telemetry_timestamp is None and normalized_runtime == 'live':
+        contradiction_flags.append('ui_live_monitoring_claim_without_telemetry')
+    if normalized_evidence == 'simulator' and confidence_status == 'high':
+        contradiction_flags.append('simulator_evidence_claimed_as_live_provider')
+    if active_alerts_count > 0 and last_detection_at is None:
+        contradiction_flags.append('alert_exists_without_detection')
+    if active_incidents_count > 0 and int(active_alerts_count) <= 0:
+        contradiction_flags.append('incident_exists_without_alert')
+    if int(response_actions_count) > 0 and int(active_incidents_count) <= 0:
+        contradiction_flags.append('response_action_exists_without_incident')
     contradiction_flags = sorted(set(contradiction_flags))
     guard_flags = sorted(flag for flag in contradiction_flags if flag in HARD_GUARD_FLAGS)
     normalized_monitoring_status = _normalized_monitoring_status(
@@ -520,8 +545,7 @@ def build_workspace_monitoring_summary(
     if prioritized_guard:
         if normalized_runtime == 'live':
             normalized_runtime = 'degraded'
-        if normalized_monitoring_status == 'live':
-            normalized_monitoring_status = 'degraded'
+        normalized_monitoring_status = 'offline' if normalized_runtime == 'offline' else 'degraded'
         if freshness_status == 'fresh':
             freshness_status = 'stale'
         confidence_status = 'unavailable'
