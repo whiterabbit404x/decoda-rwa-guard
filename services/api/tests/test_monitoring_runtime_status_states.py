@@ -2867,3 +2867,27 @@ def test_runtime_status_surfaces_loop_health_fields(monkeypatch):
     assert payload['consecutive_failures'] == 3
     assert payload['next_retry_at'] == '2026-04-29T12:02:00Z'
     assert payload['backoff_seconds'] == 120
+
+
+def test_workspace_summary_normalization_preserves_new_contradiction_flags_and_banner_reasons():
+    from services.api.app import workspace_monitoring_summary as wms
+
+    canonical = wms._canonical_summary(
+        {
+            'workspace_configured': True,
+            'runtime_status': 'degraded',
+            'monitoring_status': 'limited',
+            'contradiction_flags': [
+                'asset_monitoring_attached_but_no_monitored_systems',
+                'ui_protected_assets_positive_but_runtime_zero',
+                'ui_live_monitoring_claim_without_telemetry',
+                'ui_healthy_claim_with_zero_reporting_systems',
+            ],
+            'top_banner_reasons': ['Live monitoring is claimed, but telemetry is missing.'],
+        }
+    )
+    assert 'asset_monitoring_attached_but_no_monitored_systems' in canonical['contradiction_flags']
+    assert 'ui_protected_assets_positive_but_runtime_zero' in canonical['contradiction_flags']
+    assert 'ui_live_monitoring_claim_without_telemetry' in canonical['contradiction_flags']
+    assert 'ui_healthy_claim_with_zero_reporting_systems' in canonical['contradiction_flags']
+    assert canonical['top_banner_reasons'] == ['Live monitoring is claimed, but telemetry is missing.']

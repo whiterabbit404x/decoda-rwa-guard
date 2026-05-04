@@ -6638,12 +6638,27 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ('heartbeat_or_poll_without_telemetry_live_claim', heartbeat_or_poll_without_telemetry_live_claim),
             ('last_telemetry_not_from_telemetry_events', telemetry_timestamp_noncanonical),
             ('last_detection_not_from_detection_events', detection_timestamp_noncanonical),
+            ('asset_monitoring_attached_but_no_monitored_systems', protected_assets_count > 0 and enabled_system_count <= 0),
+            ('ui_protected_assets_positive_but_runtime_zero', protected_assets_count > 0 and runtime_status_summary == 'idle'),
+            ('ui_live_monitoring_claim_without_telemetry', monitoring_status == 'active' and runtime_last_telemetry_at is None),
+            ('ui_healthy_claim_with_zero_reporting_systems', runtime_status_summary == 'healthy' and reporting_systems <= 0),
         )
         runtime_contradiction_flags = [flag for flag, condition in contradiction_conditions if condition]
         if canonical_guard_noncanonical_timestamp:
             runtime_contradiction_flags.append('canonical_guard_noncanonical_timestamp')
         contradiction_flags = sorted(set(runtime_contradiction_flags))
         summary['contradiction_flags'] = contradiction_flags
+        contradiction_banner_reason_map: dict[str, str] = {
+            'asset_monitoring_attached_but_no_monitored_systems': 'Assets attached, but no monitored systems are running.',
+            'ui_protected_assets_positive_but_runtime_zero': 'Protected assets are present, but runtime reports zero live coverage.',
+            'ui_live_monitoring_claim_without_telemetry': 'Live monitoring is claimed, but telemetry is missing.',
+            'ui_healthy_claim_with_zero_reporting_systems': 'Healthy status is claimed with zero reporting systems.',
+        }
+        summary['top_banner_reasons'] = [
+            contradiction_banner_reason_map[flag]
+            for flag in contradiction_flags
+            if flag in contradiction_banner_reason_map
+        ]
         contradiction_reason_overrides: dict[str, tuple[str, str]] = {
             'legacy_reporting_without_canonical_telemetry': ('degraded', 'runtime_contradiction_legacy_reporting_without_canonical_telemetry'),
             'target_reporting_without_telemetry_event_link': ('fail', 'runtime_contradiction_target_reporting_without_telemetry_event_link'),
@@ -6652,6 +6667,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'heartbeat_or_poll_without_telemetry_live_claim': ('degraded', 'runtime_contradiction_heartbeat_or_poll_without_telemetry_live_claim'),
             'last_telemetry_not_from_telemetry_events': ('degraded', 'runtime_contradiction_last_telemetry_not_from_telemetry_events'),
             'last_detection_not_from_detection_events': ('degraded', 'runtime_contradiction_last_detection_not_from_detection_events'),
+            'asset_monitoring_attached_but_no_monitored_systems': ('fail', 'runtime_contradiction_asset_monitoring_attached_but_no_monitored_systems'),
+            'ui_protected_assets_positive_but_runtime_zero': ('degraded', 'runtime_contradiction_ui_protected_assets_positive_but_runtime_zero'),
+            'ui_live_monitoring_claim_without_telemetry': ('fail', 'runtime_contradiction_ui_live_monitoring_claim_without_telemetry'),
+            'ui_healthy_claim_with_zero_reporting_systems': ('fail', 'runtime_contradiction_ui_healthy_claim_with_zero_reporting_systems'),
         }
         contradiction_severity = 'healthy'
         contradiction_reason_token: str | None = None
@@ -6886,6 +6905,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'proof_chain_status': proof_chain_status,
             'proof_chain_correlation_id': proof_chain_correlation_id,
             'contradiction_flags': list(summary.get('contradiction_flags') or []),
+            'top_banner_reasons': list(summary.get('top_banner_reasons') or []),
             'workspace_monitoring_summary': summary,
             'canonical_runtime_truth_enabled': bool(canonical_runtime_truth_enabled),
             'summary_generated_at': now.isoformat(),
