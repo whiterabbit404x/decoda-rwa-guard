@@ -21,6 +21,7 @@ REQUIRED_TRUE_FIELDS = (
 REQUIRED_SUMMARY_FIELDS = REQUIRED_TRUE_FIELDS + (
     'simulator_successful_monitoring_demo',
     'billing_email_provider_checks_passing',
+    'broad_self_serve_ready',
     'broad_self_serve_blocked_reason',
     'enterprise_claim_eligibility',
     'evidence_source',
@@ -220,6 +221,28 @@ def main() -> int:
         )
         for row in evidence_records
     ]) if evidence_records else set()
+    evidence_has_chain_ids = any(
+        bool(_reference_values(
+            row,
+            'telemetry_event_id',
+            'telemetry_event_ids',
+            'detection_id',
+            'detection_ids',
+            'alert_id',
+            'alert_ids',
+            'incident_id',
+            'incident_ids',
+            'response_action_id',
+            'response_action_ids',
+        ))
+        for row in evidence_records
+    )
+    checks.append((
+        'evidence_contains_chain_ids',
+        evidence_has_chain_ids,
+        'evidence.json must include telemetry/detection/alert/incident/response identifiers',
+    ))
+
     required_chain_ids = telemetry_ids | detection_ids | alert_ids | incident_ids | response_action_ids
     checks.append((
         'evidence_package_references_chain',
@@ -228,7 +251,16 @@ def main() -> int:
     ))
 
     # Strict anti-mislabeling: simulator-origin data cannot claim live provenance.
-    mislabeled_live = telemetry_source == 'live' and evidence_source == 'live' and not full_chain_loaded
+    chain_complete = (
+        full_chain_loaded
+        and bool(telemetry_ids)
+        and bool(detection_ids)
+        and bool(alert_ids)
+        and bool(incident_ids)
+        and bool(response_action_ids)
+    )
+
+    mislabeled_live = evidence_source == 'live' and telemetry_source != 'live'
     checks.append((
         'simulator_data_never_mislabeled_live',
         not mislabeled_live,
@@ -238,12 +270,9 @@ def main() -> int:
     guided_simulator_pilot_ok = (
         evidence_source == 'guided_simulator'
         and telemetry_source == 'guided_simulator'
-        and full_chain_loaded
-        and bool(telemetry_ids)
-        and bool(detection_ids)
-        and bool(alert_ids)
-        and bool(incident_ids)
-        and bool(response_action_ids)
+        and chain_complete
+        and bool(required_chain_ids)
+        and required_chain_ids.issubset(evidence_refs)
     )
     checks.append((
         'guided_simulator_controlled_pilot_allowed',
@@ -252,14 +281,23 @@ def main() -> int:
     ))
 
     blocking_reasons = [str(reason).lower() for reason in summary.get('claim_ineligibility_reasons') or [] if reason]
-    readiness_gate_ok = not any(
+    broad_self_serve_ready = summary.get('broad_self_serve_ready') is True
+    billing_checks_passing = summary.get('billing_email_provider_checks_passing') is True
+    readiness_gate_ok = not broad_self_serve_ready or billing_checks_passing
+    reasons_block_self_serve = any(
         'billing' in reason or 'email' in reason or 'provider' in reason
         for reason in blocking_reasons
     )
+    readiness_reasons_consistent = not broad_self_serve_ready or not reasons_block_self_serve
     checks.append((
         'self_serve_readiness_gate',
         readiness_gate_ok,
-        'broad self-serve readiness is rejected when billing/email/provider checks fail',
+        'broad_self_serve_ready cannot be true when billing/email/provider checks are false',
+    ))
+    checks.append((
+        'self_serve_blocking_reasons_consistency',
+        readiness_reasons_consistent,
+        'broad self-serve readiness cannot be true when claim_ineligibility_reasons include billing/email/provider blockers',
     ))
 
     failures = [row for row in checks if not row[1]]
