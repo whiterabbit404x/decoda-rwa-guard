@@ -861,6 +861,15 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
             'response_action_exists',
             'evidence_package_exists',
         )
+        controlled_chain_linkages = {
+            'monitoring_to_telemetry': monitoring_sources > 0 and telemetry_exists,
+            'telemetry_to_detection': telemetry_exists and detections_exists,
+            'detection_to_alert': detections_exists and alerts_exists,
+            'alert_to_incident': alerts_exists and incidents_exists,
+            'incident_to_response_action': incidents_exists and response_actions_exists,
+            'detection_or_incident_to_evidence': (detections_exists or incidents_exists) and evidence_packages_exists,
+        }
+        full_controlled_chain_exists_and_linked = all(controlled_chain_linkages.values())
         broad_self_serve_required = (
             'billing_verified',
             'email_verified',
@@ -888,9 +897,18 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
         broad_self_serve_blocking_reasons = _failing_reasons(broad_self_serve_required)
         enterprise_procurement_blocking_reasons = _failing_reasons(enterprise_procurement_required)
 
-        controlled_pilot_ready = not controlled_pilot_blocking_reasons
-        broad_self_serve_ready = not broad_self_serve_blocking_reasons
-        enterprise_procurement_ready = not enterprise_procurement_blocking_reasons
+        controlled_pilot_ready = bool(full_controlled_chain_exists_and_linked and not controlled_pilot_blocking_reasons)
+        broad_self_serve_ready = bool(
+            billing_email_provider_checks_passing
+            and not broad_self_serve_blocking_reasons
+        )
+        enterprise_procurement_ready = bool(
+            staging_artifacts_exist
+            and redis_provider_ready
+            and provider_healthy
+            and production_validation_proof_bundle_complete
+            and not enterprise_procurement_blocking_reasons
+        )
         dependency_checks = {
             check['key']: {
                 'pass': bool(check['pass']),
@@ -901,9 +919,9 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
             for check in checks
         }
 
-        controlled_pilot_reason = 'Controlled pilot readiness passed via full guided simulator chain.' if controlled_pilot_ready else 'Controlled pilot readiness is blocked until the guided simulator chain is complete.'
+        controlled_pilot_reason = 'Controlled pilot readiness passed via full guided simulator chain.' if controlled_pilot_ready else 'Controlled pilot readiness is blocked until the guided simulator chain is complete with linked chain evidence.'
         broad_self_serve_reason = 'Broad self-serve readiness passed with billing, email, provider, and staging checks.' if broad_self_serve_ready else 'Broad self-serve readiness is blocked by billing/email/provider/staging checks.'
-        enterprise_procurement_reason = 'Enterprise procurement readiness passed with strong live/staging evidence and complete proof artifacts.' if enterprise_procurement_ready else 'Enterprise procurement readiness is blocked until stronger live/staging evidence and proof artifacts are complete.'
+        enterprise_procurement_reason = 'Enterprise procurement readiness passed with strong live/staging evidence and complete proof artifacts.' if enterprise_procurement_ready else 'Enterprise procurement readiness is blocked until live/staging evidence, provider checks, and proof artifacts are complete.'
 
         hard_gate_failure = bool(gate_failure_reason_codes or blocking_failure_reason_codes)
         return {
@@ -937,6 +955,25 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
                     'response_actions': _workspace_count('response_actions'),
                     'evidence_records': _workspace_count('evidence') + _workspace_count('detection_evidence'),
                 },
+            'checklist': {
+                'auth': auth_verified,
+                'workspace_creation': workspace_created,
+                'asset_creation': _workspace_count('assets') > 0,
+                'monitoring_source_creation': monitoring_sources > 0,
+                'telemetry_exists': telemetry_exists,
+                'detection_exists': detections_exists,
+                'alert_exists': alerts_exists,
+                'incident_exists': incidents_exists,
+                'response_action_exists': response_actions_exists,
+                'evidence_package_exists': evidence_packages_exists,
+            },
+            'gate_blocked_reasons': {
+                'controlled_pilot_ready': controlled_pilot_blocking_reasons,
+                'broad_self_serve_ready': broad_self_serve_blocking_reasons,
+                'enterprise_procurement_ready': enterprise_procurement_blocking_reasons,
+            },
+            'controlled_chain_linkages': controlled_chain_linkages,
+            'full_controlled_chain_exists_and_linked': full_controlled_chain_exists_and_linked,
                 'billing': billing_status,
                 'provider_health': {
                     'email': provider_checks.get('email'),
