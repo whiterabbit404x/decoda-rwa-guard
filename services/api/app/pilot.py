@@ -12673,6 +12673,10 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
     _export_guided_workflow_live_evidence_artifacts(
         workspace_id=incident['workspace']['id'],
         chain_ids={
+            'user_id': user['id'],
+            'asset_id': asset['asset']['id'],
+            'target_id': target['target']['id'],
+            'monitoring_config_id': monitoring_config_id,
             'monitoring_run_id': monitoring_run_id,
             'telemetry_event_id': telemetry_event_id,
             'detection_id': detection_id,
@@ -12779,7 +12783,34 @@ def _export_guided_workflow_live_evidence_artifacts(*, workspace_id: str, chain_
                     (workspace_id, chain_ids['monitoring_run_id']),
                 ).fetchall()
             ],
-            'evidence.json': [
+            'evidence.json': {
+                'workspace_id': workspace_id,
+                'mode': 'controlled_pilot',
+                'evidence_source': 'guided_simulator',
+                'chain': {
+                    'monitoring_run_id': str(chain_ids.get('monitoring_run_id') or ''),
+                    'telemetry_event_id': str(chain_ids.get('telemetry_event_id') or ''),
+                    'detection_id': str(chain_ids.get('detection_id') or ''),
+                    'alert_id': str(chain_ids.get('alert_id') or ''),
+                    'incident_id': str(chain_ids.get('incident_id') or ''),
+                    'response_action_id': str(chain_ids.get('response_action_id') or ''),
+                    'evidence_package_id': str(chain_ids.get('evidence_package_id') or ''),
+                },
+                'assertions': {
+                    'signup_verified': bool(chain_ids.get('user_id')),
+                    'workspace_created': bool(workspace_id),
+                    'asset_created': bool(chain_ids.get('asset_id')),
+                    'monitoring_source_created': bool(chain_ids.get('target_id')),
+                    'monitoring_enabled': bool(chain_ids.get('monitoring_config_id')),
+                    'telemetry_ingested': bool(chain_ids.get('telemetry_event_id')),
+                    'detection_created': bool(chain_ids.get('detection_id')),
+                    'alert_created': bool(chain_ids.get('alert_id')),
+                    'incident_created': bool(chain_ids.get('incident_id')),
+                    'response_action_executed': bool(chain_ids.get('response_action_id')),
+                    'evidence_package_exported': bool(chain_ids.get('evidence_package_id')),
+                },
+            },
+            'evidence_package_rows.json': [
                 _json_safe_value(dict(row))
                 for row in connection.execute(
                     '''
@@ -12813,13 +12844,14 @@ def _export_guided_workflow_live_evidence_artifacts(*, workspace_id: str, chain_
             f"- incidents: {len(datasets['incidents.json'])}",
             f"- response_actions: {len(datasets['response_actions.json'])}",
             f"- runs: {len(datasets['runs.json'])}",
-            f"- evidence: {len(datasets['evidence.json'])}",
+            f"- evidence_package_rows: {len(datasets['evidence_package_rows.json'])}",
         ]
     ).strip() + '\n'
 
     required_artifacts = (
         'summary.json',
         'evidence.json',
+        'evidence_package_rows.json',
         'telemetry_events.json',
         'detections.json',
         'alerts.json',
