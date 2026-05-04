@@ -41,8 +41,8 @@ This checklist is **fail-closed**: readiness is granted only by passing gates wi
 
 ## Pilot readiness
 
-Pilot is ready only when **all** pilot gates pass:
-- `make validate-no-billing-launch` passes with no fail-closed violations.
+Controlled pilot is ready only when **all** pilot gates pass:
+- `make validate-readiness-proof` passes with no fail-closed violations.
 - Proof confirms `BILLING_PROVIDER=none` (`00_assert_no_billing_mode`).
 - Billing may be `not_configured` only in no-billing mode.
 - Auth/session/workspace/runtime checks pass and no demo/fallback state is treated as success.
@@ -50,7 +50,7 @@ Pilot is ready only when **all** pilot gates pass:
 
 ## Broad self-serve readiness
 
-Broad self-serve is ready only when **all** broad gates pass:
+Broad paid self-serve is **not ready** until **all** broad gates pass, including billing/email/provider checks:
 - CI required gates pass in GitHub Actions: `npm test` and `npm run build` must both succeed.
 - CI release proof artifacts (`ci-required-gates.md/.json`) must be attached to the release evidence bundle.
 - `make validate-launch` passes.
@@ -64,14 +64,15 @@ Broad self-serve is ready only when **all** broad gates pass:
 
 ## Enterprise procurement readiness
 
-Enterprise procurement readiness requires broad self-serve readiness **plus** all of the following:
+Enterprise procurement is **not ready** until broad paid self-serve is ready **and** live/staging provider evidence, security controls, and production validation are complete:
 - Formal compliance/control evidence package linked to current runtime checks.
 - Procurement artifacts (security questionnaire responses, legal/commercial terms, operational commitments).
 - Traceable mapping from controls to concrete artifacts in `services/api/artifacts/` and `artifacts/launch-proof/latest/`.
-- Reproducible validation run logs demonstrating fail-closed behavior.
+- Reproducible production validation run logs demonstrating fail-closed behavior.
+- Any guided simulator evidence must be labeled as simulator-only support evidence and cannot be used as proof of live monitoring/runtime health.
 
 ## Current repository posture
 
-- **Pilot launch:** conditionally ready in no-billing mode once pilot gates pass.
-- **Broad self-serve:** not ready unless full broad gates (billing/email/provider/staging included) pass.
-- **Enterprise procurement:** not ready until broad self-serve is ready and procurement/compliance evidence is complete.
+- **Controlled pilot launch:** ready only when `make validate-readiness-proof` passes and pilot evidence gates remain fail-closed.
+- **Broad paid self-serve:** not ready until full broad gates (billing/email/provider/staging included) pass.
+- **Enterprise procurement:** not ready until broad paid self-serve is ready plus live/staging provider evidence, security controls, and production validation are complete.
