@@ -52,3 +52,26 @@ def test_simulator_workflow_does_not_claim_live_evidence_source() -> None:
     assert "evidence_source = 'guided_simulator'" in pilot_source
     assert 'guided_workflow_live_source_downgraded' in pilot_source
     assert "evidence_source = 'guided_simulator'" in pilot_source
+
+
+
+def test_guided_workflow_creates_workspace_scoped_asset_monitoring_source_and_telemetry() -> None:
+    pilot_source = (REPO_ROOT / 'services/api/app/pilot.py').read_text(encoding='utf-8')
+
+    assert "asset = create_asset(" in pilot_source
+    assert "workspace_id=workspace_context['workspace_id']" in pilot_source
+    assert "target = create_target(" in pilot_source
+    assert "'monitoring_source_creation': {'status': 'created', 'target_id': target['target']['id']}" in pilot_source
+    assert 'INSERT INTO telemetry_events' in pilot_source
+    assert "'first_telemetry_ingestion': {'status': 'ingested'" in pilot_source
+
+
+def test_guided_workflow_chain_references_ids_across_detection_alert_incident_response_and_evidence() -> None:
+    pilot_source = (REPO_ROOT / 'services/api/app/pilot.py').read_text(encoding='utf-8')
+
+    assert "'telemetry_event_id': telemetry_event_id" in pilot_source
+    assert "'detection_id': detection_id" in pilot_source
+    assert "'alert_id': alert_id" in pilot_source
+    assert "'incident_id': incident['incident']['id']" in pilot_source
+    assert "'response_action_id': executed_action['action']['id']" in pilot_source
+    assert "'evidence_package_id': str(evidence_package_id or '')" in pilot_source
