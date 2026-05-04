@@ -8,6 +8,7 @@ import AuthenticatedRoute from '../authenticated-route';
 import { getRuntimeConfig } from '../runtime-config';
 import { shouldRedirectUnauthenticatedProductAccess } from '../auth-guards';
 import WorkspaceMonitoringModeBanner from '../workspace-monitoring-mode-banner';
+import { RuntimeSummaryProvider } from '../runtime-summary-context';
 
 const TOKEN_COOKIE_NAME = 'decoda_session';
 
@@ -32,10 +33,10 @@ export default async function ProductLayout({ children }: { children: React.Reac
   }
 
   return (
-    <AppShell topBanner={<WorkspaceMonitoringModeBanner apiUrl={runtimeConfig.apiUrl} />}>
+    <RuntimeSummaryProvider><AppShell topBanner={<WorkspaceMonitoringModeBanner apiUrl={runtimeConfig.apiUrl} />}>
       <Suspense fallback={<ProductLayoutLoading>{children}</ProductLayoutLoading>}>
         <AuthenticatedRoute>{children}</AuthenticatedRoute>
       </Suspense>
-    </AppShell>
+    </AppShell></RuntimeSummaryProvider>
   );
 }

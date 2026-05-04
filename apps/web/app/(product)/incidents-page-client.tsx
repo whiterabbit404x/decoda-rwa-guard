@@ -6,6 +6,7 @@ import { actionDisabledReason, actionModeLabel, capabilityMapFromPayload, isActi
 import { fetchRuntimeStatusDeduped } from '../runtime-status-client';
 import ThreatChainPanel from '../threat-chain-panel';
 import { renderRiskLabel } from '../risk-normalization-labels';
+import RuntimeSummaryPanel from '../runtime-summary-panel';
 
 const WORKFLOW_STATUSES = ['open', 'investigating', 'contained', 'resolved', 'reopened'] as const;
 
@@ -154,6 +155,7 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
 
   return (
     <main className="productPage">
+      <RuntimeSummaryPanel />
       <section className="featureSection">
         <div className="sectionHeader"><div><p className="eyebrow">Incident lifecycle</p><h1>Incidents</h1><p className="lede">Track open → investigating → contained → resolved → reopened with persistent activity logs.</p></div></div>
         <div className="buttonRow">

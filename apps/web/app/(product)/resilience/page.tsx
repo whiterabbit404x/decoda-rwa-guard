@@ -4,6 +4,7 @@ import { normalizeMonitoringPresentation } from '../../monitoring-status-present
 import StatusBadge from '../../status-badge';
 import SystemStatusPanel from '../../system-status-panel';
 import { resolveWorkspaceMonitoringTruthFromSummary } from '../../workspace-monitoring-truth';
+import RuntimeSummaryPanel from '../../runtime-summary-panel';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,6 +16,7 @@ export default async function ResiliencePage() {
 
   return (
     <main className="productPage">
+      <RuntimeSummaryPanel />
       <section className="hero compactHero">
         <div>
           <p className="eyebrow">Resilience operations</p>

@@ -1,8 +1,10 @@
 import Link from 'next/link';
+import RuntimeSummaryPanel from '../../runtime-summary-panel';
 
 export default function MonitoringSourcesPage() {
   return (
     <main className="productPage">
+      <RuntimeSummaryPanel />
       <section className="dataCard stack">
         <h1>Monitoring Sources</h1>
         <p className="muted">

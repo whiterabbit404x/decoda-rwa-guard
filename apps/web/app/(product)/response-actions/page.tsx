@@ -1,8 +1,10 @@
 import Link from 'next/link';
+import RuntimeSummaryPanel from '../../runtime-summary-panel';
 
 export default function ResponseActionsPage() {
   return (
     <main className="productPage">
+      <RuntimeSummaryPanel />
       <section className="dataCard stack">
         <h1>Response Actions</h1>
         <p className="muted">Use alerts and incidents to triage and execute response actions for active threats.</p>
