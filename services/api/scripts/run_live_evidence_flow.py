@@ -158,6 +158,15 @@ def _validate_required_artifacts(*, artifacts_dir: Path, required_files: tuple[s
             missing_or_empty[filename] = 'empty'
     return missing_or_empty
 
+
+def _has_blocking_billing_email_provider_reason(claim_ineligibility_reasons: list[str]) -> bool:
+    return any(
+        token in str(reason).lower()
+        for reason in claim_ineligibility_reasons
+        for token in ('billing', 'email', 'provider')
+    )
+
+
 def main() -> int:
     api_url = (os.getenv('API_URL') or 'http://localhost:8000').rstrip('/')
     token = os.getenv('PILOT_AUTH_TOKEN', '').strip()
@@ -464,6 +473,10 @@ def main() -> int:
             details=chain_details,
         )
 
+    evidence_source = telemetry_evidence_source or 'guided_simulator'
+    billing_email_provider_checks_passing = not _has_blocking_billing_email_provider_reason(claim_ineligibility_reasons)
+    broad_self_serve_blocked_reason = None if billing_email_provider_checks_passing else 'billing_email_provider_checks_failed'
+
     summary = {
         'protected_asset_context': protected_asset_context,
         'protected_asset': protected_asset_context,
@@ -504,8 +517,10 @@ def main() -> int:
         'missing_target_identity_fields': missing_target_fields,
         'execution_failure_reasons': execution_failure_reasons,
         'runtime_gate_checks': runtime_gate_checks,
+        'evidence_source': evidence_source,
         # New readiness-gating schema (authoritative).
         'live_successful_monitoring_demo': bool(worker_runs) and status_value in {'live_coverage_confirmed', 'live_coverage_denied'},
+        'simulator_successful_monitoring_demo': bool(worker_runs) and evidence_source == 'guided_simulator',
         'telemetry_event_present': bool(telemetry_ids),
         'telemetry_evidence_source': telemetry_evidence_source,
         'detection_generated_from_telemetry': bool(telemetry_ids) and bool(detection_ids),
@@ -513,7 +528,8 @@ def main() -> int:
         'incident_opened_from_alert': bool(incident_ids) and bool(linked_incident_alert_ids.intersection(alert_ids)),
         'response_action_recommended_or_executed': bool(response_action_recommendation_present),
         'evidence_package_exported': False,
-        'billing_email_provider_checks_passing': False,
+        'billing_email_provider_checks_passing': billing_email_provider_checks_passing,
+        'broad_self_serve_blocked_reason': broad_self_serve_blocked_reason,
         'onboarding_to_first_signal_complete': bool(worker_runs) and bool(alert_ids),
         'production_validation_proof_bundle_complete': False,
     }

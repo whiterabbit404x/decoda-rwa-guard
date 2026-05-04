@@ -8,14 +8,18 @@ from services.api.scripts import validate_readiness_proof
 def _write_chain_artifacts(base, *, evidence_source: str = 'guided_simulator', telemetry_source: str = 'guided_simulator') -> None:
     summary = {
         'live_successful_monitoring_demo': True,
+        'simulator_successful_monitoring_demo': True,
         'telemetry_event_present': True,
         'detection_generated_from_telemetry': True,
         'alert_generated_from_detection': True,
         'incident_opened_from_alert': True,
         'response_action_recommended_or_executed': True,
         'evidence_package_exported': True,
+        'billing_email_provider_checks_passing': True,
+        'broad_self_serve_blocked_reason': None,
         'onboarding_to_first_signal_complete': True,
         'production_validation_proof_bundle_complete': True,
+        'enterprise_claim_eligibility': False,
         'evidence_source': evidence_source,
         'telemetry_evidence_source': telemetry_source,
         'claim_ineligibility_reasons': [],
