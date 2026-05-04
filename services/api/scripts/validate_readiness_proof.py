@@ -37,6 +37,27 @@ CHAIN_ARTIFACTS = {
     'runs': 'runs.json',
 }
 
+REQUIRED_EVIDENCE_CHAIN_FIELDS = (
+    'asset_id',
+    'target_id',
+    'monitoring_config_id',
+    'monitoring_run_id',
+    'telemetry_event_id',
+    'detection_id',
+    'alert_id',
+    'incident_id',
+    'response_action_id',
+    'evidence_package_id',
+)
+
+REQUIRED_EVIDENCE_ASSERTION_FIELDS = (
+    'telemetry_linked',
+    'detection_linked',
+    'alert_linked',
+    'incident_linked',
+    'response_linked',
+)
+
 
 def _truthy(value: object) -> bool:
     return value is True
@@ -189,46 +210,66 @@ def main() -> int:
     ))
 
     evidence_path = artifacts_dir / 'evidence.json'
-    evidence_records: list[dict[str, Any]] = []
+    evidence_payload: dict[str, Any] | None = None
     if evidence_path.exists():
         payload = _load_json(evidence_path)
-        if isinstance(payload, list):
-            evidence_records = [item for item in payload if isinstance(item, dict)]
-        elif isinstance(payload, dict):
-            evidence_records = [payload]
+        if isinstance(payload, dict):
+            evidence_payload = payload
+    checks.append((
+        'evidence_payload_object',
+        isinstance(evidence_payload, dict),
+        'evidence.json must be an object payload',
+    ))
 
-    evidence_refs = set().union(*[
-        _reference_values(
-            row,
-            'telemetry_event_id',
-            'telemetry_event_ids',
-            'detection_id',
-            'detection_ids',
-            'alert_id',
-            'alert_ids',
-            'incident_id',
-            'incident_ids',
-            'response_action_id',
-            'response_action_ids',
-        )
-        for row in evidence_records
-    ]) if evidence_records else set()
-    evidence_has_chain_ids = any(
-        bool(_reference_values(
-            row,
-            'telemetry_event_id',
-            'telemetry_event_ids',
-            'detection_id',
-            'detection_ids',
-            'alert_id',
-            'alert_ids',
-            'incident_id',
-            'incident_ids',
-            'response_action_id',
-            'response_action_ids',
-        ))
-        for row in evidence_records
+    workspace_id = evidence_payload.get('workspace_id') if evidence_payload else None
+    checks.append((
+        'evidence_workspace_id_present',
+        workspace_id not in (None, ''),
+        'evidence.json must include workspace_id',
+    ))
+    evidence_source = evidence_payload.get('evidence_source') if evidence_payload else None
+    checks.append((
+        'evidence_source_present',
+        evidence_source not in (None, ''),
+        'evidence.json must include evidence_source',
+    ))
+
+    chain = evidence_payload.get('chain') if evidence_payload else None
+    checks.append((
+        'evidence_chain_object_present',
+        isinstance(chain, dict),
+        'evidence.json must include chain object',
+    ))
+    chain = chain if isinstance(chain, dict) else {}
+
+    chain_fields_present = True
+    for field in REQUIRED_EVIDENCE_CHAIN_FIELDS:
+        exists = chain.get(field) not in (None, '')
+        checks.append((f'evidence_chain_has_{field}', exists, f'evidence.chain.{field} is required'))
+        chain_fields_present = chain_fields_present and exists
+
+    assertions = evidence_payload.get('assertions') if evidence_payload else None
+    checks.append((
+        'evidence_assertions_object_present',
+        isinstance(assertions, dict),
+        'evidence.json must include assertions object',
+    ))
+    assertions = assertions if isinstance(assertions, dict) else {}
+
+    for field in REQUIRED_EVIDENCE_ASSERTION_FIELDS:
+        value = assertions.get(field)
+        ok = isinstance(value, bool)
+        checks.append((f'evidence_assertion_{field}_boolean', ok, f'evidence.assertions.{field} must be boolean'))
+
+    evidence_refs = _reference_values(
+        chain,
+        'telemetry_event_id',
+        'detection_id',
+        'alert_id',
+        'incident_id',
+        'response_action_id',
     )
+    evidence_has_chain_ids = chain_fields_present and bool(evidence_refs)
     checks.append((
         'evidence_contains_chain_ids',
         evidence_has_chain_ids,
