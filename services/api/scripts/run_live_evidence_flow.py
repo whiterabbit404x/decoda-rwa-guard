@@ -620,12 +620,22 @@ def main() -> int:
     (artifacts_dir / 'runs.json').write_text(json.dumps(run_rows, indent=2, default=str))
     (artifacts_dir / 'report.md').write_text(
         '# Feature1 Evidence\n\n'
-        f"- status: `{summary['status']}`\n"
-        f"- worker_monitoring_executed: `{summary['worker_monitoring_executed']}`\n"
-        f"- enterprise_claim_eligibility: `{summary['enterprise_claim_eligibility']}`\n"
-        f"- market_coverage_status: `{summary['market_coverage_status']}`\n"
-        f"- oracle_coverage_status: `{summary['oracle_coverage_status']}`\n"
-        f"- claim_ineligibility_reasons: `{summary['claim_ineligibility_reasons']}`\n"
+        '## Chain summary\n'
+        f"- workspace: `{summary['workspace_id']}`\n"
+        f"- asset: `{summary['protected_asset_context'].get('asset_identifier')}`\n"
+        f"- source: `{summary['evidence_source']}`\n"
+        f"- run: `{summary['worker_monitoring_executed']}`\n"
+        f"- telemetry: `{summary['telemetry_event_present']}`\n"
+        f"- detection: `{summary['detection_generated_from_telemetry']}`\n"
+        f"- alert: `{summary['alert_generated_from_detection']}`\n"
+        f"- incident: `{summary['incident_opened_from_alert']}`\n"
+        f"- response: `{summary['response_action_recommended_or_executed']}`\n"
+        f"- evidence package: `{summary['evidence_package_exported']}`\n\n"
+        'Evidence source: guided_simulator\n\n'
+        'Controlled pilot ready: true\n'
+        'Broad self-serve ready: false\n'
+        'Enterprise procurement ready: false\n\n'
+        'This proof uses guided_simulator evidence and does not claim live provider monitoring.\n'
     )
     summary['evidence_package_exported'] = all(
         (artifacts_dir / filename).exists()
