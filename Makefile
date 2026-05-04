@@ -94,8 +94,7 @@ validate-readiness-proof:
 		ARTIFACT_DIR=services/api/artifacts/live_evidence/latest; \
 		echo "[validate-readiness-proof] Running guided workflow in controlled-pilot simulator-safe mode..."; \
 		python services/api/scripts/generate_guided_simulator_readiness_bundle.py; \
-		echo "[validate-readiness-proof] Exporting services/api/artifacts/live_evidence/latest bundle..."; \
-		true; \
+		echo "[validate-readiness-proof] Generated services/api/artifacts/live_evidence/latest bundle."; \
 		echo "[validate-readiness-proof] Validating readiness proof summary..."; \
 		python services/api/scripts/validate_readiness_proof.py --summary-path $$ARTIFACT_DIR/summary.json --environment $$GUIDED_PROOF_ENV; \
 		echo "[validate-readiness-proof] Readiness flags:"; \
