@@ -126,6 +126,7 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
   const [summary, setSummary] = useState<MonitoringRuntimeStatus['workspace_monitoring_summary'] | null>(null);
   const [retryPausedReason, setRetryPausedReason] = useState<string | null>(null);
   const [reconcileTransportDebug, setReconcileTransportDebug] = useState<ReconcileTransportDebug | null>(null);
+  const [isCreatingTreasuryTarget, setIsCreatingTreasuryTarget] = useState(false);
 
   async function load(options?: { failureMessage?: string; rethrow?: boolean }) {
     if (isDev) {
@@ -399,6 +400,27 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
     }
   }
 
+  async function createTreasurySettlementTarget() {
+    setMessage('');
+    setIsCreatingTreasuryTarget(true);
+    try {
+      const response = await fetchWithTimeout('/api/monitoring/systems/repair/treasury-settlement-target', {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        const errorDetail = extractErrorDetail(payload);
+        setMessage(errorDetail.reason || errorDetail.message || 'Unable to create monitoring target.');
+        return;
+      }
+      await load();
+      setMessage('Monitoring target is ready for US Treasury Settlement Contract.');
+    } finally {
+      setIsCreatingTreasuryTarget(false);
+    }
+  }
+
   async function remove(systemId: string) {
     const response = await fetch(`${effectiveApiUrl}/monitoring/systems/${systemId}`, { method: 'DELETE', headers: authHeaders() });
     if (!response.ok) {
@@ -493,9 +515,14 @@ export default function MonitoredSystemsManager({ apiUrl }: Props) {
         </p>
       ) : null}
       {systems.length === 0 ? (
-        <p className="muted">
-          No monitored systems yet. If you already have enabled targets, use Repair monitored systems to backfill missing links.
-        </p>
+        <div className="stack compactStack">
+          <p className="muted">No monitoring target is linked to this asset yet.</p>
+          <div className="buttonRow">
+            <button type="button" onClick={() => void createTreasurySettlementTarget()} disabled={isCreatingTreasuryTarget || isRepairPending}>
+              {isCreatingTreasuryTarget ? 'Creating monitoring target…' : 'Create monitoring target for US Treasury Settlement Contract'}
+            </button>
+          </div>
+        </div>
       ) : null}
       {reconcileSummary ? (
         <div className="stack compactStack">

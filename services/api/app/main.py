@@ -2887,6 +2887,14 @@ def monitoring_systems_reconcile(request: Request) -> Any:
         return JSONResponse(payload, status_code=500)
 
 
+
+@app.post('/monitoring/systems/repair/treasury-settlement-target', summary='Create or repair the US Treasury Settlement Contract monitoring target')
+def monitoring_systems_repair_treasury_settlement_target(request: Request) -> dict[str, Any]:
+    payload = with_auth_schema_json(lambda: create_or_repair_treasury_settlement_monitoring_target(request))
+    runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
+    payload['workspace_monitoring_summary'] = runtime_payload.get('workspace_monitoring_summary')
+    return payload
+
 @app.post('/monitoring/systems/reconcile/start', summary='Start monitored systems reconcile job')
 def monitoring_systems_reconcile_start(request: Request) -> Any:
     return monitoring_systems_reconcile(request)

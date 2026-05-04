@@ -9434,6 +9434,117 @@ def list_targets(request: Request) -> dict[str, Any]:
         return {'targets': targets, 'workspace': workspace_context['workspace']}
 
 
+def create_or_repair_treasury_settlement_monitoring_target(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+
+        asset_row = connection.execute(
+            '''
+            SELECT id, name
+            FROM assets
+            WHERE workspace_id = %s::uuid
+              AND deleted_at IS NULL
+              AND LOWER(name) = LOWER(%s)
+            ORDER BY created_at ASC
+            LIMIT 1
+            ''',
+            (workspace_id, 'US Treasury Settlement Contract'),
+        ).fetchone()
+        if asset_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Asset "US Treasury Settlement Contract" was not found in this workspace.')
+
+        asset_id = str(asset_row['id'])
+        target_row = connection.execute(
+            '''
+            SELECT id
+            FROM targets
+            WHERE workspace_id = %s::uuid
+              AND deleted_at IS NULL
+              AND asset_id = %s::uuid
+              AND LOWER(name) = LOWER(%s)
+            ORDER BY created_at ASC
+            LIMIT 1
+            ''',
+            (workspace_id, asset_id, 'US Treasury Settlement Contract'),
+        ).fetchone()
+
+        created = False
+        if target_row is None:
+            target_id = str(uuid.uuid4())
+            connection.execute(
+                '''
+                INSERT INTO targets (
+                    id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type, owner_notes, severity_preference, enabled,
+                    asset_id, chain_id, target_metadata,
+                    monitoring_enabled, monitoring_mode, monitoring_interval_seconds, severity_threshold, auto_create_alerts, auto_create_incidents, notification_channels,
+                    monitored_by_workspace_id, is_active, created_by_user_id, updated_by_user_id
+                ) VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, NULL, %s, %s, %s, TRUE, %s::uuid, %s, %s::jsonb, TRUE, %s, %s, %s, %s, %s, %s::jsonb, %s::uuid, TRUE, %s::uuid, %s::uuid)
+                ''',
+                (
+                    target_id,
+                    workspace_id,
+                    'US Treasury Settlement Contract',
+                    'contract',
+                    'ethereum',
+                    '0x0000000000000000000000000000000000000000',
+                    'smart_contract',
+                    'Created via monitored-systems repair action.',
+                    'medium',
+                    asset_id,
+                    1,
+                    _json_dumps({}),
+                    'continuous',
+                    300,
+                    50,
+                    True,
+                    False,
+                    _json_dumps([]),
+                    workspace_id,
+                    user['id'],
+                    user['id'],
+                ),
+            )
+            created = True
+        else:
+            target_id = str(target_row['id'])
+            connection.execute(
+                '''
+                UPDATE targets
+                SET enabled = TRUE,
+                    monitoring_enabled = TRUE,
+                    updated_by_user_id = %s::uuid,
+                    updated_at = NOW()
+                WHERE id = %s::uuid
+                  AND workspace_id = %s::uuid
+                ''',
+                (user['id'], target_id, workspace_id),
+            )
+
+        _sync_canonical_monitoring_target_state(
+            connection,
+            workspace_id=workspace_id,
+            target_id=target_id,
+            asset_id=asset_id,
+            enabled=True,
+            monitoring_enabled=True,
+        )
+        bridge_result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id)
+        reconcile_result = _normalize_reconcile_result(reconcile_enabled_targets_monitored_systems(connection, workspace_id=workspace_id))
+        log_audit(connection, action='monitoring.target.repair', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'created': created})
+        connection.commit()
+        return {
+            'status': 'ok',
+            'created': created,
+            'target_id': target_id,
+            'asset_id': asset_id,
+            'bridge': bridge_result,
+            'reconcile': reconcile_result,
+        }
+
+
 def _sync_canonical_monitoring_target_state(
     connection: Any,
     *,
