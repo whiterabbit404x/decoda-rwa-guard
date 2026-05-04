@@ -6703,9 +6703,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ('heartbeat_exists_while_poll_and_telemetry_null_ui_active_claim', last_heartbeat is not None and summary.get('last_poll_at') is None and summary.get('last_telemetry_at') is None and monitoring_status == 'active'),
             ('telemetry_current_with_null_timestamp', coverage_fresh and last_telemetry_at is None),
             ('open_alerts_without_detection_evidence', open_alerts_without_evidence_count > 0),
+            ('alert_without_detection', open_alerts_without_evidence_count > 0),
             ('proof_chain_link_missing', bool(proof_chain_missing_reason_codes)),
             ('incident_without_alert', incidents_without_alert_count > 0),
             ('response_action_without_incident', response_actions_without_incident_count > 0),
+            (
+                'telemetry_unavailable_live_claim_asserted',
+                summary_freshness_status == 'unavailable' and (monitoring_status == 'active' or evidence_source == 'live'),
+            ),
+            (
+                'simulator_evidence_rendered_as_live_provider',
+                str(health.get('source_type') or '').strip().lower() in NON_LIVE_PROVIDER_SOURCE_TYPES and evidence_source == 'live',
+            ),
             ('legacy_reporting_without_canonical_telemetry', legacy_only_reporting_without_canonical),
             ('target_reporting_without_telemetry_event_link', target_reporting_without_telemetry_events),
             ('live_evidence_without_live_events', live_evidence_without_canonical_events),
@@ -6713,6 +6722,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ('last_telemetry_not_from_telemetry_events', telemetry_timestamp_noncanonical),
             ('last_detection_not_from_detection_events', detection_timestamp_noncanonical),
             ('asset_monitoring_attached_but_no_monitored_systems', protected_assets_count > 0 and enabled_system_count <= 0),
+            (
+                'asset_count_mismatch_runtime_vs_registry',
+                int(protected_assets_count) > 0 and int(verified_assets_count) > 0 and int(protected_assets_count) != int(verified_assets_count),
+            ),
             ('ui_protected_assets_positive_but_runtime_zero', protected_assets_count > 0 and runtime_status_summary == 'idle'),
             ('ui_live_monitoring_claim_without_telemetry', monitoring_status == 'active' and runtime_last_telemetry_at is None),
             ('ui_healthy_claim_with_zero_reporting_systems', runtime_status_summary == 'healthy' and reporting_systems <= 0),
@@ -6734,6 +6747,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if flag in contradiction_banner_reason_map
         ]
         contradiction_reason_overrides: dict[str, tuple[str, str]] = {
+            'alert_without_detection': ('degraded', 'runtime_contradiction_alert_without_detection'),
+            'incident_without_alert': ('degraded', 'runtime_contradiction_incident_without_alert'),
+            'response_action_without_incident': ('degraded', 'runtime_contradiction_response_action_without_incident'),
+            'telemetry_unavailable_live_claim_asserted': ('fail', 'runtime_contradiction_telemetry_unavailable_live_claim_asserted'),
+            'simulator_evidence_rendered_as_live_provider': ('fail', 'runtime_contradiction_simulator_evidence_rendered_as_live_provider'),
             'legacy_reporting_without_canonical_telemetry': ('degraded', 'runtime_contradiction_legacy_reporting_without_canonical_telemetry'),
             'target_reporting_without_telemetry_event_link': ('fail', 'runtime_contradiction_target_reporting_without_telemetry_event_link'),
             'live_evidence_without_live_events': ('fail', 'runtime_contradiction_live_evidence_without_live_events'),
@@ -6742,6 +6760,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'last_telemetry_not_from_telemetry_events': ('degraded', 'runtime_contradiction_last_telemetry_not_from_telemetry_events'),
             'last_detection_not_from_detection_events': ('degraded', 'runtime_contradiction_last_detection_not_from_detection_events'),
             'asset_monitoring_attached_but_no_monitored_systems': ('fail', 'runtime_contradiction_asset_monitoring_attached_but_no_monitored_systems'),
+            'asset_count_mismatch_runtime_vs_registry': ('fail', 'runtime_contradiction_asset_count_mismatch_runtime_vs_registry'),
             'ui_protected_assets_positive_but_runtime_zero': ('degraded', 'runtime_contradiction_ui_protected_assets_positive_but_runtime_zero'),
             'ui_live_monitoring_claim_without_telemetry': ('fail', 'runtime_contradiction_ui_live_monitoring_claim_without_telemetry'),
             'ui_healthy_claim_with_zero_reporting_systems': ('fail', 'runtime_contradiction_ui_healthy_claim_with_zero_reporting_systems'),
@@ -6767,6 +6786,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if contradiction_reason_token not in runtime_reason_codes:
                 runtime_reason_codes.append(contradiction_reason_token)
             summary['runtime_status_reason_codes'] = runtime_reason_codes
+        hard_contradictions = {
+            'alert_without_detection',
+            'incident_without_alert',
+            'response_action_without_incident',
+            'telemetry_unavailable_live_claim_asserted',
+            'simulator_evidence_rendered_as_live_provider',
+            'asset_monitoring_attached_but_no_monitored_systems',
+            'asset_count_mismatch_runtime_vs_registry',
+        }
         impossible_state_detected = any(
             flag in contradiction_flags
             for flag in (
@@ -6778,7 +6806,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'heartbeat_exists_while_poll_and_telemetry_null_ui_active_claim',
             )
         )
-        if impossible_state_detected or contradiction_severity == 'fail':
+        hard_contradiction_detected = bool(hard_contradictions.intersection(set(contradiction_flags)))
+        if impossible_state_detected or contradiction_severity == 'fail' or hard_contradiction_detected:
             runtime_status_summary = 'fail'
             runtime_status = 'Fail'
             monitoring_status = 'offline'
