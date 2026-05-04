@@ -131,6 +131,33 @@ def _lifecycle_execution_details(*, status: str, lifecycle_checks_performed: lis
     return False, 'no_lifecycle_signal_emitted'
 
 
+
+
+def _is_non_empty_artifact(path: Path) -> bool:
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    if path.suffix == '.json':
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return False
+        if isinstance(data, (list, dict)):
+            return len(data) > 0
+        return bool(data)
+    return bool(path.read_text().strip())
+
+
+def _validate_required_artifacts(*, artifacts_dir: Path, required_files: tuple[str, ...]) -> dict[str, str]:
+    missing_or_empty: dict[str, str] = {}
+    for filename in required_files:
+        artifact_path = artifacts_dir / filename
+        if not artifact_path.exists():
+            missing_or_empty[filename] = 'missing'
+            continue
+        if not _is_non_empty_artifact(artifact_path):
+            missing_or_empty[filename] = 'empty'
+    return missing_or_empty
+
 def main() -> int:
     api_url = (os.getenv('API_URL') or 'http://localhost:8000').rstrip('/')
     token = os.getenv('PILOT_AUTH_TOKEN', '').strip()
@@ -369,6 +396,38 @@ def main() -> int:
         ]
         if str(value or '').strip()
     }
+    telemetry_events_rows: list[dict] = []
+    telemetry_events_seen: set[str] = set()
+    for row in [*worker_runs, *alert_rows]:
+        payload = (row.get('response_payload') or {}) if isinstance(row, dict) else {}
+        if row in alert_rows:
+            payload = (row.get('payload') or {}) if isinstance(row, dict) else {}
+        telemetry_event_id = str(payload.get('telemetry_event_id') or '').strip()
+        if telemetry_event_id and telemetry_event_id not in telemetry_events_seen:
+            telemetry_events_seen.add(telemetry_event_id)
+            telemetry_events_rows.append({'telemetry_event_id': telemetry_event_id, 'evidence_source': payload.get('evidence_source')})
+
+    detections_rows: list[dict] = []
+    detections_seen: set[str] = set()
+    for row in [*worker_runs, *alert_rows]:
+        payload = (row.get('response_payload') or {}) if isinstance(row, dict) else {}
+        if row in alert_rows:
+            payload = (row.get('payload') or {}) if isinstance(row, dict) else {}
+        detection_id = str(payload.get('detection_id') or payload.get('detection_event_id') or '').strip()
+        if detection_id and detection_id not in detections_seen:
+            detections_seen.add(detection_id)
+            detections_rows.append({'detection_id': detection_id, 'telemetry_event_id': payload.get('telemetry_event_id')})
+
+    response_actions_rows = [
+        {
+            'alert_id': item.get('id'),
+            'recommended_action': ((item.get('payload') or {}).get('recommended_action')),
+            'analysis_run_id': item.get('analysis_run_id'),
+        }
+        for item in alert_rows
+        if isinstance(item, dict) and str(((item.get('payload') or {}).get('recommended_action') or '')).strip()
+    ]
+
     alert_ids = {str(item.get('id')) for item in alert_rows if str(item.get('id') or '').strip()}
     incident_ids = {str(item.get('id')) for item in incident_rows if str(item.get('id') or '').strip()}
     linked_incident_alert_ids = {
@@ -517,9 +576,12 @@ def main() -> int:
         return _fail_fast('RUNS_EMPTY', 'runs.json is empty and no intentional-empty justification is permitted for guided live evidence.', details=chain_details)
 
     (artifacts_dir / 'summary.json').write_text(json.dumps(summary, indent=2))
+    (artifacts_dir / 'evidence.json').write_text(json.dumps(evidence_rows, indent=2, default=str))
+    (artifacts_dir / 'telemetry_events.json').write_text(json.dumps(telemetry_events_rows, indent=2, default=str))
+    (artifacts_dir / 'detections.json').write_text(json.dumps(detections_rows, indent=2, default=str))
     (artifacts_dir / 'alerts.json').write_text(json.dumps(alert_rows, indent=2, default=str))
     (artifacts_dir / 'incidents.json').write_text(json.dumps(incident_rows, indent=2, default=str))
-    (artifacts_dir / 'evidence.json').write_text(json.dumps(evidence_rows, indent=2, default=str))
+    (artifacts_dir / 'response_actions.json').write_text(json.dumps(response_actions_rows, indent=2, default=str))
     (artifacts_dir / 'runs.json').write_text(json.dumps(run_rows, indent=2, default=str))
     (artifacts_dir / 'report.md').write_text(
         '# Feature1 Evidence\n\n'
@@ -532,9 +594,29 @@ def main() -> int:
     )
     summary['evidence_package_exported'] = all(
         (artifacts_dir / filename).exists()
-        for filename in ('summary.json', 'alerts.json', 'incidents.json', 'evidence.json', 'runs.json', 'report.md')
+        for filename in ('summary.json', 'evidence.json', 'telemetry_events.json', 'detections.json', 'alerts.json', 'incidents.json', 'response_actions.json', 'runs.json', 'report.md')
     )
     (artifacts_dir / 'summary.json').write_text(json.dumps(summary, indent=2))
+    required_artifacts = (
+        'summary.json',
+        'evidence.json',
+        'telemetry_events.json',
+        'detections.json',
+        'alerts.json',
+        'incidents.json',
+        'response_actions.json',
+        'runs.json',
+        'report.md',
+    )
+    if summary['status'] in {'live_coverage_confirmed', 'live_coverage_denied'}:
+        missing_or_empty = _validate_required_artifacts(artifacts_dir=artifacts_dir, required_files=required_artifacts)
+        if missing_or_empty:
+            return _fail_fast(
+                'REQUIRED_ARTIFACTS_MISSING_OR_EMPTY',
+                'Successful guided workflow completion requires all required artifacts to exist and be non-empty.',
+                details={'artifacts': missing_or_empty},
+            )
+
     print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2, default=str))
     return 0 if summary['status'] in {'live_coverage_confirmed', 'live_coverage_denied'} else 3
 
