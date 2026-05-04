@@ -29,9 +29,26 @@ def test_guided_workflow_proof_chain_linkage_fields_are_persisted() -> None:
     assert 'UPDATE alerts SET incident_id = %s::uuid' in pilot_source
     assert 'INSERT INTO response_actions' in pilot_source
     assert 'incident_id,' in pilot_source
-    assert "create_proof_bundle_export({'incident_id': incident['incident']['id']}, request)" in pilot_source
+    assert 'create_proof_bundle_export(' in pilot_source
+    assert "'detection_id': detection_id" in pilot_source
+    assert "'alert_id': alert_id" in pilot_source
+    assert "'incident_id': incident['incident']['id']" in pilot_source
+    assert "'response_action_id': executed_action['action']['id']" in pilot_source
+
+
+def test_guided_workflow_builds_telemetry_detection_alert_incident_response_evidence_chain() -> None:
+    pilot_source = (REPO_ROOT / 'services/api/app/pilot.py').read_text(encoding='utf-8')
+
+    assert "'first_telemetry_ingestion': {'status': 'ingested'" in pilot_source
+    assert "'rule_evaluation_detection_creation': {'status': 'created'" in pilot_source
+    assert "'alert_creation': {'status': 'created'" in pilot_source
+    assert "'incident_creation': {'status': 'created'" in pilot_source
+    assert "'response_action_recommendation_execution': {'status': executed_action['action']['status']" in pilot_source
+    assert "'evidence_package_generation_export': {'status': evidence_export.get('status')" in pilot_source
 
 
 def test_simulator_workflow_does_not_claim_live_evidence_source() -> None:
     pilot_source = (REPO_ROOT / 'services/api/app/pilot.py').read_text(encoding='utf-8')
-    assert "evidence_source = 'live' if live_row is not None else 'simulator'" in pilot_source
+    assert "evidence_source = 'guided_simulator'" in pilot_source
+    assert 'guided_workflow_live_source_downgraded' in pilot_source
+    assert "evidence_source = 'guided_simulator'" in pilot_source
