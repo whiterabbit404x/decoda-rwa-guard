@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+import json
+
+from services.api.scripts import validate_readiness_proof
+
+
+def _write_chain_artifacts(base, *, evidence_source: str = 'guided_simulator', telemetry_source: str = 'guided_simulator') -> None:
+    summary = {
+        'live_successful_monitoring_demo': True,
+        'telemetry_event_present': True,
+        'detection_generated_from_telemetry': True,
+        'alert_generated_from_detection': True,
+        'incident_opened_from_alert': True,
+        'response_action_recommended_or_executed': True,
+        'evidence_package_exported': True,
+        'onboarding_to_first_signal_complete': True,
+        'production_validation_proof_bundle_complete': True,
+        'evidence_source': evidence_source,
+        'telemetry_evidence_source': telemetry_source,
+        'claim_ineligibility_reasons': [],
+    }
+    (base / 'summary.json').write_text(json.dumps(summary), encoding='utf-8')
+    (base / 'telemetry_events.json').write_text(json.dumps([{'id': 'te-1'}]), encoding='utf-8')
+    (base / 'detections.json').write_text(json.dumps([{'id': 'det-1', 'telemetry_event_id': 'te-1'}]), encoding='utf-8')
+    (base / 'alerts.json').write_text(json.dumps([{'id': 'al-1', 'detection_id': 'det-1'}]), encoding='utf-8')
+    (base / 'incidents.json').write_text(json.dumps([{'id': 'inc-1', 'alert_id': 'al-1'}]), encoding='utf-8')
+    (base / 'response_actions.json').write_text(json.dumps([{'id': 'ra-1', 'incident_id': 'inc-1'}]), encoding='utf-8')
+    (base / 'runs.json').write_text(json.dumps([{'id': 'run-1'}]), encoding='utf-8')
+    (base / 'evidence.json').write_text(
+        json.dumps([{'id': 'ev-1', 'telemetry_event_id': 'te-1', 'detection_id': 'det-1', 'alert_id': 'al-1', 'incident_id': 'inc-1', 'response_action_id': 'ra-1'}]),
+        encoding='utf-8',
+    )
+
+
+def test_validator_requires_all_summary_readiness_fields(tmp_path, monkeypatch) -> None:
+    _write_chain_artifacts(tmp_path)
+    summary = json.loads((tmp_path / 'summary.json').read_text(encoding='utf-8'))
+    summary.pop('onboarding_to_first_signal_complete')
+    (tmp_path / 'summary.json').write_text(json.dumps(summary), encoding='utf-8')
+
+    monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json')])
+    assert validate_readiness_proof.main() == 2
+
+
+def test_validator_fails_on_empty_artifacts_and_simulator_mislabeled_live(tmp_path, monkeypatch) -> None:
+    _write_chain_artifacts(tmp_path, evidence_source='live', telemetry_source='live')
+    (tmp_path / 'runs.json').write_text('[]', encoding='utf-8')
+
+    monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json')])
+    assert validate_readiness_proof.main() == 2
+
+
+def test_validator_blocks_broad_self_serve_when_billing_email_provider_checks_fail(tmp_path, monkeypatch) -> None:
+    _write_chain_artifacts(tmp_path)
+    summary = json.loads((tmp_path / 'summary.json').read_text(encoding='utf-8'))
+    summary['claim_ineligibility_reasons'] = ['billing_runtime_unavailable', 'email_not_verified', 'provider_dependencies_unhealthy']
+    (tmp_path / 'summary.json').write_text(json.dumps(summary), encoding='utf-8')
+
+    monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json')])
+    assert validate_readiness_proof.main() == 2
+
+
+def test_validator_passes_controlled_pilot_with_full_guided_simulator_chain(tmp_path, monkeypatch) -> None:
+    _write_chain_artifacts(tmp_path, evidence_source='guided_simulator', telemetry_source='guided_simulator')
+
+    monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json'), '--environment', 'test'])
+    assert validate_readiness_proof.main() == 0
