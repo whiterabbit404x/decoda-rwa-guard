@@ -75,3 +75,29 @@ def test_guided_workflow_chain_references_ids_across_detection_alert_incident_re
     assert "'incident_id': incident['incident']['id']" in pilot_source
     assert "'response_action_id': executed_action['action']['id']" in pilot_source
     assert "'evidence_package_id': str(evidence_package_id or '')" in pilot_source
+
+
+def test_guided_workflow_evidence_export_has_controlled_pilot_schema() -> None:
+    pilot_source = (REPO_ROOT / 'services/api/app/pilot.py').read_text(encoding='utf-8')
+
+    assert "'evidence.json': {" in pilot_source
+    assert "'mode': 'controlled_pilot'" in pilot_source
+    assert "'evidence_source': 'guided_simulator'" in pilot_source
+    assert "'chain': {" in pilot_source
+    assert "'monitoring_run_id': str(chain_ids.get('monitoring_run_id') or '')" in pilot_source
+    assert "'telemetry_event_id': str(chain_ids.get('telemetry_event_id') or '')" in pilot_source
+    assert "'detection_id': str(chain_ids.get('detection_id') or '')" in pilot_source
+    assert "'alert_id': str(chain_ids.get('alert_id') or '')" in pilot_source
+    assert "'incident_id': str(chain_ids.get('incident_id') or '')" in pilot_source
+    assert "'response_action_id': str(chain_ids.get('response_action_id') or '')" in pilot_source
+    assert "'evidence_package_id': str(chain_ids.get('evidence_package_id') or '')" in pilot_source
+    assert "'assertions': {" in pilot_source
+    assert "'evidence_package_exported': bool(chain_ids.get('evidence_package_id'))" in pilot_source
+
+
+def test_guided_workflow_evidence_export_keeps_export_jobs_rows_separate() -> None:
+    pilot_source = (REPO_ROOT / 'services/api/app/pilot.py').read_text(encoding='utf-8')
+
+    assert "'evidence_package_rows.json': [" in pilot_source
+    assert "FROM export_jobs" in pilot_source
+    assert "f\"- evidence_package_rows: {len(datasets['evidence_package_rows.json'])}\"" in pilot_source
