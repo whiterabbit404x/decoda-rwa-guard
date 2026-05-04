@@ -1,1 +1,8 @@
-[]
+[
+  {
+    "id": "2a64d1af-35b4-41eb-b0e8-6ed1b712358c",
+    "workspace_id": "2b20e3f5-f2a6-4458-a506-c94d8e026295",
+    "status": "completed",
+    "trigger_type": "manual"
+  }
+]

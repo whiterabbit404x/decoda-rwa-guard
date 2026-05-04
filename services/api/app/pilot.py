@@ -12688,6 +12688,7 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
     )
     return {
         'mode': 'controlled_pilot',
+        'evidence_source': evidence_source,
         'workspace_id': incident['workspace']['id'],
         'asset_id': asset['asset']['id'],
         'target_id': target['target']['id'],
@@ -12699,9 +12700,9 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
         'incident_id': incident['incident']['id'],
         'response_action_id': executed_action['action']['id'],
         'evidence_package_id': evidence_package_id,
-        'evidence_source': evidence_source,
         'controlled_pilot_ready': True,
         'broad_self_serve_ready': False,
+        'enterprise_procurement_ready': False,
         'workflow': {
             'signup': {'status': 'verified', 'user_id': user['id']},
             'workspace_creation': {'status': 'verified', 'workspace_id': incident['workspace']['id']},
@@ -12734,6 +12735,42 @@ def _export_guided_workflow_live_evidence_artifacts(*, workspace_id: str, chain_
                 'workspace_id': workspace_id,
                 'generated_at': utc_now_iso(),
                 'chain_ids': {key: str(value or '') for key, value in chain_ids.items()},
+                'live_successful_monitoring_demo': False,
+                'simulator_successful_monitoring_demo': True,
+                'telemetry_event_present': bool(chain_ids.get('telemetry_event_id')),
+                'telemetry_evidence_source': 'guided_simulator',
+                'detection_generated_from_telemetry': bool(chain_ids.get('detection_id') and chain_ids.get('telemetry_event_id')),
+                'alert_generated_from_detection': bool(chain_ids.get('alert_id') and chain_ids.get('detection_id')),
+                'incident_opened_from_alert': bool(chain_ids.get('incident_id') and chain_ids.get('alert_id')),
+                'response_action_recommended_or_executed': bool(chain_ids.get('response_action_id') and chain_ids.get('incident_id')),
+                'evidence_package_exported': bool(chain_ids.get('evidence_package_id')),
+                'billing_email_provider_checks_passing': False,
+                'broad_self_serve_blocked_reason': 'billing_email_provider_checks_missing_or_not_verified',
+                'onboarding_to_first_signal_complete': all(
+                    bool(chain_ids.get(key))
+                    for key in (
+                        'asset_id',
+                        'target_id',
+                        'monitoring_config_id',
+                        'monitoring_run_id',
+                        'telemetry_event_id',
+                    )
+                ),
+                'production_validation_proof_bundle_complete': all(
+                    bool(chain_ids.get(key))
+                    for key in (
+                        'monitoring_run_id',
+                        'telemetry_event_id',
+                        'detection_id',
+                        'alert_id',
+                        'incident_id',
+                        'response_action_id',
+                        'evidence_package_id',
+                    )
+                ),
+                'controlled_pilot_ready': True,
+                'broad_self_serve_ready': False,
+                'enterprise_procurement_ready': False,
             },
             'telemetry_events.json': [
                 _json_safe_value(dict(row))
@@ -12788,6 +12825,9 @@ def _export_guided_workflow_live_evidence_artifacts(*, workspace_id: str, chain_
                 'mode': 'controlled_pilot',
                 'evidence_source': 'guided_simulator',
                 'chain': {
+                    'asset_id': str(chain_ids.get('asset_id') or ''),
+                    'target_id': str(chain_ids.get('target_id') or ''),
+                    'monitoring_config_id': str(chain_ids.get('monitoring_config_id') or ''),
                     'monitoring_run_id': str(chain_ids.get('monitoring_run_id') or ''),
                     'telemetry_event_id': str(chain_ids.get('telemetry_event_id') or ''),
                     'detection_id': str(chain_ids.get('detection_id') or ''),
@@ -12797,17 +12837,22 @@ def _export_guided_workflow_live_evidence_artifacts(*, workspace_id: str, chain_
                     'evidence_package_id': str(chain_ids.get('evidence_package_id') or ''),
                 },
                 'assertions': {
-                    'signup_verified': bool(chain_ids.get('user_id')),
-                    'workspace_created': bool(workspace_id),
-                    'asset_created': bool(chain_ids.get('asset_id')),
-                    'monitoring_source_created': bool(chain_ids.get('target_id')),
-                    'monitoring_enabled': bool(chain_ids.get('monitoring_config_id')),
-                    'telemetry_ingested': bool(chain_ids.get('telemetry_event_id')),
-                    'detection_created': bool(chain_ids.get('detection_id')),
-                    'alert_created': bool(chain_ids.get('alert_id')),
-                    'incident_created': bool(chain_ids.get('incident_id')),
-                    'response_action_executed': bool(chain_ids.get('response_action_id')),
+                    'telemetry_created': bool(chain_ids.get('telemetry_event_id')),
+                    'detection_linked_to_telemetry': bool(chain_ids.get('detection_id') and chain_ids.get('telemetry_event_id')),
+                    'alert_linked_to_detection': bool(chain_ids.get('alert_id') and chain_ids.get('detection_id')),
+                    'incident_linked_to_alert': bool(chain_ids.get('incident_id') and chain_ids.get('alert_id')),
+                    'response_action_linked_to_incident': bool(chain_ids.get('response_action_id') and chain_ids.get('incident_id')),
                     'evidence_package_exported': bool(chain_ids.get('evidence_package_id')),
+                    'simulator_successful_monitoring_demo': True,
+                    'telemetry_event_present': bool(chain_ids.get('telemetry_event_id')),
+                    'detection_generated_from_telemetry': bool(chain_ids.get('detection_id') and chain_ids.get('telemetry_event_id')),
+                    'alert_generated_from_detection': bool(chain_ids.get('alert_id') and chain_ids.get('detection_id')),
+                    'incident_opened_from_alert': bool(chain_ids.get('incident_id') and chain_ids.get('alert_id')),
+                    'response_action_recommended_or_executed': bool(chain_ids.get('response_action_id') and chain_ids.get('incident_id')),
+                    'onboarding_to_first_signal_complete': all(
+                        bool(chain_ids.get(key))
+                        for key in ('asset_id', 'target_id', 'monitoring_config_id', 'monitoring_run_id', 'telemetry_event_id')
+                    ),
                 },
             },
             'evidence_package_rows.json': [
