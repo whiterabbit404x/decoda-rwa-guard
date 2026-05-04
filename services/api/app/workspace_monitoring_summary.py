@@ -47,6 +47,7 @@ CANONICAL_SUMMARY_KEYS = (
     'event_throughput_window',
     'event_throughput_window_seconds',
     'contradiction_flags',
+    'top_banner_reasons',
     'guard_flags',
     'status_reason',
     'db_failure_classification',
@@ -63,6 +64,10 @@ HARD_GUARD_FLAGS = {
     'heartbeat_only_with_live_claim',
     'live_evidence_without_live_telemetry_kind',
     'reporting_coverage_without_target_telemetry',
+    'asset_monitoring_attached_but_no_monitored_systems',
+    'ui_protected_assets_positive_but_runtime_zero',
+    'ui_live_monitoring_claim_without_telemetry',
+    'ui_healthy_claim_with_zero_reporting_systems',
 }
 HARD_GUARD_PRIORITY = (
     'offline_with_current_telemetry',
@@ -75,6 +80,10 @@ HARD_GUARD_PRIORITY = (
     'heartbeat_only_with_live_claim',
     'live_evidence_without_live_telemetry_kind',
     'reporting_coverage_without_target_telemetry',
+    'asset_monitoring_attached_but_no_monitored_systems',
+    'ui_protected_assets_positive_but_runtime_zero',
+    'ui_live_monitoring_claim_without_telemetry',
+    'ui_healthy_claim_with_zero_reporting_systems',
 )
 
 
@@ -169,6 +178,7 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'event_throughput_window': str(payload.get('event_throughput_window') or 'no_events').strip().lower(),
         'event_throughput_window_seconds': max(int(payload.get('event_throughput_window_seconds', 0) or 0), 0),
         'contradiction_flags': sorted({str(flag).strip() for flag in payload.get('contradiction_flags', []) if str(flag).strip()}),
+        'top_banner_reasons': [str(reason).strip() for reason in payload.get('top_banner_reasons', []) if str(reason).strip()],
         'guard_flags': sorted({str(flag).strip() for flag in payload.get('guard_flags', []) if str(flag).strip()}),
         'reason_codes': sorted({str(code).strip() for code in payload.get('reason_codes', []) if str(code).strip()}),
         'next_required_action': str(payload.get('next_required_action')).strip() if isinstance(payload.get('next_required_action'), str) and str(payload.get('next_required_action')).strip() else 'review_reason_codes',
