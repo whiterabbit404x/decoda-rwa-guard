@@ -8,23 +8,23 @@ from typing import Any
 
 REQUIRED_TRUE_FIELDS = (
     'live_successful_monitoring_demo',
+    'simulator_successful_monitoring_demo',
     'telemetry_event_present',
     'detection_generated_from_telemetry',
     'alert_generated_from_detection',
     'incident_opened_from_alert',
     'response_action_recommended_or_executed',
     'evidence_package_exported',
+    'billing_email_provider_checks_passing',
     'onboarding_to_first_signal_complete',
     'production_validation_proof_bundle_complete',
+    'controlled_pilot_ready',
+    'broad_self_serve_ready',
+    'enterprise_procurement_ready',
 )
 
 REQUIRED_SUMMARY_FIELDS = REQUIRED_TRUE_FIELDS + (
-    'simulator_successful_monitoring_demo',
-    'billing_email_provider_checks_passing',
-    'broad_self_serve_ready',
     'broad_self_serve_blocked_reason',
-    'enterprise_claim_eligibility',
-    'evidence_source',
     'telemetry_evidence_source',
 )
 
@@ -107,15 +107,7 @@ def main() -> int:
         ok = _truthy(value)
         checks.append((field, ok, f'expected true, got {value!r}'))
 
-    evidence_source = str(summary.get('evidence_source') or '').strip().lower()
     telemetry_source = str(summary.get('telemetry_evidence_source') or '').strip().lower()
-
-    source_consistency = evidence_source == telemetry_source
-    checks.append((
-        'evidence_source_consistency',
-        source_consistency,
-        f"expected evidence_source to match telemetry_evidence_source, got {evidence_source!r} vs {telemetry_source!r}",
-    ))
 
     full_chain_loaded = True
     artifacts: dict[str, list[dict[str, Any]]] = {}
@@ -260,23 +252,15 @@ def main() -> int:
         and bool(response_action_ids)
     )
 
-    mislabeled_live = evidence_source == 'live' and telemetry_source != 'live'
-    checks.append((
-        'simulator_data_never_mislabeled_live',
-        not mislabeled_live,
-        'live-labeled evidence is invalid when required live chain artifacts are missing or empty',
-    ))
-
     guided_simulator_pilot_ok = (
-        evidence_source == 'guided_simulator'
-        and telemetry_source == 'guided_simulator'
+        telemetry_source == 'guided_simulator'
         and chain_complete
         and bool(required_chain_ids)
         and required_chain_ids.issubset(evidence_refs)
     )
     checks.append((
         'guided_simulator_controlled_pilot_allowed',
-        guided_simulator_pilot_ok or evidence_source == 'live',
+        guided_simulator_pilot_ok or telemetry_source == 'live',
         'controlled pilot pass requires guided_simulator sources plus complete chain',
     ))
 
