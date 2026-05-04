@@ -5,10 +5,10 @@ from typing import Any
 
 
 CANONICAL_RUNTIME_STATUS = {'live', 'degraded', 'offline', 'idle'}
-CANONICAL_MONITORING_STATUS = {'live', 'limited', 'offline'}
+CANONICAL_MONITORING_STATUS = {'healthy', 'degraded', 'offline', 'not_configured'}
 CANONICAL_TELEMETRY_FRESHNESS = {'fresh', 'stale', 'unavailable'}
 CANONICAL_CONFIDENCE = {'high', 'medium', 'low', 'unavailable'}
-CANONICAL_EVIDENCE_SOURCE = {'live', 'simulator', 'replay', 'none'}
+CANONICAL_EVIDENCE_SOURCE = {'live_provider', 'simulator', 'none'}
 CANONICAL_CONTINUITY_STATUS = {'continuous_live', 'continuous_no_evidence', 'degraded', 'offline', 'idle_no_telemetry'}
 CANONICAL_SUMMARY_KEYS = (
     'workspace_configured',
@@ -109,8 +109,6 @@ def _normalized_runtime_status(value: str) -> str:
     normalized = str(value or '').strip().lower()
     if normalized in CANONICAL_RUNTIME_STATUS:
         return normalized
-    if normalized in {'healthy'}:
-        return 'live'
     if normalized in {'provisioning', 'disabled'}:
         return 'idle'
     if normalized in {'failed'}:
@@ -124,16 +122,19 @@ def _normalized_monitoring_status(
     reporting_systems_count: int,
     telemetry_freshness: str,
     contradiction_flags: list[str],
+    workspace_configured: bool,
 ) -> str:
+    if not workspace_configured:
+        return 'not_configured'
     if runtime_status == 'offline':
         return 'offline'
     if contradiction_flags:
-        return 'limited'
+        return 'degraded'
     if reporting_systems_count <= 0:
-        return 'limited'
+        return 'degraded'
     if runtime_status == 'live' and telemetry_freshness == 'fresh':
-        return 'live'
-    return 'limited'
+        return 'healthy'
+    return 'degraded'
 
 
 def _normalized_telemetry_freshness(value: str) -> str:
@@ -145,13 +146,42 @@ def _normalized_confidence(value: str) -> str:
 
 
 def _normalized_evidence_source(value: str) -> str:
-    return value if value in CANONICAL_EVIDENCE_SOURCE else 'none'
+    normalized = str(value or '').strip().lower()
+    if normalized in {'live', 'provider', 'live_provider'}:
+        return 'live_provider'
+    if normalized in {'simulator', 'replay'}:
+        return 'simulator'
+    return normalized if normalized in CANONICAL_EVIDENCE_SOURCE else 'none'
 
 
 def _normalized_continuity_status(value: str) -> str:
     return value if value in CANONICAL_CONTINUITY_STATUS else 'idle_no_telemetry'
 
 
+
+
+def _build_v2_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    runtime_chain = dict(payload.get('runtime_setup_chain') or {})
+    workflow_steps = list(runtime_chain.get('steps') or payload.get('workflow_steps') or [])
+    current_step = runtime_chain.get('current_step') or payload.get('current_step')
+    return {
+        'monitoring_status': _normalized_monitoring_status(
+            runtime_status=_normalized_runtime_status(str(payload.get('runtime_status', 'offline'))),
+            reporting_systems_count=max(int(payload.get('reporting_systems', payload.get('reporting_systems_count', 0)) or 0), 0),
+            telemetry_freshness=_normalized_telemetry_freshness(str(payload.get('freshness_status', payload.get('telemetry_freshness', 'unavailable')))),
+            contradiction_flags=sorted({str(flag).strip() for flag in payload.get('contradiction_flags', []) if str(flag).strip()}),
+            workspace_configured=bool(payload.get('workspace_configured', False)),
+        ),
+        'freshness_status': _normalized_telemetry_freshness(str(payload.get('freshness_status', payload.get('telemetry_freshness', 'unavailable')))),
+        'confidence_status': _normalized_confidence(str(payload.get('confidence_status', payload.get('confidence', 'unavailable')))),
+        'monitoring_targets': max(int(payload.get('monitored_systems', payload.get('monitored_systems_count', 0)) or 0), 0),
+        'active_alerts': max(int(payload.get('active_alerts_count', 0) or 0), 0),
+        'open_incidents': max(int(payload.get('active_incidents_count', 0) or 0), 0),
+        'evidence_source': _normalized_evidence_source(str(payload.get('evidence_source', payload.get('evidence_source_summary', 'none')))),
+        'workflow_steps': workflow_steps,
+        'current_step': str(current_step or 'asset_created'),
+        'contradiction_flags': sorted({str(flag).strip() for flag in payload.get('contradiction_flags', []) if str(flag).strip()}),
+    }
 def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
     canonical = {
         'workspace_configured': bool(payload.get('workspace_configured', False)),
@@ -159,7 +189,7 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'monitoring_status': (
             payload.get('monitoring_status')
             if payload.get('monitoring_status') in CANONICAL_MONITORING_STATUS
-            else 'offline'
+            else 'not_configured'
         ),
         'freshness_status': _normalized_telemetry_freshness(str(payload.get('freshness_status', payload.get('telemetry_freshness', 'unavailable')))),
         'confidence_status': _normalized_confidence(str(payload.get('confidence_status', payload.get('confidence', 'unavailable')))),
@@ -177,7 +207,7 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'protected_assets_count': max(int(payload.get('protected_assets_count', 0)), 0),
         'active_alerts_count': max(int(payload.get('active_alerts_count', 0)), 0),
         'active_incidents_count': max(int(payload.get('active_incidents_count', 0)), 0),
-        'evidence_source_summary': _normalized_evidence_source(str(payload.get('evidence_source_summary', 'none'))),
+        'evidence_source_summary': _normalized_evidence_source(str(payload.get('evidence_source_summary', payload.get('evidence_source', 'none')))),
         'continuity_status': _normalized_continuity_status(str(payload.get('continuity_status') or 'idle_no_telemetry')),
         'continuity_reason_codes': sorted({str(code).strip() for code in payload.get('continuity_reason_codes', []) if str(code).strip()}),
         'continuity_signals': dict(payload.get('continuity_signals') or {}),
@@ -201,7 +231,23 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'db_failure_reason': str(payload.get('db_failure_reason')).strip() if isinstance(payload.get('db_failure_reason'), str) and str(payload.get('db_failure_reason')).strip() else None,
         'runtime_setup_chain': dict(payload.get('runtime_setup_chain') or {}),
     }
-    return {key: canonical[key] for key in CANONICAL_SUMMARY_KEYS}
+    canonical_v2 = _build_v2_summary(canonical)
+    canonical['summary_v2'] = canonical_v2
+    canonical['monitoring_targets'] = canonical_v2['monitoring_targets']
+    canonical['active_alerts'] = canonical_v2['active_alerts']
+    canonical['open_incidents'] = canonical_v2['open_incidents']
+    canonical['evidence_source'] = canonical_v2['evidence_source']
+    canonical['workflow_steps'] = canonical_v2['workflow_steps']
+    canonical['current_step'] = canonical_v2['current_step']
+    return {**{key: canonical[key] for key in CANONICAL_SUMMARY_KEYS}, **{
+        'summary_v2': canonical['summary_v2'],
+        'monitoring_targets': canonical['monitoring_targets'],
+        'active_alerts': canonical['active_alerts'],
+        'open_incidents': canonical['open_incidents'],
+        'evidence_source': canonical['evidence_source'],
+        'workflow_steps': canonical['workflow_steps'],
+        'current_step': canonical['current_step'],
+    }}
 
 
 def build_runtime_setup_chain(*, counters: dict[str, int], timestamps: dict[str, str | None]) -> dict[str, Any]:
@@ -300,15 +346,15 @@ def build_workspace_monitoring_summary(
             last_coverage_telemetry_at
             and workspace_configured
             and normalized_reporting > 0
-            and normalized_evidence == 'live'
+            and normalized_evidence == 'live_provider'
             and int((now - last_coverage_telemetry_at).total_seconds()) <= telemetry_window_seconds
         )
         else 'unavailable'
     )
     evidence_source_summary = (
-        'live'
+        'live_provider'
         if (
-            normalized_evidence == 'live'
+            normalized_evidence == 'live_provider'
             and workspace_configured
             and normalized_reporting > 0
             and freshness_status == 'fresh'
@@ -329,12 +375,12 @@ def build_workspace_monitoring_summary(
         or (
             freshness_status == 'fresh'
             and confidence_status == 'high'
-            and normalized_evidence == 'live'
+            and normalized_evidence == 'live_provider'
         )
     )
     if normalized_reporting == 0 and monitoring_claimed_healthy:
         contradiction_flags.append('live_monitoring_without_reporting_systems')
-    live_telemetry_verified = normalized_evidence == 'live' and confidence_status == 'high'
+    live_telemetry_verified = normalized_evidence == 'live_provider' and confidence_status == 'high'
     if live_telemetry_verified and telemetry_timestamp is None:
         contradiction_flags.append('live_telemetry_verified_without_timestamp')
     if not workspace_configured and normalized_reporting > 0:
@@ -347,12 +393,12 @@ def build_workspace_monitoring_summary(
         and normalized_runtime in {'live'}
     ):
         contradiction_flags.append('heartbeat_only_with_live_claim')
-    if normalized_evidence == 'live' and normalized_telemetry_kind not in {'target_event', 'coverage'}:
+    if normalized_evidence == 'live_provider' and normalized_telemetry_kind not in {'target_event', 'coverage'}:
         contradiction_flags.append('live_evidence_without_live_telemetry_kind')
     if (
         normalized_reporting > 0
         and normalized_runtime == 'live'
-        and normalized_evidence == 'live'
+        and normalized_evidence == 'live_provider'
         and normalized_telemetry_kind == 'coverage'
         and last_telemetry_at is None
     ):
@@ -365,7 +411,7 @@ def build_workspace_monitoring_summary(
         and normalized_reporting > 0
         and freshness_status == 'fresh'
         and confidence_status == 'high'
-        and normalized_evidence == 'live'
+        and normalized_evidence == 'live_provider'
         and not degraded_reason_explicit
     )
     if idle_with_continuous_healthy_monitoring:
@@ -397,12 +443,13 @@ def build_workspace_monitoring_summary(
         reporting_systems_count=normalized_reporting,
         telemetry_freshness=freshness_status,
         contradiction_flags=contradiction_flags,
+        workspace_configured=bool(workspace_configured),
     )
     if not db_persistence_is_available:
         if normalized_runtime == 'live':
             normalized_runtime = 'degraded'
         if normalized_monitoring_status == 'live':
-            normalized_monitoring_status = 'limited'
+            normalized_monitoring_status = 'degraded'
         confidence_status = 'unavailable'
         if freshness_status == 'fresh':
             freshness_status = 'stale'
@@ -422,7 +469,7 @@ def build_workspace_monitoring_summary(
         if normalized_runtime == 'live':
             normalized_runtime = 'degraded'
         if normalized_monitoring_status == 'live':
-            normalized_monitoring_status = 'limited'
+            normalized_monitoring_status = 'degraded'
         if freshness_status == 'fresh':
             freshness_status = 'stale'
         confidence_status = 'unavailable'
