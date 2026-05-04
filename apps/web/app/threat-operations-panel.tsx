@@ -9,7 +9,6 @@ import { usePilotAuth } from 'app/pilot-auth-context';
 import { actionDisabledReason, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from './response-action-capabilities';
 import { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import { fetchRuntimeStatusDeduped } from './runtime-status-client';
-import ThreatChainPanel from './threat-chain-panel';
 import ThreatOverviewCard from './threat/threat-overview-card';
 import MonitoringHealthCard from './threat/monitoring-health-card';
 import DetectionFeed, { type DetectionRecord } from './threat/detection-feed';
@@ -1736,7 +1735,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     (runtimeStatusSnapshot as { can_generate_simulator_proof_chain?: boolean } | null)?.can_generate_simulator_proof_chain
     ?? (runtimeStatusSnapshot as { capabilities?: { can_generate_simulator_proof_chain?: boolean } } | null)?.capabilities?.can_generate_simulator_proof_chain,
   );
-  const canGenerateSimulatorProofChain = simulatorMode || simulatorProofChainCapability;
+  const canGenerateSimulatorProofChain = simulatorMode && simulatorProofChainCapability;
   const simulatorProofChainUnavailableCopy = 'Simulator-only action unavailable in live mode';
   const protectedAssetCount = Number(runtimeStatusSnapshot?.protected_assets_count ?? runtimeSummary?.protected_assets_count ?? 0);
   const workspaceConfigured = Boolean(runtimeStatusSnapshot?.workspace_configured ?? runtimeSummary?.workspace_configured ?? false);
@@ -2540,6 +2539,23 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     selectedThreatActionContext?.incidentId,
     shouldBlockThreatActionCreation,
   ]);
+
+  const canonicalChainSummary = runtimeSummary as (MonitoringRuntimeStatus['workspace_monitoring_summary'] & {
+    linked_monitored_system_count?: number;
+    detections_count?: number;
+  }) | null;
+  const chainBlockRows = [
+    { label: 'Asset exists', value: protectedAssetCount > 0 ? 'Yes' : 'No' },
+    { label: 'Target linked', value: Number(canonicalChainSummary?.linked_monitored_system_count ?? 0) > 0 ? 'Yes' : 'No' },
+    { label: 'Monitored system enabled', value: configuredSystems > 0 ? 'Yes' : 'No' },
+    { label: 'Worker heartbeat', value: runtimeStatusSnapshot?.last_heartbeat_at ? 'Yes' : 'No' },
+    { label: 'Last poll', value: runtimeSummary?.last_poll_at ? new Date(runtimeSummary.last_poll_at).toLocaleString() : 'Unavailable' },
+    { label: 'Last telemetry', value: runtimeSummary?.last_telemetry_at ? new Date(runtimeSummary.last_telemetry_at).toLocaleString() : 'Unavailable' },
+    { label: 'Detection count', value: String(Number(canonicalChainSummary?.detections_count ?? 0)) },
+    { label: 'Alert count', value: String(Number(runtimeSummary?.active_alerts_count ?? 0)) },
+    { label: 'Incident count', value: String(Number(runtimeSummary?.active_incidents_count ?? 0)) },
+  ];
+
   const monitoringViewModel = useMemo<MonitoringViewModel>(() => {
     const confirmLiveAction: ThreatActionButtonState = {
       disabled: Boolean(confirmLiveActionDisabledReason),
@@ -2657,6 +2673,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         incident_id: selectedThreatActionContext.incidentId,
         alert_id: selectedThreatActionContext.alertId,
         result_summary: `SIMULATED ${label} created from threat client (${contextLabel})`,
+        evidence_source: 'simulator',
       }),
     });
     if (!create.ok) {
@@ -2714,6 +2731,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         incident_id: selectedThreatActionContext?.incidentId,
         alert_id: selectedThreatActionContext?.alertId,
         result_summary: `${mode.toUpperCase()} ${label} created from threat operations panel`,
+        evidence_source: mode === 'simulated' ? 'simulator' : 'live_provider',
       }),
     });
     if (!create.ok) {
@@ -2879,6 +2897,12 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         domainLabels={monitoringHealthModel.domainLabels}
       />
       <DetectionFeed detections={detectionRecords} loading={loadingSnapshot} />
+      <div className="emptyStatePanel">
+        <h4>Canonical chain status</h4>
+        {chainBlockRows.map((row) => (
+          <p key={row.label} className="tableMeta">{row.label}: {row.value}</p>
+        ))}
+      </div>
       <AlertIncidentChain
         alert={chainSummary.alert}
         incident={chainSummary.incident}
