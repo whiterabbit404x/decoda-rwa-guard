@@ -27,6 +27,7 @@ from services.api.app.monitorable_target_types import (
 )
 from services.api.app.db_failure import classify_db_error
 from services.api.app.workspace_monitoring_summary import (
+    build_runtime_setup_chain,
     build_workspace_monitoring_summary,
     build_workspace_monitoring_summary_fallback,
 )
@@ -4863,6 +4864,12 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         latest_detection_payload: dict[str, Any] | None = None
         healthy_enabled_targets_count = 0
         healthy_enabled_assets_count = 0
+        verified_assets_count = 0
+        detections_count = 0
+        alerts_count = 0
+        incidents_count = 0
+        response_actions_count = 0
+        evidence_count = 0
         enabled_monitored_rows_count = 0
         healthy_enabled_target_ids: set[str] = set()
         healthy_enabled_target_asset_map: dict[str, str] = {}
@@ -5338,6 +5345,52 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     error_code='runtime_optional_query_failed',
                 )
                 response_actions_without_incident_count = 0
+            _mark_query_checkpoint('count_runtime_setup_chain')
+            try:
+                verified_assets_count = int(
+                    (
+                        connection.execute(
+                            f"""
+                            SELECT COUNT(*) AS c FROM assets
+                            WHERE workspace_id = %s
+                              AND LOWER(COALESCE(verification_status, '')) IN ('verified', 'approved', 'active')
+                            """,
+                            (workspace_id,),
+                        ).fetchone()
+                        or {}
+                    ).get('c')
+                    or 0
+                )
+                detections_count = int((latest_detection_count_row or {}).get('c') or 0) if 'latest_detection_count_row' in locals() else 0
+                alerts_count = int((open_alerts or {}).get('c') or 0)
+                incidents_count = int((open_incidents or {}).get('c') or 0)
+                response_actions_count = int(
+                    (
+                        connection.execute(
+                            'SELECT COUNT(*) AS c FROM response_actions WHERE workspace_id = %s',
+                            (workspace_id,),
+                        ).fetchone()
+                        or {}
+                    ).get('c')
+                    or 0
+                )
+                evidence_count = int(
+                    (
+                        connection.execute(
+                            'SELECT COUNT(*) AS c FROM evidence WHERE workspace_id = %s',
+                            (workspace_id,),
+                        ).fetchone()
+                        or {}
+                    ).get('c')
+                    or 0
+                )
+            except Exception:
+                verified_assets_count = 0
+                detections_count = 0
+                alerts_count = int((open_alerts or {}).get('c') or 0)
+                incidents_count = int((open_incidents or {}).get('c') or 0)
+                response_actions_count = 0
+                evidence_count = 0
             _mark_query_checkpoint('count_broken_targets')
             try:
                 broken_targets = connection.execute(
@@ -6443,6 +6496,23 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             summary['telemetry_freshness'] = 'unavailable'
             summary['coverage_state']['telemetry_freshness'] = 'unavailable'
         summary['linked_monitored_system_count'] = int(linked_monitored_system_count)
+        summary['runtime_setup_chain'] = build_runtime_setup_chain(
+            counters={
+                'assets_count': int(protected_assets_count),
+                'verified_assets_count': int(verified_assets_count),
+                'targets_count': int(healthy_enabled_targets_count),
+                'monitored_systems_count': int(system_count),
+                'detections_count': int(detections_count),
+                'alerts_count': int(alerts_count),
+                'incidents_count': int(incidents_count),
+                'response_actions_count': int(response_actions_count),
+                'evidence_count': int(evidence_count),
+            },
+            timestamps={
+                'last_heartbeat_at': summary.get('last_heartbeat_at'),
+                'last_telemetry_at': summary.get('last_telemetry_at'),
+            },
+        )
         continuity_evaluation = evaluate_workspace_monitoring_continuity(
             now=now,
             workspace_configured=workspace_configured,
