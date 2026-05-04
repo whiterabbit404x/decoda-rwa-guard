@@ -17,7 +17,7 @@ def _write_chain_artifacts(base, *, telemetry_source: str = 'guided_simulator') 
         'evidence_package_exported': True,
         'billing_email_provider_checks_passing': True,
         'controlled_pilot_ready': True,
-        'broad_self_serve_ready': True,
+        'broad_self_serve_ready': False,
         'broad_self_serve_blocked_reason': None,
         'enterprise_procurement_ready': True,
         'onboarding_to_first_signal_complete': True,
@@ -114,6 +114,31 @@ def test_validator_rejects_partial_top_level_evidence_refs_without_chain_structu
         'telemetry_event_id': 'te-1',
         'detection_id': 'det-1',
     }), encoding='utf-8')
+
+    monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json')])
+    assert validate_readiness_proof.main() == 2
+
+
+
+def test_validator_fails_when_alerts_are_empty(tmp_path, monkeypatch) -> None:
+    _write_chain_artifacts(tmp_path)
+    (tmp_path / 'alerts.json').write_text('[]', encoding='utf-8')
+
+    monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json')])
+    assert validate_readiness_proof.main() == 2
+
+
+def test_validator_fails_when_incidents_are_empty(tmp_path, monkeypatch) -> None:
+    _write_chain_artifacts(tmp_path)
+    (tmp_path / 'incidents.json').write_text('[]', encoding='utf-8')
+
+    monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json')])
+    assert validate_readiness_proof.main() == 2
+
+
+def test_validator_fails_when_runs_are_empty(tmp_path, monkeypatch) -> None:
+    _write_chain_artifacts(tmp_path)
+    (tmp_path / 'runs.json').write_text('[]', encoding='utf-8')
 
     monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json')])
     assert validate_readiness_proof.main() == 2
