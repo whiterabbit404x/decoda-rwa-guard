@@ -48,14 +48,10 @@ export function RuntimeSummaryProvider({ children }: { children: React.ReactNode
     const reasons = summary.continuity_reason_codes ?? [];
     const topReason = reasons[0] ?? summary.status_reason ?? 'summary_unavailable';
     const reasonMessageForCode = (code: string) => REASON_CODE_MESSAGES[code] ?? `Runtime condition: ${code.replaceAll('_', ' ')}.`;
-    const evidenceLabel = summary.evidence_source_summary === 'live'
-      ? 'Live provider evidence'
-      : 'Simulator evidence';
-    const existsLabel = `${summary.protected_assets_count} assets, ${summary.monitored_systems_count} monitored systems, ${summary.active_alerts_count} active alerts`;
+    const evidenceLabel = summary.evidence_source_summary === 'live' ? 'Live provider evidence' : summary.evidence_source_summary === 'none' ? 'No evidence configured' : 'Simulator evidence';
+    const existsLabel = `${summary.protected_assets_count} assets, ${summary.reporting_systems_count} reporting systems, ${summary.active_alerts_count} active alerts`;
     const missingLabel = reasonMessageForCode(topReason);
-    const nextActionLabel = summary.workspace_configured
-      ? 'Open Monitoring Sources to restore reporting coverage.'
-      : 'Complete onboarding steps to configure workspace monitoring.';
+    const nextActionLabel = summary.next_required_action ? summary.next_required_action.replaceAll('_', ' ') : 'review reason codes';
     return { summary, loading, reasonMessageForCode, evidenceLabel, existsLabel, missingLabel, nextActionLabel };
   }, [summary, loading]);
 

@@ -29,6 +29,9 @@ export type WorkspaceMonitoringTruth = {
   db_failure_reason?: string | null;
   contradiction_flags: string[];
   guard_flags: string[];
+  next_required_action?: string;
+  current_step?: string;
+  workflow_steps?: unknown[];
 };
 
 const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
@@ -58,6 +61,9 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   db_failure_reason: null,
   contradiction_flags: [],
   guard_flags: [],
+  next_required_action: 'review_reason_codes',
+  current_step: 'asset_created',
+  workflow_steps: [],
 };
 
 function asTrimmedString(value: unknown): string | null {
@@ -164,6 +170,9 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     db_failure_reason: dbFailureReason,
     contradiction_flags: normalizedContradictionFlags,
     guard_flags: normalizedGuardFlags,
+    next_required_action: asTrimmedString((summary as Record<string, unknown>).next_required_action) ?? 'review_reason_codes',
+    current_step: asTrimmedString((summary as Record<string, unknown>).current_step) ?? 'asset_created',
+    workflow_steps: Array.isArray((summary as Record<string, unknown>).workflow_steps) ? ((summary as Record<string, unknown>).workflow_steps as unknown[]) : [],
   };
 }
 
@@ -175,6 +184,9 @@ export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus 
     : null;
   return {
     ...truth,
+    next_required_action: asTrimmedString((status as Record<string, unknown> | null)?.next_required_action) ?? truth.next_required_action,
+    current_step: asTrimmedString((status as Record<string, unknown> | null)?.current_step) ?? truth.current_step,
+    workflow_steps: Array.isArray((status as Record<string, unknown> | null)?.workflow_steps) ? ((status as Record<string, unknown> | null)?.workflow_steps as unknown[]) : truth.workflow_steps,
     workspace_slug: asTrimmedString((status as Record<string, unknown> | null)?.workspace_slug),
     workspace_name: workspaceName ?? asTrimmedString((status as Record<string, unknown> | null)?.workspace_name),
   };
