@@ -865,6 +865,7 @@ td .tableMeta {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
   min-height: 100vh;
+  background: #070b14;
 }
 
 .appSidebar {
@@ -875,12 +876,23 @@ td .tableMeta {
   gap: 1rem;
   min-height: 100vh;
   padding: 1.25rem;
-  background: rgba(5, 9, 18, 0.94);
+  background: linear-gradient(180deg, rgba(8, 14, 28, 0.97), rgba(6, 11, 22, 0.98));
   border-right: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .appShellContent {
   padding: 1.5rem;
+  background: linear-gradient(180deg, rgba(8, 12, 22, 0.97), rgba(6, 9, 18, 0.98));
+}
+
+.appShellTop {
+  margin-bottom: 0.8rem;
+}
+
+.appShellPage,
+.productShellContent {
+  display: grid;
+  gap: 1rem;
 }
 
 .statusBanner {
@@ -931,10 +943,27 @@ td .tableMeta {
 }
 
 .appNav a {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
   padding: 0.8rem 0.9rem;
   border-radius: 0.9rem;
   text-decoration: none;
   color: #cbd7ef;
+}
+
+.appNavIcon {
+  width: 1.3rem;
+  height: 1.3rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: rgba(160, 188, 234, 0.2);
+  color: #eff5ff;
+  border: 1px solid rgba(170, 195, 236, 0.32);
 }
 
 .appNav a.active,
@@ -947,10 +976,23 @@ td .tableMeta {
 .systemStatusPanel,
 .emptyStatePanel,
 .detailDrawer {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(14, 22, 40, 0.74);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 1rem;
   padding: 1rem;
+}
+
+.tableWrap table thead,
+.tableWrap table thead tr,
+.tableWrap table th {
+  background: rgba(15, 25, 46, 0.95);
+}
+
+.chipRow .ruleChip,
+.muted .ruleChip,
+.statusBanner .ruleChip {
+  background: rgba(76, 106, 165, 0.22);
+  border-color: rgba(127, 159, 222, 0.4);
 }
 
 .emptyStatePanel {

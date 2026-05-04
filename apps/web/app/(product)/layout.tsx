@@ -13,7 +13,7 @@ import { RuntimeSummaryProvider } from '../runtime-summary-context';
 const TOKEN_COOKIE_NAME = 'decoda_session';
 
 function ProductLayoutLoading({ children }: { children: React.ReactNode }) {
-  return <>{children}</>;
+  return <div className="productShellContent">{children}</div>;
 }
 
 export default async function ProductLayout({ children }: { children: React.ReactNode }) {
@@ -35,7 +35,7 @@ export default async function ProductLayout({ children }: { children: React.Reac
   return (
     <RuntimeSummaryProvider><AppShell topBanner={<WorkspaceMonitoringModeBanner apiUrl={runtimeConfig.apiUrl} />}>
       <Suspense fallback={<ProductLayoutLoading>{children}</ProductLayoutLoading>}>
-        <AuthenticatedRoute>{children}</AuthenticatedRoute>
+        <AuthenticatedRoute><div className="productShellContent">{children}</div></AuthenticatedRoute>
       </Suspense>
     </AppShell></RuntimeSummaryProvider>
   );
