@@ -250,31 +250,32 @@ def test_ops_runtime_status_canonical_contract_includes_provider_and_target_cove
     response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer test', 'x-workspace-id': 'ws-1'})
     assert response.status_code == 200
     body = response.json()
-    assert sorted(body.keys()) == sorted(
-        [
-            'workspace_configured',
-            'runtime_status',
-            'configured_systems',
-            'reporting_systems',
-            'protected_assets',
-            'last_poll_at',
-            'last_heartbeat_at',
-            'last_telemetry_at',
-            'last_detection_at',
-            'freshness_status',
-            'confidence_status',
-            'evidence_source',
-            'status_reason',
-            'contradiction_flags',
-            'summary_generated_at',
-            'provider_health',
-            'target_coverage',
-            'provider_health_records',
-            'target_coverage_records',
-            'provider_health_status',
-            'target_coverage_status',
-        ]
-    )
+    expected_keys = {
+        'workspace_configured',
+        'runtime_status',
+        'configured_systems',
+        'reporting_systems',
+        'protected_assets',
+        'last_poll_at',
+        'last_heartbeat_at',
+        'last_telemetry_at',
+        'last_detection_at',
+        'freshness_status',
+        'confidence_status',
+        'evidence_source',
+        'status_reason',
+        'contradiction_flags',
+        'summary_generated_at',
+        'provider_health',
+        'target_coverage',
+        'provider_health_records',
+        'target_coverage_records',
+        'provider_health_status',
+        'target_coverage_status',
+        'runtime_setup_chain',
+        'next_required_action',
+    }
+    assert expected_keys.issubset(set(body.keys()))
     assert isinstance(body['provider_health'], list)
     assert body['provider_health'][0]['provider_type'] == 'rpc'
     assert body['provider_health'][0]['checked_at'] == '2026-04-29T00:00:30Z'

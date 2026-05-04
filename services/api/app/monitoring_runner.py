@@ -28,6 +28,7 @@ from services.api.app.monitorable_target_types import (
 from services.api.app.db_failure import classify_db_error
 from services.api.app.workspace_monitoring_summary import (
     build_runtime_setup_chain,
+    resolve_next_required_action,
     build_workspace_monitoring_summary,
     build_workspace_monitoring_summary_fallback,
 )
@@ -6502,6 +6503,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'verified_assets_count': int(verified_assets_count),
                 'targets_count': int(healthy_enabled_targets_count),
                 'monitored_systems_count': int(system_count),
+                'enabled_monitored_systems_count': int(enabled_system_count),
+                'simulator_signals_count': 1 if evidence_source == 'simulator' else 0,
                 'detections_count': int(detections_count),
                 'alerts_count': int(alerts_count),
                 'incidents_count': int(incidents_count),
@@ -6513,6 +6516,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 'last_telemetry_at': summary.get('last_telemetry_at'),
             },
         )
+        summary['next_required_action'] = resolve_next_required_action(summary.get('runtime_setup_chain'))
         continuity_evaluation = evaluate_workspace_monitoring_continuity(
             now=now,
             workspace_configured=workspace_configured,
