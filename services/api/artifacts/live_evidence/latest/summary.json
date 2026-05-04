@@ -1,6 +1,11 @@
 {
+<<<<<<< codex/ensure-controlled-pilot-checklist-passes-jg35iu
   "workspace_id": "09c2fbe9-8b1e-4029-87f8-0b0a93a83921",
   "generated_at": "2026-05-04T13:50:01.253334+00:00",
+=======
+  "workspace_id": "7335fb59-88f1-48bf-8a3b-5dec1d13f669",
+  "generated_at": "2026-05-04T13:35:50.917708+00:00",
+>>>>>>> main
   "live_successful_monitoring_demo": false,
   "simulator_successful_monitoring_demo": true,
   "telemetry_event_present": true,
@@ -43,6 +48,7 @@
     "billing_email_provider_checks_passing_or_broad_self_serve_blocked": true,
     "clean_onboarding_to_first_signal": true,
     "production_validation_proof_bundle": true
+<<<<<<< codex/ensure-controlled-pilot-checklist-passes-jg35iu
   },
   "checklist_evaluation": {
     "literal_passes_all_10": false,
@@ -55,5 +61,7 @@
       "point_1_satisfied_via_guided_simulator_demo",
       "point_8_satisfied_via_explicit_broad_self_serve_block_while_checks_pending"
     ]
+=======
+>>>>>>> main
   }
 }
