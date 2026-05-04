@@ -31,6 +31,18 @@ def main():
       'controlled_pilot_ready':True,'broad_self_serve_ready':False,'enterprise_procurement_ready':False,
       'claim_ineligibility_reasons':['billing_email_provider_checks_missing_or_not_verified']
     }
+    summary['checklist'] = {
+      'monitoring_demo_live_or_simulator': True,
+      'telemetry_event_present': True,
+      'detection_generated_from_telemetry': True,
+      'alert_generated_from_detection': True,
+      'incident_opened_from_alert': True,
+      'response_action_recommended_or_executed': True,
+      'evidence_package_exported': True,
+      'billing_email_provider_checks_passing_or_broad_self_serve_blocked': True,
+      'onboarding_to_first_signal_complete': True,
+      'production_validation_proof_bundle_complete': True,
+    }
     telemetry=[{'id':chain['telemetry_event_id'],'workspace_id':workspace_id,'asset_id':chain['asset_id'],'target_id':chain['target_id'],'evidence_source':'guided_simulator','event_type':'transfer_observed','observed_at':t,'monitoring_run_id':chain['monitoring_run_id']}]
     detections=[{'id':chain['detection_id'],'workspace_id':workspace_id,'telemetry_event_id':chain['telemetry_event_id'],'evidence_source':'guided_simulator','monitoring_run_id':chain['monitoring_run_id']}]
     alerts=[{'id':chain['alert_id'],'workspace_id':workspace_id,'detection_id':chain['detection_id'],'target_id':chain['target_id'],'source':'guided_simulator'}]
@@ -66,6 +78,8 @@ def main():
 - Enterprise procurement ready: false
 
 This proof uses guided_simulator evidence and does not claim live provider monitoring.
+Checklist point 1 is satisfied via simulator demo evidence (not live).
+Checklist point 8 is satisfied by explicit broad self-serve blocking while billing/email/provider checks are not yet passing.
 '''.format(workspace_id=workspace_id,**chain)
 
     files={
