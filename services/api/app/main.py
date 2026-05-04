@@ -3406,7 +3406,7 @@ def system_integrations_health(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_integration_health(request))
 
 
-@app.get('/system/readiness', summary='Workspace self-serve readiness diagnostics')
+@app.get('/system/readiness', summary='Workspace readiness diagnostics (controlled pilot, broad self-serve, enterprise procurement)')
 def system_workspace_readiness(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_workspace_readiness(request))
 

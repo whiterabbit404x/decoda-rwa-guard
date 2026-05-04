@@ -74,6 +74,9 @@ def test_workspace_readiness_exposes_gate_aggregation_and_ready_claim(monkeypatc
 
     payload = pilot.get_workspace_readiness(request=object())
 
+    assert payload['controlled_pilot_ready'] is True
+    assert payload['broad_self_serve_ready'] is True
+    assert payload['enterprise_procurement_ready'] is True
     assert payload['enterprise_broad_self_serve_ready'] is True
     assert payload['hard_gates_pass'] is True
     assert payload['details']['gate_aggregation']['billing']['pass'] is True
@@ -104,6 +107,9 @@ def test_workspace_readiness_fails_gate_reasons_deterministically(monkeypatch) -
 
     payload = pilot.get_workspace_readiness(request=object())
 
+    assert payload['controlled_pilot_ready'] is False
+    assert payload['broad_self_serve_ready'] is False
+    assert payload['enterprise_procurement_ready'] is False
     assert payload['enterprise_broad_self_serve_ready'] is False
     assert payload['hard_gates_pass'] is False
     assert payload['details']['billing_email_provider_checks_passing'] is False
@@ -115,6 +121,9 @@ def test_workspace_readiness_fails_gate_reasons_deterministically(monkeypatch) -
     assert 'email_not_verified' in payload['blocking_failure_reason_codes']
     assert 'provider_dependencies_unhealthy' in payload['blocking_failure_reason_codes']
     assert 'production_validation_proof_bundle_incomplete' in payload['blocking_failure_reason_codes']
+    assert 'alert_exists_failed' in payload['controlled_pilot_blocking_reason_codes']
+    assert 'billing_runtime_unavailable' in payload['broad_self_serve_blocking_reason_codes']
+    assert 'production_validation_proof_bundle_incomplete' in payload['enterprise_procurement_blocking_reason_codes']
 
 
 def test_workspace_readiness_fails_when_billing_email_provider_checks_missing(monkeypatch) -> None:
