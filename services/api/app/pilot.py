@@ -891,6 +891,19 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
         controlled_pilot_ready = not controlled_pilot_blocking_reasons
         broad_self_serve_ready = not broad_self_serve_blocking_reasons
         enterprise_procurement_ready = not enterprise_procurement_blocking_reasons
+        dependency_checks = {
+            check['key']: {
+                'pass': bool(check['pass']),
+                'reason_code': check.get('reason_code'),
+                'reason': check.get('reason'),
+                'blocking': bool(check.get('blocking')),
+            }
+            for check in checks
+        }
+
+        controlled_pilot_reason = 'Controlled pilot readiness passed via full guided simulator chain.' if controlled_pilot_ready else 'Controlled pilot readiness is blocked until the guided simulator chain is complete.'
+        broad_self_serve_reason = 'Broad self-serve readiness passed with billing, email, provider, and staging checks.' if broad_self_serve_ready else 'Broad self-serve readiness is blocked by billing/email/provider/staging checks.'
+        enterprise_procurement_reason = 'Enterprise procurement readiness passed with strong live/staging evidence and complete proof artifacts.' if enterprise_procurement_ready else 'Enterprise procurement readiness is blocked until stronger live/staging evidence and proof artifacts are complete.'
 
         hard_gate_failure = bool(gate_failure_reason_codes or blocking_failure_reason_codes)
         return {
@@ -899,16 +912,20 @@ def get_workspace_readiness(request: Request) -> dict[str, Any]:
             'checked_at': utc_now_iso(),
             'status': 'pass' if not blocking_failures else 'fail',
             'controlled_pilot_ready': controlled_pilot_ready,
+            'controlled_pilot_reason': controlled_pilot_reason,
             'controlled_pilot_blocking_reason_codes': controlled_pilot_blocking_reasons,
             'broad_self_serve_ready': broad_self_serve_ready,
+            'broad_self_serve_reason': broad_self_serve_reason,
             'broad_self_serve_blocking_reason_codes': broad_self_serve_blocking_reasons,
             'enterprise_procurement_ready': enterprise_procurement_ready,
+            'enterprise_procurement_reason': enterprise_procurement_reason,
             'enterprise_procurement_blocking_reason_codes': enterprise_procurement_blocking_reasons,
             'blocking_failures': blocking_failures,
             'blocking_failure_reason_codes': sorted(set(blocking_failure_reason_codes + gate_failure_reason_codes)),
             'hard_gates_pass': not hard_gate_failure,
             'enterprise_broad_self_serve_ready': broad_self_serve_ready,
             'checks': checks,
+            'dependency_checks': dependency_checks,
             'details': {
                 'counts': {
                     'assets': _workspace_count('assets'),
