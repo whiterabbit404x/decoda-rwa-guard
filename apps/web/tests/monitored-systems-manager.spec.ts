@@ -43,3 +43,10 @@ test('toggle conflict/rollback behavior re-fetches and applies server truth only
   expect(source).toContain('Unable to update system status.');
   expect(source).toContain('[stage:${errorDetail.stage}]');
 });
+
+test('empty-state renders treasury settlement call-to-action and repair endpoint hook', () => {
+  const source = readAppFile('monitored-systems-manager.tsx');
+  expect(source).toContain('No monitoring target is linked to this asset yet.');
+  expect(source).toContain('Create monitoring target for US Treasury Settlement Contract');
+  expect(source).toContain("fetchWithTimeout('/api/monitoring/systems/repair/treasury-settlement-target'");
+});
