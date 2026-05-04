@@ -18,6 +18,28 @@ function formatTelemetryTimestamp(value: string | null): string {
   return new Date(value).toLocaleString();
 }
 
+const REASON_CODE_MESSAGES: Record<string, string> = {
+  asset_monitoring_attached_but_no_monitored_systems: 'Assets are attached, but no monitored systems are configured yet.',
+  ui_protected_assets_positive_but_runtime_zero: 'Protected asset counts disagree between UI and runtime summary.',
+  ui_healthy_claim_with_zero_reporting_systems: 'Healthy monitoring cannot be claimed while reporting systems are zero.',
+  ui_live_monitoring_claim_without_telemetry: 'Live monitoring cannot be claimed while telemetry is unavailable.',
+  simulator_evidence_claimed_as_live_provider: 'Simulator evidence is present and cannot be treated as live-provider proof.',
+  alert_exists_without_detection: 'An alert exists without a linked detection record.',
+  incident_exists_without_alert: 'An incident exists without a linked alert record.',
+  response_action_exists_without_incident: 'A response action exists without a linked incident record.',
+};
+
+const NEXT_ACTION_CTA: Record<string, string> = {
+  create_monitored_system: 'Create monitored system',
+  enable_monitored_system: 'Enable monitored system',
+  ingest_live_telemetry: 'Ingest live telemetry',
+  trigger_detection: 'Trigger detection',
+  create_alert: 'Create alert',
+  open_incident: 'Open incident',
+  record_response_action: 'Record response action',
+  review_reason_codes: 'Review reason codes',
+};
+
 export default function MonitoringOverviewPanel() {
   const liveFeed = useLiveWorkspaceFeed();
   const runtime = liveFeed.runtimeStatus;
@@ -65,6 +87,9 @@ export default function MonitoringOverviewPanel() {
       : 'NONE';
   const reportingSystemsLabel = `${truth.reporting_systems_count}/${truth.monitored_systems_count}`;
   const runtimeReason = truth.status_reason ?? 'Not reported';
+  const guardReasonCodes = [...(truth.reason_codes ?? []), ...(truth.guard_flags ?? []), ...(truth.contradiction_flags ?? [])];
+  const humanizedGuardReasons = guardReasonCodes.map((code) => REASON_CODE_MESSAGES[code] ?? code.replaceAll('_', ' '));
+  const primaryFixCta = NEXT_ACTION_CTA[truth.next_required_action ?? 'review_reason_codes'] ?? 'Review reason codes';
   const lastDetection = truth.last_detection_at ?? null;
   const statusLabel = hasContradictions ? 'DEGRADED' : (runtime ? presentation.statusLabel : 'PENDING');
 
@@ -91,7 +116,8 @@ export default function MonitoringOverviewPanel() {
         <p className="metricMeta">{truthCopy}</p>
         <p className="metricMeta">{telemetryDetail}</p>
         <p className="metricMeta">{detectionDetail}</p>
-        {hasContradictions ? <p className="metricMeta">Contradiction flags: {contradictionFlags.join(', ')}</p> : null}
+        {hasContradictions ? <p className="metricMeta">Guard reasons: {humanizedGuardReasons.join(' · ')}</p> : null}
+        {hasContradictions ? <p className="metricMeta"><strong>Recommended fix:</strong> {primaryFixCta}</p> : null}
       </article>
       <article className="metricCard">
         <p className="metricLabel">Coverage freshness</p>

@@ -29,6 +29,7 @@ export type WorkspaceMonitoringTruth = {
   db_failure_reason?: string | null;
   contradiction_flags: string[];
   guard_flags: string[];
+  reason_codes: string[];
   next_required_action?: string;
   current_step?: string;
   workflow_steps?: unknown[];
@@ -61,6 +62,7 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   db_failure_reason: null,
   contradiction_flags: [],
   guard_flags: [],
+  reason_codes: [],
   next_required_action: 'review_reason_codes',
   current_step: 'asset_created',
   workflow_steps: [],
@@ -143,6 +145,12 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
         .filter((value): value is string => Boolean(value))
     : [];
   const normalizedGuardFlags = [...new Set(declaredGuardFlags)].sort();
+  const reasonCodes = Array.isArray((summary as Record<string, unknown>).reason_codes)
+    ? ((summary as Record<string, unknown>).reason_codes as unknown[])
+        .map((value) => asTrimmedString(value))
+        .filter((value): value is string => Boolean(value))
+    : [];
+  const normalizedReasonCodes = [...new Set(reasonCodes)].sort();
   return {
     workspace_slug: null,
     workspace_name: null,
@@ -170,6 +178,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     db_failure_reason: dbFailureReason,
     contradiction_flags: normalizedContradictionFlags,
     guard_flags: normalizedGuardFlags,
+    reason_codes: normalizedReasonCodes,
     next_required_action: asTrimmedString((summary as Record<string, unknown>).next_required_action) ?? 'review_reason_codes',
     current_step: asTrimmedString((summary as Record<string, unknown>).current_step) ?? 'asset_created',
     workflow_steps: Array.isArray((summary as Record<string, unknown>).workflow_steps) ? ((summary as Record<string, unknown>).workflow_steps as unknown[]) : [],
