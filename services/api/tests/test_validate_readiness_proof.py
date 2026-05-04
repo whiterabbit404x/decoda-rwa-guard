@@ -5,7 +5,12 @@ import json
 from services.api.scripts import validate_readiness_proof
 
 
-def _write_chain_artifacts(base, *, telemetry_source: str = 'guided_simulator') -> None:
+def _write_chain_artifacts(
+    base,
+    *,
+    telemetry_source: str = 'guided_simulator',
+    enterprise_procurement_ready: bool = False,
+) -> None:
     summary = {
         'live_successful_monitoring_demo': True,
         'simulator_successful_monitoring_demo': True,
@@ -19,7 +24,7 @@ def _write_chain_artifacts(base, *, telemetry_source: str = 'guided_simulator') 
         'controlled_pilot_ready': True,
         'broad_self_serve_ready': False,
         'broad_self_serve_blocked_reason': None,
-        'enterprise_procurement_ready': True,
+        'enterprise_procurement_ready': enterprise_procurement_ready,
         'onboarding_to_first_signal_complete': True,
         'production_validation_proof_bundle_complete': True,
         'telemetry_evidence_source': telemetry_source,
@@ -87,8 +92,12 @@ def test_validator_blocks_broad_self_serve_when_billing_email_provider_checks_fa
     assert validate_readiness_proof.main() == 2
 
 
-def test_validator_passes_controlled_pilot_with_full_guided_simulator_chain(tmp_path, monkeypatch) -> None:
-    _write_chain_artifacts(tmp_path, telemetry_source='guided_simulator')
+def test_validator_passes_controlled_pilot_with_enterprise_procurement_false_in_simulator_mode(tmp_path, monkeypatch) -> None:
+    _write_chain_artifacts(
+        tmp_path,
+        telemetry_source='guided_simulator',
+        enterprise_procurement_ready=False,
+    )
 
     monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json'), '--environment', 'test'])
     assert validate_readiness_proof.main() == 0
