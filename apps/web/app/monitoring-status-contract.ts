@@ -20,10 +20,17 @@ export type WorkspaceMonitoringSummary = {
   workspace_configured: boolean;
   runtime_status: 'live' | 'degraded' | 'offline' | 'idle';
   monitoring_status: 'live' | 'limited' | 'offline';
+  freshness_status: 'fresh' | 'stale' | 'unavailable';
+  confidence_status: 'high' | 'medium' | 'low' | 'unavailable';
+  protected_assets: number;
+  monitored_systems: number;
+  reporting_systems: number;
   last_poll_at: string | null;
   last_heartbeat_at: string | null;
   last_telemetry_at: string | null;
-  last_detection_at?: string | null;
+  last_detection_at: string | null;
+  reason_codes: string[];
+  next_required_action: string;
   telemetry_freshness: 'fresh' | 'stale' | 'unavailable';
   confidence: 'high' | 'medium' | 'low' | 'unavailable';
   reporting_systems_count: number;
@@ -190,6 +197,8 @@ export type MonitoringRuntimeStatus = {
   synthetic_leak_detected?: boolean;
   workspace_monitoring_summary?: WorkspaceMonitoringSummary;
   workspace_configured?: boolean;
+  reason_codes?: string[];
+  next_required_action?: string;
   monitoring_mode?: 'live' | 'hybrid' | 'simulator' | 'offline' | 'unavailable';
   runtime_status?: 'live' | 'degraded' | 'offline' | 'idle';
   configured_systems?: number;

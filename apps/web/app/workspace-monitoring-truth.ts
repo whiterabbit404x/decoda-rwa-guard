@@ -59,22 +59,6 @@ const DEFAULT_TRUTH: WorkspaceMonitoringTruth = {
   contradiction_flags: [],
   guard_flags: [],
 };
-const HARD_GUARD_FLAGS = new Set([
-  'offline_with_current_telemetry',
-  'telemetry_unavailable_with_high_confidence',
-  'live_monitoring_without_reporting_systems',
-  'live_telemetry_verified_without_timestamp',
-  'idle_runtime_with_active_monitoring_claim',
-  'coverage_only_persistent_no_evidence',
-]);
-const HARD_GUARD_PRIORITY = [
-  'offline_with_current_telemetry',
-  'telemetry_unavailable_with_high_confidence',
-  'live_monitoring_without_reporting_systems',
-  'live_telemetry_verified_without_timestamp',
-  'idle_runtime_with_active_monitoring_claim',
-  'coverage_only_persistent_no_evidence',
-] as const;
 
 function asTrimmedString(value: unknown): string | null {
   const normalized = String(value ?? '').trim();
@@ -92,12 +76,6 @@ function asTimestamp(value: unknown): string | null {
 function asCount(value: unknown): number {
   const numeric = Number(value ?? 0);
   return Number.isFinite(numeric) ? numeric : 0;
-}
-
-function appendFlag(flags: string[], value: string, enabled: boolean): void {
-  if (enabled) {
-    flags.push(value);
-  }
 }
 
 export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMonitoringSummary | null | undefined): WorkspaceMonitoringTruth {
@@ -139,59 +117,6 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   const normalizedEvidenceSource = evidenceSourceSummary === 'live' || evidenceSourceSummary === 'simulator' || evidenceSourceSummary === 'replay' || evidenceSourceSummary === 'none'
     ? evidenceSourceSummary
     : ((summary as Record<string, unknown>).evidence_source as WorkspaceMonitoringTruth['evidence_source_summary']) ?? 'none';
-  const synthesizedFlags = [...contradictionFlags];
-  appendFlag(synthesizedFlags, 'offline_with_current_telemetry', normalizedRuntimeStatus === 'offline' && normalizedTelemetryFreshness === 'fresh');
-  appendFlag(synthesizedFlags, 'telemetry_unavailable_with_high_confidence', normalizedTelemetryFreshness === 'unavailable' && normalizedConfidence === 'high');
-  const monitoringClaimedHealthy = normalizedRuntimeStatus === 'live'
-    || (normalizedTelemetryFreshness === 'fresh' && normalizedConfidence === 'high' && normalizedEvidenceSource === 'live');
-  appendFlag(synthesizedFlags, 'live_monitoring_without_reporting_systems', reportingSystemsCount === 0 && monitoringClaimedHealthy);
-  const coverageTelemetryAt = lastTelemetryAt ?? asTimestamp((summary as Record<string, unknown>).last_coverage_telemetry_at);
-  const liveTelemetryVerified = normalizedEvidenceSource === 'live' && normalizedConfidence === 'high';
-  appendFlag(synthesizedFlags, 'live_telemetry_verified_without_timestamp', liveTelemetryVerified && !coverageTelemetryAt);
-  const degradedReasonExplicit = resolvedStatusReason?.startsWith('runtime_status_degraded:') ?? false;
-  appendFlag(
-    synthesizedFlags,
-    'idle_runtime_with_active_monitoring_claim',
-    normalizedRuntimeStatus === 'idle'
-      && reportingSystemsCount > 0
-      && normalizedTelemetryFreshness === 'fresh'
-      && normalizedConfidence === 'high'
-      && normalizedEvidenceSource === 'live'
-      && !degradedReasonExplicit,
-  );
-  if (lastHeartbeatAt && !coverageTelemetryAt) {
-    appendFlag(synthesizedFlags, 'heartbeat_without_telemetry_timestamp', true);
-  }
-  if (lastPollAt && !coverageTelemetryAt) {
-    appendFlag(synthesizedFlags, 'poll_without_telemetry_timestamp', true);
-  }
-  const workspaceHasCoverage = monitoredSystemsCount > 0
-    || reportingSystemsCount > 0
-    || protectedAssetsCount > 0
-    || Boolean(coverageTelemetryAt)
-    || Boolean(lastPollAt)
-    || Boolean(lastHeartbeatAt);
-  appendFlag(synthesizedFlags, 'workspace_unconfigured_with_coverage', !workspaceConfigured && workspaceHasCoverage);
-  const validProtectedAssetCount = asCount((summary as Record<string, unknown>).valid_protected_asset_count);
-  const linkedMonitoredSystemCount = asCount((summary as Record<string, unknown>).linked_monitored_system_count);
-  const persistedEnabledConfigCount = asCount((summary as Record<string, unknown>).persisted_enabled_config_count);
-  const validTargetSystemLinkCount = asCount((summary as Record<string, unknown>).valid_target_system_link_count);
-  const linkageSignalsPresent = [
-    'valid_protected_asset_count',
-    'linked_monitored_system_count',
-    'persisted_enabled_config_count',
-    'valid_target_system_link_count',
-  ].some((key) => key in (summary as Record<string, unknown>));
-  appendFlag(
-    synthesizedFlags,
-    'workspace_configured_missing_required_links',
-    workspaceConfigured
-      && linkageSignalsPresent
-      && (validProtectedAssetCount <= 0
-        || linkedMonitoredSystemCount <= 0
-        || persistedEnabledConfigCount <= 0
-        || validTargetSystemLinkCount <= 0),
-  );
   const continuityStatusValue = asTrimmedString((summary as Record<string, unknown>).continuity_status);
   const continuityStatus = continuityStatusValue === 'continuous_live'
     || continuityStatusValue === 'continuous_no_evidence'
@@ -205,23 +130,13 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
         .map((value) => asTrimmedString(value))
         .filter((value): value is string => Boolean(value))
     : [];
-  if (continuityReasonCodes.includes('coverage_only_persistent_no_evidence')) {
-    appendFlag(synthesizedFlags, 'coverage_only_persistent_no_evidence', true);
-  }
-  const normalizedContradictionFlags = [...new Set(synthesizedFlags)].sort();
+  const normalizedContradictionFlags = [...new Set(contradictionFlags)].sort();
   const declaredGuardFlags = Array.isArray(summary.guard_flags)
     ? (summary.guard_flags as unknown[])
         .map((value) => asTrimmedString(value))
         .filter((value): value is string => Boolean(value))
     : [];
-  const normalizedGuardFlags = [...new Set([
-    ...declaredGuardFlags,
-    ...normalizedContradictionFlags.filter((flag) => HARD_GUARD_FLAGS.has(flag)),
-  ])].sort();
-  const prioritizedGuard = HARD_GUARD_PRIORITY.find((flag) => normalizedGuardFlags.includes(flag));
-  const normalizedStatusReason = prioritizedGuard
-    ? `guard:${prioritizedGuard}`
-    : resolvedStatusReason;
+  const normalizedGuardFlags = [...new Set(declaredGuardFlags)].sort();
   return {
     workspace_slug: null,
     workspace_name: null,
@@ -244,7 +159,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     evidence_source_summary: normalizedEvidenceSource,
     continuity_status: continuityStatus,
     continuity_reason_codes: continuityReasonCodes,
-    status_reason: normalizedStatusReason,
+    status_reason: resolvedStatusReason,
     db_failure_classification: dbFailureClassification,
     db_failure_reason: dbFailureReason,
     contradiction_flags: normalizedContradictionFlags,

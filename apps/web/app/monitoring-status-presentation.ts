@@ -1,11 +1,4 @@
 import type { WorkspaceMonitoringTruth } from './workspace-monitoring-truth';
-const HARD_GUARD_FLAGS = new Set([
-  'offline_with_current_telemetry',
-  'telemetry_unavailable_with_high_confidence',
-  'live_monitoring_without_reporting_systems',
-  'live_telemetry_verified_without_timestamp',
-  'idle_runtime_with_active_monitoring_claim',
-]);
 
 export type MonitoringPresentationStatus = 'live' | 'degraded' | 'offline' | 'stale' | 'limited coverage';
 export type MonitoringPresentationEvidence = 'verified' | 'recent' | 'delayed' | 'unavailable';
@@ -54,57 +47,19 @@ function normalizeStatus(
   evidence: MonitoringPresentationEvidence,
   freshness: MonitoringPresentationFreshness,
 ): MonitoringPresentationStatus {
-  const runtimeStatus = String(truth.runtime_status ?? '').trim().toLowerCase() === 'healthy'
-    ? 'live'
-    : truth.runtime_status;
-  const monitoringStatus = truth.monitoring_status ?? (runtimeStatus === 'live' ? 'live' : 'limited');
-  const contradictionGuardsTriggered = (truth.contradiction_flags ?? []).some((flag) => HARD_GUARD_FLAGS.has(flag));
-  if (truth.db_failure_reason) {
-    return runtimeStatus === 'offline' ? 'offline' : 'degraded';
-  }
-  if ((truth.guard_flags ?? []).length > 0 || contradictionGuardsTriggered) {
-    return runtimeStatus === 'offline' ? 'offline' : 'degraded';
-  }
-  if ((truth.contradiction_flags ?? []).length > 0) {
-    return 'limited coverage';
-  }
-  if (truth.continuity_status === 'continuous_no_evidence') {
-    return 'limited coverage';
-  }
-  if (monitoringStatus === 'offline') {
+  if (truth.monitoring_status === 'offline' || truth.runtime_status === 'offline') {
     return 'offline';
   }
-  if (monitoringStatus === 'limited') {
-    const liveCoverageVerified = (
-      truth.evidence_source_summary === 'live'
-      && truth.reporting_systems_count > 0
-      && truth.telemetry_freshness === 'fresh'
-      && truth.confidence === 'high'
-    );
-    if (liveCoverageVerified && runtimeStatus === 'live') {
-      return 'live';
-    }
-    if (evidence === 'unavailable') {
-      return 'degraded';
-    }
-    if (freshness === 'delayed') {
-      return 'stale';
-    }
-    return runtimeStatus === 'degraded' ? 'degraded' : 'limited coverage';
+  if (truth.monitoring_status === 'limited') {
+    return freshness === 'delayed' ? 'stale' : 'limited coverage';
   }
-  if (runtimeStatus === 'offline') {
-    return 'offline';
-  }
-  if (runtimeStatus === 'degraded') {
+  if (truth.runtime_status === 'degraded') {
     return 'degraded';
   }
-  if (runtimeStatus === 'idle') {
+  if (truth.runtime_status === 'idle') {
     return 'limited coverage';
   }
-  if (monitoringStatus === 'live') {
-    return evidence === 'unavailable' ? 'degraded' : 'live';
-  }
-  return evidence === 'unavailable' ? 'degraded' : 'limited coverage';
+  return evidence === 'unavailable' ? 'degraded' : 'live';
 }
 
 function formatTimestamp(kind: 'telemetry' | 'heartbeat' | 'poll', value: string | null): string {
