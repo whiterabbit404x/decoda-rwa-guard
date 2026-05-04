@@ -19,6 +19,10 @@ REQUIRED_TRUE_FIELDS = (
 )
 
 REQUIRED_SUMMARY_FIELDS = REQUIRED_TRUE_FIELDS + (
+    'simulator_successful_monitoring_demo',
+    'billing_email_provider_checks_passing',
+    'broad_self_serve_blocked_reason',
+    'enterprise_claim_eligibility',
     'evidence_source',
     'telemetry_evidence_source',
 )
