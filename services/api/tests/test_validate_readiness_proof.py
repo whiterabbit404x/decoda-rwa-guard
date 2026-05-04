@@ -53,11 +53,14 @@ def _write_chain_artifacts(
             'evidence_package_id': 'pkg-1',
         },
         'assertions': {
-            'telemetry_linked': True,
-            'detection_linked': True,
-            'alert_linked': True,
-            'incident_linked': True,
-            'response_linked': True,
+            'simulator_successful_monitoring_demo': True,
+            'telemetry_event_present': True,
+            'detection_generated_from_telemetry': True,
+            'alert_generated_from_detection': True,
+            'incident_opened_from_alert': True,
+            'response_action_recommended_or_executed': True,
+            'evidence_package_exported': True,
+            'onboarding_to_first_signal_complete': True,
         },
     }), encoding='utf-8')
 
@@ -101,6 +104,16 @@ def test_validator_passes_controlled_pilot_with_enterprise_procurement_false_in_
 
     monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json'), '--environment', 'test'])
     assert validate_readiness_proof.main() == 0
+
+
+def test_validator_fails_controlled_pilot_when_required_assertion_not_true(tmp_path, monkeypatch) -> None:
+    _write_chain_artifacts(tmp_path, telemetry_source='guided_simulator')
+    evidence = json.loads((tmp_path / 'evidence.json').read_text(encoding='utf-8'))
+    evidence['assertions']['incident_opened_from_alert'] = False
+    (tmp_path / 'evidence.json').write_text(json.dumps(evidence), encoding='utf-8')
+
+    monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json')])
+    assert validate_readiness_proof.main() == 2
 
 
 def test_validator_fails_when_proof_bundle_artifacts_are_empty(tmp_path, monkeypatch) -> None:
