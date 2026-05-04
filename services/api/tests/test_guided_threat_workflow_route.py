@@ -49,9 +49,9 @@ def test_guided_workflow_builds_telemetry_detection_alert_incident_response_evid
 
 def test_simulator_workflow_does_not_claim_live_evidence_source() -> None:
     pilot_source = (REPO_ROOT / 'services/api/app/pilot.py').read_text(encoding='utf-8')
-    assert "evidence_source = 'guided_simulator'" in pilot_source
-    assert 'guided_workflow_live_source_downgraded' in pilot_source
-    assert "evidence_source = 'guided_simulator'" in pilot_source
+    assert "raw_evidence_source = 'guided_simulator'" in pilot_source
+    assert "evidence_source = canonicalize_evidence_source(raw_evidence_source)" in pilot_source
+    assert "raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='live mode requires live_provider ingestion provenance.')" in pilot_source
 
 
 
@@ -82,7 +82,7 @@ def test_guided_workflow_evidence_export_has_controlled_pilot_schema() -> None:
 
     assert "'evidence.json': {" in pilot_source
     assert "'mode': 'controlled_pilot'" in pilot_source
-    assert "'evidence_source': 'guided_simulator'" in pilot_source
+    assert "'evidence_source': 'simulator'" in pilot_source
     assert "'chain': {" in pilot_source
     assert "'monitoring_run_id': str(chain_ids.get('monitoring_run_id') or '')" in pilot_source
     assert "'telemetry_event_id': str(chain_ids.get('telemetry_event_id') or '')" in pilot_source
@@ -101,3 +101,16 @@ def test_guided_workflow_evidence_export_keeps_export_jobs_rows_separate() -> No
     assert "'evidence_package_rows.json': [" in pilot_source
     assert "FROM export_jobs" in pilot_source
     assert "f\"- evidence_package_rows: {len(datasets['evidence_package_rows.json'])}\"" in pilot_source
+
+
+def test_guided_workflow_live_mode_uses_live_provider_only_with_live_provenance() -> None:
+    pilot_source = (REPO_ROOT / 'services/api/app/pilot.py').read_text(encoding='utf-8')
+    assert "if requested_live and not has_live_provenance:" in pilot_source
+    assert "raw_evidence_source = 'live_provider'" in pilot_source
+
+
+def test_guided_workflow_export_uses_canonical_evidence_source_labels() -> None:
+    pilot_source = (REPO_ROOT / 'services/api/app/pilot.py').read_text(encoding='utf-8')
+    assert "'telemetry_evidence_source': 'simulator'" in pilot_source
+    assert 'This proof uses simulator evidence and does not claim live provider monitoring.' in pilot_source
+    assert "def canonicalize_evidence_source" in pilot_source
