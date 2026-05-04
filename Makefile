@@ -89,18 +89,17 @@ proof-feature1-live:
 	$(MAKE) validate-feature1-live-artifacts
 
 validate-readiness-proof:
-	@bash -ec '\
+	@bash -euo pipefail -c '\
 		GUIDED_PROOF_ENV=staging; \
 		ARTIFACT_DIR=services/api/artifacts/live_evidence/latest; \
-		echo "[validate-readiness-proof] Running guided workflow in staging-safe simulator mode..."; \
+		echo "[validate-readiness-proof] Running guided workflow in controlled-pilot simulator-safe mode..."; \
 		GUIDED_PROOF_ENV=$$GUIDED_PROOF_ENV EVIDENCE_SOURCE=guided_simulator TELEMETRY_EVIDENCE_SOURCE=guided_simulator EVM_RPC_URL=$${EVM_RPC_URL:-simulator} API_URL=$${API_URL:-http://localhost:8000} python services/api/scripts/run_live_evidence_flow.py; \
-		echo "[validate-readiness-proof] Exporting readiness proof artifacts..."; \
+		echo "[validate-readiness-proof] Exporting services/api/artifacts/live_evidence/latest bundle..."; \
 		python services/api/scripts/export_live_proof_artifact_set.py; \
 		echo "[validate-readiness-proof] Validating readiness proof summary..."; \
-		python services/api/scripts/validate_readiness_proof.py --summary-path $$ARTIFACT_DIR/summary.json --environment $$GUIDED_PROOF_ENV || { \
-			echo "ERROR: readiness proof validation failed. Review the readiness check report above for failed points." >&2; \
-			exit 2; \
-		}; \
+		python services/api/scripts/validate_readiness_proof.py --summary-path $$ARTIFACT_DIR/summary.json --environment $$GUIDED_PROOF_ENV; \
+		echo "[validate-readiness-proof] Readiness flags:"; \
+		python -c "import json; s=json.load(open('$$ARTIFACT_DIR/summary.json')); print(f'controlled_pilot_ready: {s.get(\"controlled_pilot_ready\")}'); print(f'broad_self_serve_ready: {s.get(\"broad_self_serve_ready\")}'); print(f'enterprise_procurement_ready: {s.get(\"enterprise_procurement_ready\")}')"; \
 		echo "[validate-readiness-proof] Readiness proof passed."; \
 	'
 
