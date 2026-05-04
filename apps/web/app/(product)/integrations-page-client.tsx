@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { usePilotAuth } from '../pilot-auth-context';
+import RuntimeSummaryPanel from '../runtime-summary-panel';
 
 type RoutingRule = {
   channel_type: 'dashboard' | 'email' | 'webhook' | 'slack';
@@ -236,6 +237,7 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
   }
 
   return <main className="productPage">
+      <RuntimeSummaryPanel />
     <section className="featureSection"><div className="sectionHeader"><div><p className="eyebrow">System readiness</p><h1>Integrations health and delivery</h1><p className="lede">See Stripe, email, and Slack readiness before customers depend on production alerts.</p></div></div>
       <div className="threeColumnSection">
         <article className="dataCard"><p className="sectionEyebrow">Health summary</p>

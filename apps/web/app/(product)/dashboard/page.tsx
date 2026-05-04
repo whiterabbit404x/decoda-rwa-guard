@@ -1,6 +1,7 @@
 import DashboardLiveHydrator from '../../dashboard-live-hydrator';
 import { fetchDashboardPageData } from '../../dashboard-data';
 import { headers } from 'next/headers';
+import RuntimeSummaryPanel from '../../runtime-summary-panel';
 
 export const dynamic = 'force-dynamic';
 

@@ -1,6 +1,7 @@
 import ThreatOperationsPanel from '../../threat-operations-panel';
 import { fetchDashboardPageData } from '../../dashboard-data';
 import { renderRiskLabel } from '../../risk-normalization-labels';
+import RuntimeSummaryPanel from '../../runtime-summary-panel';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,6 +11,7 @@ export default async function ThreatPage() {
 
   return (
     <main className="productPage">
+      <RuntimeSummaryPanel />
       <section className="hero compactHero">
         <div>
           <p className="eyebrow">Threat monitoring</p>

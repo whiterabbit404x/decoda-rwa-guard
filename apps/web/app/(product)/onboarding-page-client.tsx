@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { usePilotAuth } from '../pilot-auth-context';
 
 import type { OnboardingProgress } from '../onboarding-progress';
+import RuntimeSummaryPanel from '../runtime-summary-panel';
 
 const STEP_COPY: Record<string, { title: string; detail: string; href: string; cta: string }> = {
   asset_added: { title: 'Step 1: Add your first asset', detail: 'Register the first wallet or contract your team needs to protect.', href: '/assets', cta: 'Add asset' },
@@ -35,6 +36,7 @@ export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
 
   return (
     <main className="productPage">
+      <RuntimeSummaryPanel />
       <section className="featureSection">
         <div className="sectionHeader">
           <div>

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { usePilotAuth } from '../../pilot-auth-context';
+import RuntimeSummaryPanel from '../../runtime-summary-panel';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 
@@ -29,7 +30,8 @@ export default function ExportsPage() {
 
   useEffect(() => { void loadJobs(); }, []);
 
-  return <main className="productPage"><section className="dataCard"><h1>Exports</h1><p className="muted">Generate real CSV/JSON artifacts from persisted workspace data.</p>
+  return <main className="productPage">
+      <RuntimeSummaryPanel /><section className="dataCard"><h1>Exports</h1><p className="muted">Generate real CSV/JSON artifacts from persisted workspace data.</p>
     <div className="buttonRow">
       <button type="button" onClick={() => createExport('history', 'csv')}>History CSV</button>
       <button type="button" onClick={() => createExport('alerts', 'json')}>Alerts JSON</button>

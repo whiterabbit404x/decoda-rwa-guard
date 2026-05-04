@@ -5,6 +5,7 @@ import { usePilotAuth } from '../pilot-auth-context';
 import { actionDisabledReason, actionModeLabel, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from '../response-action-capabilities';
 import { fetchRuntimeStatusDeduped } from '../runtime-status-client';
 import ThreatChainPanel from '../threat-chain-panel';
+import RuntimeSummaryPanel from '../runtime-summary-panel';
 
 export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
   const { authHeaders } = usePilotAuth();
@@ -157,6 +158,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
 
   return (
     <main className="productPage">
+      <RuntimeSummaryPanel />
       <section className="featureSection">
         <div className="sectionHeader"><div><p className="eyebrow">Operator queue</p><h1>Alerts</h1><p className="lede">Deduplicated alert queue with evidence-first triage and escalation actions.</p></div></div>
         <div className="buttonRow">
