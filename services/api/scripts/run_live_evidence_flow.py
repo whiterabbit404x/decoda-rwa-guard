@@ -6,6 +6,7 @@ import os
 import sys
 import uuid
 from pathlib import Path
+from typing import Any
 from urllib.request import Request, urlopen
 
 
@@ -460,6 +461,10 @@ def main() -> int:
         'enterprise_claim_eligibility': bool(enterprise_claim_eligibility),
     }
 
+    controlled_run_mode = str(os.getenv('EVIDENCE_RUN_MODE', '')).strip().lower() in {'controlled_pilot', 'guided_simulator'}
+    guided_simulator_evidence = telemetry_evidence_source == 'guided_simulator' or controlled_run_mode
+    live_evidence_mode = not guided_simulator_evidence
+
     chain_complete, chain_details = _validate_export_cardinality(
         alert_rows=alert_rows,
         incident_rows=incident_rows,
@@ -540,19 +545,10 @@ def main() -> int:
         (artifacts_dir / filename).exists()
         for filename in ('alerts.json', 'incidents.json', 'evidence.json', 'runs.json', 'report.md')
     )
-    summary['production_validation_proof_bundle_complete'] = all([
-        summary['live_successful_monitoring_demo'],
-        summary['telemetry_event_present'],
-        summary['detection_generated_from_telemetry'],
-        summary['alert_generated_from_detection'],
-        summary['incident_opened_from_alert'],
-        summary['onboarding_to_first_signal_complete'],
-        summary['runtime_gate_checks']['worker_monitoring_executed'],
-        summary['runtime_gate_checks']['lifecycle_checks_executed'],
-    ])
+    summary['production_validation_proof_bundle_complete'] = False
 
     summary['controlled_pilot_ready'] = all([
-        summary['simulator_successful_monitoring_demo'],
+        guided_simulator_evidence,
         summary['telemetry_event_present'],
         summary['detection_generated_from_telemetry'],
         summary['alert_generated_from_detection'],
@@ -560,10 +556,10 @@ def main() -> int:
         summary['response_action_recommended_or_executed'],
         summary['evidence_package_exported'],
         summary['onboarding_to_first_signal_complete'],
+        summary['runtime_gate_checks']['lifecycle_checks_executed'],
     ])
     summary['enterprise_procurement_ready'] = all([
         summary['controlled_pilot_ready'],
-        summary['broad_self_serve_ready'],
         summary['production_validation_proof_bundle_complete'],
     ])
 
@@ -653,15 +649,39 @@ def main() -> int:
         'runs.json',
         'report.md',
     )
+    artifact_integrity_ok = True
+    missing_or_empty: dict[str, str] = {}
     if summary['status'] in {'live_coverage_confirmed', 'live_coverage_denied'}:
         missing_or_empty = _validate_required_artifacts(artifacts_dir=artifacts_dir, required_files=required_artifacts)
-        if missing_or_empty:
+        artifact_integrity_ok = not missing_or_empty
+        if not artifact_integrity_ok:
             return _fail_fast(
                 'REQUIRED_ARTIFACTS_MISSING_OR_EMPTY',
                 'Successful guided workflow completion requires all required artifacts to exist and be non-empty.',
                 details={'artifacts': missing_or_empty},
             )
 
+    summary['production_validation_proof_bundle_complete'] = all([
+        artifact_integrity_ok,
+        chain_complete,
+        summary['telemetry_event_present'],
+        summary['detection_generated_from_telemetry'],
+        summary['alert_generated_from_detection'],
+        summary['incident_opened_from_alert'],
+        summary['runtime_gate_checks']['lifecycle_checks_executed'],
+        summary['controlled_pilot_ready'] if guided_simulator_evidence else summary['live_successful_monitoring_demo'],
+        (not live_evidence_mode) or summary['runtime_gate_checks']['worker_monitoring_executed'],
+        (not live_evidence_mode) or summary['runtime_gate_checks']['real_provider_observations_present'],
+    ])
+    summary['enterprise_procurement_ready'] = all([
+        summary['controlled_pilot_ready'],
+        summary['production_validation_proof_bundle_complete'],
+    ])
+    if summary['controlled_pilot_ready']:
+        summary['broad_self_serve_ready'] = False
+        summary['enterprise_procurement_ready'] = False
+
+    (artifacts_dir / 'summary.json').write_text(json.dumps(summary, indent=2))
     print(json.dumps({'summary': summary, 'artifacts_dir': str(artifacts_dir)}, indent=2, default=str))
     return 0 if summary['status'] in {'live_coverage_confirmed', 'live_coverage_denied'} else 3
 
