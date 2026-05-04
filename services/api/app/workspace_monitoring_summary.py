@@ -181,23 +181,38 @@ def _build_v2_summary(payload: dict[str, Any]) -> dict[str, Any]:
     runtime_chain = dict(payload.get('runtime_setup_chain') or {})
     workflow_steps = list(runtime_chain.get('steps') or payload.get('workflow_steps') or [])
     current_step = runtime_chain.get('current_step') or payload.get('current_step')
+    contradiction_flags = sorted({str(flag).strip() for flag in payload.get('contradiction_flags', []) if str(flag).strip()})
     return {
+        'workspace_id': str(payload.get('workspace_id') or '').strip() or None,
+        'workspace_name': str(payload.get('workspace_name') or '').strip() or None,
+        'workspace_configured': bool(payload.get('workspace_configured', False)),
         'monitoring_status': _normalized_monitoring_status(
             runtime_status=_normalized_runtime_status(str(payload.get('runtime_status', 'offline'))),
             reporting_systems_count=max(int(payload.get('reporting_systems', payload.get('reporting_systems_count', 0)) or 0), 0),
             telemetry_freshness=_normalized_telemetry_freshness(str(payload.get('freshness_status', payload.get('telemetry_freshness', 'unavailable')))),
-            contradiction_flags=sorted({str(flag).strip() for flag in payload.get('contradiction_flags', []) if str(flag).strip()}),
+            contradiction_flags=contradiction_flags,
             workspace_configured=bool(payload.get('workspace_configured', False)),
         ),
         'freshness_status': _normalized_telemetry_freshness(str(payload.get('freshness_status', payload.get('telemetry_freshness', 'unavailable')))),
         'confidence_status': _normalized_confidence(str(payload.get('confidence_status', payload.get('confidence', 'unavailable')))),
+        'protected_assets': max(int(payload.get('protected_assets', payload.get('protected_assets_count', 0)) or 0), 0),
         'monitoring_targets': max(int(payload.get('monitored_systems', payload.get('monitored_systems_count', 0)) or 0), 0),
+        'monitored_systems': max(int(payload.get('monitored_systems', payload.get('monitored_systems_count', 0)) or 0), 0),
+        'reporting_systems': max(int(payload.get('reporting_systems', payload.get('reporting_systems_count', 0)) or 0), 0),
         'active_alerts': max(int(payload.get('active_alerts_count', 0) or 0), 0),
         'open_incidents': max(int(payload.get('active_incidents_count', 0) or 0), 0),
+        'timestamps': {
+            'last_poll_at': payload.get('last_poll_at') if isinstance(payload.get('last_poll_at'), str) else None,
+            'last_heartbeat_at': payload.get('last_heartbeat_at') if isinstance(payload.get('last_heartbeat_at'), str) else None,
+            'last_telemetry_at': payload.get('last_telemetry_at') if isinstance(payload.get('last_telemetry_at'), str) else None,
+            'last_detection_at': payload.get('last_detection_at') if isinstance(payload.get('last_detection_at'), str) else None,
+        },
         'evidence_source': _normalized_evidence_source(str(payload.get('evidence_source', payload.get('evidence_source_summary', 'none')))),
+        'reason_codes': sorted({str(code).strip() for code in payload.get('reason_codes', []) if str(code).strip()}),
+        'contradiction_flags': contradiction_flags,
+        'next_required_action': str(payload.get('next_required_action')).strip() if isinstance(payload.get('next_required_action'), str) and str(payload.get('next_required_action')).strip() else 'review_reason_codes',
         'workflow_steps': workflow_steps,
         'current_step': str(current_step or 'asset_created'),
-        'contradiction_flags': sorted({str(flag).strip() for flag in payload.get('contradiction_flags', []) if str(flag).strip()}),
     }
 def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
     canonical = {
