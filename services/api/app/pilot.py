@@ -145,11 +145,20 @@ def utc_now_iso() -> str:
     return utc_now().isoformat()
 
 
+
+
+def canonicalize_evidence_source(value: str | None) -> str:
+    normalized = str(value or '').strip().lower()
+    if normalized in {'guided_simulator', 'simulator'}:
+        return 'simulator'
+    if normalized in {'live', 'live_provider', 'provider', 'indexer', 'rpc', 'compliance_feed'}:
+        return 'live_provider'
+    return normalized or 'simulator'
 def detection_evidence_origin_label(source: str | None) -> str | None:
     normalized = str(source or '').strip().lower()
     if normalized == 'simulator':
         return 'SIMULATED EVIDENCE'
-    if normalized == 'live':
+    if normalized in {'live', 'live_provider'}:
         return 'LIVE EVIDENCE'
     return None
 
@@ -12717,9 +12726,15 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
         requested_live = requested_mode == 'live' or mode_hint == 'live'
         runtime_live = runtime_mode == 'live'
         guided_mode = 'simulator'
-        evidence_source = 'guided_simulator'
+        raw_evidence_source = 'guided_simulator'
+        evidence_source = canonicalize_evidence_source(raw_evidence_source)
+        if requested_live and not has_live_provenance:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='live mode requires live_provider ingestion provenance.')
         if requested_live:
-            logger.warning(
+            guided_mode = 'live'
+            raw_evidence_source = 'live_provider'
+            evidence_source = canonicalize_evidence_source(raw_evidence_source)
+            logger.info(
                 'guided_workflow_live_source_downgraded workspace_id=%s requested_mode=%s runtime_mode=%s generated_chain=%s has_live_provenance=%s runtime_live=%s',
                 workspace_id,
                 requested_mode or mode_hint or 'unspecified',
@@ -12729,7 +12744,7 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
                 runtime_live,
             )
 
-        evidence_label = detection_evidence_origin_label('simulator')
+        evidence_label = detection_evidence_origin_label(evidence_source)
 
         asset = create_asset({'name': str(normalized.get('asset_name') or 'Guided Protected Asset'), 'asset_type': 'tokenized_fund', 'symbol': 'GUIDE'}, request)
         target = create_target({'name': str(normalized.get('monitored_system_name') or 'Guided Monitoring Source'), 'type': 'contract', 'asset_id': asset['asset']['id']}, request)
@@ -12900,7 +12915,7 @@ def _export_guided_workflow_live_evidence_artifacts(*, workspace_id: str, chain_
                 'live_successful_monitoring_demo': False,
                 'simulator_successful_monitoring_demo': True,
                 'telemetry_event_present': bool(chain_ids.get('telemetry_event_id')),
-                'telemetry_evidence_source': 'guided_simulator',
+                'telemetry_evidence_source': 'simulator',
                 'detection_generated_from_telemetry': bool(chain_ids.get('detection_id') and chain_ids.get('telemetry_event_id')),
                 'alert_generated_from_detection': bool(chain_ids.get('alert_id') and chain_ids.get('detection_id')),
                 'incident_opened_from_alert': bool(chain_ids.get('incident_id') and chain_ids.get('alert_id')),
@@ -12985,7 +13000,7 @@ def _export_guided_workflow_live_evidence_artifacts(*, workspace_id: str, chain_
             'evidence.json': {
                 'workspace_id': workspace_id,
                 'mode': 'controlled_pilot',
-                'evidence_source': 'guided_simulator',
+                'evidence_source': 'simulator',
                 'chain': {
                     'asset_id': str(chain_ids.get('asset_id') or ''),
                     'target_id': str(chain_ids.get('target_id') or ''),
@@ -13037,7 +13052,7 @@ def _export_guided_workflow_live_evidence_artifacts(*, workspace_id: str, chain_
             '',
             f"- workspace: `{workspace_id}`",
             f"- asset: `{chain_ids['asset_id']}`",
-            "- source: `guided_simulator`",
+            "- source: `simulator`",
             f"- run: `{bool(chain_ids['monitoring_run_id'])}`",
             f"- telemetry: `{bool(chain_ids['telemetry_event_id'])}`",
             f"- detection: `{bool(chain_ids['detection_id'])}`",
@@ -13050,7 +13065,7 @@ def _export_guided_workflow_live_evidence_artifacts(*, workspace_id: str, chain_
             'Broad self-serve ready: false',
             'Enterprise procurement ready: false',
             '',
-            'This proof uses guided_simulator evidence and does not claim live provider monitoring.',
+            'This proof uses simulator evidence and does not claim live provider monitoring.',
             '',
             '## Artifact row counts',
             f"- telemetry_events: {len(datasets['telemetry_events.json'])}",
