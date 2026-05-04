@@ -65,11 +65,14 @@ REQUIRED_EVIDENCE_CHAIN_FIELDS = (
 )
 
 REQUIRED_EVIDENCE_ASSERTION_FIELDS = (
-    'telemetry_linked',
-    'detection_linked',
-    'alert_linked',
-    'incident_linked',
-    'response_linked',
+    'simulator_successful_monitoring_demo',
+    'telemetry_event_present',
+    'detection_generated_from_telemetry',
+    'alert_generated_from_detection',
+    'incident_opened_from_alert',
+    'response_action_recommended_or_executed',
+    'evidence_package_exported',
+    'onboarding_to_first_signal_complete',
 )
 
 
@@ -329,9 +332,16 @@ def main() -> int:
     assertions = assertions if isinstance(assertions, dict) else {}
 
     for field in REQUIRED_EVIDENCE_ASSERTION_FIELDS:
-        value = assertions.get(field)
-        ok = isinstance(value, bool)
-        checks.append((f'evidence_assertion_{field}_boolean', ok, f'evidence.assertions.{field} must be boolean'))
+        exists = field in assertions
+        checks.append((f'evidence_assertion_{field}_present', exists, f'evidence.assertions.{field} is required'))
+
+        if controlled_pilot_mode:
+            value = assertions.get(field)
+            checks.append((
+                f'evidence_assertion_{field}_true_for_controlled_pilot',
+                value is True,
+                f'evidence.assertions.{field} must be boolean true for controlled pilot validation',
+            ))
 
     evidence_refs = _reference_values(
         chain,
