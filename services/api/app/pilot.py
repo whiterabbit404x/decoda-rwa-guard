@@ -12550,11 +12550,35 @@ def run_guided_threat_workflow(payload: dict[str, Any], request: Request) -> dic
         )
         connection.execute('UPDATE detections SET linked_alert_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid AND workspace_id = %s', (alert_id, detection_id, workspace_id))
         connection.commit()
-    incident = escalate_alert_to_incident(alert_id, {'reason': 'Guided workflow escalation'}, request)
-    action = create_enforcement_action({'incident_id': incident['incident']['id'], 'action_type': 'notify_team', 'operator_notes': 'Guided workflow recommendation.'}, request)
+    incident = escalate_alert_to_incident(
+        alert_id,
+        {
+            'reason': 'Guided workflow escalation',
+            'evidence_source': evidence_source,
+            'has_live_provenance': has_live_provenance,
+        },
+        request,
+    )
+    action = create_enforcement_action(
+        {
+            'incident_id': incident['incident']['id'],
+            'action_type': 'notify_team',
+            'operator_notes': 'Guided workflow recommendation.',
+            'evidence_source': evidence_source,
+            'has_live_provenance': has_live_provenance,
+        },
+        request,
+    )
     approve_enforcement_action(action['action']['id'], request)
     executed_action = execute_enforcement_action(action['action']['id'], request)
-    evidence_export = create_proof_bundle_export({'incident_id': incident['incident']['id']}, request)
+    evidence_export = create_proof_bundle_export(
+        {
+            'incident_id': incident['incident']['id'],
+            'evidence_source': evidence_source,
+            'has_live_provenance': has_live_provenance,
+        },
+        request,
+    )
     evidence_package_id = evidence_export.get('export_job_id')
     return {
         'workspace_id': incident['workspace']['id'],
