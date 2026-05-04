@@ -19,7 +19,6 @@ REQUIRED_TRUE_FIELDS = (
     'onboarding_to_first_signal_complete',
     'production_validation_proof_bundle_complete',
     'controlled_pilot_ready',
-    'broad_self_serve_ready',
     'enterprise_procurement_ready',
 )
 
@@ -91,6 +90,17 @@ def _reference_values(record: dict[str, Any], *keys: str) -> set[str]:
     return values
 
 
+def _contains_simulator_label(payload: Any) -> bool:
+    if isinstance(payload, dict):
+        return any(_contains_simulator_label(value) for value in payload.values())
+    if isinstance(payload, list):
+        return any(_contains_simulator_label(value) for value in payload)
+    if isinstance(payload, str):
+        value = payload.strip().lower()
+        return 'simulator' in value or 'guided' in value
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description='Validate readiness proof summary fields and guard against simulator/live confusion.'
@@ -137,6 +147,12 @@ def main() -> int:
         exists = artifact_path.exists()
         checks.append((f'{filename}_exists', exists, f'missing required artifact {artifact_path}'))
         if not exists:
+            full_chain_loaded = False
+            continue
+
+        file_size = artifact_path.stat().st_size
+        checks.append((f'{filename}_not_empty_file', file_size > 0, f'artifact file is empty: {artifact_path}'))
+        if file_size == 0:
             full_chain_loaded = False
             continue
 
@@ -282,6 +298,7 @@ def main() -> int:
         bool(required_chain_ids) and required_chain_ids.issubset(evidence_refs),
         'evidence package must reference every id in telemetry→detection→alert→incident→response chain',
     ))
+    linked_chain_complete = bool(required_chain_ids) and required_chain_ids.issubset(evidence_refs)
 
     # Strict anti-mislabeling: simulator-origin data cannot claim live provenance.
     chain_complete = (
@@ -305,6 +322,16 @@ def main() -> int:
         'controlled pilot pass requires guided_simulator sources plus complete chain',
     ))
 
+    simulator_chain_marked_live = telemetry_source == 'live' and (
+        _contains_simulator_label(evidence_payload)
+        or any(_contains_simulator_label(records) for records in artifacts.values())
+    )
+    checks.append((
+        'live_source_not_simulator_generated',
+        not simulator_chain_marked_live,
+        'guided/simulator generated chain cannot be labeled live',
+    ))
+
     blocking_reasons = [str(reason).lower() for reason in summary.get('claim_ineligibility_reasons') or [] if reason]
     broad_self_serve_ready = summary.get('broad_self_serve_ready') is True
     billing_checks_passing = summary.get('billing_email_provider_checks_passing') is True
@@ -323,6 +350,25 @@ def main() -> int:
         'self_serve_blocking_reasons_consistency',
         readiness_reasons_consistent,
         'broad self-serve readiness cannot be true when claim_ineligibility_reasons include billing/email/provider blockers',
+    ))
+
+    production_bundle_complete = summary.get('production_validation_proof_bundle_complete') is True
+    checks.append((
+        'production_bundle_requires_complete_linked_chain',
+        (not production_bundle_complete) or (chain_complete and linked_chain_complete),
+        'production_validation_proof_bundle_complete=true requires complete linked telemetry→detection→alert→incident→response chain',
+    ))
+
+    checks.append((
+        'controlled_pilot_allows_self_serve_blocked',
+        not (
+            telemetry_source == 'guided_simulator'
+            and summary.get('controlled_pilot_ready') is True
+            and chain_complete
+            and linked_chain_complete
+        )
+        or (summary.get('broad_self_serve_ready') is not True),
+        'guided simulator controlled pilot should keep broad self-serve blocked until readiness gates pass',
     ))
 
     failures = [row for row in checks if not row[1]]
