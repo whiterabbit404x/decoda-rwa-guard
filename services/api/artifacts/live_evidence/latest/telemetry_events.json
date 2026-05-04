@@ -1,0 +1,12 @@
+[
+  {
+    "id": "243cf3ed-ddd0-4eab-b207-322690be6b62",
+    "workspace_id": "2b20e3f5-f2a6-4458-a506-c94d8e026295",
+    "asset_id": "8dd852e8-c881-4097-9bca-fd525bda0161",
+    "target_id": "72acbd27-8c75-49af-8b44-47ca708b4a10",
+    "evidence_source": "guided_simulator",
+    "event_type": "transfer_observed",
+    "observed_at": "2026-05-04T13:02:34.391925+00:00",
+    "monitoring_run_id": "2a64d1af-35b4-41eb-b0e8-6ed1b712358c"
+  }
+]
