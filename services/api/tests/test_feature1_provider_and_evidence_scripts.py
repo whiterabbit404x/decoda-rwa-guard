@@ -975,3 +975,22 @@ def test_feature1_evidence_script_missing_asset_fields_rejects_non_list_flow_pat
         'expected_oracle_update_cadence_seconds': 120,
     })
     assert 'expected_flow_patterns' in missing
+
+def test_run_live_evidence_flow_report_contains_required_readiness_wording() -> None:
+    source = Path('services/api/scripts/run_live_evidence_flow.py').read_text(encoding='utf-8')
+
+    assert "'# Decoda RWA Guard Readiness Proof\\n\\n'" in source
+    assert "f\"- workspace: `{summary['workspace_id']}`\\n\"" in source
+    assert "f\"- asset: `{summary['protected_asset_context'].get('asset_identifier')}`\\n\"" in source
+    assert "f\"- source: `{summary['evidence_source']}`\\n\"" in source
+    assert "f\"- run: `{summary['worker_monitoring_executed']}`\\n\"" in source
+    assert "f\"- telemetry: `{summary['telemetry_event_present']}`\\n\"" in source
+    assert "f\"- detection: `{summary['detection_generated_from_telemetry']}`\\n\"" in source
+    assert "f\"- alert: `{summary['alert_generated_from_detection']}`\\n\"" in source
+    assert "f\"- incident: `{summary['incident_opened_from_alert']}`\\n\"" in source
+    assert "f\"- response action: `{summary['response_action_recommended_or_executed']}`\\n\"" in source
+    assert "f\"- evidence package: `{summary['evidence_package_exported']}`\\n\\n\"" in source
+    assert "'Controlled pilot ready: true\\n'" in source
+    assert "'Broad self-serve ready: false\\n'" in source
+    assert "'Enterprise procurement ready: false\\n\\n'" in source
+    assert "'This proof uses guided_simulator evidence and does not claim live provider monitoring.\\n'" in source

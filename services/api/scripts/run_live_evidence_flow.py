@@ -615,7 +615,7 @@ def main() -> int:
     (artifacts_dir / 'response_actions.json').write_text(json.dumps(response_actions_rows, indent=2, default=str))
     (artifacts_dir / 'runs.json').write_text(json.dumps(run_rows, indent=2, default=str))
     (artifacts_dir / 'report.md').write_text(
-        '# Feature1 Evidence\n\n'
+        '# Decoda RWA Guard Readiness Proof\n\n'
         '## Chain summary\n'
         f"- workspace: `{summary['workspace_id']}`\n"
         f"- asset: `{summary['protected_asset_context'].get('asset_identifier')}`\n"
@@ -625,7 +625,7 @@ def main() -> int:
         f"- detection: `{summary['detection_generated_from_telemetry']}`\n"
         f"- alert: `{summary['alert_generated_from_detection']}`\n"
         f"- incident: `{summary['incident_opened_from_alert']}`\n"
-        f"- response: `{summary['response_action_recommended_or_executed']}`\n"
+        f"- response action: `{summary['response_action_recommended_or_executed']}`\n"
         f"- evidence package: `{summary['evidence_package_exported']}`\n\n"
         'Evidence source: guided_simulator\n\n'
         'Controlled pilot ready: true\n'
