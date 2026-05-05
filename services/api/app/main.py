@@ -2206,6 +2206,11 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'next_action': str(summary_v2.get('next_required_action') or summary.get('next_required_action') or payload.get('next_required_action') or 'review_reason_codes'),
             'current_step': str(summary_v2.get('current_step') or 'asset_created'),
             'workflow_steps': list(summary_v2.get('workflow_steps') or []),
+            'workflow': dict(summary_v2.get('workflow') or {
+                'steps': list(summary_v2.get('workflow_steps') or []),
+                'current_step': str(summary_v2.get('current_step') or 'asset_created'),
+                'next_required_action': str(summary_v2.get('next_required_action') or summary.get('next_required_action') or payload.get('next_required_action') or 'review_reason_codes'),
+            }),
         }
         canonical_runtime_summary['contradiction_flags'] = list(summary_v2.get('contradiction_flags') or summary.get('contradiction_flags') or payload.get('contradiction_flags') or [])
         if canonical_runtime_summary['contradiction_flags']:
@@ -2435,6 +2440,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'next_retry_at': background_loop_health.get('next_retry_at'),
             'backoff_seconds': background_loop_health.get('backoff_seconds'),
             'workspace_monitoring_summary': fallback_summary,
+            'workspace_monitoring_runtime': dict(fallback_summary.get('summary_v2') or {}),
             'continuity_status': fallback_summary.get('continuity_status'),
             'continuity_reason_codes': list(fallback_summary.get('continuity_reason_codes') or []),
             'continuity_signals': dict(fallback_summary.get('continuity_signals') or {}),

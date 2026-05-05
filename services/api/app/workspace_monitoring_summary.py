@@ -53,6 +53,13 @@ CANONICAL_SUMMARY_KEYS = (
     'db_failure_classification',
     'db_failure_reason',
     'runtime_setup_chain',
+    'workflow_steps',
+    'current_step',
+    'workflow',
+    'counts',
+    'timestamps',
+    'statuses',
+    'evidence_source',
 )
 
 RUNTIME_SETUP_STEP_ORDER = (
@@ -220,6 +227,7 @@ def _build_v2_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'last_telemetry_at': payload.get('last_telemetry_at') if isinstance(payload.get('last_telemetry_at'), str) else None,
         'last_detection_at': payload.get('last_detection_at') if isinstance(payload.get('last_detection_at'), str) else None,
     }
+    next_required_action = str(payload.get('next_required_action')).strip() if isinstance(payload.get('next_required_action'), str) and str(payload.get('next_required_action')).strip() else 'review_reason_codes'
     return {
         'workspace': workspace,
         'workspace_id': workspace['id'],
@@ -240,9 +248,14 @@ def _build_v2_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'statuses': statuses,
         'reason_codes': sorted({str(code).strip() for code in payload.get('reason_codes', []) if str(code).strip()}),
         'contradiction_flags': contradiction_flags,
-        'next_required_action': str(payload.get('next_required_action')).strip() if isinstance(payload.get('next_required_action'), str) and str(payload.get('next_required_action')).strip() else 'review_reason_codes',
+        'next_required_action': next_required_action,
         'workflow_steps': workflow_steps,
         'current_step': str(current_step or 'asset_created'),
+        'workflow': {
+            'steps': workflow_steps,
+            'current_step': str(current_step or 'asset_created'),
+            'next_required_action': next_required_action,
+        },
     }
 def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
     summary_v2 = _build_v2_summary(payload)
@@ -304,14 +317,19 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
     canonical['evidence_source'] = canonical_v2['evidence_source']
     canonical['workflow_steps'] = canonical_v2['workflow_steps']
     canonical['current_step'] = canonical_v2['current_step']
+    canonical['workflow'] = dict(canonical_v2.get('workflow') or {
+        'steps': canonical['workflow_steps'],
+        'current_step': canonical['current_step'],
+        'next_required_action': canonical['next_required_action'],
+    })
+    canonical['counts'] = dict(canonical_v2.get('counts') or {})
+    canonical['timestamps'] = dict(canonical_v2.get('timestamps') or {})
+    canonical['statuses'] = dict(canonical_v2.get('statuses') or {})
     return {**{key: canonical[key] for key in CANONICAL_SUMMARY_KEYS}, **{
         'summary_v2': canonical['summary_v2'],
         'monitoring_targets': canonical['monitoring_targets'],
         'active_alerts': canonical['active_alerts'],
         'open_incidents': canonical['open_incidents'],
-        'evidence_source': canonical['evidence_source'],
-        'workflow_steps': canonical['workflow_steps'],
-        'current_step': canonical['current_step'],
     }}
 
 
