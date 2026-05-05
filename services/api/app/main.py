@@ -2201,6 +2201,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'evidence_source': str(summary_v2.get('evidence_source') or payload.get('evidence_source') or 'none'),
             'reason_codes': list(summary_v2.get('reason_codes') or payload.get('reason_codes') or payload.get('continuity_reason_codes') or []),
             'contradiction_flags': list(summary_v2.get('contradiction_flags') or payload.get('contradiction_flags') or []),
+            'next_required_action': str(summary_v2.get('next_required_action') or summary.get('next_required_action') or payload.get('next_required_action') or 'review_reason_codes'),
             'next_action': str(summary_v2.get('next_required_action') or summary.get('next_required_action') or payload.get('next_required_action') or 'review_reason_codes'),
             'current_step': str(summary_v2.get('current_step') or 'asset_created'),
             'workflow_steps': list(summary_v2.get('workflow_steps') or []),
