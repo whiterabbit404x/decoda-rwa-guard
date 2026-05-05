@@ -32,6 +32,25 @@ const REASON_CODE_MESSAGES: Record<string, string> = {
   runtime_contradiction_alert_without_detection: 'An alert exists without linked detection evidence.',
   runtime_contradiction_incident_without_alert: 'An incident exists without a linked alert.',
   runtime_contradiction_response_action_without_incident: 'A response action exists without a linked incident.',
+  live_monitoring_without_reporting_systems: 'Live monitoring requires at least one reporting monitored system.',
+  asset_monitoring_attached_but_no_monitored_systems: 'Assets are configured but no monitored system is attached.',
+  simulator_evidence_claimed_as_live_provider: 'Simulator telemetry is being represented as live provider evidence.',
+  alert_exists_without_detection: 'Alerts must be backed by at least one detection.',
+  incident_exists_without_alert: 'Incidents must be linked to at least one alert.',
+  response_action_exists_without_incident: 'Response actions must be linked to an incident.',
+};
+
+const NEXT_ACTION_LABELS: Record<string, string> = {
+  add_asset: 'Add a protected asset',
+  verify_asset: 'Verify asset',
+  create_monitoring_target: 'Create monitoring target',
+  enable_monitored_system: 'Enable monitored system',
+  start_simulator_signal: 'Start telemetry signal',
+  view_detection: 'Review detections',
+  open_incident: 'Open incident',
+  export_evidence_package: 'Export evidence package',
+  resolve_runtime_contradictions: 'Resolve runtime contradictions',
+  review_reason_codes: 'Review runtime reason codes',
 };
 
 const RuntimeSummaryContext = createContext<RuntimeSummaryContextValue | null>(null);
@@ -62,7 +81,7 @@ export function RuntimeSummaryProvider({ children }: { children: React.ReactNode
     const evidenceLabel = summary.evidence_source_summary === 'live' ? 'Live provider evidence' : summary.evidence_source_summary === 'none' ? 'No evidence configured' : 'Simulator evidence';
     const existsLabel = `${summary.protected_assets_count} assets, ${summary.reporting_systems_count} reporting systems, ${summary.active_alerts_count} active alerts`;
     const missingLabel = reasonMessageForCode(topReason);
-    const nextActionLabel = summary.next_required_action ? summary.next_required_action.replaceAll('_', ' ') : 'review reason codes';
+    const nextActionLabel = NEXT_ACTION_LABELS[summary.next_required_action] ?? 'Review runtime reason codes';
     const fixCtaLabel = summary.next_required_action === 'resolve_runtime_contradictions'
       ? 'Fix monitoring contradictions'
       : 'Review monitoring setup';
