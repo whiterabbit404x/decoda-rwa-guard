@@ -1,9 +1,26 @@
 import { expect, test } from '@playwright/test';
 import { APP_NAV_ITEMS } from '../app/product-nav';
 
-test('snapshots top-level product navigation labels and order', async () => {
+test('snapshots top-level product navigation labels/routes and order', async () => {
+  expect(APP_NAV_ITEMS).toEqual([
+    { href: '/onboarding', label: 'Getting Started' },
+    { href: '/dashboard', label: 'Dashboard' },
+    { href: '/assets', label: 'Assets' },
+    { href: '/monitoring-sources', label: 'Monitoring Sources' },
+    { href: '/threat', label: 'Threat Monitoring' },
+    { href: '/alerts', label: 'Alerts' },
+    { href: '/incidents', label: 'Incidents' },
+    { href: '/response-actions', label: 'Response Actions' },
+    { href: '/exports', label: 'Evidence' },
+    { href: '/integrations', label: 'Integrations' },
+    { href: '/settings', label: 'Settings' },
+    { href: '/resilience', label: 'System Health' },
+  ]);
+});
+
+test('snapshots top-level product navigation labels order', async () => {
   expect(APP_NAV_ITEMS.map((item) => item.label)).toEqual([
-    'Onboarding',
+    'Getting Started',
     'Dashboard',
     'Assets',
     'Monitoring Sources',
