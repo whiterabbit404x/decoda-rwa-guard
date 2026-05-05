@@ -635,6 +635,7 @@ def build_workspace_monitoring_summary_fallback(
             reporting_systems_count=0,
             telemetry_freshness=normalized_freshness,
             contradiction_flags=[],
+            workspace_configured=bool(workspace_configured),
         )
     )
     summary = {
