@@ -7,7 +7,7 @@ import { usePilotAuth } from '../pilot-auth-context';
 import type { OnboardingProgress } from '../onboarding-progress';
 import RuntimeSummaryPanel from '../runtime-summary-panel';
 import { ActionPanel, MetricCard, StepRail } from '../components/ui-primitives';
-import { NEXT_ACTION_CTA, WORKFLOW_STEP_LABELS, WORKFLOW_STEP_ORDER } from '../workflow-steps';
+import { NEXT_ACTION_CTA, ONBOARDING_TOP_STEPPER, WORKFLOW_STEP_LABELS, WORKFLOW_STEP_ORDER } from '../workflow-steps';
 
 
 function workflowCompletionFromState(state: OnboardingProgress | null, stepId: string): boolean {
@@ -58,12 +58,28 @@ export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
   const nextCopy = nextStep ? STEP_COPY[nextStep.key] : null;
   const workflowSteps = WORKFLOW_STEP_ORDER.map((id) => ({ id, complete: workflowCompletionFromState(state, id) }));
   const firstPendingStep = workflowSteps.find((step) => !step.complete);
+  const topStepperSteps = ONBOARDING_TOP_STEPPER.map((step) => ({
+    ...step,
+    complete: workflowCompletionFromState(state, step.canonicalStepId),
+  }));
+  const topStepperCurrentIndex = topStepperSteps.findIndex((step) => !step.complete);
+  const topStepperActiveIndex = topStepperCurrentIndex === -1 ? topStepperSteps.length - 1 : topStepperCurrentIndex;
   const firstPendingCta = firstPendingStep ? NEXT_ACTION_CTA[({ workspace_created: 'add_asset', asset_created: 'verify_asset', asset_verified: 'create_monitoring_target', monitoring_target_created: 'enable_monitored_system', monitored_system_created: 'start_simulator_signal', worker_reporting: 'start_simulator_signal', telemetry_received: 'view_detection', detection_created: 'open_incident', alert_created: 'open_incident', incident_opened: 'export_evidence_package', response_ready: 'export_evidence_package', evidence_export_ready: 'export_evidence_package' } as Record<string, string>)[firstPendingStep.id] ?? 'review_reason_codes'] : null;
 
   return (
     <main className="productPage">
       <RuntimeSummaryPanel />
       <section className="featureSection">
+        <div aria-label="Onboarding steps" data-testid="onboarding-top-stepper" role="list" className="buttonRow">
+          {topStepperSteps.map((step, index) => {
+            const status = step.complete ? 'complete' : index === topStepperActiveIndex ? 'current' : 'upcoming';
+            return (
+              <span key={step.canonicalStepId} role="listitem" className="badge" data-step-status={status}>
+                {step.label}
+              </span>
+            );
+          })}
+        </div>
         <div className="sectionHeader">
           <div>
             <p className="eyebrow">Self-serve setup wizard</p>
@@ -80,6 +96,19 @@ export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
             <p className="sectionEyebrow">Resume setup</p>
             {nextCopy ? <><p className="muted">Next: <strong>{nextCopy.title}</strong></p><p className="muted">{nextCopy.detail}</p><Link href={nextCopy.href} prefetch={false}>{nextCopy.cta}</Link></> : <><p className="muted">All core setup steps are complete.</p><div className="buttonRow"><Link href="/dashboard" prefetch={false}>Open Dashboard</Link><Link href="/threat" prefetch={false}>Open Threat Monitoring</Link></div></>}
             <p className="muted">First non-complete workflow CTA: <strong>{firstPendingCta ?? 'All steps complete'}</strong></p>
+          </ActionPanel>
+          <ActionPanel title="Current Step">
+            {nextCopy ? <><p className="muted"><strong>{nextCopy.title}</strong></p><p className="muted">{nextCopy.detail}</p></> : <p className="muted">All backend onboarding steps currently report complete.</p>}
+          </ActionPanel>
+          <ActionPanel title="Resources">
+            <p className="muted">Runtime truth stays backend-driven so your team can resume this setup from any session.</p>
+            <ul>
+              <li><Link href="/help" prefetch={false}>Read onboarding help</Link></li>
+              <li><Link href="/monitoring-sources" prefetch={false}>Review monitoring sources</Link></li>
+            </ul>
+          </ActionPanel>
+          <ActionPanel title="Next Action">
+            {nextCopy ? <><p className="muted">Take the next backend-confirmed setup step.</p><Link href={nextCopy.href} prefetch={false}>{nextCopy.cta}</Link></> : <p className="muted">No pending onboarding step reported by backend progress.</p>}
           </ActionPanel>
         </div>
       </section>

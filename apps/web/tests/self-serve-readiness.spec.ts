@@ -58,6 +58,7 @@ test('auth context and operational module pages use live customer workflow langu
   const authContext = read('pilot-auth-context.tsx');
   const threatPanel = read('threat-operations-panel.tsx');
   const nav = read('product-nav.ts');
+  const workflowSteps = read('workflow-steps.ts');
 
   expect(authContext).toContain('if (response.status === 401) {');
   expect(authContext).toContain('await signOut();');
@@ -73,12 +74,20 @@ test('onboarding wizard and help/legal pages are present for self-serve setup', 
   const onboarding = read('(product)/onboarding-page-client.tsx');
   const help = read('(product)/help/page.tsx');
   const nav = read('product-nav.ts');
+  const workflowSteps = read('workflow-steps.ts');
   const security = read('security/page.tsx');
   const securitySettingsRoute = read('(product)/settings/security/page.tsx');
   const settingsPage = read('settings-page-client.tsx');
 
   expect(onboarding).toContain('Self-serve setup wizard');
   expect(onboarding).toContain('/onboarding/progress');
+  expect(onboarding).toContain('data-testid="onboarding-top-stepper"');
+  expect(onboarding).toContain('Workspace');
+  expect(workflowSteps).toContain("label: 'Add Asset'");
+  expect(workflowSteps).toContain("label: 'Connect Monitoring'");
+  expect(workflowSteps).toContain("label: 'Enable System'");
+  expect(workflowSteps).toContain("label: 'First Signal'");
+  expect(onboarding).toContain('ActionPanel title="Next Action"');
   expect(help).toContain('self-serve workspace onboarding');
   expect(nav).toContain("{ href: '/onboarding', label: 'Onboarding' }");
   expect(nav).toContain("{ href: '/response-actions', label: 'Response Actions' }");
