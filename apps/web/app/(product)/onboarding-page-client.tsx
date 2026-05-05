@@ -7,6 +7,28 @@ import { usePilotAuth } from '../pilot-auth-context';
 import type { OnboardingProgress } from '../onboarding-progress';
 import RuntimeSummaryPanel from '../runtime-summary-panel';
 import { ActionPanel, MetricCard, StepRail } from '../components/ui-primitives';
+import { NEXT_ACTION_CTA, WORKFLOW_STEP_LABELS, WORKFLOW_STEP_ORDER } from '../workflow-steps';
+
+
+function workflowCompletionFromState(state: OnboardingProgress | null, stepId: string): boolean {
+  if (!state) return false;
+  const byKey = new Map(state.steps.map((step) => [step.key, step.complete]));
+  switch (stepId) {
+    case 'workspace_created': return true;
+    case 'asset_created': return Boolean(byKey.get('asset_added'));
+    case 'asset_verified': return Boolean(byKey.get('asset_added'));
+    case 'monitoring_target_created': return Boolean(byKey.get('target_created'));
+    case 'monitored_system_created': return Boolean(byKey.get('monitoring_started'));
+    case 'worker_reporting': return Boolean(byKey.get('monitoring_started'));
+    case 'telemetry_received': return Boolean(byKey.get('evidence_recorded'));
+    case 'detection_created': return Boolean(byKey.get('evidence_recorded'));
+    case 'alert_created': return Boolean(byKey.get('evidence_recorded'));
+    case 'incident_opened': return Boolean(byKey.get('evidence_recorded'));
+    case 'response_ready': return Boolean(byKey.get('evidence_recorded'));
+    case 'evidence_export_ready': return Boolean(byKey.get('evidence_recorded'));
+    default: return false;
+  }
+}
 
 const STEP_COPY: Record<string, { title: string; detail: string; href: string; cta: string }> = {
   asset_added: { title: 'Step 1: Add your first asset', detail: 'Register the first wallet or contract your team needs to protect.', href: '/assets', cta: 'Add asset' },
@@ -34,6 +56,9 @@ export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
 
   const nextStep = useMemo(() => state?.steps.find((step) => !step.complete) ?? null, [state]);
   const nextCopy = nextStep ? STEP_COPY[nextStep.key] : null;
+  const workflowSteps = WORKFLOW_STEP_ORDER.map((id) => ({ id, complete: workflowCompletionFromState(state, id) }));
+  const firstPendingStep = workflowSteps.find((step) => !step.complete);
+  const firstPendingCta = firstPendingStep ? NEXT_ACTION_CTA[({ workspace_created: 'add_asset', asset_created: 'verify_asset', asset_verified: 'create_monitoring_target', monitoring_target_created: 'enable_monitored_system', monitored_system_created: 'start_simulator_signal', worker_reporting: 'start_simulator_signal', telemetry_received: 'view_detection', detection_created: 'open_incident', alert_created: 'open_incident', incident_opened: 'export_evidence_package', response_ready: 'export_evidence_package', evidence_export_ready: 'export_evidence_package' } as Record<string, string>)[firstPendingStep.id] ?? 'review_reason_codes'] : null;
 
   return (
     <main className="productPage">
@@ -54,13 +79,14 @@ export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
           <ActionPanel title="Resume setup">
             <p className="sectionEyebrow">Resume setup</p>
             {nextCopy ? <><p className="muted">Next: <strong>{nextCopy.title}</strong></p><p className="muted">{nextCopy.detail}</p><Link href={nextCopy.href} prefetch={false}>{nextCopy.cta}</Link></> : <><p className="muted">All core setup steps are complete.</p><div className="buttonRow"><Link href="/dashboard" prefetch={false}>Open Dashboard</Link><Link href="/threat" prefetch={false}>Open Threat Monitoring</Link></div></>}
+            <p className="muted">First non-complete workflow CTA: <strong>{firstPendingCta ?? 'All steps complete'}</strong></p>
           </ActionPanel>
         </div>
       </section>
 
       <section className="featureSection">
-        <div className="sectionHeader"><div><p className="eyebrow">Setup steps</p><h2>Four-step launch flow</h2></div></div>
-        <StepRail steps={(state?.steps ?? []).map((step) => { const copy = STEP_COPY[step.key]; return copy ? { key: step.key, title: copy.title, detail: copy.detail, complete: step.complete, source: step.source, href: copy.href, cta: copy.cta } : null; }).filter(Boolean) as any} />
+        <div className="sectionHeader"><div><p className="eyebrow">Setup steps</p><h2>Workflow progression</h2></div></div>
+        <StepRail steps={workflowSteps.map((step) => ({ key: step.id, title: WORKFLOW_STEP_LABELS[step.id], detail: WORKFLOW_STEP_LABELS[step.id], complete: step.complete, source: step.complete ? 'automatic' : 'pending', href: '/threat', cta: firstPendingCta ?? 'Review workflow' })) as any} />
       </section>
     </main>
   );

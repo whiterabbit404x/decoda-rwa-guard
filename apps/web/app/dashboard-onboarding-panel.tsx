@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
 import type { OnboardingProgress } from './onboarding-progress';
+import { WORKFLOW_STEP_LABELS, WORKFLOW_STEP_ORDER } from './workflow-steps';
 
 export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApiReachable: boolean }) {
   const { user, apiUrl, authHeaders } = usePilotAuth();
@@ -36,6 +37,8 @@ export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApi
     ];
   }, [liveApiReachable, onboardingProgress]);
 
+  const compactWorkflow = WORKFLOW_STEP_ORDER.map((stepId, index) => `${index + 1}. ${WORKFLOW_STEP_LABELS[stepId]}`).join(' · ');
+
   return (
     <section className="dataCard">
       <div className="listHeader">
@@ -52,6 +55,7 @@ export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApi
         ))}
       </div>
       <p className="muted">{onboardingProgress ? `Workspace onboarding completion: ${onboardingProgress.progress_percent}%` : 'Load onboarding checklist to track setup completion.'}</p>
+      <p className="muted"><strong>Workflow:</strong> {compactWorkflow}</p>
       <div className="heroActionRow">
         <Link href="/onboarding" prefetch={false}>Open setup wizard</Link>
         <Link href="/threat" prefetch={false}>Review first evidence</Link>
