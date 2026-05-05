@@ -110,3 +110,13 @@ def test_runtime_status_legacy_inputs_cannot_control_canonical_runtime_truth_fie
     assert 'target_reporting_without_telemetry_event_link' in source
     assert 'live_evidence_without_live_events' in source
     assert 'reporting_systems_zero_with_healthy' in source
+
+
+def test_evidence_package_without_chain_sets_contradiction_flag():
+    summary = _base(
+        last_detection_at=None,
+        active_alerts_count=0,
+        active_incidents_count=0,
+        evidence_packages_count=1,
+    )
+    assert 'evidence_package_without_detection_alert_incident_chain' in summary['contradiction_flags']

@@ -21,6 +21,18 @@ export type MonitoringPresentation = {
   pollTimestampLabel: string;
 };
 
+const CRITICAL_CONTRADICTION_FLAGS = new Set([
+  'asset_monitoring_attached_but_no_monitored_systems',
+  'ui_protected_assets_positive_but_runtime_zero',
+  'ui_healthy_claim_with_zero_reporting_systems',
+  'ui_live_monitoring_claim_without_telemetry',
+  'simulator_evidence_claimed_as_live_provider',
+  'alert_exists_without_detection',
+  'incident_exists_without_alert',
+  'response_action_exists_without_incident',
+  'evidence_package_without_detection_alert_incident_chain',
+]);
+
 function normalizeEvidence(truth: WorkspaceMonitoringTruth): MonitoringPresentationEvidence {
   const confidence = truth.confidence;
   if (confidence === 'high') return 'verified';
@@ -47,16 +59,32 @@ function normalizeStatus(
   evidence: MonitoringPresentationEvidence,
   freshness: MonitoringPresentationFreshness,
 ): MonitoringPresentationStatus {
-  if (truth.monitoring_status === 'offline' || truth.runtime_status === 'offline') {
+  const runtimeStatus = truth.runtime_status === 'healthy' ? 'live' : truth.runtime_status;
+  const monitoringStatus = truth.monitoring_status === 'healthy' ? 'live' : truth.monitoring_status;
+  const contradictionFlags = truth.contradiction_flags ?? [];
+  const hasCriticalContradiction = contradictionFlags.some((flag) => CRITICAL_CONTRADICTION_FLAGS.has(flag));
+  if (truth.db_failure_reason) {
+    return runtimeStatus === 'offline' || monitoringStatus === 'offline' ? 'offline' : 'degraded';
+  }
+  if (contradictionFlags.length > 0) {
+    return runtimeStatus === 'offline' || monitoringStatus === 'offline' ? 'offline' : 'degraded';
+  }
+  if (hasCriticalContradiction) {
+    return runtimeStatus === 'offline' || monitoringStatus === 'offline' ? 'offline' : 'degraded';
+  }
+  if (monitoringStatus === 'offline' || runtimeStatus === 'offline') {
     return 'offline';
   }
-  if (truth.monitoring_status === 'limited') {
+  if (truth.monitoring_mode === 'simulator' || truth.evidence_source_summary === 'simulator' || truth.evidence_source_summary === 'replay') {
     return freshness === 'delayed' ? 'stale' : 'limited coverage';
   }
-  if (truth.runtime_status === 'degraded') {
+  if (monitoringStatus === 'limited') {
+    return freshness === 'delayed' ? 'stale' : 'limited coverage';
+  }
+  if (runtimeStatus === 'degraded') {
     return 'degraded';
   }
-  if (truth.runtime_status === 'idle') {
+  if (runtimeStatus === 'idle') {
     return 'limited coverage';
   }
   return evidence === 'unavailable' ? 'degraded' : 'live';
