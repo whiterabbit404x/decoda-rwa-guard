@@ -607,7 +607,7 @@ def build_workspace_monitoring_summary(
         'event_throughput_window_seconds': max(int(telemetry_window_seconds), 1),
         'contradiction_flags': contradiction_flags,
         'guard_flags': guard_flags,
-        'reason_codes': sorted({*configuration_reason_codes, *contradiction_flags}),
+        'reason_codes': sorted({*(configuration_reason_codes or []), *contradiction_flags}),
         'next_required_action': 'review_reason_codes',
         'status_reason': resolved_status_reason,
         'db_failure_classification': None if db_persistence_is_available else 'persistence_unavailable',
