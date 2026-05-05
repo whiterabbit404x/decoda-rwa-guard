@@ -23,10 +23,10 @@ export default function WorkspaceOwnershipBar() {
       <h2>{user?.current_workspace?.name ?? 'No active workspace selected'}</h2>
       <div className="chipRow">
         <span className="ruleChip">Role: {role}</span>
-        <span className="ruleChip">Protected assets: {feed.counts.protectedAssets}</span>
-        <span className="ruleChip">Monitored systems: {feed.counts.monitoredSystems}</span>
-        <span className="ruleChip">Alerts for this workspace: {feed.counts.openAlerts}</span>
-        <span className="ruleChip">Incidents affecting this workspace: {feed.counts.openIncidents}</span>
+        <span className="ruleChip">Protected assets: {truth.protected_assets_count}</span>
+        <span className="ruleChip">Monitored systems: {truth.monitored_systems_count}</span>
+        <span className="ruleChip">Alerts for this workspace: {truth.active_alerts_count}</span>
+        <span className="ruleChip">Incidents affecting this workspace: {truth.active_incidents_count}</span>
       </div>
       <p className="tableMeta">
         Last telemetry: {presentation.telemetryTimestampLabel} · Last heartbeat: {presentation.heartbeatTimestampLabel} · Last poll: {presentation.pollTimestampLabel} · Monitoring health: {presentation.status.toLowerCase()} · Monitoring freshness: {presentation.freshness} ·
