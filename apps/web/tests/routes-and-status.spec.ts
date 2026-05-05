@@ -21,7 +21,7 @@ test('keeps the route split between marketing / and authenticated /dashboard', a
 
 test('defines authenticated navigation for dashboard, feature routes, history, and settings', async () => {
   expect(APP_NAV_ITEMS.map((item) => item.href)).toEqual(['/onboarding', '/dashboard', '/assets', '/monitoring-sources', '/threat', '/alerts', '/incidents', '/response-actions', '/exports', '/integrations', '/settings', '/resilience']);
-  expect(APP_NAV_ITEMS.map((item) => item.label)).toEqual(['Onboarding', 'Dashboard', 'Assets', 'Monitoring Sources', 'Threat Monitoring', 'Alerts', 'Incidents', 'Response Actions', 'Evidence', 'Integrations', 'Settings', 'System Health']);
+  expect(APP_NAV_ITEMS.map((item) => item.label)).toEqual(['Getting Started', 'Dashboard', 'Assets', 'Monitoring Sources', 'Threat Monitoring', 'Alerts', 'Incidents', 'Response Actions', 'Evidence & Audit', 'Integrations', 'Settings', 'System Health']);
 });
 
 test('maps product status badges to enterprise-safe customer labels', async () => {

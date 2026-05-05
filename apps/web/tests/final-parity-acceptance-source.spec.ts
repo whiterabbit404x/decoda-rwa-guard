@@ -9,7 +9,7 @@ function read(fileName: string): string {
 test('product navigation order matches the 12 screen parity contract', () => {
   const nav = read('product-nav.ts');
   const expectedOrder = [
-    'Onboarding',
+    'Getting Started',
     'Dashboard',
     'Assets',
     'Monitoring Sources',
@@ -17,7 +17,7 @@ test('product navigation order matches the 12 screen parity contract', () => {
     'Alerts',
     'Incidents',
     'Response Actions',
-    'Evidence',
+    'Evidence & Audit',
     'Integrations',
     'Settings',
     'System Health',
@@ -38,4 +38,3 @@ test('all protected product routes share shell + runtime banner', () => {
   expect(layout).toContain('<AppShell topBanner={<WorkspaceMonitoringModeBanner apiUrl={runtimeConfig.apiUrl} />}>' );
   expect(layout).toContain('<AuthenticatedRoute>');
 });
-

@@ -28,7 +28,7 @@ test('snapshots top-level product navigation labels order', async () => {
     'Alerts',
     'Incidents',
     'Response Actions',
-    'Evidence',
+    'Evidence & Audit',
     'Integrations',
     'Settings',
     'System Health',
