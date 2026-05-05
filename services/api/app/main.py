@@ -2245,6 +2245,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         }
         if _is_production_like_runtime():
             emit_legacy_fields = False
+        canonical_runtime['workspace_monitoring_summary'] = dict(canonical_runtime_summary)
         if not emit_legacy_fields:
             return canonical_runtime
         payload.update(canonical_runtime)
