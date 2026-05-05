@@ -1387,3 +1387,46 @@ td .tableMeta {
     text-align: left;
   }
 }
+
+.sharedSurfaceCard,
+.sharedMetricTile,
+.sharedCtaPanel,
+.sharedEmptyStateBlocker,
+.sharedTableShell {
+  background: linear-gradient(180deg, rgba(14, 22, 35, 0.92), rgba(10, 16, 26, 0.95));
+  border: 1px solid rgba(124, 156, 196, 0.24);
+  box-shadow: 0 20px 45px rgba(1, 7, 19, 0.35);
+  backdrop-filter: blur(8px);
+}
+
+.sharedStatusPill {
+  border-color: rgba(124, 156, 196, 0.35);
+  background: rgba(41, 63, 96, 0.35);
+}
+
+.sharedTableShell table thead th {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9fb4ce;
+  border-bottom: 1px solid rgba(124, 156, 196, 0.22);
+}
+
+.sharedTableShell table tbody td {
+  border-bottom: 1px solid rgba(124, 156, 196, 0.12);
+}
+
+.sharedTabStrip {
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.sharedTabStrip button {
+  background: rgba(18, 29, 45, 0.92);
+  border: 1px solid rgba(124, 156, 196, 0.2);
+}
+
+.sharedTabStrip button.activeTab {
+  border-color: rgba(147, 194, 255, 0.55);
+  background: rgba(54, 95, 145, 0.35);
+}

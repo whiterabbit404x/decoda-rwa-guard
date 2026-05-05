@@ -6,6 +6,7 @@ import { actionDisabledReason, actionModeLabel, capabilityMapFromPayload, isActi
 import { fetchRuntimeStatusDeduped } from '../runtime-status-client';
 import ThreatChainPanel from '../threat-chain-panel';
 import RuntimeSummaryPanel from '../runtime-summary-panel';
+import { SurfaceCard, TabStrip } from '../components/ui-primitives';
 
 export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
   const { authHeaders } = usePilotAuth();
@@ -161,6 +162,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
       <RuntimeSummaryPanel />
       <section className="featureSection">
         <div className="sectionHeader"><div><p className="eyebrow">Operator queue</p><h1>Alerts</h1><p className="lede">Deduplicated alert queue with evidence-first triage and escalation actions.</p></div></div>
+        <TabStrip tabs={[{ key: "queue", label: "Alert queue" }, { key: "evidence", label: "Evidence review" }]} active="queue" onChange={() => {}} />
         <div className="buttonRow">
           <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="open">open</option><option value="acknowledged">acknowledged</option><option value="resolved">resolved</option><option value="suppressed">suppressed</option></select>
           <select value={severity} onChange={(event) => setSeverity(event.target.value)}><option value="">All severities</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="critical">critical</option></select>
@@ -169,7 +171,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
           <select value={timeRange} onChange={(event) => setTimeRange(event.target.value)}><option value="24">Last 24h</option><option value="168">Last 7d</option><option value="720">Last 30d</option></select>
         </div>
         <div className="twoColumnSection">
-          <article className="dataCard">
+          <SurfaceCard>
             <p className="sectionEyebrow">Alert list</p>
             {!alerts.length ? <p className="muted">No alerts available for the current filters.</p> : null}
             {alerts.map((alert) => (
@@ -178,8 +180,8 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
                 <span className="tableMeta">events {alert.occurrence_count || 1} · group {alert.findings?.dedupe_key || alert.target_id || 'none'}</span>
               </button>
             ))}
-          </article>
-          <article className="dataCard">
+          </SurfaceCard>
+          <SurfaceCard>
             {!selectedAlert ? <p className="muted">Select an alert.</p> : <>
               <h3>{selectedAlert.title}</h3>
               <p className="muted">{selectedAlert.summary || 'No summary available.'}</p>
@@ -234,7 +236,7 @@ export default function AlertsPageClient({ apiUrl }: { apiUrl: string }) {
               <p className="muted">Recommended actions: acknowledge if understood, escalate if active risk, suppress only with documented reason.</p>
             </>}
             {message ? <p className="statusLine">{message}</p> : null}
-          </article>
+          </SurfaceCard>
         </div>
       </section>
     </main>
