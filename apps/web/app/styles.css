@@ -1430,3 +1430,18 @@ td .tableMeta {
   border-color: rgba(147, 194, 255, 0.55);
   background: rgba(54, 95, 145, 0.35);
 }
+
+.runtimeBanner {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.8rem 1rem;
+  border-radius: 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(19, 29, 52, 0.62);
+  font-size: 0.85rem;
+  margin-top: 0.6rem;
+}
+
+.runtimeBanner p {
+  margin: 0;
+}

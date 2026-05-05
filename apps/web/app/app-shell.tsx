@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import AppNavigation from './app-navigation';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import WorkspaceOwnershipBar from './workspace-ownership-bar';
+import RuntimeBanner from './components/runtime-banner';
 
 export default function AppShell({ children, topBanner }: { children: React.ReactNode; topBanner?: React.ReactNode }) {
   const pathname = usePathname();
@@ -40,7 +41,10 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
         {error ? <p className="statusLine">{error}</p> : null}
       </aside>
       <div className="appShellContent">
-        <header className="appShellTop">{topBanner}</header>
+        <header className="appShellTop">
+          {topBanner}
+          <RuntimeBanner />
+        </header>
         <WorkspaceOwnershipBar />
         <main className="appShellPage">{children}</main>
       </div>
