@@ -245,16 +245,19 @@ def _build_v2_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'current_step': str(current_step or 'asset_created'),
     }
 def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    summary_v2 = _build_v2_summary(payload)
+    workspace = dict(summary_v2.get('workspace') or {})
+    statuses = dict(summary_v2.get('statuses') or {})
     canonical = {
-        'workspace_configured': workspace['configured'],
+        'workspace_configured': bool(workspace.get('configured', payload.get('workspace_configured', False))),
         'runtime_status': _normalized_runtime_status(str(payload.get('runtime_status', 'offline'))),
         'monitoring_status': (
             payload.get('monitoring_status')
             if payload.get('monitoring_status') in CANONICAL_MONITORING_STATUS
             else 'not_configured'
         ),
-        'freshness_status': statuses['freshness'],
-        'confidence_status': statuses['confidence'],
+        'freshness_status': str(statuses.get('freshness') or _normalized_telemetry_freshness(str(payload.get('freshness_status', 'unavailable')))),
+        'confidence_status': str(statuses.get('confidence') or _normalized_confidence(str(payload.get('confidence_status', 'unavailable')))),
         'protected_assets': max(int(payload.get('protected_assets', payload.get('protected_assets_count', 0))), 0),
         'monitored_systems': max(int(payload.get('monitored_systems', payload.get('monitored_systems_count', 0))), 0),
         'reporting_systems': max(int(payload.get('reporting_systems', payload.get('reporting_systems_count', 0))), 0),
