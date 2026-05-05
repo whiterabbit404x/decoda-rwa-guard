@@ -38,6 +38,7 @@ const REASON_CODE_MESSAGES: Record<string, string> = {
   alert_exists_without_detection: 'Alerts must be backed by at least one detection.',
   incident_exists_without_alert: 'Incidents must be linked to at least one alert.',
   response_action_exists_without_incident: 'Response actions must be linked to an incident.',
+  cross_page_count_mismatch: 'Cross-page count mismatch detected. Reconcile canonical runtime totals before proceeding.',
 };
 
 const NEXT_ACTION_LABELS: Record<string, string> = {
