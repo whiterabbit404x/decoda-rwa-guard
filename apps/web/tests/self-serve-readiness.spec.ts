@@ -89,7 +89,7 @@ test('onboarding wizard and help/legal pages are present for self-serve setup', 
   expect(workflowSteps).toContain("label: 'First Signal'");
   expect(onboarding).toContain('ActionPanel title="Next Action"');
   expect(help).toContain('self-serve workspace onboarding');
-  expect(nav).toContain("{ href: '/onboarding', label: 'Onboarding' }");
+  expect(nav).toContain("{ href: '/onboarding', label: 'Getting Started' }");
   expect(nav).toContain("{ href: '/response-actions', label: 'Response Actions' }");
   expect(security).toContain('workspace-scoped access control');
   expect(settingsPage).toContain('href="/settings/security"');

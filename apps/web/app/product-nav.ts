@@ -7,7 +7,7 @@ export const APP_NAV_ITEMS = [
   { href: '/alerts', label: 'Alerts' },
   { href: '/incidents', label: 'Incidents' },
   { href: '/response-actions', label: 'Response Actions' },
-  { href: '/exports', label: 'Evidence' },
+  { href: '/exports', label: 'Evidence & Audit' },
   { href: '/integrations', label: 'Integrations' },
   { href: '/settings', label: 'Settings' },
   { href: '/resilience', label: 'System Health' },
