@@ -109,6 +109,7 @@ HARD_GUARD_FLAGS = {
     'alert_exists_without_detection',
     'incident_exists_without_alert',
     'response_action_exists_without_incident',
+    'cross_page_count_mismatch',
 }
 HARD_GUARD_PRIORITY = (
     'offline_with_current_telemetry',
@@ -129,6 +130,7 @@ HARD_GUARD_PRIORITY = (
     'alert_exists_without_detection',
     'incident_exists_without_alert',
     'response_action_exists_without_incident',
+    'cross_page_count_mismatch',
 )
 
 
@@ -310,6 +312,14 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'runtime_setup_chain': dict(payload.get('runtime_setup_chain') or {}),
     }
     canonical_v2 = _build_v2_summary(canonical)
+    cross_page_count_mismatch = any(
+        int(canonical_v2['counts'].get(key, 0)) != int(canonical.get(f'{key}_count', canonical.get(key, 0)))
+        for key in ('protected_assets', 'monitored_systems', 'reporting_systems')
+    )
+    if cross_page_count_mismatch and 'cross_page_count_mismatch' not in canonical['contradiction_flags']:
+        canonical['contradiction_flags'] = sorted([*canonical['contradiction_flags'], 'cross_page_count_mismatch'])
+        canonical['guard_flags'] = sorted({*canonical['guard_flags'], 'cross_page_count_mismatch'})
+        canonical['reason_codes'] = sorted({*canonical['reason_codes'], 'cross_page_count_mismatch'})
     canonical['summary_v2'] = canonical_v2
     canonical['monitoring_targets'] = canonical_v2['monitoring_targets']
     canonical['active_alerts'] = canonical_v2['active_alerts']
