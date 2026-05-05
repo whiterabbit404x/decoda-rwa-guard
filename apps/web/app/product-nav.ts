@@ -7,8 +7,8 @@ export const APP_NAV_ITEMS = [
   { href: '/alerts', label: 'Alerts' },
   { href: '/incidents', label: 'Incidents' },
   { href: '/response-actions', label: 'Response Actions' },
-  { href: '/exports', label: 'Evidence & Audit' },
+  { href: '/evidence', label: 'Evidence & Audit' },
   { href: '/integrations', label: 'Integrations' },
   { href: '/settings', label: 'Settings' },
-  { href: '/resilience', label: 'System Health' },
+  { href: '/system-health', label: 'System Health' },
 ] as const;

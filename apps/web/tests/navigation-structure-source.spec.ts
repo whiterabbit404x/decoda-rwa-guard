@@ -11,10 +11,10 @@ test('snapshots top-level product navigation labels/routes and order', async () 
     { href: '/alerts', label: 'Alerts' },
     { href: '/incidents', label: 'Incidents' },
     { href: '/response-actions', label: 'Response Actions' },
-    { href: '/exports', label: 'Evidence' },
+    { href: '/evidence', label: 'Evidence & Audit' },
     { href: '/integrations', label: 'Integrations' },
     { href: '/settings', label: 'Settings' },
-    { href: '/resilience', label: 'System Health' },
+    { href: '/system-health', label: 'System Health' },
   ]);
 });
 

@@ -19,21 +19,21 @@ test('product route contracts keep required IA labels, page copy, tables, and tr
     { href: '/alerts', label: 'Alerts' },
     { href: '/incidents', label: 'Incidents' },
     { href: '/response-actions', label: 'Response Actions' },
-    { href: '/exports', label: 'Evidence' },
+    { href: '/evidence', label: 'Evidence & Audit' },
     { href: '/integrations', label: 'Integrations' },
     { href: '/settings', label: 'Settings' },
-    { href: '/resilience', label: 'System Health' },
+    { href: '/system-health', label: 'System Health' },
   ]);
 
-  const exportsPage = productSource('exports/page.tsx');
-  expect(exportsPage).toContain('Evidence &amp; Audit');
-  expect(exportsPage).toContain("label: 'Evidence Packages'");
-  expect(exportsPage).toContain("label: 'Audit Logs'");
-  expect(exportsPage).toContain("['Package ID', 'Incident', 'Date Created', 'Includes', 'Size', 'Evidence Source', 'Actions']");
+  const evidencePage = productSource('evidence/page.tsx');
+  expect(evidencePage).toContain('Evidence &amp; Audit');
+  expect(evidencePage).toContain("label: 'Evidence Packages'");
+  expect(evidencePage).toContain("label: 'Audit Logs'");
+  expect(evidencePage).toContain("['Package ID', 'Incident', 'Date Created', 'Includes', 'Size', 'Evidence Source', 'Actions']");
 
-  const resiliencePage = productSource('resilience/page.tsx');
-  ['Uptime', 'Avg Response Time', 'Error Rate', 'Active Systems'].forEach((label) => expect(resiliencePage).toContain(label));
-  ['API Gateway', 'Worker', 'Detection Engine', 'Alert Engine', 'Database', 'Redis/Queue', 'Provider Connectors'].forEach((label) => expect(resiliencePage).toContain(label));
+  const systemHealthPage = productSource('system-health/page.tsx');
+  ['Uptime', 'Avg Response Time', 'Error Rate', 'Active Systems'].forEach((label) => expect(systemHealthPage).toContain(label));
+  ['API Gateway', 'Worker', 'Detection Engine', 'Alert Engine', 'Database', 'Redis/Queue', 'Provider Connectors'].forEach((label) => expect(systemHealthPage).toContain(label));
 
   const monitoringSourcesPage = productSource('monitoring-sources/page.tsx');
   expect(monitoringSourcesPage).toContain('Monitoring Targets');
