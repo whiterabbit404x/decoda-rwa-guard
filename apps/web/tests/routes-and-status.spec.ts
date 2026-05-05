@@ -7,21 +7,21 @@ import { mapPayloadStateToCustomerBadge } from '../app/customer-status-badge';
 import { determineHistoryCategory, filterRecordsByRecentActivity } from '../app/pilot-history';
 import { getStatusBadgeLabel } from '../app/status-badge';
 
-const appDir = join(process.cwd(), 'apps/web/app');
+const appDir = join(process.cwd(), 'app');
 
 test('keeps the route split between marketing / and authenticated /dashboard', async () => {
   const marketingPage = readFileSync(join(appDir, 'page.tsx'), 'utf8');
   const dashboardPage = readFileSync(join(appDir, '(product)/dashboard/page.tsx'), 'utf8');
 
   expect(marketingPage).toContain('Risk control for tokenized treasuries and real-world assets.');
-  expect(marketingPage).toContain("href=\"/dashboard\"");
+  expect(marketingPage).toContain("href=\"/sign-up\"");
   expect(dashboardPage).toContain('DashboardLiveHydrator');
   expect(dashboardPage).toContain('fetchDashboardPageData');
 });
 
 test('defines authenticated navigation for dashboard, feature routes, history, and settings', async () => {
-  expect(APP_NAV_ITEMS.map((item) => item.href)).toEqual(['/dashboard', '/onboarding', '/assets', '/monitoring-sources', '/threat', '/alerts', '/incidents', '/response-actions', '/integrations', '/settings']);
-  expect(APP_NAV_ITEMS.map((item) => item.label)).toEqual(['Dashboard', 'Onboarding', 'Assets', 'Monitoring Sources', 'Threat Monitoring', 'Alerts', 'Incidents', 'Response Actions', 'Integrations', 'Settings']);
+  expect(APP_NAV_ITEMS.map((item) => item.href)).toEqual(['/onboarding', '/dashboard', '/assets', '/monitoring-sources', '/threat', '/alerts', '/incidents', '/response-actions', '/exports', '/integrations', '/settings', '/resilience']);
+  expect(APP_NAV_ITEMS.map((item) => item.label)).toEqual(['Onboarding', 'Dashboard', 'Assets', 'Monitoring Sources', 'Threat Monitoring', 'Alerts', 'Incidents', 'Response Actions', 'Evidence', 'Integrations', 'Settings', 'System Health']);
 });
 
 test('maps product status badges to enterprise-safe customer labels', async () => {

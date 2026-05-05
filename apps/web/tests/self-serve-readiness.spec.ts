@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
-const appRoot = path.join(process.cwd(), 'apps/web/app');
+const appRoot = path.join(process.cwd(), 'app');
 
 function read(relativePath: string) {
   return readFileSync(path.join(appRoot, relativePath), 'utf8');
@@ -62,7 +62,7 @@ test('auth context and operational module pages use live customer workflow langu
   expect(authContext).toContain('if (response.status === 401) {');
   expect(authContext).toContain('await signOut();');
   expect(authContext).toContain('safeAuthFailureMessage');
-  expect(threatPanel).toContain('Threat monitoring command center');
+  expect(threatPanel).toContain('ThreatPageHeader');
   expect(threatPanel).not.toContain('monitoring_scenario');
   expect(nav).toContain('Monitoring Sources');
   expect(nav).toContain('Integrations');

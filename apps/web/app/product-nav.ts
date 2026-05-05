@@ -1,5 +1,5 @@
 export const APP_NAV_ITEMS = [
-  { href: '/onboarding', label: 'Getting Started' },
+  { href: '/onboarding', label: 'Onboarding' },
   { href: '/dashboard', label: 'Dashboard' },
   { href: '/assets', label: 'Assets' },
   { href: '/monitoring-sources', label: 'Monitoring Sources' },
