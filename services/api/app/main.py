@@ -2178,35 +2178,6 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         summary = payload.get('workspace_monitoring_summary') if isinstance(payload.get('workspace_monitoring_summary'), dict) else {}
         summary_v2 = summary.get('summary_v2') if isinstance(summary.get('summary_v2'), dict) else {}
 
-        def _runtime_contradictions(summary_payload: dict[str, Any]) -> list[str]:
-            contradictions = set(str(flag).strip() for flag in list(summary_payload.get('contradiction_flags') or []) if str(flag).strip())
-            counts = dict(summary_payload.get('counts') or {})
-            statuses = dict(summary_payload.get('statuses') or {})
-            timestamps = dict(summary_payload.get('timestamps') or {})
-            evidence_source = str(summary_payload.get('evidence_source') or 'none').lower()
-            protected_assets = int(counts.get('protected_assets') or 0)
-            monitored_systems = int(counts.get('monitored_systems') or 0)
-            reporting_systems = int(counts.get('reporting_systems') or 0)
-            active_alerts = int(counts.get('active_alerts') or 0)
-            open_incidents = int(counts.get('open_incidents') or 0)
-            runtime = str(statuses.get('runtime') or 'offline').lower()
-            telemetry_present = bool(timestamps.get('last_telemetry_at'))
-            detections = int(summary.get('detection_count') or payload.get('detection_count') or 0)
-            response_actions = int(summary.get('response_actions_count') or payload.get('response_actions_count') or 0)
-            if protected_assets > 0 and monitored_systems <= 0:
-                contradictions.add('runtime_contradiction_asset_monitoring_attached_but_no_monitored_systems')
-            if runtime in {'healthy', 'live'} and (reporting_systems <= 0 or not telemetry_present):
-                contradictions.add('runtime_contradiction_healthy_claim_without_reporting_systems_or_fresh_telemetry')
-            if evidence_source == 'live' and str(payload.get('provider_mode') or '').lower() == 'simulator':
-                contradictions.add('runtime_contradiction_simulator_evidence_rendered_as_live_provider')
-            if active_alerts > 0 and detections <= 0:
-                contradictions.add('runtime_contradiction_alert_without_detection')
-            if open_incidents > 0 and active_alerts <= 0:
-                contradictions.add('runtime_contradiction_incident_without_alert')
-            if response_actions > 0 and open_incidents <= 0:
-                contradictions.add('runtime_contradiction_response_action_without_incident')
-            return sorted(contradictions)
-
         canonical_runtime_summary = {
             'workspace': dict(summary_v2.get('workspace') or {
                 'id': payload.get('workspace_id'),
@@ -2236,7 +2207,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'current_step': str(summary_v2.get('current_step') or 'asset_created'),
             'workflow_steps': list(summary_v2.get('workflow_steps') or []),
         }
-        canonical_runtime_summary['contradiction_flags'] = _runtime_contradictions(canonical_runtime_summary)
+        canonical_runtime_summary['contradiction_flags'] = list(summary_v2.get('contradiction_flags') or summary.get('contradiction_flags') or payload.get('contradiction_flags') or [])
         if canonical_runtime_summary['contradiction_flags']:
             canonical_runtime_summary['statuses']['runtime'] = 'degraded'
             canonical_runtime_summary['statuses']['monitoring'] = 'offline'

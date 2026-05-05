@@ -3,7 +3,7 @@ import { APP_NAV_ITEMS } from '../app/product-nav';
 
 test('snapshots top-level product navigation labels and order', async () => {
   expect(APP_NAV_ITEMS.map((item) => item.label)).toEqual([
-    'Onboarding',
+    'Getting Started',
     'Dashboard',
     'Assets',
     'Monitoring Sources',
