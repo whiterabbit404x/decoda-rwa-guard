@@ -6,6 +6,7 @@ import {
   hasRealTelemetryBackedChain,
   resolveWorkspaceMonitoringTruthFromSummary,
 } from './workspace-monitoring-truth';
+import { NEXT_ACTION_CTA, WORKFLOW_STEP_LABELS, WORKFLOW_STEP_ORDER } from './workflow-steps';
 
 function runtimeStatusAllowsLive(runtimeStatus: string): boolean {
   return runtimeStatus === 'healthy' || runtimeStatus === 'live';
@@ -29,16 +30,6 @@ const REASON_CODE_MESSAGES: Record<string, string> = {
   response_action_exists_without_incident: 'A response action exists without a linked incident record.',
 };
 
-const NEXT_ACTION_CTA: Record<string, string> = {
-  create_monitored_system: 'Create monitored system',
-  enable_monitored_system: 'Enable monitored system',
-  ingest_live_telemetry: 'Ingest live telemetry',
-  trigger_detection: 'Trigger detection',
-  create_alert: 'Create alert',
-  open_incident: 'Open incident',
-  record_response_action: 'Record response action',
-  review_reason_codes: 'Review reason codes',
-};
 
 export default function MonitoringOverviewPanel() {
   const liveFeed = useLiveWorkspaceFeed();
@@ -91,6 +82,10 @@ export default function MonitoringOverviewPanel() {
   const humanizedGuardReasons = guardReasonCodes.map((code) => REASON_CODE_MESSAGES[code] ?? code.replaceAll('_', ' '));
   const primaryFixCta = NEXT_ACTION_CTA[truth.next_required_action ?? 'review_reason_codes'] ?? 'Review reason codes';
   const lastDetection = truth.last_detection_at ?? null;
+  const runtimeSteps = Array.isArray(truth.workflow_steps) ? truth.workflow_steps : [];
+  const compactWorkflow = (runtimeSteps.length > 0 ? runtimeSteps : WORKFLOW_STEP_ORDER.map((id) => ({ id, status: id === truth.current_step ? 'pending' : 'complete' })))
+    .map((step: any) => `${step.status === 'complete' ? '✓' : '○'} ${WORKFLOW_STEP_LABELS[String(step.id)] ?? String(step.id).replaceAll('_', ' ')}`)
+    .join(' · ');
   const statusLabel = hasContradictions ? 'DEGRADED' : (runtime ? presentation.statusLabel : 'PENDING');
 
   return (
@@ -117,7 +112,8 @@ export default function MonitoringOverviewPanel() {
         <p className="metricMeta">{telemetryDetail}</p>
         <p className="metricMeta">{detectionDetail}</p>
         {hasContradictions ? <p className="metricMeta">Guard reasons: {humanizedGuardReasons.join(' · ')}</p> : null}
-        {hasContradictions ? <p className="metricMeta"><strong>Recommended fix:</strong> {primaryFixCta}</p> : null}
+        <p className="metricMeta"><strong>Recommended fix:</strong> {primaryFixCta}</p>
+        <p className="metricMeta"><strong>Workflow:</strong> {compactWorkflow}</p>
       </article>
       <article className="metricCard">
         <p className="metricLabel">Coverage freshness</p>
