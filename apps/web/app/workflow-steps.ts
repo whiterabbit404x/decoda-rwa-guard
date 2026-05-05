@@ -39,3 +39,11 @@ export const NEXT_ACTION_CTA: Record<string, string> = {
   export_evidence_package: 'Export evidence package',
   review_reason_codes: 'Review reason codes',
 };
+
+export const ONBOARDING_TOP_STEPPER = [
+  { label: 'Workspace', canonicalStepId: 'workspace_created' },
+  { label: 'Add Asset', canonicalStepId: 'asset_created' },
+  { label: 'Connect Monitoring', canonicalStepId: 'monitoring_target_created' },
+  { label: 'Enable System', canonicalStepId: 'monitored_system_created' },
+  { label: 'First Signal', canonicalStepId: 'telemetry_received' },
+] as const;
