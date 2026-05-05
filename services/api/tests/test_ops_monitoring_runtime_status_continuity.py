@@ -306,3 +306,28 @@ def test_ops_runtime_status_production_ignores_legacy_field_flag(monkeypatch):
     assert body['target_coverage'] == [{'target_id': 'target-1', 'coverage_status': 'none'}]
     assert body['provider_health_status'] == 'degraded'
     assert body['target_coverage_status'] == 'none'
+
+
+def test_ops_runtime_status_surfaces_workflow_blocker_and_contradictions(monkeypatch):
+    payload = _base_payload('healthy', True, [])
+    payload.update({
+        'runtime_setup_chain': {
+            'workflow_steps': [
+                {'id': 'asset_created', 'status': 'complete'},
+                {'id': 'monitored_system_created', 'status': 'pending'},
+            ],
+            'current_step': 'monitored_system_created',
+        },
+        'next_required_action': 'attach_monitoring_sources',
+        'contradiction_flags': ['runtime_contradiction_live_claim_with_no_telemetry'],
+    })
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda handler: handler())
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', lambda _request: payload)
+    monkeypatch.setattr(api_main, '_is_production_like_runtime', lambda: True)
+
+    client = TestClient(api_main.app)
+    response = client.get('/ops/monitoring/runtime-status', headers={'authorization': 'Bearer test', 'x-workspace-id': 'ws-1'})
+    assert response.status_code == 200
+    body = response.json()
+    assert body['next_required_action'] == 'attach_monitoring_sources'
+    assert body['contradiction_flags'] == ['runtime_contradiction_live_claim_with_no_telemetry']
