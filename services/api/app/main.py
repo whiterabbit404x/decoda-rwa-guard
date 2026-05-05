@@ -2177,7 +2177,36 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             target_coverage = []
         summary = payload.get('workspace_monitoring_summary') if isinstance(payload.get('workspace_monitoring_summary'), dict) else {}
         summary_v2 = summary.get('summary_v2') if isinstance(summary.get('summary_v2'), dict) else {}
+        canonical_runtime_summary = {
+            'workspace': dict(summary_v2.get('workspace') or {
+                'id': payload.get('workspace_id'),
+                'name': payload.get('workspace_name'),
+                'configured': bool(summary_v2.get('workspace_configured', payload.get('workspace_configured'))),
+            }),
+            'statuses': dict(summary_v2.get('statuses') or {
+                'runtime': str(payload.get('runtime_status') or 'offline'),
+                'monitoring': str(summary_v2.get('monitoring_status') or payload.get('monitoring_status') or 'offline'),
+                'freshness': str(summary_v2.get('freshness_status') or payload.get('freshness_status') or 'unavailable'),
+                'confidence': str(summary_v2.get('confidence_status') or payload.get('confidence_status') or 'unavailable'),
+            }),
+            'counts': dict(summary_v2.get('counts') or {
+                'protected_assets': int(summary_v2.get('protected_assets') or payload.get('protected_assets') or 0),
+                'monitoring_targets': int(summary_v2.get('monitoring_targets') or payload.get('monitoring_targets') or 0),
+                'monitored_systems': int(summary_v2.get('monitored_systems') or payload.get('monitored_systems') or payload.get('configured_systems') or 0),
+                'reporting_systems': int(summary_v2.get('reporting_systems') or payload.get('reporting_systems') or 0),
+                'active_alerts': int(summary_v2.get('active_alerts') or payload.get('open_alerts') or 0),
+                'open_incidents': int(summary_v2.get('open_incidents') or payload.get('active_incidents') or 0),
+            }),
+            'timestamps': dict(summary_v2.get('timestamps') or {}),
+            'evidence_source': str(summary_v2.get('evidence_source') or payload.get('evidence_source') or 'none'),
+            'reason_codes': list(summary_v2.get('reason_codes') or payload.get('reason_codes') or payload.get('continuity_reason_codes') or []),
+            'contradiction_flags': list(summary_v2.get('contradiction_flags') or payload.get('contradiction_flags') or []),
+            'next_action': str(summary_v2.get('next_required_action') or summary.get('next_required_action') or payload.get('next_required_action') or 'review_reason_codes'),
+            'current_step': str(summary_v2.get('current_step') or 'asset_created'),
+            'workflow_steps': list(summary_v2.get('workflow_steps') or []),
+        }
         canonical_runtime = {
+            'workspace_monitoring_runtime': canonical_runtime_summary,
             'workspace_id': payload.get('workspace_id'),
             'workspace_name': payload.get('workspace_name'),
             'workspace_configured': bool(summary_v2.get('workspace_configured', payload.get('workspace_configured'))),

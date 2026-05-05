@@ -8,6 +8,7 @@ import { resolveWorkspaceMonitoringTruth, type WorkspaceMonitoringTruth } from '
 
 type RuntimeSummaryContextValue = {
   summary: WorkspaceMonitoringTruth;
+  runtime: import('./monitoring-status-contract').WorkspaceMonitoringRuntime | null;
   loading: boolean;
   reasonMessageForCode: (code: string) => string;
   evidenceLabel: string;
@@ -33,14 +34,15 @@ function defaultSummary(): WorkspaceMonitoringTruth {
 export function RuntimeSummaryProvider({ children }: { children: React.ReactNode }) {
   const { authHeaders, isAuthenticated } = usePilotAuth();
   const [summary, setSummary] = useState<WorkspaceMonitoringTruth>(defaultSummary);
+  const [runtime, setRuntime] = useState<import('./monitoring-status-contract').WorkspaceMonitoringRuntime | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!isAuthenticated) return;
     setLoading(true);
     void fetchRuntimeStatusDeduped(authHeaders())
-      .then((payload) => setSummary(resolveWorkspaceMonitoringTruth(payload)))
-      .catch(() => setSummary(resolveWorkspaceMonitoringTruth(null)))
+      .then((payload) => { setSummary(resolveWorkspaceMonitoringTruth(payload)); setRuntime(payload?.workspace_monitoring_runtime ?? null); })
+      .catch(() => { setSummary(resolveWorkspaceMonitoringTruth(null)); setRuntime(null); })
       .finally(() => setLoading(false));
   }, [authHeaders, isAuthenticated]);
 
@@ -52,8 +54,8 @@ export function RuntimeSummaryProvider({ children }: { children: React.ReactNode
     const existsLabel = `${summary.protected_assets_count} assets, ${summary.reporting_systems_count} reporting systems, ${summary.active_alerts_count} active alerts`;
     const missingLabel = reasonMessageForCode(topReason);
     const nextActionLabel = summary.next_required_action ? summary.next_required_action.replaceAll('_', ' ') : 'review reason codes';
-    return { summary, loading, reasonMessageForCode, evidenceLabel, existsLabel, missingLabel, nextActionLabel };
-  }, [summary, loading]);
+    return { summary, runtime, loading, reasonMessageForCode, evidenceLabel, existsLabel, missingLabel, nextActionLabel };
+  }, [summary, runtime, loading]);
 
   return <RuntimeSummaryContext.Provider value={value}>{children}</RuntimeSummaryContext.Provider>;
 }

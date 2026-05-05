@@ -97,17 +97,17 @@ export default function MonitoringOverviewPanel() {
     <section className="summaryGrid">
       <article className="metricCard">
         <p className="metricLabel">Monitored systems</p>
-        <p className="metricValue">{liveFeed.loading ? '—' : liveFeed.counts.monitoredSystems}</p>
+        <p className="metricValue">{liveFeed.loading ? '—' : truth.monitored_systems_count}</p>
         <p className="metricMeta">Protected assets with automatic monitoring enabled.</p>
       </article>
       <article className="metricCard">
         <p className="metricLabel">Alerts for this workspace</p>
-        <p className="metricValue">{liveFeed.loading ? '—' : liveFeed.counts.openAlerts}</p>
+        <p className="metricValue">{liveFeed.loading ? '—' : truth.active_alerts_count}</p>
         <p className="metricMeta">{liveFeed.refreshing ? 'Refreshing…' : 'Open findings requiring investigation.'}</p>
       </article>
       <article className="metricCard">
         <p className="metricLabel">Incidents affecting this workspace</p>
-        <p className="metricValue">{liveFeed.loading ? '—' : liveFeed.counts.openIncidents}</p>
+        <p className="metricValue">{liveFeed.loading ? '—' : truth.active_incidents_count}</p>
         <p className="metricMeta">Current incidents requiring operator action.</p>
       </article>
       <article className="metricCard">

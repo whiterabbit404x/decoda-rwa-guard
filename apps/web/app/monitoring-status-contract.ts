@@ -109,7 +109,22 @@ export type WorkspaceMonitoringSummary = {
   canonical_collections?: Record<string, unknown>;
 };
 
+
+export type WorkspaceMonitoringRuntime = {
+  workspace: { id: string | null; name: string | null; configured: boolean };
+  statuses: { runtime: string; monitoring: string; freshness: string; confidence: string };
+  counts: { protected_assets: number; monitoring_targets: number; monitored_systems: number; reporting_systems: number; active_alerts: number; open_incidents: number };
+  timestamps: { last_poll_at: string | null; last_heartbeat_at: string | null; last_telemetry_at: string | null; last_detection_at: string | null };
+  evidence_source: string;
+  reason_codes: string[];
+  contradiction_flags: string[];
+  next_action: string;
+  current_step: string;
+  workflow_steps: unknown[];
+};
+
 export type MonitoringRuntimeStatus = {
+  workspace_monitoring_runtime?: WorkspaceMonitoringRuntime;
   continuity_slo?: {
     pass?: boolean;
     heartbeat_age_seconds?: number | null;
