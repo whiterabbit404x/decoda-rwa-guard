@@ -59,8 +59,8 @@ function normalizeStatus(
   evidence: MonitoringPresentationEvidence,
   freshness: MonitoringPresentationFreshness,
 ): MonitoringPresentationStatus {
-  const runtimeStatus = truth.runtime_status === 'healthy' ? 'live' : truth.runtime_status;
-  const monitoringStatus = truth.monitoring_status === 'healthy' ? 'live' : truth.monitoring_status;
+  const runtimeStatus = truth.runtime_status;
+  const monitoringStatus = truth.monitoring_status;
   const contradictionFlags = truth.contradiction_flags ?? [];
   const hasCriticalContradiction = contradictionFlags.some((flag) => CRITICAL_CONTRADICTION_FLAGS.has(flag));
   if (truth.db_failure_reason) {
