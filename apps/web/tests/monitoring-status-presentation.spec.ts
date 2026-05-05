@@ -180,6 +180,15 @@ test.describe('monitoring status presentation adapter', () => {
     expect(value.summary).toContain('guard:offline_with_current_telemetry');
   });
 
+  test('critical contradiction flags suppress healthy badge status', async () => {
+    const value = normalizeMonitoringPresentation(makeTruth({
+      contradiction_flags: ['evidence_package_without_detection_alert_incident_chain'],
+      status_reason: 'guard:evidence_package_without_detection_alert_incident_chain',
+    }));
+    expect(value.status).toBe('degraded');
+    expect(value.statusLabel).not.toBe('LIVE');
+  });
+
   test('db persistence outage forces degraded/offline presentation and blocks live telemetry copy', async () => {
     const degraded = normalizeMonitoringPresentation(makeTruth({
       runtime_status: 'healthy',

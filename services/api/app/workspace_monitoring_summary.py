@@ -109,6 +109,7 @@ HARD_GUARD_FLAGS = {
     'alert_exists_without_detection',
     'incident_exists_without_alert',
     'response_action_exists_without_incident',
+    'evidence_package_without_detection_alert_incident_chain',
     'cross_page_count_mismatch',
 }
 HARD_GUARD_PRIORITY = (
@@ -130,6 +131,7 @@ HARD_GUARD_PRIORITY = (
     'alert_exists_without_detection',
     'incident_exists_without_alert',
     'response_action_exists_without_incident',
+    'evidence_package_without_detection_alert_incident_chain',
     'cross_page_count_mismatch',
 )
 
@@ -435,6 +437,7 @@ def build_workspace_monitoring_summary(
     active_alerts_count: int = 0,
     active_incidents_count: int = 0,
     response_actions_count: int = 0,
+    evidence_packages_count: int = 0,
     db_persistence_available: bool = True,
     db_persistence_reason: str | None = None,
 ) -> dict[str, Any]:
@@ -566,6 +569,12 @@ def build_workspace_monitoring_summary(
         contradiction_flags.append('incident_exists_without_alert')
     if int(response_actions_count) > 0 and int(active_incidents_count) <= 0:
         contradiction_flags.append('response_action_exists_without_incident')
+    if int(evidence_packages_count) > 0 and (
+        last_detection_at is None
+        or int(active_alerts_count) <= 0
+        or int(active_incidents_count) <= 0
+    ):
+        contradiction_flags.append('evidence_package_without_detection_alert_incident_chain')
     contradiction_flags = sorted(set(contradiction_flags))
     guard_flags = sorted(flag for flag in contradiction_flags if flag in HARD_GUARD_FLAGS)
     normalized_monitoring_status = _normalized_monitoring_status(
