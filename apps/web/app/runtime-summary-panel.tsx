@@ -3,7 +3,7 @@
 import { useRuntimeSummary } from './runtime-summary-context';
 
 export default function RuntimeSummaryPanel() {
-  const { summary, existsLabel, missingLabel, nextActionLabel, evidenceLabel } = useRuntimeSummary();
+  const { summary, existsLabel, missingLabel, nextActionLabel, evidenceLabel, fixCtaLabel } = useRuntimeSummary();
   return (
     <article className="dataCard">
       <p className="sectionEyebrow">Runtime summary</p>
@@ -12,6 +12,7 @@ export default function RuntimeSummaryPanel() {
       <p className="muted"><strong>Next required action:</strong> {nextActionLabel}</p>
       <p className="muted">Evidence: {evidenceLabel}</p>
       <p className="muted">Status: <span className="ruleChip">{summary.runtime_status}</span> <span className="ruleChip">{summary.monitoring_status}</span></p>
+      <p className="muted"><strong>Fix now:</strong> {fixCtaLabel}</p>
     </article>
   );
 }

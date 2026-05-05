@@ -20,7 +20,7 @@ function timestampLine(label: string, value: string | null): string {
 }
 
 export default function WorkspaceMonitoringModeBanner({ apiUrl: _apiUrl }: { apiUrl: string | null }) {
-  const { summary: truth, loading, missingLabel } = useRuntimeSummary();
+  const { summary: truth, loading, missingLabel, fixCtaLabel } = useRuntimeSummary();
   if (loading) {
     return null;
   }
@@ -41,6 +41,7 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl: _apiUrl }: { api
       </span>
       <span>{timestampLine('Last heartbeat', truth.last_heartbeat_at)}</span>
       <span>{timestampLine('Last poll', truth.last_poll_at)}</span>
+      <span>Recommended fix: {fixCtaLabel}</span>
     </div>
   );
 }
