@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePilotAuth } from '../pilot-auth-context';
 import { actionDisabledReason, actionModeLabel, capabilityMapFromPayload, isActionDisabledInMode, responseActionExecutionMessage, type ResponseActionCapability } from '../response-action-capabilities';
-import { fetchRuntimeStatusDeduped } from '../runtime-status-client';
+import { fetchWorkspaceMonitoringSummary } from '../workspace-monitoring-summary-client';
 import ThreatChainPanel from '../threat-chain-panel';
 import { renderRiskLabel } from '../risk-normalization-labels';
 import RuntimeSummaryPanel from '../runtime-summary-panel';
@@ -66,8 +66,8 @@ export default function IncidentsPageClient({ apiUrl }: { apiUrl: string }) {
       .catch(() => setEvidence(null));
   }, [apiUrl, authHeaders, selected?.source_alert_id]);
   useEffect(() => {
-    void fetchRuntimeStatusDeduped(authHeaders())
-      .then((payload) => setEvidenceSourceSummary(String(payload?.workspace_monitoring_summary?.evidence_source_summary || 'none').toLowerCase()))
+    void fetchWorkspaceMonitoringSummary(authHeaders())
+      .then((summary) => setEvidenceSourceSummary(summary.evidence_source))
       .catch(() => setEvidenceSourceSummary('none'));
   }, [authHeaders]);
 

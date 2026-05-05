@@ -5,8 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { usePilotAuth } from '../pilot-auth-context';
 import RuntimeSummaryPanel from '../runtime-summary-panel';
 import { StatusPill, TableShell, TabStrip } from '../components/ui-primitives';
-import { fetchRuntimeStatusDeduped } from '../runtime-status-client';
-import { hasRealTelemetryBackedChain, resolveWorkspaceMonitoringTruth } from '../workspace-monitoring-truth';
+import { fetchWorkspaceMonitoringSummary } from '../workspace-monitoring-summary-client';
 
 type ActionRow = {
   id: string;
@@ -55,7 +54,7 @@ export default function ResponseActionsPageClient({ apiUrl }: { apiUrl: string }
         fetch(`${apiUrl}/history/actions?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
         fetch(`${apiUrl}/alerts?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
         fetch(`${apiUrl}/incidents?limit=50`, { headers, cache: 'no-store' }).catch(() => null),
-        fetchRuntimeStatusDeduped(headers).catch(() => null),
+        fetchWorkspaceMonitoringSummary(headers).catch(() => null),
       ]);
 
       const actionsPayload = actionsRes && actionsRes.ok ? await actionsRes.json() : {};
@@ -87,7 +86,7 @@ export default function ResponseActionsPageClient({ apiUrl }: { apiUrl: string }
 
       setRecommendedRows(recommended);
       setHistoryRows(history);
-      setLiveClaimsAllowed(hasRealTelemetryBackedChain(resolveWorkspaceMonitoringTruth(runtimePayload)));
+      setLiveClaimsAllowed(Boolean(runtimePayload && runtimePayload.monitoring_status === 'live' && runtimePayload.evidence_source === 'live' && runtimePayload.freshness_status === 'fresh' && runtimePayload.reporting_systems > 0));
     }
     void load();
   }, [apiUrl, authHeaders]);
