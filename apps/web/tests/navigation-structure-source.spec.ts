@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
 import { APP_NAV_ITEMS } from '../app/product-nav';
 
-test('snapshots top-level product navigation labels and order', async () => {
+test('confirms 12-screen reference navigation labels and order', async () => {
+  expect(APP_NAV_ITEMS).toHaveLength(12);
   expect(APP_NAV_ITEMS.map((item) => item.label)).toEqual([
-    'Onboarding',
+    'Getting Started',
     'Dashboard',
     'Assets',
     'Monitoring Sources',
@@ -11,7 +12,7 @@ test('snapshots top-level product navigation labels and order', async () => {
     'Alerts',
     'Incidents',
     'Response Actions',
-    'Evidence',
+    'Evidence & Audit',
     'Integrations',
     'Settings',
     'System Health',
