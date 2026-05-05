@@ -25,6 +25,7 @@ export default function SettingsPageClient() {
   const [inviteRole, setInviteRole] = useState('viewer');
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [activeTab, setActiveTab] = useState<'general' | 'team' | 'security' | 'billing' | 'notifications'>('general');
   const fallbackWorkspace = user?.memberships?.[0]?.workspace ?? null;
   const resolvedWorkspace = user?.current_workspace ?? fallbackWorkspace;
   const hasWorkspace = Boolean(resolvedWorkspace?.id);
@@ -128,7 +129,25 @@ export default function SettingsPageClient() {
   return (
     <main className="productPage">
       <section className="featureSection">
-        <div className="sectionHeader"><div><p className="eyebrow">Settings</p><h1>Workspace administration</h1><p className="lede">Manage users, seats, entitlements, and workspace governance in one place.</p></div></div>
+        <div className="sectionHeader">
+          <div>
+            <p className="eyebrow">Settings</p>
+            <h1>Workspace administration</h1>
+            <p className="lede">Manage users, seats, entitlements, and workspace governance in one place.</p>
+          </div>
+        </div>
+        <div className="buttonRow" role="tablist" aria-label="Settings tabs">
+          <button type="button" role="tab" aria-selected={activeTab === 'general'} onClick={() => setActiveTab('general')}>General</button>
+          <button type="button" role="tab" aria-selected={activeTab === 'team'} onClick={() => setActiveTab('team')}>Team</button>
+          <button type="button" role="tab" aria-selected={activeTab === 'security'} onClick={() => setActiveTab('security')}>Security</button>
+          <button type="button" role="tab" aria-selected={activeTab === 'billing'} onClick={() => setActiveTab('billing')}>Billing</button>
+          <button type="button" role="tab" aria-selected={activeTab === 'notifications'} onClick={() => setActiveTab('notifications')}>Notifications</button>
+        </div>
+      </section>
+
+      {activeTab === 'general' ? (
+      <section className="featureSection">
+        <div className="sectionHeader"><div><p className="eyebrow">General</p><h2>Workspace and account profile</h2></div></div>
         <div className="threeColumnSection">
           <article className="dataCard"><p className="sectionEyebrow">Current user</p><h2>{user?.full_name ?? 'Unknown user'}</h2><p className="muted">{user?.email}</p><p className="muted">Role: {currentMembership?.role ?? 'unknown'}</p></article>
           <article className="dataCard"><p className="sectionEyebrow">Workspace</p><h2>{resolvedWorkspace?.name ?? 'No workspace available yet'}</h2><label className="label compactLabel">Switch workspace<select value={resolvedWorkspace?.id ?? ''} onChange={(event) => void selectWorkspace(event.target.value)} disabled={loading}>{(user?.memberships ?? []).map((membership) => (<option key={membership.workspace_id} value={membership.workspace_id}>{membership.workspace.name}</option>))}</select></label></article>
@@ -143,9 +162,11 @@ export default function SettingsPageClient() {
           </article>
         </div>
       </section>
+      ) : null}
 
+      {activeTab === 'security' ? (
       <section className="featureSection">
-        <div className="sectionHeader"><div><p className="eyebrow">Readiness</p><h2>Self-serve launch gate</h2><p className="lede">Broad self-serve remains blocked until every required check passes.</p></div></div>
+        <div className="sectionHeader"><div><p className="eyebrow">Security</p><h2>Workspace security and launch readiness</h2><p className="lede">Broad self-serve remains blocked until every required check passes.</p></div></div>
         <div className="threeColumnSection">
           <article className="dataCard">
             <p className="sectionEyebrow">Current gate</p>
@@ -167,7 +188,9 @@ export default function SettingsPageClient() {
           </article>
         </div>
       </section>
+      ) : null}
 
+      {activeTab === 'billing' ? (
       <section className="featureSection">
         <div className="sectionHeader"><div><p className="eyebrow">Billing</p><h2>Subscription and entitlements</h2></div></div>
         <div className="threeColumnSection">
@@ -199,7 +222,9 @@ export default function SettingsPageClient() {
           <article className="dataCard"><p className="sectionEyebrow">Sessions</p><button type="button" onClick={() => void fetch('/api/auth/signout-all', { method: 'POST', headers: authHeaders() })}>Sign out all sessions</button></article>
         </div>
       </section>
+      ) : null}
 
+      {activeTab === 'team' ? (
       <section className="featureSection">
         <div className="sectionHeader"><div><p className="eyebrow">Team admin</p><h2>Members and invitations</h2></div></div>
         <div className="threeColumnSection">
@@ -231,6 +256,37 @@ export default function SettingsPageClient() {
           </article>
         </div>
       </section>
+      ) : null}
+
+      {activeTab === 'notifications' ? (
+      <section className="featureSection">
+        <div className="sectionHeader"><div><p className="eyebrow">Notifications</p><h2>Delivery status and alerting context</h2></div></div>
+        <div className="threeColumnSection">
+          <article className="dataCard">
+            <p className="sectionEyebrow">Workspace delivery context</p>
+            <p className="muted">Workspace: {resolvedWorkspace?.name ?? 'No workspace available yet'}</p>
+            <p className="muted">Members: {members.length}</p>
+            <p className="muted">Pending invitations: {invitations.length}</p>
+            <p className="muted">Seat usage: {seatSummary ? `${seatSummary.used}/${seatSummary.limit}` : 'loading'}</p>
+          </article>
+          <article className="dataCard">
+            <p className="sectionEyebrow">System readiness signals</p>
+            <p className="muted">Launch gate: {readiness?.status === 'pass' ? 'PASS' : 'FAIL'}</p>
+            <p className="muted">Blocking checks: {readiness?.blocking_failures?.length ?? 0}</p>
+            <p className="muted">Last readiness check: {readiness?.checked_at ? new Date(readiness.checked_at).toLocaleString() : 'not available'}</p>
+            <p className="muted">Billing status: {billingStatus}</p>
+          </article>
+          <article className="dataCard">
+            <p className="sectionEyebrow">Notification operations</p>
+            <p className="muted">Use threat operations and integrations to manage destination-specific alert routing.</p>
+            <div className="buttonRow">
+              <Link href="/threat" prefetch={false}>Open threat operations</Link>
+              <Link href="/integrations" prefetch={false}>Open integrations</Link>
+            </div>
+          </article>
+        </div>
+      </section>
+      ) : null}
     </main>
   );
 }
