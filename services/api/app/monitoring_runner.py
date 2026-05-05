@@ -6707,6 +6707,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             ('proof_chain_link_missing', bool(proof_chain_missing_reason_codes)),
             ('incident_without_alert', incidents_without_alert_count > 0),
             ('response_action_without_incident', response_actions_without_incident_count > 0),
+            ('healthy_claim_with_reporting_systems_zero', runtime_status_summary == 'healthy' and reporting_systems <= 0),
+            ('live_claim_with_no_telemetry', runtime_status_summary == 'live' and runtime_last_telemetry_at is None),
             (
                 'telemetry_unavailable_live_claim_asserted',
                 summary_freshness_status == 'unavailable' and (monitoring_status == 'active' or evidence_source == 'live'),
@@ -6750,6 +6752,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'alert_without_detection': ('degraded', 'runtime_contradiction_alert_without_detection'),
             'incident_without_alert': ('degraded', 'runtime_contradiction_incident_without_alert'),
             'response_action_without_incident': ('degraded', 'runtime_contradiction_response_action_without_incident'),
+            'healthy_claim_with_reporting_systems_zero': ('fail', 'runtime_contradiction_healthy_claim_with_reporting_systems_zero'),
+            'live_claim_with_no_telemetry': ('fail', 'runtime_contradiction_live_claim_with_no_telemetry'),
             'telemetry_unavailable_live_claim_asserted': ('fail', 'runtime_contradiction_telemetry_unavailable_live_claim_asserted'),
             'simulator_evidence_rendered_as_live_provider': ('fail', 'runtime_contradiction_simulator_evidence_rendered_as_live_provider'),
             'legacy_reporting_without_canonical_telemetry': ('degraded', 'runtime_contradiction_legacy_reporting_without_canonical_telemetry'),
@@ -6794,6 +6798,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'simulator_evidence_rendered_as_live_provider',
             'asset_monitoring_attached_but_no_monitored_systems',
             'asset_count_mismatch_runtime_vs_registry',
+            'healthy_claim_with_reporting_systems_zero',
+            'live_claim_with_no_telemetry',
         }
         impossible_state_detected = any(
             flag in contradiction_flags
@@ -6808,13 +6814,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         )
         hard_contradiction_detected = bool(hard_contradictions.intersection(set(contradiction_flags)))
         if impossible_state_detected or contradiction_severity == 'fail' or hard_contradiction_detected:
-            runtime_status_summary = 'fail'
-            runtime_status = 'Fail'
+            runtime_status_summary = 'offline'
+            runtime_status = 'Offline'
             monitoring_status = 'offline'
-            summary['runtime_status'] = 'fail'
+            summary['runtime_status'] = 'offline'
             summary['monitoring_status'] = 'offline'
             runtime_status_reason = runtime_status_reason or 'impossible_contradiction_state'
             summary['status_reason'] = runtime_status_reason
+            summary['next_required_action'] = 'resolve_runtime_contradictions'
         if canonical_guard_noncanonical_timestamp or contradiction_severity == 'degraded':
             runtime_status_summary = 'degraded'
             runtime_status = 'Degraded'

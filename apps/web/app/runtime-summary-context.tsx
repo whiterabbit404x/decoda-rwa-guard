@@ -15,6 +15,7 @@ type RuntimeSummaryContextValue = {
   existsLabel: string;
   missingLabel: string;
   nextActionLabel: string;
+  fixCtaLabel: string;
 };
 
 const REASON_CODE_MESSAGES: Record<string, string> = {
@@ -23,6 +24,14 @@ const REASON_CODE_MESSAGES: Record<string, string> = {
   no_reporting_systems: 'No monitored systems are reporting. Enable and verify monitoring sources.',
   stale_telemetry: 'Telemetry is stale. Investigate worker health and source ingestion lag.',
   no_live_evidence: 'No live evidence has been persisted yet. Trigger and validate a real detection path.',
+  runtime_contradiction_asset_monitoring_attached_but_no_monitored_systems: 'Assets are registered, but monitoring is not attached to any running systems.',
+  runtime_contradiction_asset_count_mismatch_runtime_vs_registry: 'Asset counts are out of sync between registry and runtime.',
+  runtime_contradiction_healthy_claim_with_reporting_systems_zero: 'Health cannot be verified because no systems are reporting.',
+  runtime_contradiction_live_claim_with_no_telemetry: 'Live mode cannot be verified because telemetry is missing.',
+  runtime_contradiction_simulator_evidence_rendered_as_live_provider: 'Simulator evidence was labeled as live provider data.',
+  runtime_contradiction_alert_without_detection: 'An alert exists without linked detection evidence.',
+  runtime_contradiction_incident_without_alert: 'An incident exists without a linked alert.',
+  runtime_contradiction_response_action_without_incident: 'A response action exists without a linked incident.',
 };
 
 const RuntimeSummaryContext = createContext<RuntimeSummaryContextValue | null>(null);
@@ -54,7 +63,10 @@ export function RuntimeSummaryProvider({ children }: { children: React.ReactNode
     const existsLabel = `${summary.protected_assets_count} assets, ${summary.reporting_systems_count} reporting systems, ${summary.active_alerts_count} active alerts`;
     const missingLabel = reasonMessageForCode(topReason);
     const nextActionLabel = summary.next_required_action ? summary.next_required_action.replaceAll('_', ' ') : 'review reason codes';
-    return { summary, runtime, loading, reasonMessageForCode, evidenceLabel, existsLabel, missingLabel, nextActionLabel };
+    const fixCtaLabel = summary.next_required_action === 'resolve_runtime_contradictions'
+      ? 'Fix monitoring contradictions'
+      : 'Review monitoring setup';
+    return { summary, runtime, loading, reasonMessageForCode, evidenceLabel, existsLabel, missingLabel, nextActionLabel, fixCtaLabel };
   }, [summary, runtime, loading]);
 
   return <RuntimeSummaryContext.Provider value={value}>{children}</RuntimeSummaryContext.Provider>;
@@ -67,4 +79,3 @@ export function useRuntimeSummary() {
   }
   return context;
 }
-
