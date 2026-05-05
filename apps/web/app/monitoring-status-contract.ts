@@ -23,6 +23,7 @@ export type WorkspaceMonitoringSummary = {
   freshness_status: 'fresh' | 'stale' | 'unavailable';
   confidence_status: 'high' | 'medium' | 'low' | 'unavailable';
   protected_assets: number;
+  monitoring_targets: number;
   monitored_systems: number;
   reporting_systems: number;
   last_poll_at: string | null;
@@ -38,7 +39,10 @@ export type WorkspaceMonitoringSummary = {
   protected_assets_count: number;
   active_alerts_count: number;
   active_incidents_count: number;
+  active_alerts: number;
+  open_incidents: number;
   evidence_source_summary: 'live' | 'simulator' | 'replay' | 'none';
+  evidence_source: 'live' | 'simulator' | 'replay' | 'none';
   continuity_status?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry';
   continuity_reason_codes?: string[];
   continuity_signals?: Record<string, unknown>;
@@ -107,6 +111,8 @@ export type WorkspaceMonitoringSummary = {
   enterprise_criteria_failed?: string[];
   enterprise_criteria?: EnterpriseCriterionCheck[];
   canonical_collections?: Record<string, unknown>;
+  current_step: string;
+  workflow_steps: unknown[];
 };
 
 
@@ -164,6 +170,9 @@ export type MonitoringRuntimeStatus = {
   monitored_systems?: number;
   enabled_systems?: number;
   protected_assets?: number;
+  monitoring_targets?: number;
+  active_alerts?: number;
+  open_incidents?: number;
   active_systems?: number;
   last_heartbeat?: string | null;
   last_confirmed_checkpoint?: string | null;
@@ -214,6 +223,8 @@ export type MonitoringRuntimeStatus = {
   workspace_configured?: boolean;
   reason_codes?: string[];
   next_required_action?: string;
+  current_step?: string;
+  workflow_steps?: unknown[];
   monitoring_mode?: 'live' | 'hybrid' | 'simulator' | 'offline' | 'unavailable';
   runtime_status?: 'live' | 'degraded' | 'offline' | 'idle';
   configured_systems?: number;
