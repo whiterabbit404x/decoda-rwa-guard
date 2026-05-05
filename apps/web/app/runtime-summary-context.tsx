@@ -81,8 +81,9 @@ export function RuntimeSummaryProvider({ children }: { children: React.ReactNode
     const evidenceLabel = summary.evidence_source_summary === 'live' ? 'Live provider evidence' : summary.evidence_source_summary === 'none' ? 'No evidence configured' : 'Simulator evidence';
     const existsLabel = `${summary.protected_assets_count} assets, ${summary.reporting_systems_count} reporting systems, ${summary.active_alerts_count} active alerts`;
     const missingLabel = reasonMessageForCode(topReason);
-    const nextActionLabel = NEXT_ACTION_LABELS[summary.next_required_action] ?? 'Review runtime reason codes';
-    const fixCtaLabel = summary.next_required_action === 'resolve_runtime_contradictions'
+    const nextRequiredAction = summary.next_required_action ?? 'review_reason_codes';
+    const nextActionLabel = NEXT_ACTION_LABELS[nextRequiredAction] ?? 'Review runtime reason codes';
+    const fixCtaLabel = nextRequiredAction === 'resolve_runtime_contradictions'
       ? 'Fix monitoring contradictions'
       : 'Review monitoring setup';
     return { summary, runtime, loading, reasonMessageForCode, evidenceLabel, existsLabel, missingLabel, nextActionLabel, fixCtaLabel };
