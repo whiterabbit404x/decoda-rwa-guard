@@ -2,13 +2,12 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
-test('onboarding page renders top stepper and next action card', () => {
+test('onboarding page renders top stepper and next step / resources cards', () => {
   const pageSource = readFileSync(path.join(__dirname, '..', 'app', '(product)', 'onboarding-page-client.tsx'), 'utf-8');
 
   expect(pageSource).toContain('data-testid="onboarding-top-stepper"');
   expect(pageSource).toContain('aria-label="Onboarding steps"');
-  expect(pageSource).toContain('ActionPanel title="Next Action"');
-  expect(pageSource).toContain('ActionPanel title="Current Step"');
+  expect(pageSource).toContain('ActionPanel title="Next Step"');
   expect(pageSource).toContain('ActionPanel title="Resources"');
   expect(pageSource).toContain('/onboarding/progress');
 });
