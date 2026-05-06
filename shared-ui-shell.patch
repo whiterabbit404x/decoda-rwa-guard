@@ -1,0 +1,1516 @@
+diff --git a/apps/web/app/app-navigation.tsx b/apps/web/app/app-navigation.tsx
+index f7dec8c..7498cb2 100644
+--- a/apps/web/app/app-navigation.tsx
++++ b/apps/web/app/app-navigation.tsx
+@@ -1,24 +1,30 @@
+ import Link from 'next/link';
+ 
+ import { APP_NAV_ITEMS } from './product-nav';
++import { NAV_ICONS } from './nav-icons';
+ 
+ export default function AppNavigation({ currentPath }: { currentPath: string }) {
+-  const navIcon = (label: string) => label.slice(0, 1).toUpperCase();
+-
+   return (
+     <nav className="appNav" aria-label="Product navigation">
+-      {APP_NAV_ITEMS.map((item) => (
+-        <Link
+-          key={item.href}
+-          href={item.href}
+-          prefetch={false}
+-          // Prevent protected-route prefetch fan-out from hitting multiple backend dashboard endpoints after sign-in.
+-          className={currentPath === item.href ? 'active' : ''}
+-        >
+-          <span className="appNavIcon" aria-hidden="true">{navIcon(item.label)}</span>
+-          <span>{item.label}</span>
+-        </Link>
+-      ))}
++      {APP_NAV_ITEMS.map((item) => {
++        const NavIcon = NAV_ICONS[item.href];
++        const isActive = currentPath === item.href || (item.href !== '/dashboard' && currentPath.startsWith(item.href + '/'));
++
++        return (
++          <Link
++            key={item.href}
++            href={item.href}
++            prefetch={false}
++            className={isActive ? 'active' : ''}
++            aria-current={isActive ? 'page' : undefined}
++          >
++            <span className="appNavIcon">
++              {NavIcon ? <NavIcon size={15} /> : <span aria-hidden="true">{item.label[0]}</span>}
++            </span>
++            <span className="appNavLabel">{item.label}</span>
++          </Link>
++        );
++      })}
+     </nav>
+   );
+ }
+diff --git a/apps/web/app/app-shell.tsx b/apps/web/app/app-shell.tsx
+index a7ca868..001af5c 100644
+--- a/apps/web/app/app-shell.tsx
++++ b/apps/web/app/app-shell.tsx
+@@ -5,49 +5,124 @@ import { usePathname, useRouter } from 'next/navigation';
+ 
+ import AppNavigation from './app-navigation';
+ import { usePilotAuth } from 'app/pilot-auth-context';
+-import WorkspaceOwnershipBar from './workspace-ownership-bar';
+ import RuntimeBanner from './components/runtime-banner';
++import { RuntimeSummaryProvider } from './runtime-summary-context';
++
++function BellIcon() {
++  return (
++    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
++      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
++      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
++    </svg>
++  );
++}
++
++function ChevronDownIcon() {
++  return (
++    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
++      <polyline points="6 9 12 15 18 9" />
++    </svg>
++  );
++}
++
++function initials(name: string): string {
++  return name
++    .split(/\s+/)
++    .slice(0, 2)
++    .map((w) => w[0] ?? '')
++    .join('')
++    .toUpperCase();
++}
+ 
+ export default function AppShell({ children, topBanner }: { children: React.ReactNode; topBanner?: React.ReactNode }) {
+   const pathname = usePathname();
+   const router = useRouter();
+   const { error, signOut, user } = usePilotAuth();
+ 
++  const workspaceName = user?.current_workspace?.name ?? 'Select workspace';
++  const userInitials = user?.email ? initials(user.email.split('@')[0] ?? 'U') : 'U';
++
+   async function handleSignOut() {
+     await signOut();
+     router.push('/sign-in');
+   }
+ 
+   return (
+-    <div className="appShellFrame">
+-      <aside className="appSidebar">
+-        <Link href="/dashboard" className="brandBlock" prefetch={false}>
+-          <span className="brandEyebrow">Decoda RWA Guard</span>
+-          <strong>Tokenized treasury command</strong>
+-          <span>Threat, compliance, and resilience oversight for live pilots.</span>
+-        </Link>
+-        <AppNavigation currentPath={pathname} />
+-        <div className="sidebarMetaCard">
+-          <p className="sectionEyebrow">Active workspace</p>
+-          <h2>{user?.current_workspace?.name ?? 'Workspace pending selection'}</h2>
+-          <p className="muted">{user?.email ?? 'Guest mode'}</p>
+-          <div className="overviewActions">
+-            <Link href="/workspaces" prefetch={false}>Switch workspace</Link>
+-            <button type="button" onClick={() => void handleSignOut()}>Sign out</button>
++    <RuntimeSummaryProvider>
++      <div className="appShellFrame">
++        {/* ── Sidebar ─────────────────────────────────── */}
++        <aside className="appSidebar" aria-label="Primary navigation">
++          <Link href="/dashboard" className="brandBlock" prefetch={false}>
++            <span className="brandLogo" aria-hidden="true">D</span>
++            <span className="brandText">
++              <span className="brandEyebrow">Decoda</span>
++              <span className="brandName">RWA Guard</span>
++            </span>
++          </Link>
++
++          <AppNavigation currentPath={pathname} />
++
++          <span className="sidebarSpacer" />
++          <hr className="sidebarDivider" />
++
++          <div className="sidebarMetaCard">
++            <p className="sectionEyebrow">Active workspace</p>
++            <p style={{ margin: '0 0 0.35rem', fontWeight: 600, fontSize: '0.85rem' }}>{workspaceName}</p>
++            <p className="muted" style={{ margin: '0 0 0.75rem', fontSize: '0.78rem' }}>{user?.email ?? 'Guest mode'}</p>
++            <div className="overviewActions" style={{ marginTop: 0, gap: '0.5rem' }}>
++              <Link href="/workspaces" prefetch={false} style={{ fontSize: '0.8rem' }}>Switch workspace</Link>
++              <button type="button" onClick={() => void handleSignOut()} style={{ fontSize: '0.8rem', background: 'none', border: 'none', color: '#8cc8ff', cursor: 'pointer', padding: 0, fontWeight: 600 }}>Sign out</button>
++            </div>
++            <p className="tableMeta" style={{ marginTop: '0.6rem', fontSize: '0.72rem' }}>
++              © {new Date().getFullYear()} Decoda ·{' '}
++              <Link href="/privacy" prefetch={false}>Privacy</Link> ·{' '}
++              <Link href="/terms" prefetch={false}>Terms</Link>
++            </p>
+           </div>
+-          <p className="muted">Need help? <Link href="/support" prefetch={false}>Contact support</Link></p>
+-          <p className="tableMeta">© {new Date().getFullYear()} Decoda · <Link href="/privacy" prefetch={false}>Privacy</Link> · <Link href="/terms" prefetch={false}>Terms</Link> · <Link href="/security" prefetch={false}>Security</Link> · <Link href="/trust" prefetch={false}>Trust</Link></p>
++
++          {error ? <p className="statusLine" style={{ fontSize: '0.78rem', color: 'var(--danger-fg)' }}>{error}</p> : null}
++        </aside>
++
++        {/* ── Content area ────────────────────────────── */}
++        <div className="appShellContent">
++          <header className="appShellTop">
++            {/* Top bar: workspace selector + user actions */}
++            <div className="shellHeaderBar">
++              <Link href="/workspaces" className="shellWorkspaceSelector" prefetch={false} aria-label="Switch workspace">
++                <span className="shellWorkspaceName">{workspaceName}</span>
++                <ChevronDownIcon />
++              </Link>
++
++              <span className="shellHeaderSpacer" />
++
++              {topBanner}
++
++              <div className="shellHeaderActions">
++                <button className="shellIconBtn" type="button" aria-label="Notifications">
++                  <BellIcon />
++                </button>
++                <button
++                  className="shellUserChip"
++                  type="button"
++                  onClick={() => void handleSignOut()}
++                  aria-label="Sign out"
++                >
++                  <span className="shellAvatar" aria-hidden="true">{userInitials}</span>
++                  <span style={{ fontSize: '0.78rem', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
++                    {user?.email ?? 'Guest'}
++                  </span>
++                  <ChevronDownIcon />
++                </button>
++              </div>
++            </div>
++
++            {/* Runtime banner: compact monitoring strip */}
++            <RuntimeBanner />
++          </header>
++
++          <main className="appShellPage">{children}</main>
+         </div>
+-        {error ? <p className="statusLine">{error}</p> : null}
+-      </aside>
+-      <div className="appShellContent">
+-        <header className="appShellTop">
+-          {topBanner}
+-          <RuntimeBanner />
+-        </header>
+-        <WorkspaceOwnershipBar />
+-        <main className="appShellPage">{children}</main>
+       </div>
+-    </div>
++    </RuntimeSummaryProvider>
+   );
+ }
+diff --git a/apps/web/app/components/runtime-banner.tsx b/apps/web/app/components/runtime-banner.tsx
+index 79f5d1c..5fd9fe7 100644
+--- a/apps/web/app/components/runtime-banner.tsx
++++ b/apps/web/app/components/runtime-banner.tsx
+@@ -3,30 +3,43 @@
+ import { hasLiveTelemetry, hasRealTelemetryBackedChain } from '../workspace-monitoring-truth';
+ import { useRuntimeSummary } from '../runtime-summary-context';
+ 
+-function formatTimestamp(value: string | null): string {
+-  if (!value) {
+-    return 'Unavailable';
+-  }
+-  return new Date(value).toLocaleString();
++function formatAge(iso: string | null): string {
++  if (!iso) return 'never';
++  const diffMs = Date.now() - new Date(iso).getTime();
++  const secs = Math.floor(diffMs / 1000);
++  if (secs < 60) return `${secs}s ago`;
++  const mins = Math.floor(secs / 60);
++  if (mins < 60) return `${mins}m ago`;
++  return `${Math.floor(mins / 60)}h ago`;
+ }
+ 
+ function formatStatus(value: string): string {
+   return value.replaceAll('_', ' ');
+ }
+ 
+-function formatWorkspaceCoverage(reportingSystems: number, monitoredSystems: number, protectedAssets: number): string {
+-  return `${reportingSystems}/${monitoredSystems} reporting systems across ${protectedAssets} protected assets`;
++type BannerField = { label: string; value: string };
++
++function Field({ label, value }: BannerField) {
++  return (
++    <span className="runtimeBannerField">
++      <span className="runtimeBannerLabel">{label}</span>
++      <span className="runtimeBannerValue">{value}</span>
++    </span>
++  );
++}
++
++function Sep() {
++  return <span className="runtimeBannerSep" aria-hidden="true">·</span>;
+ }
+ 
+ export default function RuntimeBanner() {
+-  const { summary, loading, missingLabel, nextActionLabel, reasonMessageForCode } = useRuntimeSummary();
++  const { summary, loading, nextActionLabel, reasonMessageForCode } = useRuntimeSummary();
+ 
+-  if (loading) {
+-    return null;
+-  }
++  if (loading) return null;
+ 
+   const topReason = summary.continuity_reason_codes?.[0] ?? summary.status_reason;
+   const reasonCopy = topReason ? reasonMessageForCode(topReason) : null;
++
+   const healthProvable =
+     summary.runtime_status === 'live'
+     && summary.monitoring_status === 'live'
+@@ -36,23 +49,51 @@ export default function RuntimeBanner() {
+     && hasRealTelemetryBackedChain(summary)
+     && !topReason;
+ 
+-  const monitoringStatusCopy = healthProvable ? 'Live' : 'Unverified';
+-  const freshnessStatusCopy = healthProvable ? 'Fresh' : formatStatus(summary.telemetry_freshness);
+-  const confidenceStatusCopy = healthProvable ? 'High' : formatStatus(summary.confidence);
++  const monitoringValue = healthProvable ? 'Live' : formatStatus(summary.monitoring_status ?? 'unverified');
++  const freshnessValue  = healthProvable ? 'Fresh' : formatStatus(summary.telemetry_freshness ?? 'unknown');
++  const confidenceValue = healthProvable ? 'High'  : formatStatus(summary.confidence ?? 'low');
++
++  const toneClass = healthProvable
++    ? 'runtimeBannerLive'
++    : summary.monitoring_status === 'degraded'
++      ? 'runtimeBannerStale'
++      : 'runtimeBannerDead';
+ 
+   return (
+-    <section className="runtimeBanner" aria-live="polite">
+-      <p><strong>Monitoring status:</strong> {monitoringStatusCopy}</p>
+-      <p><strong>Freshness status:</strong> {freshnessStatusCopy}</p>
+-      <p><strong>Confidence status:</strong> {confidenceStatusCopy}</p>
+-      <p><strong>Last telemetry at:</strong> {formatTimestamp(summary.last_telemetry_at)}</p>
+-      <p><strong>Last heartbeat at:</strong> {formatTimestamp(summary.last_heartbeat_at)}</p>
+-      <p><strong>Last poll at:</strong> {formatTimestamp(summary.last_poll_at)}</p>
+-      <p><strong>Workspace coverage:</strong> {formatWorkspaceCoverage(summary.reporting_systems_count, summary.monitored_systems_count, summary.protected_assets_count)}</p>
+-      <p><strong>Next required action:</strong> {nextActionLabel}</p>
+-      {reasonCopy ? <p><strong>Current limitation:</strong> {reasonCopy}</p> : null}
+-      {!healthProvable ? <p><strong>Health proof:</strong> Live/healthy messaging is disabled until telemetry and proof chain are verified.</p> : null}
+-      {missingLabel && !reasonCopy ? <p><strong>Current limitation:</strong> {missingLabel}</p> : null}
++    <section
++      className={`runtimeBanner ${toneClass}`}
++      aria-label="Monitoring runtime status"
++      aria-live="polite"
++    >
++      <Field label="Monitoring" value={monitoringValue} />
++      <Sep />
++      <Field label="Freshness" value={freshnessValue} />
++      <Sep />
++      <Field label="Confidence" value={confidenceValue} />
++      <Sep />
++      <Field label="Telemetry" value={formatAge(summary.last_telemetry_at)} />
++      <Sep />
++      <Field label="Heartbeat" value={formatAge(summary.last_heartbeat_at)} />
++      <Sep />
++      <Field label="Poll" value={formatAge(summary.last_poll_at)} />
++      <Sep />
++      <Field label="Next action" value={nextActionLabel} />
++      {reasonCopy ? (
++        <>
++          <Sep />
++          <Field label="Limitation" value={reasonCopy} />
++        </>
++      ) : null}
++      {!healthProvable ? (
++        <>
++          <Sep />
++          <span className="runtimeBannerField">
++            <span className="runtimeBannerLabel" style={{ color: 'var(--warning-fg)' }}>
++              Live/healthy display disabled until telemetry verified
++            </span>
++          </span>
++        </>
++      ) : null}
+     </section>
+   );
+ }
+diff --git a/apps/web/app/components/ui-primitives.tsx b/apps/web/app/components/ui-primitives.tsx
+index f9133f6..093a329 100644
+--- a/apps/web/app/components/ui-primitives.tsx
++++ b/apps/web/app/components/ui-primitives.tsx
+@@ -3,42 +3,166 @@
+ import Link from 'next/link';
+ import { ReactNode } from 'react';
+ 
++/* ── Surface card ─────────────────────────────────────────────── */
+ export function SurfaceCard({ children, className = '' }: { children: ReactNode; className?: string }) {
+   return <article className={`dataCard sharedSurfaceCard ${className}`.trim()}>{children}</article>;
+ }
+ 
++/* ── Metric tile ──────────────────────────────────────────────── */
+ export function MetricTile({ label, value, meta }: { label: string; value: ReactNode; meta?: ReactNode }) {
+-  return <article className="metricCard sharedMetricTile"><p className="metricLabel">{label}</p><p className="metricValue">{value}</p>{meta ? <p className="metricMeta">{meta}</p> : null}</article>;
++  return (
++    <article className="metricCard sharedMetricTile">
++      <p className="metricLabel">{label}</p>
++      <p className="metricValue">{value}</p>
++      {meta ? <p className="metricMeta">{meta}</p> : null}
++    </article>
++  );
+ }
+ 
+-export function StatusPill({ label }: { label: string }) {
+-  return <span className="ruleChip sharedStatusPill">{label}</span>;
++/* ── Status pill ──────────────────────────────────────────────── */
++export type PillVariant = 'success' | 'warning' | 'danger' | 'info' | 'neutral' | 'default';
++
++function pillClass(variant: PillVariant): string {
++  if (variant === 'default') return 'ruleChip sharedStatusPill';
++  return `ruleChip sharedStatusPill pill-${variant}`;
++}
++
++export function StatusPill({ label, variant = 'default' }: { label: string; variant?: PillVariant }) {
++  return <span className={pillClass(variant)}>{label}</span>;
++}
++
++export function statusVariantFromSeverity(severity: string): PillVariant {
++  switch (severity.toLowerCase()) {
++    case 'critical': case 'high':   return 'danger';
++    case 'medium':                   return 'warning';
++    case 'low':   case 'resolved':  return 'success';
++    case 'info':                     return 'info';
++    default:                         return 'neutral';
++  }
++}
++
++export function statusVariantFromStatus(status: string): PillVariant {
++  switch (status.toLowerCase()) {
++    case 'live':    case 'healthy':  case 'active':   case 'succeeded': return 'success';
++    case 'degraded': case 'stale':  case 'warning':  case 'pending':   return 'warning';
++    case 'offline': case 'failed':  case 'critical':                    return 'danger';
++    case 'investigating': case 'in_progress':                           return 'info';
++    default:                                                            return 'neutral';
++  }
+ }
+ 
+-export function TableShell({ headers, children }: { headers: string[]; children: ReactNode }) {
+-  return <div className="tableWrap sharedTableShell"><table><thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{children}</tbody></table></div>;
++/* ── Table shell ──────────────────────────────────────────────── */
++export function TableShell({ headers, children, compact = false }: { headers: string[]; children: ReactNode; compact?: boolean }) {
++  return (
++    <div className={`tableWrap sharedTableShell${compact ? ' tableCompact' : ''}`}>
++      <table>
++        <thead>
++          <tr>{headers.map((h) => <th key={h}>{h}</th>)}</tr>
++        </thead>
++        <tbody>{children}</tbody>
++      </table>
++    </div>
++  );
+ }
+ 
++/* ── Empty state ──────────────────────────────────────────────── */
+ export function EmptyStateBlocker({ title, body, ctaHref, ctaLabel }: { title: string; body: string; ctaHref?: string; ctaLabel?: string }) {
+-  return <div className="emptyStatePanel sharedEmptyStateBlocker"><h4>{title}</h4><p className="muted">{body}</p>{ctaHref && ctaLabel ? <Link href={ctaHref} prefetch={false}>{ctaLabel}</Link> : null}</div>;
++  return (
++    <div className="emptyStatePanel sharedEmptyStateBlocker">
++      <h4>{title}</h4>
++      <p className="muted">{body}</p>
++      {ctaHref && ctaLabel ? <Link href={ctaHref} prefetch={false} className="btn btn-secondary" style={{ marginTop: '0.75rem' }}>{ctaLabel}</Link> : null}
++    </div>
++  );
+ }
+ 
++/* ── Tab strip ────────────────────────────────────────────────── */
+ export function TabStrip({ tabs, active, onChange }: { tabs: Array<{ key: string; label: string }>; active: string; onChange: (key: string) => void }) {
+-  return <div className="buttonRow sharedTabStrip" role="tablist" aria-label="Views">{tabs.map((tab) => <button key={tab.key} type="button" role="tab" aria-selected={active === tab.key} className={active === tab.key ? 'activeTab' : ''} onClick={() => onChange(tab.key)}>{tab.label}</button>)}</div>;
++  return (
++    <div className="buttonRow sharedTabStrip" role="tablist" aria-label="Views">
++      {tabs.map((tab) => (
++        <button
++          key={tab.key}
++          type="button"
++          role="tab"
++          aria-selected={active === tab.key}
++          className={active === tab.key ? 'activeTab' : ''}
++          onClick={() => onChange(tab.key)}
++        >
++          {tab.label}
++        </button>
++      ))}
++    </div>
++  );
+ }
+ 
++/* ── CTA panel ────────────────────────────────────────────────── */
+ export function CtaPanel({ title, children }: { title: string; children: ReactNode }) {
+   return <article className="dataCard sharedCtaPanel"><p className="sectionEyebrow">{title}</p>{children}</article>;
+ }
+ 
+-export const MetricCard = MetricTile;
+-export const DataTable = TableShell;
+-export const ActionPanel = CtaPanel;
++/* ── Buttons ──────────────────────────────────────────────────── */
++export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
++
++export function Button({
++  children,
++  variant = 'secondary',
++  disabled = false,
++  onClick,
++  type = 'button',
++}: {
++  children: ReactNode;
++  variant?: ButtonVariant;
++  disabled?: boolean;
++  onClick?: () => void;
++  type?: 'button' | 'submit' | 'reset';
++}) {
++  return (
++    <button
++      type={type}
++      className={`btn btn-${variant}`}
++      disabled={disabled}
++      onClick={onClick}
++    >
++      {children}
++    </button>
++  );
++}
+ 
++export function LinkButton({ href, children, variant = 'secondary' }: { href: string; children: ReactNode; variant?: ButtonVariant }) {
++  return (
++    <Link href={href} prefetch={false} className={`btn btn-${variant}`}>
++      {children}
++    </Link>
++  );
++}
++
++/* ── Step rail (onboarding) ───────────────────────────────────── */
+ export function StepRail({ steps }: { steps: Array<{ key: string; title: string; detail: string; complete: boolean; source?: string; href: string; cta: string }> }) {
+-  return <div className="stack compactStack">{steps.map((step) => <SurfaceCard key={step.key}><div className="listHeader"><div><h3>{step.complete ? '✓' : '○'} {step.title}</h3><p className="muted">{step.detail}</p></div>{step.source ? <StatusPill label={step.source} /> : null}</div><Link href={step.href} prefetch={false}>{step.complete ? 'Review' : step.cta}</Link></SurfaceCard>)}</div>;
++  return (
++    <div className="stack compactStack">
++      {steps.map((step) => (
++        <SurfaceCard key={step.key}>
++          <div className="listHeader">
++            <div>
++              <h3>{step.complete ? '✓' : '○'} {step.title}</h3>
++              <p className="muted">{step.detail}</p>
++            </div>
++            {step.source ? <StatusPill label={step.source} variant="info" /> : null}
++          </div>
++          <Link href={step.href} prefetch={false}>{step.complete ? 'Review' : step.cta}</Link>
++        </SurfaceCard>
++      ))}
++    </div>
++  );
+ }
+ 
++/* ── Runtime banner (inline variant for other uses) ──────────── */
+ export function RuntimeBanner({ title, detail }: { title: string; detail: string }) {
+   return <div className="statusLine statusLine-warning"><strong>{title}</strong> {detail}</div>;
+ }
++
++/* ── Aliases for backwards compatibility ──────────────────────── */
++export const MetricCard  = MetricTile;
++export const DataTable   = TableShell;
++export const ActionPanel = CtaPanel;
+diff --git a/apps/web/app/nav-icons.tsx b/apps/web/app/nav-icons.tsx
+new file mode 100644
+index 0000000..e5b3d00
+--- /dev/null
++++ b/apps/web/app/nav-icons.tsx
+@@ -0,0 +1,152 @@
++import type { SVGProps } from 'react';
++
++type IconProps = SVGProps<SVGSVGElement> & { size?: number };
++
++function Icon({ size = 16, children, ...props }: IconProps & { children: React.ReactNode }) {
++  return (
++    <svg
++      width={size}
++      height={size}
++      viewBox="0 0 24 24"
++      fill="none"
++      stroke="currentColor"
++      strokeWidth="1.8"
++      strokeLinecap="round"
++      strokeLinejoin="round"
++      aria-hidden="true"
++      {...props}
++    >
++      {children}
++    </svg>
++  );
++}
++
++export function GettingStartedIcon(p: IconProps) {
++  return (
++    <Icon {...p}>
++      <circle cx="12" cy="12" r="9" />
++      <path d="M12 8v4l2.5 2.5" />
++    </Icon>
++  );
++}
++
++export function DashboardIcon(p: IconProps) {
++  return (
++    <Icon {...p}>
++      <rect x="3" y="3" width="7" height="7" rx="1" />
++      <rect x="14" y="3" width="7" height="7" rx="1" />
++      <rect x="3" y="14" width="7" height="7" rx="1" />
++      <rect x="14" y="14" width="7" height="7" rx="1" />
++    </Icon>
++  );
++}
++
++export function AssetsIcon(p: IconProps) {
++  return (
++    <Icon {...p}>
++      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
++    </Icon>
++  );
++}
++
++export function MonitoringSourcesIcon(p: IconProps) {
++  return (
++    <Icon {...p}>
++      <path d="M5 12.55a11 11 0 0 1 14.08 0" />
++      <path d="M1.42 9a16 16 0 0 1 21.16 0" />
++      <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
++      <circle cx="12" cy="20" r="1" fill="currentColor" />
++    </Icon>
++  );
++}
++
++export function ThreatMonitoringIcon(p: IconProps) {
++  return (
++    <Icon {...p}>
++      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
++      <circle cx="12" cy="12" r="3" />
++    </Icon>
++  );
++}
++
++export function AlertsIcon(p: IconProps) {
++  return (
++    <Icon {...p}>
++      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
++      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
++    </Icon>
++  );
++}
++
++export function IncidentsIcon(p: IconProps) {
++  return (
++    <Icon {...p}>
++      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
++      <line x1="12" y1="9" x2="12" y2="13" />
++      <line x1="12" y1="17" x2="12.01" y2="17" />
++    </Icon>
++  );
++}
++
++export function ResponseActionsIcon(p: IconProps) {
++  return (
++    <Icon {...p}>
++      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
++    </Icon>
++  );
++}
++
++export function EvidenceAuditIcon(p: IconProps) {
++  return (
++    <Icon {...p}>
++      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
++      <polyline points="14 2 14 8 20 8" />
++      <line x1="9" y1="13" x2="15" y2="13" />
++      <line x1="9" y1="17" x2="15" y2="17" />
++    </Icon>
++  );
++}
++
++export function IntegrationsIcon(p: IconProps) {
++  return (
++    <Icon {...p}>
++      <circle cx="18" cy="5" r="3" />
++      <circle cx="6" cy="12" r="3" />
++      <circle cx="18" cy="19" r="3" />
++      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
++      <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
++    </Icon>
++  );
++}
++
++export function SettingsIcon(p: IconProps) {
++  return (
++    <Icon {...p}>
++      <circle cx="12" cy="12" r="3" />
++      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
++    </Icon>
++  );
++}
++
++export function SystemHealthIcon(p: IconProps) {
++  return (
++    <Icon {...p}>
++      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
++    </Icon>
++  );
++}
++
++export const NAV_ICONS: Record<string, (p: IconProps) => JSX.Element> = {
++  '/onboarding':       GettingStartedIcon,
++  '/dashboard':        DashboardIcon,
++  '/assets':           AssetsIcon,
++  '/monitoring-sources': MonitoringSourcesIcon,
++  '/threat':           ThreatMonitoringIcon,
++  '/alerts':           AlertsIcon,
++  '/incidents':        IncidentsIcon,
++  '/response-actions': ResponseActionsIcon,
++  '/evidence':         EvidenceAuditIcon,
++  '/integrations':     IntegrationsIcon,
++  '/settings':         SettingsIcon,
++  '/system-health':    SystemHealthIcon,
++};
+diff --git a/apps/web/app/styles.css b/apps/web/app/styles.css
+index 4d5b481..b89d64b 100644
+--- a/apps/web/app/styles.css
++++ b/apps/web/app/styles.css
+@@ -1,6 +1,56 @@
++/* ─── Design tokens ─────────────────────────────────────────────── */
+ :root {
+   color-scheme: dark;
+-  font-family: Inter, Arial, sans-serif;
++  font-family: Inter, system-ui, Arial, sans-serif;
++
++  /* backgrounds */
++  --bg-base:    #070b14;
++  --bg-sidebar: #080e1c;
++  --bg-surface: #0e1625;
++  --bg-card:    rgba(14, 22, 37, 0.96);
++  --bg-header:  rgba(8, 14, 26, 0.97);
++
++  /* borders */
++  --border:        rgba(255, 255, 255, 0.08);
++  --border-accent: rgba(106, 169, 255, 0.22);
++  --border-hover:  rgba(106, 169, 255, 0.55);
++
++  /* text */
++  --text-primary:   #e6edf3;
++  --text-secondary: #8b949e;
++  --text-muted:     #5a6478;
++  --text-accent:    #6aa9ff;
++
++  /* accent colours */
++  --accent-blue:    #3b82f6;
++  --accent-blue-bg: rgba(59, 130, 246, 0.14);
++
++  /* status */
++  --success-fg:  #4ade80;
++  --success-bg:  rgba(34, 197, 94, 0.12);
++  --success-bdr: rgba(34, 197, 94, 0.32);
++
++  --warning-fg:  #fbbf24;
++  --warning-bg:  rgba(251, 191, 36, 0.12);
++  --warning-bdr: rgba(251, 191, 36, 0.32);
++
++  --danger-fg:   #f87171;
++  --danger-bg:   rgba(239, 68, 68, 0.12);
++  --danger-bdr:  rgba(239, 68, 68, 0.32);
++
++  --info-fg:   #93c5fd;
++  --info-bg:   rgba(59, 130, 246, 0.12);
++  --info-bdr:  rgba(59, 130, 246, 0.32);
++
++  /* radii */
++  --radius-xs: 0.35rem;
++  --radius-sm: 0.6rem;
++  --radius-md: 0.85rem;
++  --radius-lg: 1rem;
++  --radius-xl: 1.25rem;
++
++  /* sidebar */
++  --sidebar-w: 240px;
+ }
+ 
+ * {
+@@ -861,11 +911,12 @@ td .tableMeta {
+   border-color: rgba(143, 155, 179, 0.26);
+ }
+ 
++/* ─── App shell frame ────────────────────────────────────────────── */
+ .appShellFrame {
+   display: grid;
+-  grid-template-columns: 280px minmax(0, 1fr);
++  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+   min-height: 100vh;
+-  background: #070b14;
++  background: var(--bg-base);
+ }
+ 
+ .appSidebar {
+@@ -873,26 +924,40 @@ td .tableMeta {
+   top: 0;
+   display: flex;
+   flex-direction: column;
+-  gap: 1rem;
+-  min-height: 100vh;
+-  padding: 1.25rem;
+-  background: linear-gradient(180deg, rgba(8, 14, 28, 0.97), rgba(6, 11, 22, 0.98));
+-  border-right: 1px solid rgba(255, 255, 255, 0.08);
++  gap: 0.5rem;
++  height: 100vh;
++  overflow-y: auto;
++  padding: 1rem 0.75rem;
++  background: var(--bg-sidebar);
++  border-right: 1px solid var(--border);
++  scrollbar-width: none;
+ }
+ 
++.appSidebar::-webkit-scrollbar { display: none; }
++
+ .appShellContent {
+-  padding: 1.5rem;
+-  background: linear-gradient(180deg, rgba(8, 12, 22, 0.97), rgba(6, 9, 18, 0.98));
++  display: flex;
++  flex-direction: column;
++  min-height: 100vh;
++  background: linear-gradient(180deg, rgba(8, 12, 22, 0.98), rgba(5, 8, 16, 0.99));
+ }
+ 
+ .appShellTop {
+-  margin-bottom: 0.8rem;
++  position: sticky;
++  top: 0;
++  z-index: 20;
++  background: var(--bg-header);
++  border-bottom: 1px solid var(--border);
++  padding: 0 1.25rem;
+ }
+ 
+ .appShellPage,
+ .productShellContent {
++  flex: 1;
+   display: grid;
+   gap: 1rem;
++  padding: 1.25rem;
++  align-content: start;
+ }
+ 
+ .statusBanner {
+@@ -920,56 +985,135 @@ td .tableMeta {
+ }
+ 
+ .brandBlock {
+-  display: grid;
+-  gap: 0.25rem;
+-  padding: 1rem;
+-  border-radius: 1rem;
++  display: flex;
++  align-items: center;
++  gap: 0.6rem;
++  padding: 0.7rem 0.75rem;
++  border-radius: var(--radius-md);
+   text-decoration: none;
+-  color: inherit;
+-  background: rgba(255, 255, 255, 0.03);
+-  border: 1px solid rgba(255, 255, 255, 0.08);
++  color: var(--text-primary);
++  background: rgba(255, 255, 255, 0.04);
++  border: 1px solid var(--border);
++  margin-bottom: 0.35rem;
++  transition: background 0.15s;
++}
++
++.brandBlock:hover {
++  background: rgba(255, 255, 255, 0.07);
++}
++
++.brandLogo {
++  flex-shrink: 0;
++  width: 2rem;
++  height: 2rem;
++  border-radius: var(--radius-xs);
++  background: linear-gradient(135deg, #2563eb, #1d4ed8);
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  font-size: 0.8rem;
++  font-weight: 800;
++  color: #fff;
++  letter-spacing: -0.03em;
++}
++
++.brandText {
++  display: grid;
++  gap: 0.05rem;
++  min-width: 0;
+ }
+ 
+ .brandEyebrow {
+   text-transform: uppercase;
+-  letter-spacing: 0.16em;
+-  font-size: 0.72rem;
+-  color: #8fb2ff;
++  letter-spacing: 0.12em;
++  font-size: 0.6rem;
++  color: var(--text-accent);
++  font-weight: 700;
++}
++
++.brandName {
++  font-size: 0.82rem;
++  font-weight: 700;
++  color: var(--text-primary);
++  white-space: nowrap;
++  overflow: hidden;
++  text-overflow: ellipsis;
+ }
+ 
+ .appNav {
+-  display: grid;
+-  gap: 0.35rem;
++  display: flex;
++  flex-direction: column;
++  gap: 0.15rem;
++}
++
++.appNavSection {
++  margin-top: 0.6rem;
++  margin-bottom: 0.2rem;
++  padding: 0 0.5rem;
++  font-size: 0.62rem;
++  font-weight: 700;
++  text-transform: uppercase;
++  letter-spacing: 0.1em;
++  color: var(--text-muted);
+ }
+ 
+ .appNav a {
+   display: flex;
+   align-items: center;
+-  gap: 0.65rem;
+-  padding: 0.8rem 0.9rem;
+-  border-radius: 0.9rem;
++  gap: 0.6rem;
++  padding: 0.55rem 0.65rem;
++  border-radius: var(--radius-sm);
+   text-decoration: none;
+-  color: #cbd7ef;
++  color: var(--text-secondary);
++  font-size: 0.85rem;
++  font-weight: 500;
++  transition: background 0.12s, color 0.12s;
++}
++
++.appNav a:hover {
++  background: rgba(255, 255, 255, 0.05);
++  color: var(--text-primary);
++}
++
++.appNav a.active {
++  background: var(--accent-blue-bg);
++  color: #93c5fd;
++  font-weight: 600;
+ }
+ 
+ .appNavIcon {
+-  width: 1.3rem;
+-  height: 1.3rem;
++  flex-shrink: 0;
++  width: 1.5rem;
++  height: 1.5rem;
+   display: inline-flex;
+   align-items: center;
+   justify-content: center;
+-  border-radius: 0.35rem;
+-  font-size: 0.72rem;
+-  font-weight: 700;
+-  background: rgba(160, 188, 234, 0.2);
+-  color: #eff5ff;
+-  border: 1px solid rgba(170, 195, 236, 0.32);
++  border-radius: var(--radius-xs);
++  color: inherit;
++  opacity: 0.8;
+ }
+ 
+-.appNav a.active,
+-.appNav a:hover {
+-  background: rgba(106, 169, 255, 0.14);
+-  color: white;
++.appNav a.active .appNavIcon {
++  opacity: 1;
++}
++
++.appNavLabel {
++  flex: 1;
++  min-width: 0;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++/* ─── Sidebar divider ──────────────────────────────────────────── */
++.sidebarDivider {
++  height: 1px;
++  background: var(--border);
++  margin: 0.5rem 0;
++}
++
++.sidebarSpacer {
++  flex: 1;
+ }
+ 
+ .sidebarMetaCard,
+@@ -1431,17 +1575,286 @@ td .tableMeta {
+   background: rgba(54, 95, 145, 0.35);
+ }
+ 
+-.runtimeBanner {
+-  display: grid;
+-  gap: 0.4rem;
+-  padding: 0.8rem 1rem;
+-  border-radius: 0.8rem;
+-  border: 1px solid rgba(255, 255, 255, 0.14);
+-  background: rgba(19, 29, 52, 0.62);
++/* ─── Top header bar ─────────────────────────────────────────────── */
++.shellHeaderBar {
++  display: flex;
++  align-items: center;
++  gap: 0.75rem;
++  padding: 0.65rem 0;
++  min-height: 3.25rem;
++}
++
++.shellWorkspaceSelector {
++  display: flex;
++  align-items: center;
++  gap: 0.45rem;
++  padding: 0.35rem 0.65rem;
++  border-radius: var(--radius-sm);
++  border: 1px solid var(--border);
++  background: rgba(255, 255, 255, 0.04);
++  cursor: pointer;
++  color: var(--text-primary);
+   font-size: 0.85rem;
+-  margin-top: 0.6rem;
++  font-weight: 600;
++  white-space: nowrap;
++  text-decoration: none;
++  transition: background 0.12s;
++}
++
++.shellWorkspaceSelector:hover {
++  background: rgba(255, 255, 255, 0.08);
++}
++
++.shellWorkspaceName {
++  max-width: 160px;
++  overflow: hidden;
++  text-overflow: ellipsis;
++}
++
++.shellHeaderSpacer {
++  flex: 1;
++}
++
++.shellHeaderActions {
++  display: flex;
++  align-items: center;
++  gap: 0.5rem;
++}
++
++.shellIconBtn {
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  width: 2rem;
++  height: 2rem;
++  border-radius: var(--radius-sm);
++  border: 1px solid var(--border);
++  background: transparent;
++  color: var(--text-secondary);
++  cursor: pointer;
++  transition: background 0.12s, color 0.12s;
++  padding: 0;
++}
++
++.shellIconBtn:hover {
++  background: rgba(255, 255, 255, 0.06);
++  color: var(--text-primary);
++}
++
++.shellUserChip {
++  display: flex;
++  align-items: center;
++  gap: 0.45rem;
++  padding: 0.3rem 0.6rem 0.3rem 0.35rem;
++  border-radius: var(--radius-sm);
++  border: 1px solid var(--border);
++  background: rgba(255, 255, 255, 0.04);
++  font-size: 0.8rem;
++  color: var(--text-secondary);
++  cursor: pointer;
++  transition: background 0.12s;
++}
++
++.shellUserChip:hover {
++  background: rgba(255, 255, 255, 0.08);
++}
++
++.shellAvatar {
++  width: 1.5rem;
++  height: 1.5rem;
++  border-radius: 50%;
++  background: linear-gradient(135deg, #2563eb, #7c3aed);
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  font-size: 0.65rem;
++  font-weight: 700;
++  color: #fff;
++  flex-shrink: 0;
++}
++
++/* ─── Runtime banner ─────────────────────────────────────────────── */
++.runtimeBanner {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 0 1.25rem;
++  padding: 0.55rem 0;
++  border-top: 1px solid var(--border);
++  font-size: 0.78rem;
++  color: var(--text-secondary);
+ }
+ 
+ .runtimeBanner p {
+   margin: 0;
++  display: flex;
++  align-items: center;
++  gap: 0.3rem;
++  white-space: nowrap;
++}
++
++.runtimeBannerField {
++  display: flex;
++  align-items: center;
++  gap: 0.3rem;
++  padding: 0.2rem 0;
++}
++
++.runtimeBannerLabel {
++  color: var(--text-muted);
++  font-weight: 600;
++  text-transform: uppercase;
++  letter-spacing: 0.05em;
++  font-size: 0.7rem;
++}
++
++.runtimeBannerValue {
++  color: var(--text-primary);
++  font-weight: 500;
++}
++
++.runtimeBannerSep {
++  color: var(--border-accent);
++  user-select: none;
++}
++
++/* runtime banner severity tones */
++.runtimeBannerLive  { border-top-color: var(--success-bdr); }
++.runtimeBannerStale { border-top-color: var(--warning-bdr); }
++.runtimeBannerDead  { border-top-color: var(--danger-bdr);  }
++
++/* ─── Status pills (shared) ─────────────────────────────────────── */
++.pill-success {
++  background: var(--success-bg);
++  color: var(--success-fg);
++  border-color: var(--success-bdr);
++}
++
++.pill-warning {
++  background: var(--warning-bg);
++  color: var(--warning-fg);
++  border-color: var(--warning-bdr);
++}
++
++.pill-danger {
++  background: var(--danger-bg);
++  color: var(--danger-fg);
++  border-color: var(--danger-bdr);
++}
++
++.pill-info {
++  background: var(--info-bg);
++  color: var(--info-fg);
++  border-color: var(--info-bdr);
++}
++
++.pill-neutral {
++  background: rgba(99, 110, 123, 0.18);
++  color: #c9d1d9;
++  border-color: rgba(99, 110, 123, 0.3);
++}
++
++/* ─── Buttons ────────────────────────────────────────────────────── */
++.btn {
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  gap: 0.4rem;
++  min-height: 2.1rem;
++  padding: 0.45rem 0.9rem;
++  border-radius: var(--radius-sm);
++  border: 1px solid transparent;
++  font: inherit;
++  font-size: 0.82rem;
++  font-weight: 600;
++  cursor: pointer;
++  text-decoration: none;
++  transition: opacity 0.12s, background 0.12s, border-color 0.12s;
++  white-space: nowrap;
++}
++
++.btn:disabled { cursor: not-allowed; opacity: 0.55; }
++
++.btn-primary {
++  background: var(--accent-blue);
++  color: #fff;
++  border-color: transparent;
++}
++
++.btn-primary:hover:not(:disabled) {
++  background: #2563eb;
++}
++
++.btn-secondary {
++  background: var(--accent-blue-bg);
++  color: var(--info-fg);
++  border-color: var(--info-bdr);
++}
++
++.btn-secondary:hover:not(:disabled) {
++  background: rgba(59, 130, 246, 0.22);
++}
++
++.btn-ghost {
++  background: transparent;
++  color: var(--text-secondary);
++  border-color: var(--border);
++}
++
++.btn-ghost:hover:not(:disabled) {
++  background: rgba(255, 255, 255, 0.06);
++  color: var(--text-primary);
++}
++
++.btn-danger {
++  background: var(--danger-bg);
++  color: var(--danger-fg);
++  border-color: var(--danger-bdr);
++}
++
++.btn-danger:hover:not(:disabled) {
++  background: rgba(239, 68, 68, 0.22);
++}
++
++/* ─── Cards ──────────────────────────────────────────────────────── */
++.card-shell {
++  background: var(--bg-card);
++  border: 1px solid var(--border);
++  border-radius: var(--radius-lg);
++  padding: 1rem;
++}
++
++/* ─── Compact table ──────────────────────────────────────────────── */
++.tableCompact th,
++.tableCompact td {
++  padding: 0.6rem 0.85rem;
++  font-size: 0.82rem;
++}
++
++/* ─── Responsive sidebar ─────────────────────────────────────────── */
++@media (max-width: 1100px) {
++  .appShellFrame {
++    grid-template-columns: 1fr;
++  }
++
++  .appSidebar {
++    position: static;
++    height: auto;
++    overflow-y: visible;
++    flex-direction: row;
++    flex-wrap: wrap;
++    padding: 0.75rem;
++  }
++
++  .appNav {
++    flex-direction: row;
++    flex-wrap: wrap;
++    gap: 0.25rem;
++  }
++
++  .sidebarDivider,
++  .sidebarSpacer,
++  .sidebarMetaCard {
++    display: none;
++  }
+ }
+diff --git a/apps/web/tests/runtime-banner-and-chain-source-contract.spec.ts b/apps/web/tests/runtime-banner-and-chain-source-contract.spec.ts
+index 9e57961..3aa9805 100644
+--- a/apps/web/tests/runtime-banner-and-chain-source-contract.spec.ts
++++ b/apps/web/tests/runtime-banner-and-chain-source-contract.spec.ts
+@@ -28,7 +28,14 @@ test.describe('runtime banner and canonical chain source contract', () => {
+     const shell = fs.readFileSync(path.join(__dirname, '..', 'app', 'app-shell.tsx'), 'utf8');
+     expect(layout).toContain('<WorkspaceMonitoringModeBanner');
+     expect(layout).toContain('<AppShell topBanner=');
+-    expect(shell).toContain('<header className="appShellTop">{topBanner}</header>');
++    // topBanner prop is rendered inside the sticky header element
++    const headerStart = shell.indexOf('<header className="appShellTop"');
++    const headerEnd = shell.indexOf('</header>', headerStart);
++    const topBannerInHeader = shell.slice(headerStart, headerEnd).includes('{topBanner}');
++    expect(topBannerInHeader, 'topBanner must be rendered inside <header className="appShellTop">').toBe(true);
++    // RuntimeBanner must also appear in the header
++    const runtimeBannerInHeader = shell.slice(headerStart, headerEnd).includes('RuntimeBanner');
++    expect(runtimeBannerInHeader, 'RuntimeBanner must be rendered inside <header className="appShellTop">').toBe(true);
+   });
+ 
+   test('canonical runtime setup step labels are defined', async () => {
+diff --git a/apps/web/tests/ui-shell-source.spec.ts b/apps/web/tests/ui-shell-source.spec.ts
+new file mode 100644
+index 0000000..a400006
+--- /dev/null
++++ b/apps/web/tests/ui-shell-source.spec.ts
+@@ -0,0 +1,233 @@
++/**
++ * Source-level (static-analysis) tests for the shared UI shell.
++ *
++ * These run without a browser — they read source files and assert structural
++ * contracts: sidebar order, banner presence, component exports, and that no
++ * page claims healthy/live status without backend truth.
++ */
++import { expect, test } from '@playwright/test';
++import fs from 'node:fs';
++import path from 'node:path';
++
++const appDir = path.join(__dirname, '..', 'app');
++
++function read(rel: string): string {
++  return fs.readFileSync(path.join(appDir, rel), 'utf-8');
++}
++
++// ── Sidebar order ────────────────────────────────────────────────
++test('sidebar nav order matches exact spec', () => {
++  const src = read('product-nav.ts');
++
++  const labelMatches = [...src.matchAll(/label:\s*'([^']+)'/g)].map((m) => m[1]);
++  expect(labelMatches).toEqual([
++    'Getting Started',
++    'Dashboard',
++    'Assets',
++    'Monitoring Sources',
++    'Threat Monitoring',
++    'Alerts',
++    'Incidents',
++    'Response Actions',
++    'Evidence & Audit',
++    'Integrations',
++    'Settings',
++    'System Health',
++  ]);
++});
++
++test('sidebar nav hrefs match spec', () => {
++  const src = read('product-nav.ts');
++
++  const hrefMatches = [...src.matchAll(/href:\s*'([^']+)'/g)].map((m) => m[1]);
++  expect(hrefMatches).toEqual([
++    '/onboarding',
++    '/dashboard',
++    '/assets',
++    '/monitoring-sources',
++    '/threat',
++    '/alerts',
++    '/incidents',
++    '/response-actions',
++    '/evidence',
++    '/integrations',
++    '/settings',
++    '/system-health',
++  ]);
++});
++
++test('sidebar has exactly 12 nav items', () => {
++  const src = read('product-nav.ts');
++  const count = [...src.matchAll(/href:/g)].length;
++  expect(count).toBe(12);
++});
++
++// ── Runtime banner on protected pages ───────────────────────────
++test('app-shell renders RuntimeBanner component', () => {
++  const shell = read('app-shell.tsx');
++  expect(shell).toContain('RuntimeBanner');
++  expect(shell).toContain("import RuntimeBanner from './components/runtime-banner'");
++});
++
++test('runtime banner shows all required fields', () => {
++  const banner = read('components/runtime-banner.tsx');
++
++  // All 7 required labels must appear as string literals in Field calls
++  expect(banner).toContain('Monitoring');
++  expect(banner).toContain('Freshness');
++  expect(banner).toContain('Confidence');
++  expect(banner).toContain('Telemetry');
++  expect(banner).toContain('Heartbeat');
++  expect(banner).toContain('Poll');
++  expect(banner).toContain('Next action');
++});
++
++test('runtime banner guards against false healthy claims', () => {
++  const banner = read('components/runtime-banner.tsx');
++
++  // Must check all conditions before claiming healthy/live
++  expect(banner).toContain('hasLiveTelemetry(summary)');
++  expect(banner).toContain('hasRealTelemetryBackedChain(summary)');
++  expect(banner).toContain('healthProvable');
++  // Must show a warning when health cannot be proven
++  expect(banner).toContain('Live/healthy display disabled until telemetry verified');
++});
++
++test('runtime banner is placed inside the header in app-shell', () => {
++  const shell = read('app-shell.tsx');
++  // RuntimeBanner must appear after the <header> tag open
++  const headerStart = shell.indexOf('<header');
++  const headerEnd = shell.indexOf('</header>');
++  const bannerIdx = shell.indexOf('RuntimeBanner', headerStart);
++  expect(headerStart).toBeGreaterThan(-1);
++  expect(bannerIdx).toBeGreaterThan(headerStart);
++  expect(bannerIdx).toBeLessThan(headerEnd);
++});
++
++// ── Shared components exports ────────────────────────────────────
++test('ui-primitives exports all required primitives', () => {
++  const src = read('components/ui-primitives.tsx');
++
++  expect(src).toContain('export function SurfaceCard');
++  expect(src).toContain('export function MetricTile');
++  expect(src).toContain('export function StatusPill');
++  expect(src).toContain('export function TableShell');
++  expect(src).toContain('export function EmptyStateBlocker');
++  expect(src).toContain('export function TabStrip');
++  expect(src).toContain('export function Button');
++  expect(src).toContain('export function LinkButton');
++  expect(src).toContain('export function StepRail');
++});
++
++test('StatusPill supports variant prop for semantic colours', () => {
++  const src = read('components/ui-primitives.tsx');
++  expect(src).toContain("'success'");
++  expect(src).toContain("'warning'");
++  expect(src).toContain("'danger'");
++  expect(src).toContain("'info'");
++  expect(src).toContain("'neutral'");
++});
++
++test('Button component uses variant-based CSS classes', () => {
++  const src = read('components/ui-primitives.tsx');
++  // Button uses template literal to compose class names from variant
++  expect(src).toContain('btn-${variant}');
++  // And the supported variant union is declared
++  expect(src).toContain("'primary'");
++  expect(src).toContain("'secondary'");
++  expect(src).toContain("'ghost'");
++  expect(src).toContain("'danger'");
++});
++
++// ── Nav icons ────────────────────────────────────────────────────
++test('nav-icons defines an icon export for every nav href', () => {
++  const src = read('nav-icons.tsx');
++
++  const hrefs = [
++    '/onboarding',
++    '/dashboard',
++    '/assets',
++    '/monitoring-sources',
++    '/threat',
++    '/alerts',
++    '/incidents',
++    '/response-actions',
++    '/evidence',
++    '/integrations',
++    '/settings',
++    '/system-health',
++  ];
++
++  for (const href of hrefs) {
++    expect(src, `Missing icon mapping for ${href}`).toContain(`'${href}'`);
++  }
++});
++
++test('app-navigation imports NAV_ICONS and renders SVG icons', () => {
++  const src = read('app-navigation.tsx');
++  expect(src).toContain("import { NAV_ICONS } from './nav-icons'");
++  expect(src).toContain('NavIcon');
++  expect(src).toContain('appNavIcon');
++});
++
++// ── Dark theme tokens ─────────────────────────────────────────────
++test('styles.css defines required CSS custom properties', () => {
++  const css = read('styles.css');
++
++  expect(css).toContain('--bg-base');
++  expect(css).toContain('--bg-sidebar');
++  expect(css).toContain('--bg-card');
++  expect(css).toContain('--border');
++  expect(css).toContain('--accent-blue');
++  expect(css).toContain('--success-fg');
++  expect(css).toContain('--warning-fg');
++  expect(css).toContain('--danger-fg');
++  expect(css).toContain('--sidebar-w');
++});
++
++test('styles.css defines .btn-primary and .btn-secondary', () => {
++  const css = read('styles.css');
++  expect(css).toContain('.btn-primary');
++  expect(css).toContain('.btn-secondary');
++  expect(css).toContain('.btn-ghost');
++  expect(css).toContain('.btn-danger');
++});
++
++test('styles.css defines status pill colour variants', () => {
++  const css = read('styles.css');
++  expect(css).toContain('.pill-success');
++  expect(css).toContain('.pill-warning');
++  expect(css).toContain('.pill-danger');
++});
++
++test('styles.css defines compact table class', () => {
++  const css = read('styles.css');
++  expect(css).toContain('.tableCompact');
++});
++
++test('styles.css defines shell header bar classes', () => {
++  const css = read('styles.css');
++  expect(css).toContain('.shellHeaderBar');
++  expect(css).toContain('.shellWorkspaceSelector');
++  expect(css).toContain('.shellUserChip');
++  expect(css).toContain('.shellAvatar');
++});
++
++// ── No fake healthy states ───────────────────────────────────────
++test('app-shell does not hard-code healthy or live status strings', () => {
++  const shell = read('app-shell.tsx');
++  // Must not contain literal hardcoded status messages
++  expect(shell).not.toMatch(/>\s*(Healthy|System Healthy|All systems operational)\s*</);
++  expect(shell).not.toMatch(/status[=:]\s*['"]live['"]/);
++});
++
++test('runtime banner only claims live when healthProvable is true', () => {
++  const banner = read('components/runtime-banner.tsx');
++  // "Live" must only appear as a conditional value guarded by healthProvable
++  const healthIdx = banner.indexOf('healthProvable');
++  const liveIdx = banner.indexOf("'Live'");
++  expect(healthIdx).toBeGreaterThan(-1);
++  expect(liveIdx).toBeGreaterThan(-1);
++  // healthProvable check must precede the 'Live' value assignment
++  expect(healthIdx).toBeLessThan(liveIdx);
++});

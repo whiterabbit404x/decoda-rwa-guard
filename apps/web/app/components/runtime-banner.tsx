@@ -3,30 +3,43 @@
 import { hasLiveTelemetry, hasRealTelemetryBackedChain } from '../workspace-monitoring-truth';
 import { useRuntimeSummary } from '../runtime-summary-context';
 
-function formatTimestamp(value: string | null): string {
-  if (!value) {
-    return 'Unavailable';
-  }
-  return new Date(value).toLocaleString();
+function formatAge(iso: string | null): string {
+  if (!iso) return 'never';
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const secs = Math.floor(diffMs / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  return `${Math.floor(mins / 60)}h ago`;
 }
 
 function formatStatus(value: string): string {
   return value.replaceAll('_', ' ');
 }
 
-function formatWorkspaceCoverage(reportingSystems: number, monitoredSystems: number, protectedAssets: number): string {
-  return `${reportingSystems}/${monitoredSystems} reporting systems across ${protectedAssets} protected assets`;
+type BannerField = { label: string; value: string };
+
+function Field({ label, value }: BannerField) {
+  return (
+    <span className="runtimeBannerField">
+      <span className="runtimeBannerLabel">{label}</span>
+      <span className="runtimeBannerValue">{value}</span>
+    </span>
+  );
+}
+
+function Sep() {
+  return <span className="runtimeBannerSep" aria-hidden="true">·</span>;
 }
 
 export default function RuntimeBanner() {
-  const { summary, loading, missingLabel, nextActionLabel, reasonMessageForCode } = useRuntimeSummary();
+  const { summary, loading, nextActionLabel, reasonMessageForCode } = useRuntimeSummary();
 
-  if (loading) {
-    return null;
-  }
+  if (loading) return null;
 
   const topReason = summary.continuity_reason_codes?.[0] ?? summary.status_reason;
   const reasonCopy = topReason ? reasonMessageForCode(topReason) : null;
+
   const healthProvable =
     summary.runtime_status === 'live'
     && summary.monitoring_status === 'live'
@@ -36,23 +49,51 @@ export default function RuntimeBanner() {
     && hasRealTelemetryBackedChain(summary)
     && !topReason;
 
-  const monitoringStatusCopy = healthProvable ? 'Live' : 'Unverified';
-  const freshnessStatusCopy = healthProvable ? 'Fresh' : formatStatus(summary.telemetry_freshness);
-  const confidenceStatusCopy = healthProvable ? 'High' : formatStatus(summary.confidence);
+  const monitoringValue = healthProvable ? 'Live' : formatStatus(summary.monitoring_status ?? 'unverified');
+  const freshnessValue  = healthProvable ? 'Fresh' : formatStatus(summary.telemetry_freshness ?? 'unknown');
+  const confidenceValue = healthProvable ? 'High'  : formatStatus(summary.confidence ?? 'low');
+
+  const toneClass = healthProvable
+    ? 'runtimeBannerLive'
+    : summary.monitoring_status === 'degraded'
+      ? 'runtimeBannerStale'
+      : 'runtimeBannerDead';
 
   return (
-    <section className="runtimeBanner" aria-live="polite">
-      <p><strong>Monitoring status:</strong> {monitoringStatusCopy}</p>
-      <p><strong>Freshness status:</strong> {freshnessStatusCopy}</p>
-      <p><strong>Confidence status:</strong> {confidenceStatusCopy}</p>
-      <p><strong>Last telemetry at:</strong> {formatTimestamp(summary.last_telemetry_at)}</p>
-      <p><strong>Last heartbeat at:</strong> {formatTimestamp(summary.last_heartbeat_at)}</p>
-      <p><strong>Last poll at:</strong> {formatTimestamp(summary.last_poll_at)}</p>
-      <p><strong>Workspace coverage:</strong> {formatWorkspaceCoverage(summary.reporting_systems_count, summary.monitored_systems_count, summary.protected_assets_count)}</p>
-      <p><strong>Next required action:</strong> {nextActionLabel}</p>
-      {reasonCopy ? <p><strong>Current limitation:</strong> {reasonCopy}</p> : null}
-      {!healthProvable ? <p><strong>Health proof:</strong> Live/healthy messaging is disabled until telemetry and proof chain are verified.</p> : null}
-      {missingLabel && !reasonCopy ? <p><strong>Current limitation:</strong> {missingLabel}</p> : null}
+    <section
+      className={`runtimeBanner ${toneClass}`}
+      aria-label="Monitoring runtime status"
+      aria-live="polite"
+    >
+      <Field label="Monitoring" value={monitoringValue} />
+      <Sep />
+      <Field label="Freshness" value={freshnessValue} />
+      <Sep />
+      <Field label="Confidence" value={confidenceValue} />
+      <Sep />
+      <Field label="Telemetry" value={formatAge(summary.last_telemetry_at)} />
+      <Sep />
+      <Field label="Heartbeat" value={formatAge(summary.last_heartbeat_at)} />
+      <Sep />
+      <Field label="Poll" value={formatAge(summary.last_poll_at)} />
+      <Sep />
+      <Field label="Next action" value={nextActionLabel} />
+      {reasonCopy ? (
+        <>
+          <Sep />
+          <Field label="Limitation" value={reasonCopy} />
+        </>
+      ) : null}
+      {!healthProvable ? (
+        <>
+          <Sep />
+          <span className="runtimeBannerField">
+            <span className="runtimeBannerLabel" style={{ color: 'var(--warning-fg)' }}>
+              Live/healthy display disabled until telemetry verified
+            </span>
+          </span>
+        </>
+      ) : null}
     </section>
   );
 }

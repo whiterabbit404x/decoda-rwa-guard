@@ -28,7 +28,14 @@ test.describe('runtime banner and canonical chain source contract', () => {
     const shell = fs.readFileSync(path.join(__dirname, '..', 'app', 'app-shell.tsx'), 'utf8');
     expect(layout).toContain('<WorkspaceMonitoringModeBanner');
     expect(layout).toContain('<AppShell topBanner=');
-    expect(shell).toContain('<header className="appShellTop">{topBanner}</header>');
+    // topBanner prop is rendered inside the sticky header element
+    const headerStart = shell.indexOf('<header className="appShellTop"');
+    const headerEnd = shell.indexOf('</header>', headerStart);
+    const topBannerInHeader = shell.slice(headerStart, headerEnd).includes('{topBanner}');
+    expect(topBannerInHeader, 'topBanner must be rendered inside <header className="appShellTop">').toBe(true);
+    // RuntimeBanner must also appear in the header
+    const runtimeBannerInHeader = shell.slice(headerStart, headerEnd).includes('RuntimeBanner');
+    expect(runtimeBannerInHeader, 'RuntimeBanner must be rendered inside <header className="appShellTop">').toBe(true);
   });
 
   test('canonical runtime setup step labels are defined', async () => {
