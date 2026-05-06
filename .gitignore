@@ -20,3 +20,5 @@ contracts/core/cache/
 
 .data/
 .env.local
+test-results/
+playwright-report/

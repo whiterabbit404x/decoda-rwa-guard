@@ -911,6 +911,171 @@ td .tableMeta {
   border-color: rgba(143, 155, 179, 0.26);
 }
 
+/* ─── Onboarding / Getting Started ──────────────────────────── */
+.onboardingHeader {
+  margin-bottom: 2rem;
+}
+
+.onboardingTitle {
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin: 0 0 0.5rem;
+  color: var(--text-primary);
+}
+
+.onboardingSubtitle {
+  color: var(--text-secondary);
+  font-size: 1rem;
+  margin: 0;
+}
+
+.onboardingStepper {
+  display: flex;
+  align-items: flex-start;
+  padding: 1.5rem 0 2rem;
+}
+
+.onboardingStepItem {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  position: relative;
+  gap: 0.6rem;
+}
+
+.stepConnector {
+  position: absolute;
+  top: 19px;
+  right: calc(50% + 22px);
+  left: calc(-50% + 22px);
+  height: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  z-index: 0;
+}
+
+.stepConnectorComplete {
+  background: var(--success-fg);
+  opacity: 0.45;
+}
+
+.stepCircle {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.9rem;
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.stepCircle[data-state="complete"] {
+  background: var(--success-bg);
+  border: 2px solid var(--success-fg);
+  color: var(--success-fg);
+}
+
+.stepCircle[data-state="current"] {
+  background: var(--accent-blue-bg);
+  border: 2px solid var(--accent-blue);
+  color: #fff;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
+}
+
+.stepCircle[data-state="upcoming"] {
+  background: rgba(255, 255, 255, 0.04);
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  color: var(--text-muted);
+}
+
+.stepLabel {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  text-align: center;
+  font-weight: 500;
+}
+
+.onboardingStepItem[data-step-status="current"] .stepLabel {
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+.onboardingStepItem[data-step-status="complete"] .stepLabel {
+  color: var(--success-fg);
+}
+
+.onboardingCardsRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.onboardingStepName {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 0.35rem;
+  font-size: 1rem;
+}
+
+.onboardingCta {
+  margin-top: 1rem;
+  display: inline-flex;
+}
+
+.onboardingError {
+  color: var(--danger-fg);
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+}
+
+.resourcesList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.resourcesList li a {
+  color: var(--text-accent);
+  text-decoration: none;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.resourcesList li a::before {
+  content: '→';
+  font-size: 0.8rem;
+  opacity: 0.65;
+}
+
+.resourcesList li a:hover {
+  color: var(--text-primary);
+}
+
+@media (max-width: 720px) {
+  .onboardingCardsRow {
+    grid-template-columns: 1fr;
+  }
+
+  .onboardingStepper {
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+
+  .stepConnector {
+    display: none;
+  }
+}
+
 /* ─── App shell frame ────────────────────────────────────────────── */
 .appShellFrame {
   display: grid;

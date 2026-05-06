@@ -6,9 +6,8 @@ import { usePilotAuth } from '../pilot-auth-context';
 
 import type { OnboardingProgress } from '../onboarding-progress';
 import RuntimeSummaryPanel from '../runtime-summary-panel';
-import { ActionPanel, MetricCard, StepRail } from '../components/ui-primitives';
-import { NEXT_ACTION_CTA, ONBOARDING_TOP_STEPPER, WORKFLOW_STEP_LABELS, WORKFLOW_STEP_ORDER } from '../workflow-steps';
-
+import { ActionPanel } from '../components/ui-primitives';
+import { NEXT_ACTION_CTA, ONBOARDING_TOP_STEPPER, WORKFLOW_STEP_ORDER } from '../workflow-steps';
 
 function workflowCompletionFromState(state: OnboardingProgress | null, stepId: string): boolean {
   if (!state) return false;
@@ -31,91 +30,158 @@ function workflowCompletionFromState(state: OnboardingProgress | null, stepId: s
 }
 
 const STEP_COPY: Record<string, { title: string; detail: string; href: string; cta: string }> = {
-  asset_added: { title: 'Step 1: Add your first asset', detail: 'Register the first wallet or contract your team needs to protect.', href: '/assets', cta: 'Add asset' },
-  target_created: { title: 'Step 2: Create a monitoring target', detail: 'Attach detection rules to the asset so monitoring has clear scope.', href: '/targets', cta: 'Create target' },
-  monitoring_started: { title: 'Step 3: Start live monitoring', detail: 'Enable at least one target so the worker continuously evaluates activity.', href: '/targets', cta: 'Enable monitoring' },
-  evidence_recorded: { title: 'Step 4: Review first alerts and evidence', detail: 'Open threat monitoring and confirm your evidence timeline is flowing.', href: '/threat', cta: 'Review evidence' },
+  asset_added:       { title: 'Add your first asset',             detail: 'Register the first wallet or contract your team needs to protect.',             href: '/assets',  cta: 'Add Asset' },
+  target_created:    { title: 'Create a monitoring target',       detail: 'Attach detection rules to the asset so monitoring has clear scope.',            href: '/targets', cta: 'Create Target' },
+  monitoring_started:{ title: 'Start live monitoring',            detail: 'Enable at least one target so the worker continuously evaluates activity.',     href: '/targets', cta: 'Add Monitoring Source' },
+  evidence_recorded: { title: 'Review first alerts and evidence', detail: 'Open threat monitoring and confirm your evidence timeline is flowing.',         href: '/threat',  cta: 'Review Evidence' },
+};
+
+const STEP_TO_NEXT_ACTION_KEY: Record<string, string> = {
+  workspace_created:         'add_asset',
+  asset_created:             'verify_asset',
+  asset_verified:            'create_monitoring_target',
+  monitoring_target_created: 'enable_monitored_system',
+  monitored_system_created:  'start_simulator_signal',
+  worker_reporting:          'start_simulator_signal',
+  telemetry_received:        'view_detection',
+  detection_created:         'open_incident',
+  alert_created:             'open_incident',
+  incident_opened:           'export_evidence_package',
+  response_ready:            'export_evidence_package',
+  evidence_export_ready:     'export_evidence_package',
 };
 
 export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
   const { authHeaders } = usePilotAuth();
   const [state, setState] = useState<OnboardingProgress | null>(null);
-  const [status, setStatus] = useState<string>('');
+  const [errorMsg, setErrorMsg] = useState<string>('');
 
   async function loadState() {
     const response = await fetch(`${apiUrl}/onboarding/progress`, { headers: authHeaders(), cache: 'no-store' });
     if (!response.ok) {
-      setStatus('Unable to load onboarding progress right now.');
+      setErrorMsg('Unable to load onboarding progress right now.');
       return;
     }
     setState(await response.json() as OnboardingProgress);
-    setStatus('');
+    setErrorMsg('');
   }
 
   useEffect(() => { void loadState(); }, []);
 
   const nextStep = useMemo(() => state?.steps.find((step) => !step.complete) ?? null, [state]);
   const nextCopy = nextStep ? STEP_COPY[nextStep.key] : null;
-  const workflowSteps = WORKFLOW_STEP_ORDER.map((id) => ({ id, complete: workflowCompletionFromState(state, id) }));
-  const firstPendingStep = workflowSteps.find((step) => !step.complete);
+
   const topStepperSteps = ONBOARDING_TOP_STEPPER.map((step) => ({
     ...step,
     complete: workflowCompletionFromState(state, step.canonicalStepId),
   }));
   const topStepperCurrentIndex = topStepperSteps.findIndex((step) => !step.complete);
   const topStepperActiveIndex = topStepperCurrentIndex === -1 ? topStepperSteps.length - 1 : topStepperCurrentIndex;
-  const firstPendingCta = firstPendingStep ? NEXT_ACTION_CTA[({ workspace_created: 'add_asset', asset_created: 'verify_asset', asset_verified: 'create_monitoring_target', monitoring_target_created: 'enable_monitored_system', monitored_system_created: 'start_simulator_signal', worker_reporting: 'start_simulator_signal', telemetry_received: 'view_detection', detection_created: 'open_incident', alert_created: 'open_incident', incident_opened: 'export_evidence_package', response_ready: 'export_evidence_package', evidence_export_ready: 'export_evidence_package' } as Record<string, string>)[firstPendingStep.id] ?? 'review_reason_codes'] : null;
+
+  const workflowSteps = WORKFLOW_STEP_ORDER.map((id) => ({ id, complete: workflowCompletionFromState(state, id) }));
+  const firstPendingStep = workflowSteps.find((step) => !step.complete);
+  const nextActionKey = firstPendingStep
+    ? (STEP_TO_NEXT_ACTION_KEY[firstPendingStep.id] ?? 'review_reason_codes')
+    : null;
+  const nextRequiredActionCta = nextActionKey ? (NEXT_ACTION_CTA[nextActionKey] ?? null) : null;
 
   return (
-    <main className="productPage">
+    <main className="productPage" data-testid="onboarding-page">
       <RuntimeSummaryPanel />
+
       <section className="featureSection">
-        <div aria-label="Onboarding steps" data-testid="onboarding-top-stepper" role="list" className="buttonRow">
+        <header className="onboardingHeader">
+          <h1 className="onboardingTitle">Welcome to Decoda RWA Guard</h1>
+          <p className="onboardingSubtitle">Complete the setup below to start monitoring your protected assets.</p>
+        </header>
+
+        {/* Horizontal 5-step setup flow */}
+        <div
+          aria-label="Onboarding steps"
+          data-testid="onboarding-top-stepper"
+          role="list"
+          className="onboardingStepper"
+        >
           {topStepperSteps.map((step, index) => {
-            const status = step.complete ? 'complete' : index === topStepperActiveIndex ? 'current' : 'upcoming';
+            const stepStatus = step.complete
+              ? 'complete'
+              : index === topStepperActiveIndex
+                ? 'current'
+                : 'upcoming';
             return (
-              <span key={step.canonicalStepId} role="listitem" className="badge" data-step-status={status}>
-                {step.label}
-              </span>
+              <div
+                key={step.canonicalStepId}
+                role="listitem"
+                className="onboardingStepItem"
+                data-step-status={stepStatus}
+              >
+                {index > 0 && (
+                  <div
+                    className={`stepConnector${step.complete ? ' stepConnectorComplete' : ''}`}
+                    aria-hidden="true"
+                  />
+                )}
+                <div
+                  className="stepCircle"
+                  data-state={stepStatus}
+                  aria-current={stepStatus === 'current' ? 'step' : undefined}
+                >
+                  {step.complete ? (
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M3 8l3.5 3.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  ) : (
+                    <span>{index + 1}</span>
+                  )}
+                </div>
+                <span className="stepLabel">{step.label}</span>
+              </div>
             );
           })}
         </div>
-        <div className="sectionHeader">
-          <div>
-            <p className="eyebrow">Self-serve setup wizard</p>
-            <h1>Get your workspace live in minutes</h1>
-            <p className="lede">Follow this linear setup flow to move from first login to continuous monitoring with persisted evidence.</p>
-          </div>
-          {nextCopy ? <Link href={nextCopy.href} prefetch={false}>{nextCopy.cta}</Link> : <Link href="/dashboard" prefetch={false}>Go to dashboard</Link>}
-        </div>
 
-        <div className="threeColumnSection">
-          <MetricCard label="Progress" value={<>{state?.completed_steps ?? 0} / {state?.total_steps ?? 4} complete</>} meta={<><span>Workspace: <strong>{state?.workspace_name ?? 'Workspace unavailable'}</strong></span><br /><span>Completion: {state?.progress_percent ?? 0}%</span></>} />
-          <MetricCard label="Current live counts" value={`Assets: ${state?.counts.assets ?? 0}`} meta={`Targets: ${state?.counts.targets ?? 0} · Monitoring enabled targets: ${state?.counts.monitoring_targets ?? 0} · Evidence receipts: ${state?.counts.event_receipts ?? 0}`} />
-          <ActionPanel title="Resume setup">
-            <p className="sectionEyebrow">Resume setup</p>
-            {nextCopy ? <><p className="muted">Next: <strong>{nextCopy.title}</strong></p><p className="muted">{nextCopy.detail}</p><Link href={nextCopy.href} prefetch={false}>{nextCopy.cta}</Link></> : <><p className="muted">All core setup steps are complete.</p><div className="buttonRow"><Link href="/dashboard" prefetch={false}>Open Dashboard</Link><Link href="/threat" prefetch={false}>Open Threat Monitoring</Link></div></>}
-            <p className="muted">First non-complete workflow CTA: <strong>{firstPendingCta ?? 'All steps complete'}</strong></p>
+        {/* Next Step card | Resources card */}
+        <div className="onboardingCardsRow">
+          <ActionPanel title="Next Step">
+            <div data-testid="next-step-card">
+              {nextCopy ? (
+                <>
+                  <p className="onboardingStepName">{nextCopy.title}</p>
+                  <p className="muted">{nextCopy.detail}</p>
+                  <Link
+                    href={nextCopy.href}
+                    prefetch={false}
+                    className="btn btn-primary onboardingCta"
+                    data-testid="onboarding-cta"
+                    data-next-required-action={nextActionKey ?? ''}
+                  >
+                    {nextRequiredActionCta ?? nextCopy.cta}
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <p className="muted">All core setup steps are complete.</p>
+                  <div className="buttonRow">
+                    <Link href="/dashboard" prefetch={false} className="btn btn-primary">Open Dashboard</Link>
+                    <Link href="/threat" prefetch={false} className="btn btn-secondary">Open Threat Monitoring</Link>
+                  </div>
+                </>
+              )}
+              {errorMsg ? <p className="onboardingError">{errorMsg}</p> : null}
+            </div>
           </ActionPanel>
-          <ActionPanel title="Current Step">
-            {nextCopy ? <><p className="muted"><strong>{nextCopy.title}</strong></p><p className="muted">{nextCopy.detail}</p></> : <p className="muted">All backend onboarding steps currently report complete.</p>}
-          </ActionPanel>
+
           <ActionPanel title="Resources">
-            <p className="muted">Runtime truth stays backend-driven so your team can resume this setup from any session.</p>
-            <ul>
-              <li><Link href="/help" prefetch={false}>Read onboarding help</Link></li>
-              <li><Link href="/monitoring-sources" prefetch={false}>Review monitoring sources</Link></li>
-            </ul>
-          </ActionPanel>
-          <ActionPanel title="Next Action">
-            {nextCopy ? <><p className="muted">Take the next backend-confirmed setup step.</p><Link href={nextCopy.href} prefetch={false}>{nextCopy.cta}</Link></> : <p className="muted">No pending onboarding step reported by backend progress.</p>}
+            <div data-testid="resources-card">
+              <ul className="resourcesList">
+                <li><Link href="/help" prefetch={false}>Documentation</Link></li>
+                <li><Link href="/integrations" prefetch={false}>Integration Guide</Link></li>
+                <li><Link href="/help" prefetch={false}>API Reference</Link></li>
+                <li><Link href="/help" prefetch={false}>Help Center</Link></li>
+              </ul>
+            </div>
           </ActionPanel>
         </div>
-      </section>
-
-      <section className="featureSection">
-        <div className="sectionHeader"><div><p className="eyebrow">Setup steps</p><h2>Workflow progression</h2></div></div>
-        <StepRail steps={workflowSteps.map((step) => ({ key: step.id, title: WORKFLOW_STEP_LABELS[step.id], detail: WORKFLOW_STEP_LABELS[step.id], complete: step.complete, source: step.complete ? 'automatic' : 'pending', href: '/threat', cta: firstPendingCta ?? 'Review workflow' })) as any} />
       </section>
     </main>
   );
