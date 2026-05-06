@@ -54,10 +54,10 @@ export default function RuntimeBanner() {
   const confidenceValue = healthProvable ? 'High'  : formatStatus(summary.confidence ?? 'low');
 
   const toneClass = healthProvable
-    ? 'runtimeBannerLive'
-    : summary.monitoring_status === 'degraded'
-      ? 'runtimeBannerStale'
-      : 'runtimeBannerDead';
+  ? 'runtimeBannerLive'
+  : summary.monitoring_status === 'limited'
+    ? 'runtimeBannerStale'
+    : 'runtimeBannerDead';
 
   return (
     <section
