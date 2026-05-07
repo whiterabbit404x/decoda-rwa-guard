@@ -143,7 +143,7 @@ test.describe('Dashboard Executive Summary – source-level contracts', () => {
     expect(source).toContain("incident.source === 'fallback'");
   });
 
-  test('defensive helpers are present for runtime normalization', () => {
+  test('defensive helpers are present and invoked with explicit fallback handling', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
     expect(source).toContain('function isRecord');
     expect(source).toContain('function safeString(value: unknown, fallback');
@@ -151,13 +151,16 @@ test.describe('Dashboard Executive Summary – source-level contracts', () => {
     expect(source).toContain('function safeArray');
     expect(source).toContain('function humanizeReason');
     expect(source).toContain('function safeAction');
+    expect(source).toContain('safeString(');
+    expect(source).toContain('safeNumber(');
   });
 
-  test('summary is normalized before property access', () => {
+  test('summary uses guarded safeSummary access and removes unsafe direct dereferences', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
     expect(source).toContain('const safeSummary: Record<string, unknown> = isRecord(summary) ? summary : {};');
     expect(source).toContain('safeNumber(safeSummary.protected_assets_count)');
-    expect(source).toContain('safeAction(safeSummary.next_required_action)');
+    expect(source).toContain('const summaryNextAction = safeString(safeSummary.next_required_action);');
+    expect(source).toContain('const nextAction = safeAction(summaryNextAction);');
     expect(source).not.toContain('summary.protected_assets_count');
     expect(source).not.toContain('summary.next_required_action');
   });
@@ -173,12 +176,37 @@ test.describe('Dashboard Executive Summary – source-level contracts', () => {
     expect(source).not.toContain('status_reason.replaceAll');
   });
 
-  test('runtime null or undefined fields are guarded before map/slice and numeric rendering', () => {
+  test('offline/degraded states are never labeled Healthy without monitoringHealthyCopyAllowed(...)', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('monitoringHealthyCopyAllowed');
+    expect(source).toContain("monitoringTruth.runtime_status === 'offline'");
+    expect(source).toContain("? 'Healthy'");
+    expect(source).toContain("'Healthy'");
+    const helperIndex = source.indexOf('monitoringHealthyCopyAllowed');
+    const healthyIndex = source.indexOf("'Healthy'");
+    expect(helperIndex).toBeGreaterThan(-1);
+    expect(healthyIndex).toBeGreaterThan(-1);
+    expect(helperIndex).toBeLessThan(healthyIndex);
+  });
+
+  test('fallback/simulator evidence is never labeled as live provider', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('isSimulator');
+    expect(source).toContain("alert.source === 'fallback'");
+    expect(source).toContain("incident.source === 'fallback'");
+    expect(source).toContain("'Simulator'");
+    expect(source).toContain("'Live provider'");
+    const simCheck = source.indexOf('isSimulator');
+    const liveLabel = source.indexOf("'Live provider'");
+    expect(simCheck).toBeGreaterThan(-1);
+    expect(liveLabel).toBeGreaterThan(-1);
+    expect(simCheck).toBeLessThan(liveLabel);
+  });
+
+  test('runtime null arrays remain guarded for active_alerts and latest_incidents', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
     expect(source).toContain('function safeArray');
-    expect(source).toContain('function safeNumber');
     expect(source).toContain('safeArray<ThreatDetection>(data?.threatDashboard?.active_alerts).slice(0, 5)');
     expect(source).toContain('safeArray<ResilienceIncident>(data?.resilienceDashboard?.latest_incidents).slice(0, 5)');
-    expect(source).toContain('safeNumber(safeSummary.protected_assets_count)');
   });
 });
