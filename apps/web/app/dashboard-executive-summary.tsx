@@ -532,6 +532,12 @@ function SystemHealthCompactCard({
   isSimulator: boolean;
   evidenceLabel: string;
 }) {
+  const runtimeStatus = safeString(monitoringTruth.runtime_status) || 'unknown';
+  const monitoringStatus = safeString(monitoringTruth.monitoring_status) || 'unknown';
+  const telemetryFreshness = safeString(monitoringTruth.telemetry_freshness) || 'unknown';
+  const reportingSystemsCount = safeNumber(monitoringTruth.reporting_systems_count);
+  const monitoredSystemsCount = safeNumber(monitoringTruth.monitored_systems_count);
+
   const degradedReasons = [
     ...safeArray<unknown>(monitoringTruth.contradiction_flags),
     ...safeArray<unknown>(monitoringTruth.guard_flags),
@@ -555,22 +561,22 @@ function SystemHealthCompactCard({
         <div className="execHealthRow">
           <span className="execHealthLabel">Runtime</span>
           <StatusPill
-            label={monitoringTruth.runtime_status}
-            variant={statusVariantFromStatus(monitoringTruth.runtime_status)}
+            label={runtimeStatus}
+            variant={statusVariantFromStatus(runtimeStatus)}
           />
         </div>
         <div className="execHealthRow">
           <span className="execHealthLabel">Monitoring</span>
           <StatusPill
-            label={monitoringTruth.monitoring_status}
-            variant={statusVariantFromStatus(monitoringTruth.monitoring_status)}
+            label={monitoringStatus}
+            variant={statusVariantFromStatus(monitoringStatus)}
           />
         </div>
         <div className="execHealthRow">
           <span className="execHealthLabel">Telemetry</span>
           <StatusPill
-            label={monitoringTruth.telemetry_freshness}
-            variant={statusVariantFromStatus(monitoringTruth.telemetry_freshness)}
+            label={telemetryFreshness}
+            variant={statusVariantFromStatus(telemetryFreshness)}
           />
         </div>
         <div className="execHealthRow">
@@ -580,8 +586,7 @@ function SystemHealthCompactCard({
         <div className="execHealthRow">
           <span className="execHealthLabel">Reporting</span>
           <span className="execHealthValue">
-            {monitoringTruth.reporting_systems_count} /{' '}
-            {monitoringTruth.monitored_systems_count} systems
+            {reportingSystemsCount} / {monitoredSystemsCount} systems
           </span>
         </div>
 
@@ -589,7 +594,7 @@ function SystemHealthCompactCard({
           <div className="execHealthIssues">
             <p className="execHealthIssuesLabel">Blocking reasons</p>
             {degradedReasons.map((code, index) => (
-              <p key={code} className="execHealthIssueItem muted">
+              <p key={`${code}-${index}`} className="execHealthIssueItem muted">
                 {code || `unknown reason ${index + 1}`}
               </p>
             ))}

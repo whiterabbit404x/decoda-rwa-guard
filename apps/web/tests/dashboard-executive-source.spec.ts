@@ -159,4 +159,13 @@ test.describe('Dashboard Executive Summary – source-level contracts', () => {
     expect(source).toContain('safeArray<ResilienceIncident>(data?.resilienceDashboard?.latest_incidents).slice(0, 5)');
     expect(source).toContain('safeNumber(summary.protected_assets_count)');
   });
+
+  test('system health pills guard unknown runtime status strings and reporting counts', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain("safeString(monitoringTruth.runtime_status) || 'unknown'");
+    expect(source).toContain("safeString(monitoringTruth.monitoring_status) || 'unknown'");
+    expect(source).toContain("safeString(monitoringTruth.telemetry_freshness) || 'unknown'");
+    expect(source).toContain('safeNumber(monitoringTruth.reporting_systems_count)');
+    expect(source).toContain('safeNumber(monitoringTruth.monitored_systems_count)');
+  });
 });
