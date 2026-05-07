@@ -106,11 +106,12 @@ function humanizeReason(value: unknown): string {
 }
 
 function safeAction(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (isRecord(value)) {
-    return safeString(value.code ?? value.reason ?? value.message ?? value.status_reason);
-  }
-  return '';
+  const fallback = 'review_reason_codes';
+  const candidate = isRecord(value)
+    ? safeString(value.code ?? value.reason ?? value.message ?? value.status_reason, '')
+    : safeString(value, '');
+
+  return candidate && NEXT_ACTION_ROUTES[candidate] ? candidate : fallback;
 }
 
 export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
@@ -159,10 +160,8 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
   const reportingSystemsCount = safeNumber(monitoringTruth.reporting_systems_count);
   const activeAlertsCount = safeNumber(monitoringTruth.active_alerts_count);
   const activeIncidentsCount = safeNumber(monitoringTruth.active_incidents_count);
-  const summaryNextAction = safeAction(safeSummary.next_required_action);
-  const nextAction = summaryNextAction && NEXT_ACTION_ROUTES[summaryNextAction]
-    ? summaryNextAction
-    : 'review_reason_codes';
+  const summaryNextAction = safeString(safeSummary.next_required_action);
+  const nextAction = safeAction(summaryNextAction);
   const nextActionLabel = NEXT_ACTION_LABELS[nextAction] ?? 'Review reason codes';
   const nextActionRoute = NEXT_ACTION_ROUTES[nextAction] ?? '/system-health';
   const nextActionDescription =
