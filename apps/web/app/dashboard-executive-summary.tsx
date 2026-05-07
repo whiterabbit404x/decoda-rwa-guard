@@ -548,6 +548,10 @@ function SystemHealthCompactCard({
   isSimulator: boolean;
   evidenceLabel: string;
 }) {
+  const runtimeStatusLabel = safeString(monitoringTruth.runtime_status, 'unknown');
+  const monitoringStatusLabel = safeString(monitoringTruth.monitoring_status, 'unknown');
+  const telemetryFreshnessLabel = safeString(monitoringTruth.telemetry_freshness, 'unknown');
+
   const degradedReasons = [
     ...safeArray<unknown>(monitoringTruth.contradiction_flags),
     ...safeArray<unknown>(monitoringTruth.guard_flags),
@@ -571,21 +575,21 @@ function SystemHealthCompactCard({
         <div className="execHealthRow">
           <span className="execHealthLabel">Runtime</span>
           <StatusPill
-            label={monitoringTruth.runtime_status}
+            label={runtimeStatusLabel}
             variant={statusVariantFromStatus(monitoringTruth.runtime_status)}
           />
         </div>
         <div className="execHealthRow">
           <span className="execHealthLabel">Monitoring</span>
           <StatusPill
-            label={monitoringTruth.monitoring_status}
+            label={monitoringStatusLabel}
             variant={statusVariantFromStatus(monitoringTruth.monitoring_status)}
           />
         </div>
         <div className="execHealthRow">
           <span className="execHealthLabel">Telemetry</span>
           <StatusPill
-            label={monitoringTruth.telemetry_freshness}
+            label={telemetryFreshnessLabel}
             variant={statusVariantFromStatus(monitoringTruth.telemetry_freshness)}
           />
         </div>
