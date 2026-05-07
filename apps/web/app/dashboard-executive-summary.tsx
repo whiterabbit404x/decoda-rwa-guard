@@ -104,7 +104,7 @@ function humanizeReason(value: unknown): string {
 
 export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
   const { summary, loading } = useRuntimeSummary();
-  const safeSummary = isRecord(summary) ? summary : {};
+  const safeSummary: Record<string, unknown> = isRecord(summary) ? summary : {};
 
   const monitoringTruth: WorkspaceMonitoringTruth =
     liveFeed?.monitoring.truth ??
