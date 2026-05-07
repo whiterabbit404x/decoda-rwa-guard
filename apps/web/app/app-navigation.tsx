@@ -30,7 +30,7 @@ export default function AppNavigation({ currentPath, onNavAttempt }: { currentPa
           <Link
             key={item.href}
             href={item.href}
-            prefetch={false}
+            prefetch={item.href === '/dashboard' ? true : false}
             onClick={() => {
               logNavClick(item.href);
               onNavAttempt?.(item.href);
