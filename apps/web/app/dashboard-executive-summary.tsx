@@ -220,7 +220,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
           healthLabel={systemHealthLabel}
           healthVariant={systemHealthVariant}
           healthProvable={healthProvable}
-          monitoringStatus={monitoringTruth.monitoring_status}
+          monitoringStatus={safeString(monitoringTruth.monitoring_status, 'unknown')}
         />
       </div>
 
@@ -575,21 +575,21 @@ function SystemHealthCompactCard({
           <span className="execHealthLabel">Runtime</span>
           <StatusPill
             label={runtimeStatusLabel}
-            variant={statusVariantFromStatus(monitoringTruth.runtime_status)}
+            variant={statusVariantFromStatus(runtimeStatusLabel)}
           />
         </div>
         <div className="execHealthRow">
           <span className="execHealthLabel">Monitoring</span>
           <StatusPill
             label={monitoringStatusLabel}
-            variant={statusVariantFromStatus(monitoringTruth.monitoring_status)}
+            variant={statusVariantFromStatus(monitoringStatusLabel)}
           />
         </div>
         <div className="execHealthRow">
           <span className="execHealthLabel">Telemetry</span>
           <StatusPill
             label={telemetryFreshnessLabel}
-            variant={statusVariantFromStatus(monitoringTruth.telemetry_freshness)}
+            variant={statusVariantFromStatus(telemetryFreshnessLabel)}
           />
         </div>
         <div className="execHealthRow">
