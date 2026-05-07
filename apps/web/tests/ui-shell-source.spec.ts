@@ -231,3 +231,13 @@ test('runtime banner only claims live when healthProvable is true', () => {
   // healthProvable check must precede the 'Live' value assignment
   expect(healthIdx).toBeLessThan(liveIdx);
 });
+
+
+test('app-shell has scoped route-load failure recovery guard', () => {
+  const shell = read('app-shell.tsx');
+  expect(shell).toContain('isRouteLoadFailure');
+  expect(shell).toContain("window.addEventListener('error'");
+  expect(shell).toContain("window.addEventListener('unhandledrejection'");
+  expect(shell).toContain("window.location.assign('/dashboard')");
+  expect(shell).toContain('decoda.navAttempt.reloaded.');
+});
