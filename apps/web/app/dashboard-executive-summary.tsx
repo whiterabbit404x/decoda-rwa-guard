@@ -61,14 +61,14 @@ type Props = {
   liveFeed?: ReturnType<typeof useLiveWorkspaceFeed>;
 };
 
-function safeString(value: unknown): string {
+function safeString(value: unknown, fallback = ''): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return '';
+  return fallback;
 }
 
-function safeNumber(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+function safeNumber(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
 function safeArray<T>(value: unknown): T[] {
@@ -81,14 +81,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function humanizeReason(value: unknown): string {
   if (typeof value === 'string') {
-    const normalized = value.replaceAll('_', ' ').trim();
+    const normalized = value.replace(/_/g, ' ').trim();
     return normalized || 'unknown reason';
   }
 
-  if (value && typeof value === 'object') {
-    const objectValue = value as Record<string, unknown>;
+  if (isRecord(value)) {
+    const objectValue = value;
     const preferred = safeString(
-      objectValue.code ?? objectValue.reason ?? objectValue.message,
+      objectValue.code ??
+        objectValue.reason ??
+        objectValue.message ??
+        objectValue.status_reason,
     );
     if (preferred) return humanizeReason(preferred);
     try {
@@ -100,6 +103,14 @@ function humanizeReason(value: unknown): string {
   }
 
   return 'unknown reason';
+}
+
+function safeAction(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (isRecord(value)) {
+    return safeString(value.code ?? value.reason ?? value.message ?? value.status_reason);
+  }
+  return '';
 }
 
 export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
@@ -148,7 +159,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
   const reportingSystemsCount = safeNumber(monitoringTruth.reporting_systems_count);
   const activeAlertsCount = safeNumber(monitoringTruth.active_alerts_count);
   const activeIncidentsCount = safeNumber(monitoringTruth.active_incidents_count);
-  const summaryNextAction = safeString(safeSummary.next_required_action);
+  const summaryNextAction = safeAction(safeSummary.next_required_action);
   const nextAction = summaryNextAction && NEXT_ACTION_ROUTES[summaryNextAction]
     ? summaryNextAction
     : 'review_reason_codes';
