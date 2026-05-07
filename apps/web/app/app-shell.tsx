@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
+import { useEffect, useRef } from 'react';
 
 import AppNavigation from './app-navigation';
 import { usePilotAuth } from 'app/pilot-auth-context';
@@ -34,6 +35,28 @@ function initials(name: string): string {
     .toUpperCase();
 }
 
+function RouteTransitionLogger({ pathname }: { pathname: string }) {
+  const previousPathRef = useRef(pathname);
+  const isDev = process.env.NODE_ENV !== 'production';
+
+  useEffect(() => {
+    if (!isDev) {
+      return;
+    }
+
+    if (previousPathRef.current !== pathname) {
+      console.info('[nav-debug] pathname changed', {
+        from: previousPathRef.current,
+        to: pathname,
+        at: new Date().toISOString(),
+      });
+      previousPathRef.current = pathname;
+    }
+  }, [isDev, pathname]);
+
+  return null;
+}
+
 export default function AppShell({ children, topBanner }: { children: React.ReactNode; topBanner?: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -49,6 +72,7 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
 
   return (
     <RuntimeSummaryProvider>
+      <RouteTransitionLogger pathname={pathname} />
       <div className="appShellFrame">
         {/* ── Sidebar ─────────────────────────────────── */}
         <aside className="appSidebar" aria-label="Primary navigation">
