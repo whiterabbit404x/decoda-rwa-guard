@@ -33,8 +33,19 @@ export async function fetchRuntimeStatusDeduped(
   if (existing) {
     return existing;
   }
+  const requestStartedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const request = fetch(RUNTIME_STATUS_PROXY_PATH, { headers, cache: 'no-store' })
     .then(async (response) => {
+      const requestFinishedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      if (process.env.NODE_ENV !== 'production') {
+        console.info('[dashboard-perf] runtime-status fetch', {
+          path: RUNTIME_STATUS_PROXY_PATH,
+          ok: response.ok,
+          status: response.status,
+          durationMs: Number((requestFinishedAt - requestStartedAt).toFixed(1)),
+          fetchedAt: new Date().toISOString(),
+        });
+      }
       if (!response.ok) {
         return null;
       }

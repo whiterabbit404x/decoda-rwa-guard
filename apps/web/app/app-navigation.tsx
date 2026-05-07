@@ -13,10 +13,15 @@ export default function AppNavigation({ currentPath, onNavAttempt }: { currentPa
       return;
     }
 
+    if (targetHref === '/dashboard' && typeof window !== 'undefined') {
+      (window as Window & { __dashboardNavClickAtMs?: number }).__dashboardNavClickAtMs = performance.now();
+    }
+
     console.info('[nav-debug] sidebar click', {
       targetHref,
       currentPath,
       at: new Date().toISOString(),
+      perfNowMs: typeof window !== 'undefined' ? performance.now() : null,
     });
   }
 
