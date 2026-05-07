@@ -75,6 +75,10 @@ function safeArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
 function humanizeReason(value: unknown): string {
   if (typeof value === 'string') {
     const normalized = value.replaceAll('_', ' ').trim();
@@ -100,6 +104,7 @@ function humanizeReason(value: unknown): string {
 
 export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
   const { summary, loading } = useRuntimeSummary();
+  const safeSummary = isRecord(summary) ? summary : {};
 
   const monitoringTruth: WorkspaceMonitoringTruth =
     liveFeed?.monitoring.truth ??
@@ -138,12 +143,12 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
     monitoringTruth.telemetry_freshness !== 'unavailable';
   const detectionAvailable = Boolean(monitoringTruth.last_detection_at);
 
-  const protectedAssetsCount = safeNumber(summary.protected_assets_count);
+  const protectedAssetsCount = safeNumber(safeSummary.protected_assets_count);
   const monitoredSystemsCount = safeNumber(monitoringTruth.monitored_systems_count);
   const reportingSystemsCount = safeNumber(monitoringTruth.reporting_systems_count);
   const activeAlertsCount = safeNumber(monitoringTruth.active_alerts_count);
   const activeIncidentsCount = safeNumber(monitoringTruth.active_incidents_count);
-  const summaryNextAction = safeString(summary.next_required_action);
+  const summaryNextAction = safeString(safeSummary.next_required_action);
   const nextAction = summaryNextAction && NEXT_ACTION_ROUTES[summaryNextAction]
     ? summaryNextAction
     : 'review_reason_codes';
