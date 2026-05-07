@@ -143,10 +143,32 @@ test.describe('Dashboard Executive Summary – source-level contracts', () => {
     expect(source).toContain("incident.source === 'fallback'");
   });
 
+  test('defensive helpers are present for runtime normalization', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('function isRecord');
+    expect(source).toContain('function safeString(value: unknown, fallback');
+    expect(source).toContain('function safeNumber(value: unknown, fallback');
+    expect(source).toContain('function safeArray');
+    expect(source).toContain('function humanizeReason');
+    expect(source).toContain('function safeAction');
+  });
+
+  test('summary is normalized before property access', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('const safeSummary: Record<string, unknown> = isRecord(summary) ? summary : {};');
+    expect(source).toContain('safeNumber(safeSummary.protected_assets_count)');
+    expect(source).toContain('safeAction(safeSummary.next_required_action)');
+    expect(source).not.toContain('summary.protected_assets_count');
+    expect(source).not.toContain('summary.next_required_action');
+  });
+
   test('reason codes handle object values safely', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
     expect(source).toContain('function humanizeReason');
-    expect(source).toContain('objectValue.code ?? objectValue.reason ?? objectValue.message');
+    expect(source).toContain('objectValue.code ??');
+    expect(source).toContain('objectValue.reason ??');
+    expect(source).toContain('objectValue.message ??');
+    expect(source).toContain('objectValue.status_reason');
     expect(source).toContain('JSON.stringify(objectValue)');
     expect(source).not.toContain('status_reason.replaceAll');
   });
@@ -157,6 +179,6 @@ test.describe('Dashboard Executive Summary – source-level contracts', () => {
     expect(source).toContain('function safeNumber');
     expect(source).toContain('safeArray<ThreatDetection>(data?.threatDashboard?.active_alerts).slice(0, 5)');
     expect(source).toContain('safeArray<ResilienceIncident>(data?.resilienceDashboard?.latest_incidents).slice(0, 5)');
-    expect(source).toContain('safeNumber(summary.protected_assets_count)');
+    expect(source).toContain('safeNumber(safeSummary.protected_assets_count)');
   });
 });
