@@ -6,7 +6,7 @@ import { usePilotAuth } from './pilot-auth-context';
 import { parseTagInput } from './policy-builders';
 import { classifyApiTransportError } from './auth-diagnostics';
 import { normalizeApiBaseUrl, isValidApiBaseUrl } from './api-config';
-import { DataTable, EmptyStateBlocker, StatusPill } from './components/ui-primitives';
+import { DataTable, StatusPill, type PillVariant } from './components/ui-primitives';
 
 type Props = { apiUrl: string };
 type Asset = any;
@@ -15,28 +15,108 @@ type FieldName = 'name' | 'asset_type' | 'chain_network' | 'identifier';
 type FieldErrors = Partial<Record<FieldName, string>>;
 
 const EMPTY_ASSET = {
-  name: '', asset_type: 'wallet', chain_network: 'ethereum-mainnet', identifier: '', owner_team: '', tags: [] as string[], description: '', notes: '', enabled: true,
+  name: '', asset_type: 'wallet', chain_network: 'ethereum-mainnet', identifier: '',
+  owner_team: '', value_usd: '', tags: [] as string[], description: '', notes: '', enabled: true,
 };
 
 const QUICK_PRESETS = [
   { label: 'Ethereum Wallet', form: { name: 'Treasury wallet', asset_type: 'wallet', chain_network: 'ethereum-mainnet' } },
-  { label: 'Smart Contract', form: { name: 'Core protocol contract', asset_type: 'contract', chain_network: 'ethereum-mainnet' } },
-  { label: 'Treasury Vault', form: { name: 'Treasury vault', asset_type: 'treasury-linked asset', chain_network: 'ethereum-mainnet' } },
+  { label: 'Smart Contract', form: { name: 'Core protocol contract', asset_type: 'smart-contract', chain_network: 'ethereum-mainnet' } },
+  { label: 'Treasury Vault', form: { name: 'Treasury vault', asset_type: 'treasury-vault', chain_network: 'ethereum-mainnet' } },
 ] as const;
 
 const ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 
+function assetTypeLabel(type: string): string {
+  switch (type?.toLowerCase()) {
+    case 'wallet': return 'Wallet';
+    case 'contract':
+    case 'smart-contract': return 'Smart Contract';
+    case 'treasury-linked asset':
+    case 'treasury-vault': return 'Treasury Vault';
+    case 'tokenized-rwa': return 'Tokenized RWA';
+    case 'stablecoin': return 'Stablecoin / Cash';
+    default: return type || 'Other';
+  }
+}
+
+function assetStatusInfo(asset: Asset): { label: string; variant: PillVariant } {
+  const vs = asset?.verification_status?.toLowerCase();
+  switch (vs) {
+    case 'verified':
+    case 'active': return { label: 'Active', variant: 'success' };
+    case 'pending': return { label: 'Pending Verification', variant: 'warning' };
+    case 'failed':
+    case 'verification_failed': return { label: 'Verification Failed', variant: 'danger' };
+    case 'archived': return { label: 'Archived', variant: 'neutral' };
+    default: return { label: 'Unknown', variant: 'neutral' };
+  }
+}
+
+/**
+ * Returns monitoring column status.
+ * Never returns "Monitoring" unless a valid monitored_system exists and reports telemetry.
+ */
+export function getMonitoringStatus(asset: Asset): { label: string; variant: PillVariant } {
+  const status = asset?.monitoring_link_status;
+  const hasLinkedSystem = asset?.has_linked_monitored_system !== false;
+  const systemCount = asset?.monitoring_systems_count ?? (status === 'attached' ? 1 : -1);
+
+  if (!status || status === 'not_configured' || status === 'target_missing') {
+    return { label: 'Target missing', variant: 'warning' };
+  }
+  if (status === 'system_missing' || !hasLinkedSystem || systemCount === 0) {
+    return { label: 'System not enabled', variant: 'warning' };
+  }
+  if (asset?.has_heartbeat === false) {
+    return { label: 'Not reporting', variant: 'warning' };
+  }
+  if (asset?.has_telemetry === false) {
+    return { label: 'Waiting for telemetry', variant: 'neutral' };
+  }
+  if (asset?.telemetry_fresh === false) {
+    return { label: 'Telemetry stale', variant: 'warning' };
+  }
+  if (status === 'attached') {
+    return { label: 'Monitoring', variant: 'success' };
+  }
+  return { label: 'Target missing', variant: 'warning' };
+}
+
+/** Exported for backwards-compat and direct test use. */
 export function monitoringLinkStatusLabel(asset: Asset): string {
-  switch (asset?.monitoring_link_status) {
-    case 'attached':
-      return 'Monitoring attached';
-    case 'system_missing':
-      return 'Monitoring not configured';
-    case 'target_missing':
-      return 'Target missing';
-    case 'not_configured':
-    default:
-      return 'No targets yet';
+  return getMonitoringStatus(asset).label;
+}
+
+function assetNextAction(asset: Asset): string {
+  const vs = asset?.verification_status?.toLowerCase();
+  if (!vs || vs === 'unknown' || vs === 'pending' || vs === 'failed') return 'Verify asset';
+
+  const monStatus = asset?.monitoring_link_status;
+  if (!monStatus || monStatus === 'not_configured' || monStatus === 'target_missing') {
+    return 'Create monitoring target';
+  }
+  if (monStatus === 'system_missing' || asset?.has_linked_monitored_system === false) {
+    return 'Enable monitored system';
+  }
+  if (asset?.has_heartbeat === false) return 'Start simulator signal';
+  if (asset?.has_telemetry === false) return 'Wait for telemetry';
+  if ((asset?.open_incidents ?? 0) > 0) return 'Open incident';
+  if ((asset?.active_alerts ?? 0) > 0) return 'View alerts';
+  return 'View detections';
+}
+
+function assetMatchesTypeFilter(asset: Asset, filterValue: string): boolean {
+  if (filterValue === 'all') return true;
+  const type = asset?.asset_type?.toLowerCase() || '';
+  switch (filterValue) {
+    case 'wallet': return type === 'wallet';
+    case 'smart-contract': return type === 'smart-contract' || type === 'contract';
+    case 'treasury-vault': return type === 'treasury-vault' || type === 'treasury-linked asset';
+    case 'tokenized-rwa': return type === 'tokenized-rwa';
+    case 'stablecoin': return type === 'stablecoin';
+    case 'other': return !['wallet', 'smart-contract', 'contract', 'treasury-vault', 'treasury-linked asset', 'tokenized-rwa', 'stablecoin'].includes(type);
+    default: return false;
   }
 }
 
@@ -52,14 +132,12 @@ export default function AssetsManager({ apiUrl }: Props) {
   const [touched, setTouched] = useState<Partial<Record<FieldName, boolean>>>({});
   const [submitting, setSubmitting] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const formRef = useRef<HTMLElement | null>(null);
   const fieldRefs = useRef<Record<FieldName, HTMLInputElement | HTMLSelectElement | null>>({
-    name: null,
-    asset_type: null,
-    chain_network: null,
-    identifier: null,
+    name: null, asset_type: null, chain_network: null, identifier: null,
   });
 
-async function load() {
+  async function load() {
     const normalizedApiUrl = normalizeApiBaseUrl(apiUrl);
     if (!normalizedApiUrl || !isValidApiBaseUrl(normalizedApiUrl)) {
       setSubmitError('Cannot load assets because NEXT_PUBLIC_API_URL / API_URL is missing or invalid for this deployment.');
@@ -182,90 +260,275 @@ async function load() {
   }
 
   const filtered = useMemo(() => assets
-    .filter((asset) => filterType === 'all' ? true : asset.asset_type === filterType)
-    .filter((asset) => `${asset.name} ${asset.identifier} ${asset.chain_network} ${asset.owner_team || ''}`.toLowerCase().includes(search.toLowerCase())), [assets, search, filterType]);
+    .filter((asset) => assetMatchesTypeFilter(asset, filterType))
+    .filter((asset) => `${asset.name} ${asset.identifier} ${asset.chain_network} ${asset.owner_team || ''}`.toLowerCase().includes(search.toLowerCase())),
+  [assets, search, filterType]);
 
   useEffect(() => { void load(); }, []);
 
   return (
-    <div className="stack compactStack">
-      <section className="dataCard">
-        <div className="listHeader">
-          <div>
-            <h1>Asset registry</h1>
-            <p className="muted">Assets are the wallets, contracts, and treasury systems you protect.</p>
-          </div>
-          <button type="button" onClick={() => { document.getElementById('asset-create-form')?.scrollIntoView({ behavior: 'smooth' }); }}>Add asset</button>
+    <>
+      {/* ── Page header ──────────────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '1.5rem', gap: '1rem', flexWrap: 'wrap' }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)' }}>Protected Assets</h1>
+          <p style={{ margin: '0.3rem 0 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+            Manage your protected real-world assets.
+          </p>
         </div>
-        <div className="chipRow">
-          {QUICK_PRESETS.map((preset) => <button key={preset.label} type="button" className="secondaryCta" onClick={() => {
-            const shouldFocusName = !form.name.trim();
-            setForm((current) => ({ ...current, ...preset.form, identifier: current.identifier || '0x5f6f35FD8b10C5576089f99C7c8c351Deb851d1F' }));
-            setTouched((current) => ({ ...current, name: true, identifier: true }));
-            setSuccessMessage('');
-            setSubmitError('');
-            if (shouldFocusName) requestAnimationFrame(() => fieldRefs.current.name?.focus());
-          }}>{preset.label}</button>)}
-        </div>
-        <div className="buttonRow">
-          <input aria-label="Search assets" placeholder="Search assets by name, chain, identifier, or owner" value={search} onChange={(event) => setSearch(event.target.value)} />
-          <select value={filterType} onChange={(event) => setFilterType(event.target.value)}>
-            <option value="all">All asset types</option>
-            <option value="wallet">Wallet</option>
-            <option value="contract">Contract</option>
-            <option value="oracle">Oracle</option>
-            <option value="treasury-linked asset">Treasury-linked asset</option>
-          </select>
-        </div>
-        {filtered.length === 0 ? <EmptyStateBlocker title="No assets yet" body="No assets match this view. Add the first wallet or contract you want to protect." /> : (
-          <DataTable headers={['Name', 'Type', 'Chain', 'Identifier', 'Status']}>{filtered.map((asset) => <tr key={asset.id}><td>{asset.name}</td><td>{asset.asset_type}</td><td>{asset.chain_network}</td><td><p>{asset.identifier}</p><p className="tableMeta">Normalized: {asset.normalized_identifier || asset.identifier}</p></td><td><div className="chipRow"><StatusPill label={asset.verification_status === 'verified' ? 'Verified' : asset.verification_status === 'pending' ? 'Pending verification' : 'Needs attention'} /><StatusPill label={asset.verification_summary?.recent_activity || 'recent activity unknown'} /><StatusPill label={monitoringLinkStatusLabel(asset)} /></div></td></tr>)}</DataTable>
-        )}
-      </section>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => { formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+        >
+          Add Asset
+        </button>
+      </div>
 
-      <section id="asset-create-form" className="dataCard">
-        <p className="sectionEyebrow">Create asset</p>
-        <h2>Add your first protected system</h2>
-        <form onSubmit={(event) => void createAsset(event)} noValidate>
+      {/* ── Filters ──────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
+        <input
+          aria-label="Search assets"
+          placeholder="Search assets..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ flex: '1 1 240px', minWidth: '160px' }}
+        />
+        <select
+          value={filterType}
+          onChange={(e) => setFilterType(e.target.value)}
+          aria-label="Filter by asset type"
+          style={{ flex: '0 0 auto', minWidth: '150px' }}
+        >
+          <option value="all">All Types</option>
+          <option value="wallet">Wallet</option>
+          <option value="smart-contract">Smart Contract</option>
+          <option value="treasury-vault">Treasury Vault</option>
+          <option value="tokenized-rwa">Tokenized RWA</option>
+          <option value="stablecoin">Stablecoin / Cash</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+
+      {/* ── Registry table ───────────────────────────────────────── */}
+      {filtered.length === 0 ? (
+        <div
+          className="emptyStatePanel"
+          style={{ textAlign: 'center', padding: '4rem 2rem', margin: '0 0 2rem' }}
+        >
+          <p style={{ fontSize: '2.5rem', margin: '0 0 1rem', lineHeight: 1 }}>🛡</p>
+          <h3 style={{ margin: '0 0 0.5rem', fontSize: '1.1rem', color: 'var(--text-primary)' }}>
+            No protected assets yet
+          </h3>
+          <p className="muted" style={{ margin: '0 0 1.5rem', maxWidth: '44ch', marginInline: 'auto' }}>
+            Add your first wallet, smart contract, treasury vault, or tokenized RWA to begin monitoring.
+          </p>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => { formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+          >
+            Add Asset
+          </button>
+        </div>
+      ) : (
+        <DataTable
+          headers={['Name', 'Type', 'Network', 'Value / Exposure', 'Status', 'Monitoring', 'Next Action']}
+          compact
+        >
+          {filtered.map((asset) => {
+            const statusInfo = assetStatusInfo(asset);
+            const monInfo = getMonitoringStatus(asset);
+            const action = assetNextAction(asset);
+            return (
+              <tr key={asset.id}>
+                <td>
+                  <strong style={{ display: 'block', color: 'var(--text-primary)' }}>{asset.name}</strong>
+                  {asset.identifier ? (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                      {asset.identifier}
+                    </span>
+                  ) : null}
+                </td>
+                <td>{assetTypeLabel(asset.asset_type)}</td>
+                <td>{asset.chain_network || '--'}</td>
+                <td>
+                  {asset.value_usd
+                    ? `$${Number(asset.value_usd).toLocaleString()}`
+                    : '--'}
+                </td>
+                <td><StatusPill label={statusInfo.label} variant={statusInfo.variant} /></td>
+                <td><StatusPill label={monInfo.label} variant={monInfo.variant} /></td>
+                <td>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-accent)' }}>{action}</span>
+                </td>
+              </tr>
+            );
+          })}
+        </DataTable>
+      )}
+
+      {/* ── Add asset form ───────────────────────────────────────── */}
+      <section ref={formRef} id="asset-create-form" className="dataCard" style={{ marginTop: '2.5rem' }}>
+        <p className="sectionEyebrow">Add asset</p>
+        <h2>Register a new protected asset</h2>
+        <div className="chipRow" style={{ marginBottom: '1rem' }}>
+          {QUICK_PRESETS.map((preset) => (
+            <button
+              key={preset.label}
+              type="button"
+              className="secondaryCta"
+              onClick={() => {
+                const shouldFocusName = !form.name.trim();
+                setForm((current) => ({ ...current, ...preset.form, identifier: current.identifier || '0x5f6f35FD8b10C5576089f99C7c8c351Deb851d1F' }));
+                setTouched((current) => ({ ...current, name: true, identifier: true }));
+                setSuccessMessage('');
+                setSubmitError('');
+                if (shouldFocusName) requestAnimationFrame(() => fieldRefs.current.name?.focus());
+              }}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+        <form onSubmit={(e) => void createAsset(e)} noValidate>
           <div className="formField">
             <label htmlFor="asset-name">Asset name <span aria-hidden="true" className="requiredMark">*</span></label>
-            <input id="asset-name" ref={(node) => { fieldRefs.current.name = node; }} required aria-invalid={Boolean(touched.name && (fieldErrors.name || validationErrors.name))} aria-describedby="asset-name-help asset-name-error" placeholder="Friendly name (e.g., Treasury wallet)" value={form.name} onBlur={() => setTouched((current) => ({ ...current, name: true }))} onChange={(event) => { setForm({ ...form, name: event.target.value }); setFieldErrors((current) => ({ ...current, name: undefined })); setSubmitError(''); setSuccessMessage(''); }} />
+            <input
+              id="asset-name"
+              ref={(node) => { fieldRefs.current.name = node; }}
+              required
+              aria-invalid={Boolean(touched.name && (fieldErrors.name || validationErrors.name))}
+              aria-describedby="asset-name-help asset-name-error"
+              placeholder="Friendly name (e.g., Treasury wallet)"
+              value={form.name}
+              onBlur={() => setTouched((c) => ({ ...c, name: true }))}
+              onChange={(e) => { setForm({ ...form, name: e.target.value }); setFieldErrors((c) => ({ ...c, name: undefined })); setSubmitError(''); setSuccessMessage(''); }}
+            />
             <p id="asset-name-help" className="inputHint">Use a clear name your team will recognize quickly.</p>
-            {touched.name && (fieldErrors.name || validationErrors.name) ? <p id="asset-name-error" className="fieldError" role="alert">{fieldErrors.name || validationErrors.name}</p> : null}
+            {touched.name && (fieldErrors.name || validationErrors.name)
+              ? <p id="asset-name-error" className="fieldError" role="alert">{fieldErrors.name || validationErrors.name}</p>
+              : null}
           </div>
           <div className="buttonRow">
             <div className="formField">
               <label htmlFor="asset-type">Asset type <span aria-hidden="true" className="requiredMark">*</span></label>
-              <select id="asset-type" ref={(node) => { fieldRefs.current.asset_type = node; }} required aria-invalid={Boolean(touched.asset_type && (fieldErrors.asset_type || validationErrors.asset_type))} aria-describedby="asset-type-error" value={form.asset_type} onBlur={() => setTouched((current) => ({ ...current, asset_type: true }))} onChange={(event) => { setForm({ ...form, asset_type: event.target.value }); setFieldErrors((current) => ({ ...current, asset_type: undefined })); }}>
-                <option value="wallet">Wallet</option><option value="contract">Contract</option><option value="oracle">Oracle</option><option value="treasury-linked asset">Treasury-linked asset</option>
+              <select
+                id="asset-type"
+                ref={(node) => { fieldRefs.current.asset_type = node; }}
+                required
+                aria-invalid={Boolean(touched.asset_type && (fieldErrors.asset_type || validationErrors.asset_type))}
+                aria-describedby="asset-type-error"
+                value={form.asset_type}
+                onBlur={() => setTouched((c) => ({ ...c, asset_type: true }))}
+                onChange={(e) => { setForm({ ...form, asset_type: e.target.value }); setFieldErrors((c) => ({ ...c, asset_type: undefined })); }}
+              >
+                <option value="wallet">Wallet</option>
+                <option value="smart-contract">Smart Contract</option>
+                <option value="treasury-vault">Treasury Vault</option>
+                <option value="tokenized-rwa">Tokenized RWA</option>
+                <option value="stablecoin">Stablecoin / Cash</option>
+                <option value="other">Other</option>
               </select>
-              {touched.asset_type && (fieldErrors.asset_type || validationErrors.asset_type) ? <p id="asset-type-error" className="fieldError" role="alert">{fieldErrors.asset_type || validationErrors.asset_type}</p> : null}
+              {touched.asset_type && (fieldErrors.asset_type || validationErrors.asset_type)
+                ? <p id="asset-type-error" className="fieldError" role="alert">{fieldErrors.asset_type || validationErrors.asset_type}</p>
+                : null}
             </div>
             <div className="formField">
               <label htmlFor="asset-chain">Chain / network <span aria-hidden="true" className="requiredMark">*</span></label>
-              <input id="asset-chain" ref={(node) => { fieldRefs.current.chain_network = node; }} required aria-invalid={Boolean(touched.chain_network && (fieldErrors.chain_network || validationErrors.chain_network))} aria-describedby="asset-chain-error" placeholder="Chain / network (e.g., ethereum-mainnet)" value={form.chain_network} onBlur={() => setTouched((current) => ({ ...current, chain_network: true }))} onChange={(event) => { setForm({ ...form, chain_network: event.target.value }); setFieldErrors((current) => ({ ...current, chain_network: undefined })); }} />
-              {touched.chain_network && (fieldErrors.chain_network || validationErrors.chain_network) ? <p id="asset-chain-error" className="fieldError" role="alert">{fieldErrors.chain_network || validationErrors.chain_network}</p> : null}
+              <input
+                id="asset-chain"
+                ref={(node) => { fieldRefs.current.chain_network = node; }}
+                required
+                aria-invalid={Boolean(touched.chain_network && (fieldErrors.chain_network || validationErrors.chain_network))}
+                aria-describedby="asset-chain-error"
+                placeholder="Chain / network (e.g., ethereum-mainnet)"
+                value={form.chain_network}
+                onBlur={() => setTouched((c) => ({ ...c, chain_network: true }))}
+                onChange={(e) => { setForm({ ...form, chain_network: e.target.value }); setFieldErrors((c) => ({ ...c, chain_network: undefined })); }}
+              />
+              {touched.chain_network && (fieldErrors.chain_network || validationErrors.chain_network)
+                ? <p id="asset-chain-error" className="fieldError" role="alert">{fieldErrors.chain_network || validationErrors.chain_network}</p>
+                : null}
             </div>
           </div>
           <div className="formField">
             <label htmlFor="asset-identifier">Wallet address / identifier <span aria-hidden="true" className="requiredMark">*</span></label>
-            <input id="asset-identifier" ref={(node) => { fieldRefs.current.identifier = node; }} required aria-invalid={Boolean(touched.identifier && (fieldErrors.identifier || validationErrors.identifier))} aria-describedby="asset-identifier-help asset-identifier-error" placeholder="Wallet or contract address / identifier" value={form.identifier} onBlur={() => setTouched((current) => ({ ...current, identifier: true }))} onChange={(event) => { setForm({ ...form, identifier: event.target.value.trim() }); setFieldErrors((current) => ({ ...current, identifier: undefined })); setSubmitError(''); setSuccessMessage(''); }} />
+            <input
+              id="asset-identifier"
+              ref={(node) => { fieldRefs.current.identifier = node; }}
+              required
+              aria-invalid={Boolean(touched.identifier && (fieldErrors.identifier || validationErrors.identifier))}
+              aria-describedby="asset-identifier-help asset-identifier-error"
+              placeholder="Wallet or contract address / identifier"
+              value={form.identifier}
+              onBlur={() => setTouched((c) => ({ ...c, identifier: true }))}
+              onChange={(e) => { setForm({ ...form, identifier: e.target.value.trim() }); setFieldErrors((c) => ({ ...c, identifier: undefined })); setSubmitError(''); setSuccessMessage(''); }}
+            />
             <p id="asset-identifier-help" className="inputHint">Example wallet: 0x5f6f35FD8b10C5576089f99C7c8c351Deb851d1F</p>
-            {touched.identifier && (fieldErrors.identifier || validationErrors.identifier) ? <p id="asset-identifier-error" className="fieldError" role="alert">{fieldErrors.identifier || validationErrors.identifier}</p> : null}
+            {touched.identifier && (fieldErrors.identifier || validationErrors.identifier)
+              ? <p id="asset-identifier-error" className="fieldError" role="alert">{fieldErrors.identifier || validationErrors.identifier}</p>
+              : null}
           </div>
-          <div className="formField">
-            <label htmlFor="asset-owner">Owner team</label>
-            <input id="asset-owner" placeholder="Owner team (e.g., Treasury Ops)" value={form.owner_team} onChange={(event) => setForm({ ...form, owner_team: event.target.value })} />
-          </div>
-          <button type="button" className="secondaryCta" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? 'Hide advanced settings' : 'Advanced settings'}</button>
-          {showAdvanced ? <><div className="formField"><label htmlFor="asset-tags">Tags</label><input id="asset-tags" placeholder="Tags (comma-separated)" value={form.tags.join(', ')} onChange={(event) => setForm({ ...form, tags: parseTagInput(event.target.value) })} /></div><div className="formField"><label htmlFor="asset-notes">Notes</label><textarea id="asset-notes" rows={3} placeholder="Optional metadata / notes" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></div></> : null}
           <div className="buttonRow">
-            <button type="submit" disabled={!isFormValid || submitting}>{submitting ? 'Creating asset…' : 'Create asset'}</button>
+            <div className="formField">
+              <label htmlFor="asset-owner">Owner team</label>
+              <input
+                id="asset-owner"
+                placeholder="Owner team (e.g., Treasury Ops)"
+                value={form.owner_team}
+                onChange={(e) => setForm({ ...form, owner_team: e.target.value })}
+              />
+            </div>
+            <div className="formField">
+              <label htmlFor="asset-value">Value / Exposure (USD)</label>
+              <input
+                id="asset-value"
+                type="number"
+                placeholder="e.g., 1000000"
+                value={form.value_usd}
+                onChange={(e) => setForm({ ...form, value_usd: e.target.value })}
+              />
+            </div>
           </div>
-          {!isFormValid && !submitting ? <p className="inputHint" role="status">Create asset is disabled until required fields are valid. {blockedReason}</p> : null}
+          <button type="button" className="secondaryCta" onClick={() => setShowAdvanced((v) => !v)}>
+            {showAdvanced ? 'Hide advanced settings' : 'Advanced settings'}
+          </button>
+          {showAdvanced ? (
+            <>
+              <div className="formField">
+                <label htmlFor="asset-tags">Tags</label>
+                <input
+                  id="asset-tags"
+                  placeholder="Tags (comma-separated)"
+                  value={form.tags.join(', ')}
+                  onChange={(e) => setForm({ ...form, tags: parseTagInput(e.target.value) })}
+                />
+              </div>
+              <div className="formField">
+                <label htmlFor="asset-notes">Notes</label>
+                <textarea
+                  id="asset-notes"
+                  rows={3}
+                  placeholder="Optional metadata / notes"
+                  value={form.notes}
+                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                />
+              </div>
+            </>
+          ) : null}
+          <div className="buttonRow">
+            <button type="submit" className="btn btn-primary" disabled={!isFormValid || submitting}>
+              {submitting ? 'Creating asset…' : 'Create asset'}
+            </button>
+          </div>
+          {!isFormValid && !submitting
+            ? <p className="inputHint" role="status">Create asset is disabled until required fields are valid. {blockedReason}</p>
+            : null}
           {submitError ? <p className="statusLine" role="alert">{submitError}</p> : null}
           {successMessage ? <p className="statusLine successLine" role="status">{successMessage}</p> : null}
         </form>
       </section>
-    </div>
+    </>
   );
 }
