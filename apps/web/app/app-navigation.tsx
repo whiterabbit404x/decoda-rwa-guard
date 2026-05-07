@@ -1,9 +1,25 @@
+"use client";
+
 import Link from 'next/link';
 
 import { APP_NAV_ITEMS } from './product-nav';
 import { NAV_ICONS } from './nav-icons';
 
 export default function AppNavigation({ currentPath }: { currentPath: string }) {
+  const isDev = process.env.NODE_ENV !== 'production';
+
+  function logNavClick(targetHref: string) {
+    if (!isDev) {
+      return;
+    }
+
+    console.info('[nav-debug] sidebar click', {
+      targetHref,
+      currentPath,
+      at: new Date().toISOString(),
+    });
+  }
+
   return (
     <nav className="appNav" aria-label="Product navigation">
       {APP_NAV_ITEMS.map((item) => {
@@ -15,6 +31,7 @@ export default function AppNavigation({ currentPath }: { currentPath: string }) 
             key={item.href}
             href={item.href}
             prefetch={false}
+            onClick={() => logNavClick(item.href)}
             className={isActive ? 'active' : ''}
             aria-current={isActive ? 'page' : undefined}
           >
