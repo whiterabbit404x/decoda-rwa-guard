@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { APP_NAV_ITEMS } from './product-nav';
 import { NAV_ICONS } from './nav-icons';
 
-export default function AppNavigation({ currentPath }: { currentPath: string }) {
+export default function AppNavigation({ currentPath, onNavAttempt }: { currentPath: string; onNavAttempt?: (targetHref: string) => void }) {
   const isDev = process.env.NODE_ENV !== 'production';
 
   function logNavClick(targetHref: string) {
@@ -31,7 +31,10 @@ export default function AppNavigation({ currentPath }: { currentPath: string }) 
             key={item.href}
             href={item.href}
             prefetch={false}
-            onClick={() => logNavClick(item.href)}
+            onClick={() => {
+              logNavClick(item.href);
+              onNavAttempt?.(item.href);
+            }}
             className={isActive ? 'active' : ''}
             aria-current={isActive ? 'page' : undefined}
           >

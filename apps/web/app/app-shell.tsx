@@ -35,6 +35,51 @@ function initials(name: string): string {
     .toUpperCase();
 }
 
+
+const NAV_ATTEMPT_STORAGE_KEY = 'decoda.navAttempt';
+
+function recordNavAttempt(targetHref: string) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const payload = {
+    id: crypto.randomUUID(),
+    targetHref,
+    createdAt: Date.now(),
+  };
+  window.sessionStorage.setItem(NAV_ATTEMPT_STORAGE_KEY, JSON.stringify(payload));
+}
+
+function readNavAttempt(): { id: string; targetHref: string; createdAt: number } | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const raw = window.sessionStorage.getItem(NAV_ATTEMPT_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as { id: string; targetHref: string; createdAt: number };
+  } catch {
+    return null;
+  }
+}
+
+function clearNavAttempt() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.sessionStorage.removeItem(NAV_ATTEMPT_STORAGE_KEY);
+}
+
+function isRouteLoadFailure(reason: unknown): boolean {
+  const text = reason instanceof Error ? `${reason.name} ${reason.message}` : String(reason ?? '');
+  return /(chunk|loading css chunk|dynamically imported module|failed to fetch dynamically imported module|route chunk|loading chunk|script error|webpack)/i.test(text);
+}
+
 function RouteTransitionLogger({ pathname }: { pathname: string }) {
   const previousPathRef = useRef(pathname);
   const isDev = process.env.NODE_ENV !== 'production';
@@ -70,6 +115,45 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
     router.push('/sign-in');
   }
 
+  useEffect(() => {
+    const pending = readNavAttempt();
+    if (pending && pathname === pending.targetHref) {
+      clearNavAttempt();
+    }
+  }, [pathname]);
+
+  useEffect(() => {
+    function handleRouteLoadFailure(reason: unknown) {
+      const pending = readNavAttempt();
+      if (!pending) {
+        return;
+      }
+
+      if (!isRouteLoadFailure(reason)) {
+        return;
+      }
+
+      const dedupeKey = `decoda.navAttempt.reloaded.${pending.id}`;
+      if (window.sessionStorage.getItem(dedupeKey) === '1') {
+        return;
+      }
+
+      window.sessionStorage.setItem(dedupeKey, '1');
+      window.location.assign('/dashboard');
+    }
+
+    const onError = (event: ErrorEvent) => handleRouteLoadFailure(event.error ?? event.message);
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => handleRouteLoadFailure(event.reason);
+
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+    };
+  }, []);
+
   return (
     <RuntimeSummaryProvider>
       <RouteTransitionLogger pathname={pathname} />
@@ -84,7 +168,7 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
             </span>
           </Link>
 
-          <AppNavigation currentPath={pathname} />
+          <AppNavigation currentPath={pathname} onNavAttempt={recordNavAttempt} />
 
           <span className="sidebarSpacer" />
           <hr className="sidebarDivider" />
