@@ -1087,6 +1087,7 @@ td .tableMeta {
 .appSidebar {
   position: sticky;
   top: 0;
+  z-index: 30;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -1110,10 +1111,18 @@ td .tableMeta {
 .appShellTop {
   position: sticky;
   top: 0;
-  z-index: 20;
+  z-index: 10;
   background: var(--bg-header);
   border-bottom: 1px solid var(--border);
   padding: 0 1.25rem;
+}
+
+
+.appSidebar,
+.appNav,
+.appNav a,
+.brandBlock {
+  pointer-events: auto;
 }
 
 .appShellPage,
@@ -1840,6 +1849,8 @@ td .tableMeta {
 
 /* ─── Runtime banner ─────────────────────────────────────────────── */
 .runtimeBanner {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
