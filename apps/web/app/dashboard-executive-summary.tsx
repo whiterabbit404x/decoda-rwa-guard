@@ -61,6 +61,43 @@ type Props = {
   liveFeed?: ReturnType<typeof useLiveWorkspaceFeed>;
 };
 
+function safeString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
+function safeNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function safeArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function humanizeReason(value: unknown): string {
+  if (typeof value === 'string') {
+    const normalized = value.replaceAll('_', ' ').trim();
+    return normalized || 'unknown reason';
+  }
+
+  if (value && typeof value === 'object') {
+    const objectValue = value as Record<string, unknown>;
+    const preferred = safeString(
+      objectValue.code ?? objectValue.reason ?? objectValue.message,
+    );
+    if (preferred) return humanizeReason(preferred);
+    try {
+      const serialized = JSON.stringify(objectValue);
+      return serialized || 'unknown reason';
+    } catch {
+      return 'unknown reason';
+    }
+  }
+
+  return 'unknown reason';
+}
+
 export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
   const { summary, loading } = useRuntimeSummary();
 
@@ -93,15 +130,23 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
     ? 'Live provider'
     : 'No evidence';
 
-  const recentAlerts = data.threatDashboard.active_alerts.slice(0, 5);
-  const recentIncidents = data.resilienceDashboard.latest_incidents.slice(0, 5);
+  const recentAlerts = safeArray<ThreatDetection>(data?.threatDashboard?.active_alerts).slice(0, 5);
+  const recentIncidents = safeArray<ResilienceIncident>(data?.resilienceDashboard?.latest_incidents).slice(0, 5);
 
   const telemetryAvailable =
     Boolean(monitoringTruth.last_telemetry_at) &&
     monitoringTruth.telemetry_freshness !== 'unavailable';
   const detectionAvailable = Boolean(monitoringTruth.last_detection_at);
 
-  const nextAction = summary.next_required_action ?? 'review_reason_codes';
+  const protectedAssetsCount = safeNumber(summary.protected_assets_count);
+  const monitoredSystemsCount = safeNumber(monitoringTruth.monitored_systems_count);
+  const reportingSystemsCount = safeNumber(monitoringTruth.reporting_systems_count);
+  const activeAlertsCount = safeNumber(monitoringTruth.active_alerts_count);
+  const activeIncidentsCount = safeNumber(monitoringTruth.active_incidents_count);
+  const summaryNextAction = safeString(summary.next_required_action);
+  const nextAction = summaryNextAction && NEXT_ACTION_ROUTES[summaryNextAction]
+    ? summaryNextAction
+    : 'review_reason_codes';
   const nextActionLabel = NEXT_ACTION_LABELS[nextAction] ?? 'Review reason codes';
   const nextActionRoute = NEXT_ACTION_ROUTES[nextAction] ?? '/system-health';
   const nextActionDescription =
@@ -122,41 +167,39 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
       <div className="execMetricRow">
         <ExecMetricCard
           label="Protected Assets"
-          value={loading ? '—' : String(summary.protected_assets_count)}
+          value={loading ? '—' : String(protectedAssetsCount)}
           meta={
-            summary.protected_assets_count > 0
-              ? `${summary.protected_assets_count} registered`
+            protectedAssetsCount > 0
+              ? `${protectedAssetsCount} registered`
               : 'No assets yet'
           }
         />
         <ExecMetricCard
           label="Monitored Systems"
-          value={loading ? '—' : String(monitoringTruth.monitored_systems_count)}
+          value={loading ? '—' : String(monitoredSystemsCount)}
           meta={
-            monitoringTruth.monitored_systems_count > 0
-              ? `${monitoringTruth.reporting_systems_count} reporting`
+            monitoredSystemsCount > 0
+              ? `${reportingSystemsCount} reporting`
               : 'None reporting'
           }
         />
         <ExecMetricCard
           label="Active Alerts"
-          value={loading ? '—' : String(monitoringTruth.active_alerts_count)}
+          value={loading ? '—' : String(activeAlertsCount)}
           meta={
-            monitoringTruth.active_alerts_count > 0 ? 'Requires attention' : 'All clear'
+            activeAlertsCount > 0 ? 'Requires attention' : 'All clear'
           }
-          valueVariant={monitoringTruth.active_alerts_count > 0 ? 'danger' : undefined}
+          valueVariant={activeAlertsCount > 0 ? 'danger' : undefined}
         />
         <ExecMetricCard
           label="Open Incidents"
-          value={loading ? '—' : String(monitoringTruth.active_incidents_count)}
+          value={loading ? '—' : String(activeIncidentsCount)}
           meta={
-            monitoringTruth.active_incidents_count > 0
+            activeIncidentsCount > 0
               ? 'Under investigation'
               : 'None active'
           }
-          valueVariant={
-            monitoringTruth.active_incidents_count > 0 ? 'warning' : undefined
-          }
+          valueVariant={activeIncidentsCount > 0 ? 'warning' : undefined}
         />
         <SystemHealthMetricCard
           healthLabel={systemHealthLabel}
@@ -489,11 +532,18 @@ function SystemHealthCompactCard({
   isSimulator: boolean;
   evidenceLabel: string;
 }) {
+  const runtimeStatus = safeString(monitoringTruth.runtime_status) || 'unknown';
+  const monitoringStatus = safeString(monitoringTruth.monitoring_status) || 'unknown';
+  const telemetryFreshness = safeString(monitoringTruth.telemetry_freshness) || 'unknown';
+  const reportingSystemsCount = safeNumber(monitoringTruth.reporting_systems_count);
+  const monitoredSystemsCount = safeNumber(monitoringTruth.monitored_systems_count);
+
   const degradedReasons = [
-    ...(monitoringTruth.contradiction_flags ?? []),
-    ...(monitoringTruth.guard_flags ?? []),
-    ...(monitoringTruth.continuity_reason_codes ?? []),
+    ...safeArray<unknown>(monitoringTruth.contradiction_flags),
+    ...safeArray<unknown>(monitoringTruth.guard_flags),
+    ...safeArray<unknown>(monitoringTruth.continuity_reason_codes),
   ]
+    .map((code) => humanizeReason(code))
     .filter(Boolean)
     .slice(0, 3);
 
@@ -511,22 +561,22 @@ function SystemHealthCompactCard({
         <div className="execHealthRow">
           <span className="execHealthLabel">Runtime</span>
           <StatusPill
-            label={monitoringTruth.runtime_status}
-            variant={statusVariantFromStatus(monitoringTruth.runtime_status)}
+            label={runtimeStatus}
+            variant={statusVariantFromStatus(runtimeStatus)}
           />
         </div>
         <div className="execHealthRow">
           <span className="execHealthLabel">Monitoring</span>
           <StatusPill
-            label={monitoringTruth.monitoring_status}
-            variant={statusVariantFromStatus(monitoringTruth.monitoring_status)}
+            label={monitoringStatus}
+            variant={statusVariantFromStatus(monitoringStatus)}
           />
         </div>
         <div className="execHealthRow">
           <span className="execHealthLabel">Telemetry</span>
           <StatusPill
-            label={monitoringTruth.telemetry_freshness}
-            variant={statusVariantFromStatus(monitoringTruth.telemetry_freshness)}
+            label={telemetryFreshness}
+            variant={statusVariantFromStatus(telemetryFreshness)}
           />
         </div>
         <div className="execHealthRow">
@@ -536,26 +586,29 @@ function SystemHealthCompactCard({
         <div className="execHealthRow">
           <span className="execHealthLabel">Reporting</span>
           <span className="execHealthValue">
-            {monitoringTruth.reporting_systems_count} /{' '}
-            {monitoringTruth.monitored_systems_count} systems
+            {reportingSystemsCount} / {monitoredSystemsCount} systems
           </span>
         </div>
 
         {!healthProvable && degradedReasons.length > 0 ? (
           <div className="execHealthIssues">
             <p className="execHealthIssuesLabel">Blocking reasons</p>
-            {degradedReasons.map((code) => (
-              <p key={code} className="execHealthIssueItem muted">
-                {code.replaceAll('_', ' ')}
+            {degradedReasons.map((code, index) => (
+              <p key={`${code}-${index}`} className="execHealthIssueItem muted">
+                {code || `unknown reason ${index + 1}`}
               </p>
             ))}
           </div>
         ) : null}
 
-        {!healthProvable && degradedReasons.length === 0 && monitoringTruth.status_reason ? (
+        {!healthProvable &&
+        degradedReasons.length === 0 &&
+        safeString(monitoringTruth.status_reason) ? (
           <div className="execHealthIssues">
             <p className="execHealthIssuesLabel">Status reason</p>
-            <p className="execHealthIssueItem muted">{monitoringTruth.status_reason.replaceAll('_', ' ')}</p>
+            <p className="execHealthIssueItem muted">
+              {humanizeReason(monitoringTruth.status_reason)}
+            </p>
           </div>
         ) : null}
 
