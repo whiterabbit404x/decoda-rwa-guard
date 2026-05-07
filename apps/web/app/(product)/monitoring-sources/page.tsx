@@ -50,10 +50,10 @@ type MonitoredSystemRow = {
 };
 
 function fmt(value?: string | null): string {
-  if (!value) return '鈥?;
+  if (!value) return '-';
 
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '鈥?;
+  if (Number.isNaN(parsed.getTime())) return '-';
 
   const diff = Date.now() - parsed.getTime();
   if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
