@@ -142,4 +142,21 @@ test.describe('Dashboard Executive Summary – source-level contracts', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
     expect(source).toContain("incident.source === 'fallback'");
   });
+
+  test('reason codes handle object values safely', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('function humanizeReason');
+    expect(source).toContain('objectValue.code ?? objectValue.reason ?? objectValue.message');
+    expect(source).toContain('JSON.stringify(objectValue)');
+    expect(source).not.toContain('status_reason.replaceAll');
+  });
+
+  test('runtime null or undefined fields are guarded before map/slice and numeric rendering', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('function safeArray');
+    expect(source).toContain('function safeNumber');
+    expect(source).toContain('safeArray<ThreatDetection>(data?.threatDashboard?.active_alerts).slice(0, 5)');
+    expect(source).toContain('safeArray<ResilienceIncident>(data?.resilienceDashboard?.latest_incidents).slice(0, 5)');
+    expect(source).toContain('safeNumber(summary.protected_assets_count)');
+  });
 });
