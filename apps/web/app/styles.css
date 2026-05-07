@@ -2342,3 +2342,25 @@ td .tableMeta {
     display: none;
   }
 }
+
+.dashboardLoadingSkeleton {
+  border-radius: 0.65rem;
+  background: linear-gradient(90deg, rgba(128, 145, 172, 0.2), rgba(157, 181, 218, 0.34), rgba(128, 145, 172, 0.2));
+  background-size: 200% 100%;
+  min-height: 0.95rem;
+  margin-top: 0.5rem;
+  animation: dashboardLoadingPulse 1.4s ease-in-out infinite;
+}
+
+.dashboardLoadingLine {
+  min-height: 0.85rem;
+}
+
+@keyframes dashboardLoadingPulse {
+  0% {
+    background-position: 200% 50%;
+  }
+  100% {
+    background-position: -200% 50%;
+  }
+}
