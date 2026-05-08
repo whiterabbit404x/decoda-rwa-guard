@@ -340,7 +340,7 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
               status: webhookStatusFromBackend(webhook),
               lastDelivery: String(webhook.last_delivery_at ?? webhook.last_delivered_at ?? '') || null,
               lastError: String(webhook.last_error ?? webhook.error_message ?? '') || null,
-              failureRate: total > 0 ? `${Math.round((failed / total) * 100)}%` : '-',
+              failureRate: total > 0 ? String(Math.round((failed / total) * 100)) + '%' : '-',
               signingSecretStatus: webhook.secret_last4 ? 'Configured (...' + String(webhook.secret_last4) + ')' : 'Not configured',
               retryPolicy: String(webhook.retry_policy ?? 'Default retry policy'),
             };
