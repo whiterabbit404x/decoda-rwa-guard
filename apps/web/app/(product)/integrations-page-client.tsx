@@ -160,19 +160,19 @@ function titleCase(value: string): string {
 }
 
 function formatDate(value?: string | null): string {
-  if (!value) return '鈥?;
+  if (!value) return '-';
 
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '鈥?;
+  if (Number.isNaN(parsed.getTime())) return '-';
 
   return parsed.toLocaleString();
 }
 
 function formatRelative(value?: string | null): string {
-  if (!value) return '鈥?;
+  if (!value) return '-';
 
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '鈥?;
+  if (Number.isNaN(parsed.getTime())) return '-';
 
   const seconds = Math.max(0, Math.floor((Date.now() - parsed.getTime()) / 1000));
   if (seconds < 60) return `${seconds}s ago`;
@@ -187,7 +187,7 @@ function formatRelative(value?: string | null): string {
 }
 
 function maskUrl(value?: string | null): string {
-  if (!value) return '鈥?;
+  if (!value) return '-';
 
   try {
     const url = new URL(value);
@@ -744,4 +744,5 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
     </main>
   );
 }
+
 
