@@ -175,15 +175,15 @@ function formatRelative(value?: string | null): string {
   if (Number.isNaN(parsed.getTime())) return '-';
 
   const seconds = Math.max(0, Math.floor((Date.now() - parsed.getTime()) / 1000));
-  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 60) return String(seconds) + 's ago';
 
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return String(minutes) + 'm ago';
 
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return String(hours) + 'h ago';
 
-  return `${Math.floor(hours / 24)}d ago`;
+  return String(Math.floor(hours / 24)) + 'd ago';
 }
 
 function maskUrl(value?: string | null): string {
@@ -191,9 +191,9 @@ function maskUrl(value?: string | null): string {
 
   try {
     const url = new URL(value);
-    return `${url.protocol}//${url.hostname}/***`;
+    return url.protocol + '//' + url.hostname + '/***';
   } catch {
-    return value.length > 32 ? `${value.slice(0, 32)}鈥 : value;
+    return value.length > 32 ? value.slice(0, 32) + '...' : value;
   }
 }
 
@@ -480,9 +480,9 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
         </div>
 
         <div className="threeColumnSection" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
-          <MetricCard label="Connected Providers" value={loading ? '-' : connectedProviders} meta={`${providers.length} provider records`} />
-          <MetricCard label="Active API Keys" value={loading ? '-' : canManageApiKeys ? activeApiKeys : '-'} meta={canManageApiKeys ? `${apiKeys.length} keys visible` : 'API key management not configured'} />
-          <MetricCard label="Webhooks" value={loading ? '-' : activeWebhooks} meta={`${webhooks.length} webhook records`} />
+          <MetricCard label="Connected Providers" value={loading ? '-' : connectedProviders} meta={String(providers.length) + ' provider records'} />
+          <MetricCard label="Active API Keys" value={loading ? '-' : canManageApiKeys ? activeApiKeys : '-'} meta={canManageApiKeys ? String(apiKeys.length) + ' keys visible' : 'API key management not configured'} />
+          <MetricCard label="Webhooks" value={loading ? '-' : activeWebhooks} meta={String(webhooks.length) + ' webhook records'} />
           <MetricCard label="Degraded Connections" value={loading ? '-' : degradedConnections} meta={degradedConnections > 0 ? 'Needs attention' : 'No degraded connections'} />
         </div>
 
@@ -610,7 +610,7 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
               {selectedApiKey ? (
                 <>
                   <DetailRow label="Key name" value={selectedApiKey.keyName} />
-                  <DetailRow label="Key prefix" value={selectedApiKey.keyPrefix ? `${selectedApiKey.keyPrefix}鈥 : 'Not available'} />
+ <DetailRow label=Key prefix value={selectedApiKey.keyPrefix ? selectedApiKey.keyPrefix + '...' : 'Not available'} />
                   <DetailRow label="Scope" value={selectedApiKey.scope} />
                   <DetailRow label="Status" value={<StatusBadge status={selectedApiKey.status} />} />
                   <DetailRow label="Created at" value={formatDate(selectedApiKey.created)} />
