@@ -340,8 +340,8 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
               status: webhookStatusFromBackend(webhook),
               lastDelivery: String(webhook.last_delivery_at ?? webhook.last_delivered_at ?? '') || null,
               lastError: String(webhook.last_error ?? webhook.error_message ?? '') || null,
-              failureRate: total > 0 ? `${Math.round((failed / total) * 100)}%` : '鈥?,
-              signingSecretStatus: webhook.secret_last4 ? `Configured (鈥?{String(webhook.secret_last4)})` : 'Not configured',
+              failureRate: total > 0 ? `${Math.round((failed / total) * 100)}%` : '-',
+              signingSecretStatus: webhook.secret_last4 ? 'Configured (...' + String(webhook.secret_last4) + ')' : 'Not configured',
               retryPolicy: String(webhook.retry_policy ?? 'Default retry policy'),
             };
           }),
@@ -432,7 +432,7 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
         source: 'RWA Guard',
         destination: titleCase(key),
         status,
-        latency: typeof record?.latency_ms === 'number' ? `${record.latency_ms}ms` : '鈥?,
+        latency: typeof record?.latency_ms === 'number' ? `${record.latency_ms}ms` : '-',
         lastCheck,
         lastError: status === 'Healthy' ? null : record?.message ?? null,
         healthReason: record?.message ?? (status === 'Unknown' ? 'Provider health unavailable' : 'No active issue reported'),
@@ -480,10 +480,10 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
         </div>
 
         <div className="threeColumnSection" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
-          <MetricCard label="Connected Providers" value={loading ? '鈥? : connectedProviders} meta={`${providers.length} provider records`} />
-          <MetricCard label="Active API Keys" value={loading ? '鈥? : canManageApiKeys ? activeApiKeys : '鈥?} meta={canManageApiKeys ? `${apiKeys.length} keys visible` : 'API key management not configured'} />
-          <MetricCard label="Webhooks" value={loading ? '鈥? : activeWebhooks} meta={`${webhooks.length} webhook records`} />
-          <MetricCard label="Degraded Connections" value={loading ? '鈥? : degradedConnections} meta={degradedConnections > 0 ? 'Needs attention' : 'No degraded connections'} />
+          <MetricCard label="Connected Providers" value={loading ? '-' : connectedProviders} meta={`${providers.length} provider records`} />
+          <MetricCard label="Active API Keys" value={loading ? '-' : canManageApiKeys ? activeApiKeys : '-'} meta={canManageApiKeys ? `${apiKeys.length} keys visible` : 'API key management not configured'} />
+          <MetricCard label="Webhooks" value={loading ? '-' : activeWebhooks} meta={`${webhooks.length} webhook records`} />
+          <MetricCard label="Degraded Connections" value={loading ? '-' : degradedConnections} meta={degradedConnections > 0 ? 'Needs attention' : 'No degraded connections'} />
         </div>
 
         {message ? <p className="statusLine">{message}</p> : null}
@@ -522,7 +522,7 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
                     <td>{provider.type}</td>
                     <td><StatusBadge status={provider.status} /></td>
                     <td>{formatRelative(provider.lastSync)}</td>
-                    <td>{provider.lastError ?? '鈥?}</td>
+                    <td>{provider.lastError ?? '-'}</td>
                     <td>
                       <div className="buttonRow">
                         <button className="btn btn-secondary" type="button" disabled>Configure</button>
@@ -542,7 +542,7 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
                   <DetailRow label="Provider type" value={selectedProvider.type} />
                   <DetailRow label="Status" value={<StatusBadge status={selectedProvider.status} />} />
                   <DetailRow label="Last sync" value={formatDate(selectedProvider.lastSync)} />
-                  <DetailRow label="Last error" value={selectedProvider.lastError ?? '鈥?} />
+                  <DetailRow label="Last error" value={selectedProvider.lastError ?? '-'} />
                   <DetailRow
                     label="Linked monitoring targets"
                     value={
@@ -555,7 +555,7 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
                       )
                     }
                   />
-                  <DetailRow label="Linked monitored systems" value={selectedProvider.linkedSystems || '鈥?} />
+                  <DetailRow label="Linked monitored systems" value={selectedProvider.linkedSystems || '-'} />
                   <DetailRow label="Evidence source capability" value={selectedProvider.evidenceSourceCapability} />
                   <DetailRow label="Authentication status" value={selectedProvider.authenticationStatus} />
                   <DetailRow label="Next required action" value={selectedProvider.nextAction} />
@@ -617,7 +617,7 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
                   <DetailRow label="Last used" value={formatRelative(selectedApiKey.lastUsed)} />
                   <DetailRow label="Rotation status" value={selectedApiKey.rotationStatus} />
                   <DetailRow label="Owner" value={selectedApiKey.owner} />
-                  <DetailRow label="Linked integration" value={selectedApiKey.linkedIntegration ?? '鈥?} />
+                  <DetailRow label="Linked integration" value={selectedApiKey.linkedIntegration ?? '-'} />
                 </>
               ) : (
                 <p className="muted">API key management not configured</p>
@@ -665,7 +665,7 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
                   <DetailRow label="Event types" value={selectedWebhook.eventTypes.join(', ')} />
                   <DetailRow label="Status" value={<StatusBadge status={selectedWebhook.status} />} />
                   <DetailRow label="Last delivery" value={formatDate(selectedWebhook.lastDelivery)} />
-                  <DetailRow label="Last error" value={selectedWebhook.lastError ?? '鈥?} />
+                  <DetailRow label="Last error" value={selectedWebhook.lastError ?? '-'} />
                   <DetailRow label="Signing secret status" value={selectedWebhook.signingSecretStatus} />
                   <DetailRow label="Retry policy" value={selectedWebhook.retryPolicy} />
                   <DetailRow label="Delivery history" value="View deliveries action not configured" />
@@ -718,7 +718,7 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
                   <DetailRow label="Status" value={<StatusBadge status={selectedConnection.status} />} />
                   <DetailRow label="Latency" value={selectedConnection.latency} />
                   <DetailRow label="Last check" value={formatDate(selectedConnection.lastCheck)} />
-                  <DetailRow label="Last error" value={selectedConnection.lastError ?? '鈥?} />
+                  <DetailRow label="Last error" value={selectedConnection.lastError ?? '-'} />
                   <DetailRow label="Health reason" value={selectedConnection.healthReason} />
                   <DetailRow label="Linked provider" value={selectedConnection.linkedProvider} />
                   <DetailRow
@@ -744,6 +744,7 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
     </main>
   );
 }
+
 
 
 
