@@ -427,12 +427,12 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
       const status = connectionStatusFromBackend(record, lastCheck);
 
       return {
-        id: `connection-${key}`,
-        connection: `${titleCase(key)} Connection`,
+        id: 'connection-' + key,
+        connection: titleCase(key) + ' Connection',
         source: 'RWA Guard',
         destination: titleCase(key),
         status,
-        latency: typeof record?.latency_ms === 'number' ? `${record.latency_ms}ms` : '-',
+        latency: typeof record?.latency_ms === 'number' ? String(record.latency_ms) + 'ms' : '-',
         lastCheck,
         lastError: status === 'Healthy' ? null : record?.message ?? null,
         healthReason: record?.message ?? (status === 'Unknown' ? 'Provider health unavailable' : 'No active issue reported'),
