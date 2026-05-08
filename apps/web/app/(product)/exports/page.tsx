@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
 
-export default function ExportsPageRedirect() {
+export default function ExportsPage() {
   redirect('/evidence');
 }
