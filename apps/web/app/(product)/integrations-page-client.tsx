@@ -309,10 +309,10 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
 
       try {
         const [healthResponse, monitoringResponse, webhooksResponse, slackResponse, keysResponse] = await Promise.all([
-          fetch(`${apiUrl}/system/integrations/health`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/ops/monitoring/health`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/integrations/webhooks`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/integrations/slack`, { headers: authHeaders(), cache: 'no-store' }),
+          fetch(apiUrl + '/system/integrations/health', { headers: authHeaders(), cache: 'no-store' }),
+          fetch(apiUrl + '/ops/monitoring/health', { headers: authHeaders(), cache: 'no-store' }),
+          fetch(apiUrl + '/integrations/webhooks', { headers: authHeaders(), cache: 'no-store' }),
+          fetch(apiUrl + '/integrations/slack', { headers: authHeaders(), cache: 'no-store' }),
           canManageApiKeys
             ? fetch('/api/workspace/api-keys', { headers: authHeaders(), cache: 'no-store' })
             : Promise.resolve(null),
@@ -744,5 +744,6 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
     </main>
   );
 }
+
 
 
