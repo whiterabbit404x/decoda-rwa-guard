@@ -610,7 +610,7 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
               {selectedApiKey ? (
                 <>
                   <DetailRow label="Key name" value={selectedApiKey.keyName} />
- <DetailRow label=Key prefix value={selectedApiKey.keyPrefix ? selectedApiKey.keyPrefix + '...' : 'Not available'} />
+                  <DetailRow label="Key prefix" value={selectedApiKey.keyPrefix ? selectedApiKey.keyPrefix + "..." : "Not available"} />
                   <DetailRow label="Scope" value={selectedApiKey.scope} />
                   <DetailRow label="Status" value={<StatusBadge status={selectedApiKey.status} />} />
                   <DetailRow label="Created at" value={formatDate(selectedApiKey.created)} />
@@ -744,6 +744,7 @@ export default function IntegrationsPageClient({ apiUrl }: { apiUrl: string }) {
     </main>
   );
 }
+
 
 
 
