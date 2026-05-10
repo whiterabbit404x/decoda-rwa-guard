@@ -251,7 +251,7 @@ export default function SettingsPageClient() {
 
   return (
     <main className="productPage">
-      {/* 鈹€鈹€ Page header 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
+      
       <section className="featureSection">
         <div className="sectionHeader">
           <div>
@@ -261,7 +261,7 @@ export default function SettingsPageClient() {
           </div>
         </div>
 
-        {/* 鈹€鈹€ Top metric cards 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
+        
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginTop: '1.25rem' }}>
           <MetricCard label="Workspace Status" value={<StatusPill status={workspaceStatus} />} sub={resolvedWorkspace?.name ?? 'No workspace'} />
           <MetricCard label="Team Members" value={teamCount} sub={`${members.length} active 路 ${invitations.length} invited`} />
@@ -269,7 +269,7 @@ export default function SettingsPageClient() {
           <MetricCard label="Billing Status" value={<StatusPill status={billingStatusDisplay} />} sub={billingAvailable ? `Provider: ${billingRuntime.provider ?? 'unknown'}` : 'Not configured'} />
         </div>
 
-        {/* 鈹€鈹€ Tabs 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
+        
         <div role="tablist" aria-label="Settings tabs" style={{ display: 'flex', gap: '0.25rem', marginTop: '1.5rem', borderBottom: '1px solid #21262d', paddingBottom: 0 }}>
           {TABS.map(({ key, label }) => (
             <button
@@ -296,7 +296,7 @@ export default function SettingsPageClient() {
         </div>
       </section>
 
-      {/* 鈹€鈹€ General tab 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
+      
       {activeTab === 'general' ? (
         <section className="featureSection">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
@@ -325,7 +325,7 @@ export default function SettingsPageClient() {
                   <FieldRow label="Support Email" value={<a href="mailto:support@decoda.app" style={{ color: '#6aa9ff', textDecoration: 'none' }}>support@decoda.app</a>} />
                   <div style={{ marginTop: '0.85rem' }}>
                     <button className="btn btn-secondary" type="button" disabled style={{ opacity: 0.5, cursor: 'not-allowed' }}>
-                      Save Changes 鈥?Action not configured
+                      Save Changes -Action not configured
                     </button>
                   </div>
                 </>
@@ -367,7 +367,7 @@ export default function SettingsPageClient() {
               <FieldRow label="API Diagnostics" value={<span style={{ color: '#8b949e', fontSize: '0.8rem' }}>{apiUrl || 'Not configured'}</span>} />
               <div style={{ marginTop: '0.85rem' }}>
                 <button className="btn btn-secondary" type="button" disabled style={{ opacity: 0.5, cursor: 'not-allowed' }}>
-                  Save Defaults 鈥?Action not configured
+                  Save Defaults -Action not configured
                 </button>
               </div>
             </SectionCard>
@@ -375,7 +375,7 @@ export default function SettingsPageClient() {
           </div>
         </section>
       ) : null}
-      {/* 鈹€鈹€ Team tab 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
+      
       {activeTab === 'team' ? (
         <section className="featureSection">
           <div style={{ display: 'grid', gap: '1rem', marginTop: '1rem' }}>
@@ -485,7 +485,7 @@ export default function SettingsPageClient() {
         </section>
       ) : null}
 
-      {/* 鈹€鈹€ Security tab 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
+      
       {activeTab === 'security' ? (
         <section className="featureSection">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
@@ -544,7 +544,7 @@ export default function SettingsPageClient() {
         </section>
       ) : null}
 
-      {/* 鈹€鈹€ Billing tab 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
+      
       {activeTab === 'billing' ? (
         <section className="featureSection">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
@@ -559,7 +559,7 @@ export default function SettingsPageClient() {
               {billingStatus === 'past_due' ? <p style={{ marginTop: '0.5rem', color: '#f87171', fontSize: '0.82rem' }}>Billing is past due. Update billing details to avoid disruption.</p> : null}
               <div style={{ marginTop: '0.85rem' }}>
                 <button className="btn btn-secondary" type="button" disabled style={{ opacity: 0.5, cursor: 'not-allowed' }}>
-                  Manage Plan 鈥?Action not configured
+                  Manage Plan -Action not configured
                 </button>
               </div>
             </SectionCard>
@@ -593,7 +593,7 @@ export default function SettingsPageClient() {
                   </div>
                 ) : (
                   <button className="btn btn-secondary" type="button" disabled style={{ opacity: 0.5, cursor: 'not-allowed' }}>
-                    Configure Billing 鈥?Action not configured
+                    Configure Billing -Action not configured
                   </button>
                 )}
               </div>
@@ -603,7 +603,7 @@ export default function SettingsPageClient() {
         </section>
       ) : null}
 
-      {/* 鈹€鈹€ Notifications tab 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
+      
       {activeTab === 'notifications' ? (
         <section className="featureSection">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
@@ -707,3 +707,4 @@ export default function SettingsPageClient() {
     </main>
   );
 }
+
