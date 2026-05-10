@@ -458,7 +458,7 @@ export default function SettingsPageClient() {
                   ))}
                   {invitations.map((inv) => (
                     <tr key={inv.id}>
-                      <td><span style={{ color: '#8b949e' }}>鈥?/span></td>
+                      <td><span style={{ color: '#8b949e' }}>-</span></td>
                       <td><span className="muted">{inv.email}</span></td>
                       <td>
                         <span className="pill pill-info" style={{ textTransform: 'capitalize' }}>{inv.role}</span>
@@ -566,8 +566,8 @@ export default function SettingsPageClient() {
 
             {/* Usage */}
             <SectionCard title="Usage">
-              <FieldRow label="Protected Assets Used" value={<span style={{ fontWeight: 600 }}>鈥?/span>} note="Loaded from asset registry" />
-              <FieldRow label="Monitored Systems Used" value={<span style={{ fontWeight: 600 }}>鈥?/span>} note="Loaded from monitoring sources" />
+              <FieldRow label="Protected Assets Used" value={<span style={{ fontWeight: 600 }}>-</span>} note="Loaded from asset registry" />
+              <FieldRow label="Monitored Systems Used" value={<span style={{ fontWeight: 600 }}>-</span>} note="Loaded from monitoring sources" />
               <FieldRow label="Team Seats Used" value={<span style={{ fontWeight: 600 }}>{seatSummary ? `${seatSummary.used} / ${seatSummary.limit}` : 'Loading...'}</span>} />
               <FieldRow label="API Calls Used" value={<span style={{ color: '#8b949e' }}>Not tracked</span>} />
               <FieldRow label="Evidence Storage Used" value={<span style={{ color: '#8b949e' }}>Not tracked</span>} />
@@ -643,7 +643,7 @@ export default function SettingsPageClient() {
                 </td>
                 <td><span className="pill pill-neutral">Email</span></td>
                 <td><StatusPill status="Not Configured" /></td>
-                <td><span className="muted">鈥?/span></td>
+                <td><span className="muted">-</span></td>
                 <td>
                   <button className="btn btn-ghost" type="button" disabled style={{ fontSize: '0.78rem', padding: '0.25rem 0.6rem', opacity: 0.5 }}>
                     Action not configured
@@ -657,7 +657,7 @@ export default function SettingsPageClient() {
                 </td>
                 <td><span className="pill pill-neutral">Slack</span></td>
                 <td><StatusPill status="Not Configured" /></td>
-                <td><span className="muted">鈥?/span></td>
+                <td><span className="muted">-</span></td>
                 <td>
                   <Link className="btn btn-ghost" href="/integrations" prefetch={false} style={{ fontSize: '0.78rem', padding: '0.25rem 0.6rem', textDecoration: 'none' }}>
                     Configure
@@ -671,7 +671,7 @@ export default function SettingsPageClient() {
                 </td>
                 <td><span className="pill pill-neutral">Webhook</span></td>
                 <td><StatusPill status="Not Configured" /></td>
-                <td><span className="muted">鈥?/span></td>
+                <td><span className="muted">-</span></td>
                 <td>
                   <Link className="btn btn-ghost" href="/integrations" prefetch={false} style={{ fontSize: '0.78rem', padding: '0.25rem 0.6rem', textDecoration: 'none' }}>
                     Configure
@@ -685,7 +685,7 @@ export default function SettingsPageClient() {
                 </td>
                 <td><span className="pill pill-neutral">PagerDuty</span></td>
                 <td><StatusPill status="Not Configured" /></td>
-                <td><span className="muted">鈥?/span></td>
+                <td><span className="muted">-</span></td>
                 <td>
                   <button className="btn btn-ghost" type="button" disabled style={{ fontSize: '0.78rem', padding: '0.25rem 0.6rem', opacity: 0.5 }}>
                     Action not configured
