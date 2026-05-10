@@ -165,6 +165,7 @@ export default function SettingsPageClient() {
 
   async function call(path: string, init?: RequestInit) {
     return fetch(`${apiUrl}${path}`, { cache: 'no-store', ...init, headers: { ...(init?.headers ?? {}), ...authHeaders() } });
+  }
 
   async function loadAll() {
     if (!apiUrl || !resolvedWorkspace?.id) return;
@@ -709,4 +710,3 @@ export default function SettingsPageClient() {
 }
 
 
-}
