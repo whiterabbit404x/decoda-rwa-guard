@@ -173,6 +173,7 @@ export default function SettingsPageClient() {
       call('/workspace/members'),
       call('/workspace/invitations'),
       call('/team/seats'),
+      call('/billing/subscription'),
       call('/billing/plans'),
       call('/system/readiness'),
     ]);
@@ -708,5 +709,6 @@ export default function SettingsPageClient() {
     </main>
   );
 }
+
 
 
