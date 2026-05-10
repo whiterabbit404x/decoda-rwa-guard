@@ -708,4 +708,3 @@ export default function SettingsPageClient() {
   );
 }
 
-}
