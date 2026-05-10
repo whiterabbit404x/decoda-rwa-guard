@@ -148,6 +148,8 @@ export default function SettingsPageClient() {
   const [subscription, setSubscription] = useState<any>(null);
   const [billingRuntime, setBillingRuntime] = useState<BillingRuntime>({ provider: 'none', available: false });
   const [seatSummary, setSeatSummary] = useState<SeatSummary | null>(null);
+  const [readiness, setReadiness] = useState<WorkspaceReadiness | null>(null);
+  const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('viewer');
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -709,6 +711,7 @@ export default function SettingsPageClient() {
     </main>
   );
 }
+
 
 
 
