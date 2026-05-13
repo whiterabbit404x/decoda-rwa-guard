@@ -521,7 +521,7 @@ export default function SignInPageClient({
                 aria-controls="si-diag-content"
               >
                 {showDiag ? 'Hide details' : 'Show details'}
-                <span className="siDiagChevron aria-hidden=true>{showDiag ? '^' : 'v'}</span>
+                <span className="siDiagChevron" aria-hidden="true">{showDiag ? "^" : "v"}</span>
               </button>
             </div>
 
@@ -538,9 +538,9 @@ export default function SignInPageClient({
         <p className="siFooterCopy">&copy; 2026 Decoda Security. All rights reserved.</p>
         <nav className="siFooterLinks" aria-label="Legal links">
           <a href="#" className="siFooterLink">Privacy Policy</a>
-          <span className="siFooterSep" aria-hidden="true">鈥?/span>
+          <span className="siFooterSep" aria-hidden="true">|</span>
           <a href="#" className="siFooterLink">Terms of Service</a>
-          <span className="siFooterSep" aria-hidden="true">鈥?/span>
+          <span className="siFooterSep" aria-hidden="true">|</span>
           <a href="#" className="siFooterLink">Security</a>
         </nav>
         <div
@@ -549,7 +549,7 @@ export default function SignInPageClient({
           aria-label={systemStatus === 'healthy' ? 'All Systems Operational' : 'System status unavailable'}
         >
           <span className={`siStatusDot${systemStatus === 'healthy' ? ' siStatusDotGreen' : ' siStatusDotGray'}`} aria-hidden="true" />
-          {systemStatus === 'healthy' ? 'All Systems Operational' : systemStatus === 'checking' ? 'Checking status... : 'System status unavailable'}
+          {systemStatus === "healthy" ? "All Systems Operational" : systemStatus === "checking" ? "Checking status..." : "System status unavailable"}
         </div>
       </footer>
     </div>
