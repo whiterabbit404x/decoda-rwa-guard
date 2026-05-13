@@ -1,5 +1,7 @@
-import { redirect } from 'next/navigation';
+﻿import { redirect } from 'next/navigation';
 
-export default function ResiliencePageRedirect() {
+export const dynamic = 'force-dynamic';
+
+export default function ResiliencePage() {
   redirect('/system-health');
 }
