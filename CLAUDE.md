@@ -1,45 +1,42 @@
-# CLAUDE.md — Decoda RWA Guard
+# Decoda RWA Guard - Claude Code Instructions
 
 ## 1. Product identity
 
-- Decoda RWA Guard is a B2B SaaS platform for monitoring tokenized real-world assets (RWAs).
-- The product must feel like a serious production SaaS product, not a mock demo dashboard.
-- Customer-facing UI must clearly distinguish:
-  - live data
-  - simulator data
-  - unavailable data
-  - no data
+- This is Decoda RWA Guard, a B2B SaaS for monitoring tokenized real-world assets.
+- The app must feel like a production SaaS product, not a mock demo.
+- Customer-facing UI must distinguish live data, simulator data, unavailable data, and no data.
 
 ## 2. SaaS workflow
 
-The product workflow should remain aligned with this production SaaS path:
+The canonical product workflow is:
 
-1. Signup/login
-2. Workspace
-3. Onboarding
-4. Asset registry
-5. Monitoring target/system
-6. Monitoring config
-7. Runtime status
-8. Telemetry
-9. Detection
-10. Alert
-11. Incident
-12. Response action
-13. Evidence/export/audit
-
-Do not skip core workflow steps by replacing them with static demo screens.
+Signup/login
+→ Workspace
+→ Onboarding
+→ Asset registry
+→ Monitoring target/system
+→ Monitoring config
+→ Runtime status
+→ Telemetry
+→ Detection
+→ Alert
+→ Incident
+→ Response action
+→ Evidence/export/audit
 
 ## 3. Truthfulness rules
 
 - No data must not be shown as safe.
 - No alert must not be shown as healthy.
-- Simulator or fallback data must never be presented as customer evidence.
+- Simulator/fallback data must never be presented as customer evidence.
 - Runtime status must be derived from canonical backend facts.
-- Heartbeat, poll, and telemetry must be treated separately:
-  - heartbeat proves the worker/service is alive
-  - poll proves the monitoring loop ran
-  - telemetry proves monitored data actually arrived
+- Heartbeat, poll, and telemetry must be treated separately.
+- Heartbeat proves the worker is alive.
+- Poll proves the monitoring loop ran.
+- Telemetry proves monitored data actually arrived.
+- Do not claim live monitoring is healthy when reporting systems are zero.
+- Do not claim telemetry is current when telemetry is missing or stale.
+- Do not show simulator data as live customer evidence.
 
 ## 4. Architecture rules
 
@@ -47,24 +44,23 @@ Do not skip core workflow steps by replacing them with static demo screens.
 - Do not introduce unscoped cross-tenant queries.
 - Do not add random mock data to production UI.
 - Prefer existing backend endpoints and shared runtime summary builders.
-- Use canonical runtime/status facts where available instead of inventing frontend-only status.
 - Add tests for any behavior change.
+- Preserve the asset → target → monitoring config → telemetry → detection → alert → incident → action → export workflow.
+- Keep customer-facing status labels truthful and fail-closed.
 
 ## 5. Implementation style
 
 - Keep changes small.
 - Avoid large rewrites.
-- Preserve existing route names unless a route change is clearly necessary.
+- Preserve existing route names unless necessary.
 - Run relevant tests before final response.
-- End implementation responses by summarizing:
-  - changed files
-  - tests run
-  - pass/fail result
-  - remaining risks
+- End by summarizing changed files and remaining risks.
+- If a session is audit-only, do not modify application code.
+- If the task is unclear, make a minimal safe improvement and explain the limitation.
 
 ## 6. 403 / permission fallback
 
-If a push, PR creation, or remote write fails with a 403, permission error, push denied, Resource not accessible by integration, or failed to push some refs:
+If a push, PR creation, or remote write fails with a 403, permission error, push denied, "Resource not accessible by integration", or "failed to push some refs":
 
 1. Stop trying to push.
 2. Do not retry.
