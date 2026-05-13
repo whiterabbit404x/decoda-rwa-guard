@@ -2364,3 +2364,63 @@ td .tableMeta {
     background-position: -200% 50%;
   }
 }
+
+.fourColumnSection {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.statusCallout {
+  margin-top: 1.25rem;
+  padding: 1rem;
+  border-radius: 0.85rem;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.48);
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.healthIcon {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.healthIconLive {
+  color: #7ff0b4;
+  background: rgba(70, 196, 140, 0.16);
+  border: 1px solid rgba(70, 196, 140, 0.32);
+}
+
+.healthIconDegraded {
+  color: #ffd280;
+  background: rgba(251, 191, 36, 0.14);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+.healthIconOffline {
+  color: #ffb3b3;
+  background: rgba(248, 81, 73, 0.14);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}
+
+@media (max-width: 900px) {
+  .fourColumnSection {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 540px) {
+  .fourColumnSection {
+    grid-template-columns: 1fr;
+  }
+}

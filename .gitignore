@@ -22,3 +22,4 @@ contracts/core/cache/
 .env.local
 test-results/
 playwright-report/
+*.tsbuildinfo
