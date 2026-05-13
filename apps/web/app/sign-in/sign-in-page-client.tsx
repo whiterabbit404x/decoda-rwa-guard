@@ -141,15 +141,16 @@ function DiagnosticsExpanded({
   const fmt = (value: string | null | undefined) => (value && String(value).trim() ? value : 'unavailable');
 
   const diagRows = [
-    ['Environment', buildLoading ? 'loading... : fmt(buildInfo?.vercelEnv)],
-    ['Host', buildLoading ? 'loading... : fmt(buildInfo?.host)],
-    ['Branch', buildLoading ? 'loading... : fmt(buildInfo?.branch)],
-    ['Short commit SHA', buildLoading ? 'loading... : fmt(buildInfo?.shortCommitSha ?? buildInfo?.commitSha)],
-    ['Auth mode', buildLoading ? 'loading... : fmt(buildInfo?.authMode)],
-    ['API URL source', loading ? 'loading... : maskApiUrl(runtimeConfig.apiUrl)],
-    ['Live mode', loading ? 'loading... : runtimeConfig.liveModeEnabled ? 'enabled' : 'disabled'],
-    ['API timeout', loading ? 'loading... : runtimeConfig.apiTimeoutMs ? `${runtimeConfig.apiTimeoutMs}ms` : 'default'],
-    ['Config source', loading ? 'loading... : formatConfigSource(runtimeConfig.source)],
+  const diagRows = [
+    ['Environment', buildLoading ? 'loading...' : fmt(buildInfo?.vercelEnv)],
+    ['Host', buildLoading ? 'loading...' : fmt(buildInfo?.host)],
+    ['Branch', buildLoading ? 'loading...' : fmt(buildInfo?.branch)],
+    ['Short commit SHA', buildLoading ? 'loading...' : fmt(buildInfo?.shortCommitSha ?? buildInfo?.commitSha)],
+    ['Auth mode', buildLoading ? 'loading...' : fmt(buildInfo?.authMode)],
+    ['API URL source', loading ? 'loading...' : maskApiUrl(runtimeConfig.apiUrl)],
+    ['Live mode', loading ? 'loading...' : (runtimeConfig.liveModeEnabled ? 'enabled' : 'disabled')],
+    ['API timeout', loading ? 'loading...' : (runtimeConfig.apiTimeoutMs ? `${runtimeConfig.apiTimeoutMs}ms` : 'default')],
+    ['Config source', loading ? 'loading...' : formatConfigSource(runtimeConfig.source)],
   ] as const;
 
   return (
