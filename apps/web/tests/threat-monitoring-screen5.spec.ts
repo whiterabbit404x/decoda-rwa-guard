@@ -1,5 +1,5 @@
 /**
- * Screen 5 â€“ Threat Monitoring contract tests.
+ * Screen 5 â€?Threat Monitoring contract tests.
  * Source-level: reads .tsx files and asserts on string/structural presence.
  * No browser required.
  */
@@ -265,4 +265,18 @@ test('Generate Simulator Signal CTA is gated on isSimulatorMode', () => {
 test('page.tsx does not reference contradiction_flags', () => {
   const src = appSource('(product)/threat/page.tsx');
   expect(src).not.toContain('contradiction_flags');
+});
+
+// 19. Simulator mode changes "operational" claim text
+test('"All pipeline stages" message is gated on isSimulatorMode', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  // Simulator mode must show "simulator mode" qualifier, not "operational" claim
+  expect(panel).toContain('isSimulatorMode');
+  expect(panel).toContain('All pipeline stages are active (simulator mode)');
+  expect(panel).toContain('All pipeline stages are operational');
+  // The conditional must appear before the operational copy
+  const simModeIdx = panel.indexOf("'All pipeline stages are active (simulator mode)");
+  const operationalIdx = panel.indexOf("'All pipeline stages are operational");
+  expect(simModeIdx).toBeGreaterThan(-1);
+  expect(operationalIdx).toBeGreaterThan(-1);
 });

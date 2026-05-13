@@ -297,7 +297,7 @@ export default function ThreatMonitoringPanel() {
         ctaLabel: 'Check Worker Status',
       };
     }
-    // Case E â€” only show simulator CTA if simulator mode is enabled
+    // Case E â€?only show simulator CTA if simulator mode is enabled
     if (!telemetryOk) {
       return {
         title: 'Worker is reporting, but no telemetry event has been received yet.',
@@ -329,7 +329,7 @@ export default function ThreatMonitoringPanel() {
     return null;
   }
 
-  // Metric: data freshness â€” do not show live telemetry when last_telemetry_at is unavailable
+  // Metric: data freshness â€?do not show live telemetry when last_telemetry_at is unavailable
   function freshnessLabel(): string {
     if (!lastTelemetryAt) return 'No telemetry';
     return fmt(lastTelemetryAt);
@@ -361,17 +361,17 @@ export default function ThreatMonitoringPanel() {
       >
         <MetricTile
           label="Telemetry Events"
-          value={runtimeLoading || dataLoading ? 'â€¦' : String(telemetry.length)}
+          value={runtimeLoading || dataLoading ? 'â€? : String(telemetry.length)}
           meta={lastTelemetryAt ? fmt(lastTelemetryAt) : 'No events'}
         />
         <MetricTile
           label="Detections"
-          value={runtimeLoading || dataLoading ? 'â€¦' : String(detections.length)}
+          value={runtimeLoading || dataLoading ? 'â€? : String(detections.length)}
           meta={lastDetectionAt ? fmt(lastDetectionAt) : 'No detections'}
         />
         <MetricTile
           label="Anomalies"
-          value={runtimeLoading || dataLoading ? 'â€¦' : String(anomalies.length)}
+          value={runtimeLoading || dataLoading ? 'â€? : String(anomalies.length)}
           meta={anomalies.length > 0 ? 'Active' : 'None detected'}
         />
         <MetricTile
@@ -512,11 +512,11 @@ export default function ThreatMonitoringPanel() {
             </article>
           </div>
 
-          {/* Pipeline status â€” full-width compact chain */}
+          {/* Pipeline status â€?full-width compact chain */}
           <article className="dataCard" aria-label="Pipeline Status" style={{ marginBottom: '1rem' }}>
             <p className="sectionEyebrow">
-              Runtime Chain â€” Asset â†’ Target â†’ System â†’ Heartbeat â†’ Poll â†’ Telemetry â†’ Detection â†’
-              Alert â†’ Incident
+              Runtime Chain â€?Asset â†?Target â†?System â†?Heartbeat â†?Poll â†?Telemetry â†?Detection â†?
+              Alert â†?Incident
             </p>
             <div
               style={{
@@ -558,7 +558,7 @@ export default function ThreatMonitoringPanel() {
                           userSelect: 'none',
                         }}
                       >
-                        â†’
+                        â†?
                       </span>
                     ) : null}
                   </div>
@@ -595,7 +595,9 @@ export default function ThreatMonitoringPanel() {
                 Next Required Action
               </p>
               <p className="muted">
-                All pipeline stages are operational. Review detections and respond to active alerts.
+                {isSimulatorMode
+                  ? 'All pipeline stages are active (simulator mode). Review simulated detections and signals.'
+                  : 'All pipeline stages are operational. Review detections and respond to active alerts.'}
               </p>
             </article>
           )}
@@ -607,7 +609,7 @@ export default function ThreatMonitoringPanel() {
         <div role="tabpanel" aria-label="Telemetry">
           {dataLoading ? (
             <p className="muted" style={{ padding: '2rem 0' }}>
-              Loading telemetryâ€¦
+              Loading telemetryâ€?
             </p>
           ) : telemetry.length === 0 ? (
             <EmptyStateBlocker
@@ -655,7 +657,7 @@ export default function ThreatMonitoringPanel() {
         <div role="tabpanel" aria-label="Detections">
           {dataLoading ? (
             <p className="muted" style={{ padding: '2rem 0' }}>
-              Loading detectionsâ€¦
+              Loading detectionsâ€?
             </p>
           ) : detections.length === 0 ? (
             <EmptyStateBlocker
@@ -709,7 +711,7 @@ export default function ThreatMonitoringPanel() {
         <div role="tabpanel" aria-label="Anomalies">
           {dataLoading ? (
             <p className="muted" style={{ padding: '2rem 0' }}>
-              Loading anomaliesâ€¦
+              Loading anomaliesâ€?
             </p>
           ) : anomalies.length === 0 ? (
             <EmptyStateBlocker

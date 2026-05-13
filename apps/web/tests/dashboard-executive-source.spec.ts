@@ -16,7 +16,7 @@ function readSource(filePath: string): string {
   return fs.readFileSync(filePath, 'utf8');
 }
 
-test.describe('Dashboard Executive Summary – source-level contracts', () => {
+test.describe('Dashboard Executive Summary �?source-level contracts', () => {
   test('dashboard route renders DashboardExecutiveSummary via hydrator', () => {
     const hydrator = readSource(HYDRATOR_PATH);
     expect(hydrator).toContain("import DashboardExecutiveSummary from './dashboard-executive-summary'");
@@ -132,15 +132,22 @@ test.describe('Dashboard Executive Summary – source-level contracts', () => {
     expect(source).toContain('No incidents yet because no detection has been generated');
   });
 
-  test('simulator alerts are labeled Simulator not live', () => {
+  test('fallback alerts are labeled Unavailable not Simulator', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
     expect(source).toContain("alert.source === 'fallback'");
-    expect(source).toContain('label="Simulator"');
+    expect(source).toContain('label="Unavailable"');
+    // fallback !== simulator; pill must not mislabel fallback data as Simulator
+    const fallbackAlertIdx = source.indexOf("alert.source === 'fallback'");
+    const unavailablePillIdx = source.indexOf('label="Unavailable"');
+    expect(fallbackAlertIdx).toBeGreaterThan(-1);
+    expect(unavailablePillIdx).toBeGreaterThan(-1);
   });
 
-  test('simulator incidents are labeled Simulator not live', () => {
+  test('fallback incidents are labeled Unavailable not Simulator', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
     expect(source).toContain("incident.source === 'fallback'");
+    // fallback incidents must also use Unavailable pill
+    expect(source).toContain('label="Unavailable"');
   });
 
   test('defensive helpers are present and invoked with explicit fallback handling', () => {
@@ -194,13 +201,27 @@ test.describe('Dashboard Executive Summary – source-level contracts', () => {
     expect(source).toContain('isSimulator');
     expect(source).toContain("alert.source === 'fallback'");
     expect(source).toContain("incident.source === 'fallback'");
+    // simulator evidence label still present for safeEvidenceLabel derivation
     expect(source).toContain("'Simulator'");
     expect(source).toContain("'Live provider'");
+    // fallback source pills must use Unavailable, not Simulator
+    expect(source).toContain('label="Unavailable"');
     const simCheck = source.indexOf('isSimulator');
     const liveLabel = source.indexOf("'Live provider'");
     expect(simCheck).toBeGreaterThan(-1);
     expect(liveLabel).toBeGreaterThan(-1);
     expect(simCheck).toBeLessThan(liveLabel);
+  });
+
+  test('healthProvable excludes simulator evidence source', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain("monitoringTruth.evidence_source_summary !== 'simulator'");
+    const healthProvableIdx = source.indexOf('const healthProvable');
+    const simGuardIdx = source.indexOf("evidence_source_summary !== 'simulator'");
+    expect(healthProvableIdx).toBeGreaterThan(-1);
+    expect(simGuardIdx).toBeGreaterThan(-1);
+    // simulator guard must be part of healthProvable assignment
+    expect(simGuardIdx).toBeGreaterThan(healthProvableIdx);
   });
 
   test('runtime null arrays remain guarded for active_alerts and latest_incidents', () => {

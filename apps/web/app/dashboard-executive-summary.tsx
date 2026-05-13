@@ -124,7 +124,8 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
 
   const healthProvable =
     monitoringHealthyCopyAllowed(monitoringTruth) &&
-    monitoringTruth.monitoring_status === 'live';
+    monitoringTruth.monitoring_status === 'live' &&
+    monitoringTruth.evidence_source_summary !== 'simulator';
 
   const systemHealthLabel = healthProvable
     ? 'Healthy'
@@ -182,7 +183,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
       <div className="execMetricRow">
         <ExecMetricCard
           label="Protected Assets"
-          value={loading ? 'â€”' : String(protectedAssetsCount)}
+          value={loading ? 'â€? : String(protectedAssetsCount)}
           meta={
             protectedAssetsCount > 0
               ? `${protectedAssetsCount} registered`
@@ -191,7 +192,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
         <ExecMetricCard
           label="Monitored Systems"
-          value={loading ? 'â€”' : String(monitoredSystemsCount)}
+          value={loading ? 'â€? : String(monitoredSystemsCount)}
           meta={
             monitoredSystemsCount > 0
               ? `${reportingSystemsCount} reporting`
@@ -200,7 +201,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
         <ExecMetricCard
           label="Active Alerts"
-          value={loading ? 'â€”' : String(activeAlertsCount)}
+          value={loading ? 'â€? : String(activeAlertsCount)}
           meta={
             activeAlertsCount > 0 ? 'Requires attention' : 'All clear'
           }
@@ -208,7 +209,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
         <ExecMetricCard
           label="Open Incidents"
-          value={loading ? 'â€”' : String(activeIncidentsCount)}
+          value={loading ? 'â€? : String(activeIncidentsCount)}
           meta={
             activeIncidentsCount > 0
               ? 'Under investigation'
@@ -395,7 +396,7 @@ function RiskOverviewCard({
           ) : null}
           <div className="execChartPlaceholder">
             <p className="muted" style={{ textAlign: 'center', fontSize: '0.82rem' }}>
-              Risk timeline â€” connect live telemetry to populate chart
+              Risk timeline â€?connect live telemetry to populate chart
             </p>
           </div>
         </div>
@@ -459,7 +460,7 @@ function RecentAlertsCard({
                   variant={statusVariantFromStatus(alert.action)}
                 />
                 {alert.source === 'fallback' ? (
-                  <StatusPill label="Simulator" variant="info" />
+                  <StatusPill label="Unavailable" variant="warning" />
                 ) : null}
               </div>
             </div>
@@ -521,7 +522,7 @@ function RecentIncidentsCard({
                   variant={statusVariantFromStatus(incident.status)}
                 />
                 {incident.source === 'fallback' ? (
-                  <StatusPill label="Simulator" variant="info" />
+                  <StatusPill label="Unavailable" variant="warning" />
                 ) : null}
               </div>
             </div>
