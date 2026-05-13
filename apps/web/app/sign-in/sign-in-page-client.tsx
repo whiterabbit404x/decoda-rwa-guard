@@ -446,7 +446,7 @@ export default function SignInPageClient({
                         value={password}
                         onChange={(event) => setPassword(event.target.value)}
                         autoComplete="current-password"
- placeholder=************
+ placeholder="************"
                       />
                       <button
                         type="button"
@@ -555,6 +555,7 @@ export default function SignInPageClient({
     </div>
   );
 }
+
 
 
 
