@@ -141,7 +141,6 @@ function DiagnosticsExpanded({
   const fmt = (value: string | null | undefined) => (value && String(value).trim() ? value : 'unavailable');
 
   const diagRows = [
-  const diagRows = [
     ['Environment', buildLoading ? 'loading...' : fmt(buildInfo?.vercelEnv)],
     ['Host', buildLoading ? 'loading...' : fmt(buildInfo?.host)],
     ['Branch', buildLoading ? 'loading...' : fmt(buildInfo?.branch)],
@@ -557,4 +556,5 @@ export default function SignInPageClient({
     </div>
   );
 }
+
 
