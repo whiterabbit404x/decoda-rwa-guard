@@ -521,7 +521,7 @@ export default function SignInPageClient({
                 aria-controls="si-diag-content"
               >
                 {showDiag ? 'Hide details' : 'Show details'}
-                <span className="siDiagChevron" aria-hidden="true">{showDiag ? '鈭? : '鈭?}</span>
+                <span className="siDiagChevron aria-hidden=true>{showDiag ? '^' : 'v'}</span>
               </button>
             </div>
 
