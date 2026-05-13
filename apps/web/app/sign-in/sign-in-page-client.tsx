@@ -391,7 +391,7 @@ export default function SignInPageClient({
                   <p className="siMuted">Enter a 6-digit authenticator code or one unused recovery code.</p>
 
                   <button type="submit" className="siSubmitBtn" disabled={loading || !mfaChallengeToken} aria-busy={loading}>
-                    {loading ? 'Verifying鈥? : 'Complete sign in'}
+                    {loading ? 'Verifying...' : 'Complete sign in'}
                   </button>
 
                   <button
@@ -488,7 +488,7 @@ export default function SignInPageClient({
                   ) : null}
 
                   <button type="submit" className="siSubmitBtn" disabled={formState.submitDisabled} aria-busy={loading}>
-                    {loading ? 'Signing in鈥? : 'Sign in'}
+                    {loading ? 'Signing in... : 'Sign in'}
                   </button>
 
                   <p className="siAccountRow">
@@ -550,11 +550,13 @@ export default function SignInPageClient({
           aria-label={systemStatus === 'healthy' ? 'All Systems Operational' : 'System status unavailable'}
         >
           <span className={`siStatusDot${systemStatus === 'healthy' ? ' siStatusDotGreen' : ' siStatusDotGray'}`} aria-hidden="true" />
-          {systemStatus === 'healthy' ? 'All Systems Operational' : systemStatus === 'checking' ? 'Checking status鈥? : 'System status unavailable'}
+          {systemStatus === 'healthy' ? 'All Systems Operational' : systemStatus === 'checking' ? 'Checking status... : 'System status unavailable'}
         </div>
       </footer>
     </div>
   );
 }
+
+
 
 
