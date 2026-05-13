@@ -1,4 +1,4 @@
-﻿import Link from 'next/link';
+import Link from 'next/link';
 import { normalizeMonitoringPresentation } from '../../monitoring-status-presentation';
 import RuntimeSummaryPanel from '../../runtime-summary-panel';
 import { fetchDashboardPageData } from '../../dashboard-data';
@@ -471,7 +471,7 @@ export default async function SystemHealthPage() {
 
           <div className="statusCallout">
             <div className={isOperational ? 'healthIcon healthIconLive' : isOffline ? 'healthIcon healthIconOffline' : 'healthIcon healthIconDegraded'}>
-              {isOperational ? '鉁? : isOffline ? '脳' : '!'}
+              {isOperational ? 'OK' : isOffline ? 'X' : '!'}
             </div>
             <div>
               <strong>{isOperational ? 'All Systems Operational' : isOffline ? 'System health unavailable' : 'System Degraded'}</strong>
@@ -561,7 +561,7 @@ export default async function SystemHealthPage() {
             <h2>Provider Health</h2>
           </div>
           <Link href="/integrations" style={{ fontSize: '0.85rem', color: '#6aa9ff', textDecoration: 'none' }}>
-            View Integrations 鈫?          </Link>
+            View Integrations �?          </Link>
         </div>
         <div className="tableWrap">
           <table>
