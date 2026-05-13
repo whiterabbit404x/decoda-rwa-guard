@@ -1052,7 +1052,7 @@ td .tableMeta {
 }
 
 .resourcesList li a::before {
-  content: '鈫?;
+  content: "";
   font-size: 0.8rem;
   opacity: 0.65;
 }
@@ -2613,7 +2613,7 @@ td .tableMeta {
 }
 
 .siBrandDecor::after {
-  content: '';
+  content: "";
   position: absolute;
   inset: 0;
   background: radial-gradient(ellipse at 50% 120%, rgba(59, 130, 246, 0.18), transparent 70%);
