@@ -16,7 +16,7 @@ function readSource(filePath: string): string {
   return fs.readFileSync(filePath, 'utf8');
 }
 
-test.describe('Dashboard Executive Summary â€?source-level contracts', () => {
+test.describe('Dashboard Executive Summary éˆ¥?source-level contracts', () => {
   test('dashboard route renders DashboardExecutiveSummary via hydrator', () => {
     const hydrator = readSource(HYDRATOR_PATH);
     expect(hydrator).toContain("import DashboardExecutiveSummary from './dashboard-executive-summary'");
