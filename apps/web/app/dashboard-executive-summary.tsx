@@ -171,7 +171,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
 
   return (
     <main className="container productPage dashboardExecPage">
-      {/* 鈹€鈹€ Page header 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
+      {/* 閳光偓閳光偓 Page header 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓 */}
       <div className="dashboardPageHeader">
         <h1 className="dashboardPageTitle">Dashboard</h1>
         <p className="dashboardPageSubtitle">
@@ -179,11 +179,11 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         </p>
       </div>
 
-      {/* 鈹€鈹€ Top metric row 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
+      {/* 閳光偓閳光偓 Top metric row 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓 */}
       <div className="execMetricRow">
         <ExecMetricCard
           label="Protected Assets"
-          value={loading ? '鈥? : String(protectedAssetsCount)}
+          value={loading ? '-' : String(protectedAssetsCount)}
           meta={
             protectedAssetsCount > 0
               ? `${protectedAssetsCount} registered`
@@ -192,7 +192,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
         <ExecMetricCard
           label="Monitored Systems"
-          value={loading ? '鈥? : String(monitoredSystemsCount)}
+          value={loading ? '閳? : String(monitoredSystemsCount)}
           meta={
             monitoredSystemsCount > 0
               ? `${reportingSystemsCount} reporting`
@@ -201,7 +201,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
         <ExecMetricCard
           label="Active Alerts"
-          value={loading ? '鈥? : String(activeAlertsCount)}
+          value={loading ? '閳? : String(activeAlertsCount)}
           meta={
             activeAlertsCount > 0 ? 'Requires attention' : 'All clear'
           }
@@ -209,7 +209,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
         <ExecMetricCard
           label="Open Incidents"
-          value={loading ? '鈥? : String(activeIncidentsCount)}
+          value={loading ? '閳? : String(activeIncidentsCount)}
           meta={
             activeIncidentsCount > 0
               ? 'Under investigation'
@@ -225,7 +225,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
       </div>
 
-      {/* 鈹€鈹€ Main grid: Risk Overview + Recent Alerts 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
+      {/* 閳光偓閳光偓 Main grid: Risk Overview + Recent Alerts 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓 */}
       <div className="execMainGrid">
         <RiskOverviewCard
           telemetryAvailable={telemetryAvailable}
@@ -241,7 +241,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
       </div>
 
-      {/* 鈹€鈹€ Bottom grid: Recent Incidents + System Health 鈹€鈹€鈹€鈹€ */}
+      {/* 閳光偓閳光偓 Bottom grid: Recent Incidents + System Health 閳光偓閳光偓閳光偓閳光偓 */}
       <div className="execBottomGrid">
         <RecentIncidentsCard
           incidents={recentIncidents}
@@ -257,7 +257,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
       </div>
 
-      {/* 鈹€鈹€ Next Required Action 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
+      {/* 閳光偓閳光偓 Next Required Action 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓 */}
       <NextRequiredActionCard
         nextActionLabel={nextActionLabel}
         nextActionRoute={nextActionRoute}
@@ -269,7 +269,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
   );
 }
 
-/* 鈹€鈹€ Sub-components 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* 閳光偓閳光偓 Sub-components 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓 */
 
 function ExecMetricCard({
   label,
@@ -396,7 +396,7 @@ function RiskOverviewCard({
           ) : null}
           <div className="execChartPlaceholder">
             <p className="muted" style={{ textAlign: 'center', fontSize: '0.82rem' }}>
-              Risk timeline 鈥?connect live telemetry to populate chart
+              Risk timeline 閳?connect live telemetry to populate chart
             </p>
           </div>
         </div>
