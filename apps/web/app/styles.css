@@ -1,4 +1,4 @@
-/* ─── Design tokens ─────────────────────────────────────────────── */
+﻿/* 鈹€鈹€鈹€ Design tokens 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 :root {
   color-scheme: dark;
   font-family: Inter, system-ui, Arial, sans-serif;
@@ -911,7 +911,7 @@ td .tableMeta {
   border-color: rgba(143, 155, 179, 0.26);
 }
 
-/* ─── Onboarding / Getting Started ──────────────────────────── */
+/* 鈹€鈹€鈹€ Onboarding / Getting Started 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 .onboardingHeader {
   margin-bottom: 2rem;
 }
@@ -1052,7 +1052,7 @@ td .tableMeta {
 }
 
 .resourcesList li a::before {
-  content: '→';
+  content: "";
   font-size: 0.8rem;
   opacity: 0.65;
 }
@@ -1076,7 +1076,7 @@ td .tableMeta {
   }
 }
 
-/* ─── App shell frame ────────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ App shell frame 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 .appShellFrame {
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
@@ -1279,7 +1279,7 @@ td .tableMeta {
   white-space: nowrap;
 }
 
-/* ─── Sidebar divider ──────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Sidebar divider 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 .sidebarDivider {
   height: 1px;
   background: var(--border);
@@ -1749,7 +1749,7 @@ td .tableMeta {
   background: rgba(54, 95, 145, 0.35);
 }
 
-/* ─── Top header bar ─────────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Top header bar 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 .shellHeaderBar {
   display: flex;
   align-items: center;
@@ -1847,7 +1847,7 @@ td .tableMeta {
   flex-shrink: 0;
 }
 
-/* ─── Runtime banner ─────────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Runtime banner 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 .runtimeBanner {
   position: relative;
   z-index: 1;
@@ -1899,7 +1899,7 @@ td .tableMeta {
 .runtimeBannerStale { border-top-color: var(--warning-bdr); }
 .runtimeBannerDead  { border-top-color: var(--danger-bdr);  }
 
-/* ─── Status pills (shared) ─────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Status pills (shared) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 .pill-success {
   background: var(--success-bg);
   color: var(--success-fg);
@@ -1930,7 +1930,7 @@ td .tableMeta {
   border-color: rgba(99, 110, 123, 0.3);
 }
 
-/* ─── Buttons ────────────────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Buttons 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -1992,7 +1992,7 @@ td .tableMeta {
   background: rgba(239, 68, 68, 0.22);
 }
 
-/* ─── Cards ──────────────────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Cards 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 .card-shell {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -2000,14 +2000,14 @@ td .tableMeta {
   padding: 1rem;
 }
 
-/* ─── Compact table ──────────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Compact table 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 .tableCompact th,
 .tableCompact td {
   padding: 0.6rem 0.85rem;
   font-size: 0.82rem;
 }
 
-/* ─── Dashboard Executive Summary (Screen 2) ────────────────────── */
+/* 鈹€鈹€鈹€ Dashboard Executive Summary (Screen 2) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 .dashboardExecPage {
   display: flex;
@@ -2315,7 +2315,7 @@ td .tableMeta {
 
 .execNextActionCta { flex-shrink: 0; }
 
-/* ─── Responsive sidebar ─────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Responsive sidebar 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 @media (max-width: 1100px) {
   .appShellFrame {
     grid-template-columns: 1fr;
@@ -2424,3 +2424,677 @@ td .tableMeta {
     grid-template-columns: 1fr;
   }
 }
+
+/* === SIGN IN SAAS REDESIGN START === */
+.siPage {
+  min-height: 100vh;
+  background: #070b14;
+  display: flex;
+  flex-direction: column;
+}
+
+.siWrapper {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2.5rem 1.5rem;
+}
+
+.siContainer {
+  width: 100%;
+  max-width: 1120px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.siOuter {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid rgba(106, 169, 255, 0.13);
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(106, 169, 255, 0.04);
+}
+
+.siBrand {
+  background: linear-gradient(160deg, #0b1829 0%, #060c16 100%);
+  padding: 2.5rem;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  position: relative;
+  overflow: hidden;
+}
+
+.siBrandInner {
+  flex: 1;
+}
+
+.siLogoHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+}
+
+.siLogoIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  flex-shrink: 0;
+}
+
+.siLogoText {
+  display: flex;
+  flex-direction: column;
+  line-height: 1;
+}
+
+.siLogoName {
+  font-size: 1.1rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: #e6edf3;
+}
+
+.siLogoSub {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  color: #3b82f6;
+  margin-top: 0.15rem;
+}
+
+.siBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(59, 130, 246, 0.38);
+  background: rgba(59, 130, 246, 0.1);
+  color: #93c5fd;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 1.5rem;
+}
+
+.siHeadline {
+  font-size: clamp(1.5rem, 2.5vw, 2rem);
+  font-weight: 800;
+  line-height: 1.18;
+  color: #f0f6fc;
+  margin: 0 0 1rem;
+  letter-spacing: -0.02em;
+}
+
+.siLede {
+  font-size: 0.925rem;
+  line-height: 1.65;
+  color: #8b949e;
+  margin: 0 0 2rem;
+  max-width: 38ch;
+}
+
+.siFeatures {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1rem;
+}
+
+.siFeatureItem {
+  display: flex;
+  gap: 0.85rem;
+  align-items: flex-start;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.siFeatureItem:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.siFeatureIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+  flex-shrink: 0;
+}
+
+.siFeatureTitle {
+  margin: 0 0 0.2rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.siFeatureDesc {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #8b949e;
+  line-height: 1.5;
+}
+
+.siBrandFooter {
+  margin-top: 2rem;
+  position: relative;
+}
+
+.siBrandDecor {
+  height: 90px;
+  margin-bottom: 1.25rem;
+  background:
+    linear-gradient(0deg, rgba(59, 130, 246, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(59, 130, 246, 0.06) 1px, transparent 1px),
+    linear-gradient(180deg, transparent 60%, rgba(6, 12, 22, 0.98) 100%);
+  background-size: 24px 24px, 24px 24px, 100% 100%;
+  border-radius: 8px;
+  border: 1px solid rgba(59, 130, 246, 0.1);
+  overflow: hidden;
+  position: relative;
+}
+
+.siBrandDecor::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 120%, rgba(59, 130, 246, 0.18), transparent 70%);
+}
+
+.siTrustLine {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  color: #6e7e8f;
+  margin: 0;
+}
+
+.siFormPanel {
+  background: #0e1625;
+  padding: 2.75rem 2.5rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.siNextPath {
+  margin: 0 0 1rem;
+  font-size: 0.875rem;
+  color: #8b949e;
+}
+
+.siFormTitle {
+  margin: 0 0 0.3rem;
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #f0f6fc;
+  letter-spacing: -0.02em;
+}
+
+.siFormSubtitle {
+  margin: 0 0 1.75rem;
+  font-size: 0.925rem;
+  color: #8b949e;
+}
+
+.siFormGroup {
+  margin-bottom: 1.1rem;
+}
+
+.siLabel {
+  display: block;
+  margin-bottom: 0.45rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #c9d1d9;
+}
+
+.siInputWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.siInputIcon {
+  position: absolute;
+  left: 0.9rem;
+  color: #5a6478;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.siInput {
+  width: 100%;
+  padding: 0.7rem 0.9rem;
+  background: #0d1422;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  color: #e6edf3;
+  font: inherit;
+  font-size: 0.925rem;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.siInput::placeholder {
+  color: #3d4d5f;
+}
+
+.siInput:focus {
+  outline: none;
+  border-color: rgba(59, 130, 246, 0.55);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+
+.siInputWithIcon {
+  padding-left: 2.6rem;
+}
+
+.siInputWithToggle {
+  padding-right: 2.8rem;
+}
+
+.siPasswordToggle {
+  position: absolute;
+  right: 0.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: #5a6478;
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+
+.siPasswordToggle:hover {
+  color: #93c5fd;
+}
+
+.siCheckRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+
+.siCheckLabel {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: #c9d1d9;
+  cursor: pointer;
+}
+
+.siCheckbox {
+  width: 16px;
+  height: 16px;
+  accent-color: #3b82f6;
+  cursor: pointer;
+}
+
+.siLink {
+  color: #3b82f6;
+  text-decoration: none;
+  font-size: 0.875rem;
+  transition: color 0.15s;
+}
+
+.siLink:hover {
+  color: #60a5fa;
+  text-decoration: underline;
+}
+
+.siAlert {
+  padding: 0.65rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+
+.siAlertError {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  color: #fca5a5;
+}
+
+.siAlertWarn {
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  color: #fde68a;
+}
+
+.siSubmitBtn {
+  width: 100%;
+  padding: 0.8rem 1rem;
+  border-radius: 10px;
+  border: none;
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: #fff;
+  font: inherit;
+  font-size: 0.975rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, box-shadow 0.15s;
+  box-shadow: 0 4px 16px rgba(37, 99, 235, 0.35);
+  margin-bottom: 1.25rem;
+}
+
+.siSubmitBtn:hover:not(:disabled) {
+  box-shadow: 0 6px 22px rgba(37, 99, 235, 0.55);
+  opacity: 0.93;
+}
+
+.siSubmitBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.siSecondaryBtn {
+  width: 100%;
+  padding: 0.7rem 1rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: #8b949e;
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  margin-top: 0.75rem;
+}
+
+.siSecondaryBtn:hover:not(:disabled) {
+  color: #c9d1d9;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.siAccountRow {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #8b949e;
+  text-align: center;
+}
+
+.siMuted {
+  font-size: 0.8rem;
+  color: #5a6478;
+  margin-bottom: 1rem;
+}
+
+.siDiagCard {
+  grid-column: 2;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  background: rgba(14, 22, 37, 0.8);
+  padding: 1rem 1.25rem;
+}
+
+.siDiagHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.siDiagMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.siDiagMetaIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  color: #60a5fa;
+  flex-shrink: 0;
+}
+
+.siDiagTitle {
+  margin: 0 0 0.1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #c9d1d9;
+}
+
+.siDiagSubtitle {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #5a6478;
+}
+
+.siDiagToggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: #8b949e;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.siDiagToggle:hover {
+  color: #c9d1d9;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.siDiagChevron {
+  font-size: 0.65rem;
+}
+
+.siDiagContent {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.siDiagGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.siDiagRow {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.55rem 0.7rem;
+  background: rgba(13, 17, 23, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+}
+
+.siDiagLabel {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #5a6478;
+}
+
+.siDiagValue {
+  font-size: 0.8rem;
+  color: #c9d1d9;
+  word-break: break-all;
+}
+
+.siDiagHealthLink {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.45rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #8b949e;
+  font-size: 0.82rem;
+  text-decoration: none;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.siDiagHealthLink:hover {
+  color: #c9d1d9;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.siFooter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  padding: 1.25rem 2rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.siFooterCopy {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #5a6478;
+}
+
+.siFooterLinks {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.siFooterLink {
+  color: #3b82f6;
+  font-size: 0.8rem;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.siFooterLink:hover {
+  color: #60a5fa;
+  text-decoration: underline;
+}
+
+.siFooterSep {
+  color: #3d4d5f;
+  font-size: 0.75rem;
+}
+
+.siStatusPill {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: #8b949e;
+}
+
+.siStatusDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.siStatusDotGreen {
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
+}
+
+.siStatusDotGray {
+  background: #5a6478;
+}
+
+.siStatusHealthy {
+  color: #c9d1d9;
+}
+
+.siStatusUnknown {
+  color: #8b949e;
+}
+
+@media (max-width: 900px) {
+  .siOuter {
+    grid-template-columns: 1fr;
+  }
+
+  .siBrand {
+    border-right: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    padding: 2rem;
+  }
+
+  .siFeatures,
+  .siBrandDecor {
+    display: none;
+  }
+
+  .siContainer {
+    grid-template-columns: 1fr;
+  }
+
+  .siDiagCard {
+    grid-column: 1;
+  }
+}
+
+@media (max-width: 600px) {
+  .siWrapper {
+    padding: 1rem;
+    align-items: flex-start;
+  }
+
+  .siFormPanel {
+    padding: 1.75rem 1.25rem;
+  }
+
+  .siBrand {
+    padding: 1.5rem 1.25rem;
+  }
+
+  .siLogoHeader {
+    margin-bottom: 1.25rem;
+  }
+
+  .siLede {
+    display: none;
+  }
+
+  .siFooter {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 1rem 1.25rem;
+  }
+}
+/* === SIGN IN SAAS REDESIGN END === */
+
