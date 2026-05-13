@@ -487,7 +487,7 @@ export default function SignInPageClient({
                   ) : null}
 
                   <button type="submit" className="siSubmitBtn" disabled={formState.submitDisabled} aria-busy={loading}>
-                    {loading ? 'Signing in... : 'Sign in'}
+                    {loading ? 'Signing in...' : 'Sign in'}
                   </button>
 
                   <p className="siAccountRow">
@@ -555,6 +555,7 @@ export default function SignInPageClient({
     </div>
   );
 }
+
 
 
 
