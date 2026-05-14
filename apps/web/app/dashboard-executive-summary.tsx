@@ -171,7 +171,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
 
   return (
     <main className="container productPage dashboardExecPage">
-      {/* 闂佸啿鍘滈崑鎾绘煃閸忓浜?Page header 闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸?*/}
+      {/* Page header */}
       <div className="dashboardPageHeader">
         <h1 className="dashboardPageTitle">Dashboard</h1>
         <p className="dashboardPageSubtitle">
@@ -179,7 +179,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         </p>
       </div>
 
-      {/* 闂佸啿鍘滈崑鎾绘煃閸忓浜?Top metric row 闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸?*/}
+      {/* Top metric row */}
       <div className="execMetricRow">
         <ExecMetricCard
           label="Protected Assets"
@@ -225,7 +225,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
       </div>
 
-      {/* 闂佸啿鍘滈崑鎾绘煃閸忓浜?Main grid: Risk Overview + Recent Alerts 闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑?*/}
+      {/* Main grid: Risk Overview + Recent Alerts */}
       <div className="execMainGrid">
         <RiskOverviewCard
           telemetryAvailable={telemetryAvailable}
@@ -241,7 +241,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
       </div>
 
-      {/* 闂佸啿鍘滈崑鎾绘煃閸忓浜?Bottom grid: Recent Incidents + System Health 闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕 */}
+      {/* Bottom grid: Recent Incidents + System Health */}
       <div className="execBottomGrid">
         <RecentIncidentsCard
           incidents={recentIncidents}
@@ -257,7 +257,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
       </div>
 
-      {/* 闂佸啿鍘滈崑鎾绘煃閸忓浜?Next Required Action 闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜?*/}
+      {/* Next Required Action */}
       <NextRequiredActionCard
         nextActionLabel={nextActionLabel}
         nextActionRoute={nextActionRoute}
@@ -269,7 +269,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
   );
 }
 
-/* 闂佸啿鍘滈崑鎾绘煃閸忓浜?Sub-components 闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸?*/
+/* Sub-components */
 
 function ExecMetricCard({
   label,
@@ -396,7 +396,7 @@ function RiskOverviewCard({
           ) : null}
           <div className="execChartPlaceholder">
             <p className="muted" style={{ textAlign: 'center', fontSize: '0.82rem' }}>
-              Risk timeline 闂?connect live telemetry to populate chart
+              Risk timeline →connect live telemetry to populate chart
             </p>
           </div>
         </div>

@@ -561,7 +561,7 @@ export default async function SystemHealthPage() {
             <h2>Provider Health</h2>
           </div>
           <Link href="/integrations" style={{ fontSize: '0.85rem', color: '#6aa9ff', textDecoration: 'none' }}>
-            View Integrations �?          </Link>
+            View Integrations →          </Link>
         </div>
         <div className="tableWrap">
           <table>

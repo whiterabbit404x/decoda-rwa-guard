@@ -290,7 +290,7 @@ export default function MonitoringSourcesPage() {
                     colSpan={TARGET_HEADERS.length}
                     style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}
                   >
-                    Loading targets鈥?                  </td>
+                    Loading targets...                  </td>
                 </tr>
               ) : (
                 targets.map((target) => {
@@ -363,7 +363,7 @@ export default function MonitoringSourcesPage() {
                     colSpan={SYSTEM_HEADERS.length}
                     style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}
                   >
-                    Loading monitored systems鈥?                  </td>
+                    Loading monitored systems...                  </td>
                 </tr>
               ) : (
                 systems.map((system) => {

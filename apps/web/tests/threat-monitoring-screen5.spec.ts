@@ -1,5 +1,5 @@
 /**
- * Screen 5 鈥?Threat Monitoring contract tests.
+ * Screen 5 - Threat Monitoring contract tests.
  * Source-level: reads .tsx files and asserts on string/structural presence.
  * No browser required.
  */

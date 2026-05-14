@@ -257,7 +257,7 @@ export default function ThreatMonitoringPanel() {
     Incident: !alertOk ? 'Blocked' : incidentOk ? 'Complete' : 'Pending',
   };
 
-  // Empty state / next required action per spec cases A闂佺偨鍎插?
+  // Empty state / next required action per spec cases A-D
   type Blocker = { title: string; body: string; ctaHref: string; ctaLabel: string };
 
   function getBlocker(): Blocker | null {
@@ -297,7 +297,7 @@ export default function ThreatMonitoringPanel() {
         ctaLabel: 'Check Worker Status',
       };
     }
-    // Case E 闂?only show simulator CTA if simulator mode is enabled
+    // Case E →only show simulator CTA if simulator mode is enabled
     if (!telemetryOk) {
       return {
         title: 'Worker is reporting, but no telemetry event has been received yet.',
@@ -329,7 +329,7 @@ export default function ThreatMonitoringPanel() {
     return null;
   }
 
-  // Metric: data freshness 闂?do not show live telemetry when last_telemetry_at is unavailable
+  // Metric: data freshness →do not show live telemetry when last_telemetry_at is unavailable
   function freshnessLabel(): string {
     if (!lastTelemetryAt) return 'No telemetry';
     return fmt(lastTelemetryAt);
@@ -394,7 +394,7 @@ export default function ThreatMonitoringPanel() {
         onChange={(key) => setActiveTab(key as TabKey)}
       />
 
-      {/* 闂佸啿鍘滈崑鎾绘煃閸忓浜?Overview tab 闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸?*/}
+      {/* Overview tab */}
       {activeTab === 'overview' ? (
         <div role="tabpanel" aria-label="Overview">
           <div
@@ -512,11 +512,11 @@ export default function ThreatMonitoringPanel() {
             </article>
           </div>
 
-          {/* Pipeline status 闂?full-width compact chain */}
+          {/* Pipeline status →full-width compact chain */}
           <article className="dataCard" aria-label="Pipeline Status" style={{ marginBottom: '1rem' }}>
             <p className="sectionEyebrow">
-              Runtime Chain 闂?Asset 闂?Target 闂?System 闂?Heartbeat 闂?Poll 闂?Telemetry 闂?Detection 闂?
-              Alert 闂?Incident
+              Runtime Chain →Asset →Target →System →Heartbeat →Poll →Telemetry →Detection →
+              Alert →Incident
             </p>
             <div
               style={{
@@ -558,7 +558,7 @@ export default function ThreatMonitoringPanel() {
                           userSelect: 'none',
                         }}
                       >
-                        闂?
+                        →
                       </span>
                     ) : null}
                   </div>
@@ -604,12 +604,12 @@ export default function ThreatMonitoringPanel() {
         </div>
       ) : null}
 
-      {/* 闂佸啿鍘滈崑鎾绘煃閸忓浜?Telemetry tab 闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸?*/}
+      {/* Telemetry tab */}
       {activeTab === 'telemetry' ? (
         <div role="tabpanel" aria-label="Telemetry">
           {dataLoading ? (
             <p className="muted" style={{ padding: '2rem 0' }}>
-              Loading telemetry闂?
+              Loading telemetry...
             </p>
           ) : telemetry.length === 0 ? (
             <EmptyStateBlocker
@@ -652,12 +652,12 @@ export default function ThreatMonitoringPanel() {
         </div>
       ) : null}
 
-      {/* 闂佸啿鍘滈崑鎾绘煃閸忓浜?Detections tab 闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑?*/}
+      {/* Detections tab */}
       {activeTab === 'detections' ? (
         <div role="tabpanel" aria-label="Detections">
           {dataLoading ? (
             <p className="muted" style={{ padding: '2rem 0' }}>
-              Loading detections闂?
+              Loading detections...
             </p>
           ) : detections.length === 0 ? (
             <EmptyStateBlocker
@@ -706,12 +706,12 @@ export default function ThreatMonitoringPanel() {
         </div>
       ) : null}
 
-      {/* 闂佸啿鍘滈崑鎾绘煃閸忓浜?Anomalies tab 闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜?*/}
+      {/* Anomalies tab */}
       {activeTab === 'anomalies' ? (
         <div role="tabpanel" aria-label="Anomalies">
           {dataLoading ? (
             <p className="muted" style={{ padding: '2rem 0' }}>
-              Loading anomalies闂?
+              Loading anomalies...
             </p>
           ) : anomalies.length === 0 ? (
             <EmptyStateBlocker
