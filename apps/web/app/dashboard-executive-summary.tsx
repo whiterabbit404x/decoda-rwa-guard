@@ -171,7 +171,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
 
   return (
     <main className="container productPage dashboardExecPage">
-      {/* 閳光偓閳光偓 Page header 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓 */}
+      {/* 闁冲厜鍋撻柍鍏夊亾 Page header 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?*/}
       <div className="dashboardPageHeader">
         <h1 className="dashboardPageTitle">Dashboard</h1>
         <p className="dashboardPageSubtitle">
@@ -179,7 +179,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         </p>
       </div>
 
-      {/* 閳光偓閳光偓 Top metric row 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓 */}
+      {/* 闁冲厜鍋撻柍鍏夊亾 Top metric row 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?*/}
       <div className="execMetricRow">
         <ExecMetricCard
           label="Protected Assets"
@@ -192,7 +192,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
         <ExecMetricCard
           label="Monitored Systems"
-          value={loading ? '閳? : String(monitoredSystemsCount)}
+          value={loading ? '-' : String(monitoredSystemsCount)}
           meta={
             monitoredSystemsCount > 0
               ? `${reportingSystemsCount} reporting`
@@ -201,7 +201,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
         <ExecMetricCard
           label="Active Alerts"
-          value={loading ? '閳? : String(activeAlertsCount)}
+          value={loading ? '闁? : String(activeAlertsCount)}
           meta={
             activeAlertsCount > 0 ? 'Requires attention' : 'All clear'
           }
@@ -209,7 +209,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
         <ExecMetricCard
           label="Open Incidents"
-          value={loading ? '閳? : String(activeIncidentsCount)}
+          value={loading ? '闁? : String(activeIncidentsCount)}
           meta={
             activeIncidentsCount > 0
               ? 'Under investigation'
@@ -225,7 +225,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
       </div>
 
-      {/* 閳光偓閳光偓 Main grid: Risk Overview + Recent Alerts 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓 */}
+      {/* 闁冲厜鍋撻柍鍏夊亾 Main grid: Risk Overview + Recent Alerts 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?*/}
       <div className="execMainGrid">
         <RiskOverviewCard
           telemetryAvailable={telemetryAvailable}
@@ -241,7 +241,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
       </div>
 
-      {/* 閳光偓閳光偓 Bottom grid: Recent Incidents + System Health 閳光偓閳光偓閳光偓閳光偓 */}
+      {/* 闁冲厜鍋撻柍鍏夊亾 Bottom grid: Recent Incidents + System Health 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾 */}
       <div className="execBottomGrid">
         <RecentIncidentsCard
           incidents={recentIncidents}
@@ -257,7 +257,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
         />
       </div>
 
-      {/* 閳光偓閳光偓 Next Required Action 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓 */}
+      {/* 闁冲厜鍋撻柍鍏夊亾 Next Required Action 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾 */}
       <NextRequiredActionCard
         nextActionLabel={nextActionLabel}
         nextActionRoute={nextActionRoute}
@@ -269,7 +269,7 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
   );
 }
 
-/* 閳光偓閳光偓 Sub-components 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓 */
+/* 闁冲厜鍋撻柍鍏夊亾 Sub-components 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?*/
 
 function ExecMetricCard({
   label,
@@ -396,7 +396,7 @@ function RiskOverviewCard({
           ) : null}
           <div className="execChartPlaceholder">
             <p className="muted" style={{ textAlign: 'center', fontSize: '0.82rem' }}>
-              Risk timeline 閳?connect live telemetry to populate chart
+              Risk timeline 闁?connect live telemetry to populate chart
             </p>
           </div>
         </div>
