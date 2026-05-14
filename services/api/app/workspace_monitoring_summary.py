@@ -5,7 +5,7 @@ from typing import Any
 
 
 CANONICAL_RUNTIME_STATUS = {'live', 'degraded', 'offline', 'idle'}
-CANONICAL_MONITORING_STATUS = {'healthy', 'degraded', 'offline', 'not_configured'}
+CANONICAL_MONITORING_STATUS = {'live', 'limited', 'offline'}
 CANONICAL_TELEMETRY_FRESHNESS = {'fresh', 'stale', 'unavailable'}
 CANONICAL_CONFIDENCE = {'high', 'medium', 'low', 'unavailable'}
 CANONICAL_EVIDENCE_SOURCE = {'live_provider', 'simulator', 'none'}
@@ -144,6 +144,8 @@ def _normalized_runtime_status(value: str) -> str:
     normalized = str(value or '').strip().lower()
     if normalized in CANONICAL_RUNTIME_STATUS:
         return normalized
+    if normalized in {'healthy'}:
+        return 'live'
     if normalized in {'provisioning', 'disabled'}:
         return 'idle'
     if normalized in {'failed'}:
@@ -160,16 +162,16 @@ def _normalized_monitoring_status(
     workspace_configured: bool,
 ) -> str:
     if not workspace_configured:
-        return 'not_configured'
+        return 'limited'
     if runtime_status == 'offline':
         return 'offline'
     if contradiction_flags:
-        return 'degraded'
+        return 'limited'
     if reporting_systems_count <= 0:
-        return 'degraded'
+        return 'limited'
     if runtime_status == 'live' and telemetry_freshness == 'fresh':
-        return 'healthy'
-    return 'degraded'
+        return 'live'
+    return 'limited'
 
 
 def _normalized_telemetry_freshness(value: str) -> str:
@@ -271,7 +273,7 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'monitoring_status': (
             payload.get('monitoring_status')
             if payload.get('monitoring_status') in CANONICAL_MONITORING_STATUS
-            else 'not_configured'
+            else 'limited'
         ),
         'freshness_status': str(statuses.get('freshness') or _normalized_telemetry_freshness(str(payload.get('freshness_status', 'unavailable')))),
         'confidence_status': str(statuses.get('confidence') or _normalized_confidence(str(payload.get('confidence_status', 'unavailable')))),
@@ -588,7 +590,7 @@ def build_workspace_monitoring_summary(
         if normalized_runtime == 'live':
             normalized_runtime = 'degraded'
         if normalized_monitoring_status == 'live':
-            normalized_monitoring_status = 'degraded'
+            normalized_monitoring_status = 'limited'
         confidence_status = 'unavailable'
         if freshness_status == 'fresh':
             freshness_status = 'stale'
@@ -607,7 +609,7 @@ def build_workspace_monitoring_summary(
     if prioritized_guard:
         if normalized_runtime == 'live':
             normalized_runtime = 'degraded'
-        normalized_monitoring_status = 'offline' if normalized_runtime == 'offline' else 'degraded'
+        normalized_monitoring_status = 'offline' if normalized_runtime == 'offline' else 'limited'
         if freshness_status == 'fresh':
             freshness_status = 'stale'
         confidence_status = 'unavailable'

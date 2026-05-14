@@ -196,7 +196,7 @@ def test_runtime_status_forces_degraded_when_live_continuity_slo_fails(monkeypat
 
     payload = monitoring_runner.monitoring_runtime_status()
 
-    assert payload['monitoring_status'] in {'degraded', 'limited'}
+    assert payload['monitoring_status'] == 'limited'
     assert payload['status'] == 'Degraded'
     assert payload['runtime_status'] == 'degraded'
     assert payload['runtime_status_summary'] == 'degraded'
@@ -265,7 +265,7 @@ def test_runtime_status_transitions_across_continuous_monitoring_lifecycle(monke
 
     health_state.update({'degraded': True, 'degraded_reason': 'stale_heartbeat'})
     degraded_payload = monitoring_runner.monitoring_runtime_status()
-    assert degraded_payload['monitoring_status'] in {'degraded', 'limited'}
+    assert degraded_payload['monitoring_status'] == 'limited'
     assert degraded_payload['status'] == 'Degraded'
 
 

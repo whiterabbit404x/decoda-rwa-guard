@@ -86,12 +86,28 @@ function asCount(value: unknown): number {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function normalizeMonitoringStatus(
+  monitoringStatus: unknown,
+  runtimeStatus: WorkspaceMonitoringTruth['runtime_status'],
+): WorkspaceMonitoringTruth['monitoring_status'] {
+  const normalized = String(monitoringStatus ?? '').trim().toLowerCase();
+  if (normalized === 'live' || normalized === 'limited' || normalized === 'offline') {
+    return normalized;
+  }
+  if (normalized === 'healthy') {
+    return 'live';
+  }
+  if (normalized === 'degraded' || normalized === 'not_configured' || normalized === 'unknown') {
+    return 'limited';
+  }
+  return runtimeStatus === 'offline' ? 'offline' : 'limited';
+}
+
 export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMonitoringSummary | null | undefined): WorkspaceMonitoringTruth {
   if (!summary) {
     return DEFAULT_TRUTH;
   }
   const runtimeStatus = summary.runtime_status;
-  const monitoringStatus = summary.monitoring_status;
   const telemetryFreshness = summary.telemetry_freshness;
   const confidence = summary.confidence;
   const resolvedStatusReason = asTrimmedString(summary.status_reason);
@@ -116,6 +132,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   const workspaceConfigured = Boolean(summary.workspace_configured);
   const runtimeStatusLabel = String(runtimeStatus ?? '').trim().toLowerCase();
   const normalizedRuntimeStatus = runtimeStatusLabel === 'healthy' ? 'live' : runtimeStatusLabel;
+  const normalizedMonitoringStatus = normalizeMonitoringStatus(summary.monitoring_status, normalizedRuntimeStatus as WorkspaceMonitoringTruth['runtime_status']);
   const normalizedTelemetryFreshness = telemetryFreshness === 'fresh' || telemetryFreshness === 'stale' || telemetryFreshness === 'unavailable'
     ? telemetryFreshness
     : ((summary as Record<string, unknown>).freshness_status as WorkspaceMonitoringTruth['telemetry_freshness']) ?? 'unavailable';
@@ -156,7 +173,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     workspace_name: null,
     workspace_configured: workspaceConfigured,
     runtime_status: normalizedRuntimeStatus as WorkspaceMonitoringTruth['runtime_status'],
-    monitoring_status: monitoringStatus,
+    monitoring_status: normalizedMonitoringStatus,
     monitored_systems_count: monitoredSystemsCount,
     reporting_systems_count: reportingSystemsCount,
     protected_assets_count: protectedAssetsCount,
