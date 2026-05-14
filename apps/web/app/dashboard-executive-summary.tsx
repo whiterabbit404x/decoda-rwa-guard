@@ -31,11 +31,11 @@ const NEXT_ACTION_ROUTES: Record<string, string> = {
 };
 
 const NEXT_ACTION_LABELS: Record<string, string> = {
-  add_asset: 'Add asset',
+  add_asset: 'Add a protected asset',
   verify_asset: 'Verify asset',
-  create_monitoring_target: 'Create monitoring target',
-  enable_monitored_system: 'Enable monitored system',
-  start_simulator_signal: 'Start simulator signal',
+  create_monitoring_target: 'Connect a monitoring target',
+  enable_monitored_system: 'Enable monitoring',
+  start_simulator_signal: 'Waiting for first telemetry',
   view_detection: 'View detection',
   open_incident: 'Open incident',
   export_evidence_package: 'Export evidence package',
@@ -46,9 +46,9 @@ const NEXT_ACTION_LABELS: Record<string, string> = {
 const NEXT_ACTION_DESCRIPTIONS: Record<string, string> = {
   add_asset: 'Register your first protected real-world asset to begin monitoring.',
   verify_asset: 'Verify asset metadata so the runtime can anchor monitoring to it.',
-  create_monitoring_target: 'Create a monitoring target to connect your asset to a live data source.',
-  enable_monitored_system: 'Enable a monitored system so telemetry can begin flowing.',
-  start_simulator_signal: 'Start a simulator signal to generate synthetic telemetry for testing.',
+  create_monitoring_target: 'Connect your asset to a monitoring data source to enable live tracking.',
+  enable_monitored_system: 'Enable monitoring on the connected target so telemetry can begin flowing.',
+  start_simulator_signal: 'Monitoring is configured. Waiting for the first telemetry event to arrive.',
   view_detection: 'A detection was generated. Review it to advance the workflow.',
   open_incident: 'An alert is active. Open an incident to begin investigation.',
   export_evidence_package: 'Export an evidence package to produce an auditable proof record.',

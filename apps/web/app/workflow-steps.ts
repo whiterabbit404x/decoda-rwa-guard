@@ -29,11 +29,11 @@ export const WORKFLOW_STEP_LABELS: Record<string, string> = {
 };
 
 export const NEXT_ACTION_CTA: Record<string, string> = {
-  add_asset: 'Add asset',
+  add_asset: 'Add a protected asset',
   verify_asset: 'Verify asset',
-  create_monitoring_target: 'Create monitoring target',
-  enable_monitored_system: 'Enable monitored system',
-  start_simulator_signal: 'Start simulator signal',
+  create_monitoring_target: 'Connect a monitoring target',
+  enable_monitored_system: 'Enable monitoring',
+  start_simulator_signal: 'Waiting for first telemetry',
   view_detection: 'View detection',
   open_incident: 'Open incident',
   export_evidence_package: 'Export evidence package',
