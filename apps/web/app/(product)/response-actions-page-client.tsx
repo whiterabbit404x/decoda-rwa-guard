@@ -416,7 +416,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
             className="btn btn-primary"
             disabled
             style={{ opacity: 0.45 }}
-            title="Response action recommendation requires incident-linked workflow 鈥?use Incidents to open a response action"
+            title="Response action recommendation requires incident-linked workflow - use Incidents to open a response action"
             aria-label="Recommend Action"
           >
             Recommend Action
