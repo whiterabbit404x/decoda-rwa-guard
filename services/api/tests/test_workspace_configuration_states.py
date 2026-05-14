@@ -16,7 +16,10 @@ diagnostic function which takes pre-counted workspace-scoped values.
 """
 from __future__ import annotations
 
-from services.api.app.monitoring_runner import _workspace_configuration_diagnostics
+from services.api.app.monitoring_runner import (
+    _count_persisted_enabled_monitoring_configs,
+    _workspace_configuration_diagnostics,
+)
 from services.api.app.workspace_monitoring_summary import build_runtime_setup_chain
 
 
@@ -96,6 +99,46 @@ def test_cross_workspace_or_disabled_configs_reduce_to_zero_enabled_configs() ->
     assert result['workspace_configured'] is False
     assert result['enabled_configs'] == 0
     assert 'no_persisted_enabled_monitoring_config' in result['reason_codes']
+
+
+def test_count_persisted_enabled_monitoring_configs_uses_workspace_scoped_enabled_config_query() -> None:
+    class _Cursor:
+        def __init__(self) -> None:
+            self.sql = ''
+            self.params: tuple[object, ...] = ()
+
+        def execute(self, sql: str, params: tuple[object, ...]) -> None:
+            self.sql = sql
+            self.params = params
+
+        def fetchone(self) -> tuple[int]:
+            return (0,)
+
+        def __enter__(self) -> "_Cursor":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    class _Conn:
+        def __init__(self) -> None:
+            self.cursor_instance = _Cursor()
+
+        def cursor(self) -> _Cursor:
+            return self.cursor_instance
+
+    conn = _Conn()
+    workspace_id = 'ws-primary'
+
+    count = _count_persisted_enabled_monitoring_configs(conn, workspace_id)
+
+    assert count == 0
+    assert conn.cursor_instance.params == (workspace_id,)
+    assert 'FROM monitoring_configs mc' in conn.cursor_instance.sql
+    assert 'mc.enabled = TRUE' in conn.cursor_instance.sql
+    assert 'mt.enabled = TRUE' in conn.cursor_instance.sql
+    assert 'mc.workspace_id = %s' in conn.cursor_instance.sql
+    assert 'mc.asset_id IS NOT NULL' in conn.cursor_instance.sql
 
 
 def test_invalid_target_system_link_is_not_configured() -> None:

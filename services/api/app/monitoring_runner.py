@@ -175,13 +175,14 @@ def _count_persisted_enabled_monitoring_configs(conn: psycopg.Connection[Any], w
             JOIN monitored_targets mt
               ON mt.id = mc.target_id
              AND mt.workspace_id = mc.workspace_id
-            LEFT JOIN asset_registry ar
+            JOIN asset_registry ar
               ON ar.id = mc.asset_id
              AND ar.workspace_id = mc.workspace_id
             WHERE mc.workspace_id = %s
               AND mc.enabled = TRUE
               AND mt.enabled = TRUE
-              AND (mc.asset_id IS NULL OR ar.id IS NOT NULL)
+              AND mc.asset_id IS NOT NULL
+              AND (mt.asset_id IS NULL OR mt.asset_id = mc.asset_id)
               AND COALESCE(ar.status, 'active') = 'active'
             """,
             (workspace_id,),
