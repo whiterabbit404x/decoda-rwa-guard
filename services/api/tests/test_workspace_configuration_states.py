@@ -7,8 +7,8 @@ Covers the highest-risk states per SaaS workflow:
 - target/system exists but no enabled config
 - disabled config does not count as active monitoring
 - enabled config exists but no telemetry yet
-- all required facts present 鈫?configured
-- all missing 鈫?all four reason codes returned
+- all required facts present -> configured
+- all missing -> all four reason codes returned
 
 Cross-workspace scoping is enforced at the DB query level in monitoring_runner.py
 (workspace_id parameter on all queries). Unit tests here operate on the pure
@@ -85,6 +85,19 @@ def test_disabled_config_counted_as_zero_means_not_configured() -> None:
     assert 'no_persisted_enabled_monitoring_config' in result['reason_codes']
 
 
+def test_cross_workspace_or_disabled_configs_reduce_to_zero_enabled_configs() -> None:
+    # Cross-workspace and disabled configs are excluded before diagnostics.
+    result = _workspace_configuration_diagnostics(
+        valid_protected_asset_count=1,
+        linked_monitored_system_count=1,
+        persisted_enabled_config_count=0,
+        valid_target_system_link_count=1,
+    )
+    assert result['workspace_configured'] is False
+    assert result['enabled_configs'] == 0
+    assert 'no_persisted_enabled_monitoring_config' in result['reason_codes']
+
+
 def test_invalid_target_system_link_is_not_configured() -> None:
     result = _workspace_configuration_diagnostics(
         valid_protected_asset_count=1,
@@ -125,7 +138,7 @@ def test_all_missing_returns_all_four_reason_codes() -> None:
 
 
 # ---------------------------------------------------------------------------
-# build_runtime_setup_chain 鈥?enabled config exists but no telemetry yet
+# build_runtime_setup_chain - enabled config exists but no telemetry yet
 # ---------------------------------------------------------------------------
 
 def test_chain_telemetry_blocked_when_heartbeat_present_but_no_telemetry() -> None:
@@ -171,7 +184,7 @@ def test_chain_telemetry_complete_when_telemetry_present() -> None:
 
 
 def test_chain_target_blocked_without_verified_asset() -> None:
-    # Asset exists but is not verified 鈫?monitoring_target_created stays pending.
+    # Asset exists but is not verified -> monitoring_target_created stays pending.
     counters = {'assets_count': 1, 'verified_assets_count': 0}
     chain = build_runtime_setup_chain(counters=counters, timestamps={})
     steps_by_id = {step['id']: step for step in chain['steps']}
