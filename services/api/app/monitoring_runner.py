@@ -166,6 +166,33 @@ def is_canonical_runtime_truth_enabled() -> bool:
     return True
 
 
+def _count_persisted_enabled_monitoring_configs(conn: psycopg.Connection[Any], workspace_id: str) -> int:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM monitoring_configs mc
+            JOIN monitored_targets mt
+              ON mt.id = mc.target_id
+             AND mt.workspace_id = mc.workspace_id
+            LEFT JOIN asset_registry ar
+              ON ar.id = mc.asset_id
+             AND ar.workspace_id = mc.workspace_id
+            WHERE mc.workspace_id = %s
+              AND mc.enabled = TRUE
+              AND mt.enabled = TRUE
+              AND (mc.asset_id IS NULL OR ar.id IS NOT NULL)
+              AND COALESCE(ar.status, 'active') = 'active'
+            """,
+            (workspace_id,),
+        )
+        row = cursor.fetchone()
+    try:
+        return max(int((row or [0])[0] or 0), 0)
+    except Exception:
+        return 0
+
+
 def _evaluate_enterprise_ready_gate(
     *,
     continuity_slo_pass: bool,
@@ -5883,7 +5910,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         valid_asset_linked_targets = healthy_enabled_targets_count
         enabled_monitored_systems = sum(1 for row in monitored_rows if monitored_system_row_enabled(row))
         valid_target_system_links = valid_target_system_link_count
-        persisted_enabled_config_count = monitorable_enabled_targets
+        persisted_enabled_config_count = _count_persisted_enabled_monitoring_configs(conn, workspace_id)
         logger.info(
             'monitoring_runtime_status_counts workspace_id=%s enabled_monitored_systems=%s protected_assets=%s runtime_rows=%s list_route_rows=%s enabled_monitored_systems_list_route=%s protected_assets_list_route=%s',
             workspace_id,
