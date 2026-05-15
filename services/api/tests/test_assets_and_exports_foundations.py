@@ -157,3 +157,79 @@ def test_report_template_artifact_types_cover_required_exports() -> None:
         'custody_evidence_report',
         'compliance_audit_export',
     }
+
+
+def test_create_export_job_viewer_is_forbidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Viewers must not be allowed to create export jobs; only owner/admin may."""
+    from contextlib import contextmanager
+    from fastapi import Request
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+
+    def deny_non_admin(connection, request):
+        raise HTTPException(status_code=403, detail='Owner or admin role is required for this action.')
+
+    @contextmanager
+    def fake_pg():
+        class _C:
+            def execute(self, *a, **k):
+                pass
+            def commit(self):
+                pass
+        yield _C()
+
+    monkeypatch.setattr(pilot, 'pg_connection', fake_pg)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda c: None)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', deny_non_admin)
+
+    req = Request({'type': 'http', 'headers': []})
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.create_export_job('alerts', {'format': 'csv'}, request=req)
+    assert exc_info.value.status_code == 403
+
+
+def test_create_export_job_admin_is_permitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner/admin role allows export job creation."""
+    from contextlib import contextmanager
+    from fastapi import Request
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda c, r: ({'id': 'u1'}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+
+    inserted: list[str] = []
+
+    class _Conn:
+        def execute(self, query, params=None):
+            q = str(query)
+            inserted.append(q)
+
+            class _R:
+                def fetchone(self_inner):
+                    if 'FROM export_jobs WHERE id = %s AND workspace_id = %s' in ' '.join(q.split()):
+                        return {'id': 'exp-x', 'export_type': 'alerts', 'format': 'csv', 'filters': {}}
+                    if 'SELECT status, error_message' in q:
+                        return {'status': 'completed', 'error_message': None}
+                    return None
+
+                def fetchall(self_inner):
+                    return []
+
+            return _R()
+
+        def commit(self):
+            pass
+
+    @contextmanager
+    def fake_pg():
+        yield _Conn()
+
+    monkeypatch.setattr(pilot, 'pg_connection', fake_pg)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda c: None)
+    monkeypatch.setattr(pilot, '_workspace_plan', lambda c, wid: {'exports_enabled': True})
+    monkeypatch.setattr(pilot, '_generate_export_artifact', lambda c, workspace_id, export_id: None)
+    monkeypatch.setattr(pilot, 'log_audit', lambda *a, **k: None)
+
+    req = Request({'type': 'http', 'headers': []})
+    result = pilot.create_export_job('alerts', {'format': 'csv'}, request=req)
+    assert result['status'] == 'completed'
+    assert any('INSERT INTO export_jobs' in q for q in inserted)

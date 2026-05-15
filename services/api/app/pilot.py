@@ -12602,8 +12602,7 @@ def create_export_job(export_type: str, payload: dict[str, Any], request: Reques
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export format.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        user = authenticate_with_connection(connection, request)
-        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        user, workspace_context = _require_workspace_admin(connection, request)
         entitlements = _workspace_plan(connection, workspace_context['workspace_id'])
         if not bool(entitlements.get('exports_enabled')):
             raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Exports are not available on this plan.')

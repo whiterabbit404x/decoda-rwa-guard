@@ -1,379 +1,98 @@
-diff --git a/apps/web/app/(product)/response-actions-page-client.tsx b/apps/web/app/(product)/response-actions-page-client.tsx
-index 94e14fb..bd4dacc 100644
---- a/apps/web/app/(product)/response-actions-page-client.tsx
-+++ b/apps/web/app/(product)/response-actions-page-client.tsx
-@@ -29,6 +29,7 @@ type ActionRow = {
-   status: string;
-   recommendedBy: string;
-   linkedIncident: string | null;
-+  linkedAlert: string | null;
-   evidenceSource: string;
-   requiresApproval: boolean;
-   simulated: boolean;
-@@ -152,10 +153,12 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
-     source === 'replay';
-
-   const rawStatus = String(input?.status || input?.workflow_status || 'recommended');
--  const rawIncidentId = String(input?.incident_id || input?.linked_incident_id || '');
-+  const rawIncidentId = String(input?.incident_id || input?.linked_incident_id || input?.chain_linked_ids?.incident_id || '');
-+  const rawAlertId = String(input?.alert_id || input?.chain_linked_ids?.alert_id || '');
-
-   // Do not show linked incident unless a valid incident exists in the system.
-   const linkedIncident = rawIncidentId && validIncidentIds.has(rawIncidentId) ? rawIncidentId : null;
-+  const linkedAlert = rawAlertId || null;
-
-   return {
-     id: String(input?.id || `${input?.action_type || 'action'}-${rawIncidentId || 'none'}`),
-@@ -165,6 +168,7 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
-     status: simulated ? `${rawStatus} 路 SIMULATED` : rawStatus,
-     recommendedBy: String(input?.recommended_by || input?.actor_type || 'Policy engine'),
-     linkedIncident,
-+    linkedAlert,
-     evidenceSource: String(input?.evidence_source || input?.source || 'runtime'),
-     requiresApproval: input?.requires_approval !== false,
-     simulated,
-@@ -709,6 +713,19 @@ function ActionDetailPanel({
-         </p>
-       </div>
-
-+      <div style={{ marginBottom: '0.5rem' }}>
-+        <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Linked Alert</p>
-+        {action.linkedAlert ? (
-+          <Link href="/alerts" prefetch={false} style={{ fontSize: '0.78rem' }}>
-+            {action.linkedAlert}
-+          </Link>
-+        ) : (
-+          <p className="muted" style={{ fontSize: '0.78rem', margin: 0 }}>
-+            No linked alert
-+          </p>
-+        )}
-+      </div>
-+
-       <div style={{ marginBottom: '0.5rem' }}>
-         <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Linked Incident</p>
-         {action.linkedIncident ? (
-diff --git a/apps/web/app/incidents-panel.tsx b/apps/web/app/incidents-panel.tsx
-index d25d776..1ad428d 100644
---- a/apps/web/app/incidents-panel.tsx
-+++ b/apps/web/app/incidents-panel.tsx
-@@ -519,6 +519,11 @@ function IncidentDetailPanel({ incident, timeline, linkedAlert, evidence, respon
-               ? <Link href="/alerts" prefetch={false} style={{ fontSize: '0.78rem', color: 'var(--text-accent)' }}>{incident.source_alert_id}</Link>
-               : <span className="muted" style={{ fontSize: '0.78rem' }}>Linked alert unavailable</span>
-           } />
-+          <DetailField label="Linked Detection" value={
-+            incident.chain_linked_ids?.detection_id
-+              ? <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', wordBreak: 'break-all' }}>{incident.chain_linked_ids.detection_id}</span>
-+              : <span className="muted" style={{ fontSize: '0.78rem' }}>No linked detection</span>
-+          } />
-           <DetailField label="Evidence Source" value={<StatusPill label={evSrc.label} variant={evSrc.variant} />} />
-           <DetailField label="Next Action" value={recommendedNextAction()} />
-         </div>
 diff --git a/services/api/app/pilot.py b/services/api/app/pilot.py
-index f35a0d6..6f8f5cb 100644
+index 6f8f5cb..96f412f 100644
 --- a/services/api/app/pilot.py
 +++ b/services/api/app/pilot.py
-@@ -10385,7 +10385,17 @@ def get_alert(alert_id: str, request: Request) -> dict[str, Any]:
-         alert_payload['linked_detection_id'] = alert_payload.get('detection_id')
-         alert_payload['linked_alert_id'] = alert_payload.get('id')
-         alert_payload['linked_incident_id'] = alert_payload.get('incident_id')
--        alert_payload['linked_action_id'] = None
-+        linked_action_row = connection.execute(
-+            '''
-+            SELECT id FROM response_actions
-+            WHERE workspace_id = %s
-+              AND (alert_id = %s OR incident_id = %s::uuid)
-+            ORDER BY created_at DESC
-+            LIMIT 1
-+            ''',
-+            (workspace_context['workspace_id'], alert_id, alert_payload.get('incident_id')),
-+        ).fetchone()
-+        alert_payload['linked_action_id'] = str(linked_action_row['id']) if linked_action_row else None
-         alert_payload['chain_linked_ids'] = {
-             'detection_id': alert_payload.get('linked_detection_id'),
-             'alert_id': alert_payload.get('linked_alert_id'),
-@@ -11268,6 +11278,14 @@ def _response_action_payload(action: dict[str, Any]) -> dict[str, Any]:
-     result['execution_evidence'] = {
-         **execution_provenance,
+@@ -12602,8 +12602,7 @@ def create_export_job(export_type: str, payload: dict[str, Any], request: Reques
+         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported export format.')
+     with pg_connection() as connection:
+         ensure_pilot_schema(connection)
+-        user = authenticate_with_connection(connection, request)
+-        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
++        user, workspace_context = _require_workspace_admin(connection, request)
+         entitlements = _workspace_plan(connection, workspace_context['workspace_id'])
+         if not bool(entitlements.get('exports_enabled')):
+             raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Exports are not available on this plan.')
+diff --git a/services/api/tests/test_assets_and_exports_foundations.py b/services/api/tests/test_assets_and_exports_foundations.py
+index be6987c..54839bf 100644
+--- a/services/api/tests/test_assets_and_exports_foundations.py
++++ b/services/api/tests/test_assets_and_exports_foundations.py
+@@ -157,3 +157,79 @@ def test_report_template_artifact_types_cover_required_exports() -> None:
+         'custody_evidence_report',
+         'compliance_audit_export',
      }
-+    exec_meta = result.get('execution_metadata') if isinstance(result.get('execution_metadata'), dict) else {}
-+    meta_chain = exec_meta.get('chain_linked_ids') if isinstance(exec_meta.get('chain_linked_ids'), dict) else {}
-+    result['chain_linked_ids'] = {
-+        'detection_id': meta_chain.get('detection_id'),
-+        'alert_id': result.get('alert_id') or meta_chain.get('alert_id'),
-+        'incident_id': result.get('incident_id') or meta_chain.get('incident_id'),
-+        'action_id': result.get('id'),
-+    }
-     return result
-
-
-diff --git a/services/api/tests/test_detection_alert_incident_action_chain.py b/services/api/tests/test_detection_alert_incident_action_chain.py
-new file mode 100644
-index 0000000..cf900ea
---- /dev/null
-+++ b/services/api/tests/test_detection_alert_incident_action_chain.py
-@@ -0,0 +1,265 @@
-+"""Tests for detection → alert → incident → response_action chain linkage."""
-+from __future__ import annotations
-+
-+from contextlib import contextmanager
-+from types import SimpleNamespace
-+
-+from services.api.app import pilot
 +
 +
-+class _Result:
-+    def __init__(self, row=None, rows=None):
-+        self._row = row
-+        self._rows = rows or []
++def test_create_export_job_viewer_is_forbidden(monkeypatch: pytest.MonkeyPatch) -> None:
++    """Viewers must not be allowed to create export jobs; only owner/admin may."""
++    from contextlib import contextmanager
++    from fastapi import Request
 +
-+    def fetchone(self):
-+        return self._row
-+
-+    def fetchall(self):
-+        return self._rows
-+
-+
-+def _bootstrap(monkeypatch, connection):
 +    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
-+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
-+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(connection))
-+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda *_: {'id': 'user-1'})
-+    monkeypatch.setattr(pilot, 'resolve_workspace', lambda *_: {'workspace_id': 'ws-1'})
++
++    def deny_non_admin(connection, request):
++        raise HTTPException(status_code=403, detail='Owner or admin role is required for this action.')
++
++    @contextmanager
++    def fake_pg():
++        class _C:
++            def execute(self, *a, **k):
++                pass
++            def commit(self):
++                pass
++        yield _C()
++
++    monkeypatch.setattr(pilot, 'pg_connection', fake_pg)
++    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda c: None)
++    monkeypatch.setattr(pilot, '_require_workspace_admin', deny_non_admin)
++
++    req = Request({'type': 'http', 'headers': []})
++    with pytest.raises(HTTPException) as exc_info:
++        pilot.create_export_job('alerts', {'format': 'csv'}, request=req)
++    assert exc_info.value.status_code == 403
 +
 +
-+@contextmanager
-+def _fake_pg(connection):
-+    yield connection
++def test_create_export_job_admin_is_permitted(monkeypatch: pytest.MonkeyPatch) -> None:
++    """Owner/admin role allows export job creation."""
++    from contextlib import contextmanager
++    from fastapi import Request
 +
++    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
++    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda c, r: ({'id': 'u1'}, {'workspace_id': 'ws-1', 'role': 'admin'}))
 +
-+# ── get_alert: linked_action_id lookup ────────────────────────────
-+
-+class _AlertWithActionConn:
-+    def __init__(self):
-+        self.calls: list[tuple[str, object]] = []
-+
-+    def execute(self, query, params=None):
-+        normalized = ' '.join(str(query).split())
-+        self.calls.append((normalized, params))
-+        if 'SELECT * FROM alerts WHERE id = %s AND workspace_id = %s' in normalized:
-+            return _Result(row={
-+                'id': 'alert-1', 'workspace_id': 'ws-1', 'detection_id': 'det-1',
-+                'incident_id': 'inc-1', 'alert_type': 'transfer_anomaly',
-+                'title': 'Large transfer', 'severity': 'high', 'status': 'open',
-+                'source_service': 'threat', 'summary': 'summary', 'payload': {},
-+                'target_id': None, 'module_key': None, 'acknowledged_at': None,
-+                'acknowledged_by_user_id': None, 'resolved_at': None,
-+                'resolved_by_user_id': None, 'findings': None, 'assigned_to': None,
-+                'evidence_summary': None, 'source_alert_id': None,
-+                'detection_event_id': None, 'detection_event_workspace_id': None,
-+                'created_at': '2026-05-10T10:00:00Z',
-+            })
-+        if 'SELECT id, event_type, details, created_at FROM alert_events' in normalized:
-+            return _Result(rows=[])
-+        if 'FROM evidence WHERE alert_id' in normalized:
-+            return _Result(rows=[])
-+        if 'SELECT id FROM response_actions' in normalized:
-+            return _Result(row={'id': 'action-abc'})
-+        return _Result()
-+
-+
-+def test_get_alert_returns_linked_action_id_when_response_action_exists(monkeypatch):
-+    conn = _AlertWithActionConn()
-+    _bootstrap(monkeypatch, conn)
-+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
-+
-+    result = pilot.get_alert('alert-1', request)
-+
-+    alert = result['alert']
-+    assert alert['linked_action_id'] == 'action-abc'
-+    assert alert['chain_linked_ids']['action_id'] == 'action-abc'
-+    assert alert['chain_linked_ids']['detection_id'] == 'det-1'
-+    assert alert['chain_linked_ids']['alert_id'] == 'alert-1'
-+    assert alert['chain_linked_ids']['incident_id'] == 'inc-1'
-+
-+
-+class _AlertNoActionConn(_AlertWithActionConn):
-+    def execute(self, query, params=None):
-+        normalized = ' '.join(str(query).split())
-+        self.calls.append((normalized, params))
-+        if 'SELECT * FROM alerts WHERE id = %s AND workspace_id = %s' in normalized:
-+            return _Result(row={
-+                'id': 'alert-2', 'workspace_id': 'ws-1', 'detection_id': None,
-+                'incident_id': None, 'alert_type': 'transfer_anomaly',
-+                'title': 'No action alert', 'severity': 'low', 'status': 'open',
-+                'source_service': 'threat', 'summary': 'summary', 'payload': {},
-+                'target_id': None, 'module_key': None, 'acknowledged_at': None,
-+                'acknowledged_by_user_id': None, 'resolved_at': None,
-+                'resolved_by_user_id': None, 'findings': None, 'assigned_to': None,
-+                'evidence_summary': None, 'source_alert_id': None,
-+                'detection_event_id': None, 'detection_event_workspace_id': None,
-+                'created_at': '2026-05-10T10:00:00Z',
-+            })
-+        if 'SELECT id, event_type, details, created_at FROM alert_events' in normalized:
-+            return _Result(rows=[])
-+        if 'FROM evidence WHERE alert_id' in normalized:
-+            return _Result(rows=[])
-+        if 'SELECT id FROM response_actions' in normalized:
-+            return _Result(row=None)
-+        return _Result()
-+
-+
-+def test_get_alert_linked_action_id_is_null_when_no_action_exists(monkeypatch):
-+    conn = _AlertNoActionConn()
-+    _bootstrap(monkeypatch, conn)
-+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
-+
-+    result = pilot.get_alert('alert-2', request)
-+
-+    alert = result['alert']
-+    assert alert['linked_action_id'] is None
-+    assert alert['chain_linked_ids']['action_id'] is None
-+
-+
-+def test_get_alert_response_action_query_is_workspace_scoped(monkeypatch):
-+    conn = _AlertWithActionConn()
-+    _bootstrap(monkeypatch, conn)
-+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
-+
-+    pilot.get_alert('alert-1', request)
-+
-+    action_queries = [(q, p) for q, p in conn.calls if 'SELECT id FROM response_actions' in q]
-+    assert len(action_queries) == 1
-+    query, params = action_queries[0]
-+    assert 'workspace_id = %s' in query
-+    assert params[0] == 'ws-1'
-+
-+
-+# ── _response_action_payload: chain_linked_ids ────────────────────
-+
-+def test_response_action_payload_includes_chain_linked_ids():
-+    action = {
-+        'id': 'ra-1',
-+        'mode': 'simulated',
-+        'status': 'pending',
-+        'incident_id': 'inc-1',
-+        'alert_id': 'alert-1',
-+        'execution_metadata': {
-+            'chain_linked_ids': {
-+                'detection_id': 'det-1',
-+                'alert_id': 'alert-1',
-+                'incident_id': 'inc-1',
-+            },
-+        },
-+    }
-+    result = pilot._response_action_payload(action)
-+
-+    assert result['chain_linked_ids']['alert_id'] == 'alert-1'
-+    assert result['chain_linked_ids']['incident_id'] == 'inc-1'
-+    assert result['chain_linked_ids']['action_id'] == 'ra-1'
-+    assert result['chain_linked_ids']['detection_id'] == 'det-1'
-+
-+
-+def test_response_action_payload_chain_linked_ids_null_when_no_links():
-+    action = {
-+        'id': 'ra-2',
-+        'mode': 'simulated',
-+        'status': 'pending',
-+        'incident_id': None,
-+        'alert_id': None,
-+        'execution_metadata': {},
-+    }
-+    result = pilot._response_action_payload(action)
-+
-+    assert result['chain_linked_ids']['alert_id'] is None
-+    assert result['chain_linked_ids']['incident_id'] is None
-+    assert result['chain_linked_ids']['action_id'] == 'ra-2'
-+    assert result['chain_linked_ids']['detection_id'] is None
-+
-+
-+def test_response_action_payload_uses_row_ids_over_metadata():
-+    action = {
-+        'id': 'ra-3',
-+        'mode': 'live',
-+        'status': 'pending',
-+        'incident_id': 'inc-row',
-+        'alert_id': 'alert-row',
-+        'execution_metadata': {
-+            'chain_linked_ids': {
-+                'incident_id': 'inc-meta',
-+                'alert_id': 'alert-meta',
-+            },
-+        },
-+    }
-+    result = pilot._response_action_payload(action)
-+
-+    assert result['chain_linked_ids']['alert_id'] == 'alert-row'
-+    assert result['chain_linked_ids']['incident_id'] == 'inc-row'
-+
-+
-+# ── Cross-workspace isolation ──────────────────────────────────────
-+
-+def test_get_alert_404_for_wrong_workspace(monkeypatch):
-+    class _WrongWsConn:
-+        def execute(self, query, params=None):
-+            normalized = ' '.join(str(query).split())
-+            if 'SELECT * FROM alerts WHERE id = %s AND workspace_id = %s' in normalized:
-+                return _Result(row=None)
-+            return _Result()
-+
-+    conn = _WrongWsConn()
-+    _bootstrap(monkeypatch, conn)
-+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-2'})
-+
-+    try:
-+        pilot.get_alert('alert-1', request)
-+        assert False, 'Expected 404'
-+    except Exception as exc:
-+        assert '404' in str(exc) or 'not found' in str(exc).lower()
-+
-+
-+def test_list_enforcement_actions_query_is_workspace_scoped(monkeypatch):
-+    executed: list[tuple[str, object]] = []
++    inserted: list[str] = []
 +
 +    class _Conn:
 +        def execute(self, query, params=None):
-+            normalized = ' '.join(str(query).split())
-+            executed.append((normalized, params))
-+            return _Result(rows=[])
++            q = str(query)
++            inserted.append(q)
 +
-+    conn = _Conn()
-+    _bootstrap(monkeypatch, conn)
-+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
++            class _R:
++                def fetchone(self_inner):
++                    if 'FROM export_jobs WHERE id = %s AND workspace_id = %s' in ' '.join(q.split()):
++                        return {'id': 'exp-x', 'export_type': 'alerts', 'format': 'csv', 'filters': {}}
++                    if 'SELECT status, error_message' in q:
++                        return {'status': 'completed', 'error_message': None}
++                    return None
 +
-+    pilot.list_enforcement_actions(request)
++                def fetchall(self_inner):
++                    return []
 +
-+    action_queries = [(q, p) for q, p in executed if 'FROM response_actions' in q]
-+    assert len(action_queries) >= 1
-+    query, params = action_queries[0]
-+    assert 'workspace_id = %s' in query
-+    assert params[0] == 'ws-1'
++            return _R()
 +
++        def commit(self):
++            pass
 +
-+# ── Missing link truthfulness ──────────────────────────────────────
++    @contextmanager
++    def fake_pg():
++        yield _Conn()
 +
-+def test_response_action_payload_does_not_invent_detection_id():
-+    action = {
-+        'id': 'ra-4',
-+        'mode': 'simulated',
-+        'status': 'pending',
-+        'incident_id': 'inc-1',
-+        'alert_id': 'alert-1',
-+        'execution_metadata': {
-+            'chain_linked_ids': {},
-+        },
-+    }
-+    result = pilot._response_action_payload(action)
++    monkeypatch.setattr(pilot, 'pg_connection', fake_pg)
++    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda c: None)
++    monkeypatch.setattr(pilot, '_workspace_plan', lambda c, wid: {'exports_enabled': True})
++    monkeypatch.setattr(pilot, '_generate_export_artifact', lambda c, workspace_id, export_id: None)
++    monkeypatch.setattr(pilot, 'log_audit', lambda *a, **k: None)
 +
-+    assert result['chain_linked_ids']['detection_id'] is None
-+
-+
-+def test_get_alert_missing_detection_id_is_null_not_invented(monkeypatch):
-+    conn = _AlertNoActionConn()
-+    _bootstrap(monkeypatch, conn)
-+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
-+
-+    result = pilot.get_alert('alert-2', request)
-+
-+    alert = result['alert']
-+    assert alert['chain_linked_ids']['detection_id'] is None
-+    assert alert['linked_detection_id'] is None
++    req = Request({'type': 'http', 'headers': []})
++    result = pilot.create_export_job('alerts', {'format': 'csv'}, request=req)
++    assert result['status'] == 'completed'
++    assert any('INSERT INTO export_jobs' in q for q in inserted)
