@@ -115,3 +115,12 @@ local-bootstrap-happy-path:
 	@echo "python -m services.api.app.run_monitoring_worker --worker-name local-monitor-worker --interval-seconds 15 --limit 50"
 	@echo "Step 5/5: run web app"
 	@echo "cd apps/web && npm run dev"
+
+
+test-session4-backend:
+	python -m pytest services/api/tests/test_detection_alert_incident_action_chain.py services/api/tests/test_monitoring_investigation_timeline.py -q
+
+test-session4-web:
+	cd apps/web && npm run test -- --grep "chain|incident|alert|proof"
+
+verify-session4: test-session4-backend test-session4-web
