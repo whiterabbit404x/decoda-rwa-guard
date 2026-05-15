@@ -165,7 +165,7 @@ def test_incidents_route_open_filter_is_schema_compatible_without_resolved_at(mo
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
-            if 'SELECT id, event_type, title, severity, status, workflow_status' in normalized:
+            if 'SELECT i.id, i.event_type, i.title, i.severity, i.status, i.workflow_status' in normalized:
                 if 'resolved_at' in normalized:
                     raise RuntimeError('resolved_at column does not exist')
                 return _Result(rows=[{'id': 'inc-1', 'workflow_status': 'open', 'status': 'open', 'title': 'Open incident'}])
@@ -241,3 +241,39 @@ def test_create_asset_insert_placeholder_count_matches_params(monkeypatch: pytes
     assert response.status_code == 200
     payload = response.json()
     assert payload['name'] == 'Treasury Wallet'
+
+
+def test_patch_incident_rejects_cross_workspace_source_alert_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT id, timeline, workflow_status, assignee_user_id, resolution_note FROM incidents' in normalized:
+                return _Result({'id': 'inc-1', 'timeline': []})
+            if 'SELECT id FROM alerts WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result(None)
+            return _Result()
+
+        def commit(self):
+            return None
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda connection: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda connection, request: ({'id': 'admin-1'}, {'workspace_id': 'ws-1'}))
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1', 'x-request-id': 'req-2'}, client=SimpleNamespace(host='127.0.0.1'))
+    with pytest.raises(HTTPException) as exc:
+        pilot.patch_incident('inc-1', {'workflow_status': 'open', 'source_alert_id': 'alert-x'}, request)
+    assert exc.value.status_code == 404
+    assert exc.value.detail == 'Alert not found.'
