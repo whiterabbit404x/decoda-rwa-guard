@@ -47,6 +47,6 @@ python -m pytest services/api/tests -q
 npm ci
 # Only required when Playwright browser binaries are not yet installed:
 npx playwright install
-npm run test --workspace apps/web -- --grep "chain|incident|alert|proof"
+npx playwright test apps/web/tests/threat-alert-incident-chain-clarity-source.spec.ts apps/web/tests/threat-proof-chain-ui-guards.spec.ts apps/web/tests/threat-operations-chain-rendering-and-stale-fallback-source.spec.ts
 npm run build --workspace apps/web
 ```
