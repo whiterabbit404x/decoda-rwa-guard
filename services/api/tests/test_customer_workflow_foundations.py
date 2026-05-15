@@ -165,7 +165,7 @@ def test_incidents_route_open_filter_is_schema_compatible_without_resolved_at(mo
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
-            if 'SELECT i.id, i.event_type, i.title, i.severity, i.status, i.workflow_status' in normalized:
+            if 'FROM incidents' in normalized and 'workspace_id' in normalized and 'ORDER BY' in normalized:
                 if 'resolved_at' in normalized:
                     raise RuntimeError('resolved_at column does not exist')
                 return _Result(rows=[{'id': 'inc-1', 'workflow_status': 'open', 'status': 'open', 'title': 'Open incident'}])
