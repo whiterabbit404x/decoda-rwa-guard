@@ -29,6 +29,7 @@ type ActionRow = {
   status: string;
   recommendedBy: string;
   linkedIncident: string | null;
+  linkedAlert: string | null;
   evidenceSource: string;
   requiresApproval: boolean;
   simulated: boolean;
@@ -152,10 +153,12 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     source === 'replay';
 
   const rawStatus = String(input?.status || input?.workflow_status || 'recommended');
-  const rawIncidentId = String(input?.incident_id || input?.linked_incident_id || '');
+  const rawIncidentId = String(input?.incident_id || input?.linked_incident_id || input?.chain_linked_ids?.incident_id || '');
+  const rawAlertId = String(input?.alert_id || input?.chain_linked_ids?.alert_id || '');
 
   // Do not show linked incident unless a valid incident exists in the system.
   const linkedIncident = rawIncidentId && validIncidentIds.has(rawIncidentId) ? rawIncidentId : null;
+  const linkedAlert = rawAlertId || null;
 
   return {
     id: String(input?.id || `${input?.action_type || 'action'}-${rawIncidentId || 'none'}`),
@@ -165,6 +168,7 @@ function normalizeActionRow(input: any, validIncidentIds: Set<string>): ActionRo
     status: simulated ? `${rawStatus} 路 SIMULATED` : rawStatus,
     recommendedBy: String(input?.recommended_by || input?.actor_type || 'Policy engine'),
     linkedIncident,
+    linkedAlert,
     evidenceSource: String(input?.evidence_source || input?.source || 'runtime'),
     requiresApproval: input?.requires_approval !== false,
     simulated,
@@ -707,6 +711,19 @@ function ActionDetailPanel({
         <p style={{ fontFamily: 'monospace', fontSize: '0.73rem', margin: 0, wordBreak: 'break-all' }}>
           {action.id}
         </p>
+      </div>
+
+      <div style={{ marginBottom: '0.5rem' }}>
+        <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Linked Alert</p>
+        {action.linkedAlert ? (
+          <Link href="/alerts" prefetch={false} style={{ fontSize: '0.78rem' }}>
+            {action.linkedAlert}
+          </Link>
+        ) : (
+          <p className="muted" style={{ fontSize: '0.78rem', margin: 0 }}>
+            No linked alert
+          </p>
+        )}
       </div>
 
       <div style={{ marginBottom: '0.5rem' }}>

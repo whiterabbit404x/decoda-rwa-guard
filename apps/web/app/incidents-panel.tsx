@@ -519,6 +519,11 @@ function IncidentDetailPanel({ incident, timeline, linkedAlert, evidence, respon
               ? <Link href="/alerts" prefetch={false} style={{ fontSize: '0.78rem', color: 'var(--text-accent)' }}>{incident.source_alert_id}</Link>
               : <span className="muted" style={{ fontSize: '0.78rem' }}>Linked alert unavailable</span>
           } />
+          <DetailField label="Linked Detection" value={
+            incident.chain_linked_ids?.detection_id
+              ? <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', wordBreak: 'break-all' }}>{incident.chain_linked_ids.detection_id}</span>
+              : <span className="muted" style={{ fontSize: '0.78rem' }}>No linked detection</span>
+          } />
           <DetailField label="Evidence Source" value={<StatusPill label={evSrc.label} variant={evSrc.variant} />} />
           <DetailField label="Next Action" value={recommendedNextAction()} />
         </div>
