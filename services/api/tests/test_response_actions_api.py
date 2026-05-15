@@ -1069,3 +1069,71 @@ def test_execute_live_action_persists_execution_evidence_for_approved_path(monke
     assert 'safe-req-99' in serialized_metadata
     assert '0xaaa' in serialized_metadata
     assert 'result_status' in serialized_metadata
+
+
+def test_create_response_action_rejects_cross_workspace_incident_id(monkeypatch):
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT id, source_alert_id FROM incidents WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result(None)
+            return _Result()
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    try:
+        pilot.create_enforcement_action({'action_type': 'freeze_wallet', 'mode': 'live', 'status': 'pending', 'incident_id': 'inc-x'}, request)
+        raise AssertionError('Expected HTTPException for missing incident in workspace.')
+    except HTTPException as exc:
+        assert exc.status_code == 404
+        assert exc.detail == 'Incident not found.'
+
+
+def test_create_response_action_rejects_cross_workspace_alert_id(monkeypatch):
+    class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _Connection:
+        def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'SELECT id, incident_id FROM alerts WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result(None)
+            if 'SELECT id, source_alert_id FROM incidents WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result({'id': 'inc-1', 'source_alert_id': None})
+            return _Result()
+
+    @contextmanager
+    def _fake_pg():
+        yield _Connection()
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', _fake_pg)
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_: ({'id': 'admin-1'}, {'workspace_id': 'ws-1', 'role': 'admin'}))
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
+    try:
+        pilot.create_enforcement_action({'action_type': 'freeze_wallet', 'mode': 'live', 'status': 'pending', 'incident_id': 'inc-1', 'alert_id': 'alert-x'}, request)
+        raise AssertionError('Expected HTTPException for missing alert in workspace.')
+    except HTTPException as exc:
+        assert exc.status_code == 404
+        assert exc.detail == 'Alert not found.'

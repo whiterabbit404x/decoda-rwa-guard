@@ -10896,6 +10896,12 @@ def patch_incident(incident_id: str, payload: dict[str, Any], request: Request) 
         )
         source_alert_id = payload.get('source_alert_id')
         if source_alert_id:
+            source_alert = connection.execute(
+                'SELECT id FROM alerts WHERE id = %s AND workspace_id = %s',
+                (source_alert_id, workspace_context['workspace_id']),
+            ).fetchone()
+            if source_alert is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found.')
             connection.execute(
                 '''
                 UPDATE incidents
@@ -11608,6 +11614,26 @@ def create_enforcement_action(payload: dict[str, Any], request: Request) -> dict
         action_id = str(uuid.uuid4())
         incident_id = payload.get('incident_id')
         alert_id = payload.get('alert_id')
+        incident_row = None
+        if incident_id:
+            incident_row = connection.execute(
+                'SELECT id, source_alert_id FROM incidents WHERE id = %s AND workspace_id = %s',
+                (incident_id, workspace_context['workspace_id']),
+            ).fetchone()
+            if incident_row is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Incident not found.')
+        if alert_id:
+            alert_row = connection.execute(
+                'SELECT id, incident_id FROM alerts WHERE id = %s AND workspace_id = %s',
+                (alert_id, workspace_context['workspace_id']),
+            ).fetchone()
+            if alert_row is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Alert not found.')
+            if incident_row is not None:
+                linked_incident_id = alert_row.get('incident_id')
+                source_alert_id = incident_row.get('source_alert_id')
+                if (linked_incident_id is not None and str(linked_incident_id) != str(incident_id)) or (source_alert_id is not None and str(source_alert_id) != str(alert_id)):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='alert_id is not compatible with incident_id.')
         chain_network = str(params.get('chain_network') or '').strip() or None
         token_contract = _normalize_eth_address(params.get('token_contract'), field='token_contract')
         spender = _normalize_eth_address(params.get('spender'), field='spender')

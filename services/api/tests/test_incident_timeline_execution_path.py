@@ -21,12 +21,16 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
-            if 'SELECT id, target_id, analysis_run_id, title, severity, summary, detection_id FROM alerts' in normalized:
+            if 'SELECT id, target_id, analysis_run_id, title, severity, summary, detection_id, alert_type, findings FROM alerts' in normalized:
                 return _Result({'id': 'alert-1', 'target_id': 'target-1', 'analysis_run_id': 'run-1', 'title': 'Escalate me', 'severity': 'high', 'summary': 'summary', 'detection_id': 'det-1'})
-            if 'SELECT id, tx_hash, observed_at FROM evidence' in normalized:
-                return _Result({'id': 'evidence-1', 'tx_hash': '0xabc', 'observed_at': '2026-04-21T10:01:00Z'})
+            if 'SELECT id, tx_hash, observed_at, raw_payload_json FROM evidence' in normalized:
+                return _Result({'id': 'evidence-1', 'tx_hash': '0xabc', 'observed_at': '2026-04-21T10:01:00Z', 'raw_payload_json': {}})
             if 'WITH inserted_incident AS' in normalized:
                 return _Result({'incident_id': 'inc-1'})
+            if 'SELECT id, source_alert_id FROM incidents WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result({'id': 'inc-1', 'source_alert_id': 'alert-1'})
+            if 'SELECT id, incident_id FROM alerts WHERE id = %s AND workspace_id = %s' in normalized:
+                return _Result({'id': 'alert-1', 'incident_id': 'inc-1'})
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:
                 action_id = params[0]
                 if action_id == 'act-execute-live':
