@@ -10385,7 +10385,17 @@ def get_alert(alert_id: str, request: Request) -> dict[str, Any]:
         alert_payload['linked_detection_id'] = alert_payload.get('detection_id')
         alert_payload['linked_alert_id'] = alert_payload.get('id')
         alert_payload['linked_incident_id'] = alert_payload.get('incident_id')
-        alert_payload['linked_action_id'] = None
+        linked_action_row = connection.execute(
+            '''
+            SELECT id FROM response_actions
+            WHERE workspace_id = %s
+              AND (alert_id = %s OR incident_id = %s::uuid)
+            ORDER BY created_at DESC
+            LIMIT 1
+            ''',
+            (workspace_context['workspace_id'], alert_id, alert_payload.get('incident_id')),
+        ).fetchone()
+        alert_payload['linked_action_id'] = str(linked_action_row['id']) if linked_action_row else None
         alert_payload['chain_linked_ids'] = {
             'detection_id': alert_payload.get('linked_detection_id'),
             'alert_id': alert_payload.get('linked_alert_id'),
@@ -11267,6 +11277,14 @@ def _response_action_payload(action: dict[str, Any]) -> dict[str, Any]:
     result['execution_provenance'] = execution_provenance
     result['execution_evidence'] = {
         **execution_provenance,
+    }
+    exec_meta = result.get('execution_metadata') if isinstance(result.get('execution_metadata'), dict) else {}
+    meta_chain = exec_meta.get('chain_linked_ids') if isinstance(exec_meta.get('chain_linked_ids'), dict) else {}
+    result['chain_linked_ids'] = {
+        'detection_id': meta_chain.get('detection_id'),
+        'alert_id': result.get('alert_id') or meta_chain.get('alert_id'),
+        'incident_id': result.get('incident_id') or meta_chain.get('incident_id'),
+        'action_id': result.get('id'),
     }
     return result
 
