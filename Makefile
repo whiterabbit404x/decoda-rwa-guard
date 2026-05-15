@@ -121,6 +121,6 @@ test-session4-backend:
 	python -m pytest services/api/tests/test_detection_alert_incident_action_chain.py services/api/tests/test_monitoring_investigation_timeline.py -q
 
 test-session4-web:
-	cd apps/web && npm run test -- --grep "chain|incident|alert|proof"
+	npm run test --workspace apps/web -- --grep "chain|incident|alert|proof"
 
 verify-session4: test-session4-backend test-session4-web
