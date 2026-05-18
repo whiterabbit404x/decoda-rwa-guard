@@ -14,17 +14,9 @@ CANONICAL_SUMMARY_KEYS = (
     'workspace_configured',
     'runtime_status',
     'monitoring_status',
-    'freshness_status',
-    'confidence_status',
-    'protected_assets',
-    'monitored_systems',
-    'reporting_systems',
     'last_poll_at',
     'last_heartbeat_at',
     'last_telemetry_at',
-    'last_detection_at',
-    'reason_codes',
-    'next_required_action',
     'telemetry_freshness',
     'confidence',
     'reporting_systems_count',
@@ -47,19 +39,10 @@ CANONICAL_SUMMARY_KEYS = (
     'event_throughput_window',
     'event_throughput_window_seconds',
     'contradiction_flags',
-    'top_banner_reasons',
     'guard_flags',
     'status_reason',
     'db_failure_classification',
     'db_failure_reason',
-    'runtime_setup_chain',
-    'workflow_steps',
-    'current_step',
-    'workflow',
-    'counts',
-    'timestamps',
-    'statuses',
-    'evidence_source',
 )
 
 RUNTIME_SETUP_STEP_ORDER = (
@@ -339,12 +322,7 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
     canonical['counts'] = dict(canonical_v2.get('counts') or {})
     canonical['timestamps'] = dict(canonical_v2.get('timestamps') or {})
     canonical['statuses'] = dict(canonical_v2.get('statuses') or {})
-    return {**{key: canonical[key] for key in CANONICAL_SUMMARY_KEYS}, **{
-        'summary_v2': canonical['summary_v2'],
-        'monitoring_targets': canonical['monitoring_targets'],
-        'active_alerts': canonical['active_alerts'],
-        'open_incidents': canonical['open_incidents'],
-    }}
+    return {key: canonical[key] for key in CANONICAL_SUMMARY_KEYS}
 
 
 def resolve_next_required_action(runtime_setup_chain: dict[str, Any] | None) -> str:
