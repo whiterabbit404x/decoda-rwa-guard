@@ -35,7 +35,7 @@ from services.api.app.db_failure import (
     extract_db_host_from_dsn,
     normalize_db_error_snippet,
 )
-from services.api.app.secret_crypto import encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
+from services.api.app.secret_crypto import decrypt_secret, encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
 from services.api.app.export_storage import load_export_storage
 from services.api.app.production_readiness import build_production_readiness
 
@@ -5147,6 +5147,7 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
                 processed += 1
             except Exception as exc:
                 failed += 1
+                safe_error = _safe_background_job_error(str(row['job_type']), exc)
                 next_attempt = int(row.get('attempts') or 0) + 1
                 backoff_seconds = min(900, 2 ** next_attempt)
                 terminal = next_attempt >= int(row.get('max_attempts') or 5)
@@ -5160,7 +5161,7 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
                         updated_at = NOW()
                     WHERE id = %s
                     ''',
-                    ('failed' if terminal else 'queued', next_attempt, backoff_seconds, str(exc), job_id),
+                    ('failed' if terminal else 'queued', next_attempt, backoff_seconds, safe_error, job_id),
                 )
                 if row['job_type'] == 'send_webhook' and payload.get('delivery_id'):
                     connection.execute(
@@ -5172,7 +5173,7 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
                             updated_at = NOW()
                         WHERE id = %s
                         ''',
-                        ('failed' if terminal else 'queued', str(exc), next_attempt, str(payload['delivery_id'])),
+                        ('failed' if terminal else 'queued', safe_error, next_attempt, str(payload['delivery_id'])),
                     )
                 if row['job_type'] == 'send_slack' and payload.get('delivery_id'):
                     connection.execute(
@@ -5184,7 +5185,7 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
                             updated_at = NOW()
                         WHERE id = %s
                         ''',
-                        ('failed' if terminal else 'queued', str(exc), next_attempt, str(payload['delivery_id'])),
+                        ('failed' if terminal else 'queued', safe_error, next_attempt, str(payload['delivery_id'])),
                     )
                 logger.exception('background job failed', extra={'event': 'jobs.failed', 'job_id': job_id, 'job_type': row['job_type']})
         connection.commit()
@@ -6234,6 +6235,12 @@ def _deliver_alert_email_attempt(payload: dict[str, Any]) -> None:
         raise RuntimeError('Missing to_email for alert delivery.')
     subject = f'[{_email_brand_name()}] Alert: {title}'
     _send_email(to_email, subject, summary or 'A new alert requires attention.')
+
+
+def _safe_background_job_error(job_type: str, exc: Exception) -> str:
+    if job_type == 'send_slack':
+        return 'Slack delivery failed.'
+    return str(exc)
 
 
 def _deliver_slack_attempt(payload: dict[str, Any]) -> None:
