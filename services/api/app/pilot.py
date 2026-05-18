@@ -2668,7 +2668,7 @@ def authenticate_with_connection(connection: psycopg.Connection, request: Reques
     return build_user_response(connection, user_id)
 
 
-def normalize_workspace_header_value(requested_workspace_id: str | None) -> str | None:
+def normalize_workspace_header_value(requested_workspace_id: str | None, *, allow_non_uuid: bool = True) -> str | None:
     raw_value = str(requested_workspace_id or '')
     candidate = next((token.strip() for token in raw_value.split(',') if token.strip()), '')
     if not candidate:
@@ -2676,7 +2676,7 @@ def normalize_workspace_header_value(requested_workspace_id: str | None) -> str 
     try:
         return str(uuid.UUID(candidate))
     except (ValueError, TypeError, AttributeError):
-        if candidate and all(ch.isalnum() or ch in {'-', '_'} for ch in candidate):
+        if allow_non_uuid and candidate and all(ch.isalnum() or ch in {'-', '_'} for ch in candidate):
             return candidate
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -8597,8 +8597,11 @@ def get_workspace_monitoring_debug(request: Request) -> dict[str, Any]:
 
 
 def resolve_workspace_context_for_request(connection: psycopg.Connection, request: Request) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    normalized_workspace_id = normalize_workspace_header_value(
+        request.headers.get('x-workspace-id'),
+        allow_non_uuid=False,
+    )
     user = authenticate_with_connection(connection, request)
-    normalized_workspace_id = normalize_workspace_header_value(request.headers.get('x-workspace-id'))
     workspace_context = resolve_workspace(connection, user['id'], normalized_workspace_id)
     return user, workspace_context, bool(normalized_workspace_id)
 

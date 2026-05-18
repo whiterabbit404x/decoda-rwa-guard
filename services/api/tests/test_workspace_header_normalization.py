@@ -66,3 +66,18 @@ def test_resolve_workspace_context_for_request_rejects_malformed_workspace_heade
 
     assert exc_info.value.status_code == 400
     assert 'Invalid x-workspace-id header' in exc_info.value.detail
+
+
+def test_resolve_workspace_context_for_request_rejects_malformed_header_before_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _auth_should_not_run(_connection, _request):
+        raise AssertionError('authenticate_with_connection should not run for malformed workspace headers')
+
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', _auth_should_not_run)
+
+    request = SimpleNamespace(headers={'x-workspace-id': 'not-a-uuid'})
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.resolve_workspace_context_for_request(_Connection(), request)
+
+    assert exc_info.value.status_code == 400
+    assert 'Invalid x-workspace-id header' in exc_info.value.detail
