@@ -167,10 +167,10 @@ def is_canonical_runtime_truth_enabled() -> bool:
 
 
 def _count_persisted_enabled_monitoring_configs(conn: psycopg.Connection[Any], workspace_id: str) -> int:
-    with conn.cursor() as cursor:
-        cursor.execute(
+    try:
+        row = conn.execute(
             """
-            SELECT COUNT(*)
+            SELECT COUNT(*) AS count
             FROM monitoring_configs mc
             JOIN monitored_targets mt
               ON mt.id = mc.target_id
@@ -186,9 +186,12 @@ def _count_persisted_enabled_monitoring_configs(conn: psycopg.Connection[Any], w
               AND COALESCE(ar.status, 'active') = 'active'
             """,
             (workspace_id,),
-        )
-        row = cursor.fetchone()
+        ).fetchone()
+    except Exception:
+        return 0
     try:
+        if isinstance(row, dict):
+            return max(int(row.get('count') or 0), 0)
         return max(int((row or [0])[0] or 0), 0)
     except Exception:
         return 0
@@ -493,7 +496,7 @@ def _normalize_monitoring_runtime_contract(payload: dict[str, Any]) -> dict[str,
     required_runtime_fields = {
         'proof_chain_status': 'unavailable',
         'proof_chain_correlation_id': None,
-        'evidence_source': 'none',
+        'evidence_source': summary.get('evidence_source') or 'none',
         'status_reason': normalized.get('status_reason'),
         'contradiction_flags': [],
         'enterprise_ready_pass': False,
@@ -558,6 +561,10 @@ def _normalize_monitoring_runtime_contract(payload: dict[str, Any]) -> dict[str,
         normalized['runtime_status'] = normalized.get('runtime_status_summary') or summary.get('runtime_status') or 'offline'
     if not normalized.get('summary_generated_at'):
         normalized['summary_generated_at'] = utc_now().isoformat()
+    summary['count_reason_codes'] = dict(count_reason_codes)
+    summary['field_reason_codes'] = dict(field_reason_codes)
+    if 'evidence_source' not in summary:
+        summary['evidence_source'] = normalized.get('evidence_source') or 'none'
     normalized['workspace_monitoring_summary'] = summary
     return normalized
 
@@ -5911,7 +5918,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         valid_asset_linked_targets = healthy_enabled_targets_count
         enabled_monitored_systems = sum(1 for row in monitored_rows if monitored_system_row_enabled(row))
         valid_target_system_links = valid_target_system_link_count
-        persisted_enabled_config_count = _count_persisted_enabled_monitoring_configs(conn, workspace_id)
+        persisted_enabled_config_count = _count_persisted_enabled_monitoring_configs(connection, workspace_id)
         logger.info(
             'monitoring_runtime_status_counts workspace_id=%s enabled_monitored_systems=%s protected_assets=%s runtime_rows=%s list_route_rows=%s enabled_monitored_systems_list_route=%s protected_assets_list_route=%s',
             workspace_id,

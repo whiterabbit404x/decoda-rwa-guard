@@ -2619,6 +2619,8 @@ def normalize_workspace_header_value(requested_workspace_id: str | None) -> str 
     try:
         return str(uuid.UUID(candidate))
     except (ValueError, TypeError, AttributeError):
+        if candidate and all(ch.isalnum() or ch in {'-', '_'} for ch in candidate):
+            return candidate
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Invalid x-workspace-id header. Provide a valid UUID or a comma-separated list with a valid UUID first.',
