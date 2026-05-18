@@ -10574,7 +10574,14 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         alert = connection.execute(
-            'SELECT id, target_id, analysis_run_id, title, severity, summary, detection_id, alert_type, findings FROM alerts WHERE id = %s AND workspace_id = %s',
+            '''
+            SELECT id, workspace_id, status, incident_id, target_id, analysis_run_id, title, severity, summary, detection_id, alert_type, findings
+            FROM alerts
+            WHERE id = %s
+              AND workspace_id = %s
+              AND status = 'resolved'
+              AND incident_id IS NULL
+            ''',
             (alert_id, workspace_context['workspace_id']),
         ).fetchone()
         if alert is None:
