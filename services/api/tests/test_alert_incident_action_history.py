@@ -27,8 +27,8 @@ def test_escalate_alert_to_incident_updates_bidirectional_links_and_history(monk
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
             executed.append((normalized, params))
-            if 'SELECT id, target_id, analysis_run_id, title, severity, summary, detection_id FROM alerts' in normalized:
-                return _Result({'id': 'alert-1', 'target_id': 'target-1', 'analysis_run_id': 'run-1', 'title': 'Large transfer', 'severity': 'high', 'summary': 'Escalate me', 'detection_id': 'det-1'})
+            if 'SELECT id, workspace_id, status, incident_id, target_id, analysis_run_id, title, severity, summary, detection_id, alert_type, findings FROM alerts' in normalized:
+                return _Result({'id': 'alert-1', 'workspace_id': 'ws-1', 'status': 'resolved', 'incident_id': None, 'target_id': None, 'analysis_run_id': None, 'title': 'Large transfer', 'severity': 'high', 'summary': 'Escalate me', 'detection_id': 'det-1', 'alert_type': 'aml_velocity', 'findings': None})
             if 'WITH inserted_incident AS' in normalized:
                 return _Result({'incident_id': 'inc-1'})
             return _Result()
