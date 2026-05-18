@@ -37,6 +37,7 @@ from services.api.app.db_failure import (
 )
 from services.api.app.secret_crypto import encrypt_secret, read_encrypted_env, validate_encryption_bootstrap
 from services.api.app.export_storage import load_export_storage
+from services.api.app.production_readiness import build_production_readiness
 
 ROLE_VALUES = {'owner', 'admin', 'analyst', 'viewer', 'workspace_owner', 'workspace_admin', 'workspace_member'}
 ROLE_CANONICAL_MAP = {
@@ -1166,6 +1167,62 @@ def _run_migrations_once(connection: Any) -> list[str]:
     if missing_tables:
         raise _schema_missing_http_exception(missing_tables)
     return applied_versions
+
+
+
+
+def get_admin_readiness(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context["workspace"]["id"]
+
+        def _count(table: str) -> int:
+            row = connection.execute(f"SELECT COUNT(*) AS count FROM {table} WHERE workspace_id = %s", (workspace_id,)).fetchone()
+            return int((row or {}).get("count") or 0)
+
+        runtime = monitoring_runtime_status(request)
+        integrations = integration_health_snapshot(connection)
+        billing = billing_runtime_status()
+
+        latest_export = connection.execute("SELECT status, created_at FROM export_jobs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1", (workspace_id,)).fetchone()
+        env_checks = {
+            "database_reachable": True,
+            "billing_required": str(os.getenv("BILLING_REQUIRED", "false")).lower() in {"1","true","yes","on"},
+            "billing_configured": bool(billing.get("configured") or billing.get("available")),
+            "email_required": str(os.getenv("EMAIL_REQUIRED", "true")).lower() in {"1","true","yes","on"},
+            "email_configured": str((integrations.get("email") or {}).get("status", "warning")).lower() in {"healthy","ok"},
+        }
+        workflow = {
+            "detections": _count("detections") + _count("detection_events"),
+            "alerts": _count("alerts"),
+            "incidents": _count("incidents"),
+            "response_actions": _count("response_actions"),
+            "latest_detection_at": runtime.get("last_detection_at"),
+            "latest_alert_at": None,
+            "latest_incident_at": None,
+            "latest_response_action_at": None,
+        }
+        workflow["linkage_status"] = "pass" if all(workflow[k] > 0 for k in ("detections", "alerts", "incidents", "response_actions")) else "partial"
+        workflow["linkage_reason"] = "Linked workflow records are present." if workflow["linkage_status"] == "pass" else "Workflow chain is partial or unavailable."
+
+        exports = {
+            "evidence_source": runtime.get("evidence_source") or "unavailable",
+            "latest_export_job": {"status": (latest_export or {}).get("status"), "created_at": (latest_export or {}).get("created_at").isoformat() if latest_export and latest_export.get("created_at") else None},
+        }
+        security = {"access_control": "workspace_admin"}
+        payload = build_production_readiness(
+            env_checks=env_checks,
+            runtime=runtime,
+            workflow=workflow,
+            integrations=integrations,
+            exports=exports,
+            security=security,
+        )
+        payload["workspace"] = workspace_context["workspace"]
+        payload["checked_by"] = user.get("id")
+        return payload
 
 
 def _wait_for_migration_readiness(connection: Any) -> bool:
