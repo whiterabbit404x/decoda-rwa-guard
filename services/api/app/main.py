@@ -167,6 +167,7 @@ from services.api.app.pilot import (
     list_finding_decisions,
     get_integration_health,
     get_workspace_readiness,
+    get_admin_readiness,
     test_integration_email,
     test_integration_slack,
     get_onboarding_state,
@@ -3476,6 +3477,10 @@ def system_integrations_health(request: Request) -> dict[str, Any]:
 @app.get('/system/readiness', summary='Workspace readiness diagnostics with gates, reasons, and dependency checks')
 def system_workspace_readiness(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: get_workspace_readiness(request))
+
+@app.get('/admin/readiness', summary='Internal admin production readiness snapshot')
+def admin_readiness(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: get_admin_readiness(request))
 
 
 @app.post('/system/integrations/test-email', summary='Send integration test email')
