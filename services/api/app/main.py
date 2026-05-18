@@ -2412,6 +2412,37 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             or summary.get('runtime_status_reason_codes')
             or []
         )
+        compatibility_summary = payload.get('workspace_monitoring_summary')
+        summary = compatibility_summary if isinstance(compatibility_summary, dict) else {}
+        if payload.get('enterprise_ready_pass') is None:
+            payload['enterprise_ready_pass'] = summary.get('enterprise_ready_pass')
+        if payload.get('loop_running') is None:
+            payload['loop_running'] = summary.get('loop_running')
+        if payload.get('count_reason_codes') is None:
+            compatibility_reason_codes = (
+                payload.get('reason_codes')
+                or summary.get('reason_codes')
+                or payload.get('continuity_reason_codes')
+                or summary.get('continuity_reason_codes')
+                or []
+            )
+            payload['count_reason_codes'] = (
+                len(compatibility_reason_codes) if isinstance(compatibility_reason_codes, list) else 0
+            )
+        if payload.get('workspace_slug') is None:
+            payload['workspace_slug'] = summary.get('workspace_slug')
+        if payload.get('enabled_systems') is None:
+            payload['enabled_systems'] = (
+                summary.get('enabled_systems')
+                if summary.get('enabled_systems') is not None
+                else summary.get('monitored_systems')
+            )
+        if payload.get('continuity_freshness_ages_seconds') is None:
+            payload['continuity_freshness_ages_seconds'] = dict(
+                summary.get('continuity_freshness_ages_seconds')
+                or summary.get('freshness_ages_seconds')
+                or {}
+            )
         return payload
     except Exception as exc:
         logger.exception('ops_monitoring_runtime_status_route_failed')
