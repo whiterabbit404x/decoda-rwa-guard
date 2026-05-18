@@ -175,6 +175,8 @@ def _count_persisted_enabled_monitoring_configs(conn: psycopg.Connection[Any], w
             JOIN monitored_targets mt
               ON mt.id = mc.target_id
              AND mt.workspace_id = mc.workspace_id
+             AND mt.enabled = TRUE
+             AND (mt.asset_id IS NULL OR mt.asset_id = mc.asset_id)
             JOIN asset_registry ar
               ON ar.id = mc.asset_id
              AND ar.workspace_id = mc.workspace_id
@@ -6079,6 +6081,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
               ON mt.workspace_id = te.workspace_id
              AND mt.id = te.target_id
              AND mt.enabled = TRUE
+            JOIN monitoring_configs mc
+              ON mc.workspace_id = mt.workspace_id
+             AND mc.target_id = mt.id
+             AND mc.enabled = TRUE
+             AND (mc.asset_id IS NULL OR mc.asset_id = mt.asset_id)
             WHERE te.workspace_id = %s::uuid
               AND te.ingested_at >= %s
             ''',
@@ -6101,6 +6108,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                   ON mt.workspace_id = tcr.workspace_id
                  AND mt.id = tcr.target_id
                  AND mt.enabled = TRUE
+                JOIN monitoring_configs mc
+                  ON mc.workspace_id = mt.workspace_id
+                 AND mc.target_id = mt.id
+                 AND mc.enabled = TRUE
+                 AND (mc.asset_id IS NULL OR mc.asset_id = mt.asset_id)
                 WHERE tcr.workspace_id = %s::uuid
                   AND tcr.coverage_status = 'reporting'
                   AND tcr.last_telemetry_at IS NOT NULL
