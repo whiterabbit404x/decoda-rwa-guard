@@ -24,7 +24,12 @@ def test_create_response_action_translates_legacy_payload_and_writes_history(mon
 
     class _Connection:
         def execute(self, statement, params=None):
-            executed.append((' '.join(str(statement).split()), params))
+            normalized = ' '.join(str(statement).split())
+            executed.append((normalized, params))
+            if 'FROM incidents' in normalized and 'workspace_id' in normalized:
+                return _Result({'id': 'inc-1', 'source_alert_id': 'alert-1'})
+            if 'FROM alerts' in normalized and 'workspace_id' in normalized:
+                return _Result({'id': 'alert-1', 'incident_id': 'inc-1'})
             return _Result()
 
         def commit(self):
@@ -170,11 +175,17 @@ def test_create_live_unsupported_action_returns_structured_422_and_does_not_inse
 
 def test_create_live_action_denied_for_non_approver_role(monkeypatch):
     class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
         def fetchone(self):
-            return None
+            return self._row
 
     class _Connection:
         def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'FROM incidents' in normalized and 'workspace_id' in normalized:
+                return _Result({'id': 'inc-1', 'source_alert_id': 'alert-1'})
             return _Result()
 
         def commit(self):
@@ -207,11 +218,17 @@ def test_create_live_action_denied_for_non_approver_role(monkeypatch):
 
 def test_create_live_action_rejects_non_pending_status(monkeypatch):
     class _Result:
+        def __init__(self, row=None):
+            self._row = row
+
         def fetchone(self):
-            return None
+            return self._row
 
     class _Connection:
         def execute(self, statement, params=None):
+            normalized = ' '.join(str(statement).split())
+            if 'FROM incidents' in normalized and 'workspace_id' in normalized:
+                return _Result({'id': 'inc-1', 'source_alert_id': 'alert-1'})
             return _Result()
 
         def commit(self):
