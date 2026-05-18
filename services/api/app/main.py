@@ -2271,8 +2271,6 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         payload['consecutive_failures'] = int(background_loop_health.get('consecutive_failures') or 0)
         payload['next_retry_at'] = background_loop_health.get('next_retry_at')
         payload['backoff_seconds'] = background_loop_health.get('backoff_seconds')
-        if summary:
-            summary['background_loop_health'] = dict(background_loop_health)
         check_name_aliases = {
             'evidence_chain_completeness': 'linked_fresh_evidence',
             'linked_fresh_evidence_chain': 'linked_fresh_evidence',
