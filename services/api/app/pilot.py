@@ -11995,6 +11995,38 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         artifacts = action.get('execution_artifacts') if isinstance(action.get('execution_artifacts'), dict) else {}
         provider_receipts = action.get('provider_receipts') if isinstance(action.get('provider_receipts'), list) else []
         mode = str(action.get('mode') or 'simulated')
+        if mode in {'recommended', 'live'} and not str(action.get('approved_by_user_id') or '').strip():
+            logger.warning('execute_blocked_missing_approval action_id=%s mode=%s', action_id, mode)
+            blocked_marker = 'execute_blocked_missing_approval'
+            guardrails_artifact = artifacts.get('guardrails') if isinstance(artifacts.get('guardrails'), dict) else {}
+            blocked_markers = guardrails_artifact.get('markers') if isinstance(guardrails_artifact.get('markers'), list) else []
+            blocked_markers.append(
+                _json_safe_value(
+                    {
+                        'marker': blocked_marker,
+                        'mode': mode,
+                        'action_id': action_id,
+                        'blocked_at': utc_now_iso(),
+                        'reason': f'{mode.capitalize()} action requires owner/admin approval before execution.',
+                    }
+                )
+            )
+            artifacts['guardrails'] = {
+                **guardrails_artifact,
+                'last_blocked_marker': blocked_marker,
+                'markers': blocked_markers,
+            }
+            connection.execute(
+                'UPDATE response_actions SET execution_artifacts = %s::jsonb, result_status = %s, error_code = %s, error_reason = %s WHERE id = %s',
+                (
+                    _json_dumps(artifacts),
+                    str(action.get('status') or 'pending'),
+                    'RESPONSE_ACTION_MISSING_APPROVAL',
+                    f'{mode.capitalize()} action requires owner/admin approval before execution.',
+                    action_id,
+                ),
+            )
+            connection.commit()
         _enforce_action_policy_per_mode(
             mode=mode,
             operation='execute',
