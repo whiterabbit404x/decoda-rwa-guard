@@ -3,12 +3,22 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
+import pytest
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 import psycopg
 
 from services.api.app import main as api_main
 from services.api.app import monitoring_runner, pilot
+
+
+@pytest.fixture(autouse=True)
+def _clear_runtime_status_cache():
+    monitoring_runner.RUNTIME_STATUS_WORKSPACE_CACHE.clear()
+    monitoring_runner.RUNTIME_STATUS_SUMMARY_CACHE.clear()
+    yield
+    monitoring_runner.RUNTIME_STATUS_WORKSPACE_CACHE.clear()
+    monitoring_runner.RUNTIME_STATUS_SUMMARY_CACHE.clear()
 
 _PREREQUISITE_COUNTER_KEYS = {
     'raw_enabled_targets',
@@ -200,6 +210,7 @@ def test_monitoring_list_runtime_debug_and_reconcile_stay_consistent(monkeypatch
 
     monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda *_a, **_k: {'id': 'user-1'})
     monkeypatch.setattr(pilot, 'resolve_workspace', lambda *_a, **_k: _workspace_context())
+    monkeypatch.setattr(pilot, 'resolve_workspace_context_for_request', lambda *_a, **_k: ({'id': 'user-1'}, _workspace_context(), True))
     monkeypatch.setattr(
         monitoring_runner,
         'resolve_workspace_context_for_request',

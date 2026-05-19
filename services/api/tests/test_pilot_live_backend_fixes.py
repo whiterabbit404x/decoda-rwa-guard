@@ -685,14 +685,14 @@ def test_seed_monitoring_proof_persists_deterministic_alert_incident_evidence_ch
     assert len(evidence_sql) == 1
     assert len(alert_event_sql) == 1
     assert len(incident_timeline_sql) == 1
-    assert len(audit_sql) == 2
+    assert len(audit_sql) == 3
 
     alert_insert = alert_sql[0]
     incident_insert = incident_sql[0]
     evidence_insert = evidence_sql[0]
     alert_id = alert_insert[0]
     incident_id = incident_insert[0]
-    target_id = alert_insert[10]
+    target_id = alert_insert[13]
     asset_id = evidence_insert[2]
 
     # 1) Evidence persisted with required metadata and linkage.
@@ -710,8 +710,8 @@ def test_seed_monitoring_proof_persists_deterministic_alert_incident_evidence_ch
     # 2) Seeded proof creates one persisted alert.
     assert alert_insert[1] == workspace_id
     assert alert_insert[7] == 'simulator'
-    assert alert_insert[12] == 'simulator'
-    assert alert_insert[10] == target_id
+    assert alert_insert[15] == 'simulator'
+    assert alert_insert[13] == target_id
 
     # 3) Same proof creates one persisted incident linked to that alert.
     assert incident_insert[1] == workspace_id
@@ -723,10 +723,11 @@ def test_seed_monitoring_proof_persists_deterministic_alert_incident_evidence_ch
     assert alert_id in str(incident_timeline_sql[0][6])
     assert any('alert.seeded_from_simulator' == params[3] for params in audit_sql)
     assert any('incident.seeded_from_alert' == params[3] for params in audit_sql)
+    assert any('response_action.seeded_simulated_execution' == params[3] for params in audit_sql)
 
     # 5) Truthfulness guard: simulator/recommendation-style actions, no live containment action labels.
     assert all(params[7] == 'simulator' for params in alert_sql)
-    assert all(params[12] == 'simulator' for params in alert_sql)
+    assert all(params[15] == 'simulator' for params in alert_sql)
     assert all('contain' not in str(params).lower() for params in alert_event_sql + incident_timeline_sql + audit_sql)
 
     # 6) Deterministic end-to-end bootstrap chain asserted for one workspace.

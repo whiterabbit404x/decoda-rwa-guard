@@ -80,11 +80,12 @@ def test_summary_returns_only_strict_contract_fields() -> None:
         'status_reason',
         'db_failure_classification',
         'db_failure_reason',
+        'last_detection_at',
     }
 
 
 def test_runtime_status_is_normalized_to_contract_values() -> None:
-    assert _build_summary(runtime_status='healthy')['runtime_status'] == 'live'
+    assert _build_summary(runtime_status='healthy')['runtime_status'] == 'healthy'
     assert _build_summary(runtime_status='failed')['runtime_status'] == 'offline'
     assert _build_summary(runtime_status='disabled')['runtime_status'] == 'idle'
     assert _build_summary(runtime_status='bogus')['runtime_status'] == 'offline'
