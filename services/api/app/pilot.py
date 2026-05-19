@@ -12826,6 +12826,21 @@ def create_export_job(export_type: str, payload: dict[str, Any], request: Reques
             (job_id, workspace_context['workspace_id'], user['id'], export_type, fmt, _json_dumps(filters), output_path, 'pending', output_path),
         )
         artifact_meta = _generate_export_artifact(connection, workspace_id=workspace_context['workspace_id'], export_id=job_id)
+        if export_type == 'proof_bundle' and artifact_meta:
+            persisted_filters = {
+                **filters,
+                'export_format_version': artifact_meta.get('export_format_version'),
+                'export_status': artifact_meta.get('export_status'),
+                'evidence_source_type': artifact_meta.get('evidence_source_type'),
+                'missing_sections': artifact_meta.get('missing_sections') or [],
+                'unavailable_sections': artifact_meta.get('unavailable_sections') or [],
+                'warnings': artifact_meta.get('warnings') or [],
+                'chain_complete': bool(artifact_meta.get('chain_complete')),
+            }
+            connection.execute(
+                'UPDATE export_jobs SET filters = %s::jsonb, updated_at = NOW() WHERE id = %s AND workspace_id = %s',
+                (_json_dumps(persisted_filters), job_id, workspace_context['workspace_id']),
+            )
         log_audit(connection, action='export.generate', entity_type='export_job', entity_id=job_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'export_type': export_type, 'format': fmt})
         connection.commit()
         completed = connection.execute('SELECT status, error_message FROM export_jobs WHERE id = %s', (job_id,)).fetchone()
@@ -12901,6 +12916,8 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
         'export_status': result.get('export_status'),
         'evidence_source_type': result.get('evidence_source_type'),
         'missing_sections': result.get('missing_sections'),
+        'unavailable_sections': result.get('unavailable_sections'),
+        'chain_complete': result.get('chain_complete'),
         'warnings': result.get('warnings'),
         'error_message': result.get('error_message'),
     }
@@ -13585,7 +13602,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 evidence_source_type = 'live'
             elif any(s in {'simulator', 'demo', 'replay', 'guided_simulator'} for s in all_sources):
                 evidence_source_type = 'simulator'
-            elif any(s == 'fallback' for s in all_sources):
+            elif any(s in {'fallback', 'unavailable'} for s in all_sources):
                 evidence_source_type = 'unavailable'
             elif all_sources:
                 evidence_source_type = 'unknown'
@@ -13604,6 +13621,9 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 missing_sections.append('telemetry_evidence')
             if not audit_log_rows:
                 missing_sections.append('audit_log')
+            unavailable_sections: list[str] = []
+            if evidence_source_type == 'unavailable':
+                unavailable_sections.append('telemetry_evidence')
 
             # Compute export completeness status
             core_present = bool(alert_rows and detection_rows and action_rows and evidence_rows)
@@ -13621,10 +13641,13 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 bundle_warnings.append(f'Missing chain sections: {", ".join(missing_sections)}. Bundle is partial.')
 
             artifact_meta = {
+                'export_format_version': 'proof_bundle.v1',
                 'export_status': export_status,
                 'evidence_source_type': evidence_source_type,
                 'missing_sections': missing_sections,
+                'unavailable_sections': unavailable_sections,
                 'warnings': bundle_warnings,
+                'chain_complete': export_status == 'complete',
             }
 
             incident_dict = _json_safe_value(dict(incident))
@@ -13641,9 +13664,11 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 'alert_count': len(alert_rows),
                 'detection_count': len(detection_rows),
                 'response_action_count': len(action_rows),
+                'export_format_version': 'proof_bundle.v1',
                 'export_status': export_status,
                 'evidence_source_type': evidence_source_type,
                 'missing_sections': missing_sections,
+                'unavailable_sections': unavailable_sections,
                 'warnings': bundle_warnings,
                 'chain_complete': export_status == 'complete',
             }
@@ -13737,6 +13762,14 @@ def list_exports(request: Request) -> dict[str, Any]:
             filters_val = item.pop('filters', None) or {}
             if isinstance(filters_val, dict):
                 item['incident_id'] = filters_val.get('incident_id')
+                if item.get('export_type') == 'proof_bundle':
+                    item['export_format_version'] = 'proof_bundle.v1'
+                    item['chain_complete'] = bool(filters_val.get('chain_complete')) if isinstance(filters_val.get('chain_complete'), bool) else None
+                    item['export_status'] = filters_val.get('export_status')
+                    item['evidence_source_type'] = filters_val.get('evidence_source_type')
+                    item['missing_sections'] = filters_val.get('missing_sections') or []
+                    item['unavailable_sections'] = filters_val.get('unavailable_sections') or []
+                    item['warnings'] = filters_val.get('warnings') or []
             exports.append(item)
         return {'exports': exports}
 
