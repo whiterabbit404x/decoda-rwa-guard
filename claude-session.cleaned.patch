@@ -11,11 +11,11 @@ index b20157f..43f7dcb 100644
 +  missing_sections?: string[];
 +  unavailable_sections?: string[];
  };
- 
+
  type AuditRow = {
 @@ -96,16 +100,24 @@ type AuditRow = {
  /* ── Helpers ────────────────────────────────────────────────────── */
- 
+
  // Simulator evidence must always show evidence_source = simulator.
 -// Do not label simulator evidence as live_provider.
 +// Fallback evidence must be labeled unavailable, not simulator.
@@ -46,12 +46,12 @@ index b20157f..43f7dcb 100644
 -  return { label: 'none', variant: 'neutral' };
 +  return { label: 'unknown', variant: 'neutral' };
  }
- 
+
  function packageStatusPill(status?: string): { label: string; variant: PillVariant } {
 @@ -723,6 +735,27 @@ function PackageDetailPanel({
          </div>
        )}
- 
+
 +      {(pkg.warnings?.length ?? 0) > 0 && (
 +        <div
 +          style={{
@@ -91,7 +91,7 @@ index b20157f..43f7dcb 100644
            <StatusPill label="Not Available" variant="neutral" />
          )}
        </div>
- 
+
 +      {/* Missing chain sections */}
 +      {(pkg.missing_sections?.length ?? 0) > 0 && (
 +        <div style={{ marginBottom: '0.75rem' }}>
@@ -271,8 +271,8 @@ index 13632d0..eef4db9 100644
          completed = connection.execute('SELECT status, error_message FROM export_jobs WHERE id = %s', (job_id,)).fetchone()
 -        return {'job_id': job_id, 'status': str(completed['status']), 'download_url': f'/exports/{job_id}/download' if str(completed['status']) == 'completed' else None, 'error_message': completed.get('error_message')}
 +        return {'job_id': job_id, 'status': str(completed['status']), 'download_url': f'/exports/{job_id}/download' if str(completed['status']) == 'completed' else None, 'error_message': completed.get('error_message'), **(artifact_meta or {})}
- 
- 
+
+
  def get_mttd_metrics(request: Request, *, window_days: int = 7) -> dict[str, Any]:
 @@ -12898,6 +12898,10 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
          'export_job_id': result['job_id'],
@@ -284,11 +284,11 @@ index 13632d0..eef4db9 100644
 +        'warnings': result.get('warnings'),
          'error_message': result.get('error_message'),
      }
- 
+
 @@ -13339,11 +13343,12 @@ def _export_guided_workflow_live_evidence_artifacts(*, workspace_id: str, chain_
          if not path.exists() or path.stat().st_size <= 0:
              raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f'guided workflow artifact {artifact_name} is missing or empty')
- 
+
 -def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: str) -> None:
 +def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: str) -> dict[str, Any]:
      job = connection.execute('SELECT id, export_type, format, filters FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_id)).fetchone()
@@ -450,8 +450,8 @@ index 13632d0..eef4db9 100644
      except Exception as exc:
          connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(exc), export_id))
 +    return artifact_meta
- 
- 
+
+
  def list_exports(request: Request) -> dict[str, Any]:
 @@ -13587,7 +13718,7 @@ def list_exports(request: Request) -> dict[str, Any]:
          workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
@@ -471,7 +471,7 @@ index 13632d0..eef4db9 100644
 +                item['incident_id'] = filters_val.get('incident_id')
              exports.append(item)
          return {'exports': exports}
- 
+
 diff --git a/services/api/tests/test_assets_and_exports_foundations.py b/services/api/tests/test_assets_and_exports_foundations.py
 index 54839bf..f048fba 100644
 --- a/services/api/tests/test_assets_and_exports_foundations.py
@@ -518,8 +518,8 @@ index 54839bf..f048fba 100644
 +    # artifact_meta propagated
 +    assert meta.get('export_status') in {'complete', 'partial', 'incomplete'}
 +    assert meta.get('evidence_source_type') in {'live', 'simulator', 'unavailable', 'missing', 'unknown'}
- 
- 
+
+
  def test_generate_export_artifact_report_template_includes_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
 diff --git a/services/api/tests/test_proof_bundle_export.py b/services/api/tests/test_proof_bundle_export.py
 new file mode 100644
