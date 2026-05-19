@@ -60,6 +60,7 @@ type EvidencePackage = {
   asset_id?: string;
   asset_label?: string;
   evidence_source?: string;
+  evidence_source_type?: string;
   size_bytes?: number;
   package_ready?: boolean;
   download_url?: string | null;
@@ -95,6 +96,7 @@ type AuditRow = {
   user_agent?: string;
   workspace_id?: string;
   evidence_source?: string;
+  evidence_source_type?: string;
 };
 
 /* ── Helpers ────────────────────────────────────────────────────── */
@@ -497,7 +499,7 @@ export default function EvidenceAuditPanel() {
                   </tr>
                 ) : (
                   packages.map((pkg) => {
-                    const evSrc = evidenceSourcePill(pkg.evidence_source, workspaceEvidenceSource);
+                    const evSrc = evidenceSourcePill(pkg.evidence_source_type ?? pkg.evidence_source, workspaceEvidenceSource);
                     const ready = isPackageReady(pkg);
                     const isSelected = pkg.id === selectedPkgId;
                     return (
@@ -640,7 +642,7 @@ export default function EvidenceAuditPanel() {
                 auditRows.map((row, index) => {
                   const rowId = row.id ?? String(index);
                   const isSelected = rowId === selectedAuditId;
-                  const evSrc = evidenceSourcePill(row.evidence_source, workspaceEvidenceSource);
+                  const evSrc = evidenceSourcePill(row.evidence_source_type ?? row.evidence_source, workspaceEvidenceSource);
                   const result = auditResultPill(row.result ?? row.status);
                   return (
                     <tr
@@ -711,7 +713,7 @@ function PackageDetailPanel({
   authHeaders: () => Record<string, string>;
   onExport: (pkg: EvidencePackage, format: 'json' | 'csv') => Promise<void>;
 }) {
-  const evSrc = evidenceSourcePill(pkg.evidence_source, workspaceEvidenceSource);
+  const evSrc = evidenceSourcePill(pkg.evidence_source_type ?? pkg.evidence_source, workspaceEvidenceSource);
   const st = packageStatusPill(pkg.status);
   const ready = isPackageReady(pkg);
 
@@ -1021,7 +1023,7 @@ function AuditDetailPanel({
   row: AuditRow;
   workspaceEvidenceSource: string;
 }) {
-  const evSrc = evidenceSourcePill(row.evidence_source, workspaceEvidenceSource);
+  const evSrc = evidenceSourcePill(row.evidence_source_type ?? row.evidence_source, workspaceEvidenceSource);
   const result = auditResultPill(row.result ?? row.status);
 
   return (
