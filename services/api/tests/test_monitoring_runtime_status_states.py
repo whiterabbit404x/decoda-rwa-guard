@@ -73,6 +73,8 @@ def _enable_live_mode(monkeypatch):
 def _runtime_defaults(monkeypatch):
     _enable_live_mode(monkeypatch)
     monkeypatch.setattr(monitoring_runner, 'ensure_monitoring_runtime_schema_capabilities', lambda _c: None)
+    monitoring_runner.RUNTIME_STATUS_WORKSPACE_CACHE.clear()
+    monitoring_runner.RUNTIME_STATUS_SUMMARY_CACHE.clear()
 
 
 def test_runtime_status_idle_when_worker_healthy_without_recent_evidence(monkeypatch):

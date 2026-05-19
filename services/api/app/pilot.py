@@ -4216,7 +4216,7 @@ def _seed_demo_domain_targets(connection: Any, *, workspace_id: str, asset_id: s
             (workspace_id, name),
         ).fetchone()
         if row is None:
-            target_id = str(uuid.uuid4())
+            target_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'demo-seed-domain-target:{workspace_id}:{name}'))
             connection.execute(
                 '''
                 INSERT INTO targets (

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 
 
-CANONICAL_RUNTIME_STATUS = {'live', 'degraded', 'offline', 'idle'}
+CANONICAL_RUNTIME_STATUS = {'live', 'degraded', 'offline', 'idle', 'healthy'}
 CANONICAL_MONITORING_STATUS = {'live', 'limited', 'offline'}
 CANONICAL_TELEMETRY_FRESHNESS = {'fresh', 'stale', 'unavailable'}
 CANONICAL_CONFIDENCE = {'high', 'medium', 'low', 'unavailable'}
@@ -43,6 +43,7 @@ CANONICAL_SUMMARY_KEYS = (
     'status_reason',
     'db_failure_classification',
     'db_failure_reason',
+    'last_detection_at',
 )
 
 RUNTIME_SETUP_STEP_ORDER = (
@@ -127,8 +128,6 @@ def _normalized_runtime_status(value: str) -> str:
     normalized = str(value or '').strip().lower()
     if normalized in CANONICAL_RUNTIME_STATUS:
         return normalized
-    if normalized in {'healthy'}:
-        return 'live'
     if normalized in {'provisioning', 'disabled'}:
         return 'idle'
     if normalized in {'failed'}:
@@ -152,7 +151,7 @@ def _normalized_monitoring_status(
         return 'limited'
     if reporting_systems_count <= 0:
         return 'limited'
-    if runtime_status == 'live' and telemetry_freshness == 'fresh':
+    if runtime_status in {'live', 'healthy'} and telemetry_freshness == 'fresh':
         return 'live'
     return 'limited'
 
@@ -322,7 +321,15 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
     canonical['counts'] = dict(canonical_v2.get('counts') or {})
     canonical['timestamps'] = dict(canonical_v2.get('timestamps') or {})
     canonical['statuses'] = dict(canonical_v2.get('statuses') or {})
-    return {key: canonical[key] for key in CANONICAL_SUMMARY_KEYS}
+    canonical['valid_protected_assets'] = max(int(payload.get('valid_protected_assets', payload.get('valid_protected_asset_count', 0)) or 0), 0)
+    canonical['configured_systems'] = max(int(payload.get('configured_systems', payload.get('monitored_systems', payload.get('monitored_systems_count', 0))) or 0), 0)
+    canonical['configuration_reason'] = str(payload.get('configuration_reason')).strip() if isinstance(payload.get('configuration_reason'), str) and str(payload.get('configuration_reason')).strip() else None
+    canonical['configuration_reason_codes'] = sorted({str(code).strip() for code in payload.get('configuration_reason_codes', []) if str(code).strip()})
+    canonical['monitoring_mode'] = str(payload.get('monitoring_mode') or '').strip() or None
+    result = {key: canonical[key] for key in CANONICAL_SUMMARY_KEYS if key in canonical}
+    if canonical.get('top_banner_reasons'):
+        result['top_banner_reasons'] = canonical['top_banner_reasons']
+    return result
 
 
 def resolve_next_required_action(runtime_setup_chain: dict[str, Any] | None) -> str:
@@ -415,6 +422,7 @@ def build_workspace_monitoring_summary(
     valid_target_system_link_count: int,
     telemetry_window_seconds: int,
     active_alerts_count: int = 0,
+    alerts_without_detection_count: int = 0,
     active_incidents_count: int = 0,
     response_actions_count: int = 0,
     evidence_packages_count: int = 0,
@@ -463,9 +471,9 @@ def build_workspace_monitoring_summary(
         contradiction_flags.append('offline_with_current_telemetry')
     if freshness_status == 'unavailable' and confidence_status == 'high':
         contradiction_flags.append('telemetry_unavailable_with_high_confidence')
-    if last_heartbeat_at and telemetry_timestamp is None:
+    if last_heartbeat_at and telemetry_timestamp is None and normalized_evidence == 'live_provider':
         contradiction_flags.append('heartbeat_without_telemetry_timestamp')
-    if last_poll_at and telemetry_timestamp is None:
+    if last_poll_at and telemetry_timestamp is None and normalized_evidence == 'live_provider':
         contradiction_flags.append('poll_without_telemetry_timestamp')
     monitoring_claimed_healthy = (
         normalized_runtime == 'live'
@@ -543,7 +551,7 @@ def build_workspace_monitoring_summary(
         contradiction_flags.append('ui_live_monitoring_claim_without_telemetry')
     if normalized_evidence == 'simulator' and confidence_status == 'high':
         contradiction_flags.append('simulator_evidence_claimed_as_live_provider')
-    if active_alerts_count > 0 and last_detection_at is None:
+    if workspace_configured and alerts_without_detection_count > 0 and last_detection_at is None and normalized_evidence not in {'none', 'simulator'}:
         contradiction_flags.append('alert_exists_without_detection')
     if active_incidents_count > 0 and int(active_alerts_count) <= 0:
         contradiction_flags.append('incident_exists_without_alert')
@@ -629,6 +637,11 @@ def build_workspace_monitoring_summary(
         'status_reason': resolved_status_reason,
         'db_failure_classification': None if db_persistence_is_available else 'persistence_unavailable',
         'db_failure_reason': normalized_db_failure_reason,
+        'configured_systems': int(configured_systems),
+        'monitoring_mode': str(monitoring_mode) if monitoring_mode else None,
+        'configuration_reason': str(configuration_reason) if configuration_reason else None,
+        'configuration_reason_codes': list(configuration_reason_codes) if configuration_reason_codes else [],
+        'valid_protected_assets': int(valid_protected_asset_count),
     }
     return _canonical_summary(summary)
 
@@ -691,5 +704,10 @@ def build_workspace_monitoring_summary_fallback(
         'status_reason': status_reason,
         'db_failure_classification': None,
         'db_failure_reason': None,
+        'configured_systems': 0,
+        'monitoring_mode': None,
+        'configuration_reason': None,
+        'configuration_reason_codes': [],
+        'valid_protected_assets': 0,
     }
     return _canonical_summary(summary)

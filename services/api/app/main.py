@@ -2223,11 +2223,12 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         canonical_runtime = {
             'workspace_monitoring_runtime': canonical_runtime_summary,
             'workspace_id': payload.get('workspace_id'),
+            'workspace_slug': payload.get('workspace_slug'),
             'workspace_name': payload.get('workspace_name'),
             'workspace_configured': bool(summary_payload.get('workspace_configured', payload.get('workspace_configured'))),
             'runtime_status': str(payload.get('runtime_status') or 'offline'),
             'monitoring_status': str(summary_payload.get('monitoring_status') or payload.get('monitoring_status') or 'offline'),
-            'configured_systems': int(payload.get('configured_systems') or 0),
+            'configured_systems': int(summary_payload.get('configured_systems') or payload.get('enabled_systems') or payload.get('configured_systems') or 0),
             'reporting_systems': int(summary_payload.get('reporting_systems') or payload.get('reporting_systems') or 0),
             'protected_assets': int(summary_payload.get('protected_assets') or payload.get('protected_assets') or 0),
             'monitored_systems': int(summary_payload.get('monitored_systems') or payload.get('monitored_systems') or payload.get('configured_systems') or 0),
@@ -2259,7 +2260,55 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         }
         if _is_production_like_runtime():
             emit_legacy_fields = False
+        _frc = dict(summary_payload.get('field_reason_codes') or payload.get('field_reason_codes') or {})
+        if summary_payload:
+            for _frc_key in ('protected_assets', 'configured_systems', 'reporting_systems', 'last_poll_at', 'last_heartbeat_at', 'last_telemetry_at'):
+                _frc.setdefault(_frc_key, [])
+        canonical_runtime_summary['field_reason_codes'] = _frc
+        canonical_runtime_summary['count_reason_codes'] = dict(
+            payload.get('count_reason_codes') or summary_payload.get('count_reason_codes') or {}
+        )
+        canonical_runtime_summary['continuity_freshness_ages_seconds'] = dict(
+            summary_payload.get('continuity_freshness_ages_seconds') or {}
+        )
+        canonical_runtime_summary['continuity_configured_thresholds_seconds'] = dict(
+            summary_payload.get('continuity_configured_thresholds_seconds') or {}
+        )
+        canonical_runtime_summary['continuity_breach_reasons'] = list(
+            summary_payload.get('continuity_breach_reasons') or []
+        )
         canonical_runtime['workspace_monitoring_summary'] = dict(canonical_runtime_summary)
+        canonical_runtime['configuration_reason'] = payload.get('configuration_reason')
+        canonical_runtime['configuration_reason_codes'] = list(payload.get('configuration_reason_codes') or [])
+        canonical_runtime['count_reason_codes'] = dict(payload.get('count_reason_codes') or {})
+        canonical_runtime['field_reason_codes'] = dict(payload.get('field_reason_codes') or {})
+        canonical_runtime['runtime_status_summary'] = (
+            payload.get('runtime_status_summary')
+            or summary_payload.get('runtime_status')
+            or payload.get('runtime_status')
+            or 'offline'
+        )
+        canonical_runtime['configuration_diagnostics'] = dict(payload.get('configuration_diagnostics') or {})
+        canonical_runtime['enabled_systems'] = int(
+            payload.get('enabled_systems')
+            or payload.get('enabled_system_count')
+            or payload.get('configured_systems')
+            or summary_payload.get('configured_systems')
+            or 0
+        )
+        canonical_runtime['runtime_error_code'] = payload.get('runtime_error_code')
+        canonical_runtime['runtime_degraded_reason'] = payload.get('runtime_degraded_reason')
+        if payload.get('error') is not None:
+            canonical_runtime['error'] = payload.get('error')
+        canonical_runtime['status'] = payload.get('status') or str(
+            summary_payload.get('monitoring_status') or payload.get('monitoring_status') or 'offline'
+        ).capitalize()
+        canonical_runtime['systems_with_recent_heartbeat'] = payload.get('systems_with_recent_heartbeat')
+        for _counter_key in (
+            'raw_enabled_targets', 'monitorable_enabled_targets', 'valid_asset_linked_targets',
+            'enabled_monitored_systems', 'valid_target_system_links',
+        ):
+            canonical_runtime[_counter_key] = int(payload.get(_counter_key) or 0)
         if not emit_legacy_fields:
             return canonical_runtime
         payload.update(canonical_runtime)
