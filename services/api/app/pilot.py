@@ -12825,11 +12825,11 @@ def create_export_job(export_type: str, payload: dict[str, Any], request: Reques
             ''',
             (job_id, workspace_context['workspace_id'], user['id'], export_type, fmt, _json_dumps(filters), output_path, 'pending', output_path),
         )
-        _generate_export_artifact(connection, workspace_id=workspace_context['workspace_id'], export_id=job_id)
+        artifact_meta = _generate_export_artifact(connection, workspace_id=workspace_context['workspace_id'], export_id=job_id)
         log_audit(connection, action='export.generate', entity_type='export_job', entity_id=job_id, request=request, user_id=user['id'], workspace_id=workspace_context['workspace_id'], metadata={'export_type': export_type, 'format': fmt})
         connection.commit()
         completed = connection.execute('SELECT status, error_message FROM export_jobs WHERE id = %s', (job_id,)).fetchone()
-        return {'job_id': job_id, 'status': str(completed['status']), 'download_url': f'/exports/{job_id}/download' if str(completed['status']) == 'completed' else None, 'error_message': completed.get('error_message')}
+        return {'job_id': job_id, 'status': str(completed['status']), 'download_url': f'/exports/{job_id}/download' if str(completed['status']) == 'completed' else None, 'error_message': completed.get('error_message'), **(artifact_meta or {})}
 
 
 def get_mttd_metrics(request: Request, *, window_days: int = 7) -> dict[str, Any]:
@@ -12898,6 +12898,10 @@ def create_proof_bundle_export(payload: dict[str, Any], request: Request) -> dic
         'export_job_id': result['job_id'],
         'download_link': result.get('download_url'),
         'status': result.get('status'),
+        'export_status': result.get('export_status'),
+        'evidence_source_type': result.get('evidence_source_type'),
+        'missing_sections': result.get('missing_sections'),
+        'warnings': result.get('warnings'),
         'error_message': result.get('error_message'),
     }
 
@@ -13339,11 +13343,12 @@ def _export_guided_workflow_live_evidence_artifacts(*, workspace_id: str, chain_
         if not path.exists() or path.stat().st_size <= 0:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f'guided workflow artifact {artifact_name} is missing or empty')
 
-def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: str) -> None:
+def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: str) -> dict[str, Any]:
     job = connection.execute('SELECT id, export_type, format, filters FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_id)).fetchone()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Export not found.')
     rows: list[dict[str, Any]]
+    artifact_meta: dict[str, Any] = {}
     filters = job.get('filters') if isinstance(job.get('filters'), dict) else {}
     match str(job['export_type']):
         case 'history':
@@ -13508,18 +13513,143 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 ''',
                 (workspace_id, incident_id),
             ).fetchall()
+            alert_rows = [_json_safe_value(dict(item)) for item in alerts]
             evidence_rows = [_json_safe_value(dict(item)) for item in metrics]
+            alert_ids = [str(item.get('id') or '') for item in alert_rows if item.get('id')]
+
+            # Collect response actions for the incident
+            response_actions_rows_raw = connection.execute(
+                '''
+                SELECT id, action_type, status, mode, execution_metadata, created_at, executed_at, rolled_back_at
+                FROM response_actions
+                WHERE workspace_id = %s AND incident_id = %s
+                ORDER BY created_at DESC
+                LIMIT 50
+                ''',
+                (workspace_id, incident_id),
+            ).fetchall()
+            action_rows = [_json_safe_value(dict(item)) for item in response_actions_rows_raw]
+
+            # Collect detections linked to alerts in this incident
+            detection_rows: list[dict[str, Any]] = []
+            if alert_ids:
+                try:
+                    det_rows_raw = connection.execute(
+                        '''
+                        SELECT id, detection_type, severity, confidence, evidence_source, status, detected_at, title
+                        FROM detections
+                        WHERE workspace_id = %s AND linked_alert_id = ANY(%s::uuid[])
+                        ORDER BY detected_at DESC
+                        LIMIT 50
+                        ''',
+                        (workspace_id, alert_ids),
+                    ).fetchall()
+                    detection_rows = [_json_safe_value(dict(item)) for item in det_rows_raw]
+                except Exception:
+                    detection_rows = []
+
+            # Collect audit log entries for this incident
+            audit_log_rows: list[dict[str, Any]] = []
+            try:
+                audit_raw = connection.execute(
+                    '''
+                    SELECT id, action, entity_type, entity_id, metadata, created_at
+                    FROM audit_logs
+                    WHERE workspace_id = %s
+                      AND (entity_id = %s OR action LIKE %s)
+                    ORDER BY created_at DESC
+                    LIMIT 50
+                    ''',
+                    (workspace_id, incident_id, 'export.%'),
+                ).fetchall()
+                audit_log_rows = [_json_safe_value(dict(item)) for item in audit_raw]
+            except Exception:
+                audit_log_rows = []
+
+            # Determine evidence source type from linked alerts and detections
+            all_sources: list[str] = []
+            for item in alert_rows:
+                src = str(item.get('source') or '').lower()
+                if src:
+                    all_sources.append(src)
+            for item in detection_rows:
+                src = str(item.get('evidence_source') or '').lower()
+                if src:
+                    all_sources.append(src)
+
+            if any(s in {'live', 'live_provider'} for s in all_sources):
+                evidence_source_type = 'live'
+            elif any(s in {'simulator', 'demo', 'replay', 'guided_simulator'} for s in all_sources):
+                evidence_source_type = 'simulator'
+            elif any(s == 'fallback' for s in all_sources):
+                evidence_source_type = 'unavailable'
+            elif all_sources:
+                evidence_source_type = 'unknown'
+            else:
+                evidence_source_type = 'missing'
+
+            # Compute missing chain sections
+            missing_sections: list[str] = []
+            if not alert_rows:
+                missing_sections.append('alerts')
+            if not detection_rows:
+                missing_sections.append('detections')
+            if not action_rows:
+                missing_sections.append('response_actions')
+            if not evidence_rows:
+                missing_sections.append('telemetry_evidence')
+            if not audit_log_rows:
+                missing_sections.append('audit_log')
+
+            # Compute export completeness status
+            core_present = bool(alert_rows and detection_rows and action_rows and evidence_rows)
+            export_status = 'complete' if core_present else ('partial' if (alert_rows or detection_rows or action_rows) else 'incomplete')
+
+            # Build warnings
+            bundle_warnings: list[str] = []
+            if evidence_source_type == 'simulator':
+                bundle_warnings.append('Evidence is from simulator/demo source and does not constitute live production proof.')
+            elif evidence_source_type == 'unavailable':
+                bundle_warnings.append('Evidence source was unavailable at collection time. Bundle may contain fallback data.')
+            elif evidence_source_type == 'missing':
+                bundle_warnings.append('No evidence source records found. Bundle is incomplete.')
+            if missing_sections:
+                bundle_warnings.append(f'Missing chain sections: {", ".join(missing_sections)}. Bundle is partial.')
+
+            artifact_meta = {
+                'export_status': export_status,
+                'evidence_source_type': evidence_source_type,
+                'missing_sections': missing_sections,
+                'warnings': bundle_warnings,
+            }
+
+            incident_dict = _json_safe_value(dict(incident))
             summary = {
                 'generated_at': utc_now_iso(),
                 'workspace_id': workspace_id,
                 'incident_id': incident_id,
+                'alert_id': alert_rows[0].get('id') if alert_rows else None,
+                'detection_id': detection_rows[0].get('id') if detection_rows else None,
+                'response_action_id': action_rows[0].get('id') if action_rows else None,
+                'asset_id': incident_dict.get('asset_id') or (alert_rows[0].get('target_id') if alert_rows else None),
                 'include_raw_events': include_raw_events,
                 'detection_metric_count': len(evidence_rows),
+                'alert_count': len(alert_rows),
+                'detection_count': len(detection_rows),
+                'response_action_count': len(action_rows),
+                'export_status': export_status,
+                'evidence_source_type': evidence_source_type,
+                'missing_sections': missing_sections,
+                'warnings': bundle_warnings,
+                'chain_complete': export_status == 'complete',
             }
             rows = [{
                 'summary.json': summary,
-                'alerts.json': [_json_safe_value(dict(item)) for item in alerts],
-                'incidents.json': [_json_safe_value(dict(incident))],
+                'alerts.json': alert_rows,
+                'incidents.json': [incident_dict],
+                'detections.json': detection_rows,
+                'response_actions.json': action_rows,
+                'audit_log.json': audit_log_rows,
                 'evidence.json': [item.get('evidence') for item in evidence_rows],
                 'detection_metrics.json': evidence_rows if include_raw_events else [
                     {'id': item.get('id'), 'event_observed_at': item.get('event_observed_at'), 'detected_at': item.get('detected_at'), 'mttd_seconds': item.get('mttd_seconds'), 'evidence': item.get('evidence')}
@@ -13577,6 +13707,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
         )
     except Exception as exc:
         connection.execute("UPDATE export_jobs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s", (str(exc), export_id))
+    return artifact_meta
 
 
 def list_exports(request: Request) -> dict[str, Any]:
@@ -13587,7 +13718,7 @@ def list_exports(request: Request) -> dict[str, Any]:
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
         rows = connection.execute(
             '''
-            SELECT id, export_type, format, status, output_path, storage_backend, storage_object_key, error_message, created_at, updated_at
+            SELECT id, export_type, format, status, output_path, storage_backend, storage_object_key, error_message, filters, created_at, updated_at
             FROM export_jobs
             WHERE workspace_id = %s
             ORDER BY created_at DESC
@@ -13599,6 +13730,9 @@ def list_exports(request: Request) -> dict[str, Any]:
         for row in rows:
             item = _json_safe_value(dict(row))
             item['download_url'] = f"/exports/{item['id']}/download" if item.get('status') == 'completed' else None
+            filters_val = item.pop('filters', None) or {}
+            if isinstance(filters_val, dict):
+                item['incident_id'] = filters_val.get('incident_id')
             exports.append(item)
         return {'exports': exports}
 

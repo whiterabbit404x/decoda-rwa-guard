@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
@@ -37,7 +37,7 @@ export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApi
     ];
   }, [liveApiReachable, onboardingProgress]);
 
-  const compactWorkflow = WORKFLOW_STEP_ORDER.map((stepId, index) => `${index + 1}. ${WORKFLOW_STEP_LABELS[stepId]}`).join(' · ');
+  const compactWorkflow = WORKFLOW_STEP_ORDER.map((stepId, index) => `${index + 1}. ${WORKFLOW_STEP_LABELS[stepId]}`).join(' 路 ');
 
   return (
     <section className="dataCard">
@@ -51,7 +51,7 @@ export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApi
       <p className="muted">Signed in as <strong>{user?.email ?? 'unknown user'}</strong> in <strong>{workspaceName}</strong>.</p>
       <div className="chipRow">
         {checklist.map((item) => (
-          <span key={item.label} className="ruleChip">{item.complete ? '✓' : '○'} {item.label}</span>
+          <span key={item.label} className="ruleChip">{item.complete ? '鉁? : '鈼?} {item.label}</span>
         ))}
       </div>
       <p className="muted">{onboardingProgress ? `Workspace onboarding completion: ${onboardingProgress.progress_percent}%` : 'Load onboarding checklist to track setup completion.'}</p>
