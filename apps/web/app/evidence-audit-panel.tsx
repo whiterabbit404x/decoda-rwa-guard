@@ -108,10 +108,10 @@ function evidenceSourcePill(
 ): { label: string; variant: PillVariant } {
   const raw = (rowSource ?? '').toLowerCase();
   if (raw === 'missing') {
-    return { label: 'missing', variant: 'neutral' };
+    return { label: 'Evidence missing', variant: 'neutral' };
   }
   if (raw === 'unavailable' || raw === 'fallback') {
-    return { label: 'unavailable', variant: 'warning' };
+    return { label: 'Evidence unavailable', variant: 'warning' };
   }
   if (
     raw === 'simulator' ||
@@ -120,12 +120,12 @@ function evidenceSourcePill(
     raw === 'guided_simulator' ||
     workspaceSource === 'simulator'
   ) {
-    return { label: 'simulator', variant: 'info' };
+    return { label: 'Simulator/test evidence', variant: 'info' };
   }
   if (raw === 'live' || raw === 'live_provider') {
-    return { label: 'live_provider', variant: 'success' };
+    return { label: 'Live evidence', variant: 'success' };
   }
-  return { label: 'unknown', variant: 'neutral' };
+  return { label: 'Unknown source', variant: 'neutral' };
 }
 
 function packageStatusPill(status?: string): { label: string; variant: PillVariant } {
@@ -258,10 +258,30 @@ export default function EvidenceAuditPanel() {
 
   async function createPackage() {
     setMessage('');
-    const res = await fetch(`${apiUrl}/exports/history`, {
+    const linkedIncidentId =
+      packages.find((pkg) => pkg.incident_id)?.incident_id ??
+      ((runtime as Record<string, unknown> | undefined)?.latest_incident_id as string | undefined) ??
+      ((summary as Record<string, unknown> | undefined)?.latest_incident_id as string | undefined) ??
+      ((summary as Record<string, unknown> | undefined)?.last_incident_id as string | undefined);
+
+    let incidentId = linkedIncidentId;
+    if (!incidentId) {
+      const incidentRes = await fetch(`${apiUrl}/incidents`, { headers: authHeaders(), cache: 'no-store' });
+      if (incidentRes.ok) {
+        const incidentsPayload = (await incidentRes.json()) as { incidents?: Array<{ id?: string }> };
+        incidentId = incidentsPayload.incidents?.[0]?.id;
+      }
+    }
+
+    if (!incidentId) {
+      setMessage('Cannot create proof bundle yet: no incident is linked.');
+      return;
+    }
+
+    const res = await fetch(`${apiUrl}/exports/proof-bundle`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ format: 'csv' }),
+      body: JSON.stringify({ incident_id: incidentId, include_raw_events: true }),
     });
     const payload = (await res.json()) as { status?: string; detail?: string };
     setMessage(
@@ -913,11 +933,11 @@ function PackageDetailPanel({
           Export Status
         </p>
         {pkg.export_status === 'incomplete' ? (
-          <StatusPill label="Incomplete" variant="danger" />
+          <StatusPill label="Incomplete proof bundle" variant="danger" />
         ) : pkg.export_status === 'partial' ? (
-          <StatusPill label="Partial" variant="warning" />
+          <StatusPill label="Partial proof bundle" variant="warning" />
         ) : ready ? (
-          <StatusPill label="Ready" variant="success" />
+          <StatusPill label="Complete proof bundle" variant="success" />
         ) : (
           <StatusPill label="Not Available" variant="neutral" />
         )}
@@ -941,6 +961,23 @@ function PackageDetailPanel({
         </div>
       )}
 
+
+      {(pkg.unavailable_sections?.length ?? 0) > 0 && (
+        <div style={{ marginBottom: '0.75rem' }}>
+          <p className="sectionEyebrow" style={{ marginBottom: '0.35rem' }}>
+            Unavailable Sections
+          </p>
+          {pkg.unavailable_sections?.map((section) => (
+            <div
+              key={section}
+              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem', fontSize: '0.75rem' }}
+            >
+              <span style={{ color: '#f59e0b', fontWeight: 700 }}>!</span>
+              <span style={{ color: '#fcd34d' }}>{section}</span>
+            </div>
+          ))}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
         <button
           type="button"

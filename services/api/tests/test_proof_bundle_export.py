@@ -132,6 +132,8 @@ def test_proof_bundle_complete_chain_live_evidence(monkeypatch: pytest.MonkeyPat
     assert meta['export_status'] == 'complete'
     assert meta['evidence_source_type'] == 'live'
     assert meta['missing_sections'] == []
+    assert meta['unavailable_sections'] == []
+    assert meta['chain_complete'] is True
     assert meta['warnings'] == []
 
     payload = json.loads(fake_storage.content.decode('utf-8'))
@@ -219,8 +221,8 @@ def test_proof_bundle_summary_includes_all_required_fields(monkeypatch: pytest.M
     summary = payload['rows'][0]['summary.json']
     required_fields = {
         'generated_at', 'workspace_id', 'incident_id',
-        'export_status', 'evidence_source_type', 'missing_sections',
-        'warnings', 'chain_complete', 'alert_count', 'detection_count',
+        'export_format_version', 'export_status', 'evidence_source_type', 'missing_sections',
+        'unavailable_sections', 'warnings', 'chain_complete', 'alert_count', 'detection_count',
         'response_action_count', 'detection_metric_count',
     }
     for field in required_fields:

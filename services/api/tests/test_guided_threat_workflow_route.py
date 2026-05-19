@@ -114,3 +114,15 @@ def test_guided_workflow_export_uses_canonical_evidence_source_labels() -> None:
     assert "'telemetry_evidence_source': 'simulator'" in pilot_source
     assert 'This proof uses simulator evidence and does not claim live provider monitoring.' in pilot_source
     assert "def canonicalize_evidence_source" in pilot_source
+
+
+def test_evidence_audit_panel_uses_proof_bundle_endpoint_and_customer_labels() -> None:
+    panel_source = (REPO_ROOT / 'apps/web/app/evidence-audit-panel.tsx').read_text(encoding='utf-8')
+    assert '/exports/proof-bundle' in panel_source
+    assert '/exports/history' not in panel_source
+    assert 'Cannot create proof bundle yet: no incident is linked.' in panel_source
+    assert 'Live evidence' in panel_source
+    assert 'Simulator/test evidence' in panel_source
+    assert 'Evidence unavailable' in panel_source
+    assert 'Evidence missing' in panel_source
+
