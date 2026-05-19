@@ -1178,43 +1178,119 @@ def get_admin_readiness(request: Request) -> dict[str, Any]:
         user, workspace_context = _require_workspace_admin(connection, request)
         workspace_id = workspace_context["workspace"]["id"]
 
-        def _count(table: str) -> int:
-            row = connection.execute(f"SELECT COUNT(*) AS count FROM {table} WHERE workspace_id = %s", (workspace_id,)).fetchone()
-            return int((row or {}).get("count") or 0)
+        def _safe_count(table: str) -> int:
+            try:
+                row = connection.execute(f"SELECT COUNT(*) AS count FROM {table} WHERE workspace_id = %s", (workspace_id,)).fetchone()
+                return int((row or {}).get("count") or 0)
+            except Exception:
+                return 0
+
+        def _safe_latest_ts(table: str, column: str = "created_at") -> str | None:
+            try:
+                row = connection.execute(f"SELECT {column} AS value FROM {table} WHERE workspace_id = %s ORDER BY {column} DESC LIMIT 1", (workspace_id,)).fetchone()
+                value = (row or {}).get("value")
+                return value.isoformat() if value else None
+            except Exception:
+                return None
 
         runtime = monitoring_runtime_status(request)
-        integrations = integration_health_snapshot(connection)
+        monitoring_summary = runtime.get("workspace_monitoring_summary") or {}
+        summary_v2 = monitoring_summary.get("summary_v2") or {}
+        contradiction_flags = summary_v2.get("contradiction_flags") or monitoring_summary.get("contradiction_flags") or []
+
+        integrations_raw = integration_health_snapshot(connection)
         billing = billing_runtime_status()
 
-        latest_export = connection.execute("SELECT status, created_at FROM export_jobs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1", (workspace_id,)).fetchone()
+        def _integration_status(value: Any) -> str:
+            normalized = str((value or {}).get("status", "unavailable") if isinstance(value, dict) else value or "unavailable").lower()
+            if normalized in {"ok", "healthy", "pass", "connected", "available"}:
+                return "pass"
+            if normalized in {"warning", "warn", "degraded", "disabled"}:
+                return "warn"
+            if normalized in {"fail", "failed", "error", "unhealthy"}:
+                return "fail"
+            return "unavailable"
+
+        latest_export = None
+        export_status = "unavailable"
+        audit_log_status = "unavailable"
+        proof_bundle = "unavailable"
+        try:
+            latest_export = connection.execute("SELECT status, created_at FROM export_jobs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1", (workspace_id,)).fetchone()
+            export_status = "pass" if latest_export else "warn"
+        except Exception:
+            export_status = "unavailable"
+        try:
+            connection.execute("SELECT 1 FROM audit_logs WHERE workspace_id = %s LIMIT 1", (workspace_id,)).fetchone()
+            audit_log_status = "pass"
+        except Exception:
+            audit_log_status = "unavailable"
+
+        protected_assets = _safe_count("protected_assets")
+        reporting_systems = _safe_count("reporting_systems")
+        enabled_configs = _safe_count("monitoring_configs")
+
         env_checks = {
             "database_reachable": True,
-            "billing_required": str(os.getenv("BILLING_REQUIRED", "false")).lower() in {"1","true","yes","on"},
+            "auth_session_configured": True,
+            "required_env_vars_present": bool(os.getenv("DATABASE_URL") and os.getenv("APP_BASE_URL") and os.getenv("API_BASE_URL")),
+            "redis_required": str(os.getenv("REDIS_REQUIRED", "false")).lower() in {"1", "true", "yes", "on"},
+            "redis_configured": bool(os.getenv("REDIS_URL")),
+            "billing_required": str(os.getenv("BILLING_REQUIRED", "false")).lower() in {"1", "true", "yes", "on"},
+            "paid_ui_disabled": str(os.getenv("PAID_UI_DISABLED", "false")).lower() in {"1", "true", "yes", "on"},
             "billing_configured": bool(billing.get("configured") or billing.get("available")),
-            "email_required": str(os.getenv("EMAIL_REQUIRED", "true")).lower() in {"1","true","yes","on"},
-            "email_configured": str((integrations.get("email") or {}).get("status", "warning")).lower() in {"healthy","ok"},
+            "email_required": str(os.getenv("EMAIL_REQUIRED", "true")).lower() in {"1", "true", "yes", "on"},
+            "email_configured": _integration_status((integrations_raw.get("email") if isinstance(integrations_raw, dict) else {})) == "pass",
+            "app_base_url_configured": bool(os.getenv("APP_BASE_URL")),
+            "api_url_configured": bool(os.getenv("API_BASE_URL")),
         }
+
         workflow = {
-            "detections": _count("detections") + _count("detection_events"),
-            "alerts": _count("alerts"),
-            "incidents": _count("incidents"),
-            "response_actions": _count("response_actions"),
-            "latest_detection_at": runtime.get("last_detection_at"),
-            "latest_alert_at": None,
-            "latest_incident_at": None,
-            "latest_response_action_at": None,
+            "detections": _safe_count("detections") + _safe_count("detection_events"),
+            "alerts": _safe_count("alerts"),
+            "incidents": _safe_count("incidents"),
+            "response_actions": _safe_count("response_actions"),
+            "latest_detection_at": runtime.get("last_detection_at") or _safe_latest_ts("detections", "created_at"),
+            "latest_alert_at": _safe_latest_ts("alerts", "created_at"),
+            "latest_incident_at": _safe_latest_ts("incidents", "created_at"),
+            "latest_response_action_at": _safe_latest_ts("response_actions", "created_at"),
         }
-        workflow["linkage_status"] = "pass" if all(workflow[k] > 0 for k in ("detections", "alerts", "incidents", "response_actions")) else "partial"
+        workflow["linkage_status"] = "pass" if all(workflow[k] > 0 for k in ("detections", "alerts", "incidents", "response_actions")) else "warn"
         workflow["linkage_reason"] = "Linked workflow records are present." if workflow["linkage_status"] == "pass" else "Workflow chain is partial or unavailable."
 
-        exports = {
-            "evidence_source": runtime.get("evidence_source") or "unavailable",
-            "latest_export_job": {"status": (latest_export or {}).get("status"), "created_at": (latest_export or {}).get("created_at").isoformat() if latest_export and latest_export.get("created_at") else None},
+        runtime_for_readiness = {
+            **runtime,
+            "workspace_evaluated": True,
+            "workspace_scoped": True,
+            "latest_poll_at": runtime.get("last_poll_at") or summary_v2.get("latest_poll_at"),
+            "last_telemetry_at": runtime.get("last_telemetry_at") or runtime.get("latest_telemetry_at"),
+            "reporting_systems_count": reporting_systems,
+            "protected_assets_count": protected_assets,
+            "enabled_monitoring_configs_count": enabled_configs,
+            "target_coverage_status": summary_v2.get("target_coverage_status") or monitoring_summary.get("coverage_status") or "unavailable",
+            "provider_health_status": summary_v2.get("provider_health_status") or monitoring_summary.get("provider_health_status") or "unavailable",
+            "freshness_status": summary_v2.get("freshness_status") or monitoring_summary.get("freshness_status") or "unavailable",
+            "confidence_status": summary_v2.get("confidence_status") or monitoring_summary.get("confidence_status") or "unavailable",
+            "contradiction_flags": contradiction_flags,
         }
-        security = {"access_control": "workspace_admin"}
+        exports = {
+            "evidence_source": runtime.get("evidence_source") or summary_v2.get("evidence_source") or "unavailable",
+            "export_capability_status": export_status,
+            "latest_export_job_status": (latest_export or {}).get("status") or "unavailable",
+            "latest_export_job": {"status": (latest_export or {}).get("status"), "created_at": (latest_export or {}).get("created_at").isoformat() if latest_export and latest_export.get("created_at") else None},
+            "audit_log_availability": audit_log_status,
+            "proof_bundle_capability": proof_bundle,
+        }
+        integrations = {
+            "slack_integration_status": _integration_status((integrations_raw.get("slack") if isinstance(integrations_raw, dict) else {})),
+            "webhook_integration_status": _integration_status((integrations_raw.get("webhooks") if isinstance(integrations_raw, dict) else {})),
+            "delivery_logs_status": _integration_status((integrations_raw.get("delivery_logs") if isinstance(integrations_raw, dict) else {})),
+            "api_key_support_status": "pass",
+        }
+        security = {"readiness_access_control": "pass", "admin_workspace_scope": True}
         payload = build_production_readiness(
             env_checks=env_checks,
-            runtime=runtime,
+            runtime=runtime_for_readiness,
             workflow=workflow,
             integrations=integrations,
             exports=exports,

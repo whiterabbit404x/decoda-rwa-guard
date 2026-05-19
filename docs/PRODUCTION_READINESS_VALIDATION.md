@@ -2,6 +2,15 @@
 
 Internal/admin readiness is exposed at `GET /admin/readiness` (authenticated workspace admin scope).
 
+## Categories
+
+- **Platform**: database, auth/session config, required env presence (redacted), redis/email/billing config-or-disabled, app/api URL config.
+- **Runtime**: heartbeat, latest poll, latest telemetry, reporting systems count, protected assets count, enabled monitoring config count, target coverage, provider health, freshness, confidence, contradiction flags.
+- **Workflow**: detection/alert/incident/response-action counts, latest timestamps for each, linkage quality.
+- **Evidence & Export**: evidence source status, export capability status, latest export job status, audit log availability, proof bundle capability (if available).
+- **Integrations**: slack/webhook/delivery log statuses, API key support.
+- **Security**: readiness access control, secret redaction, admin workspace scoping.
+
 ## Statuses
 - `pass`: requirement satisfied.
 - `warn`: non-blocking risk or intentionally disabled component.
@@ -9,15 +18,34 @@ Internal/admin readiness is exposed at `GET /admin/readiness` (authenticated wor
 - `unavailable`: no trustworthy signal.
 
 ## Launch gates
-- `ready_for_pilot`: false when blocking reasons exist (for example missing telemetry, unavailable evidence, or required provider not configured).
-- `ready_for_paid_public_launch`: requires pilot readiness plus live evidence and configured billing/email.
+
+### ready_for_pilot
+Blocks when any of the following are true:
+- DB unreachable.
+- Auth/session missing.
+- Workspace not evaluated.
+- Workspace-scoped `protected_assets_count == 0`.
+- Telemetry missing (heartbeat alone does not pass).
+- Contradiction flags present.
+- Evidence/export health not truthfully known/live.
+
+`reporting_systems_count == 0` emits setup-required warning and must not appear healthy.
+
+### ready_for_paid_public_launch
+Requires `ready_for_pilot` plus:
+- Billing configured unless paid UI is disabled.
+- Email configured when required.
+- Redis/cache configured when required.
+- Production app/api URLs configured.
+- Provider/integration statuses are known.
+- Evidence source is live (not simulator).
+- No simulator data represented as live.
 
 ## Truthfulness constraints
-- Simulator evidence is labeled `source=simulator` and cannot become live pass evidence.
-- Missing telemetry fails readiness; heartbeat alone is not sufficient.
-- Missing dependencies are surfaced as fail/warn/unavailable (not healthy-by-default).
-- Secrets are never returned; only safe booleans/status names are returned.
+- Simulator evidence is labeled and cannot be treated as live readiness.
+- Missing optional tables should return `unavailable`/`warn`, not crash endpoint.
+- Secret values are never returned (booleans/status-only evidence).
 
-## Access control
-- Endpoint uses existing authenticated workspace-admin gate (`_require_workspace_admin`).
-- Remaining gap: role granularity depends on current workspace role model; no new public health exposure was added.
+## Remaining known gaps
+- Some integration/export checks depend on table/service availability and may remain `unavailable` in partial deployments.
+- Proof bundle capability is conditional and may be unavailable where not implemented.
