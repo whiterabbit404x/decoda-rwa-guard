@@ -95,9 +95,15 @@ class _FakeConnection:
         if 'SELECT * FROM incidents WHERE workspace_id = %s AND id = %s' in normalized:
             return _FakeRow({'id': 'inc-1', 'workspace_id': 'ws-1', 'title': 'Incident', 'severity': 'high'})
         if 'FROM alerts a JOIN detection_metrics dm ON dm.alert_id = a.id' in normalized:
-            return _FakeRow([{'id': 'alert-1', 'severity': 'high'}])
+            return _FakeRow([{'id': 'alert-1', 'severity': 'high', 'source': 'simulator'}])
         if 'FROM detection_metrics WHERE workspace_id = %s AND incident_id = %s' in normalized:
             return _FakeRow([{'id': 'metric-1', 'event_observed_at': '2026-01-01T00:00:00Z', 'detected_at': '2026-01-01T00:02:00Z', 'mttd_seconds': 120, 'evidence': {'tx_hash': '0xabc'}}])
+        if 'FROM response_actions' in normalized and 'incident_id = %s' in normalized:
+            return _FakeRow([{'id': 'action-1', 'action_type': 'notify_team', 'status': 'completed', 'mode': 'simulated', 'execution_metadata': None, 'created_at': '2026-01-01T00:05:00Z', 'executed_at': None, 'rolled_back_at': None}])
+        if 'FROM detections' in normalized and 'linked_alert_id = ANY' in normalized:
+            return _FakeRow([{'id': 'det-1', 'detection_type': 'anomaly', 'severity': 'high', 'confidence': 0.9, 'evidence_source': 'simulator', 'status': 'open', 'detected_at': '2026-01-01T00:01:00Z', 'title': 'Test detection'}])
+        if 'FROM audit_logs' in normalized:
+            return _FakeRow([])
         if "UPDATE export_jobs SET status = 'completed'" in normalized:
             self.storage_update_called = True
             return _FakeRow(None)
@@ -110,12 +116,24 @@ def test_generate_export_artifact_proof_bundle_contains_expected_files(monkeypat
     fake_storage = _FakeStorage()
     monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
     connection = _FakeConnection()
-    pilot._generate_export_artifact(connection, workspace_id='ws-1', export_id='exp-1')
+    meta = pilot._generate_export_artifact(connection, workspace_id='ws-1', export_id='exp-1')
     payload = json.loads(fake_storage.content.decode('utf-8'))
     row = payload['rows'][0]
-    assert sorted(row.keys()) == ['alerts.json', 'detection_metrics.json', 'evidence.json', 'incidents.json', 'summary.json']
-    assert row['summary.json']['incident_id'] == 'inc-1'
+    expected_keys = {
+        'alerts.json', 'detection_metrics.json', 'evidence.json', 'incidents.json',
+        'summary.json', 'detections.json', 'response_actions.json', 'audit_log.json',
+    }
+    assert set(row.keys()) == expected_keys
+    summary = row['summary.json']
+    assert summary['incident_id'] == 'inc-1'
+    assert 'export_status' in summary
+    assert 'evidence_source_type' in summary
+    assert 'missing_sections' in summary
+    assert 'chain_complete' in summary
     assert connection.storage_update_called is True
+    # artifact_meta propagated
+    assert meta.get('export_status') in {'complete', 'partial', 'incomplete'}
+    assert meta.get('evidence_source_type') in {'live', 'simulator', 'unavailable', 'missing', 'unknown'}
 
 
 def test_generate_export_artifact_report_template_includes_metadata(monkeypatch: pytest.MonkeyPatch) -> None:

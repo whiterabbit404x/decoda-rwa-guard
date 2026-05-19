@@ -69,6 +69,10 @@ type EvidencePackage = {
   includes?: string[];
   missing_artifacts?: string[];
   chain_complete?: boolean;
+  export_status?: string;
+  warnings?: string[];
+  missing_sections?: string[];
+  unavailable_sections?: string[];
 };
 
 type AuditRow = {
@@ -96,16 +100,24 @@ type AuditRow = {
 /* ── Helpers ────────────────────────────────────────────────────── */
 
 // Simulator evidence must always show evidence_source = simulator.
-// Do not label simulator evidence as live_provider.
+// Fallback evidence must be labeled unavailable, not simulator.
+// Do not label simulator or fallback evidence as live_provider.
 function evidenceSourcePill(
   rowSource?: string | null,
   workspaceSource?: string,
 ): { label: string; variant: PillVariant } {
   const raw = (rowSource ?? '').toLowerCase();
+  if (raw === 'missing') {
+    return { label: 'missing', variant: 'neutral' };
+  }
+  if (raw === 'unavailable' || raw === 'fallback') {
+    return { label: 'unavailable', variant: 'warning' };
+  }
   if (
     raw === 'simulator' ||
     raw === 'demo' ||
     raw === 'replay' ||
+    raw === 'guided_simulator' ||
     workspaceSource === 'simulator'
   ) {
     return { label: 'simulator', variant: 'info' };
@@ -113,7 +125,7 @@ function evidenceSourcePill(
   if (raw === 'live' || raw === 'live_provider') {
     return { label: 'live_provider', variant: 'success' };
   }
-  return { label: 'none', variant: 'neutral' };
+  return { label: 'unknown', variant: 'neutral' };
 }
 
 function packageStatusPill(status?: string): { label: string; variant: PillVariant } {
@@ -723,6 +735,27 @@ function PackageDetailPanel({
         </div>
       )}
 
+      {(pkg.warnings?.length ?? 0) > 0 && (
+        <div
+          style={{
+            marginBottom: '0.75rem',
+            padding: '0.5rem 0.6rem',
+            background: 'rgba(245,158,11,0.07)',
+            borderRadius: '4px',
+            borderLeft: '3px solid #f59e0b',
+          }}
+        >
+          <p className="tableMeta" style={{ marginBottom: '0.25rem', color: '#f59e0b' }}>
+            Warnings
+          </p>
+          {pkg.warnings?.map((w, i) => (
+            <p key={i} style={{ fontSize: '0.74rem', margin: '0.1rem 0', color: '#fcd34d' }}>
+              {w}
+            </p>
+          ))}
+        </div>
+      )}
+
       <div
         style={{
           display: 'grid',
@@ -879,12 +912,34 @@ function PackageDetailPanel({
         <p className="tableMeta" style={{ marginBottom: '0.2rem' }}>
           Export Status
         </p>
-        {ready ? (
+        {pkg.export_status === 'incomplete' ? (
+          <StatusPill label="Incomplete" variant="danger" />
+        ) : pkg.export_status === 'partial' ? (
+          <StatusPill label="Partial" variant="warning" />
+        ) : ready ? (
           <StatusPill label="Ready" variant="success" />
         ) : (
           <StatusPill label="Not Available" variant="neutral" />
         )}
       </div>
+
+      {/* Missing chain sections */}
+      {(pkg.missing_sections?.length ?? 0) > 0 && (
+        <div style={{ marginBottom: '0.75rem' }}>
+          <p className="sectionEyebrow" style={{ marginBottom: '0.35rem' }}>
+            Missing Chain Sections
+          </p>
+          {pkg.missing_sections?.map((section) => (
+            <div
+              key={section}
+              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem', fontSize: '0.75rem' }}
+            >
+              <span style={{ color: '#ef4444', fontWeight: 700 }}>✗</span>
+              <span style={{ color: '#f87171' }}>{section}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
         <button
