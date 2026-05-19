@@ -125,4 +125,6 @@ def test_evidence_audit_panel_uses_proof_bundle_endpoint_and_customer_labels() -
     assert 'Simulator/test evidence' in panel_source
     assert 'Evidence unavailable' in panel_source
     assert 'Evidence missing' in panel_source
+    assert 'evidence_source_type?: string;' in panel_source
+    assert 'pkg.evidence_source_type ?? pkg.evidence_source' in panel_source
 
