@@ -155,7 +155,14 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
         .map((value) => asTrimmedString(value))
         .filter((value): value is string => Boolean(value))
     : [];
-  const normalizedContradictionFlags = [...new Set(contradictionFlags)].sort();
+  const derivedContradictionFlags = [...contradictionFlags];
+  if (normalizedRuntimeStatus === 'live' && reportingSystemsCount === 0) {
+    derivedContradictionFlags.push('live_monitoring_without_reporting_systems');
+  }
+  if (lastPollAt && !lastTelemetryAt && !lastCoverageTelemetryAt) {
+    derivedContradictionFlags.push('poll_without_telemetry_timestamp');
+  }
+  const normalizedContradictionFlags = [...new Set(derivedContradictionFlags)].sort();
   const declaredGuardFlags = Array.isArray(summary.guard_flags)
     ? (summary.guard_flags as unknown[])
         .map((value) => asTrimmedString(value))

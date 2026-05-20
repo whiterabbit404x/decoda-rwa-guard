@@ -34,6 +34,7 @@ export default function WorkspaceMonitoringModeBanner({ apiUrl: _apiUrl }: { api
       <span>Monitoring state: {missingLabel}</span>
       <span>Freshness: {formatTruthValue(truth.telemetry_freshness)} · Confidence: {formatTruthValue(truth.confidence)}</span>
       <span>{timestampLine('Last telemetry', truth.last_telemetry_at)}</span>
+      <span>{presentation.freshness === 'unavailable' ? 'Fresh telemetry unavailable.' : 'Fresh telemetry available.'}</span>
       <span>
         {hasLiveTelemetry(truth) && hasRealTelemetryBackedChain(truth)
           ? 'Detection chain verified from evidence through response action.'

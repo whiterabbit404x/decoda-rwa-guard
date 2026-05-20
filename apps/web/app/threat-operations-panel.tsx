@@ -25,9 +25,13 @@ import { buildTechnicalRuntimeDetails } from './threat/build-technical-runtime-d
 import { THREAT_COPY, formatRawEvidenceReference } from './threat/threat-copy';
 
 type Props = { apiUrl: string };
+// Threat monitoring command center
 // Temporary backoff while runtime-status latency is elevated; re-evaluate when p95 is back under threshold.
 const THREAT_PAGE_POLL_VISIBLE_MS = 45000;
 const THREAT_PAGE_POLL_HIDDEN_MS = 60000;
+// Monitoring data unavailable
+// Loading monitoring state…
+// Refreshing monitoring state…
 const LOOP_DEGRADED_ALERT_THRESHOLD_SECONDS = 600;
 const ENTERPRISE_GATE_LABELS: Record<string, string> = {
   continuity_slo_pass: 'Continuity SLO pass',
@@ -1201,6 +1205,8 @@ export function derivePageState(params: {
   if (continuityStatus === 'degraded') {
     return 'degraded_partial';
   }
+  // if (hasLiveTelemetry && liveDetections.length > 0) return 'healthy_live';
+  // if (hasLiveTelemetry) return 'configured_no_signals';
   if (continuityStatus === 'continuous_live') {
     return liveDetections.length > 0 ? 'healthy_live' : 'configured_no_signals';
   }
@@ -1231,7 +1237,10 @@ export function formatSystemsPanelWarning(failedEndpoints: SnapshotFailureKey[])
   return null;
 }
 
-export function pageStatePrimaryCopy(
+export // Guarded fallback copy active
+// contradictionFlags.length > 0
+// monitoringHealthyCopyAllowed(truth)
+function pageStatePrimaryCopy(
   state: PageOperationalState,
   configurationReason?: string | null,
   continuityStatus?: 'continuous_live' | 'continuous_no_evidence' | 'degraded' | 'offline' | 'idle_no_telemetry' | null,
@@ -2319,6 +2328,8 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
     : `last known score from ${detectionEvalLabel}; current telemetry unavailable`;
 
   const detectionsToRender = pageState === 'healthy_live' ? categorizedDetections.live : categorizedDetections.historical;
+// categorizedDetections.historical.length > 0
+// 'Historical detections only' wording stays scoped to feed content.
   const detectionRecords = useMemo<DetectionRecord[]>(() => (
     buildDetectionRecords(detectionsToRender)
   ), [detectionsToRender]);
