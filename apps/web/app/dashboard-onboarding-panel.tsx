@@ -51,7 +51,7 @@ export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApi
       <p className="muted">Signed in as <strong>{user?.email ?? 'unknown user'}</strong> in <strong>{workspaceName}</strong>.</p>
       <div className="chipRow">
         {checklist.map((item) => (
-          <span key={item.label} className="ruleChip">{item.complete ? "Complete : Pending} {item.label}</span>
+          <span key={item.label} className="ruleChip">{item.complete ? Complete : Pending} {item.label}</span>
         ))}
       </div>
       <p className="muted">{onboardingProgress ? `Workspace onboarding completion: ${onboardingProgress.progress_percent}%` : 'Load onboarding checklist to track setup completion.'}</p>
@@ -63,4 +63,5 @@ export default function DashboardOnboardingPanel({ liveApiReachable }: { liveApi
     </section>
   );
 }
+
 
