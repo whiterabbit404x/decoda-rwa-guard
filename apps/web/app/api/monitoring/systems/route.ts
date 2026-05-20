@@ -1,6 +1,7 @@
 import { normalizeApiBaseUrl } from 'app/api-config';
 import { getRuntimeConfig } from 'app/runtime-config';
 import { normalizeWorkspaceHeaderValue } from 'app/workspace-header';
+import { FetchTimeoutError, fetchWithTimeout } from 'app/fetch-with-timeout';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -55,18 +56,15 @@ async function fetchMonitoringSystemsWithRetry(
   const maxAttempts = TIMEOUT_RETRY_ATTEMPTS + 1;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const controller = new AbortController();
     const startedAt = Date.now();
-    const timeoutId = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
     console.info('[monitoring-systems-proxy] forwarding request to backend', { backendApiUrl, attempt, maxAttempts, timeoutMs: PROXY_TIMEOUT_MS });
 
     try {
-      const response = await fetch(`${backendApiUrl}/monitoring/systems`, {
+      const response = await fetchWithTimeout(`${backendApiUrl}/monitoring/systems`, {
         method: 'GET',
         headers,
         cache: 'no-store',
-        signal: controller.signal,
-      });
+      }, PROXY_TIMEOUT_MS);
       const durationMs = Date.now() - startedAt;
       const logger = durationMs >= SLOW_REQUEST_LOG_THRESHOLD_MS ? console.warn : console.info;
       logger('[monitoring-systems-proxy] backend response received', {
@@ -78,7 +76,7 @@ async function fetchMonitoringSystemsWithRetry(
       return { response, durationMs, attempts: attempt };
     } catch (error) {
       const durationMs = Date.now() - startedAt;
-      if (error instanceof Error && error.name === 'AbortError') {
+      if (error instanceof FetchTimeoutError) {
         console.warn('[monitoring-systems-proxy] backend request timed out', {
           durationMs,
           attempt,
@@ -92,8 +90,6 @@ async function fetchMonitoringSystemsWithRetry(
         }
       }
       throw error;
-    } finally {
-      clearTimeout(timeoutId);
     }
   }
 
@@ -134,7 +130,7 @@ export async function GET(request: Request) {
       },
     });
   } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
+    if (error instanceof FetchTimeoutError) {
       return jsonError(504, { detail: 'Timed out waiting for backend monitored systems list.', code: 'backend_timeout', transport: 'same-origin proxy' });
     }
     return jsonError(502, { detail: 'Backend unreachable.', code: 'backend_unreachable', transport: 'same-origin proxy' });

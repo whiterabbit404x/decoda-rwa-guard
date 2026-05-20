@@ -1,6 +1,7 @@
 import { normalizeApiBaseUrl } from 'app/api-config';
 import { getRuntimeConfig } from 'app/runtime-config';
 import { normalizeWorkspaceHeaderValue } from 'app/workspace-header';
+import { FetchTimeoutError, fetchWithTimeout } from 'app/fetch-with-timeout';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -108,23 +109,18 @@ export async function POST(request: Request) {
   }
 
   const body = await readRequestBody(request);
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
   console.info('[monitoring-reconcile-proxy] forwarding request to backend', { backendApiUrl });
 
   try {
-    const response = await fetch(`${backendApiUrl}/monitoring/systems/reconcile`, {
+    const response = await fetchWithTimeout(`${backendApiUrl}/monitoring/systems/reconcile`, {
       method: 'POST',
       headers,
       cache: 'no-store',
       body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+    }, PROXY_TIMEOUT_MS);
     return buildProxyResponse(response);
   } catch (error) {
-    clearTimeout(timeoutId);
-    if (error instanceof Error && error.name === 'AbortError') {
+    if (error instanceof FetchTimeoutError) {
       return jsonError(504, {
         detail: 'Timed out waiting for backend reconcile response.',
         code: 'backend_timeout',

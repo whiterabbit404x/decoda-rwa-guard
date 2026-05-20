@@ -8,6 +8,7 @@ import { normalizeMonitoringPresentation } from './monitoring-status-presentatio
 import type { MonitoringRuntimeStatus } from './monitoring-status-contract';
 import { resolveWorkspaceMonitoringTruthFromSummary } from './workspace-monitoring-truth';
 import { renderRiskLabel } from './risk-normalization-labels';
+import { fetchWithTimeout } from './fetch-with-timeout';
 
 export type DashboardCard = {
   title: string;
@@ -1061,22 +1062,16 @@ function fallbackSnapshotsEnabled() {
 }
 
 export async function fetchJson<T>(path: string, apiUrl = resolveApiUrl()): Promise<T | null> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), resolveFetchTimeoutMs());
-
   try {
-    const response = await fetch(`${apiUrl}${path}`, {
+    const response = await fetchWithTimeout(`${apiUrl}${path}`, {
       cache: 'no-store',
-      signal: controller.signal
-    });
+    }, resolveFetchTimeoutMs());
     if (!response.ok) {
       return null;
     }
     return (await response.json()) as T;
   } catch {
     return null;
-  } finally {
-    clearTimeout(timeoutId);
   }
 }
 
@@ -1142,14 +1137,10 @@ async function fetchEndpointJson<T>(
     };
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), resolveFetchTimeoutMs());
-
   try {
-    const response = await fetch(`${apiUrl}${DASHBOARD_ENDPOINT_PATHS[key]}`, {
+    const response = await fetchWithTimeout(`${apiUrl}${DASHBOARD_ENDPOINT_PATHS[key]}`, {
       cache: 'no-store',
-      signal: controller.signal,
-    });
+    }, resolveFetchTimeoutMs());
 
     if (!response.ok) {
       return {
@@ -1180,8 +1171,6 @@ async function fetchEndpointJson<T>(
         error: message,
       }),
     };
-  } finally {
-    clearTimeout(timeoutId);
   }
 }
 
@@ -1193,9 +1182,6 @@ async function fetchDashboardAggregateJson(
     return null;
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), resolveFetchTimeoutMs());
-
   try {
     const endpointUrl = new URL(`${apiUrl}${DASHBOARD_AGGREGATE_ENDPOINT_PATH}`);
     if (requestSource?.trim()) {
@@ -1203,10 +1189,9 @@ async function fetchDashboardAggregateJson(
       console.info(`[dashboard-page-data trace] source=${requestSource.trim()} path=${DASHBOARD_AGGREGATE_ENDPOINT_PATH}`);
     }
 
-    const response = await fetch(endpointUrl.toString(), {
+    const response = await fetchWithTimeout(endpointUrl.toString(), {
       cache: 'no-store',
-      signal: controller.signal,
-    });
+    }, resolveFetchTimeoutMs());
 
     if (!response.ok) {
       return null;
@@ -1215,8 +1200,6 @@ async function fetchDashboardAggregateJson(
     return (await response.json()) as DashboardPageAggregateResponse;
   } catch {
     return null;
-  } finally {
-    clearTimeout(timeoutId);
   }
 }
 
