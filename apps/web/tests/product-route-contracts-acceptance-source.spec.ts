@@ -11,7 +11,7 @@ function productSource(relativePath: string): string {
 
 test('product route contracts keep required IA labels, page copy, tables, and truth-gated runtime claims', () => {
   expect(APP_NAV_ITEMS).toEqual([
-    { href: '/onboarding', label: 'Getting Started' },
+    { href: '/onboarding', label: 'Onboarding' },
     { href: '/dashboard', label: 'Dashboard' },
     { href: '/assets', label: 'Assets' },
     { href: '/monitoring-sources', label: 'Monitoring Sources' },

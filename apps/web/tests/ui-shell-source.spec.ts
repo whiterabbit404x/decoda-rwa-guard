@@ -21,7 +21,7 @@ test('sidebar nav order matches exact spec', () => {
 
   const labelMatches = [...src.matchAll(/label:\s*'([^']+)'/g)].map((m) => m[1]);
   expect(labelMatches).toEqual([
-    'Getting Started',
+    'Onboarding',
     'Dashboard',
     'Assets',
     'Monitoring Sources',

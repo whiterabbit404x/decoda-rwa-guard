@@ -5,7 +5,7 @@ import { APP_NAV_ITEMS } from '../app/product-nav';
 
 test('snapshots top-level product navigation labels/routes and order', async () => {
   expect(APP_NAV_ITEMS).toEqual([
-    { href: '/onboarding', label: 'Getting Started' },
+    { href: '/onboarding', label: 'Onboarding' },
     { href: '/dashboard', label: 'Dashboard' },
     { href: '/assets', label: 'Assets' },
     { href: '/monitoring-sources', label: 'Monitoring Sources' },
@@ -22,7 +22,7 @@ test('snapshots top-level product navigation labels/routes and order', async () 
 
 test('snapshots top-level product navigation labels order', async () => {
   expect(APP_NAV_ITEMS.map((item) => item.label)).toEqual([
-    'Getting Started',
+    'Onboarding',
     'Dashboard',
     'Assets',
     'Monitoring Sources',

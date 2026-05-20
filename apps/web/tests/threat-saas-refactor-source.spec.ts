@@ -1,3 +1,4 @@
+import { describe, expect, it } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -11,7 +12,7 @@ describe('threat saas refactor source contracts', () => {
 
   it('keeps buildSecurityWorkspaceStatus owned by monitoring model builder', () => {
     const monitoringModel = fs.readFileSync(path.join(process.cwd(), 'app/threat/build-monitoring-health-model.ts'), 'utf8');
-    expect(panel).not.toContain("import { buildSecurityWorkspaceStatus }");
+    expect(panel).not.toContain('import { buildSecurityWorkspaceStatus }');
     expect(panel).not.toContain('const securityStatus = useMemo(');
     expect(monitoringModel).toContain("import { buildSecurityWorkspaceStatus } from '../security-workspace-status';");
     expect(monitoringModel).toContain('buildSecurityWorkspaceStatus(');
