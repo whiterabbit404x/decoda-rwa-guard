@@ -21,9 +21,9 @@ def test_incident_timeline_records_evidence_escalation_and_action_execution_path
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
-            if 'SELECT id, target_id, analysis_run_id, title, severity, summary, detection_id, alert_type, findings FROM alerts' in normalized:
-                return _Result({'id': 'alert-1', 'target_id': 'target-1', 'analysis_run_id': 'run-1', 'title': 'Escalate me', 'severity': 'high', 'summary': 'summary', 'detection_id': 'det-1'})
-            if 'SELECT id, tx_hash, observed_at, raw_payload_json FROM evidence' in normalized:
+            if 'FROM alerts' in normalized and "AND status = 'resolved'" in normalized and 'incident_id IS NULL' in normalized:
+                return _Result({'id': 'alert-1', 'workspace_id': 'ws-1', 'status': 'resolved', 'incident_id': None, 'target_id': 'target-1', 'analysis_run_id': 'run-1', 'title': 'Escalate me', 'severity': 'high', 'summary': 'summary', 'detection_id': 'det-1', 'alert_type': None, 'findings': None})
+            if 'FROM evidence' in normalized and 'alert_id = %s' in normalized:
                 return _Result({'id': 'evidence-1', 'tx_hash': '0xabc', 'observed_at': '2026-04-21T10:01:00Z', 'raw_payload_json': {}})
             if 'WITH inserted_incident AS' in normalized:
                 return _Result({'incident_id': 'inc-1'})

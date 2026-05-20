@@ -445,6 +445,33 @@ DEFAULT_PRODUCTION_CORS_ORIGINS = [
 ]
 
 
+_RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS = [
+    'workspace_configured',
+    'runtime_status',
+    'configured_systems',
+    'reporting_systems',
+    'protected_assets',
+    'last_poll_at',
+    'last_heartbeat_at',
+    'last_telemetry_at',
+    'last_detection_at',
+    'freshness_status',
+    'confidence_status',
+    'evidence_source',
+    'status_reason',
+    'contradiction_flags',
+    'summary_generated_at',
+    'provider_health',
+    'target_coverage',
+    'provider_health_records',
+    'target_coverage_records',
+    'provider_health_status',
+    'target_coverage_status',
+    'runtime_setup_chain',
+    'next_required_action',
+]
+
+
 def _is_production_like_runtime() -> bool:
     mode = os.getenv('APP_ENV', os.getenv('APP_MODE', 'development')).strip().lower()
     return mode in {'production', 'prod'}
@@ -2309,7 +2336,81 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'enabled_monitored_systems', 'valid_target_system_links',
         ):
             canonical_runtime[_counter_key] = int(payload.get(_counter_key) or 0)
+        _check_name_aliases = {
+            'evidence_chain_completeness': 'linked_fresh_evidence',
+            'linked_fresh_evidence_chain': 'linked_fresh_evidence',
+            'linked_evidence_freshness': 'linked_fresh_evidence',
+        }
+        _erp = payload.get('enterprise_ready_pass')
+        if _erp is None:
+            _erp = summary.get('enterprise_ready_pass')
+        canonical_runtime['enterprise_ready_pass'] = bool(_erp) if _erp is not None else False
+        _failed_checks = payload.get('failed_checks')
+        if not isinstance(_failed_checks, list):
+            _failed_checks = summary.get('failed_checks')
+        canonical_runtime['failed_checks'] = [
+            _check_name_aliases.get(str(_c).strip(), str(_c).strip())
+            for _c in (_failed_checks or [])
+            if str(_c).strip()
+        ]
+        _check_results = payload.get('check_results')
+        if not isinstance(_check_results, list):
+            _check_results = summary.get('check_results')
+        _norm_checks: list[dict] = []
+        for _chk in list(_check_results or []):
+            if not isinstance(_chk, dict):
+                continue
+            _nc = dict(_chk)
+            _nn = str(_nc.get('name') or '').strip()
+            if _nn:
+                _nc['name'] = _check_name_aliases.get(_nn, _nn)
+            _norm_checks.append(_nc)
+        canonical_runtime['check_results'] = _norm_checks
+        _remediation_links = payload.get('remediation_links')
+        if not isinstance(_remediation_links, dict):
+            _remediation_links = summary.get('remediation_links')
+        canonical_runtime['remediation_links'] = {
+            _check_name_aliases.get(str(_rn).strip(), str(_rn).strip()): str(_ru)
+            for _rn, _ru in dict(_remediation_links or {}).items()
+            if str(_rn).strip() and str(_ru).strip()
+        }
+        _background_loop_health = get_background_loop_health()
+        canonical_runtime['background_loop_health'] = dict(_background_loop_health)
+        canonical_runtime['loop_running'] = bool(_background_loop_health.get('loop_running'))
+        canonical_runtime['last_successful_cycle'] = _background_loop_health.get('last_successful_cycle')
+        canonical_runtime['consecutive_failures'] = int(_background_loop_health.get('consecutive_failures') or 0)
+        canonical_runtime['next_retry_at'] = _background_loop_health.get('next_retry_at')
+        canonical_runtime['backoff_seconds'] = _background_loop_health.get('backoff_seconds')
+        if payload.get('mode') is not None:
+            canonical_runtime['mode'] = payload.get('mode')
+        if payload.get('sales_claims_allowed') is not None:
+            canonical_runtime['sales_claims_allowed'] = payload.get('sales_claims_allowed')
+        # Preserve continuity contract fields from the raw payload so they are available in both legacy and non-legacy paths.
+        _continuity_passthrough_keys = (
+            'continuity_slo', 'continuity_slo_pass', 'continuity_contract',
+            'continuity_status', 'continuity_reason_codes', 'continuity_signals',
+            'continuity_failed_checks', 'continuity_freshness_ages_seconds',
+            'continuity_configured_thresholds_seconds', 'continuity_breach_reasons',
+            'heartbeat_age_seconds', 'worker_heartbeat_age_seconds',
+            'telemetry_age_seconds', 'event_ingestion_age_seconds',
+            'detection_age_seconds', 'detection_pipeline_age_seconds', 'detection_eval_age_seconds',
+            'heartbeat_threshold_seconds', 'telemetry_threshold_seconds',
+            'detection_threshold_seconds', 'event_ingestion_threshold_seconds',
+            'thresholds_seconds', 'required_thresholds_seconds', 'continuity_thresholds_seconds',
+            'runtime_degraded_reason_codes', 'runtime_status_reason_codes',
+        )
+        _continuity_slo_from_payload = payload.get('continuity_slo') if isinstance(payload.get('continuity_slo'), dict) else {}
+        for _ck in _continuity_passthrough_keys:
+            _cv = payload.get(_ck)
+            if _cv is None:
+                _cv = summary_payload.get(_ck)
+            if _cv is None:
+                _cv = _continuity_slo_from_payload.get(_ck)
+            if _cv is not None:
+                canonical_runtime[_ck] = _cv
         if not emit_legacy_fields:
+            if _is_production_like_runtime():
+                return {k: canonical_runtime[k] for k in _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS if k in canonical_runtime}
             return canonical_runtime
         payload.update(canonical_runtime)
         payload['canonical_monitoring_runtime'] = dict(canonical_runtime)

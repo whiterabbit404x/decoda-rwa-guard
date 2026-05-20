@@ -8,7 +8,7 @@ CANONICAL_RUNTIME_STATUS = {'live', 'degraded', 'offline', 'idle', 'healthy'}
 CANONICAL_MONITORING_STATUS = {'live', 'limited', 'offline'}
 CANONICAL_TELEMETRY_FRESHNESS = {'fresh', 'stale', 'unavailable'}
 CANONICAL_CONFIDENCE = {'high', 'medium', 'low', 'unavailable'}
-CANONICAL_EVIDENCE_SOURCE = {'live_provider', 'simulator', 'none'}
+CANONICAL_EVIDENCE_SOURCE = {'live_provider', 'simulator', 'replay', 'none'}
 CANONICAL_CONTINUITY_STATUS = {'continuous_live', 'continuous_no_evidence', 'degraded', 'offline', 'idle_no_telemetry'}
 CANONICAL_SUMMARY_KEYS = (
     'workspace_configured',
@@ -168,8 +168,10 @@ def _normalized_evidence_source(value: str) -> str:
     normalized = str(value or '').strip().lower()
     if normalized in {'live', 'provider', 'live_provider'}:
         return 'live_provider'
-    if normalized in {'simulator', 'replay'}:
+    if normalized == 'simulator':
         return 'simulator'
+    if normalized == 'replay':
+        return 'replay'
     return normalized if normalized in CANONICAL_EVIDENCE_SOURCE else 'none'
 
 
@@ -329,6 +331,29 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
     result = {key: canonical[key] for key in CANONICAL_SUMMARY_KEYS if key in canonical}
     if canonical.get('top_banner_reasons'):
         result['top_banner_reasons'] = canonical['top_banner_reasons']
+    for extra_key in (
+        'workflow_steps',
+        'current_step',
+        'next_required_action',
+        'workflow',
+        'counts',
+        'timestamps',
+        'statuses',
+        'evidence_source',
+        'freshness_status',
+        'confidence_status',
+        'monitoring_status',
+        'runtime_setup_chain',
+        'summary_v2',
+        'reporting_systems',
+        'monitored_systems',
+        'protected_assets',
+        'active_alerts',
+        'open_incidents',
+        'monitoring_targets',
+    ):
+        if extra_key in canonical:
+            result[extra_key] = canonical[extra_key]
     return result
 
 
@@ -549,7 +574,7 @@ def build_workspace_monitoring_summary(
         contradiction_flags.append('ui_healthy_claim_with_zero_reporting_systems')
     if telemetry_timestamp is None and normalized_runtime == 'live':
         contradiction_flags.append('ui_live_monitoring_claim_without_telemetry')
-    if normalized_evidence == 'simulator' and confidence_status == 'high':
+    if normalized_evidence in {'simulator', 'replay'} and confidence_status == 'high':
         contradiction_flags.append('simulator_evidence_claimed_as_live_provider')
     if workspace_configured and alerts_without_detection_count > 0 and last_detection_at is None and normalized_evidence not in {'none', 'simulator'}:
         contradiction_flags.append('alert_exists_without_detection')
@@ -643,7 +668,11 @@ def build_workspace_monitoring_summary(
         'configuration_reason_codes': list(configuration_reason_codes) if configuration_reason_codes else [],
         'valid_protected_assets': int(valid_protected_asset_count),
     }
-    return _canonical_summary(summary)
+    full = _canonical_summary(summary)
+    result = {k: full[k] for k in CANONICAL_SUMMARY_KEYS if k in full}
+    if full.get('top_banner_reasons'):
+        result['top_banner_reasons'] = full['top_banner_reasons']
+    return result
 
 
 def build_workspace_monitoring_summary_fallback(

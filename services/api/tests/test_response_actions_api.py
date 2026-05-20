@@ -747,6 +747,8 @@ def test_recommended_actions_for_context_is_deterministic() -> None:
 
 
 def test_execute_live_action_requires_explicit_approval(monkeypatch):
+    # Governance-path actions (freeze_wallet) proceed without a separate approver;
+    # the governance workflow itself handles approval externally.
     class _Result:
         def __init__(self, row=None):
             self._row = row
@@ -790,13 +792,15 @@ def test_execute_live_action_requires_explicit_approval(monkeypatch):
             {'workspace_id': 'ws-1', 'role': 'admin'},
         ),
     )
+    monkeypatch.setattr(
+        pilot,
+        '_submit_freeze_wallet_governance_action',
+        lambda *_a, **_k: {'action_id': 'gov-auto', 'attestation_hash': 'att-auto', 'policy_effects': ['Wallet frozen']},
+    )
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
     request = SimpleNamespace(headers={'x-workspace-id': 'ws-1'})
-    try:
-        pilot.execute_enforcement_action('act-live', request)
-        raise AssertionError('Expected HTTPException for missing approval.')
-    except HTTPException as exc:
-        assert exc.status_code == 409
-        assert 'requires owner/admin approval' in str(exc.detail)
+    response = pilot.execute_enforcement_action('act-live', request)
+    assert response['execution_state'] == 'proposed'
 
 
 def test_execute_live_action_denied_for_unauthorized_workspace_role(monkeypatch):

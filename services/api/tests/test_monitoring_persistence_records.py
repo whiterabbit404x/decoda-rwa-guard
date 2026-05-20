@@ -298,6 +298,8 @@ _RUNTIME_STATUS_REQUIRED_TOP_LEVEL_KEYS = [
     'target_coverage_records',
     'provider_health_status',
     'target_coverage_status',
+    'runtime_setup_chain',
+    'next_required_action',
 ]
 
 _RUNTIME_STATUS_STABLE_CANONICAL_FIELDS = [

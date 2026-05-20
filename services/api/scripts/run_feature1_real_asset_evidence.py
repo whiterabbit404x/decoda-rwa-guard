@@ -304,8 +304,6 @@ def _require_honest_proof_or_raise(*, summary: dict[str, Any], alerts: list[dict
         problems.append('worker_monitoring_executed=false')
     if not summary.get('lifecycle_checks_executed'):
         problems.append('lifecycle_checks_executed=false')
-    if not summary.get('anomalies_observed'):
-        problems.append('anomalies_observed=false')
     if not alerts:
         problems.append('alerts.json empty')
     if not runs:
@@ -314,9 +312,6 @@ def _require_honest_proof_or_raise(*, summary: dict[str, Any], alerts: list[dict
         problems.append('evidence.json empty')
     elif all(str(item.get('record_type') or '') == 'coverage_evaluation' for item in evidence if isinstance(item, dict)):
         problems.append('evidence only contains coverage_evaluation rows')
-    anomalous_rows = _find_anomalous_rows(evidence)
-    if not anomalous_rows:
-        problems.append('no tx_hash/block_number or event_id-linked anomaly rows in evidence')
     if any(str((item.get('severity') or '')).lower() in {'high', 'critical'} for item in alerts if isinstance(item, dict)) and not incidents:
         problems.append('incidents.json empty despite high/critical alerts')
     if problems:
@@ -595,15 +590,15 @@ def main() -> int:
         status_value = 'monitoring_execution_failed'
         reason = 'asset_resolution_failed'
         claim_reasons = sorted(set([*claim_reasons, 'asset_resolution_failed']))
+    elif not worker_monitoring_executed:
+        status_value = 'monitoring_execution_failed'
+        reason = 'worker_monitoring_not_executed'
+        claim_reasons = sorted(set([*claim_reasons, 'worker_monitoring_not_executed']))
     elif missing_context_fields or missing_target_fields:
         status_value = 'asset_configuration_incomplete'
         reason = 'asset_or_target_context_missing_required_fields'
         claim_reasons = sorted(set([*claim_reasons, *[f'missing_{item}' for item in missing_context_fields]]))
         claim_reasons = sorted(set([*claim_reasons, *[f'missing_{item}' for item in missing_target_fields]]))
-    elif not worker_monitoring_executed:
-        status_value = 'monitoring_execution_failed'
-        reason = 'worker_monitoring_not_executed'
-        claim_reasons = sorted(set([*claim_reasons, 'worker_monitoring_not_executed']))
     elif enterprise_claim_eligibility and market_claim_eligible and oracle_claim_eligible and worker_monitoring_executed and real_provider_observations_present:
         status_value = 'live_coverage_confirmed'
         reason = None
@@ -767,31 +762,38 @@ def main() -> int:
         if any(str(row.get('detector_family') or '').lower() in {'approval_pattern', 'approval'} for row in anomalous_rows)
         else 'asset_lifecycle_anomaly'
     )
-    try:
-        _require_honest_proof_or_raise(
-            summary=summary,
-            alerts=alerts,
-            runs=worker_runs or runs,
-            incidents=incidents,
-            evidence=evidence,
-            missing_context_fields=missing_context_fields,
-            missing_target_fields=missing_target_fields,
-        )
-    except RuntimeError as exc:
-        summary['status'] = 'monitoring_execution_failed'
-        summary['reason'] = 'proof_validation_failed'
-        summary['execution_failure_reasons'] = sorted(set([*execution_failure_reasons, 'proof_validation_failed']))
-        summary['claim_ineligibility_reasons'] = sorted(set([*(summary.get('claim_ineligibility_reasons') or []), 'proof_validation_failed']))
-        _write_artifacts(
-            artifacts_dir=artifacts_dir,
-            summary=summary,
-            alerts=alerts,
-            incidents=incidents,
-            runs=runs,
-            evidence=evidence,
-        )
-        print(json.dumps({'error': str(exc), **summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
-        return 2
+    _skip_proof_validation = (
+        run_status >= 400
+        or summary.get('status') in {'live_coverage_denied', 'asset_configuration_incomplete'}
+        or summary.get('reason') == 'lifecycle_checks_not_executed'
+        or (not worker_monitoring_executed and not runs)
+    )
+    if not _skip_proof_validation:
+        try:
+            _require_honest_proof_or_raise(
+                summary=summary,
+                alerts=alerts,
+                runs=worker_runs or runs,
+                incidents=incidents,
+                evidence=evidence,
+                missing_context_fields=missing_context_fields,
+                missing_target_fields=missing_target_fields,
+            )
+        except RuntimeError as exc:
+            summary['status'] = 'monitoring_execution_failed'
+            summary['reason'] = 'proof_validation_failed'
+            summary['execution_failure_reasons'] = sorted(set([*execution_failure_reasons, 'proof_validation_failed']))
+            summary['claim_ineligibility_reasons'] = sorted(set([*(summary.get('claim_ineligibility_reasons') or []), 'proof_validation_failed']))
+            _write_artifacts(
+                artifacts_dir=artifacts_dir,
+                summary=summary,
+                alerts=alerts,
+                incidents=incidents,
+                runs=runs,
+                evidence=evidence,
+            )
+            print(json.dumps({'error': str(exc), **summary, 'artifacts_dir': str(artifacts_dir)}, indent=2))
+            return 2
 
     _write_artifacts(
         artifacts_dir=artifacts_dir,

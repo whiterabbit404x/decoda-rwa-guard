@@ -6557,6 +6557,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         )
         summary['runtime_error_code'] = runtime_error_code
         summary['runtime_degraded_reason'] = runtime_degraded_reason
+        if runtime_degraded_reason == 'partial_query_failure' and str(summary.get('status_reason', '')).startswith('guard:'):
+            summary['status_reason'] = 'runtime_status_degraded:partial_query_failure'
         summary['field_reason_codes'] = dict(field_reason_codes)
         summary['configured_systems'] = int(enabled_system_count)
         summary['reporting_systems'] = int(reporting_systems)
@@ -6864,7 +6866,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if flag in contradiction_banner_reason_map
         ]
         contradiction_reason_overrides: dict[str, tuple[str, str]] = {
-            'alert_without_detection': ('degraded', 'runtime_contradiction_alert_without_detection'),
+            'alert_without_detection': ('degraded', 'alerts_without_detection_evidence'),
             'incident_without_alert': ('degraded', 'runtime_contradiction_incident_without_alert'),
             'response_action_without_incident': ('degraded', 'runtime_contradiction_response_action_without_incident'),
             'healthy_claim_with_reporting_systems_zero': ('fail', 'runtime_contradiction_healthy_claim_with_reporting_systems_zero'),
@@ -6906,7 +6908,6 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 runtime_reason_codes.append(contradiction_reason_token)
             summary['runtime_status_reason_codes'] = runtime_reason_codes
         hard_contradictions = {
-            'alert_without_detection',
             'incident_without_alert',
             'response_action_without_incident',
             'telemetry_unavailable_live_claim_asserted',
@@ -6950,6 +6951,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             and reporting_systems > 0
             and last_coverage_telemetry_at is not None
             and coverage_fresh
+            and summary_freshness_status not in {'', 'unavailable'}
+            and summary_confidence_status not in {'', 'unavailable'}
         )
         if runtime_status_summary == 'healthy' and not strict_live_healthy_proof:
             runtime_status_summary = 'degraded'

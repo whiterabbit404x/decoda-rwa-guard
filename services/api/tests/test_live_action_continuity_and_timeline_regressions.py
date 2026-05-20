@@ -237,10 +237,10 @@ def test_incident_timeline_includes_required_lifecycle_events(monkeypatch):
     class _Connection:
         def execute(self, statement, params=None):
             normalized = ' '.join(str(statement).split())
-            if 'SELECT id, target_id, analysis_run_id, title, severity, summary, detection_id FROM alerts' in normalized:
-                return _Result({'id': 'alert-1', 'target_id': 'target-1', 'analysis_run_id': 'run-1', 'title': 'Escalate me', 'severity': 'high', 'summary': 'summary', 'detection_id': 'det-1'})
-            if 'SELECT id, tx_hash, observed_at FROM evidence' in normalized:
-                return _Result({'id': 'evidence-1', 'tx_hash': '0xabc', 'observed_at': '2026-04-21T10:01:00Z'})
+            if 'FROM alerts' in normalized and 'WHERE id = %s' in normalized:
+                return _Result({'id': 'alert-1', 'workspace_id': 'ws-1', 'status': 'resolved', 'incident_id': None, 'target_id': 'target-1', 'analysis_run_id': 'run-1', 'title': 'Escalate me', 'severity': 'high', 'summary': 'summary', 'detection_id': 'det-1', 'alert_type': None, 'findings': None})
+            if 'FROM evidence' in normalized:
+                return _Result({'id': 'evidence-1', 'tx_hash': '0xabc', 'observed_at': '2026-04-21T10:01:00Z', 'raw_payload_json': None})
             if 'WITH inserted_incident AS' in normalized:
                 return _Result({'incident_id': 'inc-1'})
             if 'SELECT * FROM response_actions WHERE id = %s AND workspace_id = %s' in normalized:

@@ -1,8 +1,10 @@
 from pathlib import Path
 
+_DETECTOR_LABELS_PATH = Path(__file__).resolve().parents[3] / 'apps/web/app/threat/detector-labels.ts'
+
 
 def test_web_detector_label_map_includes_canonical_codes():
-    content = Path('/workspace/decoda-rwa-guard/apps/web/app/threat/detector-labels.ts').read_text(encoding='utf-8')
+    content = _DETECTOR_LABELS_PATH.read_text(encoding='utf-8')
     for code in [
         'oracle_nav_divergence',
         'proof_of_reserve_stale',

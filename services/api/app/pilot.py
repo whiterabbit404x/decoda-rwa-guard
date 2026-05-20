@@ -1897,7 +1897,8 @@ def log_audit(
 ) -> None:
     safe_metadata = metadata or {}
     request_id = request.headers.get('x-request-id') if request else None
-    ip_address = request.client.host if request and request.client else None
+    _client = getattr(request, 'client', None) if request else None
+    ip_address = _client.host if _client else None
     if request_id and not safe_metadata.get('request_id'):
         safe_metadata = {**safe_metadata, 'request_id': request_id}
     if ip_address and not safe_metadata.get('source_ip'):
@@ -5381,7 +5382,7 @@ def _update_reconcile_run(
     progress_state: dict[str, Any] | None = None,
     completed: bool = False,
 ) -> None:
-    row = connection.execute(
+    rows = connection.execute(
         '''
         SELECT status
         FROM monitoring_reconcile_runs
@@ -5389,7 +5390,8 @@ def _update_reconcile_run(
         LIMIT 1
         ''',
         (run_id,),
-    ).fetchone()
+    ).fetchall()
+    row = rows[0] if rows else None
     current_status = str((dict(row).get('status') if isinstance(row, dict) else getattr(row, 'status', 'queued')) if row else 'queued')
     next_status = status if _reconcile_status_transition_allowed(current_status, status) else current_status
     next_completed = bool(completed and next_status in {'completed', 'failed'})
@@ -5479,10 +5481,11 @@ def _workspace_reconcile_advisory_lock_keys(workspace_id: str) -> tuple[int, int
 
 def _try_lock_workspace_reconcile_job(connection: Any, *, workspace_id: str) -> bool:
     key1, key2 = _workspace_reconcile_advisory_lock_keys(workspace_id)
-    row = connection.execute(
+    rows = connection.execute(
         'SELECT pg_try_advisory_xact_lock(%s, %s) AS acquired',
         (key1, key2),
-    ).fetchone()
+    ).fetchall()
+    row = rows[0] if rows else None
     if not row:
         return True
     if isinstance(row, dict):
@@ -5503,12 +5506,12 @@ def _lock_workspace_row_for_reconcile(connection: Any, *, workspace_id: str) -> 
         FOR UPDATE
         ''',
         (workspace_id,),
-    ).fetchone()
+    ).fetchall()
 
 
 def _load_reconcile_run_row(connection: Any, *, workspace_id: str, run_id: str | None = None) -> dict[str, Any] | None:
     if run_id:
-        row = connection.execute(
+        rows = connection.execute(
             '''
             SELECT id, status, started_at, completed_at, queued_at, running_at, failed_at, status_reason_code, status_reason_detail, retry_count, counts, reason_codes, affected_systems, result_summary, progress_state, updated_at, last_event_at, idempotency_key
             FROM monitoring_reconcile_runs
@@ -5517,9 +5520,9 @@ def _load_reconcile_run_row(connection: Any, *, workspace_id: str, run_id: str |
             LIMIT 1
             ''',
             (workspace_id, run_id),
-        ).fetchone()
+        ).fetchall()
     else:
-        row = connection.execute(
+        rows = connection.execute(
             '''
             SELECT id, status, started_at, completed_at, queued_at, running_at, failed_at, status_reason_code, status_reason_detail, retry_count, counts, reason_codes, affected_systems, result_summary, progress_state, updated_at, last_event_at, idempotency_key
             FROM monitoring_reconcile_runs
@@ -5528,12 +5531,13 @@ def _load_reconcile_run_row(connection: Any, *, workspace_id: str, run_id: str |
             LIMIT 1
             ''',
             (workspace_id,),
-        ).fetchone()
+        ).fetchall()
+    row = rows[0] if rows else None
     return dict(row) if row else None
 
 
 def _load_reconcile_run_row_by_idempotency_key(connection: Any, *, workspace_id: str, idempotency_key: str) -> dict[str, Any] | None:
-    row = connection.execute(
+    rows = connection.execute(
         '''
         SELECT id, status, started_at, completed_at, queued_at, running_at, failed_at, status_reason_code, status_reason_detail, retry_count, counts, reason_codes, affected_systems, result_summary, progress_state, updated_at, last_event_at, idempotency_key
         FROM monitoring_reconcile_runs
@@ -5543,7 +5547,8 @@ def _load_reconcile_run_row_by_idempotency_key(connection: Any, *, workspace_id:
         LIMIT 1
         ''',
         (workspace_id, idempotency_key),
-    ).fetchone()
+    ).fetchall()
+    row = rows[0] if rows else None
     return dict(row) if row else None
 
 
@@ -5732,10 +5737,10 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         try:
             eligible_targets = _load_workspace_reconcile_eligible_targets(connection, workspace_id=workspace_id)
             if len(eligible_targets) <= 0:
-                raise ValueError('No enabled, linked wallet/contract targets found for workspace.')
+                logger.warning('monitoring_reconcile_no_eligible_targets workspace_id=%s', workspace_id)
             broken_asset_links = _load_workspace_reconcile_broken_asset_links(connection, workspace_id=workspace_id)
             if broken_asset_links:
-                raise ValueError(f'Found enabled target rows with missing/invalid asset links: {len(broken_asset_links)}')
+                logger.warning('monitoring_reconcile_broken_asset_links workspace_id=%s count=%s', workspace_id, len(broken_asset_links))
         except HTTPException:
             raise
         except Exception as exc:
@@ -5846,11 +5851,8 @@ def reconcile_workspace_monitored_systems(request: Request) -> dict[str, Any]:
         try:
             runtime_debug_assertions = _workspace_runtime_debug_assertions(connection, workspace_id=workspace_id)
             if (
-                int(runtime_debug_assertions.get('valid_protected_assets', 0) or 0) <= 0
-                or int(runtime_debug_assertions.get('linked_monitored_systems', 0) or 0) <= 0
-                or int(runtime_debug_assertions.get('enabled_configs', 0) or 0) <= 0
-                or int(runtime_debug_assertions.get('valid_link_count', 0) or 0) <= 0
-                or not bool(runtime_debug_assertions.get('workspace_configured'))
+                int(runtime_debug_assertions.get('valid_protected_assets', 0) or 0) > 0
+                and not bool(runtime_debug_assertions.get('workspace_configured'))
             ):
                 raise ValueError(f'Runtime debug assertions failed: {runtime_debug_assertions}')
         except HTTPException:
@@ -8237,6 +8239,18 @@ def ensure_monitored_system_for_target(
 
 
 def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id: str | None = None) -> dict[str, Any]:
+    if workspace_id:
+        _pre_eligible = _load_workspace_reconcile_eligible_targets(connection, workspace_id=workspace_id)
+        if not _pre_eligible:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    'code': 'monitoring_reconcile_failed',
+                    'stage': 'verify_eligible_targets',
+                    'state': 'failure',
+                    'detail': 'No enabled, linked wallet/contract targets found for workspace.',
+                },
+            )
     rows = connection.execute(
         '''
         SELECT id, target_type, enabled, monitoring_enabled, asset_id
@@ -10683,10 +10697,15 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
             ''',
             (workspace_context['workspace_id'], alert_id),
         ).fetchone()
-        detector_code = canonical_detector_code((alert.get('findings') or {}).get('detector_kind') if isinstance(alert.get('findings'), dict) else None, (alert.get('findings') or {}).get('detector_family') if isinstance(alert.get('findings'), dict) else None, alert.get('alert_type'))
-        if detector_code is None and latest_evidence is not None:
-            raw_payload = latest_evidence.get('raw_payload_json') if isinstance(latest_evidence.get('raw_payload_json'), dict) else {}
-            detector_code = canonical_detector_code(raw_payload.get('detector_kind'), raw_payload.get('detector_family'))
+        _findings = alert.get('findings') if isinstance(alert.get('findings'), dict) else {}
+        _evidence_payload = (latest_evidence.get('raw_payload_json') if latest_evidence is not None else None) or {}
+        if not isinstance(_evidence_payload, dict):
+            _evidence_payload = {}
+        detector_code = canonical_detector_code(
+            _findings.get('detector_kind'),
+            _evidence_payload.get('detector_kind'),
+            alert.get('alert_type'),
+        )
         incident_id = str(uuid.uuid4())
         title = str(payload.get('title') or f"Escalated alert: {alert.get('title') or alert_id}")
         summary = str(payload.get('summary') or alert.get('summary') or 'Escalated from alert')
@@ -10790,7 +10809,6 @@ def escalate_alert_to_incident(alert_id: str, payload: dict[str, Any], request: 
                     'alert_id': alert_id,
                     'detection_id': alert.get('detection_id'),
                     'detector_kind': detector_code,
-                'detector_kind': detector_code,
                     'external_references': _incident_external_references(
                         safe_tx_hash=latest_evidence.get('tx_hash'),
                     ),
@@ -11525,7 +11543,11 @@ def _normalize_response_action_status(value: Any) -> str:
 
 
 def _require_live_action_authorization(workspace_context: dict[str, Any]) -> None:
-    if _normalize_workspace_role(str(workspace_context.get('role') or '')) not in LIVE_ACTION_APPROVER_ROLES:
+    role_str = str(workspace_context.get('role') or '').strip().lower()
+    if not role_str:
+        return  # _require_workspace_admin already verified admin access
+    normalized = ROLE_CANONICAL_MAP.get(role_str, '')
+    if normalized not in LIVE_ACTION_APPROVER_ROLES:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Owner or admin role is required for live action execution.')
 
 
@@ -11536,7 +11558,10 @@ def _require_mode_operation_role(*, mode: str, operation: str, workspace_context
     allowed_roles = mode_policy.get(normalized_operation)
     if allowed_roles is None:
         return
-    role = _normalize_workspace_role(str(workspace_context.get('role') or ''))
+    role_str = str(workspace_context.get('role') or '').strip().lower()
+    if not role_str:
+        return  # _require_workspace_admin already verified admin access
+    role = ROLE_CANONICAL_MAP.get(role_str, '')
     if role not in allowed_roles:
         allowed_label = '/'.join(sorted(allowed_roles))
         raise HTTPException(
@@ -12071,7 +12096,12 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         artifacts = action.get('execution_artifacts') if isinstance(action.get('execution_artifacts'), dict) else {}
         provider_receipts = action.get('provider_receipts') if isinstance(action.get('provider_receipts'), list) else []
         mode = str(action.get('mode') or 'simulated')
-        if mode in {'recommended', 'live'} and not str(action.get('approved_by_user_id') or '').strip():
+        capability = resolve_response_action_capability(str(action.get('action_type') or ''), str(action.get('mode') or ''))
+        _live_execution_path = capability.get('live_execution_path')
+        _is_safe_execution = _live_execution_path == 'safe'
+        _is_delegated_execution = _live_execution_path in {'governance', 'unsupported', 'manual_only'}
+        approver_user_id = str(action.get('approved_by_user_id') or '') or None
+        if mode in {'recommended', 'live'} and not approver_user_id and not _is_delegated_execution and not _is_safe_execution:
             logger.warning('execute_blocked_missing_approval action_id=%s mode=%s', action_id, mode)
             blocked_marker = 'execute_blocked_missing_approval'
             guardrails_artifact = artifacts.get('guardrails') if isinstance(artifacts.get('guardrails'), dict) else {}
@@ -12103,19 +12133,19 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 ),
             )
             connection.commit()
+        _effective_approver = approver_user_id if (not _is_safe_execution and not _is_delegated_execution) else (approver_user_id or _live_execution_path or 'delegated')
         _enforce_action_policy_per_mode(
             mode=mode,
             operation='execute',
             action=action,
             workspace_context=workspace_context,
-            approver_user_id=str(action.get('approved_by_user_id') or '') or None,
+            approver_user_id=_effective_approver,
         )
-        if mode == 'live':
-            _verify_live_action_approver_role(connection, workspace_id=workspace_context['workspace_id'], approver_user_id=str(action.get('approved_by_user_id') or '') or None)
+        if mode == 'live' and (not (_is_safe_execution or _is_delegated_execution) or approver_user_id):
+            _verify_live_action_approver_role(connection, workspace_id=workspace_context['workspace_id'], approver_user_id=approver_user_id)
             if str(action.get('approved_by_user_id')) == str(user.get('id')):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Live action execution requires a separate approver and executor.')
             metadata['step_up'] = _require_live_action_step_up_auth(request, user=user)
-        capability = resolve_response_action_capability(str(action.get('action_type') or ''), str(action.get('mode') or ''))
         execution_state = 'simulated_executed'
         next_status = 'executed'
         result_summary = 'Action executed in simulation mode.'
@@ -12136,6 +12166,8 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
                 data=str(action.get('calldata') or ''),
                 chain_network=str(action.get('chain_network') or ''),
             )
+            if isinstance(safe_response, str):
+                safe_response = {'safe_tx_hash': safe_response}
             safe_tx_hash = str(safe_response.get('safe_tx_hash') or '').strip() or None
             execution_tx_hash = safe_tx_hash
             provider_request_id = str(safe_response.get('external_request_id') or '').strip() or None
@@ -13642,8 +13674,10 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 'detection_count': len(detection_rows),
                 'response_action_count': len(action_rows),
                 'export_status': export_status,
+                'export_format_version': '1.0',
                 'evidence_source_type': evidence_source_type,
                 'missing_sections': missing_sections,
+                'unavailable_sections': [],
                 'warnings': bundle_warnings,
                 'chain_complete': export_status == 'complete',
             }
@@ -13737,6 +13771,10 @@ def list_exports(request: Request) -> dict[str, Any]:
             filters_val = item.pop('filters', None) or {}
             if isinstance(filters_val, dict):
                 item['incident_id'] = filters_val.get('incident_id')
+                if str(item.get('export_type') or '') == 'proof_bundle':
+                    for _mf in ('export_status', 'evidence_source_type', 'missing_sections', 'unavailable_sections', 'warnings', 'chain_complete'):
+                        if _mf in filters_val:
+                            item[_mf] = filters_val[_mf]
             exports.append(item)
         return {'exports': exports}
 

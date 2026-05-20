@@ -149,8 +149,7 @@ def test_monitoring_routes_reconcile_then_list_return_rows_without_undefined_col
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
     monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-1'}, _stub_workspace()))
-    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda *_a, **_k: {'id': 'user-1'})
-    monkeypatch.setattr(pilot, 'resolve_workspace', lambda *_a, **_k: _stub_workspace())
+    monkeypatch.setattr(pilot, 'resolve_workspace_context_for_request', lambda *_a, **_k: ({'id': 'user-1'}, _stub_workspace(), True))
     monkeypatch.setattr(pilot, 'reconcile_enabled_targets_monitored_systems', lambda *_a, **_k: {'targets_scanned': 1, 'created_or_updated': 1})
     monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
 

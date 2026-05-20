@@ -47,7 +47,7 @@ class _RuntimeStatusConn:
             return _Result(None)
         if "FROM alerts WHERE status IN ('open','acknowledged','investigating')" in q and 'FROM alerts a' not in q:
             return _Result({'c': self.raw_open_alerts})
-        if 'FROM alerts a' in q and 'JOIN detections d' in q and 'FROM detection_evidence de' in q:
+        if 'FROM alerts a' in q and 'JOIN detection_events de' in q and 'JOIN telemetry_events te' in q and 'COUNT' in q:
             return _Result({'c': self.chain_open_alerts})
         if "FROM incidents WHERE status IN ('open','acknowledged')" in q and 'WITH proof_chain_alerts AS (' not in q:
             return _Result({'c': self.raw_open_incidents})
@@ -67,7 +67,9 @@ class _RuntimeStatusConn:
             return _Result({'observed_at': self.now - timedelta(seconds=30), 'block_number': 321})
         if 'FROM analysis_runs' in q:
             return _Result({'created_at': self.now - timedelta(seconds=20), 'response_payload': {'metadata': {'recent_real_event_count': 1, 'evidence_state': 'real'}}})
-        if 'SELECT detected_at FROM detections' in q:
+        if 'MAX(created_at) AS ts' in q and 'FROM detection_events' in q:
+            return _Result({'ts': self.latest_detection_at} if self.latest_detection_at else None)
+        if 'AS detected_at' in q and 'FROM alerts a' in q and 'JOIN detection_events de' in q:
             return _Result({'detected_at': self.latest_detection_at} if self.latest_detection_at else None)
         if 'WITH filtered_receipts AS (' in q:
             return _Result(rows=[])
