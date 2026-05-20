@@ -1,6 +1,7 @@
 import { normalizeApiBaseUrl } from 'app/api-config';
 import { getRuntimeConfig } from 'app/runtime-config';
 import { normalizeWorkspaceHeaderValue } from 'app/workspace-header';
+import { FetchTimeoutError, fetchWithTimeout } from 'app/fetch-with-timeout';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -56,17 +57,13 @@ export async function GET(request: Request) {
   const requestUrl = `${backendApiUrl}/ops/monitoring/runtime-status`;
 
   for (let attempt = 0; attempt <= MAX_TIMEOUT_RETRIES; attempt += 1) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
     try {
-      const response = await fetch(requestUrl, {
+      const response = await fetchWithTimeout(requestUrl, {
         method: 'GET',
         headers: buildForwardHeaders(request),
         cache: 'no-store',
         next: { revalidate: 0 },
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
+      }, PROXY_TIMEOUT_MS);
       const payload = await response.json().catch(() => ({}));
       return Response.json(payload, {
         status: response.status,
@@ -76,8 +73,7 @@ export async function GET(request: Request) {
         },
       });
     } catch (error) {
-      clearTimeout(timeoutId);
-      const isTimeout = error instanceof Error && error.name === 'AbortError';
+      const isTimeout = error instanceof FetchTimeoutError;
       if (isTimeout && attempt < MAX_TIMEOUT_RETRIES) {
         continue;
       }
