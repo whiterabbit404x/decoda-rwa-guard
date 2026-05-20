@@ -9,6 +9,7 @@ test.describe('threat saas refactor source contracts', () => {
   const detect = fs.readFileSync(path.join(process.cwd(), 'app/threat/detection-feed.tsx'), 'utf8');
   const chain = fs.readFileSync(path.join(process.cwd(), 'app/threat/alert-incident-chain.tsx'), 'utf8');
   const action = fs.readFileSync(path.join(process.cwd(), 'app/threat/response-action-panel.tsx'), 'utf8');
+  const threatCopy = fs.readFileSync(path.join(process.cwd(), 'app/threat/threat-copy.ts'), 'utf8');
 
   test('keeps buildSecurityWorkspaceStatus owned by monitoring model builder', () => {
     const monitoringModel = fs.readFileSync(path.join(process.cwd(), 'app/threat/build-monitoring-health-model.ts'), 'utf8');
@@ -28,7 +29,9 @@ test.describe('threat saas refactor source contracts', () => {
   });
 
   test('customer-safe empty states and labels are present', () => {
-    expect(detect).toContain('No detections yet. Monitoring will show detections here once telemetry matches a rule.');
+    expect(detect).toContain("import { THREAT_COPY } from './threat-copy';");
+    expect(detect).toContain('{THREAT_COPY.noDetectionRecords}');
+    expect(threatCopy).toContain('No detections yet. Live telemetry coverage for Treasury-backed assets, custody wallets, issuer contracts, oracle/NAV feeds, and compliance exposure checks will populate detections here once signals arrive.');
     expect(chain).toContain('Alert → Incident → Response Action');
     expect(action).toContain('Simulation only');
     expect(action).toContain('Manual recommendation');
