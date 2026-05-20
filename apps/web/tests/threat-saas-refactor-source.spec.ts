@@ -1,8 +1,8 @@
-import { describe, expect, it } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 
-describe('threat saas refactor source contracts', () => {
+test.describe('threat saas refactor source contracts', () => {
   const panel = fs.readFileSync(path.join(process.cwd(), 'app/threat-operations-panel.tsx'), 'utf8');
   const overview = fs.readFileSync(path.join(process.cwd(), 'app/threat/threat-overview-card.tsx'), 'utf8');
   const tech = fs.readFileSync(path.join(process.cwd(), 'app/threat/technical-runtime-details.tsx'), 'utf8');
@@ -10,7 +10,7 @@ describe('threat saas refactor source contracts', () => {
   const chain = fs.readFileSync(path.join(process.cwd(), 'app/threat/alert-incident-chain.tsx'), 'utf8');
   const action = fs.readFileSync(path.join(process.cwd(), 'app/threat/response-action-panel.tsx'), 'utf8');
 
-  it('keeps buildSecurityWorkspaceStatus owned by monitoring model builder', () => {
+  test('keeps buildSecurityWorkspaceStatus owned by monitoring model builder', () => {
     const monitoringModel = fs.readFileSync(path.join(process.cwd(), 'app/threat/build-monitoring-health-model.ts'), 'utf8');
     expect(panel).not.toContain('import { buildSecurityWorkspaceStatus }');
     expect(panel).not.toContain('const securityStatus = useMemo(');
@@ -18,16 +18,16 @@ describe('threat saas refactor source contracts', () => {
     expect(monitoringModel).toContain('buildSecurityWorkspaceStatus(');
   });
 
-  it('ThreatOverviewCard accepts SecurityWorkspaceStatus', () => {
+  test('ThreatOverviewCard accepts SecurityWorkspaceStatus', () => {
     expect(overview).toContain('SecurityWorkspaceStatus');
   });
 
-  it('technical details collapsed by default', () => {
+  test('technical details collapsed by default', () => {
     expect(tech).toContain('<details className="tableMeta">');
     expect(tech).not.toContain('<details open');
   });
 
-  it('customer-safe empty states and labels are present', () => {
+  test('customer-safe empty states and labels are present', () => {
     expect(detect).toContain('No detections yet. Monitoring will show detections here once telemetry matches a rule.');
     expect(chain).toContain('Alert → Incident → Response Action');
     expect(action).toContain('Simulation only');
