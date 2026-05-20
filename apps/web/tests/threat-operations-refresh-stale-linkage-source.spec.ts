@@ -101,7 +101,7 @@ test('detection rows surface raw evidence references and observed timestamps', (
 
   expect(threat).toContain('rawEvidenceReference');
   expect(threat).toContain('formatRawEvidenceReference({');
-  expect(threat).toContain('evidenceId: latestEvidence?.id || 'n/a'');
+  expect(threat).toContain("evidenceId: latestEvidence?.id || 'n/a'");
   expect(threat).toContain('rawEvidenceObservedAt');
   expect(threat).toContain('observed {formatAbsoluteTime(signal.rawEvidenceObservedAt || signal.timestamp)}');
 });

@@ -9,7 +9,7 @@ function read(fileName: string): string {
 test('product navigation order matches the 12 screen parity contract', () => {
   const nav = read('product-nav.ts');
   const expectedOrder = [
-    'Getting Started',
+    'Onboarding',
     'Dashboard',
     'Assets',
     'Monitoring Sources',

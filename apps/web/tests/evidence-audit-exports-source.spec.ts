@@ -1,3 +1,8 @@
+import { expect, test } from '@playwright/test';
+import fs from 'node:fs';
+import path from 'node:path';
+
+function read(relativePath: string): string {
   return fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf-8');
 }
 
