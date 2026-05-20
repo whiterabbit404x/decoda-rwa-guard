@@ -1,5 +1,8 @@
 import { redirect } from 'next/navigation';
 
+export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
+
 type LegacySearchParams = Record<string, string | string[] | undefined>;
 
 function serializeSearchParams(searchParams: LegacySearchParams | undefined) {
