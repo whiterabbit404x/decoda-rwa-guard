@@ -1,8 +1,4 @@
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-﻿"""Tests for proof bundle export quality, truthfulness, and workspace scoping."""
-=======
 """Tests for proof bundle export quality, truthfulness, and workspace scoping."""
->>>>>>> main
 from __future__ import annotations
 
 import json
@@ -87,11 +83,7 @@ class _SimulatorChainConnection(_CompleteChainConnection):
 
 
 class _MissingResponseActionsConnection(_CompleteChainConnection):
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-    """No response actions 鈥?chain is partial."""
-=======
     """No response actions — chain is partial."""
->>>>>>> main
 
     def execute(self, query, params=None):
         normalized = ' '.join(str(query).split())
@@ -101,11 +93,7 @@ class _MissingResponseActionsConnection(_CompleteChainConnection):
 
 
 class _NoAlertsConnection(_CompleteChainConnection):
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-    """No alerts, detections, evidence, or response actions 鈥?chain is incomplete."""
-=======
     """No alerts, detections, evidence, or response actions — chain is incomplete."""
->>>>>>> main
 
     def execute(self, query, params=None):
         normalized = ' '.join(str(query).split())
@@ -132,17 +120,10 @@ class _CrossWorkspaceConnection:
         raise AssertionError(f'unexpected query: {query}')
 
 
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-# 鈹€鈹€ Tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
-def test_proof_bundle_complete_chain_live_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Complete chain with live evidence 鈫?export_status=complete, evidence_source_type=live."""
-=======
 # ── Tests ──────────────────────────────────────────────────────────
 
 def test_proof_bundle_complete_chain_live_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     """Complete chain with live evidence → export_status=complete, evidence_source_type=live."""
->>>>>>> main
     fake_storage = _FakeStorage()
     monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
     connection = _CompleteChainConnection()
@@ -151,29 +132,7 @@ def test_proof_bundle_complete_chain_live_evidence(monkeypatch: pytest.MonkeyPat
     assert meta['export_status'] == 'complete'
     assert meta['evidence_source_type'] == 'live'
     assert meta['missing_sections'] == []
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-=======
-    assert meta['unavailable_sections'] == []
-    assert meta['chain_complete'] is True
->>>>>>> main
-    assert meta['warnings'] == []
-
-    payload = json.loads(fake_storage.content.decode('utf-8'))
-    summary = payload['rows'][0]['summary.json']
-    assert summary['export_status'] == 'complete'
-    assert summary['evidence_source_type'] == 'live'
-    assert summary['chain_complete'] is True
-    assert summary['alert_count'] == 1
-    assert summary['detection_count'] == 1
-    assert summary['response_action_count'] == 1
-
-
-def test_proof_bundle_simulator_evidence_is_labeled(monkeypatch: pytest.MonkeyPatch) -> None:
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-    """Simulator evidence 鈫?evidence_source_type=simulator, warning included."""
-=======
     """Simulator evidence → evidence_source_type=simulator, warning included."""
->>>>>>> main
     fake_storage = _FakeStorage()
     monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
     connection = _SimulatorChainConnection()
@@ -188,11 +147,7 @@ def test_proof_bundle_simulator_evidence_is_labeled(monkeypatch: pytest.MonkeyPa
 
 
 def test_proof_bundle_missing_response_actions_is_partial(monkeypatch: pytest.MonkeyPatch) -> None:
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-    """No response actions 鈫?export_status=partial, response_actions in missing_sections."""
-=======
     """No response actions → export_status=partial, response_actions in missing_sections."""
->>>>>>> main
     fake_storage = _FakeStorage()
     monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
     connection = _MissingResponseActionsConnection()
@@ -204,11 +159,7 @@ def test_proof_bundle_missing_response_actions_is_partial(monkeypatch: pytest.Mo
 
 
 def test_proof_bundle_no_alerts_is_incomplete(monkeypatch: pytest.MonkeyPatch) -> None:
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-    """No alerts, detections, or evidence 鈫?export_status=incomplete."""
-=======
     """No alerts, detections, or evidence → export_status=incomplete."""
->>>>>>> main
     fake_storage = _FakeStorage()
     monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
     connection = _NoAlertsConnection()
@@ -221,11 +172,7 @@ def test_proof_bundle_no_alerts_is_incomplete(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_proof_bundle_cross_workspace_incident_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-    """Incident not found for requesting workspace 鈫?404 raised."""
-=======
     """Incident not found for requesting workspace → 404 raised."""
->>>>>>> main
     fake_storage = _FakeStorage()
     monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
     connection = _CrossWorkspaceConnection()
@@ -259,22 +206,14 @@ def test_proof_bundle_summary_includes_all_required_fields(monkeypatch: pytest.M
     summary = payload['rows'][0]['summary.json']
     required_fields = {
         'generated_at', 'workspace_id', 'incident_id',
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-        'export_status', 'evidence_source_type', 'missing_sections',
-        'warnings', 'chain_complete', 'alert_count', 'detection_count',
-=======
         'export_format_version', 'export_status', 'evidence_source_type', 'missing_sections',
         'unavailable_sections', 'warnings', 'chain_complete', 'alert_count', 'detection_count',
->>>>>>> main
         'response_action_count', 'detection_metric_count',
     }
     for field in required_fields:
         assert field in summary, f'summary.json missing required field: {field}'
 
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-=======
 
->>>>>>> main
 def test_proof_bundle_includes_response_actions_and_detections_files(monkeypatch: pytest.MonkeyPatch) -> None:
     """Proof bundle must include response_actions.json, detections.json, audit_log.json."""
     fake_storage = _FakeStorage()

@@ -110,17 +110,10 @@ function evidenceSourcePill(
 ): { label: string; variant: PillVariant } {
   const raw = (rowSource ?? '').toLowerCase();
   if (raw === 'missing') {
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-    return { label: 'missing', variant: 'neutral' };
-  }
-  if (raw === 'unavailable' || raw === 'fallback') {
-    return { label: 'unavailable', variant: 'warning' };
-=======
     return { label: 'Evidence missing', variant: 'neutral' };
   }
   if (raw === 'unavailable' || raw === 'fallback') {
     return { label: 'Evidence unavailable', variant: 'warning' };
->>>>>>> main
   }
   if (
     raw === 'simulator' ||
@@ -134,11 +127,7 @@ function evidenceSourcePill(
   if (raw === 'live' || raw === 'live_provider') {
     return { label: 'Live evidence', variant: 'success' };
   }
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-  return { label: 'unknown', variant: 'neutral' };
-=======
   return { label: 'Unknown source', variant: 'neutral' };
->>>>>>> main
 }
 
 function packageStatusPill(status?: string): { label: string; variant: PillVariant } {
@@ -946,19 +935,11 @@ function PackageDetailPanel({
           Export Status
         </p>
         {pkg.export_status === 'incomplete' ? (
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-          <StatusPill label="Incomplete" variant="danger" />
-        ) : pkg.export_status === 'partial' ? (
-          <StatusPill label="Partial" variant="warning" />
-        ) : ready ? (
-          <StatusPill label="Ready" variant="success" />
-=======
           <StatusPill label="Incomplete proof bundle" variant="danger" />
         ) : pkg.export_status === 'partial' ? (
           <StatusPill label="Partial proof bundle" variant="warning" />
         ) : ready ? (
           <StatusPill label="Complete proof bundle" variant="success" />
->>>>>>> main
         ) : (
           <StatusPill label="Not Available" variant="neutral" />
         )}
@@ -982,8 +963,6 @@ function PackageDetailPanel({
         </div>
       )}
 
-<<<<<<< claude/follow-claude-guidelines-cZjO6
-=======
 
       {(pkg.unavailable_sections?.length ?? 0) > 0 && (
         <div style={{ marginBottom: '0.75rem' }}>
@@ -1001,7 +980,6 @@ function PackageDetailPanel({
           ))}
         </div>
       )}
->>>>>>> main
       <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
         <button
           type="button"
