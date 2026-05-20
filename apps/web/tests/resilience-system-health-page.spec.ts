@@ -3,14 +3,14 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 const pageSource = readFileSync(
-  join(process.cwd(), 'apps/web/app/(product)/system-health/page.tsx'),
+  join(process.cwd(), 'app/(product)/system-health/page.tsx'),
   'utf8',
 );
 const resilienceSource = readFileSync(
-  join(process.cwd(), 'apps/web/app/(product)/resilience/page.tsx'),
+  join(process.cwd(), 'app/(product)/resilience/page.tsx'),
   'utf8',
 );
-const navSource = readFileSync(join(process.cwd(), 'apps/web/app/product-nav.ts'), 'utf8');
+const navSource = readFileSync(join(process.cwd(), 'app/product-nav.ts'), 'utf8');
 
 test('/system-health renders the System Health screen', () => {
   expect(pageSource).toContain('<h1>System Health</h1>');
