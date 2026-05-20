@@ -12918,6 +12918,10 @@ def create_incident_report_export(payload: dict[str, Any], request: Request) -> 
         'export_job_id': result['job_id'],
         'download_link': result.get('download_url'),
         'status': result.get('status'),
+        'export_status': result.get('export_status'),
+        'evidence_source_type': result.get('evidence_source_type'),
+        'missing_sections': result.get('missing_sections'),
+        'warnings': result.get('warnings'),
         'error_message': result.get('error_message'),
     }
 

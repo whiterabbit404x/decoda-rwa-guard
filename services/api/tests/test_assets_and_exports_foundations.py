@@ -251,3 +251,57 @@ def test_create_export_job_admin_is_permitted(monkeypatch: pytest.MonkeyPatch) -
     result = pilot.create_export_job('alerts', {'format': 'csv'}, request=req)
     assert result['status'] == 'completed'
     assert any('INSERT INTO export_jobs' in q for q in inserted)
+
+
+def test_list_exports_exposes_proof_bundle_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    from contextlib import contextmanager
+    from fastapi import Request
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda c, r: {'id': 'u-1'})
+    monkeypatch.setattr(pilot, 'resolve_workspace', lambda c, u, w: {'workspace_id': 'ws-1'})
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda c: None)
+
+    class _Conn:
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split())
+            class _R:
+                def fetchall(self_inner):
+                    if 'FROM export_jobs' in q:
+                        return [{
+                            'id': 'exp-1',
+                            'export_type': 'proof_bundle',
+                            'format': 'json',
+                            'status': 'completed',
+                            'output_path': 'ws-1/exp-1.json',
+                            'storage_backend': 'local',
+                            'storage_object_key': 'ws-1/exp-1.json',
+                            'error_message': None,
+                            'filters': {
+                                'incident_id': 'inc-1',
+                                'export_status': 'partial',
+                                'evidence_source_type': 'simulator',
+                                'missing_sections': ['response_actions'],
+                                'unavailable_sections': [],
+                                'warnings': ['simulator evidence'],
+                                'chain_complete': False,
+                            },
+                            'created_at': '2026-01-01T00:00:00Z',
+                            'updated_at': '2026-01-01T00:01:00Z',
+                        }]
+                    return []
+            return _R()
+
+    @contextmanager
+    def _pg():
+        yield _Conn()
+
+    monkeypatch.setattr(pilot, 'pg_connection', _pg)
+
+    payload = pilot.list_exports(Request({'type': 'http', 'headers': []}))
+    item = payload['exports'][0]
+    assert item['export_status'] == 'partial'
+    assert item['evidence_source_type'] == 'simulator'
+    assert item['missing_sections'] == ['response_actions']
+    assert item['unavailable_sections'] == []
+    assert item['chain_complete'] is False

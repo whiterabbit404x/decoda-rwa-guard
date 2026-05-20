@@ -60,6 +60,7 @@ type EvidencePackage = {
   asset_id?: string;
   asset_label?: string;
   evidence_source?: string;
+  evidence_source_type?: string;
   size_bytes?: number;
   package_ready?: boolean;
   download_url?: string | null;
@@ -95,6 +96,7 @@ type AuditRow = {
   user_agent?: string;
   workspace_id?: string;
   evidence_source?: string;
+  evidence_source_type?: string;
 };
 
 /* ── Helpers ────────────────────────────────────────────────────── */
@@ -108,10 +110,17 @@ function evidenceSourcePill(
 ): { label: string; variant: PillVariant } {
   const raw = (rowSource ?? '').toLowerCase();
   if (raw === 'missing') {
+<<<<<<< claude/follow-claude-guidelines-cZjO6
     return { label: 'missing', variant: 'neutral' };
   }
   if (raw === 'unavailable' || raw === 'fallback') {
     return { label: 'unavailable', variant: 'warning' };
+=======
+    return { label: 'Evidence missing', variant: 'neutral' };
+  }
+  if (raw === 'unavailable' || raw === 'fallback') {
+    return { label: 'Evidence unavailable', variant: 'warning' };
+>>>>>>> main
   }
   if (
     raw === 'simulator' ||
@@ -120,12 +129,16 @@ function evidenceSourcePill(
     raw === 'guided_simulator' ||
     workspaceSource === 'simulator'
   ) {
-    return { label: 'simulator', variant: 'info' };
+    return { label: 'Simulator/test evidence', variant: 'info' };
   }
   if (raw === 'live' || raw === 'live_provider') {
-    return { label: 'live_provider', variant: 'success' };
+    return { label: 'Live evidence', variant: 'success' };
   }
+<<<<<<< claude/follow-claude-guidelines-cZjO6
   return { label: 'unknown', variant: 'neutral' };
+=======
+  return { label: 'Unknown source', variant: 'neutral' };
+>>>>>>> main
 }
 
 function packageStatusPill(status?: string): { label: string; variant: PillVariant } {
@@ -258,10 +271,30 @@ export default function EvidenceAuditPanel() {
 
   async function createPackage() {
     setMessage('');
-    const res = await fetch(`${apiUrl}/exports/history`, {
+    const linkedIncidentId =
+      packages.find((pkg) => pkg.incident_id)?.incident_id ??
+      ((runtime as Record<string, unknown> | undefined)?.latest_incident_id as string | undefined) ??
+      ((summary as Record<string, unknown> | undefined)?.latest_incident_id as string | undefined) ??
+      ((summary as Record<string, unknown> | undefined)?.last_incident_id as string | undefined);
+
+    let incidentId = linkedIncidentId;
+    if (!incidentId) {
+      const incidentRes = await fetch(`${apiUrl}/incidents`, { headers: authHeaders(), cache: 'no-store' });
+      if (incidentRes.ok) {
+        const incidentsPayload = (await incidentRes.json()) as { incidents?: Array<{ id?: string }> };
+        incidentId = incidentsPayload.incidents?.[0]?.id;
+      }
+    }
+
+    if (!incidentId) {
+      setMessage('Cannot create proof bundle yet: no incident is linked.');
+      return;
+    }
+
+    const res = await fetch(`${apiUrl}/exports/proof-bundle`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ format: 'csv' }),
+      body: JSON.stringify({ incident_id: incidentId, include_raw_events: true }),
     });
     const payload = (await res.json()) as { status?: string; detail?: string };
     setMessage(
@@ -477,7 +510,7 @@ export default function EvidenceAuditPanel() {
                   </tr>
                 ) : (
                   packages.map((pkg) => {
-                    const evSrc = evidenceSourcePill(pkg.evidence_source, workspaceEvidenceSource);
+                    const evSrc = evidenceSourcePill(pkg.evidence_source_type ?? pkg.evidence_source, workspaceEvidenceSource);
                     const ready = isPackageReady(pkg);
                     const isSelected = pkg.id === selectedPkgId;
                     return (
@@ -620,7 +653,7 @@ export default function EvidenceAuditPanel() {
                 auditRows.map((row, index) => {
                   const rowId = row.id ?? String(index);
                   const isSelected = rowId === selectedAuditId;
-                  const evSrc = evidenceSourcePill(row.evidence_source, workspaceEvidenceSource);
+                  const evSrc = evidenceSourcePill(row.evidence_source_type ?? row.evidence_source, workspaceEvidenceSource);
                   const result = auditResultPill(row.result ?? row.status);
                   return (
                     <tr
@@ -691,7 +724,7 @@ function PackageDetailPanel({
   authHeaders: () => Record<string, string>;
   onExport: (pkg: EvidencePackage, format: 'json' | 'csv') => Promise<void>;
 }) {
-  const evSrc = evidenceSourcePill(pkg.evidence_source, workspaceEvidenceSource);
+  const evSrc = evidenceSourcePill(pkg.evidence_source_type ?? pkg.evidence_source, workspaceEvidenceSource);
   const st = packageStatusPill(pkg.status);
   const ready = isPackageReady(pkg);
 
@@ -913,11 +946,19 @@ function PackageDetailPanel({
           Export Status
         </p>
         {pkg.export_status === 'incomplete' ? (
+<<<<<<< claude/follow-claude-guidelines-cZjO6
           <StatusPill label="Incomplete" variant="danger" />
         ) : pkg.export_status === 'partial' ? (
           <StatusPill label="Partial" variant="warning" />
         ) : ready ? (
           <StatusPill label="Ready" variant="success" />
+=======
+          <StatusPill label="Incomplete proof bundle" variant="danger" />
+        ) : pkg.export_status === 'partial' ? (
+          <StatusPill label="Partial proof bundle" variant="warning" />
+        ) : ready ? (
+          <StatusPill label="Complete proof bundle" variant="success" />
+>>>>>>> main
         ) : (
           <StatusPill label="Not Available" variant="neutral" />
         )}
@@ -941,6 +982,26 @@ function PackageDetailPanel({
         </div>
       )}
 
+<<<<<<< claude/follow-claude-guidelines-cZjO6
+=======
+
+      {(pkg.unavailable_sections?.length ?? 0) > 0 && (
+        <div style={{ marginBottom: '0.75rem' }}>
+          <p className="sectionEyebrow" style={{ marginBottom: '0.35rem' }}>
+            Unavailable Sections
+          </p>
+          {pkg.unavailable_sections?.map((section) => (
+            <div
+              key={section}
+              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem', fontSize: '0.75rem' }}
+            >
+              <span style={{ color: '#f59e0b', fontWeight: 700 }}>!</span>
+              <span style={{ color: '#fcd34d' }}>{section}</span>
+            </div>
+          ))}
+        </div>
+      )}
+>>>>>>> main
       <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
         <button
           type="button"
@@ -984,7 +1045,7 @@ function AuditDetailPanel({
   row: AuditRow;
   workspaceEvidenceSource: string;
 }) {
-  const evSrc = evidenceSourcePill(row.evidence_source, workspaceEvidenceSource);
+  const evSrc = evidenceSourcePill(row.evidence_source_type ?? row.evidence_source, workspaceEvidenceSource);
   const result = auditResultPill(row.result ?? row.status);
 
   return (
