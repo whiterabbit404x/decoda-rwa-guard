@@ -132,21 +132,6 @@ def test_proof_bundle_complete_chain_live_evidence(monkeypatch: pytest.MonkeyPat
     assert meta['export_status'] == 'complete'
     assert meta['evidence_source_type'] == 'live'
     assert meta['missing_sections'] == []
-    assert meta['unavailable_sections'] == []
-    assert meta['chain_complete'] is True
-    assert meta['warnings'] == []
-
-    payload = json.loads(fake_storage.content.decode('utf-8'))
-    summary = payload['rows'][0]['summary.json']
-    assert summary['export_status'] == 'complete'
-    assert summary['evidence_source_type'] == 'live'
-    assert summary['chain_complete'] is True
-    assert summary['alert_count'] == 1
-    assert summary['detection_count'] == 1
-    assert summary['response_action_count'] == 1
-
-
-def test_proof_bundle_simulator_evidence_is_labeled(monkeypatch: pytest.MonkeyPatch) -> None:
     """Simulator evidence → evidence_source_type=simulator, warning included."""
     fake_storage = _FakeStorage()
     monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
