@@ -2,10 +2,6 @@ import { redirect } from 'next/navigation';
 
 type LegacySearchParams = Record<string, string | string[] | undefined>;
 
-type LegacyRouteProps = {
-  searchParams?: Promise<LegacySearchParams>;
-};
-
 function serializeSearchParams(searchParams: LegacySearchParams | undefined) {
   const params = new URLSearchParams();
   if (!searchParams) return '';
@@ -22,7 +18,6 @@ function serializeSearchParams(searchParams: LegacySearchParams | undefined) {
   return query ? `?${query}` : '';
 }
 
-export default async function TargetsPage({ searchParams }: LegacyRouteProps) {
-  const resolvedSearchParams = await searchParams;
-  redirect(`/monitoring-sources/targets${serializeSearchParams(resolvedSearchParams)}`);
+export default function TargetsPage({ searchParams }: { searchParams?: any }) {
+  redirect(`/monitoring-sources/targets${serializeSearchParams(searchParams as LegacySearchParams | undefined)}`);
 }

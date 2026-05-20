@@ -7,7 +7,7 @@ import SignInPageClient from './sign-in-page-client';
 export const dynamic = 'force-dynamic';
 
 type SignInPageProps = {
-  searchParams?: Promise<{ next?: string | string[] | undefined }>;
+  searchParams?: any;
 };
 
 export default async function SignInPage({ searchParams }: SignInPageProps) {
@@ -15,8 +15,7 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
   const runtimeConfig = getRuntimeConfig();
   const cookieStore = await cookies();
   const token = cookieStore.get('decoda_session')?.value;
-  const resolvedSearchParams = await searchParams;
-  const nextParam = resolvedSearchParams?.next;
+  const nextParam = (searchParams as { next?: string | string[] | undefined } | undefined)?.next;
   const nextPath = Array.isArray(nextParam) ? nextParam[0] : nextParam;
 
   console.debug('[dashboard-page-data trace] source=sign-in-server-render', {
