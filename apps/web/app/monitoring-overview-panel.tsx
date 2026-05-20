@@ -36,7 +36,7 @@ export default function MonitoringOverviewPanel() {
   const runtime = liveFeed.runtimeStatus;
   const truth = resolveWorkspaceMonitoringTruthFromSummary(runtime?.workspace_monitoring_summary);
   const presentation = normalizeMonitoringPresentation(truth);
-  const telemetryProofTimestamp = truth.last_telemetry_at;
+  const telemetryProofTimestamp = truth.last_coverage_telemetry_at ?? truth.last_telemetry_at;
   const realChainVerified = hasRealTelemetryBackedChain(truth);
   const showLiveWithVerifiedTelemetry = runtimeStatusAllowsLive(truth.runtime_status)
     && truth.telemetry_freshness === 'fresh'
@@ -64,7 +64,7 @@ export default function MonitoringOverviewPanel() {
       return 'Validate chain visibility for one real item: evidence → detection → alert → incident → response action.';
     }
     if (truth.active_incidents_count === 0) {
-      return 'No recent confirmed anomalies yet';
+      return 'No recent detections.';
     }
     return 'Detection chain verified from evidence through response action.';
   })();

@@ -31,6 +31,8 @@ const CRITICAL_CONTRADICTION_FLAGS = new Set([
   'incident_exists_without_alert',
   'response_action_exists_without_incident',
   'evidence_package_without_detection_alert_incident_chain',
+  'live_monitoring_without_reporting_systems',
+  'poll_without_telemetry_timestamp',
 ]);
 
 function normalizeEvidence(truth: WorkspaceMonitoringTruth): MonitoringPresentationEvidence {
@@ -74,6 +76,9 @@ function normalizeStatus(
   }
   if (monitoringStatus === 'offline' || runtimeStatus === 'offline') {
     return 'offline';
+  }
+  if (truth.reporting_systems_count === 0 && runtimeStatus === 'live') {
+    return 'degraded';
   }
   if (truth.monitoring_mode === 'simulator' || truth.evidence_source_summary === 'simulator' || truth.evidence_source_summary === 'replay') {
     return freshness === 'delayed' ? 'stale' : 'limited coverage';
