@@ -103,3 +103,20 @@ Each blocker maps to a specific env var group shown in `billing_missing_env`, `e
 > **Passing pilot readiness is not the same as broad paid launch readiness.**
 
 `build_production_readiness()` with `paid_ui_disabled=True` can return `ready_for_pilot=True` while `build_paid_launch_readiness()` returns `paid_launch_ready=false`. These are independent checks. Pilot status does not imply launch readiness.
+
+
+## Session 10 — Paid Launch Billing/Email/Provider Readiness
+
+Passing pilot readiness is not the same as broad paid launch readiness.
+
+Broad paid launch now requires a separate `paid_launch_readiness` section in canonical readiness/proof output with fail-closed gates for:
+- Billing provider + webhook readiness.
+- Email readiness (`EMAIL_PROVIDER`, `EMAIL_FROM`, `EMAIL_DOMAIN`, plus one credential path: `SENDGRID_API_KEY` or `RESEND_API_KEY` or `SMTP_HOST`+`SMTP_USER`+`SMTP_PASSWORD`).
+- Provider config readiness (`EVM_RPC_URL` non-placeholder).
+- Live provider proof readiness (`LIVE_PROVIDER_PROOF_PRESENT=true` or canonical evidence source=`live`; simulator evidence does not satisfy this).
+
+Interpret blockers from `paid_launch_blockers` as explicit reasons broad paid launch is still blocked.
+
+Recommended checks:
+- `python -m pytest services/api/tests/test_paid_launch_readiness.py -q`
+- `python -m pytest services/api/tests/test_admin_readiness.py services/api/tests/test_proof_bundle_export.py services/api/tests/test_validate_readiness_proof.py services/api/tests/test_workspace_readiness_gate_aggregation.py services/api/tests/test_saas_workflow_validation.py -q`

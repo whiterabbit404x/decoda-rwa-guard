@@ -23,6 +23,7 @@ REQUIRED_SUMMARY_PRESENCE_FIELDS = (
     'broad_self_serve_ready',
     'broad_self_serve_blocked_reason',
     'telemetry_evidence_source',
+    'paid_launch_readiness',
 )
 
 REQUIRED_SUMMARY_BOOLEAN_FIELDS = (
@@ -423,6 +424,26 @@ def main() -> int:
         'production_validation_proof_bundle_complete=true requires complete linked telemetry→detection→alert→incident→response chain',
     ))
 
+
+    paid_launch = summary.get('paid_launch_readiness')
+    checks.append((
+        'paid_launch_readiness_object_present',
+        isinstance(paid_launch, dict),
+        'summary.paid_launch_readiness must be an object',
+    ))
+    paid_launch = paid_launch if isinstance(paid_launch, dict) else {}
+    for field in ('billing_ready', 'billing_webhook_ready', 'email_ready', 'provider_ready', 'paid_launch_ready', 'blockers'):
+        checks.append((
+            f'paid_launch_readiness_has_{field}',
+            field in paid_launch,
+            f'summary.paid_launch_readiness.{field} is required',
+        ))
+    blockers_value = paid_launch.get('blockers')
+    checks.append((
+        'paid_launch_readiness_blockers_list',
+        isinstance(blockers_value, list),
+        'summary.paid_launch_readiness.blockers must be a list',
+    ))
     checks.append((
         'controlled_pilot_allows_self_serve_blocked',
         not (

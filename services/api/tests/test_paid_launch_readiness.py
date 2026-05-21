@@ -19,10 +19,10 @@ _LAUNCH_ENV_VARS = [
     'BILLING_PROVIDER',
     'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PRICE_ID',
     'PADDLE_API_KEY', 'PADDLE_WEBHOOK_SECRET',
-    'EMAIL_PROVIDER', 'EMAIL_FROM',
+    'EMAIL_PROVIDER', 'EMAIL_FROM', 'EMAIL_DOMAIN',
     'SENDGRID_API_KEY', 'RESEND_API_KEY', 'EMAIL_RESEND_API_KEY',
     'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD',
-    'EVM_RPC_URL',
+    'EVM_RPC_URL', 'LIVE_PROVIDER_PROOF_PRESENT',
 ]
 
 
@@ -41,7 +41,9 @@ def _base_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
     monkeypatch.setenv('SENDGRID_API_KEY', 'SG.testApiKey_abc')
     monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'decoda.io')
     monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
+    monkeypatch.setenv('LIVE_PROVIDER_PROOF_PRESENT', 'true')
 
 
 # A. Paid launch blocked when billing provider is missing.
@@ -50,7 +52,9 @@ def test_paid_launch_blocked_when_billing_provider_missing(monkeypatch: pytest.M
     monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
     monkeypatch.setenv('SENDGRID_API_KEY', 'SG.testApiKey_abc')
     monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'decoda.io')
     monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
+    monkeypatch.setenv('LIVE_PROVIDER_PROOF_PRESENT', 'true')
 
     out = build_paid_launch_readiness()
 
@@ -68,7 +72,9 @@ def test_paid_launch_blocked_when_billing_provider_is_none(monkeypatch: pytest.M
     monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
     monkeypatch.setenv('SENDGRID_API_KEY', 'SG.testApiKey_abc')
     monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'decoda.io')
     monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
+    monkeypatch.setenv('LIVE_PROVIDER_PROOF_PRESENT', 'true')
 
     out = build_paid_launch_readiness()
 
@@ -194,7 +200,9 @@ def test_secret_values_never_returned(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
     monkeypatch.setenv('SENDGRID_API_KEY', sendgrid_key)
     monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'decoda.io')
     monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
+    monkeypatch.setenv('LIVE_PROVIDER_PROOF_PRESENT', 'true')
 
     out = build_paid_launch_readiness()
     output_str = str(out)
@@ -213,7 +221,9 @@ def test_pilot_readiness_passes_while_paid_launch_is_blocked(monkeypatch: pytest
     monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
     monkeypatch.setenv('SENDGRID_API_KEY', 'SG.testApiKey_abc')
     monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'decoda.io')
     monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
+    monkeypatch.setenv('LIVE_PROVIDER_PROOF_PRESENT', 'true')
 
     paid_launch = build_paid_launch_readiness()
     assert paid_launch['paid_launch_ready'] is False
@@ -322,7 +332,9 @@ def test_paid_launch_passes_with_paddle_billing(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
     monkeypatch.setenv('SENDGRID_API_KEY', 'SG.testApiKey_abc')
     monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'decoda.io')
     monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
+    monkeypatch.setenv('LIVE_PROVIDER_PROOF_PRESENT', 'true')
 
     out = build_paid_launch_readiness()
 
@@ -355,7 +367,9 @@ def test_paid_launch_passes_with_resend_email(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
     monkeypatch.setenv('RESEND_API_KEY', 're_testApiKey_abc')
     monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'decoda.io')
     monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
+    monkeypatch.setenv('LIVE_PROVIDER_PROOF_PRESENT', 'true')
 
     out = build_paid_launch_readiness()
 
@@ -392,4 +406,36 @@ def test_unknown_billing_provider_is_misconfigured(monkeypatch: pytest.MonkeyPat
 
     assert out['billing_ready'] is False
     assert out['billing_status'] == 'misconfigured'
+    assert out['paid_launch_ready'] is False
+
+
+def test_paid_launch_blocked_when_email_domain_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _base_env(monkeypatch)
+    monkeypatch.delenv('EMAIL_DOMAIN', raising=False)
+
+    out = build_paid_launch_readiness()
+
+    assert out['email_ready'] is False
+    assert 'EMAIL_DOMAIN' in out['email_missing_env']
+    assert out['paid_launch_ready'] is False
+
+
+def test_paid_launch_blocked_when_live_provider_proof_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _base_env(monkeypatch)
+    monkeypatch.delenv('LIVE_PROVIDER_PROOF_PRESENT', raising=False)
+
+    out = build_paid_launch_readiness()
+
+    assert out['paid_launch_ready'] is False
+    assert out['live_provider_proof_ready'] is False
+    assert 'live provider proof is missing' in out['paid_launch_blockers']
+
+
+def test_simulator_evidence_does_not_satisfy_live_provider_proof(monkeypatch: pytest.MonkeyPatch) -> None:
+    _base_env(monkeypatch)
+    monkeypatch.delenv('LIVE_PROVIDER_PROOF_PRESENT', raising=False)
+
+    out = build_paid_launch_readiness(live_evidence={'evidence_source': 'guided_simulator'})
+
+    assert out['live_provider_proof_ready'] is False
     assert out['paid_launch_ready'] is False

@@ -133,3 +133,10 @@ When `paid_launch_ready=false`, the `paid_launch_blockers` list names every unme
 > **Passing pilot readiness is not the same as broad paid launch readiness.**
 
 `build_production_readiness()` with `paid_ui_disabled=True` can return `ready_for_pilot=True` while `build_paid_launch_readiness()` returns `paid_launch_ready=false`. These are independent checks. Resolving all `paid_launch_blockers` is a prerequisite for broad paid SaaS launch, not for controlled pilot launch.
+
+
+## Session 10 — Paid Launch Billing/Email/Provider Readiness
+
+Passing pilot readiness is not the same as broad paid launch readiness.
+
+Paid launch remains separately blocked until billing, webhook, email domain/sender, provider configuration, and live provider proof gates all pass. Simulator or guided evidence cannot be treated as live provider proof.

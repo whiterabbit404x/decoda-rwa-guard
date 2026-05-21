@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from .paid_launch_readiness import build_paid_launch_readiness
+
 CHECK_FIELDS = {"key", "label", "status", "reason", "source", "evidence", "last_seen_at"}
 
 
@@ -134,9 +136,14 @@ def build_production_readiness(*, env_checks:dict[str,Any], runtime:dict[str,Any
     if int(runtime.get("reporting_systems_count") or 0) <= 0:
         warnings.append("setup_required_reporting_systems")
 
+
+    paid_launch_readiness = build_paid_launch_readiness(live_evidence={
+        "evidence_source": ev_source,
+        "telemetry_evidence_source": runtime.get("evidence_source") or exports.get("evidence_source"),
+    })
     ready_for_pilot = len(blockers) == 0
     paid_ui_disabled = bool(env_checks.get("paid_ui_disabled", False))
-    ready_for_paid_public_launch = ready_for_pilot and (billing_ok or paid_ui_disabled) and (not email_required or email_ok) and (not redis_required or redis_ok) and app_base_url and api_url and ev_status == "pass" and not contradiction_flags
+    ready_for_paid_public_launch = ready_for_pilot and (billing_ok or paid_ui_disabled) and (not email_required or email_ok) and (not redis_required or redis_ok) and app_base_url and api_url and ev_status == "pass" and not contradiction_flags and paid_launch_readiness.get("paid_launch_ready") is True
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -145,4 +152,5 @@ def build_production_readiness(*, env_checks:dict[str,Any], runtime:dict[str,Any
         "blocking_reasons": sorted(set(blockers)),
         "warnings": sorted(set(warnings)),
         "categories": checks,
+        "paid_launch_readiness": paid_launch_readiness,
     }

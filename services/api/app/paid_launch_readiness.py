@@ -121,6 +121,22 @@ def check_billing_readiness() -> dict[str, Any]:
     }
 
 
+def _live_provider_proof_present(live_evidence: dict[str, Any] | None = None) -> tuple[bool, str]:
+    # Accept explicit non-secret override or canonical live evidence signal.
+    proof_flag = (os.getenv('LIVE_PROVIDER_PROOF_PRESENT') or '').strip().lower()
+    if proof_flag in {'1', 'true', 'yes', 'on'}:
+        return True, 'LIVE_PROVIDER_PROOF_PRESENT is set.'
+
+    if isinstance(live_evidence, dict):
+        source = str(live_evidence.get('evidence_source') or live_evidence.get('telemetry_evidence_source') or '').strip().lower()
+        if source == 'live':
+            return True, 'Canonical live evidence source is present.'
+        if source:
+            return False, f"Canonical evidence source is '{source}', not live."
+
+    return False, 'No canonical live provider proof signal found.'
+
+
 def check_email_readiness() -> dict[str, Any]:
     """
     Check email provider, API credentials, and sender address configuration.
@@ -135,12 +151,12 @@ def check_email_readiness() -> dict[str, Any]:
             'email_ready': False,
             'email_status': 'missing',
             'email_reason': 'EMAIL_PROVIDER is not configured.',
-            'email_required_env': ['EMAIL_PROVIDER', 'EMAIL_FROM'],
+            'email_required_env': ['EMAIL_PROVIDER', 'EMAIL_FROM', 'EMAIL_DOMAIN'],
             'email_missing_env': ['EMAIL_PROVIDER'],
         }
 
     if provider == 'sendgrid':
-        required = ['SENDGRID_API_KEY', 'EMAIL_FROM']
+        required = ['SENDGRID_API_KEY', 'EMAIL_FROM', 'EMAIL_DOMAIN']
         missing = _missing_from(required)
         ready = not missing
         return {
@@ -151,7 +167,7 @@ def check_email_readiness() -> dict[str, Any]:
                 if ready
                 else f'SendGrid email missing required configuration: {missing}'
             ),
-            'email_required_env': ['EMAIL_PROVIDER'] + required,
+            'email_required_env': ['EMAIL_PROVIDER', 'SENDGRID_API_KEY', 'RESEND_API_KEY', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD', 'EMAIL_FROM', 'EMAIL_DOMAIN'],
             'email_missing_env': missing,
         }
 
@@ -163,6 +179,8 @@ def check_email_readiness() -> dict[str, Any]:
             missing.append('RESEND_API_KEY')
         if not _env_ok('EMAIL_FROM'):
             missing.append('EMAIL_FROM')
+        if not _env_ok('EMAIL_DOMAIN'):
+            missing.append('EMAIL_DOMAIN')
         ready = not missing
         return {
             'email_ready': ready,
@@ -172,12 +190,12 @@ def check_email_readiness() -> dict[str, Any]:
                 if ready
                 else f'Resend email missing required configuration: {missing}'
             ),
-            'email_required_env': ['EMAIL_PROVIDER', 'RESEND_API_KEY', 'EMAIL_FROM'],
+            'email_required_env': ['EMAIL_PROVIDER', 'SENDGRID_API_KEY', 'RESEND_API_KEY', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD', 'EMAIL_FROM', 'EMAIL_DOMAIN'],
             'email_missing_env': missing,
         }
 
     if provider == 'smtp':
-        required = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD', 'EMAIL_FROM']
+        required = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD', 'EMAIL_FROM', 'EMAIL_DOMAIN']
         missing = _missing_from(required)
         ready = not missing
         return {
@@ -188,7 +206,7 @@ def check_email_readiness() -> dict[str, Any]:
                 if ready
                 else f'SMTP email missing required configuration: {missing}'
             ),
-            'email_required_env': ['EMAIL_PROVIDER'] + required,
+            'email_required_env': ['EMAIL_PROVIDER', 'SENDGRID_API_KEY', 'RESEND_API_KEY', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD', 'EMAIL_FROM', 'EMAIL_DOMAIN'],
             'email_missing_env': missing,
         }
 
@@ -199,7 +217,7 @@ def check_email_readiness() -> dict[str, Any]:
             f"EMAIL_PROVIDER='{provider}' is not a recognized provider. "
             "Supported providers: sendgrid, resend, smtp."
         ),
-        'email_required_env': ['EMAIL_PROVIDER', 'EMAIL_FROM'],
+        'email_required_env': ['EMAIL_PROVIDER', 'EMAIL_FROM', 'EMAIL_DOMAIN'],
         'email_missing_env': [],
     }
 
@@ -247,7 +265,7 @@ def check_provider_readiness() -> dict[str, Any]:
     }
 
 
-def build_paid_launch_readiness() -> dict[str, Any]:
+def build_paid_launch_readiness(*, live_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
     """
     Build canonical paid launch readiness status from the current environment.
 
@@ -288,6 +306,10 @@ def build_paid_launch_readiness() -> dict[str, Any]:
     if not provider['provider_ready']:
         blockers.append('live provider configuration is missing')
 
+    live_proof_ready, live_proof_reason = _live_provider_proof_present(live_evidence)
+    if not live_proof_ready:
+        blockers.append('live provider proof is missing')
+
     paid_launch_ready = not blockers
 
     return {
@@ -309,6 +331,8 @@ def build_paid_launch_readiness() -> dict[str, Any]:
         'provider_reason': provider['provider_reason'],
         'provider_required_env': provider['provider_required_env'],
         'provider_missing_env': provider['provider_missing_env'],
+        'live_provider_proof_ready': live_proof_ready,
+        'live_provider_proof_reason': live_proof_reason,
         'paid_launch_ready': paid_launch_ready,
         'paid_launch_status': 'ready' if paid_launch_ready else 'blocked',
         'paid_launch_blockers': blockers,
