@@ -8,7 +8,7 @@ import { normalizeMonitoringPresentation } from './monitoring-status-presentatio
 import type { MonitoringRuntimeStatus } from './monitoring-status-contract';
 import { resolveWorkspaceMonitoringTruthFromSummary } from './workspace-monitoring-truth';
 import { renderRiskLabel } from './risk-normalization-labels';
-import { fetchWithTimeout } from './fetch-with-timeout';
+import { FetchTimeoutError, fetchWithTimeout } from './fetch-with-timeout';
 
 export type DashboardCard = {
   title: string;
@@ -1054,6 +1054,18 @@ export function resolveFetchTimeoutMs() {
   return value;
 }
 
+
+function isTimeoutError(error: unknown): error is FetchTimeoutError {
+  return error instanceof FetchTimeoutError;
+}
+
+function isTimeoutMetaError(message: string | null | undefined): boolean {
+  return typeof message === 'string' && message.toLowerCase().includes('timed out');
+}
+
+function timeoutUnavailableReason(feedLabel: string) {
+  return `${feedLabel} is temporarily unavailable because the live request timed out.`;
+}
 function fallbackSnapshotsEnabled() {
   if (process.env.ENABLE_DEMO_FALLBACKS?.toLowerCase() !== 'true') {
     return false;
@@ -1163,7 +1175,7 @@ async function fetchEndpointJson<T>(
       }),
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = isTimeoutError(error) ? `Live request timed out after ${error.timeoutMs}ms.` : error instanceof Error ? error.message : String(error);
     return {
       payload: null,
       meta: buildEndpointMeta(key, {
@@ -1782,10 +1794,22 @@ export async function fetchDashboardPageData(
   ]);
 
   const dashboard = normalizeDashboardResponse(dashboardResult.payload);
-  const riskDashboard = riskResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackRiskDashboard : await getRiskDashboard(resolvedApiUrl));
-  const threatDashboard = normalizeThreatDashboardPayload(threatResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackThreatDashboard : await getThreatDashboard(resolvedApiUrl)));
-  const complianceDashboard = complianceResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackComplianceDashboard : await getComplianceDashboard(resolvedApiUrl));
-  const resilienceDashboard = resilienceResult.payload ?? (fallbackSnapshotsEnabled() ? fallbackResilienceDashboard : await getResilienceDashboard(resolvedApiUrl));
+  const riskDashboard = riskResult.payload
+    ?? (isTimeoutMetaError(riskResult.meta.error)
+      ? { ...fallbackRiskDashboard, message: timeoutUnavailableReason('Risk dashboard'), transaction_queue: [], risk_alerts: [], contract_scan_results: [], decisions_log: [] }
+      : (fallbackSnapshotsEnabled() ? fallbackRiskDashboard : await getRiskDashboard(resolvedApiUrl)));
+  const threatDashboard = normalizeThreatDashboardPayload(threatResult.payload
+    ?? (isTimeoutMetaError(threatResult.meta.error)
+      ? { ...fallbackThreatDashboard, message: timeoutUnavailableReason('Threat dashboard'), cards: [], active_alerts: [], recent_detections: [], summary: { ...fallbackThreatDashboard.summary, average_score: 0, critical_or_high_alerts: 0, blocked_actions: 0, review_actions: 0, market_anomaly_types: [] } }
+      : (fallbackSnapshotsEnabled() ? fallbackThreatDashboard : await getThreatDashboard(resolvedApiUrl))));
+  const complianceDashboard = complianceResult.payload
+    ?? (isTimeoutMetaError(complianceResult.meta.error)
+      ? { ...fallbackComplianceDashboard, message: timeoutUnavailableReason('Compliance dashboard'), cards: [], latest_governance_actions: [], asset_transfer_status: [], summary: { ...fallbackComplianceDashboard.summary, allowlisted_wallet_count: 0, blocklisted_wallet_count: 0, frozen_wallet_count: 0, review_required_wallet_count: 0, paused_asset_count: 0, triggered_rule_count: 0 } }
+      : (fallbackSnapshotsEnabled() ? fallbackComplianceDashboard : await getComplianceDashboard(resolvedApiUrl)));
+  const resilienceDashboard = resilienceResult.payload
+    ?? (isTimeoutMetaError(resilienceResult.meta.error)
+      ? { ...fallbackResilienceDashboard, message: timeoutUnavailableReason('Resilience dashboard'), cards: [], latest_incidents: [], summary: { ...fallbackResilienceDashboard.summary, mismatch_amount: 0, stale_ledger_count: 0, incident_count: 0 } }
+      : (fallbackSnapshotsEnabled() ? fallbackResilienceDashboard : await getResilienceDashboard(resolvedApiUrl)));
 
   threatDashboard.message = sanitizeCustomerFacingCopy(threatDashboard.message);
   threatDashboard.cards = threatDashboard.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) }));
