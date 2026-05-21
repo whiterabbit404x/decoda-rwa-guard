@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness
 
 up:
 	docker compose up -d
@@ -75,7 +75,11 @@ validate-launch:
 validate-no-billing-launch:
 	BILLING_PROVIDER=none VALIDATION_MODE=no_billing_pilot python services/api/scripts/validate_staging.py
 
+test-paid-launch-readiness:
+	python -m pytest services/api/tests/test_paid_launch_readiness.py -q
+
 validate-paid-ga:
+	$(MAKE) test-paid-launch-readiness
 	VALIDATION_MODE=paid_ga STRICT_PRODUCTION_BILLING=true python services/api/scripts/validate_staging.py
 
 proof-no-billing-launch:

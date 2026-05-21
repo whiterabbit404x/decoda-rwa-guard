@@ -1,0 +1,1027 @@
+From 8baa82abd93fa519dd9e6fe04619a1f4b5ed1bd7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 21 May 2026 11:40:27 +0000
+Subject: [PATCH] feat(session10): add paid launch billing/email/provider
+ readiness gates
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds a canonical fail-closed readiness model for broad paid SaaS launch.
+Pilot readiness remains independent and is not affected by this change.
+
+- services/api/app/paid_launch_readiness.py: new module with
+  check_billing_readiness, check_billing_webhook, check_email_readiness,
+  check_provider_readiness, and build_paid_launch_readiness. Supports
+  Stripe, Paddle (billing); SendGrid, Resend, SMTP (email); EVM_RPC_URL
+  (provider). Placeholder detection rejects non-real values. Secret
+  values are never included in output.
+
+- services/api/tests/test_paid_launch_readiness.py: 20 focused tests
+  covering all 12 required cases (A–L) plus extras for Paddle, Resend,
+  field completeness, and unknown provider handling.
+
+- Makefile: adds test-paid-launch-readiness target; validate-paid-ga now
+  runs paid launch readiness tests before staging validation.
+
+- .github/workflows/ci-release-gates.yml: adds paid-launch-readiness-gates
+  job that runs the Python test suite and uploads a proof artifact.
+
+- generate_guided_simulator_readiness_bundle.py: adds paid_launch_readiness
+  section to summary.json artifacts (additive, no existing fields changed).
+
+- docs/PRODUCTION_READINESS_VALIDATION.md, RELEASE_READY.md: Session 10
+  sections documenting required env vars, fail-closed logic, how to run
+  tests, and the distinction between pilot and paid launch readiness.
+
+https://claude.ai/code/session_011kUekXekg9jZrTAttbLPJT
+---
+ .github/workflows/ci-release-gates.yml        |  56 +++
+ Makefile                                      |   6 +-
+ RELEASE_READY.md                              |  57 +++
+ docs/PRODUCTION_READINESS_VALIDATION.md       |  54 +++
+ services/api/app/paid_launch_readiness.py     | 315 ++++++++++++++
+ ...erate_guided_simulator_readiness_bundle.py |  15 +
+ .../api/tests/test_paid_launch_readiness.py   | 395 ++++++++++++++++++
+ 7 files changed, 897 insertions(+), 1 deletion(-)
+ create mode 100644 services/api/app/paid_launch_readiness.py
+ create mode 100644 services/api/tests/test_paid_launch_readiness.py
+
+diff --git a/.github/workflows/ci-release-gates.yml b/.github/workflows/ci-release-gates.yml
+index 37e4b28..086156d 100644
+--- a/.github/workflows/ci-release-gates.yml
++++ b/.github/workflows/ci-release-gates.yml
+@@ -10,6 +10,62 @@ on:
+   workflow_dispatch:
+ 
+ jobs:
++  paid-launch-readiness-gates:
++    name: Paid launch billing/email/provider readiness gates
++    runs-on: ubuntu-latest
++    timeout-minutes: 10
++
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++
++      - name: Setup Python
++        uses: actions/setup-python@v5
++        with:
++          python-version: '3.11'
++
++      - name: Install Python test dependencies
++        run: pip install pytest
++
++      - name: Run paid launch readiness tests
++        run: python -m pytest services/api/tests/test_paid_launch_readiness.py -q
++
++      - name: Build paid launch readiness proof artifact
++        if: always()
++        run: |
++          set -euo pipefail
++          mkdir -p artifacts/release-proof/latest
++          python - <<'PYEOF'
++          import json, os, sys
++          sys.path.insert(0, '.')
++          from services.api.app.paid_launch_readiness import build_paid_launch_readiness
++          result = build_paid_launch_readiness()
++          proof = {
++            'paid_launch_readiness': {
++              'billing_ready': result['billing_ready'],
++              'billing_webhook_ready': result['billing_webhook_ready'],
++              'email_ready': result['email_ready'],
++              'provider_ready': result['provider_ready'],
++              'paid_launch_ready': result['paid_launch_ready'],
++              'paid_launch_status': result['paid_launch_status'],
++              'blockers': result['paid_launch_blockers'],
++            }
++          }
++          path = 'artifacts/release-proof/latest/paid-launch-readiness.json'
++          with open(path, 'w') as f:
++            json.dump(proof, f, indent=2)
++          print(json.dumps(proof, indent=2))
++          PYEOF
++
++      - name: Upload paid launch readiness proof artifact
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: paid-launch-readiness-proof-${{ github.run_id }}
++          if-no-files-found: error
++          retention-days: 30
++          path: artifacts/release-proof/latest/paid-launch-readiness.json
++
+   required-gates:
+     name: Required npm test/build gates
+     runs-on: ubuntu-latest
+diff --git a/Makefile b/Makefile
+index 7eff7a2..f1dbe18 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,4 +1,4 @@
+-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path
++.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness
+ 
+ up:
+ 	docker compose up -d
+@@ -75,7 +75,11 @@ validate-launch:
+ validate-no-billing-launch:
+ 	BILLING_PROVIDER=none VALIDATION_MODE=no_billing_pilot python services/api/scripts/validate_staging.py
+ 
++test-paid-launch-readiness:
++	python -m pytest services/api/tests/test_paid_launch_readiness.py -q
++
+ validate-paid-ga:
++	$(MAKE) test-paid-launch-readiness
+ 	VALIDATION_MODE=paid_ga STRICT_PRODUCTION_BILLING=true python services/api/scripts/validate_staging.py
+ 
+ proof-no-billing-launch:
+diff --git a/RELEASE_READY.md b/RELEASE_READY.md
+index d8aafcf..cd5073c 100644
+--- a/RELEASE_READY.md
++++ b/RELEASE_READY.md
+@@ -76,3 +76,60 @@ Enterprise procurement is **not ready** until broad paid self-serve is ready **a
+ - **Controlled pilot launch:** ready only when `make validate-readiness-proof` passes and pilot evidence gates remain fail-closed.
+ - **Broad paid self-serve:** not ready until full broad gates (billing/email/provider/staging included) pass.
+ - **Enterprise procurement:** not ready until broad paid self-serve is ready plus live/staging provider evidence, security controls, and production validation are complete.
++
++---
++
++## Session 10 — Paid Launch Billing/Email/Provider Readiness
++
++Last updated: **2026-05-21**.
++
++### What is checked
++
++`services/api/app/paid_launch_readiness.py` provides `build_paid_launch_readiness()`, a canonical fail-closed readiness model for broad paid SaaS launch. It checks:
++
++- **Billing provider**: `BILLING_PROVIDER` set to `stripe` or `paddle` with required credentials (`STRIPE_SECRET_KEY` + `STRIPE_PRICE_ID`, or `PADDLE_API_KEY` + `PADDLE_PRICE_ID_*`).
++- **Billing webhook**: `STRIPE_WEBHOOK_SECRET` or `PADDLE_WEBHOOK_SECRET` (checked independently from billing credentials).
++- **Email provider**: `EMAIL_PROVIDER` set to `sendgrid`, `resend`, or `smtp` with API key and `EMAIL_FROM`.
++- **Live provider**: `EVM_RPC_URL` set to a non-placeholder live endpoint.
++
++### Why it fails closed
++
++- `BILLING_PROVIDER` absent or `'none'` → `billing_ready=false`.
++- Webhook secret absent → `billing_webhook_ready=false` (independent of `billing_ready`).
++- Placeholder values in env vars → treated as misconfigured, not ready.
++- Unknown provider → `misconfigured`, not ready.
++- `paid_launch_ready=true` only when **all four gates** pass simultaneously.
++
++### Required env vars
++
++| Provider | Required | Optional |
++|---|---|---|
++| Stripe billing | `BILLING_PROVIDER=stripe`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID` | `STRIPE_PORTAL_CONFIGURATION_ID` |
++| Paddle billing | `BILLING_PROVIDER=paddle`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_ID_*` | — |
++| SendGrid email | `EMAIL_PROVIDER=sendgrid`, `SENDGRID_API_KEY`, `EMAIL_FROM` | `EMAIL_DOMAIN` |
++| Resend email | `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `EMAIL_FROM` | — |
++| SMTP email | `EMAIL_PROVIDER=smtp`, `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM` | — |
++| Chain provider | `EVM_RPC_URL` | `CHAIN_ID` |
++
++### How to run tests
++
++```bash
++# Focused paid launch readiness tests
++python -m pytest services/api/tests/test_paid_launch_readiness.py -q
++
++# Full readiness test suite (includes paid launch)
++make test-paid-launch-readiness
++
++# Broad paid GA validation (includes paid launch readiness tests)
++make validate-paid-ga
++```
++
++### How to interpret blockers
++
++When `paid_launch_ready=false`, the `paid_launch_blockers` list names every unmet gate. Each blocker corresponds to one or more missing env vars listed in `billing_missing_env`, `email_missing_env`, or `provider_missing_env`. Secret values are never returned — only boolean flags and var names.
++
++### Important distinction
++
++> **Passing pilot readiness is not the same as broad paid launch readiness.**
++
++`build_production_readiness()` with `paid_ui_disabled=True` can return `ready_for_pilot=True` while `build_paid_launch_readiness()` returns `paid_launch_ready=false`. These are independent checks. Resolving all `paid_launch_blockers` is a prerequisite for broad paid SaaS launch, not for controlled pilot launch.
+diff --git a/docs/PRODUCTION_READINESS_VALIDATION.md b/docs/PRODUCTION_READINESS_VALIDATION.md
+index f00b9e0..841fd60 100644
+--- a/docs/PRODUCTION_READINESS_VALIDATION.md
++++ b/docs/PRODUCTION_READINESS_VALIDATION.md
+@@ -49,3 +49,57 @@ Requires `ready_for_pilot` plus:
+ ## Remaining known gaps
+ - Some integration/export checks depend on table/service availability and may remain `unavailable` in partial deployments.
+ - Proof bundle capability is conditional and may be unavailable where not implemented.
++
++---
++
++## Session 10 — Paid Launch Billing/Email/Provider Readiness
++
++### What is checked
++
++`services/api/app/paid_launch_readiness.py` exposes `build_paid_launch_readiness()` which checks:
++
++| Gate | Required env vars |
++|---|---|
++| Billing provider | `BILLING_PROVIDER` + `STRIPE_SECRET_KEY` + `STRIPE_PRICE_ID` (Stripe) or `PADDLE_API_KEY` + `PADDLE_PRICE_ID_*` (Paddle) |
++| Billing webhook | `STRIPE_WEBHOOK_SECRET` (Stripe) or `PADDLE_WEBHOOK_SECRET` (Paddle) |
++| Email provider | `EMAIL_PROVIDER` + `EMAIL_FROM` + `SENDGRID_API_KEY` / `RESEND_API_KEY` / `SMTP_*` |
++| Live provider | `EVM_RPC_URL` (non-placeholder) |
++
++### Why it fails closed
++
++- `BILLING_PROVIDER=none` or absent → `billing_ready=false`.
++- Missing webhook secret → `billing_webhook_ready=false` independently of `billing_ready`.
++- Placeholder values in `EVM_RPC_URL` → `provider_ready=false`.
++- Unknown status is never treated as ready.
++- `paid_launch_ready=true` only when **all four** gates pass.
++
++### How to run tests
++
++```
++python -m pytest services/api/tests/test_paid_launch_readiness.py -q
++```
++
++### How to interpret blockers
++
++The `paid_launch_blockers` list in the output describes every unmet gate in plain language:
++
++```json
++{
++  "paid_launch_ready": false,
++  "paid_launch_status": "blocked",
++  "paid_launch_blockers": [
++    "billing provider is not configured",
++    "billing webhook secret is missing",
++    "email provider is not configured",
++    "live provider configuration is missing"
++  ]
++}
++```
++
++Each blocker maps to a specific env var group shown in `billing_missing_env`, `email_missing_env`, or `provider_missing_env`. Secret values are never included.
++
++### Important distinction
++
++> **Passing pilot readiness is not the same as broad paid launch readiness.**
++
++`build_production_readiness()` with `paid_ui_disabled=True` can return `ready_for_pilot=True` while `build_paid_launch_readiness()` returns `paid_launch_ready=false`. These are independent checks. Pilot status does not imply launch readiness.
+diff --git a/services/api/app/paid_launch_readiness.py b/services/api/app/paid_launch_readiness.py
+new file mode 100644
+index 0000000..813d117
+--- /dev/null
++++ b/services/api/app/paid_launch_readiness.py
+@@ -0,0 +1,315 @@
++from __future__ import annotations
++
++import os
++from typing import Any
++
++_PLACEHOLDER_MARKERS = frozenset({
++    'example', 'changeme', 'replace-me', 'placeholder', 'test-key', 'your_',
++})
++
++
++def _has_placeholder(value: str) -> bool:
++    lowered = value.lower()
++    return any(marker in lowered for marker in _PLACEHOLDER_MARKERS)
++
++
++def _env_ok(name: str) -> bool:
++    val = (os.getenv(name) or '').strip()
++    return bool(val) and not _has_placeholder(val)
++
++
++def _missing_from(names: list[str]) -> list[str]:
++    return [n for n in names if not _env_ok(n)]
++
++
++def check_billing_readiness() -> dict[str, Any]:
++    """
++    Check billing provider, API credentials, price configuration, and webhook secret.
++
++    Returns separate billing_ready and billing_webhook_ready flags.
++    Never exposes secret values — only boolean presence and missing env var names.
++    Fail-closed: unknown or 'none' provider is not ready.
++    """
++    provider = (os.getenv('BILLING_PROVIDER') or '').strip().lower()
++
++    if not provider or provider == 'none':
++        return {
++            'billing_ready': False,
++            'billing_status': 'missing',
++            'billing_reason': (
++                "BILLING_PROVIDER is not configured or is set to 'none'; "
++                "a live billing provider is required for paid launch."
++            ),
++            'billing_required_env': ['BILLING_PROVIDER'],
++            'billing_missing_env': ['BILLING_PROVIDER'],
++            'billing_webhook_ready': False,
++            'billing_webhook_status': 'missing',
++            'billing_webhook_reason': 'No billing provider configured; webhook check cannot proceed.',
++        }
++
++    if provider == 'stripe':
++        billing_required = ['STRIPE_SECRET_KEY', 'STRIPE_PRICE_ID']
++        webhook_required = ['STRIPE_WEBHOOK_SECRET']
++        billing_missing = _missing_from(billing_required)
++        webhook_missing = _missing_from(webhook_required)
++        billing_ready = not billing_missing
++        webhook_ready = not webhook_missing
++        return {
++            'billing_ready': billing_ready,
++            'billing_status': 'ready' if billing_ready else 'missing',
++            'billing_reason': (
++                'Stripe billing configured with required credentials and price ID.'
++                if billing_ready
++                else f'Stripe billing missing required env vars: {billing_missing}'
++            ),
++            'billing_required_env': billing_required + webhook_required,
++            'billing_missing_env': billing_missing + webhook_missing,
++            'billing_webhook_ready': webhook_ready,
++            'billing_webhook_status': 'ready' if webhook_ready else 'missing',
++            'billing_webhook_reason': (
++                'STRIPE_WEBHOOK_SECRET is configured.'
++                if webhook_ready
++                else 'STRIPE_WEBHOOK_SECRET is missing; webhook signature verification will fail.'
++            ),
++        }
++
++    if provider == 'paddle':
++        billing_required = ['PADDLE_API_KEY']
++        webhook_required = ['PADDLE_WEBHOOK_SECRET']
++        price_ids = [
++            k for k, v in os.environ.items()
++            if k.startswith('PADDLE_PRICE_ID_') and v.strip() and not _has_placeholder(v.strip())
++        ]
++        billing_missing = _missing_from(billing_required)
++        if not price_ids:
++            billing_missing.append('PADDLE_PRICE_ID_*')
++        webhook_missing = _missing_from(webhook_required)
++        billing_ready = not billing_missing
++        webhook_ready = not webhook_missing
++        return {
++            'billing_ready': billing_ready,
++            'billing_status': 'ready' if billing_ready else 'missing',
++            'billing_reason': (
++                'Paddle billing configured with required credentials and price IDs.'
++                if billing_ready
++                else f'Paddle billing missing required configuration: {billing_missing}'
++            ),
++            'billing_required_env': billing_required + ['PADDLE_PRICE_ID_*'] + webhook_required,
++            'billing_missing_env': billing_missing + webhook_missing,
++            'billing_webhook_ready': webhook_ready,
++            'billing_webhook_status': 'ready' if webhook_ready else 'missing',
++            'billing_webhook_reason': (
++                'PADDLE_WEBHOOK_SECRET is configured.'
++                if webhook_ready
++                else 'PADDLE_WEBHOOK_SECRET is missing; webhook signature verification will fail.'
++            ),
++        }
++
++    return {
++        'billing_ready': False,
++        'billing_status': 'misconfigured',
++        'billing_reason': (
++            f"Unsupported BILLING_PROVIDER='{provider}'. Supported providers: stripe, paddle."
++        ),
++        'billing_required_env': ['BILLING_PROVIDER'],
++        'billing_missing_env': [],
++        'billing_webhook_ready': False,
++        'billing_webhook_status': 'unknown',
++        'billing_webhook_reason': (
++            f"Cannot determine webhook requirements for unknown provider '{provider}'."
++        ),
++    }
++
++
++def check_email_readiness() -> dict[str, Any]:
++    """
++    Check email provider, API credentials, and sender address configuration.
++
++    Never exposes secret values — only boolean presence and missing env var names.
++    Fail-closed: missing or unrecognized provider is not ready.
++    """
++    provider = (os.getenv('EMAIL_PROVIDER') or '').strip().lower()
++
++    if not provider:
++        return {
++            'email_ready': False,
++            'email_status': 'missing',
++            'email_reason': 'EMAIL_PROVIDER is not configured.',
++            'email_required_env': ['EMAIL_PROVIDER', 'EMAIL_FROM'],
++            'email_missing_env': ['EMAIL_PROVIDER'],
++        }
++
++    if provider == 'sendgrid':
++        required = ['SENDGRID_API_KEY', 'EMAIL_FROM']
++        missing = _missing_from(required)
++        ready = not missing
++        return {
++            'email_ready': ready,
++            'email_status': 'ready' if ready else 'missing',
++            'email_reason': (
++                'SendGrid email configured with API key and verified sender address.'
++                if ready
++                else f'SendGrid email missing required configuration: {missing}'
++            ),
++            'email_required_env': ['EMAIL_PROVIDER'] + required,
++            'email_missing_env': missing,
++        }
++
++    if provider == 'resend':
++        resend_key = (os.getenv('RESEND_API_KEY') or os.getenv('EMAIL_RESEND_API_KEY') or '').strip()
++        api_key_ok = bool(resend_key) and not _has_placeholder(resend_key)
++        missing: list[str] = []
++        if not api_key_ok:
++            missing.append('RESEND_API_KEY')
++        if not _env_ok('EMAIL_FROM'):
++            missing.append('EMAIL_FROM')
++        ready = not missing
++        return {
++            'email_ready': ready,
++            'email_status': 'ready' if ready else 'missing',
++            'email_reason': (
++                'Resend email configured with API key and verified sender address.'
++                if ready
++                else f'Resend email missing required configuration: {missing}'
++            ),
++            'email_required_env': ['EMAIL_PROVIDER', 'RESEND_API_KEY', 'EMAIL_FROM'],
++            'email_missing_env': missing,
++        }
++
++    if provider == 'smtp':
++        required = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD', 'EMAIL_FROM']
++        missing = _missing_from(required)
++        ready = not missing
++        return {
++            'email_ready': ready,
++            'email_status': 'ready' if ready else 'missing',
++            'email_reason': (
++                'SMTP email configured with host, credentials, and sender address.'
++                if ready
++                else f'SMTP email missing required configuration: {missing}'
++            ),
++            'email_required_env': ['EMAIL_PROVIDER'] + required,
++            'email_missing_env': missing,
++        }
++
++    return {
++        'email_ready': False,
++        'email_status': 'misconfigured',
++        'email_reason': (
++            f"EMAIL_PROVIDER='{provider}' is not a recognized provider. "
++            "Supported providers: sendgrid, resend, smtp."
++        ),
++        'email_required_env': ['EMAIL_PROVIDER', 'EMAIL_FROM'],
++        'email_missing_env': [],
++    }
++
++
++def check_provider_readiness() -> dict[str, Any]:
++    """
++    Check live chain provider configuration (EVM_RPC_URL).
++
++    Placeholder values are rejected as not ready.
++    Never exposes secret values — only boolean presence.
++    """
++    evm_rpc = (os.getenv('EVM_RPC_URL') or '').strip()
++    required = ['EVM_RPC_URL']
++
++    if not evm_rpc:
++        return {
++            'provider_ready': False,
++            'provider_status': 'missing',
++            'provider_reason': (
++                'EVM_RPC_URL is not configured; '
++                'live chain monitoring requires a real provider endpoint.'
++            ),
++            'provider_required_env': required,
++            'provider_missing_env': ['EVM_RPC_URL'],
++        }
++
++    if _has_placeholder(evm_rpc):
++        return {
++            'provider_ready': False,
++            'provider_status': 'misconfigured',
++            'provider_reason': (
++                'EVM_RPC_URL contains a placeholder value; '
++                'set a real live provider endpoint before paid launch.'
++            ),
++            'provider_required_env': required,
++            'provider_missing_env': ['EVM_RPC_URL'],
++        }
++
++    return {
++        'provider_ready': True,
++        'provider_status': 'ready',
++        'provider_reason': 'EVM_RPC_URL is configured with a non-placeholder provider endpoint.',
++        'provider_required_env': required,
++        'provider_missing_env': [],
++    }
++
++
++def build_paid_launch_readiness() -> dict[str, Any]:
++    """
++    Build canonical paid launch readiness status from the current environment.
++
++    Fail-closed: paid_launch_ready=True only when ALL gates pass.
++    Unknown or placeholder configuration is never treated as ready.
++    Secret values are never included in output — only presence flags and var names.
++
++    Pilot readiness (build_production_readiness) is independent and may pass
++    while paid launch remains blocked (e.g., no-billing pilot mode).
++    """
++    billing = check_billing_readiness()
++    email = check_email_readiness()
++    provider = check_provider_readiness()
++
++    blockers: list[str] = []
++
++    if not billing['billing_ready']:
++        status = billing['billing_status']
++        if status == 'missing':
++            blockers.append('billing provider is not configured')
++        elif status == 'misconfigured':
++            blockers.append('billing provider is misconfigured')
++        else:
++            blockers.append('billing provider configuration is incomplete')
++
++    if not billing['billing_webhook_ready']:
++        blockers.append('billing webhook secret is missing')
++
++    if not email['email_ready']:
++        status = email['email_status']
++        if status == 'missing':
++            blockers.append('email provider is not configured')
++        elif status == 'misconfigured':
++            blockers.append('email provider is misconfigured')
++        else:
++            blockers.append('email provider configuration is incomplete')
++
++    if not provider['provider_ready']:
++        blockers.append('live provider configuration is missing')
++
++    paid_launch_ready = not blockers
++
++    return {
++        'billing_ready': billing['billing_ready'],
++        'billing_status': billing['billing_status'],
++        'billing_reason': billing['billing_reason'],
++        'billing_required_env': billing['billing_required_env'],
++        'billing_missing_env': billing['billing_missing_env'],
++        'billing_webhook_ready': billing['billing_webhook_ready'],
++        'billing_webhook_status': billing['billing_webhook_status'],
++        'billing_webhook_reason': billing['billing_webhook_reason'],
++        'email_ready': email['email_ready'],
++        'email_status': email['email_status'],
++        'email_reason': email['email_reason'],
++        'email_required_env': email['email_required_env'],
++        'email_missing_env': email['email_missing_env'],
++        'provider_ready': provider['provider_ready'],
++        'provider_status': provider['provider_status'],
++        'provider_reason': provider['provider_reason'],
++        'provider_required_env': provider['provider_required_env'],
++        'provider_missing_env': provider['provider_missing_env'],
++        'paid_launch_ready': paid_launch_ready,
++        'paid_launch_status': 'ready' if paid_launch_ready else 'blocked',
++        'paid_launch_blockers': blockers,
++    }
+diff --git a/services/api/scripts/generate_guided_simulator_readiness_bundle.py b/services/api/scripts/generate_guided_simulator_readiness_bundle.py
+index b207a1f..a7df55a 100755
+--- a/services/api/scripts/generate_guided_simulator_readiness_bundle.py
++++ b/services/api/scripts/generate_guided_simulator_readiness_bundle.py
+@@ -1,10 +1,14 @@
+ #!/usr/bin/env python3
+ from __future__ import annotations
+ import json
++import sys
+ from pathlib import Path
+ from uuid import uuid4
+ from datetime import datetime, timezone
+ 
++sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
++from services.api.app.paid_launch_readiness import build_paid_launch_readiness
++
+ def now():
+     return datetime.now(timezone.utc).isoformat()
+ 
+@@ -105,6 +109,17 @@ Literal checklist-all pass: false (fails points 1 and 8).
+ Controlled-pilot checklist-all pass: true.
+ '''.format(workspace_id=workspace_id,**chain)
+ 
++    paid_launch = build_paid_launch_readiness()
++    summary['paid_launch_readiness'] = {
++      'billing_ready': paid_launch['billing_ready'],
++      'billing_webhook_ready': paid_launch['billing_webhook_ready'],
++      'email_ready': paid_launch['email_ready'],
++      'provider_ready': paid_launch['provider_ready'],
++      'paid_launch_ready': paid_launch['paid_launch_ready'],
++      'paid_launch_status': paid_launch['paid_launch_status'],
++      'blockers': paid_launch['paid_launch_blockers'],
++    }
++
+     files={
+       'summary.json':summary,'evidence.json':evidence,'telemetry_events.json':telemetry,'detections.json':detections,
+       'alerts.json':alerts,'incidents.json':incidents,'response_actions.json':response,'runs.json':runs,'report.md':report
+diff --git a/services/api/tests/test_paid_launch_readiness.py b/services/api/tests/test_paid_launch_readiness.py
+new file mode 100644
+index 0000000..42ff650
+--- /dev/null
++++ b/services/api/tests/test_paid_launch_readiness.py
+@@ -0,0 +1,395 @@
++"""
++Session 10 — Paid Launch Billing/Email/Provider Readiness Tests.
++
++Tests that broad paid SaaS launch is blocked unless all required gates pass.
++Pilot readiness is independent and may pass while paid launch remains blocked.
++"""
++from __future__ import annotations
++
++import pytest
++
++from services.api.app.paid_launch_readiness import (
++    build_paid_launch_readiness,
++    check_billing_readiness,
++    check_email_readiness,
++    check_provider_readiness,
++)
++
++_LAUNCH_ENV_VARS = [
++    'BILLING_PROVIDER',
++    'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PRICE_ID',
++    'PADDLE_API_KEY', 'PADDLE_WEBHOOK_SECRET',
++    'EMAIL_PROVIDER', 'EMAIL_FROM',
++    'SENDGRID_API_KEY', 'RESEND_API_KEY', 'EMAIL_RESEND_API_KEY',
++    'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD',
++    'EVM_RPC_URL',
++]
++
++
++def _clear_launch_env(monkeypatch: pytest.MonkeyPatch) -> None:
++    for var in _LAUNCH_ENV_VARS:
++        monkeypatch.delenv(var, raising=False)
++
++
++def _base_env(monkeypatch: pytest.MonkeyPatch) -> None:
++    """Set all required env vars so paid launch passes. Tests remove specific vars to exercise fail-closed gates."""
++    _clear_launch_env(monkeypatch)
++    monkeypatch.setenv('BILLING_PROVIDER', 'stripe')
++    monkeypatch.setenv('STRIPE_SECRET_KEY', 'sk_live_testkey_abc')
++    monkeypatch.setenv('STRIPE_WEBHOOK_SECRET', 'whsec_testwebhook_abc')
++    monkeypatch.setenv('STRIPE_PRICE_ID', 'price_pro_monthly')
++    monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
++    monkeypatch.setenv('SENDGRID_API_KEY', 'SG.testApiKey_abc')
++    monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
++    monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
++
++
++# A. Paid launch blocked when billing provider is missing.
++def test_paid_launch_blocked_when_billing_provider_missing(monkeypatch: pytest.MonkeyPatch) -> None:
++    _clear_launch_env(monkeypatch)
++    monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
++    monkeypatch.setenv('SENDGRID_API_KEY', 'SG.testApiKey_abc')
++    monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
++    monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
++
++    out = build_paid_launch_readiness()
++
++    assert out['paid_launch_ready'] is False
++    assert out['paid_launch_status'] == 'blocked'
++    assert out['billing_ready'] is False
++    assert out['billing_status'] == 'missing'
++    assert any('billing' in b for b in out['paid_launch_blockers'])
++
++
++# A2. Paid launch blocked when BILLING_PROVIDER=none (explicit pilot mode).
++def test_paid_launch_blocked_when_billing_provider_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
++    _clear_launch_env(monkeypatch)
++    monkeypatch.setenv('BILLING_PROVIDER', 'none')
++    monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
++    monkeypatch.setenv('SENDGRID_API_KEY', 'SG.testApiKey_abc')
++    monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
++    monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
++
++    out = build_paid_launch_readiness()
++
++    assert out['paid_launch_ready'] is False
++    assert out['billing_ready'] is False
++    assert out['billing_status'] == 'missing'
++
++
++# B. Paid launch blocked when Stripe secret key is missing.
++def test_paid_launch_blocked_when_stripe_secret_key_missing(monkeypatch: pytest.MonkeyPatch) -> None:
++    _base_env(monkeypatch)
++    monkeypatch.delenv('STRIPE_SECRET_KEY', raising=False)
++
++    out = build_paid_launch_readiness()
++
++    assert out['paid_launch_ready'] is False
++    assert out['billing_ready'] is False
++    assert 'STRIPE_SECRET_KEY' in out['billing_missing_env']
++
++
++# C. Paid launch blocked when Stripe webhook secret is missing.
++def test_paid_launch_blocked_when_stripe_webhook_secret_missing(monkeypatch: pytest.MonkeyPatch) -> None:
++    _base_env(monkeypatch)
++    monkeypatch.delenv('STRIPE_WEBHOOK_SECRET', raising=False)
++
++    out = build_paid_launch_readiness()
++
++    assert out['paid_launch_ready'] is False
++    assert out['billing_webhook_ready'] is False
++    assert out['billing_webhook_status'] == 'missing'
++    assert any('webhook' in b for b in out['paid_launch_blockers'])
++    assert 'STRIPE_WEBHOOK_SECRET' in out['billing_missing_env']
++
++
++# C2. billing_ready can be True while billing_webhook_ready is False.
++def test_billing_ready_true_but_webhook_ready_false_when_only_webhook_missing(monkeypatch: pytest.MonkeyPatch) -> None:
++    _base_env(monkeypatch)
++    monkeypatch.delenv('STRIPE_WEBHOOK_SECRET', raising=False)
++
++    out = build_paid_launch_readiness()
++
++    assert out['billing_ready'] is True
++    assert out['billing_webhook_ready'] is False
++    assert out['paid_launch_ready'] is False
++
++
++# D. Paid launch blocked when Stripe price ID is missing.
++def test_paid_launch_blocked_when_stripe_price_id_missing(monkeypatch: pytest.MonkeyPatch) -> None:
++    _base_env(monkeypatch)
++    monkeypatch.delenv('STRIPE_PRICE_ID', raising=False)
++
++    out = build_paid_launch_readiness()
++
++    assert out['paid_launch_ready'] is False
++    assert out['billing_ready'] is False
++    assert 'STRIPE_PRICE_ID' in out['billing_missing_env']
++
++
++# E. Paid launch blocked when email provider is missing.
++def test_paid_launch_blocked_when_email_provider_missing(monkeypatch: pytest.MonkeyPatch) -> None:
++    _base_env(monkeypatch)
++    monkeypatch.delenv('EMAIL_PROVIDER', raising=False)
++
++    out = build_paid_launch_readiness()
++
++    assert out['paid_launch_ready'] is False
++    assert out['email_ready'] is False
++    assert out['email_status'] == 'missing'
++    assert any('email' in b for b in out['paid_launch_blockers'])
++
++
++# F. Paid launch blocked when sender/domain config is missing.
++def test_paid_launch_blocked_when_sender_config_missing(monkeypatch: pytest.MonkeyPatch) -> None:
++    _base_env(monkeypatch)
++    monkeypatch.delenv('EMAIL_FROM', raising=False)
++
++    out = build_paid_launch_readiness()
++
++    assert out['paid_launch_ready'] is False
++    assert out['email_ready'] is False
++    assert 'EMAIL_FROM' in out['email_missing_env']
++
++
++# G. Paid launch blocked when live provider configuration is missing.
++def test_paid_launch_blocked_when_provider_config_missing(monkeypatch: pytest.MonkeyPatch) -> None:
++    _base_env(monkeypatch)
++    monkeypatch.delenv('EVM_RPC_URL', raising=False)
++
++    out = build_paid_launch_readiness()
++
++    assert out['paid_launch_ready'] is False
++    assert out['provider_ready'] is False
++    assert out['provider_status'] == 'missing'
++    assert any('provider' in b for b in out['paid_launch_blockers'])
++
++
++# H. Paid launch passes only when billing, webhook, email, and provider config are all present.
++def test_paid_launch_passes_when_all_gates_configured(monkeypatch: pytest.MonkeyPatch) -> None:
++    _base_env(monkeypatch)
++
++    out = build_paid_launch_readiness()
++
++    assert out['paid_launch_ready'] is True
++    assert out['paid_launch_status'] == 'ready'
++    assert out['paid_launch_blockers'] == []
++    assert out['billing_ready'] is True
++    assert out['billing_webhook_ready'] is True
++    assert out['email_ready'] is True
++    assert out['provider_ready'] is True
++
++
++# I. Secret values are never returned in readiness API or proof output.
++def test_secret_values_never_returned(monkeypatch: pytest.MonkeyPatch) -> None:
++    secret_key = 'sk_live_veryuniquesecret_xyz777'
++    webhook_secret = 'whsec_veryuniquehook_xyz777'
++    sendgrid_key = 'SG.veryuniqueapikey_xyz777'
++
++    _clear_launch_env(monkeypatch)
++    monkeypatch.setenv('BILLING_PROVIDER', 'stripe')
++    monkeypatch.setenv('STRIPE_SECRET_KEY', secret_key)
++    monkeypatch.setenv('STRIPE_WEBHOOK_SECRET', webhook_secret)
++    monkeypatch.setenv('STRIPE_PRICE_ID', 'price_pro_monthly')
++    monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
++    monkeypatch.setenv('SENDGRID_API_KEY', sendgrid_key)
++    monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
++    monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
++
++    out = build_paid_launch_readiness()
++    output_str = str(out)
++
++    assert secret_key not in output_str, 'Stripe secret key must not appear in output'
++    assert webhook_secret not in output_str, 'Stripe webhook secret must not appear in output'
++    assert sendgrid_key not in output_str, 'SendGrid API key must not appear in output'
++
++
++# J. Pilot readiness can still pass while paid launch is blocked.
++def test_pilot_readiness_passes_while_paid_launch_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
++    from services.api.app.production_readiness import build_production_readiness
++
++    _clear_launch_env(monkeypatch)
++    # No billing configured — paid launch must be blocked
++    monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
++    monkeypatch.setenv('SENDGRID_API_KEY', 'SG.testApiKey_abc')
++    monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
++    monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
++
++    paid_launch = build_paid_launch_readiness()
++    assert paid_launch['paid_launch_ready'] is False
++    assert paid_launch['billing_ready'] is False
++
++    # Pilot readiness is independent — passes with paid_ui_disabled=True
++    pilot = build_production_readiness(
++        env_checks={
++            'database_reachable': True,
++            'auth_session_configured': True,
++            'required_env_vars_present': True,
++            'redis_required': False,
++            'redis_configured': False,
++            'billing_required': False,
++            'billing_configured': False,
++            'paid_ui_disabled': True,
++            'email_required': True,
++            'email_configured': True,
++            'app_base_url_configured': True,
++            'api_url_configured': True,
++        },
++        runtime={
++            'last_heartbeat_at': '2026-01-01T00:00:00Z',
++            'latest_poll_at': '2026-01-01T00:00:30Z',
++            'last_telemetry_at': '2026-01-01T00:01:00Z',
++            'evidence_source': 'live',
++            'workspace_evaluated': True,
++            'workspace_scoped': True,
++            'protected_assets_count': 1,
++            'reporting_systems_count': 1,
++            'enabled_monitoring_configs_count': 1,
++            'target_coverage_status': 'covered',
++            'provider_health_status': 'healthy',
++            'freshness_status': 'fresh',
++            'confidence_status': 'high',
++            'contradiction_flags': [],
++        },
++        workflow={
++            'detections': 1, 'alerts': 1, 'incidents': 1, 'response_actions': 1,
++            'linkage_status': 'pass', 'linkage_reason': 'ok',
++        },
++        integrations={
++            'slack_integration_status': 'pass',
++            'webhook_integration_status': 'pass',
++            'delivery_logs_status': 'pass',
++            'api_key_support_status': 'pass',
++        },
++        exports={
++            'evidence_source': 'live',
++            'export_capability_status': 'pass',
++            'latest_export_job_status': 'pass',
++            'audit_log_availability': 'pass',
++            'proof_bundle_capability': 'pass',
++        },
++        security={'readiness_access_control': 'pass', 'admin_workspace_scope': True},
++    )
++    assert pilot['ready_for_pilot'] is True
++
++
++# K. Simulator/placeholder evidence must not satisfy live provider readiness.
++def test_placeholder_evm_rpc_does_not_satisfy_provider_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
++    _base_env(monkeypatch)
++    monkeypatch.setenv('EVM_RPC_URL', 'https://replace-me.changeme.io/rpc')
++
++    out = build_paid_launch_readiness()
++
++    assert out['provider_ready'] is False
++    assert out['provider_status'] == 'misconfigured'
++    assert out['paid_launch_ready'] is False
++    assert any('provider' in b for b in out['paid_launch_blockers'])
++
++
++def test_placeholder_stripe_key_does_not_satisfy_billing_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
++    _base_env(monkeypatch)
++    monkeypatch.setenv('STRIPE_SECRET_KEY', 'sk_test-key_placeholder_value')
++
++    out = build_paid_launch_readiness()
++
++    assert out['billing_ready'] is False
++    assert out['paid_launch_ready'] is False
++
++
++# L. Readiness proof output includes paid launch blockers.
++def test_readiness_proof_output_includes_paid_launch_blockers(monkeypatch: pytest.MonkeyPatch) -> None:
++    _clear_launch_env(monkeypatch)
++
++    out = build_paid_launch_readiness()
++
++    assert out['paid_launch_ready'] is False
++    assert out['paid_launch_status'] == 'blocked'
++    assert isinstance(out['paid_launch_blockers'], list)
++    assert len(out['paid_launch_blockers']) >= 3
++    assert 'billing_ready' in out
++    assert 'billing_webhook_ready' in out
++    assert 'email_ready' in out
++    assert 'provider_ready' in out
++
++
++# Extra: Paddle billing provider support.
++def test_paid_launch_passes_with_paddle_billing(monkeypatch: pytest.MonkeyPatch) -> None:
++    _clear_launch_env(monkeypatch)
++    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
++    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_abc')
++    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_webhook_testkey_abc')
++    monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_pro_monthly_abc')
++    monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
++    monkeypatch.setenv('SENDGRID_API_KEY', 'SG.testApiKey_abc')
++    monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
++    monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
++
++    out = build_paid_launch_readiness()
++
++    assert out['paid_launch_ready'] is True
++    assert out['billing_ready'] is True
++    assert out['billing_webhook_ready'] is True
++
++
++def test_paddle_billing_blocked_when_webhook_missing(monkeypatch: pytest.MonkeyPatch) -> None:
++    _clear_launch_env(monkeypatch)
++    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
++    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_abc')
++    monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_pro_monthly_abc')
++    # No PADDLE_WEBHOOK_SECRET
++
++    out = build_paid_launch_readiness()
++
++    assert out['billing_webhook_ready'] is False
++    assert out['billing_webhook_status'] == 'missing'
++    assert out['paid_launch_ready'] is False
++
++
++# Extra: Resend email provider support.
++def test_paid_launch_passes_with_resend_email(monkeypatch: pytest.MonkeyPatch) -> None:
++    _clear_launch_env(monkeypatch)
++    monkeypatch.setenv('BILLING_PROVIDER', 'stripe')
++    monkeypatch.setenv('STRIPE_SECRET_KEY', 'sk_live_testkey_abc')
++    monkeypatch.setenv('STRIPE_WEBHOOK_SECRET', 'whsec_testwebhook_abc')
++    monkeypatch.setenv('STRIPE_PRICE_ID', 'price_pro_monthly')
++    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
++    monkeypatch.setenv('RESEND_API_KEY', 're_testApiKey_abc')
++    monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
++    monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
++
++    out = build_paid_launch_readiness()
++
++    assert out['email_ready'] is True
++    assert out['paid_launch_ready'] is True
++
++
++# Extra: All fields present in output.
++def test_all_required_fields_present_in_output(monkeypatch: pytest.MonkeyPatch) -> None:
++    _clear_launch_env(monkeypatch)
++
++    out = build_paid_launch_readiness()
++
++    required_fields = [
++        'billing_ready', 'billing_status', 'billing_reason',
++        'billing_required_env', 'billing_missing_env',
++        'billing_webhook_ready', 'billing_webhook_status', 'billing_webhook_reason',
++        'email_ready', 'email_status', 'email_reason',
++        'email_required_env', 'email_missing_env',
++        'provider_ready', 'provider_status', 'provider_reason',
++        'provider_required_env', 'provider_missing_env',
++        'paid_launch_ready', 'paid_launch_status', 'paid_launch_blockers',
++    ]
++    for field in required_fields:
++        assert field in out, f'Missing required output field: {field}'
++
++
++# Extra: Unknown/unsupported billing provider is misconfigured, not ready.
++def test_unknown_billing_provider_is_misconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
++    _clear_launch_env(monkeypatch)
++    monkeypatch.setenv('BILLING_PROVIDER', 'unknown_provider_xyz')
++
++    out = build_paid_launch_readiness()
++
++    assert out['billing_ready'] is False
++    assert out['billing_status'] == 'misconfigured'
++    assert out['paid_launch_ready'] is False
+-- 
+2.43.0
+

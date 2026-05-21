@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import json
+import sys
 from pathlib import Path
 from uuid import uuid4
 from datetime import datetime, timezone
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from services.api.app.paid_launch_readiness import build_paid_launch_readiness
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -104,6 +108,17 @@ Checklist point 8 is satisfied by explicit broad self-serve blocking while billi
 Literal checklist-all pass: false (fails points 1 and 8).
 Controlled-pilot checklist-all pass: true.
 '''.format(workspace_id=workspace_id,**chain)
+
+    paid_launch = build_paid_launch_readiness()
+    summary['paid_launch_readiness'] = {
+      'billing_ready': paid_launch['billing_ready'],
+      'billing_webhook_ready': paid_launch['billing_webhook_ready'],
+      'email_ready': paid_launch['email_ready'],
+      'provider_ready': paid_launch['provider_ready'],
+      'paid_launch_ready': paid_launch['paid_launch_ready'],
+      'paid_launch_status': paid_launch['paid_launch_status'],
+      'blockers': paid_launch['paid_launch_blockers'],
+    }
 
     files={
       'summary.json':summary,'evidence.json':evidence,'telemetry_events.json':telemetry,'detections.json':detections,

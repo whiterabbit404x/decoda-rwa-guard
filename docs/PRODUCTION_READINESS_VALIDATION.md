@@ -49,3 +49,57 @@ Requires `ready_for_pilot` plus:
 ## Remaining known gaps
 - Some integration/export checks depend on table/service availability and may remain `unavailable` in partial deployments.
 - Proof bundle capability is conditional and may be unavailable where not implemented.
+
+---
+
+## Session 10 — Paid Launch Billing/Email/Provider Readiness
+
+### What is checked
+
+`services/api/app/paid_launch_readiness.py` exposes `build_paid_launch_readiness()` which checks:
+
+| Gate | Required env vars |
+|---|---|
+| Billing provider | `BILLING_PROVIDER` + `STRIPE_SECRET_KEY` + `STRIPE_PRICE_ID` (Stripe) or `PADDLE_API_KEY` + `PADDLE_PRICE_ID_*` (Paddle) |
+| Billing webhook | `STRIPE_WEBHOOK_SECRET` (Stripe) or `PADDLE_WEBHOOK_SECRET` (Paddle) |
+| Email provider | `EMAIL_PROVIDER` + `EMAIL_FROM` + `SENDGRID_API_KEY` / `RESEND_API_KEY` / `SMTP_*` |
+| Live provider | `EVM_RPC_URL` (non-placeholder) |
+
+### Why it fails closed
+
+- `BILLING_PROVIDER=none` or absent → `billing_ready=false`.
+- Missing webhook secret → `billing_webhook_ready=false` independently of `billing_ready`.
+- Placeholder values in `EVM_RPC_URL` → `provider_ready=false`.
+- Unknown status is never treated as ready.
+- `paid_launch_ready=true` only when **all four** gates pass.
+
+### How to run tests
+
+```
+python -m pytest services/api/tests/test_paid_launch_readiness.py -q
+```
+
+### How to interpret blockers
+
+The `paid_launch_blockers` list in the output describes every unmet gate in plain language:
+
+```json
+{
+  "paid_launch_ready": false,
+  "paid_launch_status": "blocked",
+  "paid_launch_blockers": [
+    "billing provider is not configured",
+    "billing webhook secret is missing",
+    "email provider is not configured",
+    "live provider configuration is missing"
+  ]
+}
+```
+
+Each blocker maps to a specific env var group shown in `billing_missing_env`, `email_missing_env`, or `provider_missing_env`. Secret values are never included.
+
+### Important distinction
+
+> **Passing pilot readiness is not the same as broad paid launch readiness.**
+
+`build_production_readiness()` with `paid_ui_disabled=True` can return `ready_for_pilot=True` while `build_paid_launch_readiness()` returns `paid_launch_ready=false`. These are independent checks. Pilot status does not imply launch readiness.

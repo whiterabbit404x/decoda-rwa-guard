@@ -76,3 +76,60 @@ Enterprise procurement is **not ready** until broad paid self-serve is ready **a
 - **Controlled pilot launch:** ready only when `make validate-readiness-proof` passes and pilot evidence gates remain fail-closed.
 - **Broad paid self-serve:** not ready until full broad gates (billing/email/provider/staging included) pass.
 - **Enterprise procurement:** not ready until broad paid self-serve is ready plus live/staging provider evidence, security controls, and production validation are complete.
+
+---
+
+## Session 10 — Paid Launch Billing/Email/Provider Readiness
+
+Last updated: **2026-05-21**.
+
+### What is checked
+
+`services/api/app/paid_launch_readiness.py` provides `build_paid_launch_readiness()`, a canonical fail-closed readiness model for broad paid SaaS launch. It checks:
+
+- **Billing provider**: `BILLING_PROVIDER` set to `stripe` or `paddle` with required credentials (`STRIPE_SECRET_KEY` + `STRIPE_PRICE_ID`, or `PADDLE_API_KEY` + `PADDLE_PRICE_ID_*`).
+- **Billing webhook**: `STRIPE_WEBHOOK_SECRET` or `PADDLE_WEBHOOK_SECRET` (checked independently from billing credentials).
+- **Email provider**: `EMAIL_PROVIDER` set to `sendgrid`, `resend`, or `smtp` with API key and `EMAIL_FROM`.
+- **Live provider**: `EVM_RPC_URL` set to a non-placeholder live endpoint.
+
+### Why it fails closed
+
+- `BILLING_PROVIDER` absent or `'none'` → `billing_ready=false`.
+- Webhook secret absent → `billing_webhook_ready=false` (independent of `billing_ready`).
+- Placeholder values in env vars → treated as misconfigured, not ready.
+- Unknown provider → `misconfigured`, not ready.
+- `paid_launch_ready=true` only when **all four gates** pass simultaneously.
+
+### Required env vars
+
+| Provider | Required | Optional |
+|---|---|---|
+| Stripe billing | `BILLING_PROVIDER=stripe`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID` | `STRIPE_PORTAL_CONFIGURATION_ID` |
+| Paddle billing | `BILLING_PROVIDER=paddle`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_ID_*` | — |
+| SendGrid email | `EMAIL_PROVIDER=sendgrid`, `SENDGRID_API_KEY`, `EMAIL_FROM` | `EMAIL_DOMAIN` |
+| Resend email | `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `EMAIL_FROM` | — |
+| SMTP email | `EMAIL_PROVIDER=smtp`, `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM` | — |
+| Chain provider | `EVM_RPC_URL` | `CHAIN_ID` |
+
+### How to run tests
+
+```bash
+# Focused paid launch readiness tests
+python -m pytest services/api/tests/test_paid_launch_readiness.py -q
+
+# Full readiness test suite (includes paid launch)
+make test-paid-launch-readiness
+
+# Broad paid GA validation (includes paid launch readiness tests)
+make validate-paid-ga
+```
+
+### How to interpret blockers
+
+When `paid_launch_ready=false`, the `paid_launch_blockers` list names every unmet gate. Each blocker corresponds to one or more missing env vars listed in `billing_missing_env`, `email_missing_env`, or `provider_missing_env`. Secret values are never returned — only boolean flags and var names.
+
+### Important distinction
+
+> **Passing pilot readiness is not the same as broad paid launch readiness.**
+
+`build_production_readiness()` with `paid_ui_disabled=True` can return `ready_for_pilot=True` while `build_paid_launch_readiness()` returns `paid_launch_ready=false`. These are independent checks. Resolving all `paid_launch_blockers` is a prerequisite for broad paid SaaS launch, not for controlled pilot launch.
