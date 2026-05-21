@@ -4,6 +4,9 @@ import { useEffect } from 'react';
 
 import { usePilotAuth } from 'app/pilot-auth-context';
 
+export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
+
 export default function SignOutPage() {
   const { signOut } = usePilotAuth();
 

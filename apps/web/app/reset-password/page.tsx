@@ -2,6 +2,9 @@ import { Suspense } from 'react';
 
 import ResetPasswordClient from './reset-password-client';
 
+export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
+
 function PageLoadingState() {
   return (
     <main className="container authPage">

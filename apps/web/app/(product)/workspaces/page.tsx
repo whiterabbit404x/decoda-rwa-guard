@@ -2,6 +2,9 @@ import { Suspense } from 'react';
 
 import WorkspacesPageClient from './workspaces-page-client';
 
+export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
+
 function WorkspacesPageLoading() {
   return (
     <main className="container authPage">
