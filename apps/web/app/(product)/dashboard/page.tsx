@@ -4,6 +4,7 @@ import { headers } from 'next/headers';
 import RuntimeSummaryPanel from '../../runtime-summary-panel';
 
 export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
 
 export default async function DashboardPage() {
   const requestHeaders = await headers();

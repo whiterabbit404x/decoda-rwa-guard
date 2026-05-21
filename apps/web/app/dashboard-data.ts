@@ -1794,22 +1794,27 @@ export async function fetchDashboardPageData(
   ]);
 
   const dashboard = normalizeDashboardResponse(dashboardResult.payload);
+
+  // When the primary endpoint fetch fails (any transport error or skipped), return the empty fallback
+  // directly without making a second sequential network call. The secondary getRiskDashboard/etc.
+  // calls were originally intended as retries but they always hit the same unavailable URL and add
+  // sequential timeout latency (up to 5 s each) that can stall the Next.js static-generation phase.
   const riskDashboard = riskResult.payload
-    ?? (isTimeoutMetaError(riskResult.meta.error)
-      ? { ...fallbackRiskDashboard, message: timeoutUnavailableReason('Risk dashboard'), transaction_queue: [], risk_alerts: [], contract_scan_results: [], decisions_log: [] }
-      : (fallbackSnapshotsEnabled() ? fallbackRiskDashboard : await getRiskDashboard(resolvedApiUrl)));
+    ?? (fallbackSnapshotsEnabled()
+      ? fallbackRiskDashboard
+      : { ...fallbackRiskDashboard, message: isTimeoutMetaError(riskResult.meta.error) ? timeoutUnavailableReason('Risk dashboard') : 'Risk dashboard is unavailable. Connect the API to view live workspace records.', transaction_queue: [], risk_alerts: [], contract_scan_results: [], decisions_log: [], summary: { ...fallbackRiskDashboard.summary, total_transactions: 0, allow_count: 0, review_count: 0, block_count: 0, high_alert_count: 0 } });
   const threatDashboard = normalizeThreatDashboardPayload(threatResult.payload
-    ?? (isTimeoutMetaError(threatResult.meta.error)
-      ? { ...fallbackThreatDashboard, message: timeoutUnavailableReason('Threat dashboard'), cards: [], active_alerts: [], recent_detections: [], summary: { ...fallbackThreatDashboard.summary, average_score: 0, critical_or_high_alerts: 0, blocked_actions: 0, review_actions: 0, market_anomaly_types: [] } }
-      : (fallbackSnapshotsEnabled() ? fallbackThreatDashboard : await getThreatDashboard(resolvedApiUrl))));
+    ?? (fallbackSnapshotsEnabled()
+      ? fallbackThreatDashboard
+      : { ...fallbackThreatDashboard, message: isTimeoutMetaError(threatResult.meta.error) ? timeoutUnavailableReason('Threat dashboard') : 'Threat dashboard is unavailable. Reconnect the API to restore threat operations data.', cards: [], active_alerts: [], recent_detections: [], summary: { ...fallbackThreatDashboard.summary, average_score: 0, critical_or_high_alerts: 0, blocked_actions: 0, review_actions: 0, market_anomaly_types: [] } }));
   const complianceDashboard = complianceResult.payload
-    ?? (isTimeoutMetaError(complianceResult.meta.error)
-      ? { ...fallbackComplianceDashboard, message: timeoutUnavailableReason('Compliance dashboard'), cards: [], latest_governance_actions: [], asset_transfer_status: [], summary: { ...fallbackComplianceDashboard.summary, allowlisted_wallet_count: 0, blocklisted_wallet_count: 0, frozen_wallet_count: 0, review_required_wallet_count: 0, paused_asset_count: 0, triggered_rule_count: 0 } }
-      : (fallbackSnapshotsEnabled() ? fallbackComplianceDashboard : await getComplianceDashboard(resolvedApiUrl)));
+    ?? (fallbackSnapshotsEnabled()
+      ? fallbackComplianceDashboard
+      : { ...fallbackComplianceDashboard, message: isTimeoutMetaError(complianceResult.meta.error) ? timeoutUnavailableReason('Compliance dashboard') : 'Compliance dashboard is unavailable. Reconnect the API to restore compliance operations data.', cards: [], latest_governance_actions: [], asset_transfer_status: [], summary: { ...fallbackComplianceDashboard.summary, allowlisted_wallet_count: 0, blocklisted_wallet_count: 0, frozen_wallet_count: 0, review_required_wallet_count: 0, paused_asset_count: 0, triggered_rule_count: 0 } });
   const resilienceDashboard = resilienceResult.payload
-    ?? (isTimeoutMetaError(resilienceResult.meta.error)
-      ? { ...fallbackResilienceDashboard, message: timeoutUnavailableReason('Resilience dashboard'), cards: [], latest_incidents: [], summary: { ...fallbackResilienceDashboard.summary, mismatch_amount: 0, stale_ledger_count: 0, incident_count: 0 } }
-      : (fallbackSnapshotsEnabled() ? fallbackResilienceDashboard : await getResilienceDashboard(resolvedApiUrl)));
+    ?? (fallbackSnapshotsEnabled()
+      ? fallbackResilienceDashboard
+      : { ...fallbackResilienceDashboard, message: isTimeoutMetaError(resilienceResult.meta.error) ? timeoutUnavailableReason('Resilience dashboard') : 'Resilience dashboard is unavailable. Reconnect the API to restore resilience operations data.', cards: [], latest_incidents: [], summary: { ...fallbackResilienceDashboard.summary, mismatch_amount: 0, stale_ledger_count: 0, incident_count: 0 } });
 
   threatDashboard.message = sanitizeCustomerFacingCopy(threatDashboard.message);
   threatDashboard.cards = threatDashboard.cards.map((card) => ({ ...card, detail: sanitizeCustomerFacingCopy(card.detail) }));

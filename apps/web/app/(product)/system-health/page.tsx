@@ -5,6 +5,7 @@ import { fetchDashboardPageData } from '../../dashboard-data';
 import { resolveWorkspaceMonitoringTruthFromSummary } from '../../workspace-monitoring-truth';
 
 export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
 
 type ComponentStatus =
   | 'Operational'

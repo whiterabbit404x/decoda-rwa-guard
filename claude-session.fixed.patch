@@ -1,722 +1,182 @@
-diff --git a/apps/web/app/(product)/system-health/readiness/page.tsx b/apps/web/app/(product)/system-health/readiness/page.tsx
-new file mode 100644
-index 0000000..50b27a2
---- /dev/null
-+++ b/apps/web/app/(product)/system-health/readiness/page.tsx
-@@ -0,0 +1,716 @@
-+'use client';
-+
-+import Link from 'next/link';
-+import { useCallback, useEffect, useState } from 'react';
-+
-+import { usePilotAuth } from 'app/pilot-auth-context';
-+
-+export const dynamic = 'force-dynamic';
-+
-+// ---------------------------------------------------------------------------
-+// Types matching the /admin/readiness API response (production_readiness.py)
-+// ---------------------------------------------------------------------------
-+
-+type CheckStatus = 'pass' | 'warn' | 'fail' | 'unavailable' | 'partial' | string;
-+
-+type ReadinessCheck = {
-+  key: string;
-+  label: string;
-+  status: CheckStatus;
-+  reason: string;
-+  source: string;
-+  evidence: Record<string, unknown>;
-+  last_seen_at: string | null;
-+};
-+
-+type CategoryName =
-+  | 'Platform'
-+  | 'Runtime'
-+  | 'Workflow'
-+  | 'Evidence & Export'
-+  | 'Integrations'
-+  | 'Security';
-+
-+type ReadinessReport = {
-+  generated_at: string;
-+  ready_for_pilot: boolean;
-+  ready_for_paid_public_launch: boolean;
-+  blocking_reasons: string[];
-+  warnings: string[];
-+  categories: Record<CategoryName, ReadinessCheck[]>;
-+};
-+
-+// ---------------------------------------------------------------------------
-+// Helpers
-+// ---------------------------------------------------------------------------
-+
-+function humanize(s: string): string {
-+  return s
-+    .replace(/_/g, ' ')
-+    .replace(/-/g, ' ')
-+    .replace(/\b\w/g, (c) => c.toUpperCase());
-+}
-+
-+function formatTs(value: string | null | undefined): string {
-+  if (!value) return '';
-+  const d = new Date(value);
-+  if (Number.isNaN(d.getTime())) return value;
-+  return d.toLocaleString(undefined, {
-+    month: 'short',
-+    day: 'numeric',
-+    year: 'numeric',
-+    hour: '2-digit',
-+    minute: '2-digit',
-+    timeZoneName: 'short',
-+  });
-+}
-+
-+function formatRelative(value: string | null | undefined): string {
-+  if (!value) return '';
-+  const d = new Date(value);
-+  if (Number.isNaN(d.getTime())) return value;
-+  const diffMs = Date.now() - d.getTime();
-+  const diffSec = Math.floor(diffMs / 1000);
-+  if (diffSec < 60) return `${diffSec}s ago`;
-+  const diffMin = Math.floor(diffSec / 60);
-+  if (diffMin < 60) return `${diffMin}m ago`;
-+  const diffHr = Math.floor(diffMin / 60);
-+  if (diffHr < 24) return `${diffHr}h ago`;
-+  return `${Math.floor(diffHr / 24)}d ago`;
-+}
-+
-+// Derive a single per-category rollup status
-+function categoryRollup(checks: ReadinessCheck[]): CheckStatus {
-+  if (checks.some((c) => c.status === 'fail')) return 'fail';
-+  if (checks.some((c) => c.status === 'warn')) return 'warn';
-+  if (checks.every((c) => c.status === 'pass')) return 'pass';
-+  return 'unavailable';
-+}
-+
-+// CSS class for status dot (small circle)
-+function dotClass(status: CheckStatus): string {
-+  if (status === 'pass') return 'rdDot rdDot-pass';
-+  if (status === 'warn' || status === 'partial') return 'rdDot rdDot-warn';
-+  if (status === 'fail') return 'rdDot rdDot-fail';
-+  return 'rdDot rdDot-unavail';
-+}
-+
-+// StatusBadge for category pill
-+function statusPillClass(status: CheckStatus): string {
-+  if (status === 'pass') return 'statusBadge statusBadge-live';
-+  if (status === 'warn' || status === 'partial') return 'statusBadge statusBadge-degraded';
-+  if (status === 'fail') return 'statusBadge statusBadge-offline';
-+  return 'statusBadge statusBadge-unavailable';
-+}
-+
-+function statusPillLabel(status: CheckStatus): string {
-+  if (status === 'pass') return 'PASS';
-+  if (status === 'warn' || status === 'partial') return 'WARN';
-+  if (status === 'fail') return 'FAIL';
-+  return 'UNAVAILABLE';
-+}
-+
-+// Derive a human-readable check value to show in the "evidence" column
-+function checkValueLabel(check: ReadinessCheck): string {
-+  const { status, evidence } = check;
-+  // Special cases: counts, sources, etc.
-+  if (typeof evidence?.count === 'number') return String(evidence.count);
-+  if (typeof evidence?.value === 'string') return evidence.value as string;
-+  if (typeof evidence?.evidence_source === 'string') {
-+    const src = evidence.evidence_source as string;
-+    return src.toUpperCase();
-+  }
-+  // Fallback to status label
-+  if (status === 'pass') return 'PASS';
-+  if (status === 'warn' || status === 'partial') return 'WARN';
-+  if (status === 'fail') return 'FAIL';
-+  return status ? status.toUpperCase() : 'UNAVAILABLE';
-+}
-+
-+// Color for the value label
-+function valueColor(check: ReadinessCheck): string {
-+  const src =
-+    typeof check.evidence?.evidence_source === 'string'
-+      ? (check.evidence.evidence_source as string)
-+      : '';
-+  if (src === 'simulator') return '#ffd280'; // warn/amber for simulator
-+  if (check.status === 'pass') return '#7ff0b4';
-+  if (check.status === 'warn' || check.status === 'partial') return '#ffd280';
-+  if (check.status === 'fail') return '#ffb3b3';
-+  return '#dbe5ff';
-+}
-+
-+// Count helper across all categories
-+function countChecks(
-+  categories: Record<string, ReadinessCheck[]>,
-+  predicate: (c: ReadinessCheck) => boolean,
-+): number {
-+  return Object.values(categories)
-+    .flat()
-+    .filter(predicate).length;
-+}
-+
-+// ---------------------------------------------------------------------------
-+// Sub-components
-+// ---------------------------------------------------------------------------
-+
-+const CATEGORY_ICONS: Record<string, string> = {
-+  Platform: '🖥',
-+  Runtime: '⚙',
-+  Workflow: '🔗',
-+  'Evidence & Export': '🔒',
-+  Integrations: '🔌',
-+  Security: '🛡',
-+};
-+
-+const CATEGORY_ORDER: CategoryName[] = [
-+  'Platform',
-+  'Runtime',
-+  'Workflow',
-+  'Evidence & Export',
-+  'Integrations',
-+  'Security',
-+];
-+
-+function CheckRow({ check }: { check: ReadinessCheck }) {
-+  const val = checkValueLabel(check);
-+  const color = valueColor(check);
-+  return (
-+    <div
-+      style={{
-+        display: 'flex',
-+        alignItems: 'center',
-+        gap: '0.5rem',
-+        padding: '0.45rem 0',
-+        borderBottom: '1px solid rgba(48,54,61,0.5)',
-+        fontSize: '0.82rem',
-+      }}
-+    >
-+      <span className={dotClass(check.status)} aria-hidden="true" />
-+      <span style={{ flex: 1, color: '#c9d1d9' }}>{check.label}</span>
-+      {check.last_seen_at && (
-+        <span style={{ color: '#5a6478', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>
-+          {formatRelative(check.last_seen_at)}
-+        </span>
-+      )}
-+      <span
-+        style={{
-+          color,
-+          fontWeight: 700,
-+          fontSize: '0.75rem',
-+          minWidth: '5rem',
-+          textAlign: 'right',
-+          whiteSpace: 'nowrap',
-+        }}
-+      >
-+        {val}
-+      </span>
-+    </div>
-+  );
-+}
-+
-+function CategoryCard({ name, checks }: { name: string; checks: ReadinessCheck[] }) {
-+  const rollup = categoryRollup(checks);
-+  const icon = CATEGORY_ICONS[name] ?? '●';
-+  return (
-+    <article className="dataCard" style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-+      <div
-+        style={{
-+          display: 'flex',
-+          alignItems: 'center',
-+          justifyContent: 'space-between',
-+          marginBottom: '0.75rem',
-+        }}
-+      >
-+        <p className="sectionEyebrow" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-+          <span aria-hidden="true">{icon}</span>
-+          {name}
-+        </p>
-+        <span className={statusPillClass(rollup)} style={{ fontSize: '0.7rem', padding: '0.2rem 0.55rem' }}>
-+          {statusPillLabel(rollup)}
-+        </span>
-+      </div>
-+      <div>
-+        {checks.map((c) => (
-+          <CheckRow key={c.key} check={c} />
-+        ))}
-+      </div>
-+    </article>
-+  );
-+}
-+
-+function BlockerList({
-+  title,
-+  items,
-+  variant,
-+}: {
-+  title: string;
-+  items: string[];
-+  variant: 'blocker' | 'warning';
-+}) {
-+  const accentColor = variant === 'blocker' ? '#ffb3b3' : '#ffd280';
-+  const iconColor = variant === 'blocker' ? '#ff6b6b' : '#ffd280';
-+  const dotLabel = variant === 'blocker' ? '●' : '▲';
-+  return (
-+    <article className="dataCard" style={{ flex: 1, minWidth: 0 }}>
-+      <p className="sectionEyebrow" style={{ marginBottom: '0.6rem' }}>
-+        <span style={{ color: iconColor }}>{dotLabel}</span> {title} ({items.length})
-+      </p>
-+      {items.length === 0 ? (
-+        <p style={{ color: '#5a6478', fontSize: '0.82rem' }}>None</p>
-+      ) : (
-+        <ul style={{ margin: 0, paddingLeft: '1.1rem', listStyle: 'disc' }}>
-+          {items.slice(0, 6).map((r) => (
-+            <li key={r} style={{ color: accentColor, fontSize: '0.82rem', marginBottom: '0.3rem' }}>
-+              {humanize(r)}
-+            </li>
-+          ))}
-+          {items.length > 6 && (
-+            <li style={{ color: '#5a6478', fontSize: '0.78rem' }}>+{items.length - 6} more</li>
-+          )}
-+        </ul>
-+      )}
-+    </article>
-+  );
-+}
-+
-+function ReadinessCriteria() {
-+  const pilotCriteria = [
-+    'Database, auth/session, workspace scope',
-+    'At least one protected asset',
-+    'At least one reporting system (or explicit setup required state)',
-+    'Worker heartbeat, poll & telemetry reporting',
-+    'Evidence/export capability truthfully reported',
-+    'No contradiction flags',
-+  ];
-+  const paidCriteria = [
-+    'Billing provider configured (or paid UI disabled)',
-+    'Email provider configured',
-+    'Redis/Cache configured (or intentionally disabled)',
-+    'Production URLs configured',
-+    'Provider health known',
-+    'Evidence source is live (not simulator)',
-+  ];
-+  return (
-+    <article className="dataCard" style={{ gridColumn: 'span 1' }}>
-+      <p className="sectionEyebrow" style={{ marginBottom: '0.75rem' }}>Readiness Gate Criteria</p>
-+      <p style={{ fontSize: '0.8rem', color: '#8b949e', marginBottom: '0.5rem', fontWeight: 600 }}>
-+        Pilot launch requires:
-+      </p>
-+      <ul style={{ margin: '0 0 1rem', paddingLeft: '1.1rem', listStyle: 'disc' }}>
-+        {pilotCriteria.map((c) => (
-+          <li key={c} style={{ color: '#c9d1d9', fontSize: '0.78rem', marginBottom: '0.25rem' }}>
-+            {c}
-+          </li>
-+        ))}
-+      </ul>
-+      <p style={{ fontSize: '0.8rem', color: '#8b949e', marginBottom: '0.5rem', fontWeight: 600 }}>
-+        Paid public launch requires pilot readiness plus:
-+      </p>
-+      <ul style={{ margin: 0, paddingLeft: '1.1rem', listStyle: 'disc' }}>
-+        {paidCriteria.map((c) => (
-+          <li key={c} style={{ color: '#c9d1d9', fontSize: '0.78rem', marginBottom: '0.25rem' }}>
-+            {c}
-+          </li>
-+        ))}
-+      </ul>
-+    </article>
-+  );
-+}
-+
-+// ---------------------------------------------------------------------------
-+// Main page
-+// ---------------------------------------------------------------------------
-+
-+export default function ProductionReadinessPage() {
-+  const { apiUrl, authHeaders, loading: authLoading } = usePilotAuth();
-+
-+  const [report, setReport] = useState<ReadinessReport | null>(null);
-+  const [loadError, setLoadError] = useState<string | null>(null);
-+  const [loading, setLoading] = useState(false);
-+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-+
-+  const load = useCallback(async () => {
-+    if (!apiUrl) return;
-+    setLoading(true);
-+    setLoadError(null);
-+    try {
-+      const res = await fetch(`${apiUrl}/admin/readiness`, {
-+        cache: 'no-store',
-+        headers: authHeaders(),
-+      });
-+      if (res.status === 401 || res.status === 403) {
-+        setLoadError('admin_access_required');
-+        return;
-+      }
-+      if (!res.ok) {
-+        setLoadError('api_error');
-+        return;
-+      }
-+      const data = (await res.json()) as ReadinessReport;
-+      setReport(data);
-+      setLastUpdated(new Date());
-+    } catch {
-+      setLoadError('api_error');
-+    } finally {
-+      setLoading(false);
-+    }
-+  }, [apiUrl, authHeaders]);
-+
-+  useEffect(() => {
-+    if (!authLoading && apiUrl) void load();
-+  }, [authLoading, apiUrl, load]);
-+
-+  // Derived summary counts
-+  const totalChecks = report
-+    ? Object.values(report.categories).flat().length
-+    : 0;
-+  const passedChecks = report
-+    ? countChecks(report.categories, (c) => c.status === 'pass')
-+    : 0;
-+  const warnChecks = report
-+    ? countChecks(report.categories, (c) => c.status === 'warn' || c.status === 'partial')
-+    : 0;
-+  const failChecks = report
-+    ? countChecks(report.categories, (c) => c.status === 'fail')
-+    : 0;
-+  const unavailChecks = report
-+    ? countChecks(
-+        report.categories,
-+        (c) => c.status === 'unavailable' || (!c.status),
-+      )
-+    : 0;
-+
-+  const overallLabel = report
-+    ? report.ready_for_pilot
-+      ? 'READY FOR PILOT'
-+      : 'NOT READY'
-+    : '—';
-+  const overallColor = report
-+    ? report.ready_for_pilot
-+      ? '#7ff0b4'
-+      : '#ffb3b3'
-+    : '#8b949e';
-+  const overallSubLabel = report
-+    ? report.ready_for_paid_public_launch
-+      ? 'Ready for paid public launch'
-+      : `Not ready for paid public launch${report.blocking_reasons.length ? ` · ${report.blocking_reasons.length} blocking issue${report.blocking_reasons.length !== 1 ? 's' : ''}` : ''}`
-+    : 'Loading readiness data…';
-+
-+  return (
-+    <main className="productPage">
-+      {/* Inline styles for readiness-specific classes */}
-+      <style>{`
-+        .rdDot {
-+          display: inline-block;
-+          width: 8px;
-+          height: 8px;
-+          border-radius: 50%;
-+          flex-shrink: 0;
-+        }
-+        .rdDot-pass   { background: #46c48c; }
-+        .rdDot-warn   { background: #f2cc60; }
-+        .rdDot-fail   { background: #f85149; }
-+        .rdDot-unavail { background: #5a6478; }
-+        .rdCategoryGrid {
-+          display: grid;
-+          grid-template-columns: repeat(3, 1fr);
-+          gap: 1rem;
-+        }
-+        @media (max-width: 1100px) {
-+          .rdCategoryGrid { grid-template-columns: repeat(2, 1fr); }
-+        }
-+        @media (max-width: 700px) {
-+          .rdCategoryGrid { grid-template-columns: 1fr; }
-+        }
-+      `}</style>
-+
-+      {/* ── Breadcrumb + Header ─────────────────────────────────────── */}
-+      <section className="hero compactHero" style={{ paddingBottom: '1rem' }}>
-+        <div style={{ flex: 1 }}>
-+          <nav aria-label="Breadcrumb" style={{ fontSize: '0.78rem', color: '#5a6478', marginBottom: '0.5rem' }}>
-+            <span>Admin</span>
-+            <span style={{ margin: '0 0.3rem' }}>/</span>
-+            <Link href="/system-health" style={{ color: '#58a6ff', textDecoration: 'none' }}>
-+              System Health
-+            </Link>
-+            <span style={{ margin: '0 0.3rem' }}>/</span>
-+            <span style={{ color: '#c9d1d9' }}>Production Readiness</span>
-+          </nav>
-+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-+            <h1 style={{ margin: 0 }}>Production Readiness</h1>
-+            <span
-+              style={{
-+                fontSize: '0.7rem',
-+                fontWeight: 700,
-+                background: 'rgba(88,166,255,0.12)',
-+                color: '#58a6ff',
-+                border: '1px solid rgba(88,166,255,0.25)',
-+                borderRadius: '4px',
-+                padding: '0.15rem 0.4rem',
-+                letterSpacing: '0.05em',
-+              }}
-+            >
-+              BETA
-+            </span>
-+          </div>
-+          <p className="lede" style={{ marginTop: '0.35rem' }}>
-+            Internal launch validation for Decoda RWA Guard
-+          </p>
-+        </div>
-+        <div
-+          style={{
-+            display: 'flex',
-+            flexDirection: 'column',
-+            alignItems: 'flex-end',
-+            gap: '0.5rem',
-+          }}
-+        >
-+          <p style={{ margin: 0, fontSize: '0.78rem', color: '#5a6478' }}>
-+            Last updated:{' '}
-+            {lastUpdated
-+              ? lastUpdated.toLocaleString(undefined, {
-+                  month: 'short',
-+                  day: 'numeric',
-+                  year: 'numeric',
-+                  hour: '2-digit',
-+                  minute: '2-digit',
-+                  timeZoneName: 'short',
-+                })
-+              : 'Never'}
-+          </p>
-+          <button
-+            className="secondaryCta"
-+            style={{ fontSize: '0.85rem' }}
-+            onClick={() => void load()}
-+            disabled={loading}
-+          >
-+            {loading ? 'Loading…' : '↻ Refresh'}
-+          </button>
-+        </div>
-+      </section>
-+
-+      {/* ── Error / Loading states ───────────────────────────────────── */}
-+      {(loading || authLoading) && !report && (
-+        <section className="banner" role="status" style={{ marginBottom: '1rem' }}>
-+          Loading readiness…
-+        </section>
-+      )}
-+      {loadError === 'admin_access_required' && (
-+        <section className="banner banner-offline" role="alert" style={{ marginBottom: '1rem' }}>
-+          <strong>Admin access required.</strong> You must be signed in as a workspace admin to view
-+          production readiness.
-+        </section>
-+      )}
-+      {loadError === 'api_error' && (
-+        <section className="banner banner-degraded" role="alert" style={{ marginBottom: '1rem' }}>
-+          <strong>Unable to load readiness checks.</strong> The readiness API did not respond. Check
-+          API health and retry.
-+        </section>
-+      )}
-+
-+      {report && (
-+        <>
-+          {/* ── Overall Summary Card ─────────────────────────────────── */}
-+          <section className="dataCard" style={{ marginBottom: '1rem' }}>
-+            <div
-+              style={{
-+                display: 'grid',
-+                gridTemplateColumns: 'auto 1fr 1fr 1fr 1fr 1fr 1fr 1fr',
-+                gap: '1rem',
-+                alignItems: 'center',
-+              }}
-+            >
-+              {/* Overall status block */}
-+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-+                <div
-+                  style={{
-+                    width: '48px',
-+                    height: '48px',
-+                    borderRadius: '50%',
-+                    background: report.ready_for_pilot
-+                      ? 'rgba(70,196,140,0.15)'
-+                      : 'rgba(248,81,73,0.15)',
-+                    border: `2px solid ${report.ready_for_pilot ? 'rgba(70,196,140,0.4)' : 'rgba(248,81,73,0.4)'}`,
-+                    display: 'flex',
-+                    alignItems: 'center',
-+                    justifyContent: 'center',
-+                    fontSize: '1.2rem',
-+                    flexShrink: 0,
-+                  }}
-+                  aria-hidden="true"
-+                >
-+                  {report.ready_for_pilot ? '✓' : '✗'}
-+                </div>
-+                <div>
-+                  <p className="sectionEyebrow" style={{ margin: '0 0 0.15rem' }}>
-+                    Overall Readiness
-+                  </p>
-+                  <p
-+                    style={{
-+                      margin: 0,
-+                      fontWeight: 800,
-+                      fontSize: '1rem',
-+                      color: overallColor,
-+                      lineHeight: 1.2,
-+                    }}
-+                  >
-+                    {overallLabel}
-+                  </p>
-+                  <p style={{ margin: 0, fontSize: '0.72rem', color: '#8b949e' }}>
-+                    {overallSubLabel}
-+                  </p>
-+                </div>
-+              </div>
-+
-+              {/* Pilot */}
-+              <div style={{ borderLeft: '1px solid #30363d', paddingLeft: '1rem' }}>
-+                <p className="sectionEyebrow" style={{ margin: '0 0 0.25rem' }}>Pilot Readiness</p>
-+                <p
-+                  style={{
-+                    margin: 0,
-+                    fontWeight: 800,
-+                    fontSize: '1.4rem',
-+                    color: report.ready_for_pilot ? '#7ff0b4' : '#ffb3b3',
-+                  }}
-+                >
-+                  {report.ready_for_pilot ? 'YES' : 'NO'}
-+                </p>
-+                <p style={{ margin: 0, fontSize: '0.72rem', color: '#5a6478' }}>
-+                  {report.ready_for_pilot ? 'Updated just now' : `${report.blocking_reasons.length} blocker${report.blocking_reasons.length !== 1 ? 's' : ''}`}
-+                </p>
-+              </div>
-+
-+              {/* Paid launch */}
-+              <div style={{ borderLeft: '1px solid #30363d', paddingLeft: '1rem' }}>
-+                <p className="sectionEyebrow" style={{ margin: '0 0 0.25rem' }}>Paid Public Launch</p>
-+                <p
-+                  style={{
-+                    margin: 0,
-+                    fontWeight: 800,
-+                    fontSize: '1.4rem',
-+                    color: report.ready_for_paid_public_launch ? '#7ff0b4' : '#ffb3b3',
-+                  }}
-+                >
-+                  {report.ready_for_paid_public_launch ? 'YES' : 'NO'}
-+                </p>
-+                <p style={{ margin: 0, fontSize: '0.72rem', color: '#5a6478' }}>
-+                  {report.ready_for_paid_public_launch
-+                    ? 'Ready for paid customers'
-+                    : report.blocking_reasons.length > 0
-+                    ? `${report.blocking_reasons.length} blocking issue${report.blocking_reasons.length !== 1 ? 's' : ''}`
-+                    : 'Not yet ready'}
-+                </p>
-+              </div>
-+
-+              {/* Metric tiles */}
-+              {(
-+                [
-+                  ['Total Checks', totalChecks, '#c9d1d9'],
-+                  ['Passed', passedChecks, '#7ff0b4'],
-+                  ['Warnings', warnChecks, '#ffd280'],
-+                  ['Failed', failChecks, '#ffb3b3'],
-+                  ['Unavailable', unavailChecks, '#dbe5ff'],
-+                ] as const
-+              ).map(([label, val, color]) => (
-+                <div key={label} style={{ borderLeft: '1px solid #30363d', paddingLeft: '1rem' }}>
-+                  <p className="sectionEyebrow" style={{ margin: '0 0 0.25rem' }}>{label}</p>
-+                  <p style={{ margin: 0, fontWeight: 800, fontSize: '1.4rem', color }}>{val}</p>
-+                </div>
-+              ))}
-+            </div>
-+
-+            {/* View JSON / Export */}
-+            <div style={{ marginTop: '1rem', display: 'flex', gap: '0.75rem' }}>
-+              <button
-+                className="secondaryCta"
-+                style={{ fontSize: '0.8rem' }}
-+                onClick={() => {
-+                  const blob = new Blob([JSON.stringify(report, null, 2)], {
-+                    type: 'application/json',
-+                  });
-+                  const url = URL.createObjectURL(blob);
-+                  window.open(url, '_blank');
-+                }}
-+              >
-+                {'{ } View JSON'}
-+              </button>
-+              <button
-+                className="secondaryCta"
-+                style={{ fontSize: '0.8rem' }}
-+                onClick={() => {
-+                  const lines = [
-+                    `Production Readiness Report — ${formatTs(report.generated_at)}`,
-+                    '',
-+                    `Pilot Ready:       ${report.ready_for_pilot ? 'YES' : 'NO'}`,
-+                    `Paid Launch Ready: ${report.ready_for_paid_public_launch ? 'YES' : 'NO'}`,
-+                    '',
-+                    `Blocking Reasons (${report.blocking_reasons.length}):`,
-+                    ...report.blocking_reasons.map((r) => `  - ${humanize(r)}`),
-+                    '',
-+                    `Warnings (${report.warnings.length}):`,
-+                    ...report.warnings.map((w) => `  - ${humanize(w)}`),
-+                  ];
-+                  const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
-+                  const url = URL.createObjectURL(blob);
-+                  const a = document.createElement('a');
-+                  a.href = url;
-+                  a.download = `readiness-report-${new Date().toISOString().slice(0, 10)}.txt`;
-+                  a.click();
-+                }}
-+              >
-+                ↓ Export Report
-+              </button>
-+            </div>
-+          </section>
-+
-+          {/* ── Blockers & Warnings ──────────────────────────────────── */}
-+          {(report.blocking_reasons.length > 0 || report.warnings.length > 0) && (
-+            <section style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
-+              <BlockerList
-+                title="Blocking Issues"
-+                items={report.blocking_reasons}
-+                variant="blocker"
-+              />
-+              <BlockerList
-+                title="Warnings"
-+                items={report.warnings}
-+                variant="warning"
-+              />
-+            </section>
-+          )}
-+
-+          {/* ── Category Cards + Gate Criteria ──────────────────────── */}
-+          <div className="rdCategoryGrid" style={{ marginBottom: '1rem' }}>
-+            {CATEGORY_ORDER.map((name, i) => {
-+              const checks = report.categories[name] ?? [];
-+              // Span criteria card across remaining slot on last row if needed
-+              return <CategoryCard key={name} name={name} checks={checks} />;
-+            })}
-+            <ReadinessCriteria />
-+          </div>
-+
-+          {/* ── Bottom note ─────────────────────────────────────────── */}
-+          <section
-+            style={{
-+              display: 'flex',
-+              alignItems: 'center',
-+              gap: '0.5rem',
-+              padding: '0.75rem 1rem',
-+              background: 'rgba(88,166,255,0.06)',
-+              border: '1px solid rgba(88,166,255,0.15)',
-+              borderRadius: '10px',
-+              marginBottom: '1rem',
-+            }}
-+          >
-+            <span style={{ fontSize: '0.9rem', color: '#58a6ff' }}>ℹ</span>
-+            <p style={{ margin: 0, fontSize: '0.82rem', color: '#8b949e' }}>
-+              Readiness data is collected from live systems and databases. No demo or mock data is
-+              used.
-+            </p>
-+          </section>
-+        </>
-+      )}
-+    </main>
-+  );
-+}
+diff --git a/package-lock.json b/package-lock.json
+index bb8d174..cc51b2f 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -12,8 +12,8 @@
+         "packages/*"
+       ],
+       "devDependencies": {
+-        "@playwright/test": "1.53.2",
+-        "playwright": "1.53.2"
++        "@playwright/test": "1.55.1",
++        "playwright": "1.55.1"
+       }
+     },
+     "apps/web": {
+@@ -509,13 +509,13 @@
+     "node_modules/@next/env": {
+       "version": "15.5.18",
+       "resolved": "https://registry.npmjs.org/@next/env/-/env-15.5.18.tgz",
+-      "integrity": "sha512-4GlTZ+EJM7WaW2HEZcyU317tIQDjkQIyENDLxYJfSWlfqguN+dHkZgyQTV/7ykvobU7yEH5gKvreNrH4B6QgIg==",
++      "integrity": "sha512-hAV85Ckd9QR6RvH04MEKwsfLTksvFpO47j9xwtoIuvuPnlwecpSi+uZTtm8HirVbtlI2Fnz//xpcSTjFdyJk+g==",
+       "license": "MIT"
+     },
+     "node_modules/@next/swc-darwin-arm64": {
+-      "version": "15.5.7",
+-      "resolved": "https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-15.5.7.tgz",
+-      "integrity": "sha512-IZwtxCEpI91HVU/rAUOOobWSZv4P2DeTtNaCdHqLcTJU4wdNXgAySvKa/qJCgR5m6KI8UsKDXtO2B31jcaw1Yw==",
++      "version": "15.5.18",
++      "resolved": "https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-15.5.18.tgz",
++      "integrity": "sha512-w0WvQf1n+txiwns/9pwIQteCJpZTbxzO2SE0FLcwuD4v0WEh1JPOjdyxWL21XwJsdpx8cFRjyzxzCS/siP7HcQ==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -529,9 +529,9 @@
+       }
+     },
+     "node_modules/@next/swc-darwin-x64": {
+-      "version": "15.5.7",
+-      "resolved": "https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-15.5.7.tgz",
+-      "integrity": "sha512-UP6CaDBcqaCBuiq/gfCEJw7sPEoX1aIjZHnBWN9v9qYHQdMKvCKcAVs4OX1vIjeE+tC5EIuwDTVIoXpUes29lg==",
++      "version": "15.5.18",
++      "resolved": "https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-15.5.18.tgz",
++      "integrity": "sha512-znn71QmDuxm+BOaglihMZfvyySMnNljkVIY5Z2TCssBmm+WqL6c19VhtH5ktFkHa8EZ2bnTUpcNcmNSQsg67og==",
+       "cpu": [
+         "x64"
+       ],
+@@ -545,9 +545,9 @@
+       }
+     },
+     "node_modules/@next/swc-linux-arm64-gnu": {
+-      "version": "15.5.7",
+-      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-15.5.7.tgz",
+-      "integrity": "sha512-NCslw3GrNIw7OgmRBxHtdWFQYhexoUCq+0oS2ccjyYLtcn1SzGzeM54jpTFonIMUjNbHmpKpziXnpxhSWLcmBA==",
++      "version": "15.5.18",
++      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-15.5.18.tgz",
++      "integrity": "sha512-yPPe5MNL+igZUa+OsqQJisqSfh6oarIuA1Q0BDxljGJhRQyZeP+WRHh7rs/jZUGMh5aY0YdIjXZG0VohkKkUdw==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -561,9 +561,9 @@
+       }
+     },
+     "node_modules/@next/swc-linux-arm64-musl": {
+-      "version": "15.5.7",
+-      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-15.5.7.tgz",
+-      "integrity": "sha512-nfymt+SE5cvtTrG9u1wdoxBr9bVB7mtKTcj0ltRn6gkP/2Nu1zM5ei8rwP9qKQP0Y//umK+TtkKgNtfboBxRrw==",
++      "version": "15.5.18",
++      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-15.5.18.tgz",
++      "integrity": "sha512-glaCczEWIrHsokFZ3pP08U4BpKxwIdnT+txdOM32OBgpL9Yw4aqx8NejmgtZQZOdstQ5f0L3CasIZudzCuD+nw==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -577,9 +577,9 @@
+       }
+     },
+     "node_modules/@next/swc-linux-x64-gnu": {
+-      "version": "15.5.7",
+-      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-15.5.7.tgz",
+-      "integrity": "sha512-hvXcZvCaaEbCZcVzcY7E1uXN9xWZfFvkNHwbe/n4OkRhFWrs1J1QV+4U1BN06tXLdaS4DazEGXwgqnu/VMcmqw==",
++      "version": "15.5.18",
++      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-15.5.18.tgz",
++      "integrity": "sha512-oUfg2EgJmU3R0OCOWiokGFUTvZiPfXtriXiuF3YNxRoROCdgvTedHIzYoeKH34gsZxS/V7mHbfq2hpAHwhH1/A==",
+       "cpu": [
+         "x64"
+       ],
+@@ -593,9 +593,9 @@
+       }
+     },
+     "node_modules/@next/swc-linux-x64-musl": {
+-      "version": "15.5.7",
+-      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-15.5.7.tgz",
+-      "integrity": "sha512-4IUO539b8FmF0odY6/SqANJdgwn1xs1GkPO5doZugwZ3ETF6JUdckk7RGmsfSf7ws8Qb2YB5It33mvNL/0acqA==",
++      "version": "15.5.18",
++      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-15.5.18.tgz",
++      "integrity": "sha512-JLxSP3KTd9iu/bvUMQxH7RJo9xKSHf55/6RPE4a6FTSZygGn7uvZbCej0AHXydwkggQGSD9UddSjwv6Xz5ESfA==",
+       "cpu": [
+         "x64"
+       ],
+@@ -609,9 +609,9 @@
+       }
+     },
+     "node_modules/@next/swc-win32-arm64-msvc": {
+-      "version": "15.5.7",
+-      "resolved": "https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-15.5.7.tgz",
+-      "integrity": "sha512-CpJVTkYI3ZajQkC5vajM7/ApKJUOlm6uP4BknM3XKvJ7VXAvCqSjSLmM0LKdYzn6nBJVSjdclx8nYJSa3xlTgQ==",
++      "version": "15.5.18",
++      "resolved": "https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-15.5.18.tgz",
++      "integrity": "sha512-ir1v7enP52K2HNz3tQQvwF+x7VNxBk1ciiZ18WBPvxf4C59IqdfmHPJYK3vH7rSxpuCVw/8C712wTXNAtEp+NA==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -625,9 +625,9 @@
+       }
+     },
+     "node_modules/@next/swc-win32-x64-msvc": {
+-      "version": "15.5.7",
+-      "resolved": "https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-15.5.7.tgz",
+-      "integrity": "sha512-gMzgBX164I6DN+9/PGA+9dQiwmTkE4TloBNx8Kv9UiGARsr9Nba7IpcBRA1iTV9vwlYnrE3Uy6I7Aj6qLjQuqw==",
++      "version": "15.5.18",
++      "resolved": "https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-15.5.18.tgz",
++      "integrity": "sha512-LIu5me6QTANCd25E7I5uIEfvgQ06RK7tvHAbYo3zCb3VpxQEPvMcSpd87NwUABDT6MbGPdEGR5VRiK4PPTJhQg==",
+       "cpu": [
+         "x64"
+       ],
+@@ -649,13 +649,13 @@
+       "link": true
+     },
+     "node_modules/@playwright/test": {
+-      "version": "1.53.2",
+-      "resolved": "https://registry.npmjs.org/@playwright/test/-/test-1.53.2.tgz",
+-      "integrity": "sha512-tEB2U5z74ebBeyfGNZ3Jfg29AnW+5HlWhvHtb/Mqco9pFdZU1ZLNdVb2UtB5CvmiilNr2ZfVH/qMmAROG/XTzw==",
++      "version": "1.55.1",
++      "resolved": "https://registry.npmjs.org/@playwright/test/-/test-1.55.1.tgz",
++      "integrity": "sha512-IVAh/nOJaw6W9g+RJVlIQJ6gSiER+ae6mKQ5CX1bERzQgbC1VSeBlwdvczT7pxb0GWiyrxH4TGKbMfDb4Sq/ig==",
+       "devOptional": true,
+       "license": "Apache-2.0",
+       "dependencies": {
+-        "playwright": "1.53.2"
++        "playwright": "1.55.1"
+       },
+       "bin": {
+         "playwright": "cli.js"
+@@ -798,7 +798,7 @@
+     "node_modules/next": {
+       "version": "15.5.18",
+       "resolved": "https://registry.npmjs.org/next/-/next-15.5.18.tgz",
+-      "integrity": "sha512-agNLK89seZEtC5zUHwtut0+tNrc0Xw4FT/Dg+B/VLEo9pAcS9rtTKpek3V6kVcVwsB2YlqMaHdfZL4eLEVYuCg==",
++      "integrity": "sha512-eKL8zUJkX9Y5lE+RX/2YJoItVdGlIscyVyboeD9wSpp0PaGqjoA4tTpT2qPqz9ax+5IzGESyLSeZ/RCwbSZ2uQ==",
+       "deprecated": "This version has a security vulnerability. Please upgrade to a patched version. See https://nextjs.org/blog/security-update-2025-12-11 for more details.",
+       "license": "MIT",
+       "dependencies": {
+@@ -855,13 +855,13 @@
+       "license": "ISC"
+     },
+     "node_modules/playwright": {
+-      "version": "1.53.2",
+-      "resolved": "https://registry.npmjs.org/playwright/-/playwright-1.53.2.tgz",
+-      "integrity": "sha512-6K/qQxVFuVQhRQhFsVZ9fGeatxirtrpPgxzBYWyZLEXJzqYwuL4fuNmfOfD5et1tJE4GScKyPNeLhZeRwuTU3A==",
++      "version": "1.55.1",
++      "resolved": "https://registry.npmjs.org/playwright/-/playwright-1.55.1.tgz",
++      "integrity": "sha512-cJW4Xd/G3v5ovXtJJ52MAOclqeac9S/aGGgRzLabuF8TnIb6xHvMzKIa6JmrRzUkeXJgfL1MhukP0NK6l39h3A==",
+       "devOptional": true,
+       "license": "Apache-2.0",
+       "dependencies": {
+-        "playwright-core": "1.53.2"
++        "playwright-core": "1.55.1"
+       },
+       "bin": {
+         "playwright": "cli.js"
+@@ -874,6 +874,6 @@
+       }
+     },
+     "node_modules/playwright-core": {
+-      "version": "1.53.2",
+-      "resolved": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.53.2.tgz",
+-      "integrity": "sha512-ox/OytMy+2w1jcYEYlOo1Hhp8hZkLCximMTUTMBXjGUA1KoFfiSZ+DU+3a739jsPY0yoKH2TFy9S2fsJas8yAw==",
++      "version": "1.55.1",
++      "resolved": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.55.1.tgz",
++      "integrity": "sha512-Z6Mh9mkwX+zxSlHqdr5AOcJnfp+xUWLCt9uKV18fhzA8eyxUd8NUWzAjxUh55RZKSYwDGX0cfaySdhZJGMoJ+w==",
+       "devOptional": true,
+       "license": "Apache-2.0",
+       "bin": {
