@@ -109,3 +109,10 @@ def test_security_integrations_and_export_checks_present():
     assert len(out["categories"]["Security"]) > 0
     assert len(out["categories"]["Integrations"]) > 0
     assert any(c["key"] == "export_capability_status" for c in out["categories"]["Evidence & Export"])
+
+
+def test_includes_paid_launch_readiness_section():
+    out = build_production_readiness(**_base())
+    assert 'paid_launch_readiness' in out
+    for key in ('billing_ready','billing_webhook_ready','email_ready','provider_ready','paid_launch_ready','paid_launch_status','paid_launch_blockers'):
+        assert key in out['paid_launch_readiness']

@@ -29,6 +29,14 @@ def _write_chain_artifacts(
         'production_validation_proof_bundle_complete': True,
         'telemetry_evidence_source': telemetry_source,
         'claim_ineligibility_reasons': [],
+        'paid_launch_readiness': {
+            'billing_ready': False,
+            'billing_webhook_ready': False,
+            'email_ready': False,
+            'provider_ready': False,
+            'paid_launch_ready': False,
+            'blockers': ['live provider proof is missing'],
+        },
     }
     (base / 'summary.json').write_text(json.dumps(summary), encoding='utf-8')
     (base / 'telemetry_events.json').write_text(json.dumps([{'id': 'te-1'}]), encoding='utf-8')
@@ -161,6 +169,16 @@ def test_validator_fails_when_incidents_are_empty(tmp_path, monkeypatch) -> None
 def test_validator_fails_when_runs_are_empty(tmp_path, monkeypatch) -> None:
     _write_chain_artifacts(tmp_path)
     (tmp_path / 'runs.json').write_text('[]', encoding='utf-8')
+
+    monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json')])
+    assert validate_readiness_proof.main() == 2
+
+
+def test_validator_fails_when_paid_launch_readiness_missing(tmp_path, monkeypatch) -> None:
+    _write_chain_artifacts(tmp_path)
+    summary = json.loads((tmp_path / 'summary.json').read_text(encoding='utf-8'))
+    summary.pop('paid_launch_readiness', None)
+    (tmp_path / 'summary.json').write_text(json.dumps(summary), encoding='utf-8')
 
     monkeypatch.setattr('sys.argv', ['validate_readiness_proof.py', '--summary-path', str(tmp_path / 'summary.json')])
     assert validate_readiness_proof.main() == 2
