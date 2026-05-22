@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T06:50:06.189614+00:00",
+  "generated_at": "2026-05-22T07:11:23.013019+00:00",
   "release_channel": "local",
-  "commit_sha": "e8ee1fff27f0184940b1d1a3e038aacbc7931061",
-  "branch": "claude/quirky-goldberg-e7shP",
+  "commit_sha": "890f2582dca513401b8d8f522bc6038f673be184",
+  "branch": "claude/bold-galileo-1e4j4",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "8a231c92024429115c45518a8715c1448c943d0049aba7586fe4e999699329cc",
-      "size_bytes": 786,
+      "sha256": "92d445d00a12b0313fc56d854650d2f1209c6a12bcd202a35b2808a68d056e3a",
+      "size_bytes": 783,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "0881426aa5ad661da828a95a061c30ccd895448fa9cc53fdf3eaf6301ae3d79b",
-      "size_bytes": 1979,
+      "sha256": "138a7b1bbf57a80ac1c3514971d5f8a243ce75faef990d4eee693e979df44194",
+      "size_bytes": 1976,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "e2773c33df07cde778e8785ffcd11c9c868d06b67bdcc808514aa8b96d4c1320",
+      "sha256": "20b3c51c0856a039b0111b7504d8ebd7bc64f2e5e3520ec338eeddc8bac89322",
       "size_bytes": 819,
       "required": true,
       "status": "present"

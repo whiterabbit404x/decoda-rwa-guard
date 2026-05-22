@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T06:50:06.176722+00:00",
-  "commit_sha": "e8ee1fff27f0184940b1d1a3e038aacbc7931061",
-  "branch": "claude/quirky-goldberg-e7shP",
+  "generated_at": "2026-05-22T07:11:22.995830+00:00",
+  "commit_sha": "890f2582dca513401b8d8f522bc6038f673be184",
+  "branch": "claude/bold-galileo-1e4j4",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
