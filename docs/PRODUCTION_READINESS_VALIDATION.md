@@ -120,3 +120,128 @@ Interpret blockers from `paid_launch_blockers` as explicit reasons broad paid la
 Recommended checks:
 - `python -m pytest services/api/tests/test_paid_launch_readiness.py -q`
 - `python -m pytest services/api/tests/test_admin_readiness.py services/api/tests/test_proof_bundle_export.py services/api/tests/test_validate_readiness_proof.py services/api/tests/test_workspace_readiness_gate_aggregation.py services/api/tests/test_saas_workflow_validation.py -q`
+
+---
+
+## Session 11 — CI/Release Evidence and Launch Proof Artifacts
+
+### What is generated
+
+`scripts/generate_release_proof.py` creates three canonical JSON proof artifacts that provide fail-closed evidence of release readiness:
+
+| Artifact | Location | Purpose |
+|---|---|---|
+| `ci-required-gates.json` | `artifacts/release-proof/latest/ci-required-gates.json` | Proof of CI gates: backend tests, SaaS workflow validation, readiness validation, paid launch readiness, live evidence, frontend build. |
+| `release-proof/summary.json` | `artifacts/release-proof/latest/summary.json` | Overall release readiness: references CI gates and launch proof. |
+| `launch-proof/summary.json` | `artifacts/launch-proof/latest/summary.json` | Launch readiness summary: pilot vs. paid GA, billing/email/provider/live-evidence gates, blockers. |
+
+### How to generate locally
+
+```bash
+make generate-release-proof
+```
+
+or
+
+```bash
+python scripts/generate_release_proof.py --mode local
+```
+
+### How to validate
+
+```bash
+make validate-release-proof
+```
+
+or
+
+```bash
+python scripts/validate_release_proof.py
+```
+
+The validator checks:
+- All required artifact files exist
+- Schema versions are correct
+- Fail-closed semantics (unknown is never treated as pass)
+- `broad_paid_saas_ready` cannot be true unless all gates pass
+- No secret-like values in artifacts
+- Required fields are present
+
+### How to interpret the artifacts
+
+#### ci-required-gates.json
+
+- `overall_status`: `pass` only when all required gates pass. Gates with status `not_run` do not prevent pass in local mode, but do prevent pass in strict CI mode.
+- `required_gates`: structured list of gates with `status`, `command`, `summary`, and optional `blockers`.
+- `broad_paid_launch_ready`: always false in local/CI mode; reserved for staging/production.
+- `blockers`: list of explicit failure reasons preventing release.
+
+Example: missing billing configuration creates blocker `"billing provider is not configured"`.
+
+#### release-proof/summary.json
+
+- `release_status`: `pass` only when both `ci_required_gates_ready` and `launch_proof_ready` are true.
+- `ci_required_gates_ready`: true only if the ci-required-gates artifact exists and has overall_status=pass.
+- `launch_proof_ready`: true only if launch-proof artifact exists and is pass.
+- `paid_launch_ready`: always false in local mode; cannot be overridden.
+- `blockers`: why the release is not ready (missing artifacts, failed gates, etc.).
+
+#### launch-proof/summary.json
+
+- `launch_mode`: `pilot` (default) or `paid_ga` (only when broad_paid_saas_ready=true).
+- `pilot_ready`: true when live evidence is available (fail-closed without live).
+- `controlled_pilot_ready`: may be true even when broad_paid_saas_ready is false.
+- `broad_paid_saas_ready`: true only when all of:
+  - `billing_ready` = true
+  - `billing_webhook_ready` = true
+  - `email_ready` = true
+  - `provider_ready` = true
+  - `live_evidence_ready` = true
+  - `ci_required_gates_ready` = true
+- `readiness`: gate-by-gate status (all booleans).
+- `blockers`: explicit reasons why broad launch is blocked.
+
+### Why local artifacts fail closed
+
+In local development mode (`--mode local`), artifacts are generated with safe, fail-closed assumptions:
+- Live evidence is unavailable unless `artifacts/live_evidence/latest/summary.json` exists and proves live data.
+- CI gates are not run in local mode; they remain `not_run`.
+- `paid_launch_ready` and `broad_paid_saas_ready` always remain false.
+- Simulator or fallback evidence cannot satisfy live evidence gates.
+
+This ensures local development artifacts never falsely claim readiness, but allows controlled-pilot readiness to pass when appropriate.
+
+### Why missing live evidence blocks broad paid SaaS
+
+The `live_evidence` gate in `ci-required-gates.json` checks whether live data is actually available:
+- Without live evidence, the product cannot claim to be monitoring real assets.
+- Simulator evidence is labeled but cannot satisfy live evidence gates.
+- Missing live evidence creates blocker: `"live evidence summary not found"`.
+- This blocks both `ci_required_gates_ready` and `launch_proof_ready`.
+
+### Why pilot readiness is separate from paid GA readiness
+
+- **Pilot readiness** (`pilot_ready`, `controlled_pilot_ready`) can be true for controlled pilots with limited users and safe fallbacks.
+- **Paid GA readiness** (`broad_paid_saas_ready`) requires all paid launch gates, including billing, email, provider, and live evidence.
+- A product can be controlled-pilot ready (safe for trusted customers) while not being broad paid SaaS ready (unsafe for public launch).
+
+### How GitHub Actions integrates the proofs
+
+The `.github/workflows/ci-release-gates.yml` workflow:
+1. Runs paid launch readiness tests
+2. Generates release proof artifacts with `python scripts/generate_release_proof.py --mode ci`
+3. Validates artifacts with `python scripts/validate_release_proof.py`
+4. Uploads artifacts as CI artifacts (retained for 30 days)
+
+The proofs can be reviewed before merging to main or before a production deploy.
+
+### Important: Artifacts are evidence, not marketing claims
+
+The artifacts in `artifacts/release-proof/` and `artifacts/launch-proof/` are cryptographically truthful snapshots of readiness at the moment they were generated. They:
+- Never include secret values (only presence flags and env var names)
+- Fail closed (unknown is never treated as pass)
+- Are machine-readable and validator-checkable
+- Can be committed to source control for audit purposes
+- Should not be faked or overridden for release marketing
+
+If an artifact reports failure, the only correct response is to fix the underlying issues. Do not force artifacts to pass.

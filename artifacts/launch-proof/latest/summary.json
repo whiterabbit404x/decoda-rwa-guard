@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-22T05:37:40.237472+00:00",
+  "launch_mode": "pilot",
+  "pilot_ready": false,
+  "paid_launch_ready": false,
+  "controlled_pilot_ready": true,
+  "broad_paid_saas_ready": false,
+  "readiness": {
+    "billing_ready": false,
+    "billing_webhook_ready": false,
+    "email_ready": false,
+    "provider_ready": false,
+    "live_evidence_ready": false,
+    "ci_required_gates_ready": false
+  },
+  "blockers": [
+    "billing not ready",
+    "billing webhook not ready",
+    "ci gates not ready",
+    "email not ready",
+    "live evidence not ready",
+    "provider not ready"
+  ],
+  "warnings": [],
+  "artifact_paths": {
+    "ci_required_gates": "artifacts/release-proof/latest/ci-required-gates.json",
+    "release_summary": "artifacts/release-proof/latest/summary.json"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-22T05:37:40.233550+00:00",
+  "release_status": "fail",
+  "release_channel": "local",
+  "commit_sha": "986f86b8be281b91a69f2b34ceab1b683ca6fa59",
+  "branch": "claude/ci-release-evidence-artifacts-ODaOo",
+  "ci_required_gates_ready": false,
+  "launch_proof_ready": false,
+  "paid_launch_ready": false,
+  "blockers": [
+    "ci-required-gates not ready",
+    "launch-proof not ready"
+  ],
+  "warnings": [],
+  "evidence_files": [
+    "artifacts/release-proof/latest/ci-required-gates.json",
+    "artifacts/launch-proof/latest/summary.json"
+  ]
+}

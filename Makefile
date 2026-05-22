@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness test-release-proof-artifacts generate-release-proof validate-release-proof
 
 up:
 	docker compose up -d
@@ -128,3 +128,12 @@ test-session4-web:
 	npx playwright test apps/web/tests/threat-alert-incident-chain-clarity-source.spec.ts apps/web/tests/threat-proof-chain-ui-guards.spec.ts apps/web/tests/threat-operations-chain-rendering-and-stale-fallback-source.spec.ts
 
 verify-session4: test-session4-backend test-session4-web
+
+test-release-proof-artifacts:
+	python -m pytest services/api/tests/test_release_proof_artifacts.py -q
+
+generate-release-proof:
+	python scripts/generate_release_proof.py --mode local
+
+validate-release-proof:
+	python scripts/validate_release_proof.py

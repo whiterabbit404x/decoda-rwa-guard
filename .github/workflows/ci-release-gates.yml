@@ -30,41 +30,26 @@ jobs:
       - name: Run paid launch readiness tests
         run: python -m pytest services/api/tests/test_paid_launch_readiness.py -q
 
-      - name: Build paid launch readiness proof artifact
+      - name: Generate release proof artifacts
         if: always()
         run: |
-          set -euo pipefail
-          mkdir -p artifacts/release-proof/latest
-          python - <<'PYEOF'
-          import json, os, sys
-          sys.path.insert(0, '.')
-          from services.api.app.paid_launch_readiness import build_paid_launch_readiness
-          result = build_paid_launch_readiness()
-          proof = {
-            'paid_launch_readiness': {
-              'billing_ready': result['billing_ready'],
-              'billing_webhook_ready': result['billing_webhook_ready'],
-              'email_ready': result['email_ready'],
-              'provider_ready': result['provider_ready'],
-              'paid_launch_ready': result['paid_launch_ready'],
-              'paid_launch_status': result['paid_launch_status'],
-              'blockers': result['paid_launch_blockers'],
-            }
-          }
-          path = 'artifacts/release-proof/latest/paid-launch-readiness.json'
-          with open(path, 'w') as f:
-            json.dump(proof, f, indent=2)
-          print(json.dumps(proof, indent=2))
-          PYEOF
+          python scripts/generate_release_proof.py --mode ci
 
-      - name: Upload paid launch readiness proof artifact
+      - name: Validate release proof artifacts
+        if: always()
+        run: |
+          python scripts/validate_release_proof.py
+
+      - name: Upload release proof artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: paid-launch-readiness-proof-${{ github.run_id }}
-          if-no-files-found: error
+          name: release-proof-${{ github.run_id }}
+          if-no-files-found: warn
           retention-days: 30
-          path: artifacts/release-proof/latest/paid-launch-readiness.json
+          path: |
+            artifacts/release-proof/latest/
+            artifacts/launch-proof/latest/
 
   required-gates:
     name: Required npm test/build gates

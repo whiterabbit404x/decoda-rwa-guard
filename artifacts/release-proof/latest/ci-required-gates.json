@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-22T05:37:40.229556+00:00",
+  "commit_sha": "986f86b8be281b91a69f2b34ceab1b683ca6fa59",
+  "branch": "claude/ci-release-evidence-artifacts-ODaOo",
+  "release_channel": "local",
+  "overall_status": "fail",
+  "broad_paid_launch_ready": false,
+  "required_gates": {
+    "backend_tests": {
+      "status": "not_run",
+      "command": "python -m pytest services/api/tests/ -q",
+      "summary": "Not run in local mode"
+    },
+    "saas_workflow_validation": {
+      "status": "not_run",
+      "command": "python services/api/scripts/validate_staging.py",
+      "summary": "Not run in local mode"
+    },
+    "readiness_validation": {
+      "status": "not_run",
+      "command": "python services/api/scripts/validate_production_readiness.py",
+      "summary": "Not run in local mode"
+    },
+    "paid_launch_readiness": {
+      "status": "fail",
+      "summary": "Paid launch blocked: billing provider is not configured; billing webhook secret is missing; email provider is not configured; live provider configuration is missing; live provider proof is missing",
+      "blockers": [
+        "billing provider is not configured",
+        "billing webhook secret is missing",
+        "email provider is not configured",
+        "live provider configuration is missing",
+        "live provider proof is missing"
+      ]
+    },
+    "live_evidence": {
+      "status": "fail",
+      "summary": "Live evidence not available: live evidence summary not found",
+      "blockers": [
+        "live evidence summary not found"
+      ]
+    },
+    "frontend_build": {
+      "status": "not_run",
+      "command": "npm run build",
+      "summary": "Not run in local mode"
+    }
+  },
+  "blockers": [
+    "billing provider is not configured",
+    "billing webhook secret is missing",
+    "email provider is not configured",
+    "live evidence summary not found",
+    "live provider configuration is missing",
+    "live provider proof is missing"
+  ],
+  "warnings": []
+}
