@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T11:26:40.088930+00:00",
+  "generated_at": "2026-05-22T12:32:03.754527+00:00",
   "mode": "local",
   "strict": false,
   "release_channel": "local",
@@ -25,7 +25,7 @@
     "staging_migrations_validated": false,
     "staging_runtime_validated": false,
     "staging_live_evidence_validated": false,
-    "generated_at": "2026-05-22T11:26:40.088956+00:00",
+    "generated_at": "2026-05-22T12:32:03.754552+00:00",
     "blockers": [
       "STAGING_API_URL not configured",
       "STAGING_APP_URL not configured",
@@ -45,9 +45,24 @@
     "evm_rpc_configured": false,
     "chain_id_configured": false,
     "provider_health_checked": false,
+    "provider_ready": false,
+    "provider_mode": "disabled",
     "latest_live_telemetry_at": null,
     "live_evidence_ready": false,
     "evidence_source": "unknown",
+    "chain": {
+      "telemetry_event_id": null,
+      "detection_id": null,
+      "alert_id": null,
+      "incident_id": null,
+      "evidence_package_id": null
+    },
+    "missing": [
+      "EVM_RPC_URL (or STAGING_EVM_RPC_URL) not configured",
+      "evidence source unknown in launch-proof; failing closed",
+      "missing live telemetry; live evidence readiness not confirmed"
+    ],
+    "contradiction_flags": [],
     "blockers": [
       "EVM_RPC_URL (or STAGING_EVM_RPC_URL) not configured",
       "evidence source unknown in launch-proof; failing closed",

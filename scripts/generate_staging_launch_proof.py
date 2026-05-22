@@ -279,14 +279,52 @@ def build_live_provider_validation(
     else:
         status = 'fail'
 
+    # Derive provider_mode from configuration state
+    if evm_rpc_configured:
+        provider_mode = 'live'
+    else:
+        provider_mode = 'disabled'
+
+    # Derive chain IDs from launch proof when available
+    chain_telemetry_id: str | None = None
+    chain_detection_id: str | None = None
+    chain_alert_id: str | None = None
+    chain_incident_id: str | None = None
+    chain_evidence_package_id: str | None = None
+    if launch_proof is not None:
+        chain_data = launch_proof.get('chain') or launch_proof.get('live_evidence_chain') or {}
+        chain_telemetry_id = chain_data.get('telemetry_event_id') or None
+        chain_detection_id = chain_data.get('detection_id') or None
+        chain_alert_id = chain_data.get('alert_id') or None
+        chain_incident_id = chain_data.get('incident_id') or None
+        chain_evidence_package_id = chain_data.get('evidence_package_id') or None
+
+    # Contradiction flags: extract from launch proof if available
+    contradiction_flags: list[str] = []
+    if launch_proof is not None:
+        readiness = launch_proof.get('readiness', {})
+        for flag in (readiness.get('contradiction_flags') or []):
+            contradiction_flags.append(str(flag))
+
     return {
         'status': status,
         'evm_rpc_configured': evm_rpc_configured,
         'chain_id_configured': chain_id_configured,
         'provider_health_checked': provider_health_checked,
+        'provider_ready': evm_rpc_configured,
+        'provider_mode': provider_mode,
         'latest_live_telemetry_at': latest_live_telemetry_at,
         'live_evidence_ready': live_evidence_ready,
         'evidence_source': evidence_source,
+        'chain': {
+            'telemetry_event_id': chain_telemetry_id,
+            'detection_id': chain_detection_id,
+            'alert_id': chain_alert_id,
+            'incident_id': chain_incident_id,
+            'evidence_package_id': chain_evidence_package_id,
+        },
+        'missing': blockers,
+        'contradiction_flags': contradiction_flags,
         'blockers': blockers,
         'warnings': warnings,
     }
