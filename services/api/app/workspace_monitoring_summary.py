@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from .runtime_truthfulness import build_signal_freshness, detect_runtime_contradictions
+
 
 CANONICAL_RUNTIME_STATUS = {'live', 'degraded', 'offline', 'idle', 'healthy'}
 CANONICAL_MONITORING_STATUS = {'live', 'limited', 'offline'}
@@ -17,6 +19,11 @@ CANONICAL_SUMMARY_KEYS = (
     'last_poll_at',
     'last_heartbeat_at',
     'last_telemetry_at',
+    'last_detection_at',
+    'last_alert_at',
+    'last_incident_at',
+    'last_response_action_at',
+    'last_evidence_export_at',
     'telemetry_freshness',
     'confidence',
     'reporting_systems_count',
@@ -43,7 +50,7 @@ CANONICAL_SUMMARY_KEYS = (
     'status_reason',
     'db_failure_classification',
     'db_failure_reason',
-    'last_detection_at',
+    'signal_freshness',
 )
 
 RUNTIME_SETUP_STEP_ORDER = (
@@ -95,6 +102,18 @@ HARD_GUARD_FLAGS = {
     'response_action_exists_without_incident',
     'evidence_package_without_detection_alert_incident_chain',
     'cross_page_count_mismatch',
+    # Session 13 — canonical truthfulness guards
+    'healthy_without_reporting_systems',
+    'current_without_telemetry',
+    'live_mode_with_simulator_evidence',
+    'live_evidence_without_provider_ready',
+    'systems_without_protected_assets',
+    'reporting_exceeds_configured',
+    'detection_without_telemetry',
+    'alert_without_detection',
+    'incident_without_alert',
+    'response_action_without_case',
+    'evidence_export_without_source_truthfulness',
 }
 HARD_GUARD_PRIORITY = (
     'offline_with_current_telemetry',
@@ -117,6 +136,18 @@ HARD_GUARD_PRIORITY = (
     'response_action_exists_without_incident',
     'evidence_package_without_detection_alert_incident_chain',
     'cross_page_count_mismatch',
+    # Session 13 — canonical truthfulness guards
+    'healthy_without_reporting_systems',
+    'current_without_telemetry',
+    'live_mode_with_simulator_evidence',
+    'live_evidence_without_provider_ready',
+    'systems_without_protected_assets',
+    'reporting_exceeds_configured',
+    'detection_without_telemetry',
+    'alert_without_detection',
+    'incident_without_alert',
+    'response_action_without_case',
+    'evidence_export_without_source_truthfulness',
 )
 
 
@@ -216,6 +247,10 @@ def _build_v2_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'last_heartbeat_at': payload.get('last_heartbeat_at') if isinstance(payload.get('last_heartbeat_at'), str) else None,
         'last_telemetry_at': payload.get('last_telemetry_at') if isinstance(payload.get('last_telemetry_at'), str) else None,
         'last_detection_at': payload.get('last_detection_at') if isinstance(payload.get('last_detection_at'), str) else None,
+        'last_alert_at': payload.get('last_alert_at') if isinstance(payload.get('last_alert_at'), str) else None,
+        'last_incident_at': payload.get('last_incident_at') if isinstance(payload.get('last_incident_at'), str) else None,
+        'last_response_action_at': payload.get('last_response_action_at') if isinstance(payload.get('last_response_action_at'), str) else None,
+        'last_evidence_export_at': payload.get('last_evidence_export_at') if isinstance(payload.get('last_evidence_export_at'), str) else None,
     }
     next_required_action = str(payload.get('next_required_action')).strip() if isinstance(payload.get('next_required_action'), str) and str(payload.get('next_required_action')).strip() else 'review_reason_codes'
     return {
@@ -268,6 +303,11 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'last_heartbeat_at': payload.get('last_heartbeat_at') if isinstance(payload.get('last_heartbeat_at'), str) else None,
         'last_telemetry_at': payload.get('last_telemetry_at') if isinstance(payload.get('last_telemetry_at'), str) else None,
         'last_detection_at': payload.get('last_detection_at') if isinstance(payload.get('last_detection_at'), str) else None,
+        'last_alert_at': payload.get('last_alert_at') if isinstance(payload.get('last_alert_at'), str) else None,
+        'last_incident_at': payload.get('last_incident_at') if isinstance(payload.get('last_incident_at'), str) else None,
+        'last_response_action_at': payload.get('last_response_action_at') if isinstance(payload.get('last_response_action_at'), str) else None,
+        'last_evidence_export_at': payload.get('last_evidence_export_at') if isinstance(payload.get('last_evidence_export_at'), str) else None,
+        'signal_freshness': dict(payload.get('signal_freshness') or {}),
         'telemetry_freshness': _normalized_telemetry_freshness(str(payload.get('telemetry_freshness', 'unavailable'))),
         'confidence': _normalized_confidence(str(payload.get('confidence', 'unavailable'))),
         'reporting_systems_count': max(int(payload.get('reporting_systems_count', 0)), 0),
@@ -351,6 +391,11 @@ def _canonical_summary(payload: dict[str, Any]) -> dict[str, Any]:
         'active_alerts',
         'open_incidents',
         'monitoring_targets',
+        'signal_freshness',
+        'last_alert_at',
+        'last_incident_at',
+        'last_response_action_at',
+        'last_evidence_export_at',
     ):
         if extra_key in canonical:
             result[extra_key] = canonical[extra_key]
@@ -453,6 +498,11 @@ def build_workspace_monitoring_summary(
     evidence_packages_count: int = 0,
     db_persistence_available: bool = True,
     db_persistence_reason: str | None = None,
+    last_alert_at: datetime | None = None,
+    last_incident_at: datetime | None = None,
+    last_response_action_at: datetime | None = None,
+    last_evidence_export_at: datetime | None = None,
+    provider_ready: bool = True,
 ) -> dict[str, Any]:
     normalized_monitored = max(int(monitored_systems_count if monitored_systems_count is not None else configured_systems), 0)
     normalized_reporting = max(int(reporting_systems), 0)
@@ -588,6 +638,37 @@ def build_workspace_monitoring_summary(
         or int(active_incidents_count) <= 0
     ):
         contradiction_flags.append('evidence_package_without_detection_alert_incident_chain')
+
+    # Session 13 — canonical truthfulness contradiction guards
+    signal_freshness = build_signal_freshness(
+        last_heartbeat_at=last_heartbeat_at,
+        last_poll_at=last_poll_at,
+        last_telemetry_at=telemetry_timestamp,
+        last_detection_at=last_detection_at,
+        last_alert_at=last_alert_at,
+        last_incident_at=last_incident_at,
+        last_response_action_at=last_response_action_at,
+        last_evidence_export_at=last_evidence_export_at,
+        now=now,
+    )
+    session13_flags = detect_runtime_contradictions(
+        runtime_status=normalized_runtime,
+        freshness_status=freshness_status,
+        monitoring_mode=str(monitoring_mode) if monitoring_mode else None,
+        evidence_source=normalized_evidence,
+        configured_systems=int(configured_systems),
+        reporting_systems=normalized_reporting,
+        protected_assets=normalized_assets,
+        provider_ready=bool(provider_ready),
+        last_telemetry_at=telemetry_timestamp,
+        last_detection_at=last_detection_at,
+        last_alert_at=last_alert_at,
+        last_incident_at=last_incident_at,
+        last_response_action_at=last_response_action_at,
+        last_evidence_export_at=last_evidence_export_at,
+        signal_freshness=signal_freshness,
+    )
+    contradiction_flags.extend(f for f in session13_flags if f not in contradiction_flags)
     contradiction_flags = sorted(set(contradiction_flags))
     guard_flags = sorted(flag for flag in contradiction_flags if flag in HARD_GUARD_FLAGS)
     normalized_monitoring_status = _normalized_monitoring_status(
@@ -639,6 +720,11 @@ def build_workspace_monitoring_summary(
         'last_heartbeat_at': _isoformat(last_heartbeat_at),
         'last_telemetry_at': _isoformat(telemetry_timestamp),
         'last_detection_at': _isoformat(last_detection_at),
+        'last_alert_at': _isoformat(last_alert_at),
+        'last_incident_at': _isoformat(last_incident_at),
+        'last_response_action_at': _isoformat(last_response_action_at),
+        'last_evidence_export_at': _isoformat(last_evidence_export_at),
+        'signal_freshness': signal_freshness,
         'telemetry_freshness': freshness_status,
         'confidence': confidence_status,
         'reporting_systems_count': normalized_reporting,
