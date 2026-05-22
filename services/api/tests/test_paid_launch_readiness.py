@@ -12,6 +12,7 @@ from services.api.app.paid_launch_readiness import (
     build_paid_launch_readiness,
     check_billing_readiness,
     check_email_readiness,
+    check_live_evidence_chain,
     check_provider_readiness,
 )
 
@@ -439,3 +440,221 @@ def test_simulator_evidence_does_not_satisfy_live_provider_proof(monkeypatch: py
 
     assert out['live_provider_proof_ready'] is False
     assert out['paid_launch_ready'] is False
+
+
+# ---------------------------------------------------------------------------
+# Evidence chain validation tests (Task E)
+# ---------------------------------------------------------------------------
+
+_FULL_CHAIN_EVIDENCE: dict = {
+    'evidence_source': 'live',
+    'last_heartbeat_at': '2026-01-01T00:00:00Z',
+    'latest_poll_at': '2026-01-01T00:00:30Z',
+    'last_telemetry_at': '2026-01-01T00:01:00Z',
+    'detections_count': 1,
+    'detection_telemetry_linked': True,
+    'alerts_count': 1,
+    'alert_detection_linked': True,
+    'incidents_count': 1,
+    'incident_alert_linked': True,
+    'export_capability': 'pass',
+    'export_source_label': 'live',
+    'contradiction_flags': [],
+}
+
+
+def test_missing_evm_rpc_keeps_live_evidence_ready_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing EVM_RPC_URL must block live_provider_proof_ready regardless of live_evidence."""
+    _base_env(monkeypatch)
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('LIVE_PROVIDER_PROOF_PRESENT', raising=False)
+
+    out = build_paid_launch_readiness(live_evidence={'evidence_source': 'live'})
+
+    assert out['provider_ready'] is False
+    assert out['live_provider_proof_ready'] is False
+    assert out['paid_launch_ready'] is False
+    assert any('provider' in b for b in out['paid_launch_blockers'])
+
+
+def test_heartbeat_only_does_not_count_as_live_telemetry() -> None:
+    """Heartbeat alone must not satisfy live telemetry requirement."""
+    result = check_live_evidence_chain({
+        'evidence_source': 'live',
+        'last_heartbeat_at': '2026-01-01T00:00:00Z',
+        # No last_telemetry_at
+    })
+    assert result['live_evidence_chain_ready'] is False
+    assert result['telemetry_ok'] is False
+    assert any('heartbeat' in b for b in result['chain_blockers'])
+
+
+def test_poll_only_does_not_count_as_live_telemetry() -> None:
+    """Poll loop alone must not satisfy live telemetry requirement."""
+    result = check_live_evidence_chain({
+        'evidence_source': 'live',
+        'latest_poll_at': '2026-01-01T00:00:30Z',
+        # No last_telemetry_at
+    })
+    assert result['live_evidence_chain_ready'] is False
+    assert result['telemetry_ok'] is False
+    assert any('poll' in b for b in result['chain_blockers'])
+
+
+def test_heartbeat_and_poll_without_telemetry_does_not_count() -> None:
+    """Both heartbeat and poll without telemetry must still be rejected."""
+    result = check_live_evidence_chain({
+        'evidence_source': 'live',
+        'last_heartbeat_at': '2026-01-01T00:00:00Z',
+        'latest_poll_at': '2026-01-01T00:00:30Z',
+        # No last_telemetry_at
+    })
+    assert result['live_evidence_chain_ready'] is False
+    assert result['telemetry_ok'] is False
+
+
+def test_simulator_evidence_does_not_count_as_live_chain_evidence() -> None:
+    """Simulator/demo evidence source must be rejected in chain validation."""
+    for simulator_source in ('simulator', 'demo', 'guided_simulator', 'fixture'):
+        result = check_live_evidence_chain({**_FULL_CHAIN_EVIDENCE, 'evidence_source': simulator_source})
+        assert result['live_evidence_chain_ready'] is False, f'Expected failure for source={simulator_source!r}'
+        assert result['evidence_source_ok'] is False
+        assert any('simulator' in b or 'demo' in b or 'not live' in b for b in result['chain_blockers'])
+
+
+def test_unknown_evidence_source_fails_closed() -> None:
+    """Unknown evidence source must fail closed."""
+    result = check_live_evidence_chain({**_FULL_CHAIN_EVIDENCE, 'evidence_source': 'unknown'})
+    assert result['live_evidence_chain_ready'] is False
+    assert result['evidence_source_ok'] is False
+
+
+def test_full_live_chain_sets_live_evidence_chain_ready() -> None:
+    """Full chain (live telemetry → detection → alert → incident → export) must succeed."""
+    result = check_live_evidence_chain(_FULL_CHAIN_EVIDENCE)
+    assert result['live_evidence_chain_ready'] is True
+    assert result['evidence_source_ok'] is True
+    assert result['telemetry_ok'] is True
+    assert result['detection_ok'] is True
+    assert result['alert_ok'] is True
+    assert result['incident_ok'] is True
+    assert result['export_ok'] is True
+    assert result['chain_blockers'] == []
+
+
+def test_full_chain_with_response_action_instead_of_incident() -> None:
+    """Response action may substitute for incident in the chain."""
+    evidence = {**_FULL_CHAIN_EVIDENCE, 'incidents_count': 0, 'response_actions_count': 1}
+    result = check_live_evidence_chain(evidence)
+    assert result['live_evidence_chain_ready'] is True
+    assert result['incident_ok'] is True
+
+
+def test_chain_blocked_when_no_detection() -> None:
+    """Missing detection must block the chain."""
+    result = check_live_evidence_chain({**_FULL_CHAIN_EVIDENCE, 'detections_count': 0})
+    assert result['live_evidence_chain_ready'] is False
+    assert result['detection_ok'] is False
+
+
+def test_chain_blocked_when_no_alert() -> None:
+    """Missing alert must block the chain."""
+    result = check_live_evidence_chain({**_FULL_CHAIN_EVIDENCE, 'alerts_count': 0})
+    assert result['live_evidence_chain_ready'] is False
+    assert result['alert_ok'] is False
+
+
+def test_chain_blocked_when_no_incident_or_response() -> None:
+    """Missing both incident and response_action must block the chain."""
+    result = check_live_evidence_chain({
+        **_FULL_CHAIN_EVIDENCE,
+        'incidents_count': 0,
+        'response_actions_count': 0,
+    })
+    assert result['live_evidence_chain_ready'] is False
+    assert result['incident_ok'] is False
+
+
+def test_provider_mode_is_live_when_evm_rpc_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """provider_mode must be 'live' when EVM_RPC_URL is configured and non-placeholder."""
+    _base_env(monkeypatch)
+    out = check_provider_readiness()
+    assert out['provider_mode'] == 'live'
+    assert out['provider_ready'] is True
+
+
+def test_provider_mode_is_disabled_when_evm_rpc_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """provider_mode must be 'disabled' when EVM_RPC_URL is absent."""
+    _base_env(monkeypatch)
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+    out = check_provider_readiness()
+    assert out['provider_mode'] == 'disabled'
+    assert out['provider_ready'] is False
+
+
+def test_chain_id_configured_flag_present_in_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    """chain_id_configured flag must be present in provider readiness output."""
+    _base_env(monkeypatch)
+    out = check_provider_readiness()
+    assert 'chain_id_configured' in out
+
+
+def test_evm_chain_id_reported_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """chain_id_configured must be True when EVM_CHAIN_ID is set."""
+    _base_env(monkeypatch)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    out = check_provider_readiness()
+    assert out['chain_id_configured'] is True
+
+
+def test_production_build_does_not_require_live_secrets() -> None:
+    """
+    Production build config must not require staging/live secrets at build time.
+    Validates that the build script uses defaults (:-) for required env vars.
+    """
+    import re
+    from pathlib import Path
+    web_pkg = Path(__file__).resolve().parents[3] / 'apps' / 'web' / 'package.json'
+    import json
+    pkg = json.loads(web_pkg.read_text())
+    build_script = pkg.get('scripts', {}).get('build', '')
+    # Build script must supply defaults for env vars that might be missing at build time
+    assert ':-' in build_script or 'NEXT_TELEMETRY_DISABLED' in build_script, (
+        "Build script should use shell defaults (:-) so it doesn't require live secrets"
+    )
+    # Build script must not hard-require live secrets (no sk_live_, whsec_, SG. patterns)
+    assert not re.search(r'sk_live_|whsec_|SG\.[A-Za-z0-9_-]{20,}', build_script), (
+        'Build script must not embed live secret values'
+    )
+
+
+def test_dependency_audit_gate() -> None:
+    """
+    Dependency audit gate: postcss must be >=8.5.10 OR a formal risk acceptance
+    document must exist at docs/SECURITY_DEPENDENCY_RISK_ACCEPTANCE.md.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+    repo_root = Path(__file__).resolve().parents[3]
+    risk_doc = repo_root / 'docs' / 'SECURITY_DEPENDENCY_RISK_ACCEPTANCE.md'
+
+    # Try to find installed postcss version
+    postcss_pkg = repo_root / 'node_modules' / 'postcss' / 'package.json'
+    if postcss_pkg.exists():
+        import json
+        from packaging.version import Version
+        postcss_data = json.loads(postcss_pkg.read_text())
+        postcss_version = postcss_data.get('version', '0.0.0')
+        try:
+            postcss_ok = Version(postcss_version) >= Version('8.5.10')
+        except Exception:
+            postcss_ok = False
+        if postcss_ok:
+            return  # Audit gate passes
+
+    # If postcss is not at >=8.5.10, risk acceptance doc must exist
+    assert risk_doc.exists(), (
+        'postcss <8.5.10 is installed and no risk acceptance doc exists. '
+        'Either upgrade postcss to >=8.5.10 or create docs/SECURITY_DEPENDENCY_RISK_ACCEPTANCE.md'
+    )
