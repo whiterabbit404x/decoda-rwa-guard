@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T06:49:12.195017+00:00",
+  "generated_at": "2026-05-22T06:50:06.189614+00:00",
   "release_channel": "local",
-  "commit_sha": "ddc74c7bfc995633e98dcd73fae9c3456d8e5649",
+  "commit_sha": "e8ee1fff27f0184940b1d1a3e038aacbc7931061",
   "branch": "claude/quirky-goldberg-e7shP",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "b22484c9d2c92e994af147c8a629c0c5aa8e12c7b7981a7e84011d2d335d3fbe",
+      "sha256": "8a231c92024429115c45518a8715c1448c943d0049aba7586fe4e999699329cc",
       "size_bytes": 786,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "a093674dae9ea9c79ba14c7ffbcaa47eb60a2cc4fe210c5ffd0fb24ab54b36b9",
+      "sha256": "0881426aa5ad661da828a95a061c30ccd895448fa9cc53fdf3eaf6301ae3d79b",
       "size_bytes": 1979,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "ca1cdf03f6d2e73d2bcdf42a2913077510085896cd9e8326bab41a428d8b1d6c",
+      "sha256": "e2773c33df07cde778e8785ffcd11c9c868d06b67bdcc808514aa8b96d4c1320",
       "size_bytes": 819,
       "required": true,
       "status": "present"
