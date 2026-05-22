@@ -446,3 +446,17 @@ Improving the export quality to 82% improves customer trust and audit-readiness 
 - `paid_launch_ready=true` requires all four gates from Session 10 to pass
 
 Evidence export improvements are a necessary but not sufficient condition for broad paid SaaS launch.
+
+### Session 12 Follow-Up — Canonical evidence_source alias
+
+**Follow-up cleanup:** Added `evidence_source` as a canonical, customer-facing field to every proof bundle `summary.json` while preserving the legacy `evidence_source_type` field for backward compatibility.
+
+Changes made:
+- Added `normalize_evidence_source()` helper in `pilot.py` — maps raw source values to the canonical enum (`live_provider` | `simulator` | `fixture` | `unavailable` | `unknown`). Fails closed to `unknown` for unrecognized or empty values.
+- `evidence_source` now appears in `summary.json` alongside `evidence_source_type`. Old field is not removed.
+- `evidence_source_type: "live"` maps to `evidence_source: "live_provider"` — the legacy `"live"` value is preserved in the old field only.
+- `source_truthfulness_status` remains consistent with the canonical `evidence_source` value.
+- 7 new tests added to `test_evidence_export_truthfulness.py` verifying canonical field presence, correct mapping, fail-closed behavior, and enum validity.
+- `test_N_summary_contains_all_required_metadata_fields` updated to require `evidence_source` in schema 1.1.
+
+No existing Session 10/11/12 tests were weakened. All proof bundle export tests continue to pass.

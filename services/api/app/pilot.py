@@ -155,6 +155,31 @@ def canonicalize_evidence_source(value: str | None) -> str:
     if normalized in {'live', 'live_provider', 'provider', 'indexer', 'rpc', 'compliance_feed'}:
         return 'live_provider'
     return normalized or 'simulator'
+
+
+_NORMALIZE_EVIDENCE_SOURCE_MAP: dict[str, str] = {
+    'live': 'live_provider',
+    'live_provider': 'live_provider',
+    'simulator': 'simulator',
+    'simulation': 'simulator',
+    'guided_simulator': 'simulator',
+    'fixture': 'fixture',
+    'test_fixture': 'fixture',
+    'unavailable': 'unavailable',
+    'unknown': 'unknown',
+}
+
+
+def normalize_evidence_source(value: str | None) -> str:
+    """Map raw evidence_source values to the canonical customer-facing enum.
+
+    Returns one of: 'live_provider' | 'simulator' | 'fixture' | 'unavailable' | 'unknown'.
+    None, empty, or unrecognized values fail closed to 'unknown'.
+    """
+    normalized = str(value or '').strip().lower()
+    return _NORMALIZE_EVIDENCE_SOURCE_MAP.get(normalized, 'unknown')
+
+
 def detection_evidence_origin_label(source: str | None) -> str | None:
     normalized = str(source or '').strip().lower()
     if normalized == 'simulator':
@@ -13725,6 +13750,9 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             else:
                 evidence_source_type = 'missing'
 
+            # Canonical evidence_source enum — backward-compatible alias for evidence_source_type
+            evidence_source = normalize_evidence_source(evidence_source_type)
+
             # Compute missing chain sections
             missing_sections: list[str] = []
             if not alert_rows:
@@ -13804,6 +13832,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             artifact_meta = {
                 'export_status': export_status,
                 'evidence_source_type': evidence_source_type,
+                'evidence_source': evidence_source,
                 'missing_sections': missing_sections,
                 'warnings': bundle_warnings,
             }
@@ -13844,6 +13873,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 ),
                 'export_format_version': '1.0',
                 'evidence_source_type': evidence_source_type,
+                'evidence_source': evidence_source,
                 'source_truthfulness_status': source_truthfulness_status,
                 'source_truthfulness_reason': source_truthfulness_reason,
                 'missing_sections': missing_sections,
