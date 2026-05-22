@@ -878,3 +878,90 @@ staging/production mode:
   runtime_truthfulness, evidence_export_truthfulness, multi_tenant_isolation) = pass
 
 See `docs/STAGING_GO_LIVE_VALIDATION.md` for the complete go-live checklist.
+
+---
+
+## Live Evidence Chain Validation
+
+`check_live_evidence_chain()` in `services/api/app/paid_launch_readiness.py` validates the complete
+Detect → Respond chain with real operational evidence, not simulation.
+
+### Required chain fields
+
+| Field | Type | Description |
+|---|---|---|
+| `evidence_source` | str | Must be `live` or `live_provider`. |
+| `last_telemetry_at` | str (ISO8601) | Must be present. Heartbeat or poll alone are not sufficient. |
+| `detections_count` | int | Must be ≥1. |
+| `detection_telemetry_linked` | bool | Detection must link to telemetry by ID/lineage. |
+| `alerts_count` | int | Must be ≥1. |
+| `alert_detection_linked` | bool | Alert must link to detection by ID/lineage. |
+| `incidents_count` or `response_actions_count` | int | At least one must be ≥1. |
+| `incident_alert_linked` | bool | Incident/response-action must link to alert. |
+| `export_capability` | str | Must be `pass`/`available`/`ready`. |
+| `export_source_label` | str | Must be `live` or empty. |
+| `contradiction_flags` | list | Must be empty or free of live-evidence contradiction codes. |
+
+### Why heartbeat/poll are not telemetry
+
+- **Heartbeat** proves the monitoring worker process is alive.
+- **Poll** proves the monitoring loop ran (iterated).
+- **Telemetry** proves monitored chain data actually arrived in the system.
+
+All three are separate signals. A healthy heartbeat + poll with no telemetry means the monitoring
+worker is running but no data has been ingested. `live_evidence_chain_ready` remains `false`
+until `last_telemetry_at` is populated.
+
+### Contradiction guards
+
+The following states **always fail** `live_evidence_chain_ready`:
+
+- `evidence_source = simulator / demo / guided_simulator / fixture`
+- `evidence_source = unknown`
+- `last_telemetry_at` absent (heartbeat-only or poll-only)
+- Detection/alert/incident not linked by evidence lineage
+- Contradiction flags containing `live_mode_with_simulator*`, `missing_telemetry`, etc.
+- Export labeled as anything other than `live`
+
+### Running chain validation tests
+
+```bash
+pytest services/api/tests/test_paid_launch_readiness.py -k chain -v
+```
+
+### Provider mode
+
+`check_provider_readiness()` now returns an explicit `provider_mode`:
+
+| Mode | Meaning |
+|---|---|
+| `live` | EVM_RPC_URL is configured and non-placeholder |
+| `disabled` | EVM_RPC_URL is absent |
+| `unknown` | EVM_RPC_URL is a placeholder value |
+| `simulator` | Not from this function; set externally |
+
+`EVM_CHAIN_ID` is optional but recommended for explicit chain identification.
+Its presence is reported in `chain_id_configured`.
+
+---
+
+## Dependency Security (npm audit)
+
+The `postcss` vulnerability (GHSA-qx2v-qp2m-jg93, moderate) is resolved by:
+
+- Root-level `devDependencies`: `"postcss": ">=8.5.10"`
+- Root-level `overrides`: `"postcss": ">=8.5.10"` and `"next": { "postcss": ">=8.5.10" }`
+- Workspace `apps/web` also pins `"postcss": "^8.5.15"` as a devDependency
+
+After any `npm install`, verify with `npm audit` → `found 0 vulnerabilities`.
+
+The test `test_dependency_audit_gate` in `test_paid_launch_readiness.py` programmatically
+verifies postcss ≥8.5.10 is installed.
+
+### Commands to verify
+
+```bash
+npm audit
+node -e "console.log(require('./node_modules/postcss/package.json').version)"
+# Expected: 8.5.10 or higher
+```

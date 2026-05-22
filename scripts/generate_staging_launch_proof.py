@@ -666,6 +666,22 @@ def generate_staging_proof(
             'run with --mode staging --strict using real credentials'
         )
 
+    # Derive separated proof flags for consumers (Task B requirement)
+    sv = staging_validation
+    local_validation_ready = mode in ('local', 'ci') and not sv.get('blockers')
+    staging_env_configured = (
+        sv.get('staging_api_url_present', False)
+        and sv.get('staging_app_url_present', False)
+        and sv.get('staging_database_present', False)
+        and sv.get('staging_auth_secret_present', False)
+    )
+    staging_worker_enabled = sv.get('staging_worker_present', False)
+    staging_database_reachable = sv.get('staging_database_present', False)
+    staging_auth_configured = sv.get('staging_auth_secret_present', False)
+    # runtime_reachable is only provable by an actual health-check; use proof-file flag
+    staging_runtime_reachable = sv.get('staging_runtime_validated', False)
+    staging_live_evidence_ready = live_provider_validation.get('live_evidence_ready', False)
+
     summary: dict[str, Any] = {
         'schema_version': 1,
         'generated_at': now,
@@ -675,6 +691,15 @@ def generate_staging_proof(
         'staging_launch_ready': staging_launch_ready,
         'broad_paid_saas_ready': broad_paid_saas_ready,
         'safe_to_sell_broadly_today': safe_to_sell_broadly_today,
+        # Separated proof flags (fail-closed; false in local/ci mode)
+        'local_validation_ready': local_validation_ready,
+        'staging_env_configured': staging_env_configured,
+        'staging_runtime_reachable': staging_runtime_reachable,
+        'staging_worker_enabled': staging_worker_enabled,
+        'staging_database_reachable': staging_database_reachable,
+        'staging_auth_configured': staging_auth_configured,
+        'staging_live_evidence_ready': staging_live_evidence_ready,
+        # Detailed sub-validations
         'staging_launch_validation': staging_validation,
         'live_provider_validation': live_provider_validation,
         'billing_production_validation': billing_validation,
