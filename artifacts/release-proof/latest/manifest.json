@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T09:00:22.118279+00:00",
+  "generated_at": "2026-05-22T09:30:58.789711+00:00",
   "release_channel": "local",
-  "commit_sha": "869b20b5c7cac2661e2ab5305d02b9f1b9f8ebd8",
-  "branch": "claude/nifty-hamilton-uDfeC",
+  "commit_sha": "c776df0536f082964f63eeaa220bba87c0be455b",
+  "branch": "claude/eloquent-hypatia-2Te4t",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "27ee9ff4afef58db88c89861b3958229aa49e4e3b573f911b5b35d1755cce8f3",
-      "size_bytes": 785,
+      "sha256": "f905d0923827c6f5a79c41928e43568c8abeb97a97d7c11f3735df528aef385a",
+      "size_bytes": 787,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "42323854dce3eff1a3b80488c486be05595698d0f9f25e770e8ccc6b587e38b4",
-      "size_bytes": 1978,
+      "sha256": "462445bd9760862aedaad4023b596f02a185e14a1a44bc8fdfccf32eb88958f6",
+      "size_bytes": 1980,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "e5c1e905bb36903bc5005993497b839ad19622a5ab87ccf70518cff89f16aafb",
+      "sha256": "235028578fb3bcb72aa6f24e3f8ea7f500e0558b54a63786ac79323f8c445459",
       "size_bytes": 819,
       "required": true,
       "status": "present"

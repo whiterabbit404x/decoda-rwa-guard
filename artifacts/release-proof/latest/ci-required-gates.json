@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T09:00:22.103800+00:00",
-  "commit_sha": "869b20b5c7cac2661e2ab5305d02b9f1b9f8ebd8",
-  "branch": "claude/nifty-hamilton-uDfeC",
+  "generated_at": "2026-05-22T09:30:58.773507+00:00",
+  "commit_sha": "c776df0536f082964f63eeaa220bba87c0be455b",
+  "branch": "claude/eloquent-hypatia-2Te4t",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,

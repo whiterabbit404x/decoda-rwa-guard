@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness test-release-proof-artifacts generate-release-proof validate-release-proof
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness test-release-proof-artifacts generate-release-proof validate-release-proof validate-100-percent-readiness
 
 up:
 	docker compose up -d
@@ -137,3 +137,17 @@ generate-release-proof:
 
 validate-release-proof:
 	python scripts/validate_release_proof.py
+
+validate-100-percent-readiness:
+	python -m pytest services/api/tests/test_paid_launch_readiness.py -q
+	python -m pytest services/api/tests/test_release_proof_artifacts.py -q
+	python -m pytest services/api/tests/test_evidence_export_truthfulness.py -q
+	python -m pytest services/api/tests/test_runtime_truthfulness.py -q
+	python -m pytest services/api/tests/test_saas_workflow_validation.py -q
+	python -m pytest services/api/tests/test_workspace_readiness_gate_aggregation.py -q
+	python -m pytest services/api/tests/test_admin_readiness.py -q
+	python -m pytest services/api/tests/test_proof_bundle_export.py -q
+	python -m pytest services/api/tests/test_100_percent_readiness.py -q
+	python scripts/generate_release_proof.py --mode local
+	python scripts/validate_release_proof.py
+	python scripts/validate_100_percent_readiness.py --mode local
