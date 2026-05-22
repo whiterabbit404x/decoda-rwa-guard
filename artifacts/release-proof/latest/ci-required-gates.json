@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T15:07:26.265937+00:00",
-  "commit_sha": "7685db83fda11d390b5f26028b583948096eafea",
-  "branch": "claude/sleepy-mccarthy-46lEv",
+  "generated_at": "2026-05-22T15:26:58.016417+00:00",
+  "commit_sha": "e311dbb30a4e2d1a30ff45411bef79231a49b62b",
+  "branch": "claude/admiring-bardeen-ZXzBh",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
@@ -34,11 +34,9 @@
       ]
     },
     "live_evidence": {
-      "status": "fail",
-      "summary": "Live evidence not available: live evidence summary not found",
-      "blockers": [
-        "live evidence summary not found"
-      ]
+      "status": "pass",
+      "summary": "Live evidence available",
+      "blockers": []
     },
     "frontend_build": {
       "status": "not_run",
@@ -50,7 +48,6 @@
     "billing provider is not configured",
     "billing webhook secret is missing",
     "email provider is not configured",
-    "live evidence summary not found",
     "live provider configuration is missing",
     "live provider proof is missing"
   ],

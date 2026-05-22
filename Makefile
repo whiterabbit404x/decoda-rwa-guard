@@ -84,7 +84,7 @@ test-paid-launch-readiness:
 generate-live-evidence-proof:
 	python scripts/generate_live_evidence_proof.py
 
-generate-staging-proof:
+generate-staging-proof: generate-live-evidence-proof
 	python scripts/generate_staging_launch_proof.py --mode local
 
 validate-staging-proof:

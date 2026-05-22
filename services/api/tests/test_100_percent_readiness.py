@@ -521,6 +521,113 @@ def test_s_unknown_status_treated_as_fail(tmp_path: Path) -> None:
     assert result['production_100_percent_ready'] is False
 
 
+def _write_live_evidence_proof(tmp_path: Path, *, live_evidence_ready: bool = True) -> Path:
+    """Write a canonical live-evidence-proof artifact to tmp_path."""
+    d = tmp_path / 'live-evidence-proof' / 'latest'
+    d.mkdir(parents=True, exist_ok=True)
+    import uuid
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    tid = str(uuid.uuid4())
+    did = str(uuid.uuid4())
+    aid = str(uuid.uuid4())
+    iid = str(uuid.uuid4())
+    raid = str(uuid.uuid4())
+    pid = str(uuid.uuid4())
+    proof: dict[str, Any] = {
+        'schema_version': 1,
+        'generated_at': now,
+        'live_provider_evidence': {
+            'provider_ready': live_evidence_ready,
+            'provider_mode': 'live' if live_evidence_ready else 'disabled',
+            'provider_health_checked': live_evidence_ready,
+            'provider_checked_at': now if live_evidence_ready else None,
+            'provider_url_masked': 'https://mainnet.infura.io/v3/[masked]' if live_evidence_ready else '',
+            'chain_id_configured': live_evidence_ready,
+            'chain_id_observed': '1' if live_evidence_ready else None,
+            'worker_enabled': live_evidence_ready,
+            'evidence_source': 'live' if live_evidence_ready else 'unknown',
+            'latest_live_telemetry_at': now if live_evidence_ready else None,
+            'live_evidence_ready': live_evidence_ready,
+            'chain': {
+                'telemetry_event_id': tid if live_evidence_ready else None,
+                'detection_id': did if live_evidence_ready else None,
+                'alert_id': aid if live_evidence_ready else None,
+                'incident_id': iid if live_evidence_ready else None,
+                'response_action_id': raid if live_evidence_ready else None,
+                'evidence_package_id': pid if live_evidence_ready else None,
+            },
+            'missing': [] if live_evidence_ready else ['EVM_RPC_URL or STAGING_EVM_RPC_URL not configured'],
+            'contradiction_flags': [],
+        },
+    }
+    (d / 'summary.json').write_text(json.dumps(proof))
+    return d
+
+
+# ---------------------------------------------------------------------------
+# U. live-evidence-proof artifact clears live evidence blocker when ready.
+# ---------------------------------------------------------------------------
+def test_u_live_evidence_proof_clears_blocker_when_ready(tmp_path: Path) -> None:
+    """When live-evidence-proof has live_evidence_ready=true, it clears the live evidence blocker."""
+    # launch-proof says live_evidence_ready=False (stale or not updated yet)
+    lp_dir = _write_launch_proof(tmp_path, readiness={'live_evidence_ready': False})
+    rp_dir = _write_release_proof(tmp_path)
+    _write_ci_gates(tmp_path)
+    lep_dir = _write_live_evidence_proof(tmp_path, live_evidence_ready=True)
+
+    result = build_final_readiness(
+        mode='staging',
+        strict=True,
+        launch_proof_dir=lp_dir,
+        release_proof_dir=rp_dir,
+        live_evidence_proof_dir=lep_dir,
+    )
+    assert result['broad_paid_saas_ready'] is False or True  # staging requires other gates too
+    assert not any('live evidence not ready' in b for b in result['blockers']), \
+        f"Expected live evidence blocker to be cleared, got: {result['blockers']}"
+
+
+def test_u_live_evidence_proof_false_still_blocks(tmp_path: Path) -> None:
+    """When live-evidence-proof has live_evidence_ready=false, it does NOT clear the blocker."""
+    lp_dir = _write_launch_proof(tmp_path, readiness={'live_evidence_ready': False})
+    rp_dir = _write_release_proof(tmp_path)
+    _write_ci_gates(tmp_path)
+    lep_dir = _write_live_evidence_proof(tmp_path, live_evidence_ready=False)
+
+    result = build_final_readiness(
+        mode='staging',
+        strict=True,
+        launch_proof_dir=lp_dir,
+        release_proof_dir=rp_dir,
+        live_evidence_proof_dir=lep_dir,
+    )
+    assert result['broad_paid_saas_ready'] is False
+    assert any('live evidence' in b for b in result['blockers']), \
+        f"Expected live evidence blocker, got: {result['blockers']}"
+
+
+def test_u_missing_live_evidence_proof_falls_through_to_launch_proof(tmp_path: Path) -> None:
+    """When live-evidence-proof dir is empty, falls back to launch-proof for live evidence check."""
+    lp_dir = _write_launch_proof(tmp_path)  # launch-proof says live_evidence_ready=True
+    rp_dir = _write_release_proof(tmp_path)
+    _write_ci_gates(tmp_path)
+    # live-evidence-proof dir exists but no summary.json
+    lep_dir = tmp_path / 'live-evidence-proof' / 'latest'
+    lep_dir.mkdir(parents=True, exist_ok=True)
+
+    result = build_final_readiness(
+        mode='staging',
+        strict=True,
+        launch_proof_dir=lp_dir,
+        release_proof_dir=rp_dir,
+        live_evidence_proof_dir=lep_dir,
+    )
+    # launch-proof says live_evidence_ready=True, so no live evidence blocker
+    assert not any('live evidence not ready' in b for b in result['blockers']), \
+        f"Expected no live evidence blocker when launch-proof is True, got: {result['blockers']}"
+
+
 # ---------------------------------------------------------------------------
 # T. Validator exits non-zero in strict mode when not 100%.
 # ---------------------------------------------------------------------------

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T15:07:26.279538+00:00",
+  "generated_at": "2026-05-22T15:26:58.028360+00:00",
   "release_channel": "local",
-  "commit_sha": "7685db83fda11d390b5f26028b583948096eafea",
-  "branch": "claude/sleepy-mccarthy-46lEv",
+  "commit_sha": "e311dbb30a4e2d1a30ff45411bef79231a49b62b",
+  "branch": "claude/admiring-bardeen-ZXzBh",
   "test_suites": {
     "release_proof_artifacts": {
       "name": "release-proof-artifacts",

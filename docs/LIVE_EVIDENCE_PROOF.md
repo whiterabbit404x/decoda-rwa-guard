@@ -110,6 +110,30 @@ provider (EVM_RPC_URL or STAGING_EVM_RPC_URL)
 
 5. Verify provider health returns a current block number.
 
+## Proof artifact flow
+
+```
+STAGING_EVM_RPC_URL / EVM_RPC_URL
+         │
+         ▼
+make generate-live-evidence-proof
+   → scripts/generate_live_evidence_proof.py
+   → artifacts/live-evidence-proof/latest/summary.json
+         │
+         ├──► make generate-staging-proof   (reads live-evidence-proof)
+         │    → artifacts/staging-proof/latest/summary.json
+         │
+         ├──► make generate-release-proof   (reads live-evidence-proof)
+         │    → artifacts/launch-proof/latest/summary.json
+         │         (readiness.live_evidence_ready = true when proof is live)
+         │
+         └──► python scripts/validate_100_percent_readiness.py
+              (reads live-evidence-proof directly when --mode staging|production)
+```
+
+`make generate-staging-proof` automatically runs `make generate-live-evidence-proof` first,
+ensuring the live-evidence-proof artifact is up to date before the staging proof reads it.
+
 ## Running proof commands
 
 ```bash
@@ -119,13 +143,21 @@ provider (EVM_RPC_URL or STAGING_EVM_RPC_URL)
 make generate-live-evidence-proof
 # or: python scripts/generate_live_evidence_proof.py [--strict]
 
-# Generate staging launch proof (reads live-evidence-proof when live_evidence_ready=true)
+# Generate staging launch proof — automatically runs generate-live-evidence-proof first
+# (reads live-evidence-proof artifact; in local mode always fail-closed)
+make generate-staging-proof
+
+# For full staging validation with real credentials:
 python scripts/generate_staging_launch_proof.py --mode staging --strict
 
 # Validate staging launch proof artifact
-python scripts/validate_staging_launch_proof.py
+make validate-staging-proof
+# or: python scripts/validate_staging_launch_proof.py
 
 # Run 100% readiness validation
+# local mode: checks live-evidence-proof; live evidence blocker cleared when live_evidence_ready=true
+python scripts/validate_100_percent_readiness.py --mode local
+# staging mode with real credentials:
 python scripts/validate_100_percent_readiness.py --mode staging --strict
 
 # Run targeted tests
