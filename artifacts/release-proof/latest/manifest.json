@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T09:30:58.789711+00:00",
+  "generated_at": "2026-05-22T10:05:31.671708+00:00",
   "release_channel": "local",
-  "commit_sha": "c776df0536f082964f63eeaa220bba87c0be455b",
-  "branch": "claude/eloquent-hypatia-2Te4t",
+  "commit_sha": "37eb741b1ee8439505a29c04257ac2c6c3ff6c09",
+  "branch": "claude/dreamy-cerf-bDirw",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "f905d0923827c6f5a79c41928e43568c8abeb97a97d7c11f3735df528aef385a",
-      "size_bytes": 787,
+      "sha256": "f89cc542528c02f3645cf8f80468deec1aed54a0a3fba479b2def422afeacccc",
+      "size_bytes": 782,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "462445bd9760862aedaad4023b596f02a185e14a1a44bc8fdfccf32eb88958f6",
-      "size_bytes": 1980,
+      "sha256": "086a03fd70a992722d676de9f5dabaf711e41a6550666b06aa11c163a397e4c6",
+      "size_bytes": 1975,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "235028578fb3bcb72aa6f24e3f8ea7f500e0558b54a63786ac79323f8c445459",
+      "sha256": "a1be5e3e2c34cccda90a2360e2f59e359c5aff41175147db4990e946dcf7ef92",
       "size_bytes": 819,
       "required": true,
       "status": "present"
