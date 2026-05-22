@@ -13379,6 +13379,107 @@ def _export_guided_workflow_live_evidence_artifacts(*, workspace_id: str, chain_
         if not path.exists() or path.stat().st_size <= 0:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f'guided workflow artifact {artifact_name} is missing or empty')
 
+_SECRET_FIELD_PATTERNS = re.compile(
+    r'(api[_-]?key|secret[_-]?key|webhook[_-]?secret|auth[_-]?token|bearer|private[_-]?key|'
+    r'smtp[_-]?password|database[_-]?url|authorization)',
+    re.IGNORECASE,
+)
+
+
+def _redact_secret_fields(obj: Any) -> tuple[Any, bool]:
+    """Recursively redact secret-like keys from dicts. Returns (cleaned_obj, redacted_flag)."""
+    if isinstance(obj, dict):
+        redacted = False
+        out: dict[str, Any] = {}
+        for k, v in obj.items():
+            if _SECRET_FIELD_PATTERNS.search(str(k)):
+                out[k] = '[REDACTED]'
+                redacted = True
+            else:
+                cleaned, sub_redacted = _redact_secret_fields(v)
+                out[k] = cleaned
+                redacted = redacted or sub_redacted
+        return out, redacted
+    if isinstance(obj, list):
+        results = [_redact_secret_fields(item) for item in obj]
+        cleaned_list = [r[0] for r in results]
+        any_redacted = any(r[1] for r in results)
+        return cleaned_list, any_redacted
+    return obj, False
+
+
+def _build_customer_export_summary(
+    *,
+    export_status: str,
+    evidence_source_type: str,
+    missing_sections: list[str],
+    alert_count: int,
+    detection_count: int,
+    action_count: int,
+    metric_count: int,
+) -> dict[str, Any]:
+    """Build a customer-facing, non-overclaiming summary for the evidence package."""
+    limitations: list[str] = []
+
+    if evidence_source_type == 'simulator':
+        source_note = 'This package uses simulator evidence and is not live-provider proof.'
+        limitations.append('Evidence originates from a simulator environment, not live production data.')
+        limitations.append('This package cannot be used as live-provider audit evidence.')
+    elif evidence_source_type == 'unavailable':
+        source_note = 'Evidence source was unavailable at collection time. Package may contain fallback data.'
+        limitations.append('Live provider evidence is missing from this package.')
+    elif evidence_source_type == 'missing':
+        source_note = 'No evidence source records were found for this package.'
+        limitations.append('Live provider evidence is missing from this package.')
+        limitations.append('No alerts, detections, or telemetry could be retrieved.')
+    elif evidence_source_type == 'unknown':
+        source_note = 'Evidence source is unrecognized. Do not treat this package as live-provider proof.'
+        limitations.append('Evidence source type is unknown and cannot be verified as live.')
+    else:
+        source_note = 'This package contains live-provider evidence.'
+
+    if missing_sections:
+        for section in missing_sections:
+            limitations.append(f'Section unavailable: {section}.')
+
+    if export_status == 'complete' and evidence_source_type == 'live':
+        headline = 'Complete evidence package generated'
+        what_happened = (
+            f'An evidence package was generated with {alert_count} alert(s), '
+            f'{detection_count} detection(s), {metric_count} telemetry record(s), '
+            f'and {action_count} response action(s).'
+        )
+        why_it_matters = 'This package provides the full evidence chain for audit review.'
+    elif export_status == 'complete':
+        headline = 'Evidence package generated (non-live source)'
+        what_happened = (
+            f'An evidence package was generated with {alert_count} alert(s), '
+            f'{detection_count} detection(s), {metric_count} telemetry record(s), '
+            f'and {action_count} response action(s).'
+        )
+        why_it_matters = 'This package documents the incident evidence chain. Source is not live provider data.'
+    elif export_status == 'partial':
+        headline = 'Partial evidence package generated'
+        what_happened = (
+            f'An incomplete evidence package was generated. '
+            f'Available: {alert_count} alert(s), {detection_count} detection(s), '
+            f'{metric_count} telemetry record(s), {action_count} response action(s).'
+        )
+        why_it_matters = 'This package captures available evidence but some chain sections are missing.'
+    else:
+        headline = 'Evidence package is incomplete — insufficient evidence'
+        what_happened = 'No usable evidence chain sections were found for this incident.'
+        why_it_matters = 'Review monitoring configuration and ensure alerts and detections are properly linked.'
+
+    return {
+        'headline': headline,
+        'what_happened': what_happened,
+        'why_it_matters': why_it_matters,
+        'source_note': source_note,
+        'limitations': limitations,
+    }
+
+
 def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: str) -> dict[str, Any]:
     job = connection.execute('SELECT id, export_type, format, filters FROM export_jobs WHERE id = %s AND workspace_id = %s', (export_id, workspace_id)).fetchone()
     if job is None:
@@ -13641,6 +13742,28 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             core_present = bool(alert_rows and detection_rows and action_rows and evidence_rows)
             export_status = 'complete' if core_present else ('partial' if (alert_rows or detection_rows or action_rows) else 'incomplete')
 
+            # Determine source truthfulness status
+            source_truthfulness_status = 'verified_live' if evidence_source_type == 'live' else (
+                'verified_simulator' if evidence_source_type == 'simulator' else (
+                    'unavailable' if evidence_source_type == 'unavailable' else (
+                        'fixture_only' if evidence_source_type == 'fixture' else 'unknown'
+                    )
+                )
+            )
+
+            # Build source truthfulness reason
+            source_truthfulness_reason = ''
+            if evidence_source_type == 'live':
+                source_truthfulness_reason = 'Evidence sourced from live provider API responses.'
+            elif evidence_source_type == 'simulator':
+                source_truthfulness_reason = 'Evidence sourced from simulator/demo environment, not production.'
+            elif evidence_source_type == 'unavailable':
+                source_truthfulness_reason = 'Evidence source was unreachable; fallback data may be present.'
+            elif evidence_source_type == 'missing':
+                source_truthfulness_reason = 'No evidence source found in records.'
+            else:
+                source_truthfulness_reason = 'Evidence source type is unknown.'
+
             # Build warnings
             bundle_warnings: list[str] = []
             if evidence_source_type == 'simulator':
@@ -13652,6 +13775,32 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
             if missing_sections:
                 bundle_warnings.append(f'Missing chain sections: {", ".join(missing_sections)}. Bundle is partial.')
 
+            incident_dict = _json_safe_value(dict(incident))
+
+            # Track section availability
+            available_sections: list[str] = []
+            section_statuses: list[dict[str, Any]] = []
+
+            def _add_section_status(name: str, sec_status: str, reason: str = '') -> None:
+                section_statuses.append({
+                    'section_name': name,
+                    'status': sec_status,
+                    'reason': reason,
+                })
+                if sec_status == 'available':
+                    available_sections.append(name)
+
+            _add_section_status('telemetry', 'available' if evidence_rows else 'unavailable', 'Missing detection metrics' if not evidence_rows else '')
+            _add_section_status('detection', 'available' if detection_rows else 'unavailable', 'No detections found for incident' if not detection_rows else '')
+            _add_section_status('alert', 'available' if alert_rows else 'unavailable', 'No alerts found for incident' if not alert_rows else '')
+            _add_section_status('incident', 'available', '')
+            _add_section_status('response_action', 'available' if action_rows else 'unavailable', 'No response actions recorded yet' if not action_rows else '')
+            _add_section_status('asset_context', 'available' if incident_dict.get('asset_id') else 'unavailable', 'No asset linked to incident' if not incident_dict.get('asset_id') else '')
+            _add_section_status('target_context', 'available' if (alert_rows and alert_rows[0].get('target_id')) else 'unavailable', 'No target found in alerts' if not (alert_rows and alert_rows[0].get('target_id')) else '')
+            _add_section_status('provider_context', 'available' if evidence_source_type in {'live', 'simulator'} else 'unavailable', 'Provider context unknown' if evidence_source_type not in {'live', 'simulator'} else '')
+            _add_section_status('export_metadata', 'available', '')
+            _add_section_status('audit_log', 'available' if audit_log_rows else 'unavailable', 'No audit entries recorded' if not audit_log_rows else '')
+
             artifact_meta = {
                 'export_status': export_status,
                 'evidence_source_type': evidence_source_type,
@@ -13659,29 +13808,54 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 'warnings': bundle_warnings,
             }
 
-            incident_dict = _json_safe_value(dict(incident))
+            # Build customer-facing summary
+            customer_summary = _build_customer_export_summary(
+                export_status=export_status,
+                evidence_source_type=evidence_source_type,
+                missing_sections=missing_sections,
+                alert_count=len(alert_rows),
+                detection_count=len(detection_rows),
+                action_count=len(action_rows),
+                metric_count=len(evidence_rows),
+            )
+
             summary = {
+                'schema_version': '1.1',
+                'export_id': export_id,
                 'generated_at': utc_now_iso(),
+                'generated_by': 'Decoda RWA Guard',
                 'workspace_id': workspace_id,
                 'incident_id': incident_id,
                 'alert_id': alert_rows[0].get('id') if alert_rows else None,
                 'detection_id': detection_rows[0].get('id') if detection_rows else None,
                 'response_action_id': action_rows[0].get('id') if action_rows else None,
                 'asset_id': incident_dict.get('asset_id') or (alert_rows[0].get('target_id') if alert_rows else None),
+                'target_id': alert_rows[0].get('target_id') if alert_rows else None,
                 'include_raw_events': include_raw_events,
                 'detection_metric_count': len(evidence_rows),
                 'alert_count': len(alert_rows),
                 'detection_count': len(detection_rows),
                 'response_action_count': len(action_rows),
                 'export_status': export_status,
+                'package_status': (
+                    'complete' if (export_status == 'complete' and evidence_source_type not in {'missing', 'unknown'})
+                    else 'partial' if export_status == 'partial'
+                    else 'blocked'
+                ),
                 'export_format_version': '1.0',
                 'evidence_source_type': evidence_source_type,
+                'source_truthfulness_status': source_truthfulness_status,
+                'source_truthfulness_reason': source_truthfulness_reason,
                 'missing_sections': missing_sections,
-                'unavailable_sections': [],
+                'unavailable_sections': [sec['section_name'] for sec in section_statuses if sec['status'] == 'unavailable'],
+                'available_sections': available_sections,
+                'section_statuses': section_statuses,
                 'warnings': bundle_warnings,
+                'redactions_applied': False,
                 'chain_complete': export_status == 'complete',
+                'customer_summary': customer_summary,
             }
-            rows = [{
+            _bundle_data: dict[str, Any] = {
                 'summary.json': summary,
                 'alerts.json': alert_rows,
                 'incidents.json': [incident_dict],
@@ -13693,7 +13867,11 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                     {'id': item.get('id'), 'event_observed_at': item.get('event_observed_at'), 'detected_at': item.get('detected_at'), 'mttd_seconds': item.get('mttd_seconds'), 'evidence': item.get('evidence')}
                     for item in evidence_rows
                 ],
-            }]
+            }
+            _redacted_bundle, _any_redacted = _redact_secret_fields(_bundle_data)
+            if _any_redacted:
+                _redacted_bundle['summary.json']['redactions_applied'] = True
+            rows = [_redacted_bundle]
         case 'incident_report':
             incident_id = str(filters.get('incident_id') or '').strip()
             if not incident_id:

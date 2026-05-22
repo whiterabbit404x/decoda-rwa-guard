@@ -344,3 +344,105 @@ The CI/release evidence category (100%) is independent of broad paid SaaS readin
 - **All paid launch gates** passing
 
 These are separately validated via `build_paid_launch_readiness()` and are intentionally not part of the CI/release evidence category.
+
+---
+
+## Session 12 — Customer-Facing Evidence Export Quality
+
+### What improved (Evidence/export: 70% → target 82%)
+
+Evidence/export scoring was 70% because:
+- Proof bundles lacked schema versioning and canonical metadata
+- `unavailable_sections` was always an empty list
+- Section availability was not tracked per-section with statuses
+- No customer-facing summary existed
+- Redaction was not systematically applied to secret-like fields
+- `package_status` (customer-facing) did not exist (only internal `export_status`)
+- `source_truthfulness_status` and `source_truthfulness_reason` were absent
+
+Session 12 adds:
+
+| Improvement | Impact |
+|-------------|--------|
+| `schema_version: "1.1"` in summary.json | Versioned, auditable format |
+| `export_id`, `generated_by`, `target_id` fields | Complete provenance |
+| `package_status` (`complete`/`partial`/`blocked`) | Customer-facing completion signal |
+| `source_truthfulness_status` + `source_truthfulness_reason` | Clear truthfulness chain |
+| `section_statuses` with per-section `available`/`unavailable` | Granular section visibility |
+| `available_sections` + `unavailable_sections` lists | Audit-friendly section inventory |
+| `provider_context` section tracked | Provider availability visible |
+| `_build_customer_export_summary()` with headline/source_note/limitations | Customer-facing non-overclaiming summary |
+| `_redact_secret_fields()` applied to all bundle data | Secret leak prevention |
+| `redactions_applied` flag in summary | Redaction transparency |
+| 19 new tests in `test_evidence_export_truthfulness.py` | All required behaviors verified |
+
+### Commands to run
+
+```bash
+cd /home/user/decoda-rwa-guard
+
+# Session 12 tests
+uv run pytest services/api/tests/test_evidence_export_truthfulness.py -q
+
+# Full evidence/export test suite
+uv run pytest \
+  services/api/tests/test_evidence_export_truthfulness.py \
+  services/api/tests/test_proof_bundle_export.py \
+  services/api/tests/test_assets_and_exports_foundations.py \
+  -q
+
+# Confirm Sessions 10 and 11 still pass
+uv run pytest services/api/tests/test_paid_launch_readiness.py -q
+uv run pytest services/api/tests/test_release_proof_artifacts.py -q
+```
+
+### How to inspect exported packages
+
+A proof bundle `summary.json` now looks like:
+
+```json
+{
+  "schema_version": "1.1",
+  "export_id": "exp-abc123",
+  "generated_at": "2026-05-22T10:00:00Z",
+  "generated_by": "Decoda RWA Guard",
+  "workspace_id": "ws-live",
+  "incident_id": "inc-live",
+  "package_status": "complete",
+  "evidence_source_type": "live",
+  "source_truthfulness_status": "verified_live",
+  "source_truthfulness_reason": "Evidence sourced from live provider API responses.",
+  "available_sections": ["telemetry", "detection", "alert", "incident", "response_action", ...],
+  "unavailable_sections": [],
+  "section_statuses": [
+    {"section_name": "telemetry", "status": "available", "reason": ""},
+    ...
+  ],
+  "redactions_applied": false,
+  "customer_summary": {
+    "headline": "Complete evidence package generated",
+    "source_note": "This package contains live-provider evidence.",
+    "limitations": []
+  }
+}
+```
+
+Key checks when inspecting an exported package:
+1. `package_status` — `blocked` means no usable evidence
+2. `evidence_source_type` — `simulator` means it is NOT live-provider proof
+3. `unavailable_sections` — any missing chain steps are listed here
+4. `redactions_applied` — if true, some fields were sanitized
+5. `customer_summary.source_note` — plain-language summary of evidence source
+
+### Important warning
+
+> **Polished evidence export format does NOT equal broad paid SaaS readiness.**
+
+Improving the export quality to 82% improves customer trust and audit-readiness for controlled pilot customers. It does NOT satisfy the remaining broad paid SaaS launch gates:
+
+- Billing provider still requires configuration (`STRIPE_SECRET_KEY` / Paddle equivalent)
+- Email provider still requires configuration
+- Live provider (`EVM_RPC_URL`) must be non-placeholder
+- `paid_launch_ready=true` requires all four gates from Session 10 to pass
+
+Evidence export improvements are a necessary but not sufficient condition for broad paid SaaS launch.
