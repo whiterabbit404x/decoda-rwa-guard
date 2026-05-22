@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T12:57:13.421726+00:00",
+  "generated_at": "2026-05-22T15:07:26.957161+00:00",
   "mode": "local",
   "strict": false,
   "release_channel": "local",
@@ -25,7 +25,7 @@
     "staging_migrations_validated": false,
     "staging_runtime_validated": false,
     "staging_live_evidence_validated": false,
-    "generated_at": "2026-05-22T12:57:13.421748+00:00",
+    "generated_at": "2026-05-22T15:07:26.957187+00:00",
     "blockers": [
       "STAGING_API_URL not configured",
       "STAGING_APP_URL not configured",
@@ -44,9 +44,11 @@
     "status": "fail",
     "evm_rpc_configured": false,
     "chain_id_configured": false,
+    "chain_id_observed": null,
     "provider_health_checked": false,
     "provider_ready": false,
     "provider_mode": "disabled",
+    "worker_enabled": false,
     "latest_live_telemetry_at": null,
     "live_evidence_ready": false,
     "evidence_source": "unknown",
@@ -55,6 +57,7 @@
       "detection_id": null,
       "alert_id": null,
       "incident_id": null,
+      "response_action_id": null,
       "evidence_package_id": null
     },
     "missing": [
@@ -69,7 +72,7 @@
       "missing live telemetry; live evidence readiness not confirmed"
     ],
     "warnings": [
-      "CHAIN_ID (or EVM_CHAIN_ID) not configured"
+      "EVM_CHAIN_ID (or STAGING_EVM_CHAIN_ID) not configured"
     ]
   },
   "billing_production_validation": {
@@ -124,7 +127,7 @@
     "required dependency failed: release_proof"
   ],
   "warnings": [
-    "CHAIN_ID (or EVM_CHAIN_ID) not configured",
+    "EVM_CHAIN_ID (or STAGING_EVM_CHAIN_ID) not configured",
     "STAGING_EVM_RPC_URL not set; staging EVM provider not confirmed",
     "staging live evidence not validated (proof file artifacts/staging-proof/latest/live_evidence_validated missing)",
     "staging migrations not validated (proof file artifacts/staging-proof/latest/migrations_validated missing)",

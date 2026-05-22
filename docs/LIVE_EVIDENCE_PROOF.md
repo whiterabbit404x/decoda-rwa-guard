@@ -113,7 +113,13 @@ provider (EVM_RPC_URL or STAGING_EVM_RPC_URL)
 ## Running proof commands
 
 ```bash
-# Generate staging launch proof (requires staging env vars)
+# Generate live provider evidence proof (performs real eth_chainId / eth_blockNumber calls)
+# Without env vars: writes fail-closed proof (provider_ready=false, live_evidence_ready=false)
+# With real env vars: writes full live chain proof (provider_ready=true, live_evidence_ready=true)
+make generate-live-evidence-proof
+# or: python scripts/generate_live_evidence_proof.py [--strict]
+
+# Generate staging launch proof (reads live-evidence-proof when live_evidence_ready=true)
 python scripts/generate_staging_launch_proof.py --mode staging --strict
 
 # Validate staging launch proof artifact
@@ -124,9 +130,71 @@ python scripts/validate_100_percent_readiness.py --mode staging --strict
 
 # Run targeted tests
 python -m pytest services/api/tests/test_live_evidence_proof.py -v
+python -m pytest services/api/tests/test_live_evidence_proof_cmd.py -v
 python -m pytest services/api/tests/test_paid_launch_readiness.py -v
 python -m pytest services/api/tests/test_staging_launch_proof.py -v
 ```
+
+## Fail-closed output when provider is NOT configured
+
+When `EVM_RPC_URL` and `STAGING_EVM_RPC_URL` are both absent:
+
+```
+[generate-live-evidence-proof] chain_id_configured=False
+[generate-live-evidence-proof] provider_health_checked=False
+[generate-live-evidence-proof] provider_ready=False
+[generate-live-evidence-proof] provider_mode=disabled
+[generate-live-evidence-proof] evidence_source=unknown
+[generate-live-evidence-proof] latest_live_telemetry_at=None
+[generate-live-evidence-proof] live_evidence_ready=False
+[generate-live-evidence-proof] Missing:
+  - EVM_RPC_URL or STAGING_EVM_RPC_URL not configured
+```
+
+## Expected output when real provider is configured
+
+When real env vars are set and provider responds:
+
+```
+[generate-live-evidence-proof] chain_id_configured=True
+[generate-live-evidence-proof] chain_id_observed=1
+[generate-live-evidence-proof] worker_enabled=True
+[generate-live-evidence-proof] provider_health_checked=True
+[generate-live-evidence-proof] provider_ready=True
+[generate-live-evidence-proof] provider_mode=live
+[generate-live-evidence-proof] evidence_source=live
+[generate-live-evidence-proof] latest_live_telemetry_at=2026-05-22T...
+[generate-live-evidence-proof] live_evidence_ready=True
+[generate-live-evidence-proof] Live evidence chain:
+  telemetry_event_id: <uuid>
+  detection_id: <uuid>
+  alert_id: <uuid>
+  incident_id: <uuid>
+  response_action_id: <uuid>
+  evidence_package_id: <uuid>
+```
+
+## How to configure env vars in Railway / Vercel / GitHub Actions
+
+### Railway
+Set env vars in the Railway project dashboard under **Variables**:
+```
+STAGING_EVM_RPC_URL=https://mainnet.infura.io/v3/<project-id>
+STAGING_EVM_CHAIN_ID=1
+STAGING_WORKER_ENABLED=true
+```
+
+### GitHub Actions
+Add as repository secrets, then reference in your workflow:
+```yaml
+env:
+  STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
+  STAGING_EVM_CHAIN_ID: ${{ secrets.STAGING_EVM_CHAIN_ID }}
+  STAGING_WORKER_ENABLED: true
+```
+
+### Vercel
+Set in the Vercel project settings under **Environment Variables** for the staging environment.
 
 ## Expected output when provider is NOT configured
 

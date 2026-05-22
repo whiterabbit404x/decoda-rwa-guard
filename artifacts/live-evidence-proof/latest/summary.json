@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-22T15:07:26.909688+00:00",
+  "live_provider_evidence": {
+    "provider_ready": false,
+    "provider_mode": "disabled",
+    "provider_health_checked": false,
+    "provider_checked_at": null,
+    "provider_url_masked": "",
+    "chain_id_configured": false,
+    "chain_id_observed": null,
+    "block_number_observed": null,
+    "worker_enabled": false,
+    "evidence_source": "unknown",
+    "latest_live_telemetry_at": null,
+    "live_evidence_ready": false,
+    "chain": {
+      "telemetry_event_id": null,
+      "detection_id": null,
+      "alert_id": null,
+      "incident_id": null,
+      "response_action_id": null,
+      "evidence_package_id": null
+    },
+    "missing": [
+      "EVM_RPC_URL or STAGING_EVM_RPC_URL not configured"
+    ],
+    "contradiction_flags": []
+  }
+}

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T10:45:00.706856+00:00",
+  "generated_at": "2026-05-22T15:07:26.279538+00:00",
   "release_channel": "local",
-  "commit_sha": "ae6f0a75f3a789c7cee4e717c3dfdb490ecde967",
-  "branch": "claude/sharp-cerf-UFUUK",
+  "commit_sha": "7685db83fda11d390b5f26028b583948096eafea",
+  "branch": "claude/sleepy-mccarthy-46lEv",
   "test_suites": {
     "release_proof_artifacts": {
       "name": "release-proof-artifacts",

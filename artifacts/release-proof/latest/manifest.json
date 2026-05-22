@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T10:45:00.711078+00:00",
+  "generated_at": "2026-05-22T15:07:26.283831+00:00",
   "release_channel": "local",
-  "commit_sha": "ae6f0a75f3a789c7cee4e717c3dfdb490ecde967",
-  "branch": "claude/sharp-cerf-UFUUK",
+  "commit_sha": "7685db83fda11d390b5f26028b583948096eafea",
+  "branch": "claude/sleepy-mccarthy-46lEv",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "aaf5cdfbe5638a042d087517c3ac7ee7bd9498bed0444a03ca6bed181fe97000",
-      "size_bytes": 781,
+      "sha256": "09bd8b8eb20b894e6c64992578f2a268db01aeebe7a07f3ae81fbd278a55b611",
+      "size_bytes": 786,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "8e32c510b51e22f9b46bf8e85df2b20ad0273b0b98f7e7ea666aa78d732ac12e",
-      "size_bytes": 1974,
+      "sha256": "9165229b8a2713c13a38f5413178dacf70ef75d33be7263cacb0d5815800395a",
+      "size_bytes": 1979,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "909cd54ae6708388f364589af25985e3469fa43bfd0bfa76014f1365ecd458db",
+      "sha256": "bbe397a8fd00a9c5f48be3ddb118ff108245250e943d7aae5df15aa60feece26",
       "size_bytes": 819,
       "required": true,
       "status": "present"
