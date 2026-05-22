@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T10:05:31.655746+00:00",
-  "commit_sha": "37eb741b1ee8439505a29c04257ac2c6c3ff6c09",
-  "branch": "claude/dreamy-cerf-bDirw",
+  "generated_at": "2026-05-22T10:45:00.692971+00:00",
+  "commit_sha": "ae6f0a75f3a789c7cee4e717c3dfdb490ecde967",
+  "branch": "claude/sharp-cerf-UFUUK",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
