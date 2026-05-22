@@ -71,6 +71,9 @@ type EvidencePackage = {
   missing_artifacts?: string[];
   chain_complete?: boolean;
   export_status?: string;
+  package_status?: string;
+  source_truthfulness_status?: string;
+  redactions_applied?: boolean;
   warnings?: string[];
   missing_sections?: string[];
   unavailable_sections?: string[];
@@ -978,6 +981,27 @@ function PackageDetailPanel({
               <span style={{ color: '#fcd34d' }}>{section}</span>
             </div>
           ))}
+        </div>
+      )}
+      {pkg.package_status && (
+        <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem' }}>
+          <span style={{ color: '#94a3b8' }}>Package status: </span>
+          <span style={{
+            fontWeight: 600,
+            color: pkg.package_status === 'complete' ? '#4ade80' : pkg.package_status === 'partial' ? '#fbbf24' : '#f87171',
+          }}>
+            {pkg.package_status.toUpperCase()}
+          </span>
+        </div>
+      )}
+      {pkg.source_truthfulness_status && pkg.source_truthfulness_status !== 'verified_live' && (
+        <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#fbbf24' }}>
+          Source truthfulness: {pkg.source_truthfulness_status.replace(/_/g, ' ')}
+        </div>
+      )}
+      {pkg.redactions_applied && (
+        <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#94a3b8' }}>
+          Some fields were redacted for safe export.
         </div>
       )}
       <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>

@@ -1,0 +1,486 @@
+"""Session 12 — Customer-Facing Evidence Export Quality.
+
+Tests for evidence export source truthfulness, section availability,
+customer summary accuracy, redaction safety, and workspace isolation.
+
+Test cases:
+A. Simulator evidence is labeled simulator, not live_provider.
+B. Unknown source is not treated as live_provider.
+C. Missing telemetry appears in unavailable_sections.
+D. Missing response action appears in unavailable_sections.
+E. Partial package has package_status partial.
+F. No usable evidence has package_status blocked.
+G. Complete package has package_status complete only when all required sections exist.
+H. customer_summary contains simulator limitation when simulator evidence is used.
+I. customer_summary contains missing live-provider limitation when live evidence is unavailable.
+J. Export JSON does not include secret-like values.
+K. redactions_applied is true when sensitive fields are removed.
+L. Workspace isolation is preserved in export generation.
+M. Section statuses include all required sections.
+N. Existing proof bundle export tests still pass.
+"""
+from __future__ import annotations
+
+import json
+import pytest
+from fastapi import HTTPException
+
+from services.api.app import pilot
+
+
+class _FakeStorage:
+    backend_name = 'local'
+
+    def __init__(self):
+        self.content = b''
+
+    def write_bytes(self, *, object_key: str, content: bytes) -> str:
+        self.content = content
+        return object_key
+
+
+class _FakeRow:
+    def __init__(self, row):
+        self._row = row
+
+    def fetchone(self):
+        return self._row
+
+    def fetchall(self):
+        return self._row if isinstance(self._row, list) else ([] if self._row is None else [self._row])
+
+
+class _LiveCompleteConnection:
+    """All sections present, live provider evidence."""
+
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'FROM export_jobs WHERE id = %s AND workspace_id = %s' in normalized:
+            return _FakeRow({'id': 'exp-live', 'export_type': 'proof_bundle', 'format': 'json', 'filters': {'incident_id': 'inc-live', 'include_raw_events': True}})
+        if 'SELECT * FROM incidents WHERE workspace_id = %s AND id = %s' in normalized:
+            return _FakeRow({'id': 'inc-live', 'workspace_id': 'ws-live', 'title': 'Live Incident', 'severity': 'high', 'status': 'open', 'asset_id': 'asset-1'})
+        if 'FROM alerts a JOIN detection_metrics dm ON dm.alert_id = a.id' in normalized:
+            return _FakeRow([{'id': 'alert-live-1', 'severity': 'high', 'source': 'live_provider', 'target_id': 'target-1'}])
+        if 'FROM detection_metrics WHERE workspace_id = %s AND incident_id = %s' in normalized:
+            return _FakeRow([{'id': 'metric-1', 'event_observed_at': '2026-01-01T00:00:00Z', 'detected_at': '2026-01-01T00:02:00Z', 'mttd_seconds': 120, 'evidence': {'tx_hash': '0xreal'}}])
+        if 'FROM response_actions' in normalized and 'incident_id = %s' in normalized:
+            return _FakeRow([{'id': 'action-1', 'action_type': 'freeze_wallet', 'status': 'executed', 'mode': 'live', 'execution_metadata': None, 'created_at': '2026-01-01T00:10:00Z', 'executed_at': '2026-01-01T00:11:00Z', 'rolled_back_at': None}])
+        if 'FROM detections' in normalized and 'linked_alert_id = ANY' in normalized:
+            return _FakeRow([{'id': 'det-1', 'detection_type': 'anomaly', 'severity': 'high', 'confidence': 0.97, 'evidence_source': 'live', 'status': 'open', 'detected_at': '2026-01-01T00:01:00Z', 'title': 'Live anomaly'}])
+        if 'FROM audit_logs' in normalized:
+            return _FakeRow([{'id': 'audit-1', 'action': 'export.generate', 'entity_type': 'export_job', 'entity_id': 'exp-live', 'metadata': None, 'created_at': '2026-01-01T00:12:00Z'}])
+        if "UPDATE export_jobs SET status = 'completed'" in normalized:
+            return _FakeRow(None)
+        if "UPDATE export_jobs SET status = 'failed'" in normalized:
+            return _FakeRow(None)
+        raise AssertionError(f'unexpected query: {query}')
+
+
+class _SimulatorCompleteConnection(_LiveCompleteConnection):
+    """All sections present, simulator evidence source."""
+
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'FROM export_jobs WHERE id = %s AND workspace_id = %s' in normalized:
+            return _FakeRow({'id': 'exp-sim', 'export_type': 'proof_bundle', 'format': 'json', 'filters': {'incident_id': 'inc-sim', 'include_raw_events': False}})
+        if 'SELECT * FROM incidents WHERE workspace_id = %s AND id = %s' in normalized:
+            return _FakeRow({'id': 'inc-sim', 'workspace_id': 'ws-1', 'title': 'Simulator Incident', 'severity': 'medium', 'status': 'open'})
+        if 'FROM alerts a JOIN detection_metrics dm ON dm.alert_id = a.id' in normalized:
+            return _FakeRow([{'id': 'alert-sim-1', 'severity': 'medium', 'source': 'simulator', 'target_id': 'target-1'}])
+        if 'FROM detection_metrics WHERE workspace_id = %s AND incident_id = %s' in normalized:
+            return _FakeRow([{'id': 'metric-sim', 'event_observed_at': '2026-02-01T00:00:00Z', 'detected_at': '2026-02-01T00:02:00Z', 'mttd_seconds': 120, 'evidence': {'tx_hash': '0xsim'}}])
+        if 'FROM response_actions' in normalized and 'incident_id = %s' in normalized:
+            return _FakeRow([{'id': 'action-sim-1', 'action_type': 'notify_team', 'status': 'completed', 'mode': 'simulated', 'execution_metadata': None, 'created_at': '2026-02-01T00:05:00Z', 'executed_at': None, 'rolled_back_at': None}])
+        if 'FROM detections' in normalized and 'linked_alert_id = ANY' in normalized:
+            return _FakeRow([{'id': 'det-sim-1', 'detection_type': 'anomaly', 'severity': 'medium', 'confidence': 0.8, 'evidence_source': 'simulator', 'status': 'open', 'detected_at': '2026-02-01T00:01:00Z', 'title': 'Simulator anomaly'}])
+        if 'FROM audit_logs' in normalized:
+            return _FakeRow([])
+        return super().execute(query, params)
+
+
+class _UnknownSourceConnection(_LiveCompleteConnection):
+    """Alert with unrecognized evidence_source value."""
+
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'FROM alerts a JOIN detection_metrics dm ON dm.alert_id = a.id' in normalized:
+            return _FakeRow([{'id': 'alert-unk-1', 'severity': 'low', 'source': 'custom_integration_xyz', 'target_id': 'target-1'}])
+        if 'FROM detections' in normalized and 'linked_alert_id = ANY' in normalized:
+            return _FakeRow([{'id': 'det-unk-1', 'detection_type': 'anomaly', 'severity': 'low', 'confidence': 0.5, 'evidence_source': 'custom_integration_xyz', 'status': 'open', 'detected_at': '2026-01-01T00:01:00Z', 'title': 'Unknown source detection'}])
+        return super().execute(query, params)
+
+
+class _MissingTelemetryConnection(_LiveCompleteConnection):
+    """No detection_metrics — telemetry section absent."""
+
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'FROM detection_metrics WHERE workspace_id = %s AND incident_id = %s' in normalized:
+            return _FakeRow([])
+        return super().execute(query, params)
+
+
+class _MissingResponseActionsConnection(_LiveCompleteConnection):
+    """No response_actions — response_action section absent."""
+
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'FROM response_actions' in normalized and 'incident_id = %s' in normalized:
+            return _FakeRow([])
+        return super().execute(query, params)
+
+
+class _NoEvidenceConnection(_LiveCompleteConnection):
+    """No alerts, detections, metrics, or response_actions — no usable evidence."""
+
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'FROM alerts a JOIN detection_metrics dm ON dm.alert_id = a.id' in normalized:
+            return _FakeRow([])
+        if 'FROM detection_metrics WHERE workspace_id = %s AND incident_id = %s' in normalized:
+            return _FakeRow([])
+        if 'FROM detections' in normalized and 'linked_alert_id = ANY' in normalized:
+            return _FakeRow([])
+        if 'FROM response_actions' in normalized and 'incident_id = %s' in normalized:
+            return _FakeRow([])
+        return super().execute(query, params)
+
+
+class _SecretInMetadataConnection(_LiveCompleteConnection):
+    """Response action execution_metadata contains secret-like field."""
+
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'FROM response_actions' in normalized and 'incident_id = %s' in normalized:
+            return _FakeRow([{
+                'id': 'action-1',
+                'action_type': 'freeze_wallet',
+                'status': 'executed',
+                'mode': 'live',
+                'execution_metadata': {'api_key': 'sk-secret-value', 'result': 'frozen'},
+                'created_at': '2026-01-01T00:10:00Z',
+                'executed_at': '2026-01-01T00:11:00Z',
+                'rolled_back_at': None,
+            }])
+        return super().execute(query, params)
+
+
+class _CrossWorkspaceConnection:
+    """Incident not found for requesting workspace."""
+
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'FROM export_jobs WHERE id = %s AND workspace_id = %s' in normalized:
+            return _FakeRow({'id': 'exp-x', 'export_type': 'proof_bundle', 'format': 'json', 'filters': {'incident_id': 'inc-other-ws', 'include_raw_events': True}})
+        if 'SELECT * FROM incidents WHERE workspace_id = %s AND id = %s' in normalized:
+            return _FakeRow(None)
+        raise AssertionError(f'unexpected query: {query}')
+
+
+# ── Test cases ────────────────────────────────────────────────────────────────
+
+def test_A_simulator_evidence_labeled_simulator_not_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A. Simulator evidence must be labeled simulator, never live_provider."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _SimulatorCompleteConnection()
+    meta = pilot._generate_export_artifact(connection, workspace_id='ws-1', export_id='exp-sim')
+
+    assert meta['evidence_source_type'] == 'simulator', 'simulator evidence must be labeled simulator'
+    assert meta['evidence_source_type'] != 'live', 'simulator evidence must not be labeled live'
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert summary['evidence_source_type'] == 'simulator'
+    assert summary['source_truthfulness_status'] == 'verified_simulator'
+    assert summary['source_truthfulness_status'] != 'verified_live'
+
+
+def test_B_unknown_source_not_treated_as_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B. Unknown evidence source must not be treated as live_provider."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _UnknownSourceConnection()
+    meta = pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    assert meta['evidence_source_type'] == 'unknown'
+    assert meta['evidence_source_type'] != 'live'
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert summary['source_truthfulness_status'] == 'unknown'
+    assert summary['source_truthfulness_status'] != 'verified_live'
+
+
+def test_C_missing_telemetry_in_unavailable_sections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """C. Missing telemetry must appear in unavailable_sections."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _MissingTelemetryConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert 'telemetry' in summary['unavailable_sections'], \
+        'Missing telemetry must be listed in unavailable_sections'
+    assert 'telemetry' not in summary['available_sections']
+
+
+def test_D_missing_response_action_in_unavailable_sections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D. Missing response action must appear in unavailable_sections."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _MissingResponseActionsConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert 'response_action' in summary['unavailable_sections'], \
+        'Missing response_action must be listed in unavailable_sections'
+
+
+def test_E_partial_package_has_package_status_partial(monkeypatch: pytest.MonkeyPatch) -> None:
+    """E. Partial package (missing response actions) must have package_status=partial."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _MissingResponseActionsConnection()
+    meta = pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    assert meta['export_status'] == 'partial'
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert summary['package_status'] == 'partial'
+
+
+def test_F_no_usable_evidence_has_package_status_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F. No usable evidence must have package_status=blocked."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _NoEvidenceConnection()
+    meta = pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    assert meta['export_status'] == 'incomplete'
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert summary['package_status'] == 'blocked'
+
+
+def test_G_complete_package_status_only_when_all_sections_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """G. package_status=complete only when all required sections exist."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _LiveCompleteConnection()
+    meta = pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    assert meta['export_status'] == 'complete'
+    assert meta['missing_sections'] == []
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert summary['package_status'] == 'complete'
+    assert summary['chain_complete'] is True
+
+
+def test_H_customer_summary_contains_simulator_limitation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """H. customer_summary must mention simulator when simulator evidence is used."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _SimulatorCompleteConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-1', export_id='exp-sim')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    cs = summary['customer_summary']
+
+    assert 'source_note' in cs
+    assert 'simulator' in cs['source_note'].lower(), \
+        'source_note must mention simulator when simulator evidence is used'
+    assert any('simulator' in lim.lower() for lim in cs.get('limitations', [])), \
+        'limitations must mention simulator source'
+
+
+def test_I_customer_summary_missing_live_provider_limitation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """I. customer_summary must mention missing live-provider when live evidence unavailable."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _NoEvidenceConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    cs = summary['customer_summary']
+
+    assert 'source_note' in cs
+    assert 'limitations' in cs
+    assert any('live' in lim.lower() for lim in cs['limitations']), \
+        'limitations must mention missing live provider evidence'
+
+
+def test_J_export_json_does_not_include_secret_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """J. Export JSON must not contain secret-like values in any field."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _SecretInMetadataConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    raw_content = fake_storage.content.decode('utf-8')
+    assert 'sk-secret-value' not in raw_content, \
+        'Raw secret value must not appear in export output'
+
+
+def test_K_redactions_applied_true_when_sensitive_fields_removed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """K. redactions_applied must be true when sensitive fields were removed."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _SecretInMetadataConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert summary['redactions_applied'] is True, \
+        'redactions_applied must be True when secret-like fields are removed'
+
+
+def test_L_workspace_isolation_preserved(monkeypatch: pytest.MonkeyPatch) -> None:
+    """L. Export generation must enforce workspace isolation — cross-workspace incident rejected."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _CrossWorkspaceConnection()
+    with pytest.raises(HTTPException) as exc_info:
+        pilot._generate_export_artifact(connection, workspace_id='ws-attacker', export_id='exp-x')
+    assert exc_info.value.status_code == 404
+
+
+def test_M_section_statuses_include_all_required_sections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M. section_statuses must include all required section names."""
+    required_sections = {
+        'telemetry', 'detection', 'alert', 'incident', 'response_action',
+        'asset_context', 'target_context', 'provider_context', 'export_metadata',
+    }
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _LiveCompleteConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    section_names = {s['section_name'] for s in summary['section_statuses']}
+    for required in required_sections:
+        assert required in section_names, f'section_statuses must include section: {required}'
+
+
+def test_N_summary_contains_all_required_metadata_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N. summary.json must contain all required package metadata fields (schema 1.1)."""
+    required_fields = {
+        'schema_version', 'export_id', 'generated_at', 'generated_by',
+        'workspace_id', 'incident_id',
+        'export_status', 'package_status', 'export_format_version',
+        'evidence_source_type', 'source_truthfulness_status', 'source_truthfulness_reason',
+        'missing_sections', 'unavailable_sections', 'available_sections', 'section_statuses',
+        'warnings', 'redactions_applied', 'chain_complete', 'customer_summary',
+    }
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _LiveCompleteConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    for field in required_fields:
+        assert field in summary, f'summary.json missing required field: {field}'
+
+    assert summary['schema_version'] == '1.1'
+    assert summary['export_id'] == 'exp-live'
+    assert summary['workspace_id'] == 'ws-live'
+
+
+def test_redact_secret_fields_helper_removes_known_patterns() -> None:
+    """Direct unit test for _redact_secret_fields helper."""
+    data = {
+        'api_key': 'sk-12345',
+        'secret_key': 'secret-value',
+        'webhook_secret': 'whsec_abc',
+        'smtp_password': 'pass123',
+        'database_url': 'postgresql://user:pass@host/db',
+        'auth_token': 'bearer abc123',
+        'safe_field': 'keep-me',
+        'workspace_id': 'ws-safe-to-keep',
+        'nested': {
+            'bearer': 'token-value',
+            'result': 'ok',
+        },
+    }
+    cleaned, redacted = pilot._redact_secret_fields(data)
+    assert redacted is True
+    assert cleaned['api_key'] == '[REDACTED]'
+    assert cleaned['secret_key'] == '[REDACTED]'
+    assert cleaned['webhook_secret'] == '[REDACTED]'
+    assert cleaned['smtp_password'] == '[REDACTED]'
+    assert cleaned['database_url'] == '[REDACTED]'
+    assert cleaned['auth_token'] == '[REDACTED]'
+    assert cleaned['safe_field'] == 'keep-me'
+    assert cleaned['workspace_id'] == 'ws-safe-to-keep'
+    assert cleaned['nested']['bearer'] == '[REDACTED]'
+    assert cleaned['nested']['result'] == 'ok'
+
+
+def test_redact_secret_fields_no_redaction_when_clean() -> None:
+    """_redact_secret_fields must return redacted=False when no secrets present."""
+    data = {
+        'workspace_id': 'ws-1',
+        'incident_id': 'inc-1',
+        'alert_id': 'alert-1',
+        'export_status': 'complete',
+    }
+    cleaned, redacted = pilot._redact_secret_fields(data)
+    assert redacted is False
+    assert cleaned == data
+
+
+def test_build_customer_export_summary_simulator_source() -> None:
+    """_build_customer_export_summary must flag simulator as non-live in source_note."""
+    summary = pilot._build_customer_export_summary(
+        export_status='complete',
+        evidence_source_type='simulator',
+        missing_sections=[],
+        alert_count=2,
+        detection_count=2,
+        action_count=1,
+        metric_count=3,
+    )
+    assert 'simulator' in summary['source_note'].lower()
+    assert any('simulator' in lim.lower() for lim in summary['limitations'])
+
+
+def test_build_customer_export_summary_complete_live_no_limitations() -> None:
+    """Complete live package should have no source limitations."""
+    summary = pilot._build_customer_export_summary(
+        export_status='complete',
+        evidence_source_type='live',
+        missing_sections=[],
+        alert_count=1,
+        detection_count=1,
+        action_count=1,
+        metric_count=2,
+    )
+    assert 'live' in summary['source_note'].lower()
+    assert summary['limitations'] == []
+    assert 'complete' in summary['headline'].lower()
+
+
+def test_build_customer_export_summary_missing_sections_listed() -> None:
+    """Missing sections must appear in limitations."""
+    summary = pilot._build_customer_export_summary(
+        export_status='partial',
+        evidence_source_type='live',
+        missing_sections=['response_actions', 'audit_log'],
+        alert_count=2,
+        detection_count=1,
+        action_count=0,
+        metric_count=2,
+    )
+    assert any('response_actions' in lim for lim in summary['limitations'])
+    assert any('audit_log' in lim for lim in summary['limitations'])
+    assert 'partial' in summary['headline'].lower()
