@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T08:42:23.050194+00:00",
+  "generated_at": "2026-05-22T09:00:22.111161+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "a5067eeddd7043bb21c21684abee567e276c3f9f",
-  "branch": "claude/sharp-johnson-0yxVG",
+  "commit_sha": "869b20b5c7cac2661e2ab5305d02b9f1b9f8ebd8",
+  "branch": "claude/nifty-hamilton-uDfeC",
   "ci_required_gates_ready": false,
   "launch_proof_ready": false,
   "manifest_ready": true,
