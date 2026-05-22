@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness test-release-proof-artifacts generate-release-proof validate-release-proof validate-100-percent-readiness
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness test-release-proof-artifacts generate-release-proof validate-release-proof validate-100-percent-readiness generate-staging-proof validate-staging-proof
 
 up:
 	docker compose up -d
@@ -71,6 +71,9 @@ validate-staging:
 validate-launch:
 	$(MAKE) validate-production
 	$(MAKE) validate-staging
+	$(MAKE) generate-staging-proof
+	$(MAKE) validate-staging-proof
+	$(MAKE) validate-release-proof
 
 validate-no-billing-launch:
 	BILLING_PROVIDER=none VALIDATION_MODE=no_billing_pilot python services/api/scripts/validate_staging.py
@@ -78,8 +81,16 @@ validate-no-billing-launch:
 test-paid-launch-readiness:
 	python -m pytest services/api/tests/test_paid_launch_readiness.py -q
 
+generate-staging-proof:
+	python scripts/generate_staging_launch_proof.py --mode local
+
+validate-staging-proof:
+	python scripts/validate_staging_launch_proof.py
+
 validate-paid-ga:
 	$(MAKE) test-paid-launch-readiness
+	$(MAKE) generate-staging-proof
+	$(MAKE) validate-staging-proof
 	VALIDATION_MODE=paid_ga STRICT_PRODUCTION_BILLING=true python services/api/scripts/validate_staging.py
 
 proof-no-billing-launch:
@@ -148,6 +159,9 @@ validate-100-percent-readiness:
 	python -m pytest services/api/tests/test_admin_readiness.py -q
 	python -m pytest services/api/tests/test_proof_bundle_export.py -q
 	python -m pytest services/api/tests/test_100_percent_readiness.py -q
+	python -m pytest services/api/tests/test_staging_launch_proof.py -q
 	python scripts/generate_release_proof.py --mode local
 	python scripts/validate_release_proof.py
+	python scripts/generate_staging_launch_proof.py --mode local
+	python scripts/validate_staging_launch_proof.py
 	python scripts/validate_100_percent_readiness.py --mode local

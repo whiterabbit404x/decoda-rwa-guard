@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T09:20:55.534250+00:00",
+  "generated_at": "2026-05-22T10:45:13.283069+00:00",
   "mode": "local",
   "strict": false,
   "overall_score": 90,
@@ -101,10 +101,15 @@
       "source": "launch_proof",
       "note": ""
     },
+    "staging_proof_validation": {
+      "status": "fail",
+      "source": "staging_proof",
+      "note": "staging_launch_ready=false in staging proof"
+    },
     "staging_validation": {
-      "status": "not_run",
-      "source": "manual",
-      "note": "not available in local mode"
+      "status": "fail",
+      "source": "staging_proof",
+      "note": "staging_launch_ready=False, mode='local'"
     }
   },
   "blockers": [
@@ -113,7 +118,7 @@
     "email_ready=false",
     "live evidence not ready (live_evidence_ready=false in launch-proof)",
     "provider_ready=false",
-    "staging validation not available in local/ci mode"
+    "staging proof: staging_launch_ready=false; BILLING_PROVIDER not configured"
   ],
   "warnings": [
     "saas_workflow_validation not run in CI gates"
@@ -122,6 +127,7 @@
     "/home/user/decoda-rwa-guard/artifacts/launch-proof/latest/summary.json",
     "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/summary.json",
     "/home/user/decoda-rwa-guard/artifacts/release-proof/latest/ci-required-gates.json",
+    "/home/user/decoda-rwa-guard/artifacts/staging-proof/latest/summary.json",
     "/home/user/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
   ],
   "safe_to_sell_broadly_today": false,

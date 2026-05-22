@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T10:05:31.671708+00:00",
+  "generated_at": "2026-05-22T10:45:00.711078+00:00",
   "release_channel": "local",
-  "commit_sha": "37eb741b1ee8439505a29c04257ac2c6c3ff6c09",
-  "branch": "claude/dreamy-cerf-bDirw",
+  "commit_sha": "ae6f0a75f3a789c7cee4e717c3dfdb490ecde967",
+  "branch": "claude/sharp-cerf-UFUUK",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "f89cc542528c02f3645cf8f80468deec1aed54a0a3fba479b2def422afeacccc",
-      "size_bytes": 782,
+      "sha256": "aaf5cdfbe5638a042d087517c3ac7ee7bd9498bed0444a03ca6bed181fe97000",
+      "size_bytes": 781,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "086a03fd70a992722d676de9f5dabaf711e41a6550666b06aa11c163a397e4c6",
-      "size_bytes": 1975,
+      "sha256": "8e32c510b51e22f9b46bf8e85df2b20ad0273b0b98f7e7ea666aa78d732ac12e",
+      "size_bytes": 1974,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "a1be5e3e2c34cccda90a2360e2f59e359c5aff41175147db4990e946dcf7ef92",
+      "sha256": "909cd54ae6708388f364589af25985e3469fa43bfd0bfa76014f1365ecd458db",
       "size_bytes": 819,
       "required": true,
       "status": "present"
