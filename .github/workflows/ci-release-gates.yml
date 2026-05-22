@@ -126,7 +126,10 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install pytest
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/api/requirements.txt
+          if [ -f requirements-local.txt ]; then python -m pip install -r requirements-local.txt; fi
 
       - name: Run paid launch readiness tests
         run: python -m pytest services/api/tests/test_paid_launch_readiness.py -q
