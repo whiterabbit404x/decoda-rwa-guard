@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T05:37:40.229556+00:00",
-  "commit_sha": "986f86b8be281b91a69f2b34ceab1b683ca6fa59",
-  "branch": "claude/ci-release-evidence-artifacts-ODaOo",
+  "generated_at": "2026-05-22T06:49:12.180480+00:00",
+  "commit_sha": "ddc74c7bfc995633e98dcd73fae9c3456d8e5649",
+  "branch": "claude/quirky-goldberg-e7shP",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,

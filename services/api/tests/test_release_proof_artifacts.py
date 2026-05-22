@@ -285,3 +285,266 @@ def test_release_proof_includes_evidence_file_paths() -> None:
     # Should reference ci-required-gates and launch-proof
     assert any('ci-required-gates' in f for f in evidence_files)
     assert any('launch-proof' in f for f in evidence_files)
+
+
+# Test M: Manifest is generated with required fields
+def test_manifest_generated_with_required_fields(artifact_dirs: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify manifest.json is generated with all required fields."""
+    from scripts.generate_release_proof import generate_artifact_manifest
+
+    manifest = generate_artifact_manifest(artifact_dirs['release'], artifact_dirs['launch'], mode='local')
+
+    # Check required fields
+    assert 'schema_version' in manifest
+    assert 'generated_at' in manifest
+    assert 'release_channel' in manifest
+    assert 'commit_sha' in manifest
+    assert 'branch' in manifest
+    assert 'files' in manifest
+    assert 'overall_status' in manifest
+    assert 'blockers' in manifest
+    assert 'warnings' in manifest
+
+    # Check files array
+    assert isinstance(manifest['files'], list)
+
+
+# Test N: Manifest includes required artifacts
+def test_manifest_includes_required_artifacts(artifact_dirs: dict[str, Path]) -> None:
+    """Verify manifest includes paths to required artifacts."""
+    from scripts.generate_release_proof import generate_artifact_manifest
+
+    # First create the required artifacts
+    ci_gates_data = {'schema_version': 1, 'overall_status': 'pass'}
+    summary_data = {'schema_version': 1, 'release_status': 'pass'}
+    launch_summary_data = {'schema_version': 1, 'launch_mode': 'pilot'}
+
+    (artifact_dirs['release'] / 'ci-required-gates.json').write_text(json.dumps(ci_gates_data))
+    (artifact_dirs['release'] / 'summary.json').write_text(json.dumps(summary_data))
+    (artifact_dirs['launch'] / 'summary.json').write_text(json.dumps(launch_summary_data))
+
+    manifest = generate_artifact_manifest(artifact_dirs['release'], artifact_dirs['launch'], mode='local')
+
+    # Extract file paths from manifest
+    file_paths = [f['path'] for f in manifest['files']]
+
+    # Should include required artifacts (relative paths)
+    assert any('summary.json' in p for p in file_paths)
+    assert any('ci-required-gates.json' in p for p in file_paths)
+
+
+# Test O: Manifest SHA256 matches actual file contents
+def test_manifest_sha256_matches_file_contents(artifact_dirs: dict[str, Path]) -> None:
+    """Verify manifest SHA256 values match actual files."""
+    import hashlib
+    from scripts.generate_release_proof import generate_artifact_manifest
+
+    # Create test artifacts
+    test_content = {'test': 'data'}
+    test_file = artifact_dirs['release'] / 'ci-required-gates.json'
+    test_file.write_text(json.dumps(test_content))
+
+    manifest = generate_artifact_manifest(artifact_dirs['release'], artifact_dirs['launch'], mode='local')
+
+    # Find the file entry in manifest
+    file_entries = {f['path']: f for f in manifest['files']}
+
+    # Check at least one required file's SHA256
+    for path, entry in file_entries.items():
+        if entry['status'] == 'present' and entry['required']:
+            # Compute expected SHA256
+            actual_sha256 = hashlib.sha256(json.dumps(test_content).encode()).hexdigest()
+            # Manifest SHA256 should match (if this is the test file)
+            if 'ci-required-gates' in path:
+                assert entry['sha256'] == actual_sha256
+
+
+# Test P: Validator fails when manifest SHA256 is tampered
+def test_validator_fails_on_manifest_sha256_tamper(artifact_dirs: dict[str, Path]) -> None:
+    """Verify validator detects SHA256 tampering."""
+    from scripts.validate_release_proof import validate_manifest
+
+    # Create a manifest with wrong SHA256
+    invalid_manifest = {
+        'schema_version': 1,
+        'generated_at': '2026-05-22T00:00:00Z',
+        'release_channel': 'local',
+        'commit_sha': 'abc123',
+        'branch': 'main',
+        'files': [
+            {
+                'path': 'artifacts/release-proof/latest/summary.json',
+                'sha256': 'wrong_hash_value_0000000000000000000000000000000000000000',
+                'size_bytes': 100,
+                'required': True,
+                'status': 'present'
+            }
+        ],
+        'overall_status': 'pass',
+        'blockers': [],
+        'warnings': []
+    }
+
+    manifest_path = artifact_dirs['release'] / 'manifest.json'
+    with open(manifest_path, 'w') as f:
+        json.dump(invalid_manifest, f)
+
+    # Create a dummy summary.json file
+    summary_path = artifact_dirs['release'] / 'summary.json'
+    summary_path.write_text('{"test": "data"}')
+
+    # Validator should fail due to SHA256 mismatch
+    ok, issues = validate_manifest(manifest_path)
+    # Should find SHA256 mismatch or other issues
+    assert not ok or any('SHA256' in issue for issue in issues) or any('tamper' in issue.lower() for issue in issues)
+
+
+# Test Q: Test report summary is generated
+def test_test_report_summary_generated() -> None:
+    """Verify test-report-summary.json is generated."""
+    from scripts.generate_release_proof import generate_test_report_summary
+
+    test_report = generate_test_report_summary(mode='local')
+
+    # Check required fields
+    assert 'schema_version' in test_report
+    assert 'generated_at' in test_report
+    assert 'release_channel' in test_report
+    assert 'commit_sha' in test_report
+    assert 'branch' in test_report
+    assert 'test_suites' in test_report
+    assert 'overall_status' in test_report
+    assert 'blockers' in test_report
+    assert 'warnings' in test_report
+
+    # Check test_suites is a dict
+    assert isinstance(test_report['test_suites'], dict)
+
+
+# Test R: Missing test report summary cannot be interpreted as pass
+def test_missing_test_report_not_pass() -> None:
+    """Verify missing test report summary is not treated as pass."""
+    from scripts.generate_release_proof import generate_test_report_summary
+
+    test_report = generate_test_report_summary(mode='local')
+
+    # In local mode, status should be not_run or fail, not pass
+    assert test_report['overall_status'] in {'not_run', 'fail', 'missing'}
+    assert test_report['overall_status'] != 'pass'
+
+
+# Test S: Artifact paths must be relative and under artifacts/
+def test_manifest_artifact_paths_relative(artifact_dirs: dict[str, Path]) -> None:
+    """Verify manifest artifact paths are relative and under artifacts/."""
+    from scripts.validate_release_proof import validate_manifest
+
+    # Create a manifest with invalid paths
+    invalid_manifest = {
+        'schema_version': 1,
+        'generated_at': '2026-05-22T00:00:00Z',
+        'release_channel': 'local',
+        'commit_sha': 'abc123',
+        'branch': 'main',
+        'files': [
+            {
+                'path': '/absolute/path/file.json',  # Invalid: absolute path
+                'sha256': 'abc123',
+                'size_bytes': 100,
+                'required': True,
+                'status': 'present'
+            },
+            {
+                'path': '../outside/artifacts/file.json',  # Invalid: goes outside
+                'sha256': 'abc123',
+                'size_bytes': 100,
+                'required': True,
+                'status': 'present'
+            }
+        ],
+        'overall_status': 'fail',
+        'blockers': ['invalid paths'],
+        'warnings': []
+    }
+
+    manifest_path = artifact_dirs['release'] / 'manifest.json'
+    with open(manifest_path, 'w') as f:
+        json.dump(invalid_manifest, f)
+
+    ok, issues = validate_manifest(manifest_path)
+
+    # Should have issues about path validation
+    assert not ok
+    assert any('path' in issue.lower() for issue in issues)
+
+
+# Test T: Validator fails if generated JSON contains secret-like values
+def test_validator_fails_on_secret_like_values(artifact_dirs: dict[str, Path]) -> None:
+    """Verify validator detects secret-like values in artifacts."""
+    from scripts.validate_release_proof import validate_manifest
+
+    # Create a manifest with secret-like value
+    invalid_manifest = {
+        'schema_version': 1,
+        'generated_at': '2026-05-22T00:00:00Z',
+        'release_channel': 'local',
+        'commit_sha': 'abc123',
+        'branch': 'main',
+        'files': [],
+        'overall_status': 'pass',
+        'blockers': [],
+        'api_key': 'sk_test_12345',  # Secret-like value
+        'warnings': []
+    }
+
+    manifest_path = artifact_dirs['release'] / 'manifest.json'
+    with open(manifest_path, 'w') as f:
+        json.dump(invalid_manifest, f)
+
+    ok, issues = validate_manifest(manifest_path)
+
+    # Should fail due to secret detection
+    assert not ok
+    assert any('secret' in issue.lower() or 'api_key' in issue.lower() for issue in issues)
+
+
+# Test U: Release summary evidence_files includes manifest and test-report
+def test_release_proof_evidence_files_complete() -> None:
+    """Verify release-proof evidence_files includes all new artifacts."""
+    from scripts.generate_release_proof import generate_release_proof
+
+    release_proof = generate_release_proof(mode='local')
+
+    # Should reference all evidence files
+    evidence_files = release_proof.get('evidence_files', [])
+
+    # Should include manifest and test-report
+    assert any('manifest' in f for f in evidence_files), "manifest.json not in evidence_files"
+    assert any('test-report' in f for f in evidence_files), "test-report-summary.json not in evidence_files"
+
+
+# Test V: All five artifacts validate together
+def test_all_five_artifacts_validate_together(artifact_dirs: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify all five artifacts are generated and validate together."""
+    import subprocess
+    from pathlib import Path
+
+    # Run the generate script
+    result = subprocess.run(
+        ['python', 'scripts/generate_release_proof.py', '--mode', 'local'],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True
+    )
+
+    # Check generation succeeded
+    assert result.returncode == 0, f"Generation failed: {result.stderr}"
+
+    # Check all five files exist
+    release_dir = REPO_ROOT / 'artifacts' / 'release-proof' / 'latest'
+    launch_dir = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest'
+
+    assert (release_dir / 'ci-required-gates.json').exists()
+    assert (release_dir / 'summary.json').exists()
+    assert (release_dir / 'manifest.json').exists()
+    assert (release_dir / 'test-report-summary.json').exists()
+    assert (launch_dir / 'summary.json').exists()

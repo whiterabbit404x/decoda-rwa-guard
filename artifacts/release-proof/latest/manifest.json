@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-22T06:49:12.195017+00:00",
+  "release_channel": "local",
+  "commit_sha": "ddc74c7bfc995633e98dcd73fae9c3456d8e5649",
+  "branch": "claude/quirky-goldberg-e7shP",
+  "files": [
+    {
+      "path": "artifacts/release-proof/latest/summary.json",
+      "sha256": "b22484c9d2c92e994af147c8a629c0c5aa8e12c7b7981a7e84011d2d335d3fbe",
+      "size_bytes": 786,
+      "required": true,
+      "status": "present"
+    },
+    {
+      "path": "artifacts/release-proof/latest/ci-required-gates.json",
+      "sha256": "a093674dae9ea9c79ba14c7ffbcaa47eb60a2cc4fe210c5ffd0fb24ab54b36b9",
+      "size_bytes": 1979,
+      "required": true,
+      "status": "present"
+    },
+    {
+      "path": "artifacts/launch-proof/latest/summary.json",
+      "sha256": "ca1cdf03f6d2e73d2bcdf42a2913077510085896cd9e8326bab41a428d8b1d6c",
+      "size_bytes": 819,
+      "required": true,
+      "status": "present"
+    }
+  ],
+  "overall_status": "pass",
+  "blockers": [],
+  "warnings": []
+}

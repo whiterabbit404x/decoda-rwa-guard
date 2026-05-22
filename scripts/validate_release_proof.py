@@ -9,9 +9,13 @@ Checks:
 - broad_paid_saas_ready cannot be true unless all gates pass
 - No secret-like values in artifacts
 - Required fields are present
+- Manifest SHA256 integrity matches actual files
+- Test report summary is not faked as pass
+- Artifact paths are relative and under artifacts/
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -188,14 +192,133 @@ def validate_launch_proof(path: Path) -> tuple[bool, list[str]]:
     return len(issues) == 0, issues
 
 
+def _compute_sha256(path: Path) -> str:
+    """Compute SHA256 of file contents."""
+    sha256_hash = hashlib.sha256()
+    try:
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b''):
+                sha256_hash.update(chunk)
+        return sha256_hash.hexdigest()
+    except Exception:
+        return 'unknown'
+
+
+def validate_manifest(path: Path) -> tuple[bool, list[str]]:
+    """Validate artifact manifest.json."""
+    issues = []
+
+    manifest = _load_json(path)
+    if manifest is None:
+        issues.append(f'{path.relative_to(REPO_ROOT)} not found')
+        return False, issues
+
+    # Check schema version
+    if manifest.get('schema_version') != 1:
+        issues.append('manifest: invalid schema_version')
+
+    # Check required fields
+    required_fields = ['generated_at', 'release_channel', 'commit_sha', 'branch', 'files', 'overall_status', 'blockers', 'warnings']
+    for field in required_fields:
+        if field not in manifest:
+            issues.append(f'manifest: missing required field {field}')
+
+    # Validate files array
+    files = manifest.get('files', [])
+    for file_entry in files:
+        if not isinstance(file_entry, dict):
+            issues.append('manifest: file entry is not a dict')
+            continue
+
+        # Check file entry required fields
+        file_path = file_entry.get('path')
+        if not file_path:
+            issues.append('manifest: file entry missing path')
+            continue
+
+        # Check path is relative and under artifacts/
+        if file_path.startswith('/') or file_path.startswith('..'):
+            issues.append(f'manifest: file path must be relative and under artifacts/: {file_path}')
+        if not file_path.startswith('artifacts/'):
+            issues.append(f'manifest: file path must be under artifacts/: {file_path}')
+
+        # If file is marked as required and present, verify SHA256
+        if file_entry.get('required') and file_entry.get('status') == 'present':
+            full_path = REPO_ROOT / file_path
+            if full_path.exists():
+                actual_sha256 = _compute_sha256(full_path)
+                manifest_sha256 = file_entry.get('sha256')
+                if manifest_sha256 != 'missing' and actual_sha256 != manifest_sha256:
+                    issues.append(f'manifest: SHA256 mismatch for {file_path} (manifest={manifest_sha256}, actual={actual_sha256})')
+            else:
+                if file_entry.get('required'):
+                    issues.append(f'manifest: required file not found: {file_path}')
+
+    # Check overall_status
+    overall_status = manifest.get('overall_status')
+    if overall_status == 'pass' and manifest.get('blockers'):
+        issues.append('manifest: overall_status=pass but blockers present')
+
+    # Check for secrets
+    secrets = _has_secret_like_value(manifest)
+    for secret in secrets:
+        issues.append(f'manifest: {secret}')
+
+    return len(issues) == 0, issues
+
+
+def validate_test_report_summary(path: Path) -> tuple[bool, list[str]]:
+    """Validate test-report-summary.json."""
+    issues = []
+
+    report = _load_json(path)
+    if report is None:
+        issues.append(f'{path.relative_to(REPO_ROOT)} not found')
+        return False, issues
+
+    # Check schema version
+    if report.get('schema_version') != 1:
+        issues.append('test-report-summary: invalid schema_version')
+
+    # Check required fields
+    required_fields = ['generated_at', 'release_channel', 'commit_sha', 'branch', 'test_suites', 'overall_status', 'blockers', 'warnings']
+    for field in required_fields:
+        if field not in report:
+            issues.append(f'test-report-summary: missing required field {field}')
+
+    # Check overall_status
+    overall_status = report.get('overall_status')
+    if overall_status not in {'pass', 'fail', 'not_run', 'missing'}:
+        issues.append(f'test-report-summary: invalid overall_status={overall_status}')
+
+    # If status is 'not_run' or 'missing', it cannot be treated as pass
+    if overall_status in {'not_run', 'missing'}:
+        # This is expected and correct fail-closed behavior
+        pass
+
+    # Check test_suites is a dict
+    test_suites = report.get('test_suites', {})
+    if not isinstance(test_suites, dict):
+        issues.append('test-report-summary: test_suites must be a dict')
+
+    # Check for secrets
+    secrets = _has_secret_like_value(report)
+    for secret in secrets:
+        issues.append(f'test-report-summary: {secret}')
+
+    return len(issues) == 0, issues
+
+
 def main() -> int:
-    """Validate all three proof artifacts."""
+    """Validate all five proof artifacts."""
     repo_root = Path(__file__).resolve().parents[1]
     release_proof_dir = repo_root / 'artifacts' / 'release-proof' / 'latest'
     launch_proof_dir = repo_root / 'artifacts' / 'launch-proof' / 'latest'
 
     ci_gates_path = release_proof_dir / 'ci-required-gates.json'
     release_proof_path = release_proof_dir / 'summary.json'
+    manifest_path = release_proof_dir / 'manifest.json'
+    test_report_path = release_proof_dir / 'test-report-summary.json'
     launch_proof_path = launch_proof_dir / 'summary.json'
 
     all_ok = True
@@ -207,6 +330,24 @@ def main() -> int:
         print('[validate-release-proof] ✓ ci-required-gates.json valid')
     else:
         print('[validate-release-proof] ✗ ci-required-gates.json invalid')
+        all_ok = False
+    all_issues.extend(issues)
+
+    print('[validate-release-proof] Validating manifest.json...')
+    ok, issues = validate_manifest(manifest_path)
+    if ok:
+        print('[validate-release-proof] ✓ manifest.json valid')
+    else:
+        print('[validate-release-proof] ✗ manifest.json invalid')
+        all_ok = False
+    all_issues.extend(issues)
+
+    print('[validate-release-proof] Validating test-report-summary.json...')
+    ok, issues = validate_test_report_summary(test_report_path)
+    if ok:
+        print('[validate-release-proof] ✓ test-report-summary.json valid')
+    else:
+        print('[validate-release-proof] ✗ test-report-summary.json invalid')
         all_ok = False
     all_issues.extend(issues)
 

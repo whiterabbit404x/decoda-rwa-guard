@@ -1,20 +1,25 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T05:37:40.233550+00:00",
+  "generated_at": "2026-05-22T06:49:12.187975+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "986f86b8be281b91a69f2b34ceab1b683ca6fa59",
-  "branch": "claude/ci-release-evidence-artifacts-ODaOo",
+  "commit_sha": "ddc74c7bfc995633e98dcd73fae9c3456d8e5649",
+  "branch": "claude/quirky-goldberg-e7shP",
   "ci_required_gates_ready": false,
   "launch_proof_ready": false,
+  "manifest_ready": true,
+  "test_report_ready": false,
   "paid_launch_ready": false,
   "blockers": [
     "ci-required-gates not ready",
-    "launch-proof not ready"
+    "launch-proof not ready",
+    "test-report-summary not ready"
   ],
   "warnings": [],
   "evidence_files": [
     "artifacts/release-proof/latest/ci-required-gates.json",
+    "artifacts/release-proof/latest/manifest.json",
+    "artifacts/release-proof/latest/test-report-summary.json",
     "artifacts/launch-proof/latest/summary.json"
   ]
 }
