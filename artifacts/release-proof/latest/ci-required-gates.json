@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T09:00:22.103800+00:00",
-  "commit_sha": "869b20b5c7cac2661e2ab5305d02b9f1b9f8ebd8",
-  "branch": "claude/nifty-hamilton-uDfeC",
+  "generated_at": "2026-05-22T09:20:50.522321+00:00",
+  "commit_sha": "a8e6614660d2ab0b4fc329e2e38311c07b7b0b3b",
+  "branch": "claude/focused-archimedes-oD43R",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,

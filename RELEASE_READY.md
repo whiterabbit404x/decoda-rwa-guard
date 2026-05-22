@@ -191,3 +191,61 @@ Before releasing to broad paid SaaS:
 3. Verify `artifacts/launch-proof/latest/summary.json` shows `broad_paid_saas_ready=true`
 4. If either is false, the blockers list names exactly what must be fixed
 5. Do not override or fake the artifacts; fix the underlying issues instead
+
+---
+
+## Session 14 — Final 100% Readiness Gate
+
+Last updated: **2026-05-22**.
+
+### What 100% means
+
+`production_100_percent_ready: true` requires all of:
+- Backend tests pass (test files present and passing).
+- Frontend build passes (npm run build in CI).
+- SaaS workflow validation passes.
+- Runtime truthfulness tests pass.
+- Evidence export truthfulness tests pass.
+- Paid launch readiness passes (billing, email, provider configured with live credentials).
+- Release proof artifacts valid (ci-required-gates, release-proof, launch-proof present).
+- Multi-tenant isolation tests pass.
+- Billing/email/provider readiness confirmed.
+- Live evidence confirmed (not simulator).
+- Staging validation executed with real credentials.
+
+### Why local/CI fail-closed is acceptable
+
+In local and CI modes, `production_100_percent_ready` is always `false`. This is correct and expected behavior. CI proves the gate logic works — it does not prove the product is ready for broad sales without real production credentials.
+
+### Why staging/production strict mode is required before broad sales
+
+Only `--mode staging --strict` or `--mode production --strict` can produce `safe_to_sell_broadly_today: true`. These modes require real billing, email, and provider credentials plus confirmed live evidence.
+
+### How to run
+
+```bash
+# Full final readiness validation (all sessions + final gate)
+make validate-100-percent-readiness
+
+# Generate proof artifacts
+make generate-release-proof
+
+# Validate release proof
+make validate-release-proof
+
+# Final 100% validator (local mode — expect false)
+python scripts/validate_100_percent_readiness.py --mode local
+
+# Staging strict mode (requires real credentials)
+python scripts/validate_100_percent_readiness.py --mode staging --strict
+```
+
+### How to inspect
+
+```bash
+cat artifacts/final-readiness/latest/summary.json
+```
+
+### Warning
+
+> **Do not sell broadly until `safe_to_sell_broadly_today` is `true` in staging or production strict mode.**

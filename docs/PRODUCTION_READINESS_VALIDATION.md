@@ -625,3 +625,73 @@ evidence export validation all passing simultaneously.
 
 Runtime truthfulness improves customer trust and operational safety.  It does
 not by itself make the product broad paid SaaS ready.
+
+---
+
+## Final 100% Readiness Gate (Session 14)
+
+### What "100%" means
+
+`production_100_percent_ready: true` in `artifacts/final-readiness/latest/summary.json` means:
+
+1. All required proof artifact files are present and valid.
+2. Every category (product_concept, saas_workflow, runtime_truthfulness, ui_polish, auth_workspace_model, multi_tenant_isolation, evidence_export, billing_email_launch_readiness, ci_release_evidence, enterprise_readiness) has `status: pass`.
+3. Live evidence is confirmed (not simulator evidence).
+4. Staging validation has been executed with real credentials.
+5. No unresolved blockers remain.
+
+### Why local/CI fail-closed is acceptable
+
+In local and CI modes:
+- Artifacts are generated with safe, fail-closed assumptions.
+- `safe_to_sell_broadly_today` is always `false`.
+- `broad_paid_saas_ready` is always `false`.
+- CI proves fail-closed behavior — it does NOT prove live provider readiness.
+
+This is intentional: CI running correctly without secrets proves the gate system works. It does not prove the product is ready to sell.
+
+### Why staging/production strict mode is required before broad sales
+
+Only in `--mode staging --strict` or `--mode production --strict`:
+- Real billing, email, and provider credentials are present.
+- Live evidence is confirmed from a real blockchain RPC endpoint.
+- Staging validation has run end-to-end.
+- `safe_to_sell_broadly_today` can become `true`.
+
+### How to run
+
+```bash
+# Generate proof artifacts first
+make generate-release-proof
+
+# Validate all sessions + final readiness
+make validate-100-percent-readiness
+
+# Or directly (local mode — expect production_100_percent_ready=false)
+python scripts/validate_100_percent_readiness.py --mode local
+
+# Staging strict mode (requires real credentials)
+python scripts/validate_100_percent_readiness.py --mode staging --strict
+```
+
+### How to inspect results
+
+```bash
+cat artifacts/final-readiness/latest/summary.json
+```
+
+Key fields:
+- `overall_score` — 0–100, computed from category scores
+- `production_100_percent_ready` — true only when every gate passes
+- `safe_to_sell_broadly_today` — true only in staging/production strict with all gates passing
+- `blockers` — list of explicit reasons blocking readiness
+- `warnings` — non-blocking issues to be aware of
+- `proof_artifacts` — paths to all proof artifacts used
+
+### Warning
+
+> **Do not sell broadly until `safe_to_sell_broadly_today` is `true` in staging or production strict mode.**
+>
+> `production_100_percent_ready: false` in local/CI mode is expected and correct. It does not indicate a problem — it indicates that live credentials have not been provided.
+>
+> Never force `safe_to_sell_broadly_today: true` by editing artifacts. Fix the underlying gates instead.

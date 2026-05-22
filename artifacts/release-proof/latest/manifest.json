@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T09:00:22.118279+00:00",
+  "generated_at": "2026-05-22T09:20:50.538006+00:00",
   "release_channel": "local",
-  "commit_sha": "869b20b5c7cac2661e2ab5305d02b9f1b9f8ebd8",
-  "branch": "claude/nifty-hamilton-uDfeC",
+  "commit_sha": "a8e6614660d2ab0b4fc329e2e38311c07b7b0b3b",
+  "branch": "claude/focused-archimedes-oD43R",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "27ee9ff4afef58db88c89861b3958229aa49e4e3b573f911b5b35d1755cce8f3",
-      "size_bytes": 785,
+      "sha256": "cd3da9ea7cf5fced39d8caa18af5ef06466aa10bcbbb1095dfc33a8a29e852a9",
+      "size_bytes": 789,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "42323854dce3eff1a3b80488c486be05595698d0f9f25e770e8ccc6b587e38b4",
-      "size_bytes": 1978,
+      "sha256": "1df0216045dba41f532f7a3e051cd237dc1a3a29f2bd373de59592e8a182384e",
+      "size_bytes": 1982,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "e5c1e905bb36903bc5005993497b839ad19622a5ab87ccf70518cff89f16aafb",
+      "sha256": "1a0dbdbd61f5eea684a49cefbb4e52368aa59415591d9cb2f6bc74cd26646d11",
       "size_bytes": 819,
       "required": true,
       "status": "present"

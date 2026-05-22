@@ -108,3 +108,65 @@ jobs:
           path: |
             artifacts/release-proof/latest/
             artifacts/launch-proof/latest/
+
+  final-readiness-gate:
+    name: Final 100% readiness gate (fail-closed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [paid-launch-readiness-gates, required-gates]
+    if: always()
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install pytest
+
+      - name: Run paid launch readiness tests
+        run: python -m pytest services/api/tests/test_paid_launch_readiness.py -q
+
+      - name: Run release proof artifact tests
+        run: python -m pytest services/api/tests/test_release_proof_artifacts.py -q
+
+      - name: Run evidence export truthfulness tests
+        run: python -m pytest services/api/tests/test_evidence_export_truthfulness.py -q
+
+      - name: Run runtime truthfulness tests
+        run: python -m pytest services/api/tests/test_runtime_truthfulness.py -q
+
+      - name: Run SaaS workflow validation tests
+        run: python -m pytest services/api/tests/test_saas_workflow_validation.py -q
+
+      - name: Run 100% readiness gate tests
+        run: python -m pytest services/api/tests/test_100_percent_readiness.py -q
+
+      - name: Generate release proof
+        if: always()
+        run: python scripts/generate_release_proof.py --mode ci
+
+      - name: Validate release proof
+        if: always()
+        run: python scripts/validate_release_proof.py
+
+      - name: Validate 100% readiness (fail-closed, non-strict)
+        if: always()
+        run: python scripts/validate_100_percent_readiness.py --mode ci
+
+      - name: Upload final readiness artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-readiness-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            artifacts/launch-proof/latest/summary.json
+            artifacts/release-proof/latest/summary.json
+            artifacts/release-proof/latest/ci-required-gates.json
+            artifacts/final-readiness/latest/summary.json
