@@ -101,17 +101,48 @@ def _run_validation(script_path: str, env: dict[str, str] | None = None) -> tupl
 
 
 def _check_live_evidence() -> tuple[bool, list[str]]:
-    """Check if live evidence proof is available."""
+    """
+    Check if live evidence proof is available.
+
+    Checks the canonical live-evidence-proof artifact first
+    (artifacts/live-evidence-proof/latest/summary.json, written by
+    generate_live_evidence_proof.py), then falls back to the legacy
+    services/api/artifacts path for backward compatibility.
+    """
     blockers: list[str] = []
 
-    # Check for live evidence summary
-    live_evidence_path = REPO_ROOT / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest' / 'summary.json'
-    if not live_evidence_path.exists():
+    # Primary: canonical live-evidence-proof artifact (new path)
+    canonical_path = REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest' / 'summary.json'
+    if canonical_path.exists():
+        try:
+            with open(canonical_path) as f:
+                proof = json.load(f)
+            lpe = proof.get('live_provider_evidence', {})
+            if lpe.get('live_evidence_ready') is True:
+                return True, []
+            # Artifact present but not ready — surface why
+            missing = lpe.get('missing', [])
+            if missing:
+                blockers.append(f'live evidence not ready: {missing[0]}')
+            else:
+                blockers.append(
+                    'live evidence not ready (live_evidence_ready=false in live-evidence-proof)'
+                )
+            return False, blockers
+        except Exception as e:
+            blockers.append(f'failed to read live-evidence-proof: {e}')
+            return False, blockers
+
+    # Fallback: legacy path for backward compatibility
+    legacy_path = (
+        REPO_ROOT / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest' / 'summary.json'
+    )
+    if not legacy_path.exists():
         blockers.append('live evidence summary not found')
         return False, blockers
 
     try:
-        with open(live_evidence_path) as f:
+        with open(legacy_path) as f:
             evidence = json.load(f)
         evidence_source = evidence.get('evidence_source', '').lower()
         if evidence_source != 'live':

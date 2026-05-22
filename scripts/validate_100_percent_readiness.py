@@ -137,8 +137,41 @@ def _load_ci_gates(release_proof_dir: Path) -> tuple[dict[str, Any] | None, list
     return data, []
 
 
-def _check_live_evidence(launch_proof: dict[str, Any] | None, mode: str) -> tuple[bool, list[str]]:
+def _check_live_evidence(
+    launch_proof: dict[str, Any] | None,
+    mode: str,
+    live_evidence_proof_dir: Path | None = None,
+) -> tuple[bool, list[str]]:
+    """
+    Check live evidence readiness.
+
+    When live_evidence_proof_dir is provided (non-None), checks
+    live_evidence_proof_dir/summary.json for live_provider_evidence.live_evidence_ready=true
+    first, then falls back to the launch-proof artifact.
+
+    When live_evidence_proof_dir is None (default), only checks launch-proof.
+    This keeps unit tests isolated — tests that do not pass live_evidence_proof_dir
+    are unaffected by any on-disk live-evidence-proof artifact.
+    """
     blockers: list[str] = []
+
+    # Check canonical live-evidence-proof when caller supplies the path
+    if live_evidence_proof_dir is not None:
+        lep_path = live_evidence_proof_dir / 'summary.json'
+        if lep_path.exists():
+            data = _load_json(lep_path)
+            if data is not None:
+                lpe = data.get('live_provider_evidence', {})
+                if lpe.get('live_evidence_ready') is True:
+                    return True, []
+                # Present but not ready — surface first missing item
+                missing = lpe.get('missing', [])
+                if missing:
+                    blockers.append(f'live evidence not ready: {missing[0]}')
+                    return False, blockers
+                # Fall through to launch-proof check
+
+    # Fall back to launch-proof check
     if launch_proof is None:
         blockers.append('launch-proof missing; cannot verify live evidence')
         return False, blockers
@@ -441,6 +474,7 @@ def build_final_readiness(
     launch_proof_dir: Path | None = None,
     release_proof_dir: Path | None = None,
     staging_proof_dir: Path | None = None,
+    live_evidence_proof_dir: Path | None = None,
 ) -> dict[str, Any]:
     if launch_proof_dir is None:
         launch_proof_dir = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest'
@@ -481,7 +515,7 @@ def build_final_readiness(
     )
 
     # live evidence check
-    live_ok, live_blockers = _check_live_evidence(launch_proof, mode)
+    live_ok, live_blockers = _check_live_evidence(launch_proof, mode, live_evidence_proof_dir)
     if not live_ok:
         blockers.extend(live_blockers)
 
@@ -578,7 +612,11 @@ def main(mode: str = 'local', strict: bool = False) -> int:
     final_dir = REPO_ROOT / 'artifacts' / 'final-readiness' / 'latest'
     final_dir.mkdir(parents=True, exist_ok=True)
 
-    summary = build_final_readiness(mode=mode, strict=strict)
+    summary = build_final_readiness(
+        mode=mode,
+        strict=strict,
+        live_evidence_proof_dir=REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest',
+    )
 
     out_path = final_dir / 'summary.json'
     with open(out_path, 'w') as f:

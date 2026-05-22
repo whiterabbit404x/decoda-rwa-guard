@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T15:07:26.283831+00:00",
+  "generated_at": "2026-05-22T15:26:58.032348+00:00",
   "release_channel": "local",
-  "commit_sha": "7685db83fda11d390b5f26028b583948096eafea",
-  "branch": "claude/sleepy-mccarthy-46lEv",
+  "commit_sha": "e311dbb30a4e2d1a30ff45411bef79231a49b62b",
+  "branch": "claude/admiring-bardeen-ZXzBh",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "09bd8b8eb20b894e6c64992578f2a268db01aeebe7a07f3ae81fbd278a55b611",
-      "size_bytes": 786,
+      "sha256": "eb882826464de8d913e6124880eb9d6eb7063814e44fec2a00ef190b0e710e67",
+      "size_bytes": 756,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "9165229b8a2713c13a38f5413178dacf70ef75d33be7263cacb0d5815800395a",
-      "size_bytes": 1979,
+      "sha256": "52160736b1a313710a8089f337fdcdb4aab923d610ff39c379298fbb7518058f",
+      "size_bytes": 1855,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "bbe397a8fd00a9c5f48be3ddb118ff108245250e943d7aae5df15aa60feece26",
-      "size_bytes": 819,
+      "sha256": "c35328802d63572181cadd791c1b341b10ccff89870e3799a9ffc3a743e111f3",
+      "size_bytes": 786,
       "required": true,
       "status": "present"
     }
