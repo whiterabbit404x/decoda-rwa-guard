@@ -224,24 +224,34 @@ def check_email_readiness() -> dict[str, Any]:
 
 def check_provider_readiness() -> dict[str, Any]:
     """
-    Check live chain provider configuration (EVM_RPC_URL and EVM_CHAIN_ID).
+    Check live chain provider configuration.
 
+    Checks EVM_RPC_URL and STAGING_EVM_RPC_URL (staging override preferred when set).
+    Checks EVM_CHAIN_ID and STAGING_EVM_CHAIN_ID.
     Placeholder values are rejected as not ready.
     Never exposes secret values — only boolean presence.
-    Derives explicit provider_mode: live | simulator | disabled | unknown.
+    Derives explicit provider_mode: live | disabled | unknown.
     """
     evm_rpc = (os.getenv('EVM_RPC_URL') or '').strip()
-    evm_chain_id = (os.getenv('EVM_CHAIN_ID') or os.getenv('CHAIN_ID') or '').strip()
+    staging_evm_rpc = (os.getenv('STAGING_EVM_RPC_URL') or '').strip()
+    # Prefer STAGING_EVM_RPC_URL when present; fall back to EVM_RPC_URL
+    effective_rpc = staging_evm_rpc if staging_evm_rpc else evm_rpc
+    evm_chain_id = (
+        os.getenv('STAGING_EVM_CHAIN_ID')
+        or os.getenv('EVM_CHAIN_ID')
+        or os.getenv('CHAIN_ID')
+        or ''
+    ).strip()
     required = ['EVM_RPC_URL']
-    optional = ['EVM_CHAIN_ID']
+    optional = ['EVM_CHAIN_ID', 'STAGING_EVM_RPC_URL', 'STAGING_EVM_CHAIN_ID']
 
-    if not evm_rpc:
+    if not effective_rpc:
         return {
             'provider_ready': False,
             'provider_status': 'missing',
             'provider_mode': 'disabled',
             'provider_reason': (
-                'EVM_RPC_URL is not configured; '
+                'EVM_RPC_URL (or STAGING_EVM_RPC_URL) is not configured; '
                 'live chain monitoring requires a real provider endpoint.'
             ),
             'provider_required_env': required,
@@ -250,13 +260,13 @@ def check_provider_readiness() -> dict[str, Any]:
             'chain_id_configured': False,
         }
 
-    if _has_placeholder(evm_rpc):
+    if _has_placeholder(effective_rpc):
         return {
             'provider_ready': False,
             'provider_status': 'misconfigured',
             'provider_mode': 'unknown',
             'provider_reason': (
-                'EVM_RPC_URL contains a placeholder value; '
+                'EVM_RPC_URL (or STAGING_EVM_RPC_URL) contains a placeholder value; '
                 'set a real live provider endpoint before paid launch.'
             ),
             'provider_required_env': required,
@@ -267,7 +277,7 @@ def check_provider_readiness() -> dict[str, Any]:
 
     chain_id_ok = bool(evm_chain_id) and not _has_placeholder(evm_chain_id)
     chain_id_note = (
-        'EVM_CHAIN_ID is configured.'
+        'EVM_CHAIN_ID (or STAGING_EVM_CHAIN_ID) is configured.'
         if chain_id_ok
         else 'EVM_CHAIN_ID not set; chain identification may be implicit.'
     )
@@ -277,7 +287,7 @@ def check_provider_readiness() -> dict[str, Any]:
         'provider_status': 'ready',
         'provider_mode': 'live',
         'provider_reason': (
-            'EVM_RPC_URL is configured with a non-placeholder provider endpoint. '
+            'EVM provider endpoint is configured with a non-placeholder URL. '
             + chain_id_note
         ),
         'provider_required_env': required,
@@ -564,3 +574,188 @@ def build_paid_launch_readiness(
     if chain_result is not None:
         out['live_evidence_chain'] = chain_result
     return out
+
+
+def build_live_evidence_proof(
+    *,
+    chain_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Return a structured live evidence proof status covering the full operational chain:
+    provider → telemetry → detection → alert → incident/response → evidence package.
+
+    Fail-closed on every gate:
+    - Heartbeat alone is not telemetry.
+    - Poll alone is not telemetry.
+    - Simulator/demo evidence is not live evidence.
+    - Unknown evidence source fails closed.
+    - Missing chain links produce explicit missing entries.
+
+    Never infers live status from heartbeat, poll, mock data, simulator, or demo state.
+    """
+    provider = check_provider_readiness()
+    missing: list[str] = []
+    contradiction_flags: list[str] = []
+
+    provider_ready = provider['provider_ready']
+    provider_mode = provider.get('provider_mode', 'unknown')
+
+    if not provider_ready:
+        missing_env = provider.get('provider_missing_env') or ['EVM_RPC_URL']
+        missing.append(
+            f"{' or '.join(missing_env)} not configured; "
+            'live provider endpoint is required'
+        )
+
+    ce = chain_evidence or {}
+
+    # Determine evidence_source
+    evidence_source_raw = str(
+        ce.get('evidence_source')
+        or ce.get('telemetry_evidence_source')
+        or ''
+    ).strip().lower()
+
+    if not evidence_source_raw or evidence_source_raw == 'unknown':
+        evidence_source = 'unknown'
+        if not provider_ready:
+            pass  # provider missing already covers this
+        else:
+            missing.append('evidence_source (unknown; failing closed)')
+    elif evidence_source_raw in ('simulator', 'guided_simulator', 'fixture'):
+        evidence_source = 'simulator'
+        contradiction_flags.append(
+            f"evidence_source='{evidence_source_raw}' is not live provider evidence; "
+            'simulator/demo/fixture evidence does not satisfy live_evidence_ready'
+        )
+    elif evidence_source_raw == 'demo':
+        evidence_source = 'demo'
+        contradiction_flags.append(
+            "evidence_source='demo' is not live provider evidence; "
+            'demo evidence does not satisfy live_evidence_ready'
+        )
+    elif evidence_source_raw in ('live', 'live_provider'):
+        evidence_source = 'live'
+    else:
+        evidence_source = 'unknown'
+        missing.append(f"unrecognized evidence_source='{evidence_source_raw}'")
+
+    # Telemetry (heartbeat and poll are not telemetry)
+    heartbeat_at = ce.get('last_heartbeat_at') or ce.get('heartbeat_at')
+    poll_at = ce.get('latest_poll_at') or ce.get('poll_at')
+    telemetry_at = (
+        ce.get('last_telemetry_at')
+        or ce.get('latest_telemetry_at')
+        or ce.get('telemetry_at')
+    )
+    latest_live_telemetry_at: str | None = str(telemetry_at) if telemetry_at else None
+
+    if not latest_live_telemetry_at:
+        if heartbeat_at and poll_at:
+            missing.append(
+                'live telemetry: heartbeat and poll are present but neither proves '
+                'monitored chain data arrived'
+            )
+        elif heartbeat_at:
+            missing.append(
+                'live telemetry: heartbeat is present but heartbeat proves the worker '
+                'is alive, not that monitored data arrived'
+            )
+        elif poll_at:
+            missing.append(
+                'live telemetry: poll is present but poll proves the monitoring loop ran, '
+                'not that monitored data arrived'
+            )
+        else:
+            missing.append('live telemetry: last_telemetry_at is absent')
+
+    # Chain linkage
+    chain_telemetry_id: str | None = str(ce.get('telemetry_event_id') or '') or None
+    chain_detection_id: str | None = str(ce.get('detection_id') or '') or None
+    chain_alert_id: str | None = str(ce.get('alert_id') or '') or None
+    chain_incident_id: str | None = str(ce.get('incident_id') or '') or None
+    chain_evidence_package_id: str | None = str(ce.get('evidence_package_id') or '') or None
+
+    detections_count = int(ce.get('detections_count') or 0)
+    alerts_count = int(ce.get('alerts_count') or 0)
+    incidents_count = int(ce.get('incidents_count') or 0)
+    response_actions_count = int(ce.get('response_actions_count') or 0)
+    detection_linked = bool(ce.get('detection_telemetry_linked'))
+    alert_linked = bool(ce.get('alert_detection_linked'))
+    incident_linked = bool(ce.get('incident_alert_linked'))
+
+    if detections_count < 1 and not chain_detection_id:
+        missing.append('detection linked to telemetry')
+    elif (
+        not detection_linked
+        and 'detection_telemetry_linked' in ce
+        and not chain_detection_id
+    ):
+        missing.append('detection linked to telemetry by ID or lineage')
+
+    if alerts_count < 1 and not chain_alert_id:
+        missing.append('alert linked to detection')
+    elif (
+        not alert_linked
+        and 'alert_detection_linked' in ce
+        and not chain_alert_id
+    ):
+        missing.append('alert linked to detection by ID or lineage')
+
+    if incidents_count < 1 and response_actions_count < 1 and not chain_incident_id:
+        missing.append('incident or response_action linked to alert')
+    elif (
+        incidents_count + response_actions_count > 0
+        and not incident_linked
+        and 'incident_alert_linked' in ce
+        and not chain_incident_id
+    ):
+        missing.append('incident or response_action linked to alert by ID or lineage')
+
+    export_capability = str(ce.get('export_capability') or '').strip().lower()
+    export_source_label = str(ce.get('export_source_label') or '').strip().lower()
+    if not chain_evidence_package_id and not export_capability:
+        missing.append('evidence package linked to incident/response chain')
+    elif export_source_label and export_source_label not in ('live', 'live_provider', ''):
+        contradiction_flags.append(
+            f"export_source_label='{export_source_label}' is not live; "
+            'evidence package must be labeled as live'
+        )
+
+    # Runtime contradiction flags
+    for flag in (ce.get('contradiction_flags') or []):
+        flag_str = str(flag)
+        if any(
+            token in flag_str.lower()
+            for token in (
+                'live_mode_with_simulator', 'simulator_evidence',
+                'healthy_without_telemetry', 'live_mode_without_telemetry',
+                'missing_telemetry',
+            )
+        ):
+            contradiction_flags.append(flag_str)
+
+    live_evidence_ready = (
+        provider_ready
+        and evidence_source == 'live'
+        and latest_live_telemetry_at is not None
+        and not missing
+        and not contradiction_flags
+    )
+
+    return {
+        'provider_ready': provider_ready,
+        'provider_mode': provider_mode,
+        'live_evidence_ready': live_evidence_ready,
+        'evidence_source': evidence_source,
+        'latest_live_telemetry_at': latest_live_telemetry_at,
+        'chain': {
+            'telemetry_event_id': chain_telemetry_id,
+            'detection_id': chain_detection_id,
+            'alert_id': chain_alert_id,
+            'incident_id': chain_incident_id,
+            'evidence_package_id': chain_evidence_package_id,
+        },
+        'missing': missing,
+        'contradiction_flags': contradiction_flags,
+    }

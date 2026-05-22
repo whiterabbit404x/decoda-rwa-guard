@@ -67,6 +67,33 @@ is blocked even if the source is labeled `live`:
 These flags are detected by `detect_runtime_contradictions()` in
 `services/api/app/runtime_truthfulness.py`.
 
+## Required environment variables
+
+| Variable | Purpose | Required for |
+|---|---|---|
+| `EVM_RPC_URL` | Live EVM provider endpoint | `provider_ready=true` |
+| `EVM_CHAIN_ID` | Target chain integer (e.g. `1`) | Explicit chain identification |
+| `STAGING_EVM_RPC_URL` | Staging override (preferred over `EVM_RPC_URL` in staging proof) | Staging live evidence |
+| `STAGING_EVM_CHAIN_ID` | Staging chain ID override | Staging chain identification |
+| `STAGING_WORKER_ENABLED` | Confirms monitoring worker is active in staging | `staging_launch_ready=true` |
+
+`STAGING_EVM_RPC_URL` is preferred over `EVM_RPC_URL` in `check_provider_readiness()` and
+`build_live_evidence_proof()`. If `STAGING_EVM_RPC_URL` is set and non-placeholder,
+`provider_ready=true` even when `EVM_RPC_URL` is absent.
+
+## Required proof chain
+
+All of the following must be linked by ID or evidence lineage:
+
+```
+provider (EVM_RPC_URL or STAGING_EVM_RPC_URL)
+  └─ telemetry event (last_telemetry_at + telemetry_event_id)
+       └─ detection (detection_id, detection_telemetry_linked=true)
+            └─ alert (alert_id, alert_detection_linked=true)
+                 └─ incident or response_action (incident_id, incident_alert_linked=true)
+                      └─ evidence package (evidence_package_id, export_source_label='live')
+```
+
 ## How to configure a live EVM provider
 
 1. Set `EVM_RPC_URL` to a real Ethereum mainnet (or target network) endpoint:
@@ -74,16 +101,123 @@ These flags are detected by `detect_runtime_contradictions()` in
    - Alchemy: `https://eth-mainnet.g.alchemy.com/v2/<api-key>`
    - Self-hosted node: `https://your-node-url:8545`
 
-2. Set `EVM_CHAIN_ID` to the target chain integer ID (e.g., `1` for Ethereum mainnet).
+2. Optionally set `STAGING_EVM_RPC_URL` to override in staging environments.
 
-3. Verify provider health returns a current block number.
+3. Set `EVM_CHAIN_ID` (or `STAGING_EVM_CHAIN_ID`) to the target chain integer ID
+   (e.g., `1` for Ethereum mainnet).
 
-## Running chain validation
+4. Set `STAGING_WORKER_ENABLED=true` to confirm the monitoring worker is active.
+
+5. Verify provider health returns a current block number.
+
+## Running proof commands
+
+```bash
+# Generate staging launch proof (requires staging env vars)
+python scripts/generate_staging_launch_proof.py --mode staging --strict
+
+# Validate staging launch proof artifact
+python scripts/validate_staging_launch_proof.py
+
+# Run 100% readiness validation
+python scripts/validate_100_percent_readiness.py --mode staging --strict
+
+# Run targeted tests
+python -m pytest services/api/tests/test_live_evidence_proof.py -v
+python -m pytest services/api/tests/test_paid_launch_readiness.py -v
+python -m pytest services/api/tests/test_staging_launch_proof.py -v
+```
+
+## Expected output when provider is NOT configured
+
+When `EVM_RPC_URL` and `STAGING_EVM_RPC_URL` are both absent, the staging proof
+`live_provider_validation` section will show:
+
+```json
+{
+  "status": "fail",
+  "evm_rpc_configured": false,
+  "provider_ready": false,
+  "provider_mode": "disabled",
+  "live_evidence_ready": false,
+  "evidence_source": "unknown",
+  "latest_live_telemetry_at": null,
+  "chain": {
+    "telemetry_event_id": null,
+    "detection_id": null,
+    "alert_id": null,
+    "incident_id": null,
+    "evidence_package_id": null
+  },
+  "missing": [
+    "EVM_RPC_URL (or STAGING_EVM_RPC_URL) not configured",
+    "evidence source unknown in launch-proof; failing closed",
+    "missing live telemetry; live evidence readiness not confirmed"
+  ],
+  "contradiction_flags": []
+}
+```
+
+`staging_live_evidence_ready` will be `false` and `safe_to_sell_broadly_today` will be `false`.
+
+## Expected output when live evidence is confirmed
+
+When all env vars are set and the full chain is proven, the proof shows:
+
+```json
+{
+  "status": "pass",
+  "evm_rpc_configured": true,
+  "provider_ready": true,
+  "provider_mode": "live",
+  "live_evidence_ready": true,
+  "evidence_source": "live_provider",
+  "latest_live_telemetry_at": "<timestamp>",
+  "chain": {
+    "telemetry_event_id": "<id>",
+    "detection_id": "<id>",
+    "alert_id": "<id>",
+    "incident_id": "<id>",
+    "evidence_package_id": "<id>"
+  },
+  "missing": [],
+  "contradiction_flags": []
+}
+```
+
+## Running chain validation (low-level)
 
 ```python
-from services.api.app.paid_launch_readiness import check_live_evidence_chain
+from services.api.app.paid_launch_readiness import (
+    build_live_evidence_proof,
+    check_live_evidence_chain,
+)
 
-result = check_live_evidence_chain({
+# Structured proof (canonical output format)
+result = build_live_evidence_proof(chain_evidence={
+    'evidence_source': 'live',
+    'last_telemetry_at': '2026-01-01T00:01:00Z',
+    'telemetry_event_id': 'tel-001',
+    'detections_count': 1,
+    'detection_telemetry_linked': True,
+    'detection_id': 'det-001',
+    'alerts_count': 1,
+    'alert_detection_linked': True,
+    'alert_id': 'alert-001',
+    'incidents_count': 1,
+    'incident_alert_linked': True,
+    'incident_id': 'inc-001',
+    'evidence_package_id': 'pkg-001',
+    'export_capability': 'pass',
+    'export_source_label': 'live',
+    'contradiction_flags': [],
+})
+print(result['live_evidence_ready'])           # True (when EVM_RPC_URL is set)
+print(result['chain']['telemetry_event_id'])   # 'tel-001'
+print(result['missing'])                       # []
+
+# Lower-level chain check only
+chain_result = check_live_evidence_chain({
     'evidence_source': 'live',
     'last_heartbeat_at': '2026-01-01T00:00:00Z',
     'latest_poll_at': '2026-01-01T00:00:30Z',
@@ -98,9 +232,8 @@ result = check_live_evidence_chain({
     'export_source_label': 'live',
     'contradiction_flags': [],
 })
-
-print(result['live_evidence_chain_ready'])  # True
-print(result['chain_blockers'])             # []
+print(chain_result['live_evidence_chain_ready'])  # True
+print(chain_result['chain_blockers'])             # []
 ```
 
 ## NIST CSF 2.0 alignment
