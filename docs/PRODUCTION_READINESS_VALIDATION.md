@@ -628,6 +628,97 @@ not by itself make the product broad paid SaaS ready.
 
 ---
 
+## Session 14 — Multi-Tenant Isolation and Object-Level Authorization
+
+### Why this improves Multi-tenant isolation (75% → estimated 88%)
+
+The multi-tenant isolation category was at 75% because:
+- No canonical object-level authorization helper module existed.
+- Cross-workspace negative tests were absent.
+- Body/query workspace_id override protection was untested.
+- Export and response-action cross-workspace rejection was not verified.
+- Audit log workspace scoping was not explicitly tested.
+
+Session 14 adds:
+
+| Improvement | Impact |
+|---|---|
+| `services/api/app/tenant_isolation.py` | Canonical helpers: `require_object_in_workspace`, `assert_same_workspace`, `reject_body_workspace_override`, `safe_not_found` |
+| 32 new tests in `test_multi_tenant_isolation.py` (cases A–X) | Full negative test coverage for all core SaaS objects |
+| Cross-workspace asset/target/detection/alert/incident/action/export tests | Proves isolation is enforced at every endpoint family |
+| Body workspace_id override test | Proves body cannot override session workspace context |
+| Audit log scoping test | Proves `log_audit` always uses the session workspace |
+| List endpoint scoping test | Proves list queries use session workspace, not query params |
+| `docs/MULTI_TENANT_ISOLATION.md` | Reference documentation for the isolation model |
+
+### Tests added
+
+```
+services/api/tests/test_multi_tenant_isolation.py  (32 tests)
+
+A  Workspace A cannot read Workspace B asset
+B  Workspace A cannot update Workspace B asset
+C  Workspace A cannot delete Workspace B asset
+D  Workspace A cannot enable/disable Workspace B monitoring target (×2)
+E  Workspace A cannot read Workspace B detection evidence
+F  Workspace A cannot read Workspace B detection
+G  Workspace A cannot read Workspace B alert
+H  Workspace A cannot acknowledge/resolve Workspace B alert
+I  Incident list never includes Workspace B incidents
+J  Workspace A cannot close/update Workspace B incident
+K  Workspace A cannot execute Workspace B response action
+L  Workspace A cannot generate proof bundle for Workspace B incident
+M  Workspace A cannot read/download Workspace B export artifact (×2)
+N  Runtime setup chain uses workspace-scoped counters only
+O  Monitoring summary fallback uses isolated workspace state
+P  _ensure_membership rejects wrong workspace
+Q  Cross-workspace 404 does not reveal object details
+R  Body workspace_id cannot override session (×2)
+S  list_assets uses session workspace, not query params
+T  Mixed-workspace export is rejected
+U  Mixed-workspace response action is rejected
+V  log_audit writes the session workspace_id
+W  list_assets never returns Workspace B rows
+X  Tenant isolation helpers (assert_same_workspace, require_object_in_workspace, safe_not_found, reject_body_workspace_override)
++ 2 additional edge-case tests
+```
+
+### Commands to run
+
+```bash
+cd /home/user/decoda-rwa-guard
+
+# Session 14 isolation tests
+python -m pytest services/api/tests/test_multi_tenant_isolation.py -q
+
+# Prior sessions still passing
+python -m pytest \
+  services/api/tests/test_saas_workflow_validation.py \
+  services/api/tests/test_workspace_readiness_gate_aggregation.py \
+  services/api/tests/test_response_actions_api.py \
+  services/api/tests/test_proof_bundle_export.py \
+  services/api/tests/test_assets_and_exports_foundations.py \
+  -q
+python -m pytest services/api/tests/test_paid_launch_readiness.py -q
+python -m pytest services/api/tests/test_release_proof_artifacts.py -q
+python -m pytest services/api/tests/test_evidence_export_truthfulness.py -q
+python -m pytest services/api/tests/test_runtime_truthfulness.py -q
+```
+
+### Remaining blockers for broad paid SaaS readiness
+
+Multi-tenant isolation at ~88% is a necessary but not sufficient condition.
+Broad paid SaaS readiness additionally requires:
+
+- `BILLING_PROVIDER` + billing credentials (`STRIPE_SECRET_KEY` / Paddle)
+- `EMAIL_PROVIDER` + email credentials (`SENDGRID_API_KEY` / `RESEND_API_KEY` / SMTP)
+- Live EVM provider (`EVM_RPC_URL` non-placeholder)
+- Live evidence from a real chain provider (not simulator)
+- All `build_paid_launch_readiness()` gates passing simultaneously
+- CI proof artifacts generated and validated
+
+---
+
 ## Final 100% Readiness Gate (Session 14)
 
 ### What "100%" means
