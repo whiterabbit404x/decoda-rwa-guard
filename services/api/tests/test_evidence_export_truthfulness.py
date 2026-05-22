@@ -606,3 +606,213 @@ def test_normalize_evidence_source_helper() -> None:
     assert pilot.normalize_evidence_source('') == 'unknown'
     assert pilot.normalize_evidence_source('custom_source_xyz') == 'unknown'
     assert pilot.normalize_evidence_source('missing') == 'unknown'
+
+
+# ── Session 12 Hardening: Fixture connection + stricter tests ─────────────────
+
+class _FixtureCompleteConnection(_LiveCompleteConnection):
+    """All sections present, fixture evidence source."""
+
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'FROM alerts a JOIN detection_metrics dm ON dm.alert_id = a.id' in normalized:
+            return _FakeRow([{'id': 'alert-fix-1', 'severity': 'low', 'source': 'fixture', 'target_id': 'target-1'}])
+        if 'FROM detections' in normalized and 'linked_alert_id = ANY' in normalized:
+            return _FakeRow([{
+                'id': 'det-fix-1', 'detection_type': 'anomaly', 'severity': 'low',
+                'confidence': 0.6, 'evidence_source': 'test_fixture', 'status': 'open',
+                'detected_at': '2026-03-01T00:01:00Z', 'title': 'Fixture detection',
+            }])
+        return super().execute(query, params)
+
+
+_CANONICAL_EVIDENCE_SOURCE_ENUM_HARDENING = frozenset({
+    'live_provider', 'simulator', 'fixture', 'unavailable', 'unknown',
+})
+
+_FORBIDDEN_CUSTOMER_CLAIMS = [
+    'broad paid saas ready',
+    'enterprise ready',
+    'audit certified',
+    'regulatory compliant',
+]
+
+
+def test_hardening_A_complete_impossible_when_evidence_source_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A. package_status cannot be complete when evidence_source is unknown."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    pilot._generate_export_artifact(_UnknownSourceConnection(), workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert summary['evidence_source'] == 'unknown'
+    assert summary['package_status'] != 'complete', (
+        f"package_status must not be complete when evidence_source is unknown, "
+        f"got package_status={summary['package_status']!r}"
+    )
+
+
+def test_hardening_B_complete_impossible_when_truthfulness_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B. package_status cannot be complete when source_truthfulness_status is unknown."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    pilot._generate_export_artifact(_UnknownSourceConnection(), workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert summary['source_truthfulness_status'] == 'unknown'
+    assert summary['package_status'] != 'complete', (
+        f"package_status must not be complete when source_truthfulness_status is unknown, "
+        f"got package_status={summary['package_status']!r}"
+    )
+
+
+def test_hardening_C_simulator_customer_summary_not_live_proof(monkeypatch: pytest.MonkeyPatch) -> None:
+    """C. Simulator package customer_summary must explicitly say it is not live-provider proof."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    pilot._generate_export_artifact(_SimulatorCompleteConnection(), workspace_id='ws-1', export_id='exp-sim')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    cs = payload['rows'][0]['summary.json']['customer_summary']
+    source_note = cs.get('source_note', '').lower()
+    assert 'not live-provider proof' in source_note, (
+        f"simulator source_note must say 'not live-provider proof', got: {cs.get('source_note')!r}"
+    )
+
+
+def test_hardening_D_fixture_customer_summary_not_live_proof(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D. Fixture package customer_summary must say it is not live-provider proof."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    pilot._generate_export_artifact(_FixtureCompleteConnection(), workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert summary['evidence_source'] == 'fixture', (
+        f"expected evidence_source='fixture', got {summary['evidence_source']!r}"
+    )
+    cs = summary['customer_summary']
+    source_note = cs.get('source_note', '').lower()
+    assert 'not live-provider proof' in source_note, (
+        f"fixture source_note must say 'not live-provider proof', got: {cs.get('source_note')!r}"
+    )
+
+
+def test_hardening_E_unknown_source_customer_summary_warns_not_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    """E. Unknown source customer_summary must warn it should not be treated as live-provider proof."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    pilot._generate_export_artifact(_UnknownSourceConnection(), workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    cs = payload['rows'][0]['summary.json']['customer_summary']
+    source_note = cs.get('source_note', '').lower()
+    assert 'live-provider proof' in source_note, (
+        f"unknown source_note must warn about live-provider proof, got: {cs.get('source_note')!r}"
+    )
+
+
+def test_hardening_F_blocked_when_no_usable_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F. package_status must be blocked when no usable evidence sections exist."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    pilot._generate_export_artifact(_NoEvidenceConnection(), workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert summary['package_status'] == 'blocked', (
+        f"expected package_status='blocked' with no evidence, got {summary['package_status']!r}"
+    )
+    assert len(summary.get('unavailable_sections', [])) > 0, (
+        'blocked package must list unavailable sections'
+    )
+
+
+def test_hardening_G_no_complete_without_response_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    """G. package_status must not be complete if response_action section is missing."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    pilot._generate_export_artifact(_MissingResponseActionsConnection(), workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert 'response_action' in summary['unavailable_sections'], (
+        'response_action must be in unavailable_sections when missing'
+    )
+    assert summary['package_status'] != 'complete', (
+        f"package_status must not be complete when response_action is missing, "
+        f"got {summary['package_status']!r}"
+    )
+
+
+def test_hardening_H_no_complete_without_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """H. package_status must not be complete if telemetry section is missing."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    pilot._generate_export_artifact(_MissingTelemetryConnection(), workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert 'telemetry' in summary['unavailable_sections'], (
+        'telemetry must be in unavailable_sections when missing'
+    )
+    assert summary['package_status'] != 'complete', (
+        f"package_status must not be complete when telemetry is missing, "
+        f"got {summary['package_status']!r}"
+    )
+
+
+def test_hardening_I_customer_summary_no_forbidden_claims(monkeypatch: pytest.MonkeyPatch) -> None:
+    """I. customer_summary must never contain forbidden overclaiming phrases across all source types."""
+    cases = [
+        (_LiveCompleteConnection(), 'ws-live', 'exp-live'),
+        (_SimulatorCompleteConnection(), 'ws-1', 'exp-sim'),
+        (_UnknownSourceConnection(), 'ws-live', 'exp-live'),
+        (_NoEvidenceConnection(), 'ws-live', 'exp-live'),
+        (_MissingResponseActionsConnection(), 'ws-live', 'exp-live'),
+        (_FixtureCompleteConnection(), 'ws-live', 'exp-live'),
+    ]
+    for conn, ws, exp in cases:
+        fake_storage = _FakeStorage()
+        monkeypatch.setattr(pilot, 'load_export_storage', lambda _s=fake_storage: _s)
+        pilot._generate_export_artifact(conn, workspace_id=ws, export_id=exp)
+        payload = json.loads(fake_storage.content.decode('utf-8'))
+        cs = payload['rows'][0]['summary.json']['customer_summary']
+        all_text = ' '.join([
+            cs.get('headline', ''),
+            cs.get('what_happened', ''),
+            cs.get('why_it_matters', ''),
+            cs.get('source_note', ''),
+            ' '.join(cs.get('limitations', [])),
+        ]).lower()
+        for forbidden in _FORBIDDEN_CUSTOMER_CLAIMS:
+            assert forbidden not in all_text, (
+                f"customer_summary contains forbidden claim {forbidden!r} "
+                f"for {conn.__class__.__name__}"
+            )
+
+
+def test_hardening_J_canonical_evidence_source_valid_enum_all_cases(monkeypatch: pytest.MonkeyPatch) -> None:
+    """J. canonical evidence_source must always be a valid enum value across all connection types."""
+    cases = [
+        (_LiveCompleteConnection(), 'ws-live', 'exp-live'),
+        (_SimulatorCompleteConnection(), 'ws-1', 'exp-sim'),
+        (_UnknownSourceConnection(), 'ws-live', 'exp-live'),
+        (_NoEvidenceConnection(), 'ws-live', 'exp-live'),
+        (_FixtureCompleteConnection(), 'ws-live', 'exp-live'),
+        (_MissingTelemetryConnection(), 'ws-live', 'exp-live'),
+        (_MissingResponseActionsConnection(), 'ws-live', 'exp-live'),
+    ]
+    for conn, ws, exp in cases:
+        fake_storage = _FakeStorage()
+        monkeypatch.setattr(pilot, 'load_export_storage', lambda _s=fake_storage: _s)
+        pilot._generate_export_artifact(conn, workspace_id=ws, export_id=exp)
+        payload = json.loads(fake_storage.content.decode('utf-8'))
+        summary = payload['rows'][0]['summary.json']
+        src = summary['evidence_source']
+        assert src in _CANONICAL_EVIDENCE_SOURCE_ENUM_HARDENING, (
+            f"evidence_source={src!r} is not a valid canonical enum value "
+            f"for {conn.__class__.__name__}"
+        )

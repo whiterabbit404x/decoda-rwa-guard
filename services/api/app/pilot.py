@@ -13450,8 +13450,12 @@ def _build_customer_export_summary(
         source_note = 'This package uses simulator evidence and is not live-provider proof.'
         limitations.append('Evidence originates from a simulator environment, not live production data.')
         limitations.append('This package cannot be used as live-provider audit evidence.')
+    elif evidence_source_type == 'fixture':
+        source_note = 'This package uses fixture evidence and is not live-provider proof.'
+        limitations.append('Evidence originates from a test fixture, not live production data.')
+        limitations.append('This package cannot be used as live-provider audit evidence.')
     elif evidence_source_type == 'unavailable':
-        source_note = 'Evidence source was unavailable at collection time. Package may contain fallback data.'
+        source_note = 'Evidence source is unavailable. Package may contain fallback data.'
         limitations.append('Live provider evidence is missing from this package.')
     elif evidence_source_type == 'missing':
         source_note = 'No evidence source records were found for this package.'
@@ -13743,6 +13747,8 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 evidence_source_type = 'live'
             elif any(s in {'simulator', 'demo', 'replay', 'guided_simulator'} for s in all_sources):
                 evidence_source_type = 'simulator'
+            elif any(s in {'fixture', 'test_fixture'} for s in all_sources):
+                evidence_source_type = 'fixture'
             elif any(s == 'fallback' for s in all_sources):
                 evidence_source_type = 'unavailable'
             elif all_sources:
@@ -13787,15 +13793,30 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 source_truthfulness_reason = 'Evidence sourced from simulator/demo environment, not production.'
             elif evidence_source_type == 'unavailable':
                 source_truthfulness_reason = 'Evidence source was unreachable; fallback data may be present.'
+            elif evidence_source_type == 'fixture':
+                source_truthfulness_reason = 'Evidence sourced from a test fixture, not live production data.'
             elif evidence_source_type == 'missing':
                 source_truthfulness_reason = 'No evidence source found in records.'
             else:
                 source_truthfulness_reason = 'Evidence source type is unknown.'
 
             # Build warnings
+            # Fail-closed package_status — uses canonical evidence_source and source_truthfulness_status
+            _pkg_has_evidence = bool(alert_rows or detection_rows or action_rows or evidence_rows)
+            _pkg_status = (
+                'complete' if (
+                    export_status == 'complete'
+                    and evidence_source not in {'unknown', 'unavailable'}
+                    and source_truthfulness_status not in {'unknown', 'unavailable'}
+                )
+                else ('partial' if _pkg_has_evidence else 'blocked')
+            )
+
             bundle_warnings: list[str] = []
             if evidence_source_type == 'simulator':
                 bundle_warnings.append('Evidence is from simulator/demo source and does not constitute live production proof.')
+            elif evidence_source_type == 'fixture':
+                bundle_warnings.append('Evidence is from a test fixture and does not constitute live production proof.')
             elif evidence_source_type == 'unavailable':
                 bundle_warnings.append('Evidence source was unavailable at collection time. Bundle may contain fallback data.')
             elif evidence_source_type == 'missing':
@@ -13866,11 +13887,7 @@ def _generate_export_artifact(connection: Any, *, workspace_id: str, export_id: 
                 'detection_count': len(detection_rows),
                 'response_action_count': len(action_rows),
                 'export_status': export_status,
-                'package_status': (
-                    'complete' if (export_status == 'complete' and evidence_source_type not in {'missing', 'unknown'})
-                    else 'partial' if export_status == 'partial'
-                    else 'blocked'
-                ),
+                'package_status': _pkg_status,
                 'export_format_version': '1.0',
                 'evidence_source_type': evidence_source_type,
                 'evidence_source': evidence_source,

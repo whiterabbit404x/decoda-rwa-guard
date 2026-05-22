@@ -460,3 +460,46 @@ Changes made:
 - `test_N_summary_contains_all_required_metadata_fields` updated to require `evidence_source` in schema 1.1.
 
 No existing Session 10/11/12 tests were weakened. All proof bundle export tests continue to pass.
+
+### Session 12 Hardening Follow-Up — Fail-closed package status and customer_summary safety
+
+**Goal:** Close remaining evidence/export polish gaps without weakening any existing gates.
+
+Changes made:
+
+- **`package_status` now fails closed** using the canonical `evidence_source` field and `source_truthfulness_status` rather than the legacy `evidence_source_type` field:
+  - `complete` requires `evidence_source not in {unknown, unavailable}` AND `source_truthfulness_status not in {unknown, unavailable}`
+  - `partial` is returned when any evidence rows exist but completeness cannot be claimed
+  - `blocked` is returned only when no evidence rows exist at all
+
+- **`fixture` evidence source explicitly handled** throughout the evidence chain:
+  - `fixture` and `test_fixture` alert/detection sources now produce `evidence_source_type = fixture`
+  - `source_truthfulness_status = fixture_only` and `source_truthfulness_reason` are set correctly
+  - Bundle warnings flag fixture evidence as non-live-production proof
+
+- **`_build_customer_export_summary` cannot overclaim:**
+  - New `fixture` case: `source_note` says "not live-provider proof"
+  - `unavailable` case updated: `source_note` starts with "Evidence source is unavailable."
+  - No case ever says "regulatory compliant", "audit certified", "enterprise ready", or "broad paid SaaS ready"
+
+- **10 new hardening tests** added to `test_evidence_export_truthfulness.py`:
+  - A: complete impossible when evidence_source is unknown
+  - B: complete impossible when source_truthfulness_status is unknown
+  - C: simulator customer_summary says "not live-provider proof"
+  - D: fixture customer_summary says "not live-provider proof"
+  - E: unknown source customer_summary warns about live-provider proof
+  - F: blocked package returned when no usable evidence
+  - G: package_status not complete without response_action
+  - H: package_status not complete without telemetry
+  - I: customer_summary never contains forbidden claims across all source types
+  - J: canonical evidence_source always a valid enum across all connection types
+
+- **UI panel** (`evidence-audit-panel.tsx`): added explicit warning banner when `package_status` is `partial` or `blocked`
+
+**Broad paid SaaS readiness remains blocked** unless all launch gates pass with real proof artifacts:
+- Billing provider configuration (`STRIPE_SECRET_KEY` / Paddle)
+- Email provider configuration
+- Live provider (`EVM_RPC_URL`) must be non-placeholder
+- `paid_launch_ready=true` requires all four gates from Session 10 to pass
+
+Evidence/export hardening improves customer trust and fail-closed audit safety. It does not change the broad paid SaaS launch gate requirements.
