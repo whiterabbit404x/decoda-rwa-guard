@@ -72,10 +72,23 @@ REQUIRED_LIVE_PROVIDER_FIELDS = [
     'evm_rpc_configured',
     'chain_id_configured',
     'provider_health_checked',
+    'provider_ready',
+    'provider_mode',
     'live_evidence_ready',
     'evidence_source',
+    'chain',
+    'missing',
+    'contradiction_flags',
     'blockers',
     'warnings',
+]
+
+REQUIRED_LIVE_PROVIDER_CHAIN_FIELDS = [
+    'telemetry_event_id',
+    'detection_id',
+    'alert_id',
+    'incident_id',
+    'evidence_package_id',
 ]
 
 REQUIRED_BILLING_FIELDS = [
@@ -159,6 +172,13 @@ def validate_staging_proof(artifact_path: Path) -> tuple[bool, list[str], list[s
     for field in REQUIRED_LIVE_PROVIDER_FIELDS:
         if field not in live_val:
             errors.append(f'live_provider_validation missing field: {field}')
+
+    # Validate chain sub-fields when present
+    live_chain = live_val.get('chain', {})
+    if isinstance(live_chain, dict):
+        for field in REQUIRED_LIVE_PROVIDER_CHAIN_FIELDS:
+            if field not in live_chain:
+                errors.append(f'live_provider_validation.chain missing field: {field}')
 
     billing_val: dict[str, Any] = artifact.get('billing_production_validation', {})
     for field in REQUIRED_BILLING_FIELDS:
@@ -245,6 +265,36 @@ def validate_staging_proof(artifact_path: Path) -> tuple[bool, list[str], list[s
         errors.append(
             f'OVERCLAIM: live_provider_validation.status=pass '
             f'but evidence_source={ev_source!r}'
+        )
+
+    # Rule 6: live_evidence_ready=true requires full chain IDs to be present
+    if live_val.get('live_evidence_ready'):
+        chain = live_val.get('chain', {}) if isinstance(live_val.get('chain'), dict) else {}
+        for chain_field in ('telemetry_event_id', 'detection_id', 'alert_id', 'evidence_package_id'):
+            if not chain.get(chain_field):
+                errors.append(
+                    f'OVERCLAIM: live_evidence_ready=true '
+                    f'but chain.{chain_field} is missing or null'
+                )
+        if not (chain.get('incident_id') or chain.get('response_action_id')):
+            errors.append(
+                'OVERCLAIM: live_evidence_ready=true '
+                'but chain has no incident_id or response_action_id'
+            )
+
+    # Rule 7: live_evidence_ready=true requires live evidence_source
+    if live_val.get('live_evidence_ready') and ev_source not in ('live', 'live_provider'):
+        errors.append(
+            f'OVERCLAIM: live_evidence_ready=true '
+            f'but evidence_source={ev_source!r} is not a live source'
+        )
+
+    # Rule 8: contradiction_flags present → live_evidence_ready must be false
+    contradiction_flags = live_val.get('contradiction_flags', [])
+    if contradiction_flags and live_val.get('live_evidence_ready'):
+        errors.append(
+            f'OVERCLAIM: live_evidence_ready=true '
+            f'but contradiction_flags are present: {contradiction_flags[:3]}'
         )
 
     # Rule 5: test_mode_detected=true cannot coexist with billing status=pass
