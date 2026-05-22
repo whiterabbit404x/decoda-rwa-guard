@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T15:27:10.375086+00:00",
+  "generated_at": "2026-05-22T15:42:48.750013+00:00",
   "mode": "local",
-  "strict": true,
+  "strict": false,
   "overall_score": 90,
   "controlled_pilot_ready": true,
   "broad_paid_saas_ready": false,
@@ -97,7 +97,7 @@
       "note": ""
     },
     "live_evidence_readiness": {
-      "status": "pass",
+      "status": "fail",
       "source": "launch_proof",
       "note": ""
     },

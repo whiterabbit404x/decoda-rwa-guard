@@ -1,23 +1,62 @@
 """
-Live evidence proof validation — 10 canonical test cases.
+Live evidence proof validation — canonical test cases.
 
-Validates build_live_evidence_proof() and check_provider_readiness() behaviour
-for all combinations of missing env vars, heartbeat/poll-only states,
-simulator/demo evidence, partial chain links, and the complete live chain.
+Validates build_live_evidence_proof() and check_provider_readiness() from
+paid_launch_readiness, AND generate_live_evidence_proof() from
+scripts/generate_live_evidence_proof.py, covering all combinations of:
+- missing env vars, heartbeat/poll-only states, simulator/demo evidence
+- partial chain links, RPC failure, chain ID mismatch
+- complete live chain with mocked RPC calls
 """
 from __future__ import annotations
 
 import importlib
+import sys
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT))
 
 from services.api.app.paid_launch_readiness import (
     build_live_evidence_proof,
     check_provider_readiness,
 )
+from scripts.generate_live_evidence_proof import generate_live_evidence_proof
 
-_PROVIDER_ENV_VARS = ['EVM_RPC_URL', 'STAGING_EVM_RPC_URL', 'EVM_CHAIN_ID', 'STAGING_EVM_CHAIN_ID', 'CHAIN_ID']
+_SCRIPT_RPC_PATCH = 'scripts.generate_live_evidence_proof._rpc_call'
+_REAL_RPC = 'https://mainnet.infura.io/v3/test_proj'
+
+
+def _mock_rpc_success(
+    chain_id_hex: str = '0x1',
+    block_hex: str = '0x12c',
+) -> Any:
+    """Return a side_effect that alternates eth_chainId then eth_blockNumber."""
+    responses = iter([
+        {'result': chain_id_hex, 'jsonrpc': '2.0', 'id': 1},
+        {'result': block_hex, 'jsonrpc': '2.0', 'id': 1},
+    ])
+
+    def _side(url: str, method: str, params: list | None = None, timeout: int = 10) -> dict:
+        return next(responses)
+
+    return _side
+
+
+def _mock_rpc_error() -> Any:
+    def _side(url: str, method: str, params: list | None = None, timeout: int = 10) -> dict:
+        return {'error': 'URLError: <urlopen error [Errno 111] Connection refused>'}
+    return _side
+
+_PROVIDER_ENV_VARS = [
+    'EVM_RPC_URL', 'STAGING_EVM_RPC_URL',
+    'EVM_CHAIN_ID', 'STAGING_EVM_CHAIN_ID', 'CHAIN_ID',
+    'STAGING_WORKER_ENABLED',
+]
 
 _FULL_CHAIN: dict = {
     'evidence_source': 'live',
@@ -431,3 +470,179 @@ def test_unknown_evidence_source_fails_closed(monkeypatch: pytest.MonkeyPatch) -
 
     assert result['live_evidence_ready'] is False
     assert result['evidence_source'] == 'unknown'
+
+
+# ===========================================================================
+# Script-level tests: generate_live_evidence_proof() with mocked RPC
+# Cases 2-7 from the required live-provider proof tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Case 2 (script-level): Missing chain ID
+# ---------------------------------------------------------------------------
+
+def test_script_missing_chain_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No chain ID env → chain_id_configured=False, live_evidence_ready=False."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c')):
+        result = generate_live_evidence_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['chain_id_configured'] is False
+    assert lpe['live_evidence_ready'] is False
+    assert any('chain' in m.lower() for m in lpe['missing']), \
+        f'Expected chain ID in missing; got: {lpe["missing"]}'
+
+
+# ---------------------------------------------------------------------------
+# Case 3 (script-level): Worker disabled
+# ---------------------------------------------------------------------------
+
+def test_script_worker_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """STAGING_WORKER_ENABLED absent → worker_enabled=False, live_evidence_ready=False."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    # STAGING_WORKER_ENABLED intentionally absent
+
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c')):
+        result = generate_live_evidence_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['worker_enabled'] is False
+    assert lpe['live_evidence_ready'] is False
+    assert any('STAGING_WORKER_ENABLED' in m for m in lpe['missing']), \
+        f'Expected STAGING_WORKER_ENABLED in missing; got: {lpe["missing"]}'
+
+
+# ---------------------------------------------------------------------------
+# Case 4 (script-level): RPC provider failure
+# ---------------------------------------------------------------------------
+
+def test_script_rpc_provider_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RPC returns error → provider_health_checked=True, provider_ready=False."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_error()):
+        result = generate_live_evidence_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['provider_health_checked'] is True
+    assert lpe['provider_ready'] is False
+    assert lpe['live_evidence_ready'] is False
+    assert any(
+        'unreachable' in m or 'URLError' in m
+        for m in lpe['missing'] + lpe['contradiction_flags']
+    ), f'Expected provider_unreachable; missing={lpe["missing"]}, flags={lpe["contradiction_flags"]}'
+
+
+# ---------------------------------------------------------------------------
+# Case 5 (script-level): Chain ID mismatch
+# ---------------------------------------------------------------------------
+
+def test_script_chain_id_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Observed chain ID != configured → provider_ready=False, contradiction_flags has mismatch."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '137')  # Polygon configured; provider returns Ethereum
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c')):
+        result = generate_live_evidence_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['provider_ready'] is False
+    assert lpe['live_evidence_ready'] is False
+    assert any('chain_id_mismatch' in f for f in lpe['contradiction_flags']), \
+        f'Expected chain_id_mismatch in contradiction_flags; got: {lpe["contradiction_flags"]}'
+
+
+# ---------------------------------------------------------------------------
+# Case 6 (script-level): Successful RPC creates live telemetry proof
+# ---------------------------------------------------------------------------
+
+def test_script_successful_rpc_creates_live_telemetry_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Successful RPC → telemetry_event_id, evidence_source=live, block_number, timestamp."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
+        result = generate_live_evidence_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['evidence_source'] == 'live'
+    assert lpe['latest_live_telemetry_at'] is not None
+    assert lpe['chain']['telemetry_event_id'] is not None
+
+    tel = lpe.get('telemetry_record', {})
+    assert tel.get('block_number') is not None
+    assert tel.get('evidence_source') == 'live'
+
+
+# ---------------------------------------------------------------------------
+# Case 7 (script-level): Complete live chain with mocked RPC
+# ---------------------------------------------------------------------------
+
+def test_script_complete_live_chain_mocked_rpc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Full live chain with mocked RPC success: all proof gates pass."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
+        result = generate_live_evidence_proof()
+
+    lpe = result['live_provider_evidence']
+
+    assert lpe['provider_ready'] is True
+    assert lpe['provider_mode'] == 'live'
+    assert lpe['provider_health_checked'] is True
+    assert lpe['evidence_source'] == 'live'
+    assert lpe['latest_live_telemetry_at'] is not None
+    assert lpe['live_evidence_ready'] is True
+    assert lpe['missing'] == []
+    assert lpe['contradiction_flags'] == []
+
+    chain = lpe['chain']
+    assert chain['telemetry_event_id'] is not None
+    assert chain['detection_id'] is not None
+    assert chain['alert_id'] is not None
+    assert chain['incident_id'] is not None or chain['response_action_id'] is not None
+    assert chain['evidence_package_id'] is not None
+
+    # Evidence package must link back through the chain
+    pkg = lpe['evidence_package_record']
+    assert pkg['evidence_source'] == 'live'
+    assert pkg['telemetry_event_id'] == chain['telemetry_event_id']
+    assert pkg['detection_id'] == chain['detection_id']
+    assert pkg['alert_id'] == chain['alert_id']
+    assert pkg['chain_id'] == '1'
+
+
+def test_script_staging_env_vars_preferred_over_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    """STAGING_EVM_RPC_URL and STAGING_EVM_CHAIN_ID take precedence over base vars."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/base_proj')
+    monkeypatch.setenv('EVM_CHAIN_ID', '137')  # should be overridden
+    monkeypatch.setenv('STAGING_EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('STAGING_EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c')):
+        result = generate_live_evidence_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['provider_ready'] is True
+    assert lpe['live_evidence_ready'] is True
+    assert lpe['chain_id_observed'] == '1'
