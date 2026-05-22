@@ -149,6 +149,9 @@ jobs:
       - name: Run 100% readiness gate tests
         run: python -m pytest services/api/tests/test_100_percent_readiness.py -q
 
+      - name: Run staging launch proof tests
+        run: python -m pytest services/api/tests/test_staging_launch_proof.py -q
+
       - name: Generate release proof
         if: always()
         run: python scripts/generate_release_proof.py --mode ci
@@ -156,6 +159,17 @@ jobs:
       - name: Validate release proof
         if: always()
         run: python scripts/validate_release_proof.py
+
+      - name: Generate staging launch proof (fail-closed local/ci mode)
+        # In PR/CI: always fail-closed local mode; no real staging credentials.
+        # Staging environment workflow uses --mode staging --strict with real secrets.
+        # To enable GitHub environment protection for staging, see docs/STAGING_GO_LIVE_VALIDATION.md.
+        if: always()
+        run: python scripts/generate_staging_launch_proof.py --mode ci
+
+      - name: Validate staging launch proof artifact
+        if: always()
+        run: python scripts/validate_staging_launch_proof.py
 
       - name: Validate 100% readiness (fail-closed, non-strict)
         if: always()
@@ -172,4 +186,5 @@ jobs:
             artifacts/launch-proof/latest/summary.json
             artifacts/release-proof/latest/summary.json
             artifacts/release-proof/latest/ci-required-gates.json
+            artifacts/staging-proof/latest/summary.json
             artifacts/final-readiness/latest/summary.json

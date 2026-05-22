@@ -249,3 +249,77 @@ cat artifacts/final-readiness/latest/summary.json
 ### Warning
 
 > **Do not sell broadly until `safe_to_sell_broadly_today` is `true` in staging or production strict mode.**
+
+---
+
+## Session 15 — Broad Paid SaaS Launch Validation / Staging Go-Live Gates
+
+Last updated: **2026-05-22**.
+
+### What changed
+
+A canonical staging launch proof layer was added. The final 100% readiness validator
+now requires `artifacts/staging-proof/latest/summary.json` to exist with
+`staging_launch_ready=true` before `broad_paid_saas_ready` can be true.
+
+### New artifacts
+
+- `artifacts/staging-proof/latest/summary.json` — staging launch proof
+  (fail-closed in local/CI mode)
+
+### New commands
+
+```bash
+# Generate fail-closed staging proof (local mode)
+make generate-staging-proof
+python scripts/generate_staging_launch_proof.py --mode local
+
+# Validate staging proof artifact
+make validate-staging-proof
+python scripts/validate_staging_launch_proof.py
+
+# Full validation including staging proof
+make validate-launch
+make validate-100-percent-readiness
+```
+
+### What staging proof validates
+
+1. **Staging environment** — STAGING_API_URL, STAGING_APP_URL, STAGING_DATABASE_URL,
+   STAGING_AUTH_TOKEN_SECRET, STAGING_WORKER_ENABLED all present.
+
+2. **Live provider** — EVM_RPC_URL configured; live evidence from launch-proof is
+   of type `live_provider` (not simulator, fixture, or unknown).
+
+3. **Billing production mode** — BILLING_PROVIDER configured; live secret key
+   (sk_live_* only); STRIPE_WEBHOOK_SECRET configured; STRIPE_PRICE_ID present.
+
+4. **Email production mode** — EMAIL_PROVIDER configured; API key present;
+   EMAIL_FROM is a verified non-test sender; EMAIL_DOMAIN present.
+
+### Controlled pilot vs broad paid SaaS
+
+**Controlled pilot launch:** Ready when `controlled_pilot_ready=true` in final
+readiness summary. Does not require billing, provider, or staging env vars.
+
+**Broad paid SaaS launch:** Blocked until `staging_launch_ready=true` in the
+staging proof artifact AND all four validation models pass AND all required
+dependencies from Sessions 10–14 pass.
+
+**Do not sell broadly** until `safe_to_sell_broadly_today=true` in staging or
+production strict mode. This value is always `false` in local/CI mode.
+
+### Remaining blockers for broad paid SaaS (as of 2026-05-22)
+
+In local/CI mode, broad paid SaaS remains blocked because:
+- Staging environment env vars are not configured
+- Live provider evidence is not present
+- Billing is not in production mode (no live Stripe key)
+- Email is not in production mode (no verified sender)
+
+These blockers are correct and expected. They will resolve only when real
+staging/production environment credentials are configured and the staging proof
+generator is run in staging/production mode.
+
+> **Do not mark the product as broad paid SaaS ready until all staging proof
+> gates pass with real credentials. Do not edit artifacts to bypass this gate.**

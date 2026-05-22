@@ -107,6 +107,16 @@ def _load_launch_proof(launch_proof_dir: Path) -> tuple[dict[str, Any] | None, l
     return data, []
 
 
+def _load_staging_proof(staging_proof_dir: Path) -> tuple[dict[str, Any] | None, list[str]]:
+    path = staging_proof_dir / 'summary.json'
+    if not path.exists():
+        return None, ['artifacts/staging-proof/latest/summary.json missing; run generate_staging_launch_proof.py first']
+    data = _load_json(path)
+    if data is None:
+        return None, ['staging proof artifact unreadable']
+    return data, []
+
+
 def _load_release_proof(release_proof_dir: Path) -> tuple[dict[str, Any] | None, list[str]]:
     path = release_proof_dir / 'summary.json'
     if not path.exists():
@@ -139,12 +149,41 @@ def _check_live_evidence(launch_proof: dict[str, Any] | None, mode: str) -> tupl
     return live_ok, blockers
 
 
-def _check_staging_validation(mode: str, strict: bool) -> tuple[bool, list[str]]:
-    if mode in ('staging', 'production'):
-        if strict:
-            return False, ['staging validation requires live execution with real credentials; not proven in this run']
-        return False, ['staging validation not proven (run with --strict in staging/production mode)']
-    return False, ['staging validation not available in local/ci mode']
+def _check_staging_validation(
+    mode: str,
+    strict: bool,
+    staging_proof: dict[str, Any] | None = None,
+) -> tuple[bool, list[str]]:
+    """Check staging validation using staging proof artifact.
+
+    Fail-closed: returns False unless staging proof artifact exists and
+    staging_launch_ready=true in staging/production mode.
+    """
+    if staging_proof is None:
+        if mode in ('staging', 'production'):
+            return False, [
+                'staging proof artifact missing; '
+                'run generate_staging_launch_proof.py --mode staging --strict first'
+            ]
+        return False, ['staging proof artifact missing; staging validation not available in local/ci mode']
+
+    staging_launch_ready = bool(staging_proof.get('staging_launch_ready'))
+    if not staging_launch_ready:
+        proof_blockers = staging_proof.get('blockers', [])
+        if proof_blockers:
+            first_blocker = proof_blockers[0]
+            return False, [
+                f'staging proof: staging_launch_ready=false; {first_blocker}'
+            ]
+        return False, ['staging proof: staging_launch_ready=false']
+
+    if mode not in ('staging', 'production'):
+        return False, [
+            f'staging proof present but mode={mode!r}; '
+            'staging validation requires staging/production mode'
+        ]
+
+    return True, []
 
 
 def _evaluate_categories(
@@ -281,6 +320,7 @@ def _build_required_gates(
     ci_gates: dict[str, Any] | None,
     mode: str,
     strict: bool,
+    staging_proof: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     def _gate(status: str, source: str, note: str = '') -> dict[str, Any]:
         return {'status': status, 'source': source, 'note': note}
@@ -348,11 +388,31 @@ def _build_required_gates(
     else:
         gates['live_evidence_readiness'] = _gate('fail', 'launch_proof', 'launch-proof missing')
 
-    # staging_validation — only provable in staging/production strict mode
-    if mode in ('staging', 'production') and strict:
-        gates['staging_validation'] = _gate('fail', 'manual', 'requires real live execution')
+    # staging_proof_validation — requires staging proof artifact
+    if staging_proof is not None:
+        sp_launch_ready = bool(staging_proof.get('staging_launch_ready'))
+        gates['staging_proof_validation'] = _gate(
+            'pass' if sp_launch_ready else 'fail',
+            'staging_proof',
+            '' if sp_launch_ready else 'staging_launch_ready=false in staging proof',
+        )
+        # staging_validation gate reflects staging proof + mode requirement
+        if sp_launch_ready and mode in ('staging', 'production'):
+            gates['staging_validation'] = _gate('pass', 'staging_proof')
+        else:
+            gates['staging_validation'] = _gate(
+                'fail', 'staging_proof',
+                f'staging_launch_ready={sp_launch_ready}, mode={mode!r}',
+            )
     else:
-        gates['staging_validation'] = _gate('not_run', 'manual', f'not available in {mode} mode')
+        gates['staging_proof_validation'] = _gate(
+            'fail', 'staging_proof', 'staging proof artifact missing'
+        )
+        gates['staging_validation'] = _gate(
+            'not_run' if mode not in ('staging', 'production') else 'fail',
+            'staging_proof',
+            'staging proof missing',
+        )
 
     return gates
 
@@ -361,14 +421,17 @@ def _build_proof_artifacts(
     launch_proof_dir: Path,
     release_proof_dir: Path,
     final_dir: Path,
+    staging_proof_dir: Path | None = None,
 ) -> list[str]:
     paths = [
         str(launch_proof_dir / 'summary.json'),
         str(release_proof_dir / 'summary.json'),
         str(release_proof_dir / 'ci-required-gates.json'),
-        str(final_dir / 'summary.json'),
     ]
-    return [p for p in paths]
+    if staging_proof_dir is not None:
+        paths.append(str(staging_proof_dir / 'summary.json'))
+    paths.append(str(final_dir / 'summary.json'))
+    return paths
 
 
 def build_final_readiness(
@@ -377,11 +440,14 @@ def build_final_readiness(
     strict: bool = False,
     launch_proof_dir: Path | None = None,
     release_proof_dir: Path | None = None,
+    staging_proof_dir: Path | None = None,
 ) -> dict[str, Any]:
     if launch_proof_dir is None:
         launch_proof_dir = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest'
     if release_proof_dir is None:
         release_proof_dir = REPO_ROOT / 'artifacts' / 'release-proof' / 'latest'
+    if staging_proof_dir is None:
+        staging_proof_dir = REPO_ROOT / 'artifacts' / 'staging-proof' / 'latest'
     final_dir = REPO_ROOT / 'artifacts' / 'final-readiness' / 'latest'
 
     blockers: list[str] = []
@@ -390,10 +456,12 @@ def build_final_readiness(
     launch_proof, lp_blockers = _load_launch_proof(launch_proof_dir)
     release_proof, rp_blockers = _load_release_proof(release_proof_dir)
     ci_gates, cg_blockers = _load_ci_gates(release_proof_dir)
+    staging_proof, _sp_blockers = _load_staging_proof(staging_proof_dir)
 
     blockers.extend(lp_blockers)
     blockers.extend(rp_blockers)
     blockers.extend(cg_blockers)
+    # staging blockers are added via _check_staging_validation below
 
     categories = _evaluate_categories(
         launch_proof, release_proof, ci_gates,
@@ -403,7 +471,7 @@ def build_final_readiness(
     overall_score = _compute_overall_score(categories)
 
     required_gates = _build_required_gates(
-        launch_proof, release_proof, ci_gates, mode, strict,
+        launch_proof, release_proof, ci_gates, mode, strict, staging_proof,
     )
 
     # Derived readiness flags
@@ -417,8 +485,8 @@ def build_final_readiness(
     if not live_ok:
         blockers.extend(live_blockers)
 
-    # staging validation check
-    staging_ok, staging_blockers = _check_staging_validation(mode, strict)
+    # staging validation check — requires staging proof artifact
+    staging_ok, staging_blockers = _check_staging_validation(mode, strict, staging_proof)
     if not staging_ok:
         blockers.extend(staging_blockers)
 
@@ -478,7 +546,9 @@ def build_final_readiness(
     else:
         safe_reason = 'One or more required categories have not achieved pass status.'
 
-    proof_artifacts = _build_proof_artifacts(launch_proof_dir, release_proof_dir, final_dir)
+    proof_artifacts = _build_proof_artifacts(
+        launch_proof_dir, release_proof_dir, final_dir, staging_proof_dir
+    )
 
     summary = {
         'schema_version': 1,

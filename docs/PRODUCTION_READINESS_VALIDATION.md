@@ -786,3 +786,95 @@ Key fields:
 > `production_100_percent_ready: false` in local/CI mode is expected and correct. It does not indicate a problem — it indicates that live credentials have not been provided.
 >
 > Never force `safe_to_sell_broadly_today: true` by editing artifacts. Fix the underlying gates instead.
+
+---
+
+## Session 15 — Broad Paid SaaS Launch Validation / Staging Go-Live Gates
+
+### What was added
+
+Session 15 adds a canonical staging launch proof layer that proves (or blocks)
+broad paid SaaS readiness based on real staging/live environment validation.
+
+**New scripts:**
+- `scripts/generate_staging_launch_proof.py` — generates `artifacts/staging-proof/latest/summary.json`
+- `scripts/validate_staging_launch_proof.py` — validates structure and fail-closed rules
+
+**New artifact:** `artifacts/staging-proof/latest/summary.json`
+
+**New test file:** `services/api/tests/test_staging_launch_proof.py` (tests A–Q)
+
+**Updated:** `scripts/validate_100_percent_readiness.py` — now requires staging proof artifact
+
+**Updated:** Makefile — added `generate-staging-proof`, `validate-staging-proof`; extended `validate-launch`, `validate-paid-ga`, `validate-100-percent-readiness`
+
+**Updated:** `.github/workflows/ci-release-gates.yml` — added staging proof generation/validation step
+
+**New doc:** `docs/STAGING_GO_LIVE_VALIDATION.md`
+
+### Four new validation models
+
+1. **Staging launch validation** — checks STAGING_API_URL, STAGING_APP_URL,
+   STAGING_DATABASE_URL, STAGING_AUTH_TOKEN_SECRET, STAGING_WORKER_ENABLED.
+   All five are required blockers if absent.
+
+2. **Live provider validation** — checks EVM_RPC_URL configuration and live
+   evidence readiness from the launch-proof artifact. Simulator evidence fails
+   this gate. Fixture evidence fails this gate. Unknown evidence fails closed.
+
+3. **Billing production-mode validation** — checks BILLING_PROVIDER, live secret
+   key presence (sk_live_* only; sk_test_* rejected), webhook secret (whsec_*),
+   and price ID configuration.
+
+4. **Email production-mode validation** — checks EMAIL_PROVIDER, API key presence,
+   EMAIL_FROM (non-placeholder, non-test-domain), EMAIL_DOMAIN.
+
+### Fail-closed rules enforced by validator
+
+- `broad_paid_saas_ready` cannot be true unless all four validation sections pass.
+- `safe_to_sell_broadly_today` cannot be true unless `broad_paid_saas_ready` is true.
+- `test_mode_detected=true` cannot coexist with `billing_production_validation.status=pass`.
+- Simulator/fixture evidence cannot coexist with `live_provider_validation.status=pass`.
+- Blockers present → `broad_paid_saas_ready` and `safe_to_sell_broadly_today` must be false.
+- No secret-like values may appear in the artifact.
+
+### Updated final 100% readiness gate
+
+`validate_100_percent_readiness.py` now:
+- Loads `artifacts/staging-proof/latest/summary.json`
+- Requires `staging_launch_ready=true` in the staging proof for `staging_ok=true`
+- Missing staging proof → staging validation blocker → `production_100_percent_ready=false`
+- Adds `staging_proof_validation` gate to `required_gates`
+- Adds staging proof path to `proof_artifacts` list
+
+### Run commands
+
+```bash
+# Generate fail-closed staging proof (local/CI)
+python scripts/generate_staging_launch_proof.py --mode local
+
+# Validate staging proof artifact
+python scripts/validate_staging_launch_proof.py
+
+# Full 100% readiness check (includes staging proof)
+make validate-100-percent-readiness
+
+# Staging environment (requires real credentials)
+python scripts/generate_staging_launch_proof.py --mode staging --strict
+python scripts/validate_staging_launch_proof.py
+python scripts/validate_100_percent_readiness.py --mode staging --strict
+```
+
+### Broad paid SaaS readiness status after Session 15
+
+`broad_paid_saas_ready` remains `false` in local/CI mode. This is correct.
+To reach `broad_paid_saas_ready=true`, all of the following must pass in
+staging/production mode:
+- staging_launch_validation.status = pass
+- live_provider_validation.status = pass
+- billing_production_validation.status = pass
+- email_production_validation.status = pass
+- All required dependencies (paid_launch_readiness, release_proof,
+  runtime_truthfulness, evidence_export_truthfulness, multi_tenant_isolation) = pass
+
+See `docs/STAGING_GO_LIVE_VALIDATION.md` for the complete go-live checklist.
