@@ -994,6 +994,14 @@ function PackageDetailPanel({
           </span>
         </div>
       )}
+      {(pkg.package_status === 'partial' || pkg.package_status === 'blocked') && (
+        <div style={{ marginBottom: '0.5rem', fontSize: '0.74rem', color: pkg.package_status === 'blocked' ? '#f87171' : '#fbbf24' }}>
+          &#9888;{' '}
+          {pkg.package_status === 'blocked'
+            ? 'No usable evidence — this package cannot be used as verification proof.'
+            : 'Package is incomplete — some evidence sections are missing.'}
+        </div>
+      )}
       {pkg.source_truthfulness_status && pkg.source_truthfulness_status !== 'verified_live' && (
         <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#fbbf24' }}>
           Source truthfulness: {pkg.source_truthfulness_status.replace(/_/g, ' ')}

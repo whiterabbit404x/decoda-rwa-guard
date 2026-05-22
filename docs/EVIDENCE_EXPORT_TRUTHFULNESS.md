@@ -41,6 +41,43 @@ Rules:
 
 ---
 
+## Fail-Closed Package Status Rules
+
+The package status logic uses the **canonical `evidence_source` field** and `source_truthfulness_status` to prevent any overclaiming. These rules apply even when the legacy `evidence_source_type` field appears to indicate completeness.
+
+### `complete`
+A package may only be `complete` when **all** of the following are true:
+- All required evidence sections are present (`export_status = complete`)
+- `evidence_source` is not `unknown` or `unavailable`
+- `source_truthfulness_status` is not `unknown` or `unavailable`
+
+### `partial`
+A package is `partial` when at least one evidence record exists but completeness cannot be claimed:
+- One or more required sections are missing, OR
+- The evidence source is known (e.g., `simulator`, `fixture`) but not all sections are present
+
+### `blocked`
+A package is `blocked` when no usable evidence exists at all:
+- No alert, detection, telemetry, or response action rows were found
+
+### Non-live sources and customer_summary
+
+`simulator`, `fixture`, `unknown`, and `unavailable` evidence **must not be presented as live-provider proof**:
+
+- `simulator` — `source_note` must say "not live-provider proof"
+- `fixture` — `source_note` must say "not live-provider proof"
+- `unknown` — `source_note` must say "Do not treat this package as live-provider proof"
+- `unavailable` — `source_note` must say "Evidence source is unavailable"
+
+The `customer_summary` must never claim:
+- Regulatory compliance
+- Audit certification
+- Enterprise readiness
+- Broad paid SaaS readiness
+- Live-provider proof unless `evidence_source = live_provider` and `source_truthfulness_status = verified_live`
+
+---
+
 ## Source Truthfulness Status
 
 | Value | Meaning |

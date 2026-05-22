@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T08:15:02.515877+00:00",
+  "generated_at": "2026-05-22T08:42:23.058219+00:00",
   "release_channel": "local",
-  "commit_sha": "029e40259eb129fee9e1abfa140cc57f52534a74",
-  "branch": "claude/intelligent-mccarthy-Htpku",
+  "commit_sha": "a5067eeddd7043bb21c21684abee567e276c3f9f",
+  "branch": "claude/sharp-johnson-0yxVG",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "f760d97260b803d49715960068cd68631ed70e6b82635f2b372a23429118e6b2",
-      "size_bytes": 791,
+      "sha256": "ece50ed6d5b4801502aa0cfb964bcbb6316ee849943e58d590d53a3838c4efb6",
+      "size_bytes": 784,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "545dd86b7d4353e17efbf0c24f6588fcc67c70ade180974395ea293945142c9a",
-      "size_bytes": 1984,
+      "sha256": "bea5282e8bda0623d35dca2fc8e64e1dcc39a3be33a0ce7c0a2d87ec65f3b9d9",
+      "size_bytes": 1977,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "d43f49293c691a81a01216cb3132835d561a54327f18b258d17b06dab892ae39",
+      "sha256": "cf93e3f54f920279d7323c3db8a6073c78045303a22cd91d3de62d0b545ce5f1",
       "size_bytes": 819,
       "required": true,
       "status": "present"
