@@ -1,17 +1,18 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T15:26:58.024573+00:00",
+  "generated_at": "2026-05-22T15:42:46.382586+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "e311dbb30a4e2d1a30ff45411bef79231a49b62b",
-  "branch": "claude/admiring-bardeen-ZXzBh",
+  "commit_sha": "72e6140d4190e7c5dec3de6f8a5f100ff4a8774f",
+  "branch": "claude/great-fermi-jyKDI",
   "ci_required_gates_ready": false,
-  "launch_proof_ready": true,
+  "launch_proof_ready": false,
   "manifest_ready": true,
   "test_report_ready": false,
   "paid_launch_ready": false,
   "blockers": [
     "ci-required-gates not ready",
+    "launch-proof not ready",
     "test-report-summary not ready"
   ],
   "warnings": [],

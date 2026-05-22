@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T15:26:58.016417+00:00",
-  "commit_sha": "e311dbb30a4e2d1a30ff45411bef79231a49b62b",
-  "branch": "claude/admiring-bardeen-ZXzBh",
+  "generated_at": "2026-05-22T15:42:46.374273+00:00",
+  "commit_sha": "72e6140d4190e7c5dec3de6f8a5f100ff4a8774f",
+  "branch": "claude/great-fermi-jyKDI",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
@@ -34,9 +34,11 @@
       ]
     },
     "live_evidence": {
-      "status": "pass",
-      "summary": "Live evidence available",
-      "blockers": []
+      "status": "fail",
+      "summary": "Live evidence not available: live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
+      "blockers": [
+        "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured"
+      ]
     },
     "frontend_build": {
       "status": "not_run",
@@ -48,6 +50,7 @@
     "billing provider is not configured",
     "billing webhook secret is missing",
     "email provider is not configured",
+    "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
     "live provider configuration is missing",
     "live provider proof is missing"
   ],
