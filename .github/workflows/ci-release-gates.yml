@@ -83,6 +83,11 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements-local.txt
 
+      - name: Run release proof artifact tests
+        if: always()
+        run: |
+          python -m pytest services/api/tests/test_release_proof_artifacts.py -q
+
       - name: Generate canonical release proof artifacts
         if: always()
         run: |
