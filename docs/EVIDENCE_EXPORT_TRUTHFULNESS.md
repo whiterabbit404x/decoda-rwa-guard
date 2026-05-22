@@ -268,6 +268,65 @@ Key test scenarios in `test_evidence_export_truthfulness.py`:
 
 ---
 
+## Canonical Evidence Source Field (Session 12 Follow-Up)
+
+The proof bundle `summary.json` now includes **two evidence source fields** to support both new and legacy clients:
+
+| Field | Purpose | Example value |
+|-------|---------|---------------|
+| `evidence_source` | **Canonical customer-facing field** (new) | `"live_provider"` |
+| `evidence_source_type` | Legacy field retained for backward compatibility | `"live"` |
+
+### Canonical enum
+
+`evidence_source` is always one of:
+
+| Value | Meaning |
+|-------|---------|
+| `live_provider` | Evidence confirmed from live provider API |
+| `simulator` | Evidence from simulator/demo environment |
+| `fixture` | Static test fixture evidence |
+| `unavailable` | Provider was unreachable; fallback data may be present |
+| `unknown` | Source type is unrecognized or absent — fail-closed |
+
+### Normalization rules (via `normalize_evidence_source()`)
+
+| Raw input | Canonical output |
+|-----------|----------------|
+| `live`, `live_provider` | `live_provider` |
+| `simulator`, `simulation`, `guided_simulator` | `simulator` |
+| `fixture`, `test_fixture` | `fixture` |
+| `unavailable` | `unavailable` |
+| `unknown` | `unknown` |
+| `None`, `""`, unrecognized | `unknown` |
+
+Rules:
+- **Fail-closed**: Unknown or unrecognized values always become `unknown`, never `live_provider`.
+- `simulator` always remains `simulator` — it is never promoted to `live_provider`.
+- Only explicit `live` or `live_provider` inputs may produce `live_provider`.
+
+### Backward compatibility
+
+The legacy `evidence_source_type` field is preserved unchanged. It may contain values like `"live"` (not `"live_provider"`) which were used before the canonical enum was introduced.
+
+- **New clients** should read `evidence_source` (canonical enum).
+- **Legacy clients** that already parse `evidence_source_type` continue to work — the field is not removed.
+- The two fields do not contradict each other: `evidence_source_type: "live"` always corresponds to `evidence_source: "live_provider"`.
+
+### Consistency with source_truthfulness_status
+
+`source_truthfulness_status` is always consistent with `evidence_source`:
+
+| `evidence_source` | `source_truthfulness_status` |
+|-------------------|------------------------------|
+| `live_provider` | `verified_live` |
+| `simulator` | `verified_simulator` |
+| `fixture` | `fixture_only` |
+| `unavailable` | `unavailable` |
+| `unknown` | `unknown` |
+
+---
+
 ## Remaining Gaps
 
 - **Telemetry event IDs** are not yet linked from detection_metrics to telemetry_events directly in the proof bundle. The `evidence.json` file contains the JSONB evidence field from detection_metrics which may include telemetry context.

@@ -377,7 +377,8 @@ def test_N_summary_contains_all_required_metadata_fields(monkeypatch: pytest.Mon
         'schema_version', 'export_id', 'generated_at', 'generated_by',
         'workspace_id', 'incident_id',
         'export_status', 'package_status', 'export_format_version',
-        'evidence_source_type', 'source_truthfulness_status', 'source_truthfulness_reason',
+        'evidence_source_type', 'evidence_source',
+        'source_truthfulness_status', 'source_truthfulness_reason',
         'missing_sections', 'unavailable_sections', 'available_sections', 'section_statuses',
         'warnings', 'redactions_applied', 'chain_complete', 'customer_summary',
     }
@@ -484,3 +485,124 @@ def test_build_customer_export_summary_missing_sections_listed() -> None:
     assert any('response_actions' in lim for lim in summary['limitations'])
     assert any('audit_log' in lim for lim in summary['limitations'])
     assert 'partial' in summary['headline'].lower()
+
+
+# ── Session 12 Follow-Up: Canonical evidence_source field tests ───────────────
+
+_CANONICAL_EVIDENCE_SOURCE_ENUM = frozenset({'live_provider', 'simulator', 'fixture', 'unavailable', 'unknown'})
+
+
+def test_canonical_A_export_includes_evidence_source_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A. Every proof bundle summary.json must include the canonical evidence_source field."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _LiveCompleteConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert 'evidence_source' in summary, 'summary.json must include canonical evidence_source field'
+
+
+def test_canonical_B_legacy_live_maps_to_live_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B. Legacy evidence_source_type='live' must map to canonical evidence_source='live_provider'."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _LiveCompleteConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert summary['evidence_source_type'] == 'live', 'legacy field must remain live for backward compat'
+    assert summary['evidence_source'] == 'live_provider', 'canonical field must be live_provider'
+
+
+def test_canonical_C_simulator_maps_to_simulator_not_live_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """C. Simulator source must map to evidence_source='simulator' and never 'live_provider'."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _SimulatorCompleteConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-1', export_id='exp-sim')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert summary['evidence_source'] == 'simulator', 'simulator evidence must map to canonical simulator'
+    assert summary['evidence_source'] != 'live_provider', 'simulator must never become live_provider'
+
+
+def test_canonical_D_unknown_source_maps_to_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D. Unknown or missing evidence source must map to evidence_source='unknown'."""
+    fake_storage = _FakeStorage()
+    monkeypatch.setattr(pilot, 'load_export_storage', lambda: fake_storage)
+    connection = _UnknownSourceConnection()
+    pilot._generate_export_artifact(connection, workspace_id='ws-live', export_id='exp-live')
+
+    payload = json.loads(fake_storage.content.decode('utf-8'))
+    summary = payload['rows'][0]['summary.json']
+    assert summary['evidence_source'] == 'unknown', 'unrecognized source must fail closed to unknown'
+    assert summary['evidence_source'] != 'live_provider'
+
+
+def test_canonical_E_evidence_source_value_is_valid_enum(monkeypatch: pytest.MonkeyPatch) -> None:
+    """E. Canonical evidence_source must be one of the allowed enum values in all cases."""
+    cases = [
+        (_LiveCompleteConnection(), 'ws-live', 'exp-live'),
+        (_SimulatorCompleteConnection(), 'ws-1', 'exp-sim'),
+        (_UnknownSourceConnection(), 'ws-live', 'exp-live'),
+        (_NoEvidenceConnection(), 'ws-live', 'exp-live'),
+    ]
+    for conn, ws, exp in cases:
+        fake_storage = _FakeStorage()
+        monkeypatch.setattr(pilot, 'load_export_storage', lambda _s=fake_storage: _s)
+        pilot._generate_export_artifact(conn, workspace_id=ws, export_id=exp)
+        payload = json.loads(fake_storage.content.decode('utf-8'))
+        summary = payload['rows'][0]['summary.json']
+        assert summary['evidence_source'] in _CANONICAL_EVIDENCE_SOURCE_ENUM, (
+            f"evidence_source={summary['evidence_source']!r} is not a valid canonical enum value"
+        )
+
+
+def test_canonical_F_truthfulness_status_consistent_with_canonical_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F. source_truthfulness_status must stay consistent with canonical evidence_source."""
+    expected_truthfulness = {
+        'live_provider': 'verified_live',
+        'simulator': 'verified_simulator',
+        'fixture': 'fixture_only',
+        'unavailable': 'unavailable',
+        'unknown': 'unknown',
+    }
+    cases = [
+        (_LiveCompleteConnection(), 'ws-live', 'exp-live'),
+        (_SimulatorCompleteConnection(), 'ws-1', 'exp-sim'),
+        (_UnknownSourceConnection(), 'ws-live', 'exp-live'),
+    ]
+    for conn, ws, exp in cases:
+        fake_storage = _FakeStorage()
+        monkeypatch.setattr(pilot, 'load_export_storage', lambda _s=fake_storage: _s)
+        pilot._generate_export_artifact(conn, workspace_id=ws, export_id=exp)
+        payload = json.loads(fake_storage.content.decode('utf-8'))
+        summary = payload['rows'][0]['summary.json']
+        src = summary['evidence_source']
+        want = expected_truthfulness.get(src)
+        if want:
+            assert summary['source_truthfulness_status'] == want, (
+                f"For evidence_source={src!r}, expected source_truthfulness_status={want!r}, "
+                f"got {summary['source_truthfulness_status']!r}"
+            )
+
+
+def test_normalize_evidence_source_helper() -> None:
+    """Direct unit test for normalize_evidence_source helper."""
+    assert pilot.normalize_evidence_source('live') == 'live_provider'
+    assert pilot.normalize_evidence_source('live_provider') == 'live_provider'
+    assert pilot.normalize_evidence_source('simulator') == 'simulator'
+    assert pilot.normalize_evidence_source('simulation') == 'simulator'
+    assert pilot.normalize_evidence_source('guided_simulator') == 'simulator'
+    assert pilot.normalize_evidence_source('fixture') == 'fixture'
+    assert pilot.normalize_evidence_source('test_fixture') == 'fixture'
+    assert pilot.normalize_evidence_source('unavailable') == 'unavailable'
+    assert pilot.normalize_evidence_source('unknown') == 'unknown'
+    assert pilot.normalize_evidence_source(None) == 'unknown'
+    assert pilot.normalize_evidence_source('') == 'unknown'
+    assert pilot.normalize_evidence_source('custom_source_xyz') == 'unknown'
+    assert pilot.normalize_evidence_source('missing') == 'unknown'
