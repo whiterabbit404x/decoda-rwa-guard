@@ -968,11 +968,18 @@ node -e "console.log(require('./node_modules/postcss/package.json').version)"
 
 ---
 
-## Why blocker 3 still fails locally
+## Blocker 3 status
 
 Blocker 3 is **live provider evidence** — proof that real monitored chain data
-arrived from a real EVM JSON-RPC provider. Without provider env vars, the proof
-**must fail closed**:
+arrived from a real EVM JSON-RPC provider.
+
+| Level | Status |
+|---|---|
+| Code / guardrail level | **PASS** |
+| Mocked positive-path level | **PASS** |
+| Real live-provider evidence level | **FAIL until secrets are configured** |
+
+Without provider env vars, the proof **must fail closed**:
 
 ```
 provider_ready=false
@@ -990,7 +997,7 @@ not, manufacture real live evidence. `live_evidence_ready` is never hardcoded
 to `true`; it is read from the actual `artifacts/live-evidence-proof/latest/summary.json`
 artifact written by `scripts/generate_live_evidence_proof.py`.
 
-### To pass real production evidence
+## How to make blocker 3 pass for real
 
 Set:
 
@@ -998,17 +1005,50 @@ Set:
 - `STAGING_EVM_CHAIN_ID` — the chain id (e.g. `1`)
 - `STAGING_WORKER_ENABLED=true`
 
-Then run:
+### Local: Windows PowerShell
 
-```bash
+```powershell
+$env:STAGING_EVM_RPC_URL="YOUR_REAL_RPC_URL"
+$env:STAGING_EVM_CHAIN_ID="1"
+$env:STAGING_WORKER_ENABLED="true"
 make run-staging-live-proof
 ```
 
-This is the single entry point for proving blocker 3. It runs the real proof
-chain (live RPC calls, staging proof, validate staging proof,
-validate-100-percent-readiness in staging strict mode), reads the artifact, and
-exits 0 only when `live_evidence_ready=true`. The RPC URL is masked in all
-output.
+### Local: bash / zsh
+
+```bash
+export STAGING_EVM_RPC_URL=https://mainnet.infura.io/v3/<project-id>
+export STAGING_EVM_CHAIN_ID=1
+export STAGING_WORKER_ENABLED=true
+make run-staging-live-proof
+```
+
+### Env-only preflight (no RPC calls)
+
+```bash
+make check-staging-live-env
+```
+
+`scripts/check_staging_live_env.py` inspects env vars only. Exit 0 when all
+three are present and non-placeholder, exit 1 with a clear "BLOCKER 3 IS NOT
+A CODE FAILURE" message otherwise. The RPC URL is masked in all output.
+
+### GitHub Actions
+
+1. Open **Repository → Settings → Secrets and variables → Actions → New
+   repository secret** and add:
+   - `STAGING_EVM_RPC_URL`
+   - `STAGING_EVM_CHAIN_ID`
+   - `STAGING_WORKER_ENABLED`
+2. Open **Actions → Staging Live Evidence Proof (blocker 3) → Run workflow**.
+
+`make run-staging-live-proof` is the single entry point for proving blocker
+3. It runs the real proof chain (live RPC calls, staging proof, validate
+staging proof, validate-100-percent-readiness in staging strict mode), reads
+the artifact, and exits 0 only when `live_evidence_ready=true`. The RPC URL
+is masked in all output.
+
+**Do not commit real RPC URLs or API keys.**
 
 ### Expected passing output
 
@@ -1031,12 +1071,14 @@ evidence_package_id=<present>
 `.github/workflows/staging-live-evidence-proof.yml` provides two-tier coverage:
 
 - **`pull_request` / push**: structural fail-closed validation. Runs the
-  blocker 3 guardrail tests and asserts the proof fail-closes without secrets.
-  Needs no secrets and never red-Xes a PR for a missing secret.
+  blocker 3 guardrail tests (including the env-checker tests) and asserts the
+  proof fail-closes without secrets. Needs no secrets and never red-Xes a PR
+  for a missing secret.
 - **`workflow_dispatch` / push to main**: real proof job. Reads the
   `STAGING_EVM_RPC_URL`, `STAGING_EVM_CHAIN_ID`, `STAGING_WORKER_ENABLED`
-  repository secrets and runs `make run-staging-live-proof`. When the secret
-  is absent the job clearly skips with a notice instead of failing red. The
-  full RPC URL is never printed (the runner masks it; GitHub Actions also
-  masks secret values in logs).
+  repository secrets, runs `make check-staging-live-env` and then
+  `make run-staging-live-proof`. When the secret is absent the job clearly
+  skips with a notice instead of failing red. The full RPC URL is never
+  printed (the runner and checker mask it; GitHub Actions also masks secret
+  values in logs).
 

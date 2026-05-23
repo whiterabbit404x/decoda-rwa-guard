@@ -288,7 +288,9 @@ def test_run_missing_env_fails_closed_and_runs_no_commands(
     assert recorder.calls == []  # no commands run
 
     out = capsys.readouterr().out
-    assert 'FAIL-CLOSED' in out
+    # The remediation must clearly explain this is an env-setup issue,
+    # not a code failure.
+    assert 'BLOCKER 3 IS NOT A CODE FAILURE' in out
     assert '[FAIL]' in out
     # Remediation must clearly name the three required variables.
     assert 'STAGING_EVM_RPC_URL' in out
@@ -312,6 +314,32 @@ def test_run_partial_env_fails_closed(capsys: pytest.CaptureFixture[str]) -> Non
     # The masked URL appears, the raw secret never does.
     assert _SECRET not in out
     assert '[masked]' in out
+
+
+def test_run_no_env_message_says_not_a_code_failure(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """
+    Blocker 3 fail-closed message must explicitly state the failure is an
+    env-setup issue, not a code regression. This wording is load-bearing —
+    operators and CI consumers look at it to decide whether to file a bug or
+    configure secrets.
+    """
+    recorder = _Recorder()
+    rc = run_staging_live_evidence_proof(env={}, runner=recorder)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert 'BLOCKER 3 IS NOT A CODE FAILURE' in out
+    assert 'Real staging provider env vars are missing' in out
+    # The three required vars must be named exactly so users can grep.
+    assert 'STAGING_EVM_RPC_URL' in out
+    assert 'STAGING_EVM_CHAIN_ID' in out
+    assert 'STAGING_WORKER_ENABLED=true' in out
+    # The next command must be the make target.
+    assert 'make run-staging-live-proof' in out
+    # The remediation must not pretend the proof passed.
+    assert 'live_evidence_ready=true' not in out.lower() or \
+           'live_evidence_ready=true)' not in out.lower()
 
 
 def test_run_with_good_env_and_live_ready_artifact_returns_zero(

@@ -48,10 +48,25 @@ jobs:
       - name: Run blocker 3 guardrail tests
         run: |
           python -m pytest -q \
+            services/api/tests/test_check_staging_live_env.py \
             services/api/tests/test_live_evidence_proof.py \
             services/api/tests/test_live_evidence_proof_cmd.py \
             services/api/tests/test_run_staging_live_evidence_proof.py \
             services/api/tests/test_staging_launch_proof.py
+
+      - name: Confirm preflight checker fails closed without env
+        # The env checker exits 1 when STAGING_* / EVM_* env vars are unset.
+        # That is the correct fail-closed outcome - we expect a non-zero exit.
+        run: |
+          set +e
+          python scripts/check_staging_live_env.py
+          rc=$?
+          set -e
+          if [ "$rc" -ne 1 ]; then
+            echo "::error::env checker did not fail closed without env (exit $rc, expected 1)"
+            exit 1
+          fi
+          echo "OK: env checker exited 1 as required when env vars are absent."
 
       - name: Generate live evidence proof (no secrets -> must fail closed)
         run: make generate-live-evidence-proof
@@ -131,6 +146,16 @@ jobs:
           echo "  STAGING_EVM_RPC_URL    (a real EVM JSON-RPC endpoint)"
           echo "  STAGING_EVM_CHAIN_ID   (e.g. 1 for Ethereum mainnet)"
           echo "  STAGING_WORKER_ENABLED (true)"
+
+      - name: Preflight - check staging live env
+        if: steps.secrets.outputs.present == 'true'
+        env:
+          STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
+          STAGING_EVM_CHAIN_ID: ${{ secrets.STAGING_EVM_CHAIN_ID }}
+          STAGING_WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+        # The checker masks the RPC URL and never prints the full secret.
+        # GitHub Actions also masks secret values in logs as a second layer.
+        run: make check-staging-live-env
 
       - name: Run staging live evidence proof
         if: steps.secrets.outputs.present == 'true'
