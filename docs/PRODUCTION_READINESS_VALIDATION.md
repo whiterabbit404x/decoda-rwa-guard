@@ -965,3 +965,78 @@ npm audit
 node -e "console.log(require('./node_modules/postcss/package.json').version)"
 # Expected: 8.5.10 or higher
 ```
+
+---
+
+## Why blocker 3 still fails locally
+
+Blocker 3 is **live provider evidence** — proof that real monitored chain data
+arrived from a real EVM JSON-RPC provider. Without provider env vars, the proof
+**must fail closed**:
+
+```
+provider_ready=false
+provider_mode=disabled
+provider_health_checked=false
+evidence_source=unknown
+latest_live_telemetry_at=null
+live_evidence_ready=false
+missing: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured
+```
+
+**This is expected and safe.** Fail-closed guardrail tests and mocked
+positive-path tests still pass — they prove the logic. They cannot, and must
+not, manufacture real live evidence. `live_evidence_ready` is never hardcoded
+to `true`; it is read from the actual `artifacts/live-evidence-proof/latest/summary.json`
+artifact written by `scripts/generate_live_evidence_proof.py`.
+
+### To pass real production evidence
+
+Set:
+
+- `STAGING_EVM_RPC_URL` — a real Ethereum-compatible JSON-RPC endpoint
+- `STAGING_EVM_CHAIN_ID` — the chain id (e.g. `1`)
+- `STAGING_WORKER_ENABLED=true`
+
+Then run:
+
+```bash
+make run-staging-live-proof
+```
+
+This is the single entry point for proving blocker 3. It runs the real proof
+chain (live RPC calls, staging proof, validate staging proof,
+validate-100-percent-readiness in staging strict mode), reads the artifact, and
+exits 0 only when `live_evidence_ready=true`. The RPC URL is masked in all
+output.
+
+### Expected passing output
+
+```
+provider_ready=true
+provider_mode=live
+provider_health_checked=true
+evidence_source=live
+latest_live_telemetry_at=<timestamp>
+live_evidence_ready=true
+telemetry_event_id=<present>
+detection_id=<present>
+alert_id=<present>
+incident_id or response_action_id=<present>
+evidence_package_id=<present>
+```
+
+### CI
+
+`.github/workflows/staging-live-evidence-proof.yml` provides two-tier coverage:
+
+- **`pull_request` / push**: structural fail-closed validation. Runs the
+  blocker 3 guardrail tests and asserts the proof fail-closes without secrets.
+  Needs no secrets and never red-Xes a PR for a missing secret.
+- **`workflow_dispatch` / push to main**: real proof job. Reads the
+  `STAGING_EVM_RPC_URL`, `STAGING_EVM_CHAIN_ID`, `STAGING_WORKER_ENABLED`
+  repository secrets and runs `make run-staging-live-proof`. When the secret
+  is absent the job clearly skips with a notice instead of failing red. The
+  full RPC URL is never printed (the runner masks it; GitHub Actions also
+  masks secret values in logs).
+

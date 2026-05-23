@@ -378,6 +378,75 @@ And the launch proof must show:
 
 If `safe_to_sell_broadly_today` is `false`, the `safe_to_sell_reason` field explains why.
 
+## Why blocker 3 still fails locally
+
+Blocker 3 is **live provider evidence** — proof that real monitored chain data
+arrived from a real EVM JSON-RPC provider. Running the proof locally **without**
+provider environment variables **must fail closed**:
+
+```
+provider_ready=false
+provider_mode=disabled
+provider_health_checked=false
+evidence_source=unknown
+latest_live_telemetry_at=null
+live_evidence_ready=false
+missing: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured
+```
+
+**This is expected and safe.** A local run with no real provider has no real
+chain data to ingest, so the proof correctly reports `live_evidence_ready=false`.
+The fail-closed guardrail tests and the mocked positive-path tests still pass —
+they prove the *logic* is correct. They do not, and cannot, manufacture real
+live evidence. Hardcoding `live_evidence_ready=true` would be a truthfulness
+violation per `CLAUDE.md`.
+
+To produce real production evidence, set:
+
+| Variable | Value |
+|---|---|
+| `STAGING_EVM_RPC_URL` | A real Ethereum-compatible JSON-RPC endpoint |
+| `STAGING_EVM_CHAIN_ID` | The chain id (e.g. `1` for Ethereum mainnet) |
+| `STAGING_WORKER_ENABLED` | `true` |
+
+Then run:
+
+```bash
+export STAGING_EVM_RPC_URL=https://mainnet.infura.io/v3/<project-id>
+export STAGING_EVM_CHAIN_ID=1
+export STAGING_WORKER_ENABLED=true
+make run-staging-live-proof
+```
+
+`make run-staging-live-proof` invokes `scripts/run_staging_live_evidence_proof.py`,
+which prints a preflight checklist (RPC URL masked), runs the real proof chain
+(`generate_live_evidence_proof.py --strict`, `make generate-live-evidence-proof`,
+`make generate-staging-proof`, `make validate-staging-proof`,
+`scripts/validate_100_percent_readiness.py --mode staging --strict`), and prints
+a final summary read from the actual artifact.
+
+### Expected passing output
+
+When a real provider is configured and reachable:
+
+```
+provider_ready=true
+provider_mode=live
+provider_health_checked=true
+evidence_source=live
+latest_live_telemetry_at=<timestamp>
+live_evidence_ready=true
+telemetry_event_id=<present>
+detection_id=<present>
+alert_id=<present>
+incident_id or response_action_id=<present>
+evidence_package_id=<present>
+```
+
+Until those variables are set, `live_evidence_ready=false` is the **correct**
+result. The runner exits 0 only when the live-evidence-proof artifact reports
+`live_evidence_ready=true`; it is never hardcoded.
+
 ## Simulator evidence policy
 
 Simulator/demo/fixture evidence:
