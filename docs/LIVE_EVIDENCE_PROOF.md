@@ -378,11 +378,18 @@ And the launch proof must show:
 
 If `safe_to_sell_broadly_today` is `false`, the `safe_to_sell_reason` field explains why.
 
-## Why blocker 3 still fails locally
+## Blocker 3 status
 
 Blocker 3 is **live provider evidence** — proof that real monitored chain data
-arrived from a real EVM JSON-RPC provider. Running the proof locally **without**
-provider environment variables **must fail closed**:
+arrived from a real EVM JSON-RPC provider. Where the project actually stands:
+
+| Level | Status | What it proves |
+|---|---|---|
+| Code / guardrail level | **PASS** | All `test_live_evidence_proof*`, `test_run_staging_live_evidence_proof`, `test_check_staging_live_env`, and `test_staging_launch_proof` tests pass. The proof correctly fails closed when no provider is configured. The runner never hardcodes `live_evidence_ready=true`. |
+| Mocked positive-path level | **PASS** | With mocked `_rpc_call` responses, the full chain (telemetry → detection → alert → incident → evidence package) is generated and `live_evidence_ready=true` is reported. |
+| Real live-provider evidence level | **FAIL until secrets are configured** | Without `STAGING_EVM_RPC_URL` / `STAGING_EVM_CHAIN_ID` / `STAGING_WORKER_ENABLED=true`, the proof fail-closes with `provider_ready=false`, `provider_mode=disabled`, `evidence_source=unknown`, `latest_live_telemetry_at=null`, `live_evidence_ready=false`. |
+
+The expected fail-closed output when env vars are absent:
 
 ```
 provider_ready=false
@@ -401,7 +408,10 @@ they prove the *logic* is correct. They do not, and cannot, manufacture real
 live evidence. Hardcoding `live_evidence_ready=true` would be a truthfulness
 violation per `CLAUDE.md`.
 
-To produce real production evidence, set:
+## How to make blocker 3 pass for real
+
+To produce real live-provider evidence, you must configure three env vars and
+run the proof against a real EVM JSON-RPC endpoint.
 
 | Variable | Value |
 |---|---|
@@ -409,7 +419,16 @@ To produce real production evidence, set:
 | `STAGING_EVM_CHAIN_ID` | The chain id (e.g. `1` for Ethereum mainnet) |
 | `STAGING_WORKER_ENABLED` | `true` |
 
-Then run:
+### Local: Windows PowerShell
+
+```powershell
+$env:STAGING_EVM_RPC_URL="YOUR_REAL_RPC_URL"
+$env:STAGING_EVM_CHAIN_ID="1"
+$env:STAGING_WORKER_ENABLED="true"
+make run-staging-live-proof
+```
+
+### Local: bash / zsh
 
 ```bash
 export STAGING_EVM_RPC_URL=https://mainnet.infura.io/v3/<project-id>
@@ -417,6 +436,37 @@ export STAGING_EVM_CHAIN_ID=1
 export STAGING_WORKER_ENABLED=true
 make run-staging-live-proof
 ```
+
+### Quick env-only preflight (no RPC calls)
+
+```bash
+make check-staging-live-env
+```
+
+`scripts/check_staging_live_env.py` only inspects env vars. It exits 0 when all
+three required variables are present and non-placeholder, and exits 1 with a
+clear "BLOCKER 3 IS NOT A CODE FAILURE" message otherwise. The RPC URL is
+masked in all output.
+
+### GitHub Actions
+
+1. Open **Repository → Settings → Secrets and variables → Actions → New
+   repository secret** and add:
+   - `STAGING_EVM_RPC_URL`
+   - `STAGING_EVM_CHAIN_ID`
+   - `STAGING_WORKER_ENABLED`
+2. Open **Actions → Staging Live Evidence Proof (blocker 3) → Run workflow**
+   to trigger `workflow_dispatch`.
+
+The workflow's `real-staging-live-proof` job calls
+`make check-staging-live-env` first, then `make run-staging-live-proof`. When
+the secret is absent the job clearly skips with a notice instead of failing
+red. The full RPC URL is never printed (the runner and checker mask it;
+GitHub Actions also masks secret values in logs).
+
+**Do not commit real RPC URLs or API keys.**
+
+### What `make run-staging-live-proof` does
 
 `make run-staging-live-proof` invokes `scripts/run_staging_live_evidence_proof.py`,
 which prints a preflight checklist (RPC URL masked), runs the real proof chain
