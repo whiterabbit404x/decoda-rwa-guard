@@ -130,6 +130,71 @@ To fix:
 2. Run `make generate-live-evidence-proof` — this performs real eth_chainId/eth_blockNumber calls
 3. Re-run `make generate-staging-proof`
 
+## Why blocker 3 still fails locally
+
+Blocker 3 is **live provider evidence**. A local run **without** real provider
+environment variables **must fail closed**:
+
+```
+provider_ready=false
+provider_mode=disabled
+provider_health_checked=false
+evidence_source=unknown
+latest_live_telemetry_at=null
+live_evidence_ready=false
+missing: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured
+```
+
+**This is expected and safe.** The fail-closed guardrail tests and the mocked
+positive-path tests still pass — they prove the *logic* is correct. They do
+not, and cannot, manufacture real live evidence. The runner never hardcodes
+`live_evidence_ready=true`.
+
+To pass real production evidence, set:
+
+- `STAGING_EVM_RPC_URL` — a real Ethereum-compatible JSON-RPC endpoint
+- `STAGING_EVM_CHAIN_ID` — the chain id (e.g. `1`)
+- `STAGING_WORKER_ENABLED=true`
+
+Then run a single command that does the full proof chain:
+
+```bash
+make run-staging-live-proof
+```
+
+This invokes `scripts/run_staging_live_evidence_proof.py`, which:
+
+1. Prints a preflight checklist with the RPC URL masked.
+2. Fails closed (exit 1, no commands run) when any of the three vars is missing.
+3. Otherwise runs, in order:
+   - `python scripts/generate_live_evidence_proof.py --strict`
+   - `make generate-live-evidence-proof`
+   - `make generate-staging-proof`
+   - `make validate-staging-proof`
+   - `python scripts/validate_100_percent_readiness.py --mode staging --strict`
+4. Reads `artifacts/live-evidence-proof/latest/summary.json` and prints a
+   final summary. Exits 0 only when the artifact reports
+   `live_evidence_ready=true`.
+
+### Expected passing output
+
+```
+provider_ready=true
+provider_mode=live
+provider_health_checked=true
+evidence_source=live
+latest_live_telemetry_at=<timestamp>
+live_evidence_ready=true
+telemetry_event_id=<present>
+detection_id=<present>
+alert_id=<present>
+incident_id or response_action_id=<present>
+evidence_package_id=<present>
+```
+
+If `live_evidence_ready` is false, the runner prints the `missing` and
+`contradiction_flags` from the artifact and exits 1 — never faked.
+
 ## Commands proving broad SaaS readiness
 
 The **exact command** that must produce `safe_to_sell_broadly_today=true`:

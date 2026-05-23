@@ -1,0 +1,153 @@
+name: Staging Live Evidence Proof (blocker 3)
+
+# Two-tier workflow for proving blocker 3 (live provider evidence):
+#
+#   1. structural-fail-closed-validation
+#        Runs on every pull_request, push, and workflow_dispatch.
+#        Needs no secrets. Verifies the runner script and guardrail tests
+#        and asserts the proof correctly fails closed when no provider is
+#        configured. PRs from forks (which never see secrets) pass here.
+#
+#   2. real-staging-live-proof
+#        Runs only on workflow_dispatch or push to a protected branch
+#        (main / master). Reads the STAGING_* repository secrets. When the
+#        provider secret is absent the job clearly skips with a notice
+#        instead of failing red. When the secret is present it runs
+#        `make run-staging-live-proof`, which itself fails closed if the
+#        provider does not actually respond.
+#
+# The full RPC URL is never echoed. GitHub Actions masks secret values in
+# logs, and the runner script masks the URL in its own output.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  structural-fail-closed-validation:
+    name: Blocker 3 structural / fail-closed validation (no secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python test dependencies
+        run: pip install pytest
+
+      - name: Run blocker 3 guardrail tests
+        run: |
+          python -m pytest -q \
+            services/api/tests/test_live_evidence_proof.py \
+            services/api/tests/test_live_evidence_proof_cmd.py \
+            services/api/tests/test_run_staging_live_evidence_proof.py \
+            services/api/tests/test_staging_launch_proof.py
+
+      - name: Generate live evidence proof (no secrets -> must fail closed)
+        run: make generate-live-evidence-proof
+
+      - name: Assert proof fails closed without provider secrets
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          path = Path('artifacts/live-evidence-proof/latest/summary.json')
+          data = json.loads(path.read_text())
+          lpe = data['live_provider_evidence']
+          assert lpe['live_evidence_ready'] is False, (
+              f'expected fail-closed without secrets; got '
+              f"live_evidence_ready={lpe['live_evidence_ready']!r}"
+          )
+          assert lpe['provider_ready'] is False, (
+              f"expected provider_ready=false without secrets; got {lpe['provider_ready']!r}"
+          )
+          assert lpe['evidence_source'] == 'unknown', (
+              f"expected evidence_source='unknown'; got {lpe['evidence_source']!r}"
+          )
+          print('OK: blocker 3 fails closed without provider secrets (expected, safe).')
+          PY
+
+      - name: Confirm runner fails closed without env
+        # The runner exits 1 here because no STAGING_* env vars are set.
+        # That is the correct fail-closed outcome - we expect a non-zero exit.
+        run: |
+          set +e
+          python scripts/run_staging_live_evidence_proof.py
+          rc=$?
+          set -e
+          if [ "$rc" -ne 1 ]; then
+            echo "::error::runner did not fail closed without env (exit $rc, expected 1)"
+            exit 1
+          fi
+          echo "OK: runner exited 1 as required when env vars are absent."
+
+  real-staging-live-proof:
+    name: Blocker 3 real live provider proof (uses STAGING_* secrets)
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Detect staging provider secrets
+        id: secrets
+        env:
+          STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
+        run: |
+          # Only the presence/absence of the secret is logged here.
+          # Do not echo the secret value; GitHub Actions also masks secret
+          # contents in logs as a second layer of defense.
+          if [ -n "$STAGING_EVM_RPC_URL" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "Staging EVM provider secret is configured."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "Staging EVM provider secret is NOT configured."
+          fi
+
+      - name: Skipped (no provider secret)
+        if: steps.secrets.outputs.present != 'true'
+        run: |
+          echo "::notice::Staging live evidence proof skipped - STAGING_EVM_RPC_URL is not configured."
+          echo "Blocker 3 remains fail-closed (expected, safe)."
+          echo "To run the real proof, configure repository secrets:"
+          echo "  STAGING_EVM_RPC_URL    (a real EVM JSON-RPC endpoint)"
+          echo "  STAGING_EVM_CHAIN_ID   (e.g. 1 for Ethereum mainnet)"
+          echo "  STAGING_WORKER_ENABLED (true)"
+
+      - name: Run staging live evidence proof
+        if: steps.secrets.outputs.present == 'true'
+        env:
+          STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
+          STAGING_EVM_CHAIN_ID: ${{ secrets.STAGING_EVM_CHAIN_ID }}
+          STAGING_WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+        run: make run-staging-live-proof
+
+      - name: Upload live evidence proof artifacts
+        if: steps.secrets.outputs.present == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-live-evidence-proof-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            artifacts/live-evidence-proof/latest/summary.json
+            artifacts/staging-proof/latest/summary.json
+            artifacts/final-readiness/latest/summary.json

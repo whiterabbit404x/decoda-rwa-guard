@@ -12,6 +12,7 @@
     "validate:no-billing-launch": "make validate-no-billing-launch",
     "validate:paid-ga": "make validate-paid-ga",
     "proof:no-billing-launch": "make proof-no-billing-launch",
+    "proof:staging-live": "python scripts/run_staging_live_evidence_proof.py",
     "test:backend:feature2-smoke": "python -m pytest services/api/tests/test_feature2_smoke.py -q",
     "test:frontend:feature2-smoke": "playwright test apps/web/tests/feature2-smoke.spec.ts",
     "smoke:feature2": "python scripts/smoke_feature2.py",
