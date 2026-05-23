@@ -27,6 +27,9 @@ on:
       - master
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   structural-fail-closed-validation:
     name: Blocker 3 structural / fail-closed validation (no secrets)
@@ -36,6 +39,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -115,6 +121,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
