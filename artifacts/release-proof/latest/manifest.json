@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T13:08:25.201725+00:00",
+  "generated_at": "2026-05-25T16:48:49.486436+00:00",
   "release_channel": "local",
-  "commit_sha": "44124fcdef56562ba350c2e678410f5762c8cb72",
-  "branch": "claude/dreamy-hypatia-ORhth",
+  "commit_sha": "02bd9379f9a780496fa3afcf8c1f7258181d3e10",
+  "branch": "claude/sweet-lamport-pcHzX",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "4b38cce3ad236b056e17fc7861b4cbcb69f2239a500514f891f332339b0e4b15",
-      "size_bytes": 785,
+      "sha256": "8b8cb3ff3a0a19f2999da586838527723970c7335c8bb37aad169d18a1ac6489",
+      "size_bytes": 784,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "6ce62253e668af4b88847ab9acd464af1e662c2dc34ea17637b668481a8f6004",
-      "size_bytes": 2107,
+      "sha256": "8fb03b13904b4f563a7eb144162dcdf59c68f5f88c7f0dff7ef6f08c0e56be04",
+      "size_bytes": 2106,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "acf7860c65410705c51582da90d1df6deb06580897e2dd8f0857d3f077a8bae3",
+      "sha256": "c600e4b592bd02a72adc3edf11b420ece1205184544774505d0e1dc74099c848",
       "size_bytes": 819,
       "required": true,
       "status": "present"

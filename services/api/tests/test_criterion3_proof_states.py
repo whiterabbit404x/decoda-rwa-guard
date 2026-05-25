@@ -62,6 +62,29 @@ def _mock_rpc_success(chain_id_hex: str = '0x1', block_hex: str = '0x12c4cca'):
     return _side
 
 
+def _real_live_chain(**overrides) -> dict:
+    """A canonical real live-event chain (telemetry -> ... -> evidence package).
+
+    Represents evidence captured by the monitoring worker (source_type=rpc_polling,
+    evidence_source=live). Tests use this to satisfy live_evidence_ready=True
+    without faking IDs from eth_chainId or eth_blockNumber alone.
+    """
+    chain = {
+        'telemetry_event_id': 'tel-live-001',
+        'detection_id': 'det-live-001',
+        'alert_id': 'alert-live-001',
+        'incident_id': 'inc-live-001',
+        'response_action_id': 'ra-live-001',
+        'evidence_package_id': 'pkg-live-001',
+        'evidence_source': 'live',
+        'source_type': 'rpc_polling',
+        'observed_at': '2026-05-22T12:00:00+00:00',
+        'detection_name': 'live_rpc_event_observed',
+    }
+    chain.update(overrides)
+    return chain
+
+
 # ---------------------------------------------------------------------------
 # Task 2 — env detection: STAGING_EVM_RPC_URL prevents false "not configured"
 # ---------------------------------------------------------------------------
@@ -396,10 +419,14 @@ def test_build_live_evidence_proof_output_includes_all_required_flags(
 # Script-level: generate_live_evidence_proof new flags
 # ---------------------------------------------------------------------------
 
-def test_script_successful_rpc_sets_live_provider_ready_true(
+def test_script_successful_rpc_alone_sets_only_provider_flags_true(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Successful RPC health check => live_provider_ready=True in proof output."""
+    """Successful RPC alone => live_provider_ready=True, downstream flags False.
+
+    RPC health alone (eth_chainId + eth_blockNumber) must not fake a full chain.
+    Without a real live telemetry event, only the provider/receipt flags flip true.
+    """
     _clear_provider_env(monkeypatch)
     monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
     monkeypatch.setenv('EVM_CHAIN_ID', '1')
@@ -411,23 +438,58 @@ def test_script_successful_rpc_sets_live_provider_ready_true(
     lpe = result['live_provider_evidence']
     assert lpe['live_provider_ready'] is True
     assert lpe['live_provider_receipt_ready'] is True
-    assert lpe['live_telemetry_ready'] is True
-    assert lpe['live_detection_ready'] is True
-    assert lpe['live_alert_ready'] is True
-    assert lpe['live_incident_ready'] is True
+    # No real live telemetry event was supplied -> downstream flags must be False.
+    assert lpe['live_telemetry_ready'] is False
+    assert lpe['live_detection_ready'] is False
+    assert lpe['live_alert_ready'] is False
+    assert lpe['live_incident_ready'] is False
+    assert lpe['live_evidence_ready'] is False
+    # Chain IDs are not synthesised from eth_chainId or eth_blockNumber alone.
+    chain = lpe['chain']
+    for fld in ('telemetry_event_id', 'detection_id', 'alert_id',
+                'incident_id', 'evidence_package_id'):
+        assert chain[fld] is None
+    # The reason is explicit and operator-facing.
+    assert any(
+        'no matching live telemetry event' in m
+        for m in lpe['missing']
+    ), f"Expected no-live-event reason; got: {lpe['missing']}"
 
 
-def test_script_telemetry_record_has_rpc_polling_source_type(
+def test_script_real_evidence_satisfies_full_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Telemetry record created by proof script must have source_type='rpc_polling'."""
+    """Real live evidence injected via param => all flags true, chain populated."""
     _clear_provider_env(monkeypatch)
     monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
     monkeypatch.setenv('EVM_CHAIN_ID', '1')
     monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
 
     with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
-        result = generate_live_evidence_proof()
+        result = generate_live_evidence_proof(live_evidence_chain=_real_live_chain())
+
+    lpe = result['live_provider_evidence']
+    assert lpe['live_provider_ready'] is True
+    assert lpe['live_provider_receipt_ready'] is True
+    assert lpe['live_telemetry_ready'] is True
+    assert lpe['live_detection_ready'] is True
+    assert lpe['live_alert_ready'] is True
+    assert lpe['live_incident_ready'] is True
+    assert lpe['live_evidence_ready'] is True
+    assert lpe['chain']['telemetry_event_id'] == 'tel-live-001'
+
+
+def test_script_telemetry_record_has_rpc_polling_source_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When real live evidence is supplied, telemetry_record carries rpc_polling source_type."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
+        result = generate_live_evidence_proof(live_evidence_chain=_real_live_chain())
 
     lpe = result['live_provider_evidence']
     tel = lpe.get('telemetry_record', {})
@@ -447,7 +509,7 @@ def test_script_evidence_package_has_evidence_source_live(
     monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
 
     with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
-        result = generate_live_evidence_proof()
+        result = generate_live_evidence_proof(live_evidence_chain=_real_live_chain())
 
     lpe = result['live_provider_evidence']
     pkg = lpe.get('evidence_package_record', {})
@@ -473,7 +535,7 @@ def test_script_detection_name_is_live_rpc_event_observed(
     monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
 
     with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
-        result = generate_live_evidence_proof()
+        result = generate_live_evidence_proof(live_evidence_chain=_real_live_chain())
 
     det = result['live_provider_evidence'].get('detection_record', {})
     assert det.get('detection_name') == 'live_rpc_event_observed'
@@ -545,16 +607,23 @@ def test_script_chain_id_not_configured_live_provider_ready_true(
 def test_script_staging_env_vars_create_live_provider_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """STAGING_EVM_RPC_URL + STAGING_EVM_CHAIN_ID => live_provider_ready=True in script."""
+    """STAGING_EVM_RPC_URL + STAGING_EVM_CHAIN_ID => live_provider_ready=True.
+
+    live_evidence_ready=True requires a real live event chain on top of RPC health.
+    """
     _clear_provider_env(monkeypatch)
     monkeypatch.setenv('STAGING_EVM_RPC_URL', _REAL_RPC)
     monkeypatch.setenv('STAGING_EVM_CHAIN_ID', '1')
     monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
 
     with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
-        result = generate_live_evidence_proof()
+        result = generate_live_evidence_proof(live_evidence_chain=_real_live_chain())
 
     lpe = result['live_provider_evidence']
     assert lpe['provider_ready'] is True
     assert lpe['live_provider_ready'] is True
     assert lpe['live_evidence_ready'] is True
+
+    # The "not configured" message must not appear when STAGING_EVM_RPC_URL is set.
+    joined = ' '.join(lpe.get('missing') or [])
+    assert 'not configured' not in joined

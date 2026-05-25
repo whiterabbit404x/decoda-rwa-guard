@@ -56,7 +56,26 @@ _PROVIDER_ENV_VARS = [
     'EVM_RPC_URL', 'STAGING_EVM_RPC_URL',
     'EVM_CHAIN_ID', 'STAGING_EVM_CHAIN_ID', 'CHAIN_ID',
     'STAGING_WORKER_ENABLED',
+    'LIVE_EVIDENCE_CHAIN_JSON', 'LIVE_EVIDENCE_CHAIN_FILE',
 ]
+
+
+def _real_live_chain(**overrides) -> dict:
+    """Canonical real live-event chain for the script proof tests."""
+    chain = {
+        'telemetry_event_id': 'tel-live-001',
+        'detection_id': 'det-live-001',
+        'alert_id': 'alert-live-001',
+        'incident_id': 'inc-live-001',
+        'response_action_id': 'ra-live-001',
+        'evidence_package_id': 'pkg-live-001',
+        'evidence_source': 'live',
+        'source_type': 'rpc_polling',
+        'observed_at': '2026-05-22T12:00:00+00:00',
+        'detection_name': 'live_rpc_event_observed',
+    }
+    chain.update(overrides)
+    return chain
 
 _FULL_CHAIN: dict = {
     'evidence_source': 'live',
@@ -570,14 +589,14 @@ def test_script_chain_id_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_script_successful_rpc_creates_live_telemetry_proof(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Successful RPC → telemetry_event_id, evidence_source=live, block_number, timestamp."""
+    """Successful RPC + real live evidence -> telemetry_event_id, evidence_source=live."""
     _clear_provider_env(monkeypatch)
     monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
     monkeypatch.setenv('EVM_CHAIN_ID', '1')
     monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
 
     with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
-        result = generate_live_evidence_proof()
+        result = generate_live_evidence_proof(live_evidence_chain=_real_live_chain())
 
     lpe = result['live_provider_evidence']
     assert lpe['evidence_source'] == 'live'
@@ -589,12 +608,10 @@ def test_script_successful_rpc_creates_live_telemetry_proof(
     assert tel.get('evidence_source') == 'live'
 
 
-# ---------------------------------------------------------------------------
-# Case 7 (script-level): Complete live chain with mocked RPC
-# ---------------------------------------------------------------------------
-
-def test_script_complete_live_chain_mocked_rpc(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Full live chain with mocked RPC success: all proof gates pass."""
+def test_script_successful_rpc_without_live_event_fails_with_specific_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RPC works but no live event -> live_evidence_ready=False with explicit reason."""
     _clear_provider_env(monkeypatch)
     monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
     monkeypatch.setenv('EVM_CHAIN_ID', '1')
@@ -602,6 +619,32 @@ def test_script_complete_live_chain_mocked_rpc(monkeypatch: pytest.MonkeyPatch) 
 
     with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
         result = generate_live_evidence_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['live_provider_ready'] is True
+    assert lpe['live_telemetry_ready'] is False
+    assert lpe['live_evidence_ready'] is False
+    assert any(
+        'no matching live telemetry event' in m for m in lpe['missing']
+    ), f'Expected explicit no-live-event reason; got: {lpe["missing"]}'
+    for fld in ('telemetry_event_id', 'detection_id', 'alert_id',
+                'incident_id', 'evidence_package_id'):
+        assert lpe['chain'][fld] is None, f'{fld} must not be synthesised from RPC alone'
+
+
+# ---------------------------------------------------------------------------
+# Case 7 (script-level): Complete live chain with mocked RPC
+# ---------------------------------------------------------------------------
+
+def test_script_complete_live_chain_mocked_rpc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Full live chain with mocked RPC + real evidence injected: all proof gates pass."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
+        result = generate_live_evidence_proof(live_evidence_chain=_real_live_chain())
 
     lpe = result['live_provider_evidence']
 
@@ -640,9 +683,46 @@ def test_script_staging_env_vars_preferred_over_base(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
 
     with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c')):
-        result = generate_live_evidence_proof()
+        result = generate_live_evidence_proof(live_evidence_chain=_real_live_chain())
 
     lpe = result['live_provider_evidence']
     assert lpe['provider_ready'] is True
     assert lpe['live_evidence_ready'] is True
     assert lpe['chain_id_observed'] == '1'
+
+
+def test_script_live_evidence_chain_json_env_var_supplies_real_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LIVE_EVIDENCE_CHAIN_JSON env var feeds real evidence into the proof."""
+    import json as _json
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+    monkeypatch.setenv('LIVE_EVIDENCE_CHAIN_JSON', _json.dumps(_real_live_chain()))
+
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
+        result = generate_live_evidence_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['live_evidence_ready'] is True
+    assert lpe['chain']['telemetry_event_id'] == 'tel-live-001'
+
+
+def test_script_live_evidence_chain_rejects_non_live_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Injected chain with evidence_source!='live' or source_type!='rpc_polling' is rejected."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    bad_chain = _real_live_chain(evidence_source='simulator')
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
+        result = generate_live_evidence_proof(live_evidence_chain=bad_chain)
+
+    lpe = result['live_provider_evidence']
+    assert lpe['live_evidence_ready'] is False
+    assert lpe['chain']['telemetry_event_id'] is None

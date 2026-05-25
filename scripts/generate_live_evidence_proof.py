@@ -7,24 +7,41 @@ Produces: artifacts/live-evidence-proof/latest/summary.json
 Steps:
 1. Read provider env (STAGING_EVM_RPC_URL preferred, EVM_RPC_URL fallback)
 2. If env vars missing: fail closed, write proof with live_evidence_ready=false
-3. If present:
+3. If RPC env vars present:
    - Perform eth_chainId and eth_blockNumber JSON-RPC calls
    - Verify observed chain ID matches configured chain ID (if set)
-   - Create minimal live telemetry proof record (data derived from real RPC)
-   - Generate chain: telemetry -> detection -> alert -> incident/response -> evidence package
-   - Write proof artifact with live_provider_evidence section
+   - Set live_provider_ready=True (RPC poll proves the provider is reachable)
+   - Set live_provider_receipt_ready=True (block_number observation proves receipt)
+4. Load real live-event evidence (telemetry_event_id, detection_id, alert_id,
+   incident_id/response_action_id, evidence_package_id) from:
+   - the `live_evidence_chain` parameter, or
+   - env var LIVE_EVIDENCE_CHAIN_JSON (a JSON string), or
+   - env var LIVE_EVIDENCE_CHAIN_FILE (path to a JSON file).
+   The chain MUST carry evidence_source='live' and source_type='rpc_polling'.
+5. If no real live-event evidence is found:
+   - live_provider_ready stays True (RPC works), but
+   - live_telemetry_ready / live_detection_ready / live_alert_ready /
+     live_incident_ready / live_evidence_ready all stay False
+   - reason: "Live RPC provider checked successfully, but no matching live
+     telemetry event was found."
+   - chain IDs are all null. No IDs are synthesised from eth_chainId or
+     eth_blockNumber alone.
+6. If real live-event evidence is found:
+   - Build the full chain using the real IDs (never synthesise from RPC alone).
+   - live_evidence_ready=True only when all required IDs are present and
+     evidence_source='live'/source_type='rpc_polling'.
 
 Fail-closed semantics:
 - provider_ready=false when no RPC URL configured
 - provider_ready=false when RPC call fails or is unreachable
 - provider_ready=false when chain ID mismatch
-- live_evidence_ready=false unless provider_ready=true AND chain_id_configured
-  AND worker_enabled AND full chain is proven
+- live_evidence_ready=false unless real live telemetry event exists
 - safe_to_sell_broadly_today is NOT set by this script
 
 Two-tier missing list:
 - Provider-level issues (block provider_ready): no RPC URL, RPC error, chain ID mismatch
-- Evidence-level issues (block live_evidence_ready only): missing chain ID, worker disabled
+- Evidence-level issues (block live_evidence_ready only): missing chain ID, worker
+  disabled, no matching live telemetry event observed
 
 Usage:
   python scripts/generate_live_evidence_proof.py
@@ -145,22 +162,99 @@ def _empty_chain() -> dict[str, Any]:
     }
 
 
+NO_LIVE_EVENT_REASON = (
+    'Live RPC provider checked successfully, '
+    'but no matching live telemetry event was found.'
+)
+
+
+def _load_live_evidence_chain_from_env() -> dict[str, Any] | None:
+    """
+    Load a real live-event evidence chain from env vars.
+
+    Returns the parsed dict when LIVE_EVIDENCE_CHAIN_JSON or
+    LIVE_EVIDENCE_CHAIN_FILE points at usable JSON, otherwise None.
+    No fields are invented; callers must validate the returned dict.
+    """
+    raw_json = _env_val('LIVE_EVIDENCE_CHAIN_JSON')
+    if raw_json:
+        try:
+            data = json.loads(raw_json)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+
+    file_path = _env_val('LIVE_EVIDENCE_CHAIN_FILE')
+    if file_path:
+        try:
+            with open(file_path) as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+
+    return None
+
+
+def _validated_live_evidence_chain(chain: Any) -> dict[str, Any] | None:
+    """
+    Validate that ``chain`` carries a complete live-event proof.
+
+    Requires:
+      - evidence_source == 'live'
+      - source_type == 'rpc_polling'
+      - telemetry_event_id, detection_id, alert_id, evidence_package_id all truthy
+      - incident_id or response_action_id truthy
+
+    Returns the normalized chain on success, None otherwise. No IDs are
+    invented; missing fields cause rejection rather than substitution.
+    """
+    if not isinstance(chain, dict):
+        return None
+    evidence_source = str(chain.get('evidence_source') or '').strip().lower()
+    source_type = str(chain.get('source_type') or '').strip().lower()
+    if evidence_source != 'live' or source_type != 'rpc_polling':
+        return None
+    required = ('telemetry_event_id', 'detection_id', 'alert_id', 'evidence_package_id')
+    if not all(str(chain.get(k) or '').strip() for k in required):
+        return None
+    incident = str(chain.get('incident_id') or '').strip()
+    response_action = str(chain.get('response_action_id') or '').strip()
+    if not incident and not response_action:
+        return None
+    return chain
+
+
 def generate_live_evidence_proof(
     *,
     rpc_url_override: str | None = None,
+    live_evidence_chain: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Build live provider evidence proof. Always fail-closed.
 
     Two-tier missing logic:
     - provider_missing: issues that block provider_ready (no URL, RPC error, chain mismatch)
-    - evidence_missing: issues that block live_evidence_ready only (no chain ID, worker off)
+    - evidence_missing: issues that block live_evidence_ready only (no chain ID, worker
+      disabled, no matching live telemetry event observed)
 
     provider_ready = True only when provider_missing is empty and no contradiction_flags.
-    live_evidence_ready = True only when provider_ready AND evidence_missing is empty.
+    live_evidence_ready = True only when provider_ready AND a real live-event
+    evidence chain is supplied (no chain IDs are synthesised from eth_chainId or
+    eth_blockNumber alone).
 
     Args:
         rpc_url_override: inject a URL for unit tests only.
+        live_evidence_chain: real telemetry chain captured by the monitoring
+            worker (telemetry_event_id, detection_id, alert_id,
+            incident_id/response_action_id, evidence_package_id; evidence_source
+            must be 'live' and source_type 'rpc_polling'). When None, the
+            function also looks at the LIVE_EVIDENCE_CHAIN_JSON /
+            LIVE_EVIDENCE_CHAIN_FILE env vars. When no valid chain is found and
+            RPC is healthy, the proof reports live_provider_ready=True but
+            live_evidence_ready=False with the explicit no-live-event reason.
     """
     now = datetime.now(timezone.utc).isoformat()
     provider_missing: list[str] = []   # blocks provider_ready
@@ -314,10 +408,10 @@ def generate_live_evidence_proof(
 
     # --- Determine provider_ready (only provider-level issues matter) ---
     provider_ready = not provider_missing and not contradiction_flags
-    all_missing = provider_missing + evidence_missing
 
-    # --- If anything blocks live evidence, emit structured fail result ---
-    if all_missing or contradiction_flags:
+    # --- Provider-level fail: bail out with fail-closed result ---
+    if provider_missing or contradiction_flags:
+        all_missing = provider_missing + evidence_missing
         return _build_fail_result(
             now=now,
             provider_ready=provider_ready,
@@ -333,20 +427,57 @@ def generate_live_evidence_proof(
             contradiction_flags=contradiction_flags,
         )
 
-    # --- All gates pass: build full live evidence chain from real RPC data ---
-    # IDs are content-addressable (uuid5), derived from actual on-chain data.
-    # The same block observation produces the same IDs; different blocks produce
-    # different IDs. This ties evidence to the real chain state, not to random UUIDs.
-    telemetry_ts = datetime.now(timezone.utc).isoformat()
-    telemetry_id = _content_id(
-        'telemetry', chain_id_observed, block_number_observed or '', raw_rpc_response_hash
-    )
-    detection_id = _content_id('detection', telemetry_id, 'live_rpc_event_observed')
-    alert_id = _content_id('alert', detection_id)
-    incident_id = _content_id('incident', alert_id)
-    response_action_id = _content_id('response_action', alert_id)
-    evidence_package_id = _content_id(
-        'evidence_package', telemetry_id, detection_id, alert_id, incident_id
+    # --- Look for real live-event evidence; never synthesise from RPC alone ---
+    real_chain = _validated_live_evidence_chain(live_evidence_chain)
+    if real_chain is None:
+        real_chain = _validated_live_evidence_chain(_load_live_evidence_chain_from_env())
+
+    # --- Evidence-level issue: RPC works but no matching live event observed ---
+    if real_chain is None:
+        evidence_missing.append(NO_LIVE_EVENT_REASON)
+        return _build_fail_result(
+            now=now,
+            provider_ready=provider_ready,
+            provider_mode='live',
+            provider_health_checked=True,
+            provider_checked_at=check_time,
+            provider_url_masked=provider_url_masked,
+            chain_id_configured=chain_id_configured,
+            chain_id_observed=chain_id_observed,
+            block_number_observed=block_number_observed,
+            worker_enabled=worker_enabled,
+            missing=evidence_missing,
+            contradiction_flags=contradiction_flags,
+        )
+
+    # --- Other evidence-level issues still block live_evidence_ready ---
+    if evidence_missing:
+        return _build_fail_result(
+            now=now,
+            provider_ready=provider_ready,
+            provider_mode='live',
+            provider_health_checked=True,
+            provider_checked_at=check_time,
+            provider_url_masked=provider_url_masked,
+            chain_id_configured=chain_id_configured,
+            chain_id_observed=chain_id_observed,
+            block_number_observed=block_number_observed,
+            worker_enabled=worker_enabled,
+            missing=evidence_missing,
+            contradiction_flags=contradiction_flags,
+        )
+
+    # --- Real live-event evidence: build chain from the supplied real IDs ---
+    telemetry_id = str(real_chain['telemetry_event_id'])
+    detection_id = str(real_chain['detection_id'])
+    alert_id = str(real_chain['alert_id'])
+    incident_id = str(real_chain.get('incident_id') or '') or None
+    response_action_id = str(real_chain.get('response_action_id') or '') or None
+    evidence_package_id = str(real_chain['evidence_package_id'])
+    telemetry_ts = str(
+        real_chain.get('observed_at')
+        or real_chain.get('latest_live_telemetry_at')
+        or datetime.now(timezone.utc).isoformat()
     )
 
     return {
@@ -367,7 +498,7 @@ def generate_live_evidence_proof(
             'live_telemetry_ready': True,
             'live_detection_ready': True,
             'live_alert_ready': True,
-            'live_incident_ready': True,
+            'live_incident_ready': bool(incident_id or response_action_id),
             'evidence_source': 'live',
             'latest_live_telemetry_at': telemetry_ts,
             'live_evidence_ready': True,
@@ -388,20 +519,20 @@ def generate_live_evidence_proof(
                 'chain_id': chain_id_observed,
                 'block_number': block_number_observed,
                 'raw_rpc_response_hash': raw_rpc_response_hash,
-                'transaction_hash': tx_hash,
-                'workspace_id': None,
-                'target_id': None,
-                'asset_id': None,
+                'transaction_hash': real_chain.get('transaction_hash') or tx_hash,
+                'workspace_id': real_chain.get('workspace_id'),
+                'target_id': real_chain.get('target_id'),
+                'asset_id': real_chain.get('asset_id'),
             },
             'detection_record': {
                 'detection_id': detection_id,
-                'detection_name': 'live_rpc_event_observed',
+                'detection_name': real_chain.get('detection_name') or 'live_rpc_event_observed',
                 'telemetry_event_id': telemetry_id,
                 'observed_at': telemetry_ts,
                 'evidence_source': 'live',
                 'source_type': 'rpc_polling',
-                'severity': 'informational',
-                'confidence': 'high',
+                'severity': real_chain.get('severity') or 'informational',
+                'confidence': real_chain.get('confidence') or 'high',
             },
             'alert_record': {
                 'alert_id': alert_id,

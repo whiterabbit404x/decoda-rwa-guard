@@ -32,7 +32,23 @@ _PROVIDER_ENV_VARS = [
     'EVM_RPC_URL', 'STAGING_EVM_RPC_URL',
     'EVM_CHAIN_ID', 'STAGING_EVM_CHAIN_ID', 'CHAIN_ID',
     'STAGING_WORKER_ENABLED',
+    'LIVE_EVIDENCE_CHAIN_JSON', 'LIVE_EVIDENCE_CHAIN_FILE',
 ]
+
+
+def _real_live_chain(telemetry_id: str = 'tel-live-001') -> dict[str, Any]:
+    """Canonical real live-event chain (source_type=rpc_polling, evidence_source=live)."""
+    return {
+        'telemetry_event_id': telemetry_id,
+        'detection_id': 'det-live-001',
+        'alert_id': 'alert-live-001',
+        'incident_id': 'inc-live-001',
+        'response_action_id': 'ra-live-001',
+        'evidence_package_id': 'pkg-live-001',
+        'evidence_source': 'live',
+        'source_type': 'rpc_polling',
+        'observed_at': '2026-05-22T12:00:00+00:00',
+    }
 
 _ALL_CHAIN_IDS = {
     'telemetry_event_id': 'tel-live-001',
@@ -187,59 +203,64 @@ def test_check_live_evidence_rejects_false_live_evidence_ready(tmp_path: Path) -
 
 def test_ids_are_deterministic_for_same_rpc_data(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Running generate_live_evidence_proof twice with the same mocked RPC response
-    must produce the same chain IDs. Random uuid4() would fail this test.
+    With the same real live-event chain injected twice, IDs must match exactly
+    (no random uuid4(); the chain comes from the worker, not from synthesis).
     """
     _clear_env(monkeypatch)
     monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
     monkeypatch.setenv('EVM_CHAIN_ID', '1')
     monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
 
+    chain = _real_live_chain()
+
     mock = _mock_rpc_success('0x1', '0x112358')
     with patch(_SCRIPT_RPC_PATCH, side_effect=mock):
-        result1 = generate_live_evidence_proof()
+        result1 = generate_live_evidence_proof(live_evidence_chain=chain)
 
     mock2 = _mock_rpc_success('0x1', '0x112358')
     with patch(_SCRIPT_RPC_PATCH, side_effect=mock2):
-        result2 = generate_live_evidence_proof()
+        result2 = generate_live_evidence_proof(live_evidence_chain=chain)
 
     chain1 = result1['live_provider_evidence']['chain']
     chain2 = result2['live_provider_evidence']['chain']
 
-    assert chain1['telemetry_event_id'] == chain2['telemetry_event_id'], \
-        'telemetry_event_id must be deterministic for the same RPC data'
+    assert chain1['telemetry_event_id'] == chain2['telemetry_event_id']
     assert chain1['detection_id'] == chain2['detection_id']
     assert chain1['alert_id'] == chain2['alert_id']
     assert chain1['incident_id'] == chain2['incident_id']
     assert chain1['evidence_package_id'] == chain2['evidence_package_id']
 
 
-def test_ids_differ_for_different_block_numbers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Different block numbers must produce different chain IDs."""
+def test_ids_differ_for_different_live_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Different real live-event chains must produce different telemetry IDs in the proof."""
     _clear_env(monkeypatch)
     monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
     monkeypatch.setenv('EVM_CHAIN_ID', '1')
     monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
 
+    chain_a = _real_live_chain(telemetry_id='tel-live-A')
+    chain_b = _real_live_chain(telemetry_id='tel-live-B')
+
     mock1 = _mock_rpc_success('0x1', '0x112358')
     with patch(_SCRIPT_RPC_PATCH, side_effect=mock1):
-        result1 = generate_live_evidence_proof()
+        result_a = generate_live_evidence_proof(live_evidence_chain=chain_a)
 
-    mock2 = _mock_rpc_success('0x1', '0x112359')
+    mock2 = _mock_rpc_success('0x1', '0x112358')
     with patch(_SCRIPT_RPC_PATCH, side_effect=mock2):
-        result2 = generate_live_evidence_proof()
+        result_b = generate_live_evidence_proof(live_evidence_chain=chain_b)
 
-    tel1 = result1['live_provider_evidence']['chain']['telemetry_event_id']
-    tel2 = result2['live_provider_evidence']['chain']['telemetry_event_id']
+    tel_a = result_a['live_provider_evidence']['chain']['telemetry_event_id']
+    tel_b = result_b['live_provider_evidence']['chain']['telemetry_event_id']
 
-    assert tel1 != tel2, \
-        'Different block numbers must produce different telemetry_event_ids'
+    assert tel_a != tel_b
+    assert tel_a == 'tel-live-A'
+    assert tel_b == 'tel-live-B'
 
 
-def test_ids_are_not_random_uuid4(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rpc_alone_does_not_fake_chain_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Chain IDs must be valid UUIDs but NOT from uuid4 (random).
-    uuid5 IDs have version=5; uuid4 IDs have version=4.
+    Successful RPC without a real live event must NOT fake any chain IDs.
+    All chain IDs must be None and live_evidence_ready must be False.
     """
     _clear_env(monkeypatch)
     monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
@@ -249,13 +270,12 @@ def test_ids_are_not_random_uuid4(monkeypatch: pytest.MonkeyPatch) -> None:
     with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c')):
         result = generate_live_evidence_proof()
 
-    chain = result['live_provider_evidence']['chain']
+    lpe = result['live_provider_evidence']
+    assert lpe['live_evidence_ready'] is False
+    chain = lpe['chain']
     for field in ('telemetry_event_id', 'detection_id', 'alert_id', 'incident_id', 'evidence_package_id'):
-        val = chain[field]
-        assert val is not None, f'{field} must not be None'
-        parsed = uuid.UUID(val)
-        assert parsed.version == 5, \
-            f'{field} must be uuid5 (content-addressable), not uuid4 (random). Got version={parsed.version}'
+        assert chain[field] is None, \
+            f'{field} must not be synthesised from eth_chainId/eth_blockNumber alone'
 
 
 def test_simulator_evidence_does_not_produce_live_evidence_ready(
