@@ -1251,8 +1251,25 @@ def get_admin_readiness(request: Request) -> dict[str, Any]:
         except Exception:
             audit_log_status = "unavailable"
 
-        protected_assets = _safe_count("protected_assets")
-        reporting_systems = _safe_count("reporting_systems")
+        # Count assets from the canonical assets table (no protected_assets table exists).
+        # _safe_count("protected_assets") previously returned 0 because the table does not exist.
+        try:
+            _pa_row = connection.execute(
+                "SELECT COUNT(*) AS count FROM assets WHERE workspace_id = %s AND deleted_at IS NULL",
+                (workspace_id,),
+            ).fetchone()
+            protected_assets = int((_pa_row or {}).get("count") or 0)
+        except Exception:
+            protected_assets = 0
+        # Count enabled monitored_systems as reporting systems.
+        try:
+            _rs_row = connection.execute(
+                "SELECT COUNT(*) AS count FROM monitored_systems WHERE workspace_id = %s AND COALESCE(is_enabled, TRUE) = TRUE",
+                (workspace_id,),
+            ).fetchone()
+            reporting_systems = int((_rs_row or {}).get("count") or 0)
+        except Exception:
+            reporting_systems = 0
         enabled_configs = _safe_count("monitoring_configs")
 
         env_checks = {
@@ -9884,20 +9901,29 @@ def _sync_canonical_monitoring_target_state(
     monitoring_enabled: bool,
 ) -> None:
     provider_type = 'target_bridge'
-    canonical = connection.execute(
-        '''
-        INSERT INTO monitored_targets (id, workspace_id, asset_id, provider_type, target_identifier, enabled, status, created_at, updated_at)
-        VALUES (%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, NOW(), NOW())
-        ON CONFLICT (workspace_id, provider_type, target_identifier)
-        DO UPDATE SET
-            asset_id = EXCLUDED.asset_id,
-            enabled = EXCLUDED.enabled,
-            status = EXCLUDED.status,
-            updated_at = NOW()
-        RETURNING id
-        ''',
-        (str(uuid.uuid5(uuid.NAMESPACE_URL, f'canonical-target:{workspace_id}:{target_id}')), workspace_id, asset_id, provider_type, target_id, enabled, 'active' if enabled else 'inactive'),
-    ).fetchone()
+    # Pass NULL for asset_id: monitored_targets.asset_id references asset_registry(id)
+    # but asset_id here comes from assets(id). Migration 0079 drops the FK so either
+    # value is valid, but NULL is correct until asset_registry is populated from assets.
+    try:
+        canonical = connection.execute(
+            '''
+            INSERT INTO monitored_targets (id, workspace_id, asset_id, provider_type, target_identifier, enabled, status, created_at, updated_at)
+            VALUES (%s::uuid, %s::uuid, NULL, %s, %s, %s, %s, NOW(), NOW())
+            ON CONFLICT (workspace_id, provider_type, target_identifier)
+            DO UPDATE SET
+                enabled = EXCLUDED.enabled,
+                status = EXCLUDED.status,
+                updated_at = NOW()
+            RETURNING id
+            ''',
+            (str(uuid.uuid5(uuid.NAMESPACE_URL, f'canonical-target:{workspace_id}:{target_id}')), workspace_id, provider_type, target_id, enabled, 'active' if enabled else 'inactive'),
+        ).fetchone()
+    except Exception:
+        logger.warning(
+            'canonical_sync_monitored_targets_failed target_id=%s workspace_id=%s',
+            target_id, workspace_id, exc_info=True,
+        )
+        return
     if canonical is None:
         return
     canonical_target_id = str(canonical['id'])
@@ -9918,7 +9944,7 @@ def _sync_canonical_monitoring_target_state(
         connection.execute(
             '''
             INSERT INTO monitoring_configs (id, workspace_id, asset_id, target_id, enabled, cadence_seconds, provider_type, created_at, updated_at)
-            VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, TRUE, 300, %s, NOW(), NOW())
+            VALUES (%s::uuid, %s::uuid, NULL, %s::uuid, TRUE, 300, %s, NOW(), NOW())
             ON CONFLICT (id)
             DO UPDATE SET
                 asset_id = EXCLUDED.asset_id,
@@ -9926,7 +9952,7 @@ def _sync_canonical_monitoring_target_state(
                 provider_type = EXCLUDED.provider_type,
                 updated_at = NOW()
             ''',
-            (primary_config_id, workspace_id, asset_id, canonical_target_id, provider_type),
+            (primary_config_id, workspace_id, canonical_target_id, provider_type),
         )
         connection.execute(
             '''
@@ -10404,7 +10430,7 @@ def _repair_orphan_targets_in_workspace(
     }
 
 
-def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[str, Any]:
+def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[str, Any]:  # noqa: C901
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -10465,16 +10491,26 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
         if enabled:
             result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id_value)
             if result.get('status') != 'ok':
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Cannot enable target: linked asset is missing or deleted.')
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        'ok': False,
+                        'code': 'TARGET_LINKED_ASSET_MISSING',
+                        'message': 'Cannot enable target: linked asset is missing or deleted. Add a protected asset and link it to this target.',
+                        'repair_available': True,
+                    },
+                )
             # Upsert monitoring_configs keyed by targets.id so the monitoring runner
             # candidate query (JOIN monitoring_configs mc ON mc.target_id = t.id) can
             # find this target. The canonical sync above links to monitored_targets.id
-            # which is a different UUID.
+            # which is a different UUID. asset_id is NULL here because monitoring_configs
+            # previously had a FK to asset_registry(id) (migration 0079 fixes this);
+            # using NULL avoids any residual FK violation on environments not yet migrated.
             monitoring_config_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'target-direct-config:{workspace_id_value}:{target_id}'))
             connection.execute(
                 '''
                 INSERT INTO monitoring_configs (id, workspace_id, asset_id, target_id, enabled, cadence_seconds, provider_type, created_at, updated_at)
-                VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, TRUE, 300, 'live', NOW(), NOW())
+                VALUES (%s::uuid, %s::uuid, NULL, %s::uuid, TRUE, 300, 'live', NOW(), NOW())
                 ON CONFLICT (id)
                 DO UPDATE SET
                     asset_id = EXCLUDED.asset_id,
@@ -10483,7 +10519,7 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
                     provider_type = 'live',
                     updated_at = NOW()
                 ''',
-                (monitoring_config_id, workspace_id_value, asset_id_value, target_id),
+                (monitoring_config_id, workspace_id_value, target_id),
             )
         else:
             connection.execute(

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T09:17:29.244906+00:00",
+  "generated_at": "2026-05-25T10:31:49.868170+00:00",
   "release_channel": "local",
-  "commit_sha": "af2289fcaf5370f40f842f2fb3c34e102f703117",
-  "branch": "claude/eager-volta-Weeuz",
+  "commit_sha": "647301a67b9c08e2aec8eeac45895f414ae2756a",
+  "branch": "claude/charming-wright-IbHkL",
   "test_suites": {
     "release_proof_artifacts": {
       "name": "release-proof-artifacts",
