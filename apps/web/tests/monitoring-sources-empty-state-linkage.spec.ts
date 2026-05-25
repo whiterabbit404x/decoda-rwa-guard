@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 test('monitoring sources does not show no-assets state when assets exist', async ({ page }) => {
-  await page.route('**/monitoring/sources', async (route) => {
+  await page.route('**/api/monitoring/sources', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',

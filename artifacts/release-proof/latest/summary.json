@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T15:42:46.382586+00:00",
+  "generated_at": "2026-05-25T05:36:11.861152+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "72e6140d4190e7c5dec3de6f8a5f100ff4a8774f",
-  "branch": "claude/great-fermi-jyKDI",
+  "commit_sha": "706991fd3261db4a6bf22d6dbc284789fd12e493",
+  "branch": "claude/tender-knuth-OLPWa",
   "ci_required_gates_ready": false,
   "launch_proof_ready": false,
   "manifest_ready": true,
