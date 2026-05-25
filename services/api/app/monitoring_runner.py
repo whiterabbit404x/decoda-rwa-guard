@@ -3341,15 +3341,22 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             if workspace_id:
                 cycle_workspace_ids.add(workspace_id)
         for workspace_id in sorted(cycle_workspace_ids):
-            connection.execute(
-                """
-                INSERT INTO monitoring_heartbeats (id, workspace_id, worker_name, last_heartbeat_at, status, metadata)
-                VALUES (%s::uuid, %s::uuid, %s, NOW(), %s, %s::jsonb)
-                ON CONFLICT (workspace_id, worker_name)
-                DO UPDATE SET last_heartbeat_at = EXCLUDED.last_heartbeat_at, status = EXCLUDED.status, metadata = EXCLUDED.metadata
-                """,
-                (str(uuid.uuid4()), workspace_id, worker_name, 'healthy', _json_dumps({'trigger_type': trigger_type})),
-            )
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO monitoring_heartbeats (id, workspace_id, worker_name, last_heartbeat_at, status, metadata)
+                    VALUES (%s::uuid, %s::uuid, %s, NOW(), %s, %s::jsonb)
+                    ON CONFLICT (workspace_id, worker_name)
+                    DO UPDATE SET last_heartbeat_at = EXCLUDED.last_heartbeat_at, status = EXCLUDED.status, metadata = EXCLUDED.metadata
+                    """,
+                    (str(uuid.uuid4()), workspace_id, worker_name, 'healthy', _json_dumps({'trigger_type': trigger_type})),
+                )
+            except Exception:
+                logger.warning(
+                    'monitoring_heartbeat_upsert_failed table=monitoring_heartbeats conflict_target=(workspace_id,worker_name) workspace_id=%s worker_name=%s — apply migration 0080_monitoring_heartbeats_unique_constraint.sql',
+                    workspace_id,
+                    worker_name,
+                )
         now = utc_now()
         max_targets = max(1, min(limit, 200))
         skipped_disabled = 0
