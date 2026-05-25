@@ -36,7 +36,23 @@ _PROVIDER_ENV_VARS = [
     'EVM_RPC_URL', 'STAGING_EVM_RPC_URL',
     'EVM_CHAIN_ID', 'STAGING_EVM_CHAIN_ID', 'CHAIN_ID',
     'STAGING_WORKER_ENABLED',
+    'LIVE_EVIDENCE_CHAIN_JSON', 'LIVE_EVIDENCE_CHAIN_FILE',
 ]
+
+
+def _real_live_chain() -> dict[str, Any]:
+    """Canonical real live-event chain captured by the monitoring worker."""
+    return {
+        'telemetry_event_id': 'tel-live-001',
+        'detection_id': 'det-live-001',
+        'alert_id': 'alert-live-001',
+        'incident_id': 'inc-live-001',
+        'response_action_id': 'ra-live-001',
+        'evidence_package_id': 'pkg-live-001',
+        'evidence_source': 'live',
+        'source_type': 'rpc_polling',
+        'observed_at': '2026-05-22T12:00:00+00:00',
+    }
 
 _REAL_RPC = 'https://mainnet.infura.io/v3/test_proj'
 
@@ -420,7 +436,7 @@ def test_case12_full_chain_no_evidence_package(monkeypatch: pytest.MonkeyPatch) 
 def test_case13_complete_live_chain_with_real_rpc_mock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Full live chain with mocked successful RPC: all gates pass."""
+    """Full live chain with mocked successful RPC + real injected evidence: all gates pass."""
     _clear_env(monkeypatch)
     monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
     monkeypatch.setenv('EVM_CHAIN_ID', '1')
@@ -430,7 +446,7 @@ def test_case13_complete_live_chain_with_real_rpc_mock(
         'scripts.generate_live_evidence_proof._rpc_call',
         side_effect=_mock_rpc_success('0x1', '0x12c4cca'),
     ):
-        result = generate_live_evidence_proof()
+        result = generate_live_evidence_proof(live_evidence_chain=_real_live_chain())
 
     lpe = result['live_provider_evidence']
 
@@ -477,7 +493,7 @@ def test_case13_staging_env_vars_preferred(monkeypatch: pytest.MonkeyPatch) -> N
         'scripts.generate_live_evidence_proof._rpc_call',
         side_effect=_mock_rpc_success('0x1', '0x12c'),
     ):
-        result = generate_live_evidence_proof()
+        result = generate_live_evidence_proof(live_evidence_chain=_real_live_chain())
 
     lpe = result['live_provider_evidence']
     assert lpe['provider_ready'] is True

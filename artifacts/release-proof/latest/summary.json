@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T13:08:25.194961+00:00",
+  "generated_at": "2026-05-25T16:48:49.479139+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "44124fcdef56562ba350c2e678410f5762c8cb72",
-  "branch": "claude/dreamy-hypatia-ORhth",
+  "commit_sha": "02bd9379f9a780496fa3afcf8c1f7258181d3e10",
+  "branch": "claude/sweet-lamport-pcHzX",
   "ci_required_gates_ready": false,
   "launch_proof_ready": false,
   "manifest_ready": true,
