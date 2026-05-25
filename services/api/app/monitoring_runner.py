@@ -3617,17 +3617,31 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             target = dict(row)
             target['monitored_system_id'] = due_system_ids.get(str(target['id']))
             workspace_id = str(target.get('workspace_id') or '').strip()
+            poll_id = str(uuid.uuid4())
+            poll_started_at = utc_now()
             try:
-                poll_id = str(uuid.uuid4())
-                poll_started_at = utc_now()
-                connection.execute(
-                    """
-                    INSERT INTO monitoring_polls (id, workspace_id, target_id, poll_started_at, status, metadata)
-                    VALUES (%s::uuid, %s::uuid, %s::uuid, %s, 'running', %s::jsonb)
-                    """,
-                    (poll_id, str(target['workspace_id']), str(target['id']), poll_started_at, _json_dumps({'worker_name': worker_name})),
-                )
+                # Guard: verify target_id exists in the canonical targets table.
+                # monitoring_polls.target_id FK references targets(id) after migration 0081.
+                # The target was just fetched via FOR UPDATE SKIP LOCKED, so this should
+                # always pass; the guard handles race-condition deletes between fetch and poll.
+                _poll_parent = connection.execute(
+                    'SELECT 1 FROM targets WHERE id = %s LIMIT 1',
+                    (target['id'],),
+                ).fetchone()
+                if not _poll_parent:
+                    logger.warning(
+                        'skip_reason=missing_poll_parent_target target_id=%s workspace_id=%s',
+                        target.get('id'), workspace_id,
+                    )
+                    continue
                 with connection.transaction():
+                    connection.execute(
+                        """
+                        INSERT INTO monitoring_polls (id, workspace_id, target_id, poll_started_at, status, metadata)
+                        VALUES (%s::uuid, %s::uuid, %s::uuid, %s, 'running', %s::jsonb)
+                        """,
+                        (poll_id, str(target['workspace_id']), str(target['id']), poll_started_at, _json_dumps({'worker_name': worker_name})),
+                    )
                     connection.execute(
                         'UPDATE targets SET monitoring_claimed_by = %s, monitoring_claimed_at = NOW() WHERE id = %s AND workspace_id = %s',
                         (worker_name, target['id'], target['workspace_id']),
@@ -3707,20 +3721,26 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 if workspace_id:
                     workspace_errors[workspace_id] = str(exc)
                 logger.exception('monitoring target failed target=%s name=%s', target.get('id'), target.get('name'))
-                connection.execute(
-                    'UPDATE targets SET last_checked_at = NOW(), last_run_status = %s, monitoring_claimed_by = NULL, monitoring_claimed_at = NULL WHERE id = %s AND workspace_id = %s',
-                    ('error', target['id'], target['workspace_id']),
-                )
-                monitored_system_id = due_system_ids.get(str(target['id']))
-                if monitored_system_id:
-                    # Keep explicit status transition text stable for regression checks:
-                    # 'error', status = 'error'
-                    connection.execute(
-                        "UPDATE monitored_systems SET runtime_status = 'failed', status = 'error', freshness_status = 'unavailable', confidence_status = 'low', coverage_reason = 'monitoring_worker_error', last_error_text = %s, last_heartbeat = NOW() WHERE id = %s::uuid AND workspace_id = %s::uuid",
-                        (error_message, monitored_system_id, str(target['workspace_id'])),
-                    )
-                    monitored_systems_updated += 1
-                connection.execute("UPDATE monitoring_polls SET poll_finished_at = NOW(), status = 'degraded', error_message = %s WHERE id = %s::uuid", (error_message, poll_id))
+                # Wrap error-status updates in a new savepoint so that a rolled-back poll
+                # savepoint (InFailedSqlTransaction) cannot prevent last_run_status recording.
+                try:
+                    with connection.transaction():
+                        connection.execute(
+                            'UPDATE targets SET last_checked_at = NOW(), last_run_status = %s, monitoring_claimed_by = NULL, monitoring_claimed_at = NULL WHERE id = %s AND workspace_id = %s',
+                            ('error', target['id'], target['workspace_id']),
+                        )
+                        monitored_system_id = due_system_ids.get(str(target['id']))
+                        if monitored_system_id:
+                            # Keep explicit status transition text stable for regression checks:
+                            # 'error', status = 'error'
+                            connection.execute(
+                                "UPDATE monitored_systems SET runtime_status = 'failed', status = 'error', freshness_status = 'unavailable', confidence_status = 'low', coverage_reason = 'monitoring_worker_error', last_error_text = %s, last_heartbeat = NOW() WHERE id = %s::uuid AND workspace_id = %s::uuid",
+                                (error_message, monitored_system_id, str(target['workspace_id'])),
+                            )
+                            monitored_systems_updated += 1
+                        connection.execute("UPDATE monitoring_polls SET poll_finished_at = NOW(), status = 'degraded', error_message = %s WHERE id = %s::uuid", (error_message, poll_id))
+                except Exception:
+                    logger.exception('error_handler_failed target=%s', target.get('id'))
         for workspace_id, monitoring_run_id in workspace_run_ids.items():
             workspace_note = f'worker_name={worker_name}'
             workspace_error = workspace_errors.get(workspace_id)

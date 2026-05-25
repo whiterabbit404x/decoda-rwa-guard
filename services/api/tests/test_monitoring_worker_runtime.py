@@ -77,6 +77,9 @@ class _FakeConnection:
                 row.setdefault('workspace_id', target.get('workspace_exists_id') or 'ws-1')
                 rows.append(row)
             return _Result(rows=rows)
+        if normalized.startswith('SELECT 1 FROM targets WHERE id'):
+            # Parent guard check: target was just fetched, so it always exists in tests.
+            return _Result(row={'exists': 1})
         if normalized.startswith('SELECT worker_name, running, status, last_started_at'):
             if 'WHERE worker_name = %s' in normalized:
                 return _Result(row=self.health_row)
