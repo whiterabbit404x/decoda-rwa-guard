@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T05:36:11.851621+00:00",
-  "commit_sha": "706991fd3261db4a6bf22d6dbc284789fd12e493",
-  "branch": "claude/tender-knuth-OLPWa",
+  "generated_at": "2026-05-25T08:12:28.869475+00:00",
+  "commit_sha": "b8c09946dc3f0c2ddce34fe8b3767c63017b2eee",
+  "branch": "claude/serene-lamport-xx5zg",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
