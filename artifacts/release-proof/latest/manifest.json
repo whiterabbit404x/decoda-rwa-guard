@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T05:36:11.869901+00:00",
+  "generated_at": "2026-05-25T08:12:28.884951+00:00",
   "release_channel": "local",
-  "commit_sha": "706991fd3261db4a6bf22d6dbc284789fd12e493",
-  "branch": "claude/tender-knuth-OLPWa",
+  "commit_sha": "b8c09946dc3f0c2ddce34fe8b3767c63017b2eee",
+  "branch": "claude/serene-lamport-xx5zg",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "b7374acbb4efb5b44c48df913b542f144cad4b7714670073e6cca1228f9f4a3f",
-      "size_bytes": 783,
+      "sha256": "fab0de11b2769fdc4f0d976deec8f2db3ce23e513a53159da4220770add3b4ee",
+      "size_bytes": 785,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "0fba17aff6fccccac299194c0793717bfa1f3b31926b6048872f6b0b70efd9a0",
-      "size_bytes": 2105,
+      "sha256": "f8cf4fe93484ba6db88707158bc844ba4714c84c48d376bd00e6387f0159ac38",
+      "size_bytes": 2107,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "73d09f05be49824298d9604f435f7ed9fb9d9eb9a074d360641c6441309576cf",
+      "sha256": "ba76d3f32786de570afa03ac78c4d5963ded59d1bbc1296e1f7124adbda47ca4",
       "size_bytes": 819,
       "required": true,
       "status": "present"
