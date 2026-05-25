@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T08:12:28.869475+00:00",
-  "commit_sha": "b8c09946dc3f0c2ddce34fe8b3767c63017b2eee",
-  "branch": "claude/serene-lamport-xx5zg",
+  "generated_at": "2026-05-25T09:17:29.233177+00:00",
+  "commit_sha": "af2289fcaf5370f40f842f2fb3c34e102f703117",
+  "branch": "claude/eager-volta-Weeuz",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
