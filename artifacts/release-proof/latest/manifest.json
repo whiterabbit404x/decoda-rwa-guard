@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T11:47:46.170652+00:00",
+  "generated_at": "2026-05-25T12:02:56.859869+00:00",
   "release_channel": "local",
-  "commit_sha": "47483b880d207ded48ed882afbaa174efcc86d69",
-  "branch": "claude/dreamy-cannon-CFoxu",
+  "commit_sha": "c4e6d988d4664e02140b3a54e21a258d935079d2",
+  "branch": "claude/nice-hawking-6rRCS",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "2afb954fecbb73a36abb663e8ec1b65d10e70b8a42a9667cef4c3a90433ebf61",
-      "size_bytes": 784,
+      "sha256": "ac7a38d0996d5ae3f526f322489256b32d8ec9f113ea9a111a18be03ebbef7cb",
+      "size_bytes": 783,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "7f61432bc269963547798314efb4ac8f23dce712a9cbb529bc8cc6ff363a23c8",
-      "size_bytes": 2106,
+      "sha256": "64202eabeaf2b4e2ef24900c158be3061ee76dd46014d5077fc76da6d218307f",
+      "size_bytes": 2105,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "8a3672536a1047c1654f3a68c5722b1df9635a4821574be5d153a3a0a0b4569d",
+      "sha256": "fefa42d09f4d0dcae3ec9ca0b8b499ac0a7b4de099755a080f68219565e6883a",
       "size_bytes": 819,
       "required": true,
       "status": "present"
