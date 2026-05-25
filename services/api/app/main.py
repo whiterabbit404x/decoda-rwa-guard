@@ -115,6 +115,7 @@ from services.api.app.pilot import (
     delete_slack_integration,
     upsert_alert_routing_rule,
     list_targets,
+    list_monitoring_sources,
     list_assets,
     create_asset,
     get_asset,
@@ -2978,6 +2979,11 @@ def targets_list(request: Request) -> dict[str, Any]:
 @app.get('/monitoring/targets', summary='List target monitoring settings')
 def monitoring_targets_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_monitoring_targets(request))
+
+
+@app.get('/monitoring/sources', summary='List monitoring sources linkage')
+def monitoring_sources_list(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: list_monitoring_sources(request))
 
 
 @app.get('/monitoring/runs', summary='List recent monitoring runs for workspace')

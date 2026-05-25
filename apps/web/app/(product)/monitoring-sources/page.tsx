@@ -186,34 +186,23 @@ export default function MonitoringSourcesPage() {
       setLoading(true);
 
       try {
-        const [assetsResponse, targetsResponse, systemsResponse] = await Promise.all([
-          fetch(`${apiUrl}/assets`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/targets`, { headers: authHeaders(), cache: 'no-store' }),
-          fetch(`${apiUrl}/monitoring/systems`, { headers: authHeaders(), cache: 'no-store' }),
-        ]);
-
-        if (!assetsResponse.ok || !targetsResponse.ok || !systemsResponse.ok) {
-          if (!cancelled) {
-            setLoadError('Unable to load monitoring sources.');
-          }
+        const response = await fetch(`${apiUrl}/monitoring/sources`, { headers: authHeaders(), cache: 'no-store' });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`;
+          if (!cancelled) setLoadError(`Unable to load monitoring sources: ${detail}`);
           return;
         }
 
-        const [assetsPayload, targetsPayload, systemsPayload] = await Promise.all([
-          assetsResponse.json(),
-          targetsResponse.json(),
-          systemsResponse.json(),
-        ]);
-
         if (cancelled) return;
 
-        setAssets(assetsPayload.assets ?? []);
-        setTargets(targetsPayload.targets ?? []);
-        setSystems(systemsPayload.systems ?? []);
+        setAssets(payload.assets ?? []);
+        setTargets(payload.targets ?? []);
+        setSystems(payload.systems ?? []);
         setLoadError('');
-      } catch {
+      } catch (error) {
         if (!cancelled) {
-          setLoadError('Network error loading monitoring sources.');
+          setLoadError(`Network error loading monitoring sources: ${error instanceof Error ? error.message : 'unknown error'}`);
         }
       } finally {
         if (!cancelled) {

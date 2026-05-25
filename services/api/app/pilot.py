@@ -9077,6 +9077,61 @@ def _target_type_for_asset(asset_type: str, identifier: str) -> str:
     return 'contract' if re.fullmatch(r'^0x[a-f0-9]{40}$', str(identifier or '').strip().lower()) else 'wallet'
 
 
+def _upsert_asset_monitoring_linkage(
+    connection: Any,
+    *,
+    workspace_id: str,
+    asset_row: dict[str, Any],
+    user_id: str | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    normalized_identifier = str(asset_row.get('normalized_identifier') or asset_row.get('identifier') or '').strip().lower()
+    if not normalized_identifier:
+        return None, None
+    target_type = _target_type_for_asset(str(asset_row.get('asset_type') or ''), normalized_identifier)
+    is_evm = bool(re.fullmatch(r'^0x[a-f0-9]{40}$', normalized_identifier))
+    existing_target = connection.execute(
+        '''
+        SELECT id
+        FROM targets
+        WHERE workspace_id = %s::uuid AND asset_id = %s::uuid AND deleted_at IS NULL
+        ORDER BY created_at ASC
+        LIMIT 1
+        ''',
+        (workspace_id, str(asset_row['id'])),
+    ).fetchone()
+    target_id = str(existing_target['id']) if existing_target else str(uuid.uuid4())
+    contract_identifier = normalized_identifier if target_type == 'contract' and is_evm else None
+    wallet_address = normalized_identifier if target_type == 'wallet' and is_evm else None
+    if existing_target:
+        connection.execute(
+            '''
+            UPDATE targets
+            SET target_type = %s, chain_network = %s, chain_id = %s, contract_identifier = %s, wallet_address = %s,
+                enabled = TRUE, monitoring_enabled = TRUE, is_active = TRUE, auto_create_alerts = TRUE, auto_create_incidents = TRUE,
+                monitoring_interval_seconds = 30, asset_type = %s, updated_by_user_id = COALESCE(%s::uuid, updated_by_user_id), updated_at = NOW()
+            WHERE id = %s::uuid
+            ''',
+            (target_type, 'ethereum-mainnet', 1, contract_identifier, wallet_address, asset_row.get('asset_type'), user_id, target_id),
+        )
+    else:
+        connection.execute(
+            '''
+            INSERT INTO targets (
+                id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type,
+                enabled, asset_id, chain_id, monitoring_enabled, monitoring_interval_seconds, auto_create_alerts, auto_create_incidents, is_active,
+                created_at, updated_at, updated_by_user_id
+            ) VALUES (%s, %s::uuid, %s, %s, %s, %s, %s, %s, TRUE, %s::uuid, %s, TRUE, 30, TRUE, TRUE, TRUE, NOW(), NOW(), %s::uuid)
+            ''',
+            (target_id, workspace_id, f"{asset_row.get('name') or 'Asset'} target", target_type, 'ethereum-mainnet', contract_identifier, wallet_address, asset_row.get('asset_type'), str(asset_row['id']), 1, user_id),
+        )
+    target = connection.execute('SELECT * FROM targets WHERE id = %s::uuid', (target_id,)).fetchone()
+    bridge_result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id, require_enabled=False)
+    monitored_system = None
+    if bridge_result.get('status') == 'ok' and bridge_result.get('monitored_system_id'):
+        monitored_system = connection.execute('SELECT * FROM monitored_systems WHERE id = %s::uuid', (bridge_result['monitored_system_id'],)).fetchone()
+    return (dict(target) if target else None), (dict(monitored_system) if monitored_system else None)
+
+
 def verify_asset(asset_id: str, request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -9103,45 +9158,7 @@ def verify_asset(asset_id: str, request: Request) -> dict[str, Any]:
         monitored_system = None
         provider_reachable = bool((verification.get('verification_summary') or {}).get('reachable'))
         if verification['verification_status'] in {'verified', 'active'} or provider_reachable:
-            normalized_identifier = str(verification['normalized_identifier'] or '').strip().lower()
-            is_evm = bool(re.fullmatch(r'^0x[a-f0-9]{40}$', normalized_identifier))
-            target_type = _target_type_for_asset(str(asset.get('asset_type') or ''), normalized_identifier)
-            existing_target = connection.execute(
-                '''
-                SELECT id
-                FROM targets
-                WHERE workspace_id = %s::uuid AND asset_id = %s::uuid AND deleted_at IS NULL
-                ORDER BY created_at ASC
-                LIMIT 1
-                ''',
-                (workspace_id, asset_id),
-            ).fetchone()
-            target_id = str(existing_target['id']) if existing_target else str(uuid.uuid4())
-            if existing_target:
-                connection.execute(
-                    '''
-                    UPDATE targets
-                    SET target_type = %s, chain_network = %s, chain_id = %s, contract_identifier = %s, wallet_address = %s,
-                        enabled = TRUE, monitoring_enabled = TRUE, is_active = TRUE, auto_create_alerts = TRUE, auto_create_incidents = TRUE,
-                        monitoring_interval_seconds = 30, asset_type = %s, updated_at = NOW()
-                    WHERE id = %s::uuid
-                    ''',
-                    (target_type, asset['chain_network'], 1 if str(asset['chain_network']).lower() == 'ethereum-mainnet' else None, normalized_identifier if is_evm and target_type == 'contract' else None, normalized_identifier if is_evm and target_type == 'wallet' else None, asset['asset_type'], target_id),
-                )
-            else:
-                connection.execute(
-                    '''
-                    INSERT INTO targets (
-                        id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type,
-                        enabled, asset_id, chain_id, monitoring_enabled, monitoring_interval_seconds, auto_create_alerts, auto_create_incidents, is_active, created_at, updated_at
-                    ) VALUES (%s, %s::uuid, %s, %s, %s, %s, %s, %s, TRUE, %s::uuid, %s, TRUE, 30, TRUE, TRUE, TRUE, NOW(), NOW())
-                    ''',
-                    (target_id, workspace_id, f"{asset['name']} target", target_type, asset['chain_network'], normalized_identifier if is_evm and target_type == 'contract' else None, normalized_identifier if is_evm and target_type == 'wallet' else None, asset['asset_type'], asset_id, 1 if str(asset['chain_network']).lower() == 'ethereum-mainnet' else None),
-                )
-            target = connection.execute('SELECT * FROM targets WHERE id = %s::uuid', (target_id,)).fetchone()
-            bridge_result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id, require_enabled=False)
-            if bridge_result.get('status') == 'ok' and bridge_result.get('monitored_system_id'):
-                monitored_system = connection.execute('SELECT * FROM monitored_systems WHERE id = %s::uuid', (bridge_result['monitored_system_id'],)).fetchone()
+            target, monitored_system = _upsert_asset_monitoring_linkage(connection, workspace_id=workspace_id, asset_row=dict(asset), user_id=str(user['id']))
         log_audit(connection, action='asset.verify', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'verification_status': verification['verification_status']})
         updated_asset = connection.execute('SELECT * FROM assets WHERE id = %s::uuid', (asset_id,)).fetchone()
         connection.commit()
@@ -9324,6 +9341,15 @@ def list_assets(request: Request) -> dict[str, Any]:
         return {'assets': assets, 'workspace': workspace_context['workspace']}
 
 
+def list_monitoring_sources(request: Request) -> dict[str, Any]:
+    require_live_mode()
+    return {
+        'assets': list_assets(request).get('assets', []),
+        'targets': list_targets(request).get('targets', []),
+        'systems': list_monitored_systems(request).get('systems', []),
+    }
+
+
 def create_asset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
     validated = _validate_asset_payload(payload)
@@ -9485,6 +9511,10 @@ def update_asset(asset_id: str, payload: dict[str, Any], request: Request) -> di
         connection.execute('DELETE FROM asset_tags WHERE asset_id = %s', (asset_id,))
         for tag in validated['tags']:
             connection.execute('INSERT INTO asset_tags (id, workspace_id, asset_id, tag) VALUES (%s, %s, %s, %s)', (str(uuid.uuid4()), workspace_id, asset_id, tag))
+        if validated['enabled']:
+            refreshed_asset = connection.execute('SELECT * FROM assets WHERE id = %s::uuid', (asset_id,)).fetchone()
+            if refreshed_asset is not None:
+                _upsert_asset_monitoring_linkage(connection, workspace_id=workspace_id, asset_row=dict(refreshed_asset), user_id=str(user['id']))
         log_audit(connection, action='asset.update', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={})
         connection.commit()
         return {'id': asset_id, **validated, 'verification_status': verification['verification_status'], 'verification_summary': verification['verification_summary'], 'normalized_identifier': verification['normalized_identifier']}
