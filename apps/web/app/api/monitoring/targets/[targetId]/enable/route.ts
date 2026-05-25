@@ -17,9 +17,9 @@ function jsonError(status: number, body: Record<string, unknown>) {
 
 export async function POST(
   request: Request,
-  { params }: { params: { targetId: string } },
+  { params }: { params: Promise<{ targetId: string }> },
 ) {
-  const { targetId } = params;
+  const { targetId } = await params;
   if (!targetId || typeof targetId !== 'string') {
     return jsonError(400, { detail: 'Missing targetId.', code: 'invalid_params' });
   }
