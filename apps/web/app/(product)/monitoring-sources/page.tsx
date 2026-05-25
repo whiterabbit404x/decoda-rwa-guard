@@ -176,6 +176,8 @@ export default function MonitoringSourcesPage() {
   const [loading, setLoading] = useState(true);
   const [enablingTargetId, setEnablingTargetId] = useState<string | null>(null);
   const [enableError, setEnableError] = useState('');
+  const [orphanTargetId, setOrphanTargetId] = useState<string | null>(null);
+  const [repairingTargetId, setRepairingTargetId] = useState<string | null>(null);
   const [repairingTargets, setRepairingTargets] = useState(false);
   const [repairResult, setRepairResult] = useState('');
 
@@ -217,6 +219,7 @@ export default function MonitoringSourcesPage() {
   async function handleEnableTarget(targetId: string) {
     setEnablingTargetId(targetId);
     setEnableError('');
+    setOrphanTargetId(null);
     const url = `/api/monitoring/targets/${encodeURIComponent(targetId)}/enable`;
     try {
       const response = await fetch(url, {
@@ -228,6 +231,12 @@ export default function MonitoringSourcesPage() {
       if (!response.ok) {
         const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`;
         setEnableError(`Enable failed (${response.status} ${url}): ${detail}`);
+        const isOrphan =
+          detail.includes('linked asset is missing or deleted') ||
+          (response.status === 400 && detail.toLowerCase().includes('asset'));
+        if (isOrphan) {
+          setOrphanTargetId(targetId);
+        }
         return;
       }
       await loadSources();
@@ -235,6 +244,42 @@ export default function MonitoringSourcesPage() {
       setEnableError(`Network error enabling target: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
       setEnablingTargetId(null);
+    }
+  }
+
+  async function handleRepairTarget(targetId: string) {
+    setRepairingTargetId(targetId);
+    setRepairResult('');
+    setEnableError('');
+    const url = `/api/monitoring/targets/${encodeURIComponent(targetId)}/repair`;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        cache: 'no-store',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = typeof payload?.detail === 'string'
+          ? payload.detail
+          : typeof payload?.detail === 'object' && payload.detail !== null
+            ? (payload.detail as { message?: string }).message ?? `HTTP ${response.status}`
+            : `HTTP ${response.status}`;
+        setRepairResult(`Repair failed: ${detail}`);
+        return;
+      }
+      const relinked = Number((payload as Record<string, unknown>).targets_relinked ?? 0);
+      const created = Number((payload as Record<string, unknown>).assets_created ?? 0);
+      const systems = Number((payload as Record<string, unknown>).systems_created ?? 0);
+      setRepairResult(`Repair complete: ${relinked} relinked, ${created} asset(s) created, ${systems} system(s) created.`);
+      setOrphanTargetId(null);
+      await loadSources();
+      // Auto-retry enable after successful repair
+      void handleEnableTarget(targetId);
+    } catch (error) {
+      setRepairResult(`Network error during repair: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setRepairingTargetId(null);
     }
   }
 
@@ -270,6 +315,7 @@ export default function MonitoringSourcesPage() {
   }
 
   const enableErrorIsOrphan =
+    orphanTargetId !== null ||
     enableError.includes('linked asset is missing or deleted') ||
     (enableError.includes('400') && enableError.toLowerCase().includes('asset'));
 
@@ -390,7 +436,19 @@ export default function MonitoringSourcesPage() {
                       </td>
                       <td style={{ whiteSpace: 'nowrap' }}>{fmt(target.last_checked_at)}</td>
                       <td>
-                        {targetNextAction(target) === 'Enable target' ? (
+                        {orphanTargetId === target.id ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ fontSize: '0.78rem', padding: '0.2rem 0.65rem' }}
+                              disabled={repairingTargetId === target.id}
+                              onClick={() => void handleRepairTarget(target.id)}
+                            >
+                              {repairingTargetId === target.id ? 'Repairing…' : 'Repair target'}
+                            </button>
+                          </div>
+                        ) : targetNextAction(target) === 'Enable target' ? (
                           <button
                             type="button"
                             className="btn btn-secondary"

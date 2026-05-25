@@ -129,6 +129,7 @@ from services.api.app.pilot import (
     get_target,
     update_target,
     delete_target,
+    repair_orphan_target,
     get_module_config,
     put_module_config,
     list_detections,
@@ -2222,7 +2223,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             }),
             'counts': dict(summary_payload.get('counts') or {
                 'protected_assets': int(summary_payload.get('protected_assets') or payload.get('protected_assets') or 0),
-                'monitoring_targets': int(summary_payload.get('monitoring_targets') or payload.get('monitoring_targets') or 0),
+                'monitoring_targets': int(summary_payload.get('monitoring_targets') or payload.get('monitoring_targets') or payload.get('raw_enabled_targets') or payload.get('monitorable_enabled_targets') or 0),
                 'monitored_systems': int(summary_payload.get('monitored_systems') or payload.get('monitored_systems') or payload.get('configured_systems') or 0),
                 'reporting_systems': int(summary_payload.get('reporting_systems') or payload.get('reporting_systems') or 0),
                 'active_alerts': int(summary_payload.get('active_alerts') or payload.get('open_alerts') or 0),
@@ -3266,6 +3267,11 @@ def targets_enable(target_id: str, request: Request) -> dict[str, Any]:
 @app.post('/targets/{target_id}/disable', summary='Disable target and monitoring')
 def targets_disable(target_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: set_target_enabled(target_id, False, request))
+
+
+@app.post('/targets/{target_id}/repair', summary='Repair orphaned monitoring target by relinking to matching asset')
+def targets_repair(target_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: repair_orphan_target(target_id, request))
 
 
 @app.post('/monitoring/run-once/{target_id}', summary='Debug-only: trigger one manual monitoring run for target (not enterprise-proof eligible)')

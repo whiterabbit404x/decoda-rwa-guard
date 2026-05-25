@@ -265,7 +265,7 @@ export default function ThreatMonitoringPanel() {
     if (!assetOk) {
       return {
         title: 'No active protected asset detected in runtime.',
-        body: 'If you have added assets, enable a monitoring target and run reconcile so the runtime summary reflects your configuration.',
+        body: 'If you have already added assets, enable a monitoring target and run repair/reconcile so the runtime summary reflects your configuration. Assets and monitoring targets exist but the runtime summary may not reflect them until the worker runs a cycle.',
         ctaHref: '/monitoring-sources',
         ctaLabel: 'Configure Monitoring',
       };
