@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T11:08:53.525875+00:00",
+  "generated_at": "2026-05-25T11:30:22.611703+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "22984e38d7219d2c91d805b76d072b8f13219880",
-  "branch": "claude/funny-knuth-aZyGi",
+  "commit_sha": "1d5c52d0754edfd200d766e0c4c0385f2efe6910",
+  "branch": "claude/festive-lovelace-CX7dB",
   "ci_required_gates_ready": false,
   "launch_proof_ready": false,
   "manifest_ready": true,

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T11:08:53.517375+00:00",
-  "commit_sha": "22984e38d7219d2c91d805b76d072b8f13219880",
-  "branch": "claude/funny-knuth-aZyGi",
+  "generated_at": "2026-05-25T11:30:22.602395+00:00",
+  "commit_sha": "1d5c52d0754edfd200d766e0c4c0385f2efe6910",
+  "branch": "claude/festive-lovelace-CX7dB",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
