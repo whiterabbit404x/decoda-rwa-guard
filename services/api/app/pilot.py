@@ -10159,21 +10159,42 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
             if asset_valid is None:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Cannot enable target: linked asset is missing or deleted.')
         connection.execute(
-            'UPDATE targets SET enabled = %s, monitoring_enabled = %s, updated_by_user_id = %s, updated_at = NOW() WHERE id = %s',
-            (enabled, enabled, user['id'], target_id),
+            'UPDATE targets SET enabled = %s, monitoring_enabled = %s, is_active = %s, updated_by_user_id = %s, updated_at = NOW() WHERE id = %s',
+            (enabled, enabled, enabled, user['id'], target_id),
         )
+        workspace_id_value = workspace_context['workspace_id']
+        asset_id_value = str(row.get('asset_id') or '') or None
         _sync_canonical_monitoring_target_state(
             connection,
-            workspace_id=workspace_context['workspace_id'],
+            workspace_id=workspace_id_value,
             target_id=target_id,
-            asset_id=str(row.get('asset_id') or '') or None,
+            asset_id=asset_id_value,
             enabled=enabled,
             monitoring_enabled=enabled,
         )
         if enabled:
-            result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_context['workspace_id'])
+            result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id_value)
             if result.get('status') != 'ok':
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Cannot enable target: linked asset is missing or deleted.')
+            # Upsert monitoring_configs keyed by targets.id so the monitoring runner
+            # candidate query (JOIN monitoring_configs mc ON mc.target_id = t.id) can
+            # find this target. The canonical sync above links to monitored_targets.id
+            # which is a different UUID.
+            monitoring_config_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'target-direct-config:{workspace_id_value}:{target_id}'))
+            connection.execute(
+                '''
+                INSERT INTO monitoring_configs (id, workspace_id, asset_id, target_id, enabled, cadence_seconds, provider_type, created_at, updated_at)
+                VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, TRUE, 300, 'live', NOW(), NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    asset_id = EXCLUDED.asset_id,
+                    enabled = TRUE,
+                    cadence_seconds = 300,
+                    provider_type = 'live',
+                    updated_at = NOW()
+                ''',
+                (monitoring_config_id, workspace_id_value, asset_id_value, target_id),
+            )
         else:
             connection.execute(
                 "UPDATE monitored_systems SET is_enabled = FALSE, runtime_status = 'offline', status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s",

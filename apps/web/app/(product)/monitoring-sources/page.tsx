@@ -174,47 +174,67 @@ export default function MonitoringSourcesPage() {
   const [systems, setSystems] = useState<MonitoredSystemRow[]>([]);
   const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [enablingTargetId, setEnablingTargetId] = useState<string | null>(null);
+  const [enableError, setEnableError] = useState('');
 
   const { authHeaders } = usePilotAuth();
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      setLoading(true);
-
-      try {
-        const response = await fetch('/api/monitoring/sources', { headers: authHeaders(), cache: 'no-store' });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`;
-          if (!cancelled) setLoadError(`Unable to load monitoring sources: ${detail}`);
-          return;
-        }
-
-        if (cancelled) return;
-
-        setAssets(payload.assets ?? []);
-        setTargets(payload.targets ?? []);
-        setSystems(payload.systems ?? []);
-        setLoadError('');
-      } catch (error) {
-        if (!cancelled) {
-          setLoadError(`Network error loading monitoring sources: ${error instanceof Error ? error.message : 'unknown error'}`);
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+  async function loadSources(signal?: AbortSignal) {
+    setLoading(true);
+    try {
+      const response = await fetch('/api/monitoring/sources', {
+        headers: authHeaders(),
+        cache: 'no-store',
+        signal,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`;
+        setLoadError(`Unable to load monitoring sources: ${detail}`);
+        return;
       }
+      setAssets(payload.assets ?? []);
+      setTargets(payload.targets ?? []);
+      setSystems(payload.systems ?? []);
+      setLoadError('');
+    } catch (error) {
+      if ((error as { name?: string }).name === 'AbortError') return;
+      setLoadError(`Network error loading monitoring sources: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setLoading(false);
     }
+  }
 
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadSources(controller.signal);
+    return () => controller.abort();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authHeaders]);
+
+  async function handleEnableTarget(targetId: string) {
+    setEnablingTargetId(targetId);
+    setEnableError('');
+    const url = `/api/monitoring/targets/${encodeURIComponent(targetId)}/enable`;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        cache: 'no-store',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`;
+        setEnableError(`Enable failed (${response.status} ${url}): ${detail}`);
+        return;
+      }
+      await loadSources();
+    } catch (error) {
+      setEnableError(`Network error enabling target: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setEnablingTargetId(null);
+    }
+  }
 
   const targetNameById = useMemo(
     () => new Map(targets.map((target) => [target.id, target.name || 'Unnamed target'])),
@@ -248,6 +268,12 @@ export default function MonitoringSourcesPage() {
       {loadError ? (
         <p className="statusLine" style={{ color: 'var(--danger-fg)' }}>
           {loadError}
+        </p>
+      ) : null}
+
+      {enableError ? (
+        <p className="statusLine" style={{ color: 'var(--danger-fg)', fontSize: '0.85rem' }}>
+          {enableError}
         </p>
       ) : null}
 
@@ -295,7 +321,23 @@ export default function MonitoringSourcesPage() {
                         <StatusPill label={status.label} variant={status.variant} />
                       </td>
                       <td style={{ whiteSpace: 'nowrap' }}>{fmt(target.last_checked_at)}</td>
-                      <td style={{ color: 'var(--text-accent)', fontSize: '0.82rem' }}>{targetNextAction(target)}</td>
+                      <td>
+                        {targetNextAction(target) === 'Enable target' ? (
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            style={{ fontSize: '0.78rem', padding: '0.2rem 0.65rem' }}
+                            disabled={enablingTargetId === target.id}
+                            onClick={() => void handleEnableTarget(target.id)}
+                          >
+                            {enablingTargetId === target.id ? 'Enabling…' : 'Enable target'}
+                          </button>
+                        ) : (
+                          <span style={{ color: 'var(--text-accent)', fontSize: '0.82rem' }}>
+                            {targetNextAction(target)}
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })
