@@ -9066,6 +9066,88 @@ def _derive_asset_verification(*, identifier: str, chain_network: str) -> dict[s
         }
 
 
+def _target_type_for_asset(asset_type: str, identifier: str) -> str:
+    normalized_type = str(asset_type or '').strip().lower()
+    if normalized_type in {'wallet'}:
+        return 'wallet'
+    if normalized_type in {'smart-contract', 'contract'}:
+        return 'contract'
+    if normalized_type in {'treasury-vault', 'treasury-linked asset', 'tokenized-rwa'}:
+        return 'contract' if re.fullmatch(r'^0x[a-f0-9]{40}$', str(identifier or '').strip().lower()) else 'wallet'
+    return 'contract' if re.fullmatch(r'^0x[a-f0-9]{40}$', str(identifier or '').strip().lower()) else 'wallet'
+
+
+def verify_asset(asset_id: str, request: Request) -> dict[str, Any]:
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, workspace_context = _require_workspace_admin(connection, request)
+        workspace_id = workspace_context['workspace_id']
+        asset = connection.execute(
+            'SELECT * FROM assets WHERE id = %s::uuid AND workspace_id = %s::uuid AND deleted_at IS NULL',
+            (asset_id, workspace_id),
+        ).fetchone()
+        if asset is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Asset not found.')
+        verification = _derive_asset_verification(identifier=str(asset['identifier'] or ''), chain_network=str(asset['chain_network'] or ''))
+        connection.execute(
+            '''
+            UPDATE assets
+            SET normalized_identifier = %s, verification_status = %s, verification_summary = %s::jsonb, verification_checked_at = NOW(),
+                updated_by_user_id = %s, updated_at = NOW()
+            WHERE id = %s::uuid AND workspace_id = %s::uuid
+            ''',
+            (verification['normalized_identifier'], verification['verification_status'], _json_dumps(verification['verification_summary']), user['id'], asset_id, workspace_id),
+        )
+        target = None
+        monitored_system = None
+        provider_reachable = bool((verification.get('verification_summary') or {}).get('reachable'))
+        if verification['verification_status'] in {'verified', 'active'} or provider_reachable:
+            normalized_identifier = str(verification['normalized_identifier'] or '').strip().lower()
+            is_evm = bool(re.fullmatch(r'^0x[a-f0-9]{40}$', normalized_identifier))
+            target_type = _target_type_for_asset(str(asset.get('asset_type') or ''), normalized_identifier)
+            existing_target = connection.execute(
+                '''
+                SELECT id
+                FROM targets
+                WHERE workspace_id = %s::uuid AND asset_id = %s::uuid AND deleted_at IS NULL
+                ORDER BY created_at ASC
+                LIMIT 1
+                ''',
+                (workspace_id, asset_id),
+            ).fetchone()
+            target_id = str(existing_target['id']) if existing_target else str(uuid.uuid4())
+            if existing_target:
+                connection.execute(
+                    '''
+                    UPDATE targets
+                    SET target_type = %s, chain_network = %s, chain_id = %s, contract_identifier = %s, wallet_address = %s,
+                        enabled = TRUE, monitoring_enabled = TRUE, is_active = TRUE, auto_create_alerts = TRUE, auto_create_incidents = TRUE,
+                        monitoring_interval_seconds = 30, asset_type = %s, updated_at = NOW()
+                    WHERE id = %s::uuid
+                    ''',
+                    (target_type, asset['chain_network'], 1 if str(asset['chain_network']).lower() == 'ethereum-mainnet' else None, normalized_identifier if is_evm and target_type == 'contract' else None, normalized_identifier if is_evm and target_type == 'wallet' else None, asset['asset_type'], target_id),
+                )
+            else:
+                connection.execute(
+                    '''
+                    INSERT INTO targets (
+                        id, workspace_id, name, target_type, chain_network, contract_identifier, wallet_address, asset_type,
+                        enabled, asset_id, chain_id, monitoring_enabled, monitoring_interval_seconds, auto_create_alerts, auto_create_incidents, is_active, created_at, updated_at
+                    ) VALUES (%s, %s::uuid, %s, %s, %s, %s, %s, %s, TRUE, %s::uuid, %s, TRUE, 30, TRUE, TRUE, TRUE, NOW(), NOW())
+                    ''',
+                    (target_id, workspace_id, f"{asset['name']} target", target_type, asset['chain_network'], normalized_identifier if is_evm and target_type == 'contract' else None, normalized_identifier if is_evm and target_type == 'wallet' else None, asset['asset_type'], asset_id, 1 if str(asset['chain_network']).lower() == 'ethereum-mainnet' else None),
+                )
+            target = connection.execute('SELECT * FROM targets WHERE id = %s::uuid', (target_id,)).fetchone()
+            bridge_result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id, require_enabled=False)
+            if bridge_result.get('status') == 'ok' and bridge_result.get('monitored_system_id'):
+                monitored_system = connection.execute('SELECT * FROM monitored_systems WHERE id = %s::uuid', (bridge_result['monitored_system_id'],)).fetchone()
+        log_audit(connection, action='asset.verify', entity_type='asset', entity_id=asset_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'verification_status': verification['verification_status']})
+        updated_asset = connection.execute('SELECT * FROM assets WHERE id = %s::uuid', (asset_id,)).fetchone()
+        connection.commit()
+        return {'status': 'verified' if target else 'verification_only', 'asset': _json_safe_value(dict(updated_asset)), 'target': _json_safe_value(dict(target)) if target else None, 'monitored_system': _json_safe_value(dict(monitored_system)) if monitored_system else None, 'verification': verification}
+
+
 def _validate_asset_payload(payload: dict[str, Any]) -> dict[str, Any]:
     def validation_error(*, field: str, message: str) -> None:
         raise HTTPException(
@@ -9366,9 +9448,10 @@ def update_asset(asset_id: str, payload: dict[str, Any], request: Request) -> di
         ensure_pilot_schema(connection)
         user, workspace_context = _require_workspace_admin(connection, request)
         workspace_id = workspace_context['workspace_id']
-        found = connection.execute('SELECT id FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (asset_id, workspace_id)).fetchone()
+        found = connection.execute('SELECT id, verification_status, verification_summary, normalized_identifier FROM assets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL', (asset_id, workspace_id)).fetchone()
         if found is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Asset not found.')
+        verification = _derive_asset_verification(identifier=validated['identifier'], chain_network=validated['chain_network'])
         connection.execute(
             '''
             UPDATE assets
@@ -9377,6 +9460,7 @@ def update_asset(asset_id: str, payload: dict[str, Any], request: Request) -> di
                 oracle_sources = %s::jsonb, venue_labels = %s::jsonb, expected_counterparties = %s::jsonb, expected_flow_patterns = %s::jsonb, expected_approval_patterns = %s::jsonb,
                 expected_liquidity_baseline = %s::jsonb, expected_oracle_freshness_seconds = %s, expected_oracle_update_cadence_seconds = %s, policy_tags = %s::jsonb, jurisdiction_tags = %s::jsonb,
                 baseline_status = %s, baseline_source = %s, baseline_updated_at = NOW(), baseline_confidence = %s, baseline_coverage = %s,
+                normalized_identifier = %s, verification_status = %s, verification_summary = %s::jsonb, verification_checked_at = NOW(),
                 updated_by_user_id = %s, updated_at = NOW()
             WHERE id = %s
             ''',
@@ -9385,7 +9469,8 @@ def update_asset(asset_id: str, payload: dict[str, Any], request: Request) -> di
                 validated['issuer_name'], validated['asset_symbol'], validated['asset_identifier'], validated['token_contract_address'], _json_dumps(validated['custody_wallets']), _json_dumps(validated['treasury_ops_wallets']),
                 _json_dumps(validated['oracle_sources']), _json_dumps(validated['venue_labels']), _json_dumps(validated['expected_counterparties']), _json_dumps(validated['expected_flow_patterns']), _json_dumps(validated['expected_approval_patterns']),
                 _json_dumps(validated['expected_liquidity_baseline']), validated['expected_oracle_freshness_seconds'] or None, validated['expected_oracle_update_cadence_seconds'] or None, _json_dumps(validated['policy_tags']), _json_dumps(validated['jurisdiction_tags']),
-                validated['baseline_status'], validated['baseline_source'], validated['baseline_confidence'], validated['baseline_coverage'], user['id'], asset_id,
+                validated['baseline_status'], validated['baseline_source'], validated['baseline_confidence'], validated['baseline_coverage'],
+                verification['normalized_identifier'], verification['verification_status'], _json_dumps(verification['verification_summary']), user['id'], asset_id,
             ),
         )
         connection.execute(

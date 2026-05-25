@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 
 import { usePilotAuth } from './pilot-auth-context';
 import { parseTagInput } from './policy-builders';
@@ -131,6 +132,7 @@ export default function AssetsManager({ apiUrl }: Props) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [touched, setTouched] = useState<Partial<Record<FieldName, boolean>>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [actionLoadingAssetId, setActionLoadingAssetId] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const formRef = useRef<HTMLElement | null>(null);
   const fieldRefs = useRef<Record<FieldName, HTMLInputElement | HTMLSelectElement | null>>({
@@ -266,6 +268,28 @@ export default function AssetsManager({ apiUrl }: Props) {
 
   useEffect(() => { void load(); }, []);
 
+  async function runNextAction(asset: Asset, action: string) {
+    setSubmitError('');
+    setSuccessMessage('');
+    if (action === 'Verify asset') {
+      setActionLoadingAssetId(asset.id);
+      try {
+        const response = await fetch(`${apiUrl}/assets/${asset.id}/verify`, { method: 'POST', headers: { ...authHeaders() } });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          setSubmitError(payload?.detail || 'Unable to verify this asset right now.');
+          return;
+        }
+        setSuccessMessage('Asset verified and monitoring prerequisites have been reconciled.');
+        await load();
+      } catch (error) {
+        setSubmitError(classifyApiTransportError('verify this asset', apiUrl, error));
+      } finally {
+        setActionLoadingAssetId(null);
+      }
+    }
+  }
+
   return (
     <>
       {/* ── Page header ──────────────────────────────────────────── */}
@@ -360,7 +384,15 @@ export default function AssetsManager({ apiUrl }: Props) {
                 <td><StatusPill label={statusInfo.label} variant={statusInfo.variant} /></td>
                 <td><StatusPill label={monInfo.label} variant={monInfo.variant} /></td>
                 <td>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-accent)' }}>{action}</span>
+                  {action === 'Verify asset' ? (
+                    <button type="button" className="btn btn-secondary" disabled={actionLoadingAssetId === asset.id} onClick={() => { void runNextAction(asset, action); }}>
+                      {actionLoadingAssetId === asset.id ? 'Verifying…' : 'Verify asset'}
+                    </button>
+                  ) : (action === 'Create monitoring target' || action === 'Enable monitored system') ? (
+                    <Link href="/monitoring-sources" prefetch={false} className="btn btn-secondary">{action}</Link>
+                  ) : (
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-accent)' }}>{action}</span>
+                  )}
                 </td>
               </tr>
             );
