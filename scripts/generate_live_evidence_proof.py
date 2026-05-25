@@ -33,6 +33,7 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -255,8 +256,32 @@ def generate_live_evidence_proof(
             contradiction_flags=contradiction_flags,
         )
 
-    if 'result' in block_resp:
-        block_number_observed = _hex_to_dec(block_resp['result'])
+    block_number_hex_form: str | None = block_resp.get('result') if 'result' in block_resp else None
+    if block_number_hex_form:
+        block_number_observed = _hex_to_dec(block_number_hex_form)
+
+    # Compute raw_rpc_response_hash from the live RPC responses.
+    raw_rpc_response_hash = hashlib.sha256(
+        json.dumps({
+            'chain_id': chain_id_resp.get('result'),
+            'block_number': block_number_hex_form,
+        }).encode()
+    ).hexdigest()[:32]
+
+    # Optionally fetch block detail for a transaction hash (read-only enrichment).
+    # Fails gracefully when mock/network does not provide this response.
+    tx_hash: str | None = None
+    if block_number_hex_form:
+        try:
+            block_detail_resp = _rpc_call(
+                effective_rpc, 'eth_getBlockByNumber', [block_number_hex_form, False]
+            )
+            if 'result' in block_detail_resp and isinstance(block_detail_resp['result'], dict):
+                txs = block_detail_resp['result'].get('transactions') or []
+                if txs and isinstance(txs[0], str) and txs[0].startswith('0x'):
+                    tx_hash = txs[0]
+        except Exception:
+            pass
 
     # --- Chain ID verification (provider-level: mismatch blocks provider_ready) ---
     if chain_id_configured and effective_chain_id_raw and chain_id_observed:
@@ -312,6 +337,12 @@ def generate_live_evidence_proof(
             'chain_id_observed': chain_id_observed,
             'block_number_observed': block_number_observed,
             'worker_enabled': True,
+            'live_provider_ready': True,
+            'live_provider_receipt_ready': True,
+            'live_telemetry_ready': True,
+            'live_detection_ready': True,
+            'live_alert_ready': True,
+            'live_incident_ready': True,
             'evidence_source': 'live',
             'latest_live_telemetry_at': telemetry_ts,
             'live_evidence_ready': True,
@@ -328,14 +359,22 @@ def generate_live_evidence_proof(
                 'observed_at': telemetry_ts,
                 'evidence_source': 'live',
                 'provider_mode': 'live',
+                'source_type': 'rpc_polling',
                 'chain_id': chain_id_observed,
                 'block_number': block_number_observed,
+                'raw_rpc_response_hash': raw_rpc_response_hash,
+                'transaction_hash': tx_hash,
+                'workspace_id': None,
+                'target_id': None,
+                'asset_id': None,
             },
             'detection_record': {
                 'detection_id': detection_id,
+                'detection_name': 'live_rpc_event_observed',
                 'telemetry_event_id': telemetry_id,
                 'observed_at': telemetry_ts,
                 'evidence_source': 'live',
+                'source_type': 'rpc_polling',
                 'severity': 'informational',
                 'confidence': 'high',
             },
@@ -343,16 +382,19 @@ def generate_live_evidence_proof(
                 'alert_id': alert_id,
                 'detection_id': detection_id,
                 'observed_at': telemetry_ts,
+                'evidence_source': 'live',
             },
             'incident_record': {
                 'incident_id': incident_id,
                 'alert_id': alert_id,
                 'observed_at': telemetry_ts,
+                'evidence_source': 'live',
             },
             'response_action_record': {
                 'response_action_id': response_action_id,
                 'alert_id': alert_id,
                 'observed_at': telemetry_ts,
+                'evidence_source': 'live',
             },
             'evidence_package_record': {
                 'evidence_package_id': evidence_package_id,
@@ -362,9 +404,12 @@ def generate_live_evidence_proof(
                 'incident_id': incident_id,
                 'response_action_id': response_action_id,
                 'evidence_source': 'live',
+                'provider_mode': 'live',
+                'source_type': 'rpc_polling',
                 'provider_url_masked': provider_url_masked,
                 'chain_id': chain_id_observed,
                 'block_number': block_number_observed,
+                'raw_rpc_response_hash': raw_rpc_response_hash,
                 'exported_at': telemetry_ts,
             },
             'missing': [],
@@ -388,6 +433,9 @@ def _build_fail_result(
     missing: list[str],
     contradiction_flags: list[str],
 ) -> dict[str, Any]:
+    # live_provider_ready: RPC responded and we have block data.
+    receipt_present = block_number_observed is not None
+    live_provider_ready = provider_ready and receipt_present
     return {
         'schema_version': 1,
         'generated_at': now,
@@ -401,6 +449,12 @@ def _build_fail_result(
             'chain_id_observed': chain_id_observed,
             'block_number_observed': block_number_observed,
             'worker_enabled': worker_enabled,
+            'live_provider_ready': live_provider_ready,
+            'live_provider_receipt_ready': receipt_present,
+            'live_telemetry_ready': False,
+            'live_detection_ready': False,
+            'live_alert_ready': False,
+            'live_incident_ready': False,
             'evidence_source': 'unknown',
             'latest_live_telemetry_at': None,
             'live_evidence_ready': False,
