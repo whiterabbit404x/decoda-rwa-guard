@@ -743,9 +743,53 @@ def build_live_evidence_proof(
         and not contradiction_flags
     )
 
+    # Split proof states — derived from monitoring / worker evidence in chain_evidence.
+    receipts_written_count = int(ce.get('receipts_written') or 0)
+    monitoring_checked_val = int(
+        ce.get('monitoring_checked_count') or ce.get('checked_count') or 0
+    )
+    receipt_checkpoint_present = bool(
+        ce.get('receipt_checkpoint') or receipts_written_count >= 1
+    )
+    has_monitoring_activity = (
+        monitoring_checked_val >= 1
+        or receipt_checkpoint_present
+        or latest_live_telemetry_at is not None
+    )
+    live_provider_ready = provider_ready and has_monitoring_activity
+    live_provider_receipt_ready = receipts_written_count >= 1 or bool(
+        ce.get('receipt_checkpoint')
+    )
+
+    # live_telemetry_ready requires a real rpc_polling telemetry_event to exist,
+    # not just coverage heartbeat or poll.
+    telemetry_source_type = str(
+        ce.get('source_type') or ce.get('telemetry_source_type') or ''
+    ).strip().lower()
+    rpc_polling_telemetry_count = int(ce.get('rpc_polling_telemetry_count') or 0)
+    live_telemetry_ready = latest_live_telemetry_at is not None and (
+        chain_telemetry_id is not None
+        or telemetry_source_type == 'rpc_polling'
+        or rpc_polling_telemetry_count >= 1
+    )
+
+    live_detection_ready = chain_detection_id is not None or detections_count >= 1
+    live_alert_ready = chain_alert_id is not None or alerts_count >= 1
+    live_incident_ready = (
+        chain_incident_id is not None
+        or incidents_count >= 1
+        or response_actions_count >= 1
+    )
+
     return {
         'provider_ready': provider_ready,
         'provider_mode': provider_mode,
+        'live_provider_ready': live_provider_ready,
+        'live_provider_receipt_ready': live_provider_receipt_ready,
+        'live_telemetry_ready': live_telemetry_ready,
+        'live_detection_ready': live_detection_ready,
+        'live_alert_ready': live_alert_ready,
+        'live_incident_ready': live_incident_ready,
         'live_evidence_ready': live_evidence_ready,
         'evidence_source': evidence_source,
         'latest_live_telemetry_at': latest_live_telemetry_at,
