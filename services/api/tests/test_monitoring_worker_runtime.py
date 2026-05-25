@@ -1069,6 +1069,181 @@ def test_migration_0080_creates_unique_index_for_monitoring_heartbeats() -> None
     assert 'worker_name' in sql
 
 
+def test_migration_0080_deduplicates_before_creating_unique_index() -> None:
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / 'migrations'
+        / '0080_monitoring_heartbeats_unique_constraint.sql'
+    )
+    sql = migration_path.read_text()
+    assert 'DELETE FROM monitoring_heartbeats' in sql, 'must deduplicate before adding unique index'
+    assert 'DISTINCT ON (workspace_id, worker_name)' in sql
+
+
+def test_monitoring_heartbeat_upsert_uses_savepoint(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'target-savepoint',
+            'name': 'Savepoint Target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-savepoint',
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+    transaction_calls: list[str] = []
+    original_transaction = connection.transaction
+
+    def _recording_transaction():
+        transaction_calls.append('transaction')
+        return original_transaction()
+
+    connection.transaction = _recording_transaction
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda _connection, target, triggered_by_user_id=None: {
+            'alerts_generated': 0,
+            'events_ingested': 0,
+            'target_id': target['id'],
+            'status': 'completed',
+        },
+    )
+
+    monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+
+    heartbeat_transaction_calls = [c for c in transaction_calls]
+    assert len(heartbeat_transaction_calls) >= 1, (
+        'connection.transaction() must be called for heartbeat upsert savepoint; '
+        'if missing, a failed heartbeat upsert aborts the psycopg3 connection state '
+        'and crashes subsequent queries with InFailedSqlTransaction'
+    )
+
+
+def test_monitoring_heartbeat_upsert_savepoint_rollback_does_not_abort_cycle(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'target-abort',
+            'name': 'Abort Target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-abort',
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+    heartbeat_attempts: list[str] = []
+    original_execute = connection.execute
+    savepoint_rolled_back = [False]
+    original_transaction = connection.transaction
+
+    class _SavepointThatRollsBack:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            if exc_type is not None:
+                savepoint_rolled_back[0] = True
+            return False
+
+    def _transaction_with_rollback_tracking():
+        return _SavepointThatRollsBack()
+
+    connection.transaction = _transaction_with_rollback_tracking
+
+    def _execute_raise_on_heartbeat(query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'INSERT INTO monitoring_heartbeats' in normalized:
+            heartbeat_attempts.append(normalized)
+            raise RuntimeError('InvalidColumnReference: no unique or exclusion constraint matching the ON CONFLICT specification')
+        return original_execute(query, params)
+
+    connection.execute = _execute_raise_on_heartbeat
+
+    processed: list[str] = []
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda _connection, target, triggered_by_user_id=None: processed.append(target['id']) or {
+            'alerts_generated': 0,
+            'events_ingested': 0,
+            'target_id': target['id'],
+            'status': 'completed',
+        },
+    )
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+
+    assert len(heartbeat_attempts) == 1, 'heartbeat was attempted once'
+    assert savepoint_rolled_back[0] is True, 'savepoint was rolled back on heartbeat failure'
+    assert summary['checked'] == 1, 'cycle continued past heartbeat failure and polled the target'
+    assert processed == ['target-abort'], 'target was processed despite heartbeat failure'
+
+
+def test_monitoring_cycle_with_one_candidate_no_fake_telemetry(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'real-target',
+            'name': 'Real Target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-real',
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+    process_calls: list[dict] = []
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda _connection, target, triggered_by_user_id=None: process_calls.append({'target_id': target['id']}) or {
+            'alerts_generated': 0,
+            'events_ingested': 0,
+            'detections_created': 0,
+            'incidents_created': 0,
+            'target_id': target['id'],
+            'status': 'completed',
+        },
+    )
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+
+    assert summary['checked'] == 1
+    assert summary['alerts_generated'] == 0
+    assert summary['events_ingested'] == 0
+    assert len(process_calls) == 1
+    assert process_calls[0]['target_id'] == 'real-target'
+    run = next((r for r in summary.get('runs', []) if r.get('target_id') == 'real-target'), None)
+    assert run is not None
+    assert run.get('alerts_generated', 0) == 0
+    assert run.get('events_ingested', 0) == 0
+
+
 def test_monitoring_heartbeat_upsert_failure_does_not_crash_cycle(monkeypatch) -> None:
     now = datetime.now(timezone.utc)
     due_targets = [
