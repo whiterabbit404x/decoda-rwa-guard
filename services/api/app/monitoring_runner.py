@@ -3295,6 +3295,34 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             ORDER BY COALESCE(ms.last_heartbeat, t.last_checked_at, '1970-01-01'::timestamptz) ASC, ms.created_at ASC
             ''',
         ).fetchall()
+        # Log detailed candidate breakdown for diagnostics
+        try:
+            _total_targets = connection.execute(
+                'SELECT COUNT(*) AS c FROM targets WHERE deleted_at IS NULL',
+            ).fetchone()
+            _enabled_targets = connection.execute(
+                'SELECT COUNT(*) AS c FROM targets WHERE deleted_at IS NULL AND enabled = TRUE',
+            ).fetchone()
+            _valid_asset_linked = connection.execute(
+                '''
+                SELECT COUNT(*) AS c FROM targets t
+                JOIN assets a ON a.id = t.asset_id AND a.workspace_id = t.workspace_id AND a.deleted_at IS NULL
+                WHERE t.deleted_at IS NULL AND t.enabled = TRUE
+                ''',
+            ).fetchone()
+            _enabled_monitored_systems = connection.execute(
+                "SELECT COUNT(*) AS c FROM monitored_systems WHERE COALESCE(is_enabled, TRUE) = TRUE",
+            ).fetchone()
+            logger.info(
+                'monitoring_candidate_breakdown total_targets=%s enabled_targets=%s valid_asset_linked_targets=%s enabled_monitored_systems=%s total_candidate_targets=%s',
+                int((_total_targets or {}).get('c') or 0),
+                int((_enabled_targets or {}).get('c') or 0),
+                int((_valid_asset_linked or {}).get('c') or 0),
+                int((_enabled_monitored_systems or {}).get('c') or 0),
+                len(candidate_systems),
+            )
+        except Exception:
+            pass
         cycle_workspace_ids: set[str] = set()
         for row in candidate_systems:
             workspace_id = str((dict(row)).get('workspace_id') or '').strip()
@@ -5909,6 +5937,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         _raw_asset_ids = {str(row.get('asset_id') or '') for row in enabled_asset_rows if row.get('asset_id')}
         _raw_asset_count = len(_raw_asset_ids)
         protected_assets_count = _raw_asset_count or healthy_enabled_assets_count or (healthy_enabled_targets_count if not monitored_rows else 0)
+        # Fallback: if monitoring hasn't produced a count yet, use direct asset registry count
+        if protected_assets_count == 0 and workspace_id:
+            try:
+                _direct_row = connection.execute(
+                    'SELECT COUNT(DISTINCT id) AS c FROM assets WHERE workspace_id = %s::uuid AND deleted_at IS NULL',
+                    (workspace_id,),
+                ).fetchone()
+                _direct_count = int((_direct_row or {}).get('c') or 0)
+                if _direct_count > 0:
+                    protected_assets_count = _direct_count
+            except Exception:
+                pass
         linked_monitored_system_count = sum(1 for row in monitored_rows if monitored_system_row_enabled(row) and str(row.get('target_id') or '') in healthy_enabled_target_ids)
         def _row_has_valid_target_asset_link(row: dict[str, Any]) -> bool:
             target_id = str(row.get('target_id') or '')

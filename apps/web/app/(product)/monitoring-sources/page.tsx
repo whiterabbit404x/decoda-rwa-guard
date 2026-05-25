@@ -176,6 +176,8 @@ export default function MonitoringSourcesPage() {
   const [loading, setLoading] = useState(true);
   const [enablingTargetId, setEnablingTargetId] = useState<string | null>(null);
   const [enableError, setEnableError] = useState('');
+  const [repairingTargets, setRepairingTargets] = useState(false);
+  const [repairResult, setRepairResult] = useState('');
 
   const { authHeaders } = usePilotAuth();
 
@@ -236,6 +238,41 @@ export default function MonitoringSourcesPage() {
     }
   }
 
+  async function handleRepairTargets() {
+    setRepairingTargets(true);
+    setRepairResult('');
+    setEnableError('');
+    try {
+      const response = await fetch('/api/monitoring/systems/reconcile', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        cache: 'no-store',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`;
+        setRepairResult(`Repair failed: ${detail}`);
+        return;
+      }
+      const reconcile = (payload.reconcile ?? payload) as Record<string, unknown>;
+      const relinked = Number(reconcile.targets_relinked ?? 0);
+      const created = Number(reconcile.assets_created ?? 0);
+      const updated = Number(reconcile.created_or_updated ?? reconcile.eligible_targets ?? 0);
+      setRepairResult(
+        `Repair complete: ${relinked} target(s) relinked, ${created} asset(s) created, ${updated} monitored system(s) updated.`,
+      );
+      await loadSources();
+    } catch (error) {
+      setRepairResult(`Network error during repair: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setRepairingTargets(false);
+    }
+  }
+
+  const enableErrorIsOrphan =
+    enableError.includes('linked asset is missing or deleted') ||
+    (enableError.includes('400') && enableError.toLowerCase().includes('asset'));
+
   const targetNameById = useMemo(
     () => new Map(targets.map((target) => [target.id, target.name || 'Unnamed target'])),
     [targets],
@@ -272,8 +309,39 @@ export default function MonitoringSourcesPage() {
       ) : null}
 
       {enableError ? (
-        <p className="statusLine" style={{ color: 'var(--danger-fg)', fontSize: '0.85rem' }}>
-          {enableError}
+        <div style={{ marginBottom: '0.75rem' }}>
+          <p className="statusLine" style={{ color: 'var(--danger-fg)', fontSize: '0.85rem', margin: 0 }}>
+            {enableError}
+          </p>
+          {enableErrorIsOrphan ? (
+            <div style={{ marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ fontSize: '0.8rem', padding: '0.25rem 0.75rem' }}
+                disabled={repairingTargets}
+                onClick={() => void handleRepairTargets()}
+              >
+                {repairingTargets ? 'Repairing…' : 'Repair targets'}
+              </button>
+              <span className="muted" style={{ fontSize: '0.8rem' }}>
+                Auto-relink orphaned targets to their matching workspace assets.
+              </span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {repairResult ? (
+        <p
+          className="statusLine"
+          style={{
+            color: repairResult.startsWith('Repair failed') ? 'var(--danger-fg)' : 'var(--success-fg)',
+            fontSize: '0.85rem',
+            marginBottom: '0.75rem',
+          }}
+        >
+          {repairResult}
         </p>
       ) : null}
 
