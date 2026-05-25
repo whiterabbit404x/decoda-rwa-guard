@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T05:36:11.869901+00:00",
+  "generated_at": "2026-05-25T06:00:23.071301+00:00",
   "release_channel": "local",
-  "commit_sha": "706991fd3261db4a6bf22d6dbc284789fd12e493",
-  "branch": "claude/tender-knuth-OLPWa",
+  "commit_sha": "2c348773fe23c006da070540339be24d6b9a5e10",
+  "branch": "claude/happy-pascal-ZgiDE",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "b7374acbb4efb5b44c48df913b542f144cad4b7714670073e6cca1228f9f4a3f",
+      "sha256": "33091caabd7cfc2caaee5c5169e5957ccc922b91e63798057d8544228d42dd60",
       "size_bytes": 783,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "0fba17aff6fccccac299194c0793717bfa1f3b31926b6048872f6b0b70efd9a0",
+      "sha256": "b28bb565be06efdd7768a4453230cc208d9d776161287fd3cb0589b2c1463bee",
       "size_bytes": 2105,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "73d09f05be49824298d9604f435f7ed9fb9d9eb9a074d360641c6441309576cf",
+      "sha256": "b687917012cb02486cb4620d542a0cab902a7ca3c7c17432ffdf18c9f2ebedc6",
       "size_bytes": 819,
       "required": true,
       "status": "present"

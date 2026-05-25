@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T05:36:11.851621+00:00",
-  "commit_sha": "706991fd3261db4a6bf22d6dbc284789fd12e493",
-  "branch": "claude/tender-knuth-OLPWa",
+  "generated_at": "2026-05-25T06:00:23.057587+00:00",
+  "commit_sha": "2c348773fe23c006da070540339be24d6b9a5e10",
+  "branch": "claude/happy-pascal-ZgiDE",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
