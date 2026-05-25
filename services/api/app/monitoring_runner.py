@@ -3303,6 +3303,13 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             _enabled_targets = connection.execute(
                 'SELECT COUNT(*) AS c FROM targets WHERE deleted_at IS NULL AND enabled = TRUE',
             ).fetchone()
+            _orphan_targets = connection.execute(
+                '''
+                SELECT COUNT(*) AS c FROM targets t
+                LEFT JOIN assets a ON a.id = t.asset_id AND a.workspace_id = t.workspace_id AND a.deleted_at IS NULL
+                WHERE t.deleted_at IS NULL AND t.enabled = TRUE AND (t.asset_id IS NULL OR a.id IS NULL)
+                ''',
+            ).fetchone()
             _valid_asset_linked = connection.execute(
                 '''
                 SELECT COUNT(*) AS c FROM targets t
@@ -3313,12 +3320,17 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             _enabled_monitored_systems = connection.execute(
                 "SELECT COUNT(*) AS c FROM monitored_systems WHERE COALESCE(is_enabled, TRUE) = TRUE",
             ).fetchone()
+            _enabled_monitoring_configs = connection.execute(
+                "SELECT COUNT(*) AS c FROM monitoring_configs WHERE enabled = TRUE",
+            ).fetchone()
             logger.info(
-                'monitoring_candidate_breakdown total_targets=%s enabled_targets=%s valid_asset_linked_targets=%s enabled_monitored_systems=%s total_candidate_targets=%s',
+                'monitoring_candidate_breakdown total_targets=%s enabled_targets=%s orphan_targets=%s valid_asset_linked_targets=%s enabled_monitored_systems=%s enabled_monitoring_configs=%s total_candidate_targets=%s',
                 int((_total_targets or {}).get('c') or 0),
                 int((_enabled_targets or {}).get('c') or 0),
+                int((_orphan_targets or {}).get('c') or 0),
                 int((_valid_asset_linked or {}).get('c') or 0),
                 int((_enabled_monitored_systems or {}).get('c') or 0),
+                int((_enabled_monitoring_configs or {}).get('c') or 0),
                 len(candidate_systems),
             )
         except Exception:

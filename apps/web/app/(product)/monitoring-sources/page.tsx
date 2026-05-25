@@ -229,11 +229,23 @@ export default function MonitoringSourcesPage() {
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`;
+        const detailObj = payload?.detail;
+        const detail =
+          typeof detailObj === 'string'
+            ? detailObj
+            : typeof detailObj === 'object' && detailObj !== null
+              ? ((detailObj as { message?: string; code?: string }).message ?? `HTTP ${response.status}`)
+              : `HTTP ${response.status}`;
         setEnableError(`Enable failed (${response.status} ${url}): ${detail}`);
+        const errorCode =
+          typeof detailObj === 'object' && detailObj !== null
+            ? (detailObj as { code?: string }).code
+            : undefined;
         const isOrphan =
+          errorCode === 'TARGET_LINKED_ASSET_MISSING' ||
           detail.includes('linked asset is missing or deleted') ||
-          (response.status === 400 && detail.toLowerCase().includes('asset'));
+          (response.status === 400 && detail.toLowerCase().includes('asset')) ||
+          response.status === 500;
         if (isOrphan) {
           setOrphanTargetId(targetId);
         }
