@@ -119,6 +119,7 @@ from services.api.app.pilot import (
     create_asset,
     get_asset,
     update_asset,
+    verify_asset,
     delete_asset,
     resolve_asset_onchain,
     bind_asset_wallets,
@@ -3299,6 +3300,11 @@ def assets_get(asset_id: str, request: Request) -> dict[str, Any]:
 @app.patch('/assets/{asset_id}', summary='Update workspace asset')
 def assets_patch(asset_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: update_asset(asset_id, payload, request))
+
+
+@app.post('/assets/{asset_id}/verify', summary='Verify workspace asset and enable monitoring prerequisites')
+def assets_verify(asset_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: verify_asset(asset_id, request))
 
 
 @app.patch('/asset-profiles/{asset_id}', summary='Update workspace asset profile')
