@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T09:17:29.248794+00:00",
+  "generated_at": "2026-05-25T10:31:49.872334+00:00",
   "release_channel": "local",
-  "commit_sha": "af2289fcaf5370f40f842f2fb3c34e102f703117",
-  "branch": "claude/eager-volta-Weeuz",
+  "commit_sha": "647301a67b9c08e2aec8eeac45895f414ae2756a",
+  "branch": "claude/charming-wright-IbHkL",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "5ca8d8d928e808e2124d12acf7e1637af511a352596809a665200f600d503c3a",
-      "size_bytes": 782,
+      "sha256": "647a3afbe88dc25a07d9e86e511a32110e04ac12b475bdff1b63bfddad76b43f",
+      "size_bytes": 786,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "7703d3433122e4d86aebfece416c493d9adf93652361e3091382582e2b68253c",
-      "size_bytes": 2104,
+      "sha256": "ebbca82a7c10893c1c5975ae5070dd9f500f9139958def81a95a34e6b6af2c26",
+      "size_bytes": 2108,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "015bd308cc4f123351c49a0df7b86f254b2713b26eca577e5569e270687ff26f",
+      "sha256": "6e7b51315d23a0b5739befd797e425d72160b60a6ef6c4728a4fce12e9cf493f",
       "size_bytes": 819,
       "required": true,
       "status": "present"

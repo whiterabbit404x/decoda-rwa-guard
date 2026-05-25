@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T09:17:29.241065+00:00",
+  "generated_at": "2026-05-25T10:31:49.864169+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "af2289fcaf5370f40f842f2fb3c34e102f703117",
-  "branch": "claude/eager-volta-Weeuz",
+  "commit_sha": "647301a67b9c08e2aec8eeac45895f414ae2756a",
+  "branch": "claude/charming-wright-IbHkL",
   "ci_required_gates_ready": false,
   "launch_proof_ready": false,
   "manifest_ready": true,
