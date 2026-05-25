@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T11:47:46.151693+00:00",
-  "commit_sha": "47483b880d207ded48ed882afbaa174efcc86d69",
-  "branch": "claude/dreamy-cannon-CFoxu",
+  "generated_at": "2026-05-25T12:02:56.844060+00:00",
+  "commit_sha": "c4e6d988d4664e02140b3a54e21a258d935079d2",
+  "branch": "claude/nice-hawking-6rRCS",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
