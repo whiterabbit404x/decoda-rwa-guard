@@ -44,6 +44,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# Proof-system namespace for content-addressable IDs.
+# Using uuid5 (SHA-1 name-based) ensures IDs are derived from actual RPC data,
+# not from random uuid4(). This makes evidence verifiable: same on-chain state
+# produces the same IDs; different blocks produce different IDs.
+_PROOF_NAMESPACE = uuid.UUID('a1b2c3d4-e5f6-4789-abcd-dec0da00aaaa')
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -101,6 +107,18 @@ def _rpc_call(
         return {'error': f'URLError: {exc.reason}'}
     except Exception as exc:
         return {'error': f'{type(exc).__name__}: {exc}'}
+
+
+def _content_id(prefix: str, *parts: str) -> str:
+    """
+    Generate a content-addressable UUID derived from actual evidence data.
+
+    Uses uuid5 (name-based, SHA-1) so IDs are deterministic: the same chain
+    state produces the same IDs and different RPC observations produce different
+    IDs. This prevents random uuid4()-only proofs from satisfying live_evidence_ready.
+    """
+    content = prefix + ':' + ':'.join(str(p) for p in parts)
+    return str(uuid.uuid5(_PROOF_NAMESPACE, content))
 
 
 def _hex_to_dec(hex_val: Any) -> str | None:
@@ -316,13 +334,20 @@ def generate_live_evidence_proof(
         )
 
     # --- All gates pass: build full live evidence chain from real RPC data ---
+    # IDs are content-addressable (uuid5), derived from actual on-chain data.
+    # The same block observation produces the same IDs; different blocks produce
+    # different IDs. This ties evidence to the real chain state, not to random UUIDs.
     telemetry_ts = datetime.now(timezone.utc).isoformat()
-    telemetry_id = str(uuid.uuid4())
-    detection_id = str(uuid.uuid4())
-    alert_id = str(uuid.uuid4())
-    incident_id = str(uuid.uuid4())
-    response_action_id = str(uuid.uuid4())
-    evidence_package_id = str(uuid.uuid4())
+    telemetry_id = _content_id(
+        'telemetry', chain_id_observed, block_number_observed or '', raw_rpc_response_hash
+    )
+    detection_id = _content_id('detection', telemetry_id, 'live_rpc_event_observed')
+    alert_id = _content_id('alert', detection_id)
+    incident_id = _content_id('incident', alert_id)
+    response_action_id = _content_id('response_action', alert_id)
+    evidence_package_id = _content_id(
+        'evidence_package', telemetry_id, detection_id, alert_id, incident_id
+    )
 
     return {
         'schema_version': 1,

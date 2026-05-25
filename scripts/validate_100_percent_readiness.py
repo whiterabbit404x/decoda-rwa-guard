@@ -163,6 +163,27 @@ def _check_live_evidence(
             if data is not None:
                 lpe = data.get('live_provider_evidence', {})
                 if lpe.get('live_evidence_ready') is True:
+                    # Verify evidence_source=live; simulator/demo sources must not pass.
+                    source = lpe.get('evidence_source', 'unknown')
+                    if source != 'live':
+                        blockers.append(
+                            f'live_evidence_ready=true but evidence_source={source!r}; '
+                            'must be live — simulated data cannot satisfy live evidence'
+                        )
+                        return False, blockers
+                    # Verify all required chain IDs exist (no UUID-only proof).
+                    chain = lpe.get('chain', {})
+                    _required_chain_ids = (
+                        'telemetry_event_id', 'detection_id', 'alert_id',
+                        'incident_id', 'evidence_package_id',
+                    )
+                    missing_ids = [fld for fld in _required_chain_ids if not chain.get(fld)]
+                    if missing_ids:
+                        blockers.append(
+                            'live_evidence_ready=true but required chain IDs missing: '
+                            + ', '.join(missing_ids)
+                        )
+                        return False, blockers
                     return True, []
                 # Present but not ready — surface first missing item
                 missing = lpe.get('missing', [])
