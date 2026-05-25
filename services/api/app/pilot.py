@@ -8267,15 +8267,35 @@ def reconcile_enabled_targets_monitored_systems(connection: Any, *, workspace_id
     if workspace_id:
         _pre_eligible = _load_workspace_reconcile_eligible_targets(connection, workspace_id=workspace_id)
         if not _pre_eligible:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    'code': 'monitoring_reconcile_failed',
-                    'stage': 'verify_eligible_targets',
-                    'state': 'failure',
-                    'detail': 'No enabled, linked wallet/contract targets found for workspace.',
-                },
+            # Try orphan repair before giving up
+            repair_summary = _repair_orphan_targets_in_workspace(
+                connection,
+                workspace_id=workspace_id,
+                user_id='system',
             )
+            logger.info(
+                'reconcile_pre_repair workspace_id=%s repair=%s',
+                workspace_id, repair_summary,
+            )
+            _post_eligible = _load_workspace_reconcile_eligible_targets(connection, workspace_id=workspace_id)
+            if not _post_eligible:
+                logger.warning(
+                    'reconcile_no_eligible_targets_after_repair workspace_id=%s orphans_scanned=%s relinked=%s created=%s unresolved=%s',
+                    workspace_id,
+                    repair_summary.get('targets_scanned', 0),
+                    repair_summary.get('targets_relinked', 0),
+                    repair_summary.get('assets_created', 0),
+                    repair_summary.get('unresolved_targets', 0),
+                )
+                return {
+                    'created_or_updated': 0,
+                    'eligible_targets': 0,
+                    'invalid_targets': [],
+                    'skipped_reasons': {'no_eligible_targets': 1},
+                    'targets_repaired': repair_summary.get('targets_relinked', 0) + repair_summary.get('assets_created', 0),
+                    'assets_created': repair_summary.get('assets_created', 0),
+                    'unresolved_targets': repair_summary.get('unresolved_targets', 0),
+                }
     rows = connection.execute(
         '''
         SELECT id, target_type, enabled, monitoring_enabled, asset_id
@@ -10140,6 +10160,197 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
         return _load_target_row(connection, workspace_id=workspace_id, target_id=target_id)
 
 
+def _try_relink_orphan_target(
+    connection: Any,
+    *,
+    target_id: str,
+    workspace_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    """
+    Attempt to repair an orphaned monitoring target by finding or creating a matching
+    workspace asset. Returns a dict with 'status' key:
+      'relinked'           - found exactly one matching asset and linked it
+      'created'            - no match found; new asset created from target identifiers
+      'multiple_candidates'- found >1 matching assets; 'candidates' key has their ids/names
+      'no_identifier'      - target has no identifier to search or create with
+    """
+    full_row = connection.execute(
+        '''
+        SELECT id, name, target_type, chain_network, contract_identifier, wallet_address
+        FROM targets
+        WHERE id = %s::uuid AND workspace_id = %s::uuid AND deleted_at IS NULL
+        ''',
+        (target_id, workspace_id),
+    ).fetchone()
+    if full_row is None:
+        return {'status': 'no_identifier'}
+
+    target_name = str(full_row.get('name') or '').strip()
+    target_type = str(full_row.get('target_type') or '').strip().lower()
+    chain_network = str(full_row.get('chain_network') or '').strip() or 'ethereum-mainnet'
+    contract_identifier = str(full_row.get('contract_identifier') or '').strip() or None
+    wallet_address = str(full_row.get('wallet_address') or '').strip() or None
+    identifier = contract_identifier or wallet_address
+
+    if identifier:
+        matches = connection.execute(
+            '''
+            SELECT id, name FROM assets
+            WHERE workspace_id = %s::uuid
+              AND deleted_at IS NULL
+              AND lower(chain_network) = lower(%s)
+              AND (lower(identifier) = lower(%s) OR lower(COALESCE(normalized_identifier, '')) = lower(%s))
+            ''',
+            (workspace_id, chain_network, identifier, identifier),
+        ).fetchall()
+        if len(matches) == 1:
+            new_asset_id = str(matches[0]['id'])
+            connection.execute(
+                'UPDATE targets SET asset_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid',
+                (new_asset_id, target_id),
+            )
+            logger.info(
+                'orphan_target_relinked target_id=%s workspace_id=%s new_asset_id=%s reason=identifier_match',
+                target_id, workspace_id, new_asset_id,
+            )
+            return {'status': 'relinked', 'asset_id': new_asset_id}
+        if len(matches) > 1:
+            return {
+                'status': 'multiple_candidates',
+                'candidates': [{'id': str(m['id']), 'name': str(m.get('name') or '')} for m in matches],
+            }
+        # No identifier match — create an asset from target data
+        asset_type_map = {'contract': 'contract', 'wallet': 'wallet'}
+        asset_type = asset_type_map.get(target_type, 'contract')
+        asset_name = target_name or f'{asset_type.title()} ({identifier[:12]})'
+        verification = _derive_asset_verification(identifier=identifier, chain_network=chain_network)
+        new_asset_id = str(uuid.uuid4())
+        connection.execute(
+            '''
+            INSERT INTO assets (
+                id, workspace_id, name, description, asset_type, chain_network, identifier,
+                asset_class, risk_tier, owner_team, notes, enabled,
+                issuer_name, asset_symbol, asset_identifier, token_contract_address,
+                custody_wallets, treasury_ops_wallets, oracle_sources, venue_labels,
+                expected_counterparties, expected_flow_patterns, expected_approval_patterns, expected_liquidity_baseline,
+                expected_oracle_freshness_seconds, expected_oracle_update_cadence_seconds, policy_tags, jurisdiction_tags,
+                baseline_status, baseline_source, baseline_updated_at, baseline_confidence, baseline_coverage,
+                normalized_identifier, verification_status, verification_summary, verification_checked_at,
+                created_by_user_id, updated_by_user_id
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb,
+                %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb,
+                %s, %s, %s::jsonb, %s::jsonb,
+                %s, %s, NOW(), %s, %s,
+                %s, %s, %s::jsonb, NOW(), %s, %s
+            )
+            ''',
+            (
+                new_asset_id, workspace_id, asset_name, None, asset_type, chain_network, identifier,
+                None, 'medium', None, None, True,
+                None, None, None, None,
+                '[]', '[]', '[]', '[]',
+                '[]', '[]', '{}', '{}',
+                None, None, '[]', '[]',
+                'missing', 'target_auto_repair', None, None,
+                verification['normalized_identifier'], verification['verification_status'],
+                _json_dumps(verification['verification_summary']),
+                user_id, user_id,
+            ),
+        )
+        connection.execute(
+            'UPDATE targets SET asset_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid',
+            (new_asset_id, target_id),
+        )
+        logger.info(
+            'orphan_target_asset_created target_id=%s workspace_id=%s new_asset_id=%s identifier=%s chain=%s',
+            target_id, workspace_id, new_asset_id, identifier, chain_network,
+        )
+        return {'status': 'created', 'asset_id': new_asset_id}
+
+    # No identifier — try matching by name
+    if target_name:
+        name_matches = connection.execute(
+            '''
+            SELECT id, name FROM assets
+            WHERE workspace_id = %s::uuid
+              AND deleted_at IS NULL
+              AND lower(name) = lower(%s)
+            ''',
+            (workspace_id, target_name),
+        ).fetchall()
+        if len(name_matches) == 1:
+            new_asset_id = str(name_matches[0]['id'])
+            connection.execute(
+                'UPDATE targets SET asset_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid',
+                (new_asset_id, target_id),
+            )
+            logger.info(
+                'orphan_target_relinked target_id=%s workspace_id=%s new_asset_id=%s reason=name_match',
+                target_id, workspace_id, new_asset_id,
+            )
+            return {'status': 'relinked', 'asset_id': new_asset_id}
+        if len(name_matches) > 1:
+            return {
+                'status': 'multiple_candidates',
+                'candidates': [{'id': str(m['id']), 'name': str(m.get('name') or '')} for m in name_matches],
+            }
+
+    return {'status': 'no_identifier'}
+
+
+def _repair_orphan_targets_in_workspace(
+    connection: Any,
+    *,
+    workspace_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    """Scan workspace targets and repair orphaned asset links."""
+    orphan_rows = connection.execute(
+        '''
+        SELECT t.id
+        FROM targets t
+        LEFT JOIN assets a
+          ON a.id = t.asset_id
+         AND a.workspace_id = t.workspace_id
+         AND a.deleted_at IS NULL
+        WHERE t.workspace_id = %s::uuid
+          AND t.deleted_at IS NULL
+          AND (t.asset_id IS NULL OR a.id IS NULL)
+        ''',
+        (workspace_id,),
+    ).fetchall()
+    relinked = 0
+    created = 0
+    unresolved = 0
+    for orphan_row in orphan_rows:
+        result = _try_relink_orphan_target(
+            connection,
+            target_id=str(orphan_row['id']),
+            workspace_id=workspace_id,
+            user_id=user_id,
+        )
+        s = result.get('status')
+        if s == 'relinked':
+            relinked += 1
+        elif s == 'created':
+            created += 1
+        else:
+            unresolved += 1
+    logger.info(
+        'orphan_repair_workspace workspace_id=%s scanned=%s relinked=%s created=%s unresolved=%s',
+        workspace_id, len(orphan_rows), relinked, created, unresolved,
+    )
+    return {
+        'targets_scanned': len(orphan_rows),
+        'targets_relinked': relinked,
+        'assets_created': created,
+        'unresolved_targets': unresolved,
+    }
+
+
 def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -10157,7 +10368,33 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
                 (row.get('asset_id'), workspace_context['workspace_id']),
             ).fetchone()
             if asset_valid is None:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Cannot enable target: linked asset is missing or deleted.')
+                workspace_id_value = workspace_context['workspace_id']
+                repair_result = _try_relink_orphan_target(
+                    connection,
+                    target_id=target_id,
+                    workspace_id=workspace_id_value,
+                    user_id=user['id'],
+                )
+                repair_status = repair_result.get('status')
+                if repair_status == 'multiple_candidates':
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            'code': 'multiple_asset_candidates',
+                            'message': 'Cannot auto-relink target: multiple matching assets found. Choose one and update the target.',
+                            'candidates': repair_result.get('candidates', []),
+                        },
+                    )
+                if repair_status not in ('relinked', 'created'):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail='Cannot enable target: linked asset is missing or deleted. Add a protected asset and link it to this target.',
+                    )
+                # Repair succeeded — refresh row with new asset_id
+                row = connection.execute(
+                    'SELECT id, asset_id, chain_network FROM targets WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL',
+                    (target_id, workspace_context['workspace_id']),
+                ).fetchone()
         connection.execute(
             'UPDATE targets SET enabled = %s, monitoring_enabled = %s, is_active = %s, updated_by_user_id = %s, updated_at = NOW() WHERE id = %s',
             (enabled, enabled, enabled, user['id'], target_id),

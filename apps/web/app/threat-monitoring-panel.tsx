@@ -264,10 +264,10 @@ export default function ThreatMonitoringPanel() {
     // Case A
     if (!assetOk) {
       return {
-        title: 'No protected asset exists yet.',
-        body: 'Add a protected asset to begin threat monitoring.',
-        ctaHref: '/assets',
-        ctaLabel: 'Add Asset',
+        title: 'No active protected asset detected in runtime.',
+        body: 'If you have added assets, enable a monitoring target and run reconcile so the runtime summary reflects your configuration.',
+        ctaHref: '/monitoring-sources',
+        ctaLabel: 'Configure Monitoring',
       };
     }
     // Case B
@@ -615,9 +615,11 @@ export default function ThreatMonitoringPanel() {
             <EmptyStateBlocker
               title="No telemetry events"
               body={
-                !lastTelemetryAt
-                  ? 'No telemetry event has been received yet. The worker may be reporting but no events have arrived.'
-                  : 'No telemetry events found.'
+                assetOk && systemOk
+                  ? 'Assets and monitoring targets exist — waiting for first live telemetry event from the worker.'
+                  : !lastTelemetryAt
+                    ? 'No telemetry event has been received yet. The worker may be reporting but no events have arrived.'
+                    : 'No telemetry events found.'
               }
               ctaHref={isSimulatorMode ? '/threat' : '/monitoring-sources'}
               ctaLabel={isSimulatorMode ? 'Generate Simulator Signal' : 'Check Monitoring Sources'}
