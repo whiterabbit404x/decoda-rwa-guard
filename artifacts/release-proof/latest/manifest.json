@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-22T15:42:46.390941+00:00",
+  "generated_at": "2026-05-25T05:36:11.869901+00:00",
   "release_channel": "local",
-  "commit_sha": "72e6140d4190e7c5dec3de6f8a5f100ff4a8774f",
-  "branch": "claude/great-fermi-jyKDI",
+  "commit_sha": "706991fd3261db4a6bf22d6dbc284789fd12e493",
+  "branch": "claude/tender-knuth-OLPWa",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "755d0dddbe0745e4763e5d9a442ffa7332ea44161d86cbea44a596bc6f852bb7",
-      "size_bytes": 782,
+      "sha256": "b7374acbb4efb5b44c48df913b542f144cad4b7714670073e6cca1228f9f4a3f",
+      "size_bytes": 783,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "ce14f41d08e490de79d8d441f3ebee9281b00fefd2bab2b5bbdecf13e43dc25e",
-      "size_bytes": 2104,
+      "sha256": "0fba17aff6fccccac299194c0793717bfa1f3b31926b6048872f6b0b70efd9a0",
+      "size_bytes": 2105,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "d4d06484d5b8b82a6080a5357038adba9df9e5fbd9dbef700a4894b2bf5a9aad",
+      "sha256": "73d09f05be49824298d9604f435f7ed9fb9d9eb9a074d360641c6441309576cf",
       "size_bytes": 819,
       "required": true,
       "status": "present"
