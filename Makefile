@@ -91,7 +91,7 @@ run-staging-live-proof:
 	python scripts/run_staging_live_evidence_proof.py
 
 generate-staging-proof: generate-live-evidence-proof
-	python scripts/generate_staging_launch_proof.py --mode local
+	python scripts/generate_staging_launch_proof.py --mode staging
 
 validate-staging-proof:
 	python scripts/validate_staging_launch_proof.py
