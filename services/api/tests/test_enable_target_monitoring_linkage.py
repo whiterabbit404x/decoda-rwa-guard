@@ -376,3 +376,440 @@ def test_orphan_target_no_identifier_returns_400(monkeypatch):
         pilot.set_target_enabled('t_orphan', True, _Req())
 
     assert exc_info.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Chain-agnostic identifier match tests
+# ---------------------------------------------------------------------------
+
+class _ChainMismatchConn(_OrphanConn):
+    """
+    Orphaned target WITH a contract_identifier, but the matching asset has a
+    different chain_network. Chain-specific query returns 0; chain-agnostic
+    query returns 1.
+    """
+
+    def execute(self, query, params=None):
+        q = ' '.join(str(query).split()).upper()
+        params = params or ()
+
+        # SELECT targets row — orphaned (asset_id is None)
+        if 'FROM TARGETS WHERE ID' in q and 'DELETED_AT IS NULL' in q and 'WORKSPACE_ID' in q:
+            return _Rows([{
+                'id': self.target_id,
+                'asset_id': None,
+                'chain_network': 'ethereum-mainnet',
+                'name': 'US Treasury Settlement Contract',
+                'target_type': 'contract',
+                'contract_identifier': self.identifier,
+                'wallet_address': None,
+            }])
+
+        # asset_valid check — orphaned
+        if 'FROM ASSETS A WHERE A.ID' in q:
+            return _Rows([])
+
+        # Chain-specific identifier search — no match (chain mismatch)
+        if 'FROM ASSETS' in q and 'LOWER(CHAIN_NETWORK)' in q:
+            return _Rows([])
+
+        # Chain-agnostic identifier search — one match
+        if 'FROM ASSETS' in q and 'LOWER(IDENTIFIER)' in q and 'LOWER(CHAIN_NETWORK)' not in q:
+            return _Rows([{'id': 'a_chain_agnostic', 'name': 'US Treasury Settlement Contract'}])
+
+        # Workspace-level fallback (ORDER BY CREATED_AT) — not reached
+        if 'FROM ASSETS' in q and 'ORDER BY CREATED_AT' in q:
+            return _Rows([{'id': 'a_ws_fallback', 'name': 'Any Asset'}])
+
+        if 'FROM TARGETS WHERE ID' in q:
+            return _Rows([{
+                'id': self.target_id, 'workspace_id': self.workspace_id,
+                'name': 'US Treasury Settlement Contract', 'target_type': 'contract',
+                'chain_network': 'ethereum-mainnet',
+                'enabled': True, 'monitoring_enabled': True, 'is_active': True,
+                'asset_id': 'a_chain_agnostic',
+                'monitoring_interval_seconds': 30,
+                'last_checked_at': None, 'last_run_status': None, 'last_run_id': None,
+                'last_alert_at': None, 'monitored_by_workspace_id': None,
+                'created_at': None, 'updated_at': None,
+                'monitoring_mode': None, 'severity_threshold': None,
+                'auto_create_alerts': True, 'auto_create_incidents': True,
+                'notification_channels': None, 'last_real_event_at': None,
+                'last_no_evidence_at': None, 'last_degraded_at': None,
+                'last_failed_monitoring_at': None, 'recent_evidence_state': None,
+                'recent_truthfulness_state': None, 'recent_real_event_count': None,
+                'chain_id': 1, 'target_metadata': None,
+            }])
+
+        if 'UPDATE TARGETS' in q:
+            self.updates.append((query, params))
+            return _Rows([])
+        if 'INSERT INTO MONITORING_CONFIGS' in q:
+            self.inserts.append((query, params))
+            return _Rows([])
+        if 'MONITORED_TARGETS' in q:
+            return _Rows([{'id': 'mt1'}])
+        if 'MONITORED_SYSTEMS' in q:
+            return _Rows([])
+        if 'INSERT INTO ASSETS' in q:
+            self.inserts.append((query, params))
+            return _Rows([])
+        return _Rows([])
+
+
+def test_orphan_target_relinks_via_chain_agnostic_identifier_match(monkeypatch):
+    """
+    If the chain-specific identifier search returns 0 but the chain-agnostic
+    search returns 1, the target must be relinked without creating a duplicate asset.
+    """
+    conn = _ChainMismatchConn(one_matching_asset=False)
+    _patch_orphan(monkeypatch, conn)
+
+    result = pilot.set_target_enabled('t_orphan', True, _Req())
+
+    assert result is not None
+    relink_updates = [
+        (q, p) for q, p in conn.updates
+        if 'asset_id' in q.lower() and 'UPDATE targets' in q
+    ]
+    assert relink_updates, 'Expected UPDATE targets SET asset_id for chain-agnostic relink'
+    # Must NOT have created a new asset (no INSERT INTO assets)
+    asset_inserts = [(q, p) for q, p in conn.inserts if 'INSERT INTO ASSETS' in q.upper()]
+    assert not asset_inserts, 'Chain-agnostic match must NOT create a duplicate asset'
+
+
+# ---------------------------------------------------------------------------
+# Workspace-level fallback tests
+# ---------------------------------------------------------------------------
+
+class _NoIdentifierOneAssetConn:
+    """
+    Target with no identifier and no name match, but exactly ONE active asset
+    in the workspace. The workspace-level fallback should relink the target.
+    """
+
+    def __init__(self, *, target_id='t_noid', workspace_id='ws1', asset_id='a_single'):
+        self.target_id = target_id
+        self.workspace_id = workspace_id
+        self.asset_id = asset_id
+        self.updates: list[tuple[str, tuple]] = []
+        self.inserts: list[tuple[str, tuple]] = []
+
+    def execute(self, query, params=None):
+        q = ' '.join(str(query).split()).upper()
+        params = params or ()
+
+        if 'FROM TARGETS WHERE ID' in q and 'DELETED_AT IS NULL' in q and 'WORKSPACE_ID' in q:
+            return _Rows([{
+                'id': self.target_id, 'asset_id': None,
+                'chain_network': 'ethereum-mainnet',
+                'name': 'My Target', 'target_type': 'contract',
+                'contract_identifier': None, 'wallet_address': None,
+            }])
+
+        if 'FROM ASSETS A WHERE A.ID' in q:
+            return _Rows([])
+
+        # Any assets query (identifier search or name search) returns empty
+        if 'FROM ASSETS' in q and ('LOWER(IDENTIFIER)' in q or 'LOWER(NAME)' in q or 'LOWER(CHAIN_NETWORK)' in q):
+            return _Rows([])
+
+        # Workspace-level fallback: ORDER BY CREATED_AT — one asset
+        if 'FROM ASSETS' in q and 'ORDER BY CREATED_AT' in q:
+            return _Rows([{'id': self.asset_id, 'name': 'US Treasury Settlement Contract'}])
+
+        if 'FROM TARGETS WHERE ID' in q:
+            return _Rows([{
+                'id': self.target_id, 'workspace_id': self.workspace_id,
+                'name': 'My Target', 'target_type': 'contract',
+                'chain_network': 'ethereum-mainnet',
+                'enabled': True, 'monitoring_enabled': True, 'is_active': True,
+                'asset_id': self.asset_id,
+                'monitoring_interval_seconds': 30,
+                'last_checked_at': None, 'last_run_status': None, 'last_run_id': None,
+                'last_alert_at': None, 'monitored_by_workspace_id': None,
+                'created_at': None, 'updated_at': None,
+                'monitoring_mode': None, 'severity_threshold': None,
+                'auto_create_alerts': True, 'auto_create_incidents': True,
+                'notification_channels': None, 'last_real_event_at': None,
+                'last_no_evidence_at': None, 'last_degraded_at': None,
+                'last_failed_monitoring_at': None, 'recent_evidence_state': None,
+                'recent_truthfulness_state': None, 'recent_real_event_count': None,
+                'chain_id': 1, 'target_metadata': None,
+            }])
+
+        if 'UPDATE TARGETS' in q:
+            self.updates.append((query, params))
+            return _Rows([])
+        if 'INSERT INTO MONITORING_CONFIGS' in q:
+            self.inserts.append((query, params))
+            return _Rows([])
+        if 'MONITORED_TARGETS' in q:
+            return _Rows([{'id': 'mt1'}])
+        if 'MONITORED_SYSTEMS' in q:
+            return _Rows([])
+        return _Rows([])
+
+    def commit(self):
+        pass
+
+
+def _patch_no_identifier(monkeypatch, conn):
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: (
+        {'id': 'u1'}, {'workspace_id': conn.workspace_id}
+    ))
+    monkeypatch.setattr(pilot, '_sync_canonical_monitoring_target_state', lambda *_a, **_k: None)
+    monkeypatch.setattr(pilot, 'ensure_monitored_system_for_target', lambda *_a, **_k: {
+        'status': 'ok', 'monitored_system_id': 'ms1',
+    })
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+    monkeypatch.setattr(pilot, '_load_target_row', lambda *_a, **_k: {'id': conn.target_id, 'enabled': True})
+
+
+def test_orphan_target_relinks_via_single_workspace_asset(monkeypatch):
+    """
+    An orphaned target with no identifier should be relinked when exactly one
+    active asset exists in the workspace (workspace-level fallback).
+    """
+    conn = _NoIdentifierOneAssetConn()
+    _patch_no_identifier(monkeypatch, conn)
+
+    result = pilot.set_target_enabled('t_noid', True, _Req())
+
+    assert result is not None
+    relink_updates = [
+        (q, p) for q, p in conn.updates
+        if 'asset_id' in q.lower() and 'UPDATE targets' in q
+    ]
+    assert relink_updates, 'Expected UPDATE targets SET asset_id for workspace-level fallback relink'
+
+
+def test_orphan_target_multiple_workspace_assets_returns_409(monkeypatch):
+    """
+    When no identifier is set and multiple assets exist in the workspace,
+    the workspace-level fallback must raise 409 Conflict.
+    """
+    from fastapi import HTTPException as FastAPIHTTPException
+
+    class _MultiAssetConn(_NoIdentifierOneAssetConn):
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split()).upper()
+            params = params or ()
+            if 'FROM TARGETS WHERE ID' in q and 'DELETED_AT IS NULL' in q and 'WORKSPACE_ID' in q:
+                return _Rows([{
+                    'id': self.target_id, 'asset_id': None,
+                    'chain_network': 'ethereum-mainnet',
+                    'name': 'My Target', 'target_type': 'contract',
+                    'contract_identifier': None, 'wallet_address': None,
+                }])
+            if 'FROM ASSETS A WHERE A.ID' in q:
+                return _Rows([])
+            if 'FROM ASSETS' in q and ('LOWER(IDENTIFIER)' in q or 'LOWER(NAME)' in q or 'LOWER(CHAIN_NETWORK)' in q):
+                return _Rows([])
+            if 'FROM ASSETS' in q and 'ORDER BY CREATED_AT' in q:
+                return _Rows([
+                    {'id': 'a_one', 'name': 'Asset One'},
+                    {'id': 'a_two', 'name': 'Asset Two'},
+                ])
+            if 'UPDATE TARGETS' in q:
+                self.updates.append((query, params))
+                return _Rows([])
+            return _Rows([])
+
+    conn = _MultiAssetConn()
+    _patch_no_identifier(monkeypatch, conn)
+
+    with pytest.raises(FastAPIHTTPException) as exc_info:
+        pilot.set_target_enabled('t_noid', True, _Req())
+
+    assert exc_info.value.status_code == 409
+    detail = exc_info.value.detail
+    assert isinstance(detail, dict)
+    assert detail.get('code') == 'multiple_asset_candidates'
+
+
+# ---------------------------------------------------------------------------
+# Per-target repair endpoint tests
+# ---------------------------------------------------------------------------
+
+class _RepairConn(_NoIdentifierOneAssetConn):
+    """Conn for repair_orphan_target tests — behaves like single-asset workspace."""
+
+    def __init__(self, *, target_id='t_repair', workspace_id='ws1', asset_id='a_repair'):
+        super().__init__(target_id=target_id, workspace_id=workspace_id, asset_id=asset_id)
+
+    def execute(self, query, params=None):
+        q = ' '.join(str(query).split()).upper()
+        params = params or ()
+
+        # Target exists check (for repair_orphan_target initial load)
+        if 'FROM TARGETS WHERE ID' in q and 'WORKSPACE_ID' in q and 'DELETED_AT IS NULL' in q:
+            return _Rows([{'id': self.target_id, 'asset_id': None}])
+
+        # asset_valid check — invalid
+        if 'FROM ASSETS A WHERE A.ID' in q:
+            return _Rows([])
+
+        # Identifier/name searches — no match
+        if 'FROM ASSETS' in q and ('LOWER(IDENTIFIER)' in q or 'LOWER(NAME)' in q or 'LOWER(CHAIN_NETWORK)' in q):
+            return _Rows([])
+
+        # Workspace-level fallback
+        if 'FROM ASSETS' in q and 'ORDER BY CREATED_AT' in q:
+            return _Rows([{'id': self.asset_id, 'name': 'US Treasury Settlement Contract'}])
+
+        # _try_relink_orphan_target reads the target row
+        if 'FROM TARGETS' in q and 'DELETED_AT IS NULL' in q:
+            return _Rows([{
+                'id': self.target_id, 'name': 'Test Repair Target',
+                'target_type': 'contract', 'chain_network': 'ethereum-mainnet',
+                'contract_identifier': None, 'wallet_address': None,
+            }])
+
+        if 'UPDATE TARGETS' in q:
+            self.updates.append((query, params))
+            return _Rows([])
+        if 'INSERT INTO MONITORING_CONFIGS' in q:
+            self.inserts.append((query, params))
+            return _Rows([])
+        if 'MONITORED_SYSTEMS' in q:
+            return _Rows([])
+        return _Rows([])
+
+
+def test_repair_endpoint_relinks_orphan_target(monkeypatch):
+    """repair_orphan_target must relink an orphaned target to a single workspace asset."""
+    conn = _RepairConn()
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: (
+        {'id': 'u1'}, {'workspace_id': conn.workspace_id}
+    ))
+    monkeypatch.setattr(pilot, 'ensure_monitored_system_for_target', lambda *_a, **_k: {
+        'status': 'ok', 'monitored_system_id': 'ms_repair',
+    })
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+
+    result = pilot.repair_orphan_target('t_repair', _Req())
+
+    assert result['status'] in ('relinked', 'created', 'already_linked')
+    assert result.get('targets_relinked', 0) + result.get('assets_created', 0) >= 1 or result['status'] == 'already_linked'
+
+
+def test_repair_endpoint_creates_monitored_system(monkeypatch):
+    """repair_orphan_target must ensure a monitored_system is created after repair."""
+    systems_created = []
+    conn = _RepairConn()
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
+    monkeypatch.setattr(pilot, 'pg_connection', lambda: _pg(conn))
+    monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: (
+        {'id': 'u1'}, {'workspace_id': conn.workspace_id}
+    ))
+
+    def _fake_ensure_ms(*_a, **_k):
+        systems_created.append(True)
+        return {'status': 'ok', 'monitored_system_id': 'ms_new'}
+
+    monkeypatch.setattr(pilot, 'ensure_monitored_system_for_target', _fake_ensure_ms)
+    monkeypatch.setattr(pilot, 'log_audit', lambda *_a, **_k: None)
+
+    result = pilot.repair_orphan_target('t_repair', _Req())
+
+    assert result['status'] in ('relinked', 'created', 'already_linked')
+    assert systems_created, 'ensure_monitored_system_for_target must be called during repair'
+    assert result.get('systems_created', 0) >= 1 or result['status'] == 'already_linked'
+
+
+# ---------------------------------------------------------------------------
+# Runtime summary asset count test
+# ---------------------------------------------------------------------------
+
+def test_repair_route_exists_in_main_source():
+    """The /targets/{target_id}/repair route must appear in main.py source."""
+    import pathlib
+    main_source = (pathlib.Path(__file__).resolve().parents[1] / 'app' / 'main.py').read_text()
+    assert "'/targets/{target_id}/repair'" in main_source, (
+        "POST /targets/{target_id}/repair must be declared in main.py"
+    )
+    assert 'repair_orphan_target' in main_source, (
+        'main.py must delegate to repair_orphan_target'
+    )
+
+
+def test_try_relink_chain_agnostic_match(monkeypatch):
+    """_try_relink_orphan_target must use chain-agnostic search when chain-specific fails."""
+    relinked_asset_ids: list[str] = []
+
+    class _InnerConn:
+        def __init__(self):
+            self.updates: list[tuple] = []
+
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split()).upper()
+            params = params or ()
+            if 'FROM TARGETS' in q and 'DELETED_AT IS NULL' in q:
+                return _Rows([{
+                    'id': 't_ca', 'name': 'Target', 'target_type': 'contract',
+                    'chain_network': 'ethereum', 'contract_identifier': '0xabc123',
+                    'wallet_address': None,
+                }])
+            # Chain-specific: no match
+            if 'FROM ASSETS' in q and 'LOWER(CHAIN_NETWORK)' in q:
+                return _Rows([])
+            # Chain-agnostic: one match
+            if 'FROM ASSETS' in q and 'LOWER(IDENTIFIER)' in q and 'LOWER(CHAIN_NETWORK)' not in q:
+                return _Rows([{'id': 'a_target', 'name': 'Found Asset'}])
+            if 'UPDATE TARGETS' in q:
+                relinked_asset_ids.append(str(params[0]) if params else '')
+                self.updates.append((query, params))
+                return _Rows([])
+            return _Rows([])
+
+    conn = _InnerConn()
+    result = pilot._try_relink_orphan_target(conn, target_id='t_ca', workspace_id='ws1', user_id='u1')
+
+    assert result['status'] == 'relinked', f'Expected relinked, got {result}'
+    assert result.get('asset_id') == 'a_target'
+    assert relinked_asset_ids == ['a_target']
+
+
+def test_try_relink_single_workspace_asset_fallback(monkeypatch):
+    """_try_relink_orphan_target must relink when exactly one workspace asset exists."""
+    relinked: list[str] = []
+
+    class _InnerConn:
+        def __init__(self):
+            self.updates: list[tuple] = []
+
+        def execute(self, query, params=None):
+            q = ' '.join(str(query).split()).upper()
+            params = params or ()
+            if 'FROM TARGETS' in q and 'DELETED_AT IS NULL' in q:
+                return _Rows([{
+                    'id': 't_ws', 'name': '', 'target_type': 'contract',
+                    'chain_network': 'ethereum-mainnet',
+                    'contract_identifier': None, 'wallet_address': None,
+                }])
+            # All identifier/name queries: no match
+            if 'FROM ASSETS' in q and ('LOWER(IDENTIFIER)' in q or 'LOWER(NAME)' in q or 'LOWER(CHAIN_NETWORK)' in q):
+                return _Rows([])
+            # Workspace-level fallback (ORDER BY CREATED_AT): one asset
+            if 'FROM ASSETS' in q and 'ORDER BY CREATED_AT' in q:
+                return _Rows([{'id': 'a_ws', 'name': 'Only Asset'}])
+            if 'UPDATE TARGETS' in q:
+                relinked.append(str(params[0]) if params else '')
+                self.updates.append((query, params))
+                return _Rows([])
+            return _Rows([])
+
+    conn = _InnerConn()
+    result = pilot._try_relink_orphan_target(conn, target_id='t_ws', workspace_id='ws1', user_id='u1')
+
+    assert result['status'] == 'relinked', f'Expected relinked, got {result}'
+    assert result.get('asset_id') == 'a_ws'
+    assert relinked == ['a_ws']
