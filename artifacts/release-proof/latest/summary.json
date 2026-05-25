@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T10:31:49.864169+00:00",
+  "generated_at": "2026-05-25T10:48:17.981975+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "647301a67b9c08e2aec8eeac45895f414ae2756a",
-  "branch": "claude/charming-wright-IbHkL",
+  "commit_sha": "512af35faae6e503f33210475bafcee67805eede",
+  "branch": "claude/magical-cori-N4i6N",
   "ci_required_gates_ready": false,
   "launch_proof_ready": false,
   "manifest_ready": true,

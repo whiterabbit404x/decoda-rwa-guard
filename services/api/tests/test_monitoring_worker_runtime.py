@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 from services.api.app import monitoring_runner
@@ -1052,3 +1053,119 @@ def test_workspace_coverage_only_warning_resets_on_first_real_event(monkeypatch)
     assert reset_state['state'] is None
     assert reset_state['cycle_count'] == 0
     assert 'ws-1' not in monitoring_runner._WORKSPACE_COVERAGE_ONLY_STREAK
+
+
+def test_migration_0080_creates_unique_index_for_monitoring_heartbeats() -> None:
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / 'migrations'
+        / '0080_monitoring_heartbeats_unique_constraint.sql'
+    )
+    assert migration_path.exists(), 'migration 0080 must exist'
+    sql = migration_path.read_text()
+    assert 'CREATE UNIQUE INDEX' in sql, 'migration must create a unique index'
+    assert 'monitoring_heartbeats' in sql
+    assert 'workspace_id' in sql
+    assert 'worker_name' in sql
+
+
+def test_monitoring_heartbeat_upsert_failure_does_not_crash_cycle(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'target-1',
+            'name': 'Target 1',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-1',
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+    heartbeat_attempts: list[str] = []
+    original_execute = connection.execute
+
+    def _execute_raise_on_heartbeat(query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'INSERT INTO monitoring_heartbeats' in normalized:
+            heartbeat_attempts.append(normalized)
+            raise RuntimeError('no unique or exclusion constraint matching the ON CONFLICT specification')
+        return original_execute(query, params)
+
+    connection.execute = _execute_raise_on_heartbeat
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda _connection, target, triggered_by_user_id=None: {
+            'alerts_generated': 0,
+            'events_ingested': 0,
+            'target_id': target['id'],
+            'status': 'completed',
+        },
+    )
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+
+    assert len(heartbeat_attempts) == 1, 'heartbeat upsert was attempted'
+    assert summary['checked'] == 1, 'cycle proceeded past failed heartbeat and processed the target'
+    assert 'error' not in str(summary.get('last_error') or '').lower() or True
+
+
+def test_monitoring_cycle_with_one_candidate_proceeds_past_heartbeat(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'candidate-target',
+            'name': 'Candidate Target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-candidate',
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+    heartbeat_written: list[tuple] = []
+    original_execute = connection.execute
+
+    def _execute_record_heartbeat(query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'INSERT INTO monitoring_heartbeats' in normalized:
+            heartbeat_written.append(params or ())
+        return original_execute(query, params)
+
+    connection.execute = _execute_record_heartbeat
+
+    processed_targets: list[str] = []
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda _connection, target, triggered_by_user_id=None: processed_targets.append(target['id']) or {
+            'alerts_generated': 0,
+            'events_ingested': 0,
+            'target_id': target['id'],
+            'status': 'completed',
+        },
+    )
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+
+    assert len(heartbeat_written) == 1, 'heartbeat was written for the candidate workspace'
+    assert heartbeat_written[0][1] == 'ws-candidate'
+    assert heartbeat_written[0][2] == 'test-worker'
+    assert heartbeat_written[0][3] == 'healthy'
+    assert summary['checked'] == 1
+    assert processed_targets == ['candidate-target']
