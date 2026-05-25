@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T11:30:22.616365+00:00",
+  "generated_at": "2026-05-25T11:47:46.165874+00:00",
   "release_channel": "local",
-  "commit_sha": "1d5c52d0754edfd200d766e0c4c0385f2efe6910",
-  "branch": "claude/festive-lovelace-CX7dB",
+  "commit_sha": "47483b880d207ded48ed882afbaa174efcc86d69",
+  "branch": "claude/dreamy-cannon-CFoxu",
   "test_suites": {
     "release_proof_artifacts": {
       "name": "release-proof-artifacts",

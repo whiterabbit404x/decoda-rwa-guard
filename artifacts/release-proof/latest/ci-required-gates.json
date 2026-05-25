@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T11:30:22.602395+00:00",
-  "commit_sha": "1d5c52d0754edfd200d766e0c4c0385f2efe6910",
-  "branch": "claude/festive-lovelace-CX7dB",
+  "generated_at": "2026-05-25T11:47:46.151693+00:00",
+  "commit_sha": "47483b880d207ded48ed882afbaa174efcc86d69",
+  "branch": "claude/dreamy-cannon-CFoxu",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,

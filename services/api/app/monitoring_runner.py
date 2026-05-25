@@ -3221,6 +3221,74 @@ def process_ingested_event(connection: Any, *, target: dict[str, Any], event: Ac
     return {'status': 'processed', 'event_id': event.event_id, 'analysis_run_id': processed['analysis_run_id'], 'alert_id': processed.get('alert_id')}
 
 
+# Monitoring tables whose target_id FK must reference targets(id).
+# Values are (constraint_name, nullable) where nullable=True means SET NULL is acceptable.
+_MONITORING_TARGET_FK_TABLES: list[tuple[str, str, bool]] = [
+    ('monitoring_polls', 'monitoring_polls_target_id_fkey', False),
+    ('provider_health_records', 'provider_health_records_target_id_fkey', True),
+    ('target_coverage_records', 'target_coverage_records_target_id_fkey', False),
+]
+
+
+def _verify_monitoring_fk_alignment(connection: Any) -> dict[str, Any]:
+    """Check that all monitoring table target_id FKs reference targets(id).
+
+    Logs the FK mapping on every call. Returns a dict with keys:
+      - aligned: list of (table, constraint) that are correct
+      - misaligned: list of (table, constraint, actual_parent) that are wrong
+    """
+    aligned = []
+    misaligned = []
+    for table, constraint, _nullable in _MONITORING_TARGET_FK_TABLES:
+        try:
+            row = connection.execute(
+                '''
+                SELECT ccu.table_name AS parent_table
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.referential_constraints rc
+                    ON tc.constraint_name = rc.constraint_name
+                    AND tc.constraint_schema = rc.constraint_schema
+                JOIN information_schema.constraint_column_usage ccu
+                    ON rc.unique_constraint_name = ccu.constraint_name
+                    AND rc.unique_constraint_schema = ccu.constraint_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                  AND tc.table_name = %s
+                  AND tc.constraint_name = %s
+                LIMIT 1
+                ''',
+                (table, constraint),
+            ).fetchone()
+        except Exception:
+            logger.exception(
+                'code=MONITORING_TARGET_FK_CHECK_FAILED table=%s constraint=%s',
+                table, constraint,
+            )
+            continue
+        if row is None:
+            logger.warning(
+                'code=MONITORING_TARGET_FK_MISSING table=%s constraint=%s '
+                'note=constraint_not_found_may_have_been_dropped',
+                table, constraint,
+            )
+            continue
+        parent = row['parent_table'] if isinstance(row, dict) else row[0]
+        if parent == 'targets':
+            aligned.append((table, constraint))
+            logger.info(
+                'code=MONITORING_TARGET_FK_OK table=%s constraint=%s parent=targets',
+                table, constraint,
+            )
+        else:
+            misaligned.append((table, constraint, parent))
+            logger.error(
+                'code=MONITORING_TARGET_FK_MISMATCH table=%s constraint=%s '
+                'expected_parent=targets actual_parent=%s '
+                'fix=run_migration_0082',
+                table, constraint, parent,
+            )
+    return {'aligned': aligned, 'misaligned': misaligned}
+
+
 def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int = 50, trigger_type: str = 'scheduler') -> dict[str, Any]:
     trigger_type = _normalize_monitoring_run_trigger_type(trigger_type)
     ingestion_runtime = monitoring_ingestion_runtime()
@@ -3242,6 +3310,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     logger.info('monitoring cycle started worker=%s limit=%s', worker_name, limit)
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
+        _verify_monitoring_fk_alignment(connection)
         workspace_run_ids: dict[str, str] = {}
         workspace_systems_checked: dict[str, int] = defaultdict(int)
         workspace_assets_checked: dict[str, set[str]] = defaultdict(set)
@@ -3634,6 +3703,44 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         target.get('id'), workspace_id,
                     )
                     continue
+                # Preflight: confirm target_id is in the canonical targets table before
+                # any INSERT that carries a FK -> targets(id) (provider_health_records,
+                # target_coverage_records, monitoring_polls).  The poll-parent guard above
+                # already covers this for monitoring_polls; this check protects the other
+                # two tables and produces an explicit log line if schema is misaligned.
+                _phk_tables_with_target_fk = [
+                    ('provider_health_records', 'provider_health_records_target_id_fkey'),
+                    ('target_coverage_records', 'target_coverage_records_target_id_fkey'),
+                ]
+                for _phk_table, _phk_constraint in _phk_tables_with_target_fk:
+                    try:
+                        _fk_row = connection.execute(
+                            '''
+                            SELECT ccu.table_name AS parent_table
+                            FROM information_schema.table_constraints tc
+                            JOIN information_schema.referential_constraints rc
+                                ON tc.constraint_name = rc.constraint_name
+                                AND tc.constraint_schema = rc.constraint_schema
+                            JOIN information_schema.constraint_column_usage ccu
+                                ON rc.unique_constraint_name = ccu.constraint_name
+                                AND rc.unique_constraint_schema = ccu.constraint_schema
+                            WHERE tc.constraint_type = 'FOREIGN KEY'
+                              AND tc.table_name = %s
+                              AND tc.constraint_name = %s
+                            LIMIT 1
+                            ''',
+                            (_phk_table, _phk_constraint),
+                        ).fetchone()
+                        _fk_parent = (_fk_row['parent_table'] if isinstance(_fk_row, dict) else _fk_row[0]) if _fk_row else None
+                        if _fk_parent and _fk_parent != 'targets':
+                            logger.error(
+                                'code=MONITORING_TARGET_FK_MISMATCH table=%s constraint=%s '
+                                'expected_parent=targets actual_parent=%s target_id=%s '
+                                'fix=run_migration_0082',
+                                _phk_table, _phk_constraint, _fk_parent, target.get('id'),
+                            )
+                    except Exception:
+                        pass
                 with connection.transaction():
                     connection.execute(
                         """
