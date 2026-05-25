@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T10:31:49.872334+00:00",
+  "generated_at": "2026-05-25T10:48:17.990640+00:00",
   "release_channel": "local",
-  "commit_sha": "647301a67b9c08e2aec8eeac45895f414ae2756a",
-  "branch": "claude/charming-wright-IbHkL",
+  "commit_sha": "512af35faae6e503f33210475bafcee67805eede",
+  "branch": "claude/magical-cori-N4i6N",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "647a3afbe88dc25a07d9e86e511a32110e04ac12b475bdff1b63bfddad76b43f",
-      "size_bytes": 786,
+      "sha256": "75f7e245997ca5b68f4c38005edfb1829a6c53142ea9cee1040039c3478d50ce",
+      "size_bytes": 783,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "ebbca82a7c10893c1c5975ae5070dd9f500f9139958def81a95a34e6b6af2c26",
-      "size_bytes": 2108,
+      "sha256": "eca7cdf16de36b0aa18b4860be2669d33af8ba2078ace2d3af34addd0a56d965",
+      "size_bytes": 2105,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "6e7b51315d23a0b5739befd797e425d72160b60a6ef6c4728a4fce12e9cf493f",
+      "sha256": "f98ee2e2f3750006334706ed53020a40c56863019efd528987ed15bae14d8626",
       "size_bytes": 819,
       "required": true,
       "status": "present"
