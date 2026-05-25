@@ -10,7 +10,6 @@ import {
   TableShell,
   type PillVariant,
 } from '../../components/ui-primitives';
-import { resolveApiUrl } from '../../dashboard-data';
 import { usePilotAuth } from '../../pilot-auth-context';
 import RuntimeSummaryPanel from '../../runtime-summary-panel';
 
@@ -176,7 +175,6 @@ export default function MonitoringSourcesPage() {
   const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(true);
 
-  const apiUrl = resolveApiUrl();
   const { authHeaders } = usePilotAuth();
 
   useEffect(() => {
@@ -186,7 +184,7 @@ export default function MonitoringSourcesPage() {
       setLoading(true);
 
       try {
-        const response = await fetch(`${apiUrl}/monitoring/sources`, { headers: authHeaders(), cache: 'no-store' });
+        const response = await fetch('/api/monitoring/sources', { headers: authHeaders(), cache: 'no-store' });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
           const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`;
@@ -216,7 +214,7 @@ export default function MonitoringSourcesPage() {
     return () => {
       cancelled = true;
     };
-  }, [apiUrl, authHeaders]);
+  }, [authHeaders]);
 
   const targetNameById = useMemo(
     () => new Map(targets.map((target) => [target.id, target.name || 'Unnamed target'])),
