@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T12:02:56.859869+00:00",
+  "generated_at": "2026-05-25T13:08:25.201725+00:00",
   "release_channel": "local",
-  "commit_sha": "c4e6d988d4664e02140b3a54e21a258d935079d2",
-  "branch": "claude/nice-hawking-6rRCS",
+  "commit_sha": "44124fcdef56562ba350c2e678410f5762c8cb72",
+  "branch": "claude/dreamy-hypatia-ORhth",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "ac7a38d0996d5ae3f526f322489256b32d8ec9f113ea9a111a18be03ebbef7cb",
-      "size_bytes": 783,
+      "sha256": "4b38cce3ad236b056e17fc7861b4cbcb69f2239a500514f891f332339b0e4b15",
+      "size_bytes": 785,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "64202eabeaf2b4e2ef24900c158be3061ee76dd46014d5077fc76da6d218307f",
-      "size_bytes": 2105,
+      "sha256": "6ce62253e668af4b88847ab9acd464af1e662c2dc34ea17637b668481a8f6004",
+      "size_bytes": 2107,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "fefa42d09f4d0dcae3ec9ca0b8b499ac0a7b4de099755a080f68219565e6883a",
+      "sha256": "acf7860c65410705c51582da90d1df6deb06580897e2dd8f0857d3f077a8bae3",
       "size_bytes": 819,
       "required": true,
       "status": "present"

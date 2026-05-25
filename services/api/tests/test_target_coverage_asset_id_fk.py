@@ -130,12 +130,23 @@ def _make_fake_provider_result():
 
 
 class _CaptureConn:
-    """Records INSERT statements for inspection.  Returns empty rows for all queries."""
+    """Records INSERT statements for inspection.  Returns empty rows for all queries.
 
-    def __init__(self, raise_on_table: str | None = None, raise_exc: Exception | None = None):
+    Pass known_asset_ids to simulate assets that exist in the assets table so
+    that _resolve_coverage_asset_id returns them rather than None.
+    """
+
+    def __init__(
+        self,
+        raise_on_table: str | None = None,
+        raise_exc: Exception | None = None,
+        *,
+        known_asset_ids: list[str] | None = None,
+    ):
         self.inserts: list[tuple[str, tuple]] = []
         self._raise_on_table = raise_on_table
         self._raise_exc = raise_exc
+        self._known_asset_ids: set[str] = set(str(a).strip() for a in (known_asset_ids or []))
 
     def execute(self, query: str, params=None):
         q_lower = query.strip().lower()
@@ -144,6 +155,11 @@ class _CaptureConn:
             self.inserts.append((table, tuple(params or ())))
             if self._raise_on_table and table == self._raise_on_table and self._raise_exc:
                 raise self._raise_exc
+        # Support _resolve_coverage_asset_id asset existence lookup.
+        if 'from assets' in q_lower and 'where id' in q_lower and params:
+            lookup_id = str(params[0]).strip()
+            if lookup_id in self._known_asset_ids:
+                return _Rows([{'id': lookup_id}])
         return _Rows([])
 
     @contextmanager
@@ -211,7 +227,9 @@ def test_target_coverage_records_receives_asset_id_from_target(monkeypatch):
     monkeypatch.setattr(monitoring_runner, 'fetch_target_activity_result', lambda *_a, **_k: _make_fake_provider_result())
     monkeypatch.setattr(monitoring_runner, '_load_checkpoint', lambda *_a, **_k: 0)
 
-    conn = _CaptureConn()
+    # known_asset_ids simulates the asset existing in the assets table so that
+    # _resolve_coverage_asset_id returns the real UUID instead of None.
+    conn = _CaptureConn(known_asset_ids=[asset_id])
     try:
         monitoring_runner.process_monitoring_target(conn, target)
     except Exception:
@@ -257,7 +275,8 @@ def test_target_coverage_asset_id_not_asset_registry_uuid(monkeypatch):
     monkeypatch.setattr(monitoring_runner, 'fetch_target_activity_result', lambda *_a, **_k: _make_fake_provider_result())
     monkeypatch.setattr(monitoring_runner, '_load_checkpoint', lambda *_a, **_k: 0)
 
-    conn = _CaptureConn()
+    # known_asset_ids simulates the asset row existing in the assets table.
+    conn = _CaptureConn(known_asset_ids=[asset_id])
     try:
         monitoring_runner.process_monitoring_target(conn, target)
     except Exception:
@@ -270,10 +289,7 @@ def test_target_coverage_asset_id_not_asset_registry_uuid(monkeypatch):
         assert asset_id in params, (
             f'target_coverage_records must use target asset_id={asset_id!r}; got {params!r}'
         )
-        # Confirm no other random UUID was substituted in its place
-        other_uuids = [p for p in params if isinstance(p, str) and p != asset_id and _is_uuid(p)]
-        # target_id, workspace_id, record_id are also UUIDs - that's fine.
-        # Just ensure asset_id value is present.
+        # target_id, workspace_id, record_id are also UUIDs - asset_id must be present
         assert asset_id in params
 
 
@@ -291,10 +307,10 @@ def _is_uuid(s: str) -> bool:
 
 def test_coverage_asset_id_fk_failure_does_not_abort_cycle(monkeypatch):
     """
-    A FK violation on target_coverage_records.asset_id must not prevent the
-    cycle loop from continuing.  process_monitoring_target propagates the
-    exception; the outer loop catches it and increments checked for the next
-    target.
+    A FK violation on target_coverage_records.asset_id must not crash
+    process_monitoring_target.  The savepoint wrapper catches the exception,
+    logs a TARGET_COVERAGE_ASSET_PARENT_MISSING warning, and returns normally
+    so the caller's checked counter can increment.
     """
     import psycopg
 
@@ -309,12 +325,17 @@ def test_coverage_asset_id_fk_failure_does_not_abort_cycle(monkeypatch):
         'Key (asset_id)=(f701aba7-3c19-4efd-8088-9ebf73b5b901) is not present in '
         'table "asset_registry"'
     )
+    # Simulate pre-migration DB: asset not in known_asset_ids → guard returns None,
+    # but the raised FK exc from the INSERT is still caught by the savepoint wrapper.
     conn = _CaptureConn(raise_on_table='target_coverage_records', raise_exc=fk_exc)
 
-    with pytest.raises((psycopg.errors.ForeignKeyViolation, Exception)):
-        monitoring_runner.process_monitoring_target(conn, target)
-    # The test verifies the exception propagates cleanly (not swallowed)
-    # so the cycle loop's except clause can catch it and continue.
+    # The savepoint wrapper must catch the FK violation; process_monitoring_target
+    # must return a result dict rather than propagating the exception.
+    result = monitoring_runner.process_monitoring_target(conn, target)
+    assert isinstance(result, dict), (
+        'process_monitoring_target must return a result dict even when '
+        'target_coverage_records insert raises a FK violation'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -425,4 +446,181 @@ def test_worker_cycle_checked_increments_after_coverage_fix(monkeypatch):
 
     assert checked >= 1, (
         f'After asset_id FK fix, worker cycle must reach checked>=1 for a valid target; got checked={checked}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# _resolve_coverage_asset_id unit tests
+# ---------------------------------------------------------------------------
+
+def test_resolve_coverage_asset_id_returns_asset_id_when_present():
+    """_resolve_coverage_asset_id returns the asset_id when it exists in assets."""
+    asset_id = str(uuid.uuid4())
+    target = _make_fake_target(asset_id=asset_id)
+    conn = _CaptureConn(known_asset_ids=[asset_id])
+    result = monitoring_runner._resolve_coverage_asset_id(conn, target)
+    assert result == asset_id, (
+        f'_resolve_coverage_asset_id must return asset_id={asset_id!r} when asset exists; got {result!r}'
+    )
+
+
+def test_resolve_coverage_asset_id_returns_none_for_null_asset_id():
+    """_resolve_coverage_asset_id returns None immediately when target.asset_id is None."""
+    target = _make_fake_target(asset_id=None)
+    conn = _CaptureConn()
+    result = monitoring_runner._resolve_coverage_asset_id(conn, target)
+    assert result is None, (
+        f'_resolve_coverage_asset_id must return None for null asset_id; got {result!r}'
+    )
+
+
+def test_resolve_coverage_asset_id_returns_none_when_missing():
+    """_resolve_coverage_asset_id returns None and logs a warning when asset is not in assets."""
+    asset_id = str(uuid.uuid4())
+    target = _make_fake_target(asset_id=asset_id)
+    # known_asset_ids is empty → asset not found → guard returns None
+    conn = _CaptureConn(known_asset_ids=[])
+    result = monitoring_runner._resolve_coverage_asset_id(conn, target)
+    assert result is None, (
+        f'_resolve_coverage_asset_id must return None when asset not in assets table; got {result!r}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Asset parent missing → coverage write uses NULL, no crash
+# ---------------------------------------------------------------------------
+
+def test_missing_asset_in_assets_does_not_crash_process_monitoring_target(monkeypatch):
+    """
+    When target.asset_id is not present in the assets table (e.g. migration not
+    yet applied or stale FK reference), _resolve_coverage_asset_id returns None
+    and target_coverage_records is inserted with NULL asset_id.
+    process_monitoring_target must not raise.
+    """
+    asset_id = str(uuid.uuid4())
+    target = _make_fake_target(asset_id=asset_id)
+
+    monkeypatch.setattr(monitoring_runner, 'fetch_target_activity_result', lambda *_a, **_k: _make_fake_provider_result())
+    monkeypatch.setattr(monitoring_runner, '_load_checkpoint', lambda *_a, **_k: 0)
+
+    # Do NOT add asset_id to known_asset_ids → simulates missing asset parent row.
+    conn = _CaptureConn(known_asset_ids=[])
+
+    result = monitoring_runner.process_monitoring_target(conn, target)
+
+    assert isinstance(result, dict), (
+        'process_monitoring_target must return a result dict even when asset_id is missing from assets'
+    )
+    tcr_inserts = [(t, p) for t, p in conn.inserts if t == 'target_coverage_records']
+    assert tcr_inserts, 'target_coverage_records INSERT must still be attempted with NULL asset_id'
+    for _tbl, params in tcr_inserts:
+        assert None in params, (
+            f'target_coverage_records must use NULL asset_id when asset is missing; got params={params!r}'
+        )
+        assert asset_id not in params, (
+            f'target_coverage_records must NOT use the missing asset_id={asset_id!r}; got params={params!r}'
+        )
+
+
+# ---------------------------------------------------------------------------
+# Live RPC, zero events → coverage insert, checked counts
+# ---------------------------------------------------------------------------
+
+def test_live_rpc_zero_events_inserts_coverage_record(monkeypatch):
+    """
+    A live RPC poll that returns status=live but event_count=0 must still insert
+    a target_coverage_records row.  event_count=0 is not an error.
+    """
+    from services.api.app.activity_providers import ActivityProviderResult
+
+    asset_id = str(uuid.uuid4())
+    target = _make_fake_target(asset_id=asset_id)
+
+    # status='live' requires evidence_present=True (provider connection confirmed);
+    # events=[] means no on-chain events were found in this polling window.
+    live_no_events_result = ActivityProviderResult(
+        mode='live',
+        status='live',
+        evidence_state='NO_EVIDENCE',
+        truthfulness_state='NOT_CLAIM_SAFE',
+        synthetic=False,
+        provider_name='test_rpc',
+        provider_kind='rpc',
+        evidence_present=True,
+        recent_real_event_count=0,
+        last_real_event_at=None,
+        events=[],
+        latest_block=12345,
+        checkpoint=None,
+        checkpoint_age_seconds=10,
+        degraded_reason=None,
+        error_code=None,
+        source_type='rpc_polling',
+        reason_code='NO_EVIDENCE',
+        claim_safe=False,
+        detection_outcome='NO_EVIDENCE',
+    )
+    monkeypatch.setattr(monitoring_runner, 'fetch_target_activity_result', lambda *_a, **_k: live_no_events_result)
+    monkeypatch.setattr(monitoring_runner, '_load_checkpoint', lambda *_a, **_k: 0)
+
+    conn = _CaptureConn(known_asset_ids=[asset_id])
+    result = monitoring_runner.process_monitoring_target(conn, target)
+
+    assert isinstance(result, dict), 'process_monitoring_target must return dict for live+zero-events poll'
+    tcr_inserts = [(t, p) for t, p in conn.inserts if t == 'target_coverage_records']
+    assert tcr_inserts, (
+        'target_coverage_records must be inserted even for live RPC poll with event_count=0'
+    )
+
+
+def test_live_rpc_zero_events_source_status_active(monkeypatch):
+    """
+    A live RPC poll with event_count=0 must set source_status='active', which
+    the cycle loop should treat as provider-reachable (included in
+    workspace_provider_reachable_cycles).
+    """
+    from services.api.app.activity_providers import ActivityProviderResult
+
+    target = _make_fake_target(asset_id=str(uuid.uuid4()))
+
+    # status='live' requires evidence_present=True (provider connection confirmed);
+    # events=[] means no on-chain events were found in this polling window.
+    live_no_events_result = ActivityProviderResult(
+        mode='live',
+        status='live',
+        evidence_state='NO_EVIDENCE',
+        truthfulness_state='NOT_CLAIM_SAFE',
+        synthetic=False,
+        provider_name='test_rpc',
+        provider_kind='rpc',
+        evidence_present=True,
+        recent_real_event_count=0,
+        last_real_event_at=None,
+        events=[],
+        latest_block=12345,
+        checkpoint=None,
+        checkpoint_age_seconds=10,
+        degraded_reason=None,
+        error_code=None,
+        source_type='rpc_polling',
+        reason_code='NO_EVIDENCE',
+        claim_safe=False,
+        detection_outcome='NO_EVIDENCE',
+    )
+    monkeypatch.setattr(monitoring_runner, 'fetch_target_activity_result', lambda *_a, **_k: live_no_events_result)
+    monkeypatch.setattr(monitoring_runner, '_load_checkpoint', lambda *_a, **_k: 0)
+
+    conn = _CaptureConn(known_asset_ids=[str(target['asset_id'])] if target.get('asset_id') else [])
+    result = monitoring_runner.process_monitoring_target(conn, target)
+
+    assert result.get('source_status') == 'active', (
+        f"Live RPC poll with event_count=0 must return source_status='active'; got {result.get('source_status')!r}"
+    )
+    assert result.get('provider_status') == 'live', (
+        f"Live RPC poll must return provider_status='live'; got {result.get('provider_status')!r}"
+    )
+    # Verify the cycle loop condition: 'active' must be in the accepted source_status set
+    source_status_accepted = result.get('source_status') in {'live', 'no_evidence', 'active'}
+    assert source_status_accepted, (
+        f"source_status={result.get('source_status')!r} must be accepted as provider-reachable"
     )

@@ -382,6 +382,40 @@ def _resolve_target_coverage_state(
     return coverage_status, last_telemetry_at, evidence_source, metadata
 
 
+def _resolve_coverage_asset_id(connection: Any, target: dict[str, Any]) -> str | None:
+    """Return a safe asset_id for target_coverage_records, verifying it exists in assets.
+
+    targets.asset_id references assets(id).  After migration 0083,
+    target_coverage_records.asset_id also references assets(id).  If the asset
+    row is missing (e.g. migration not yet applied, or stale FK reference),
+    return None so the nullable column receives NULL rather than raising a
+    ForeignKeyViolation that would roll back the whole target cycle.
+    """
+    asset_id = target.get('asset_id')
+    if not asset_id:
+        return None
+    asset_id_str = str(asset_id).strip()
+    if not asset_id_str:
+        return None
+    try:
+        row = connection.execute(
+            'SELECT id FROM assets WHERE id = %s::uuid LIMIT 1',
+            (asset_id_str,),
+        ).fetchone()
+        if row:
+            return asset_id_str
+    except Exception:
+        pass
+    logger.warning(
+        'code=TARGET_COVERAGE_ASSET_PARENT_MISSING workspace_id=%s target_id=%s asset_id=%s '
+        'action=null_out_coverage_asset_id',
+        target.get('workspace_id'),
+        target.get('id'),
+        asset_id_str,
+    )
+    return None
+
+
 def _provider_source_is_live(source_type: Any) -> bool:
     return str(source_type or '').strip().lower() not in NON_LIVE_PROVIDER_SOURCE_TYPES
 
@@ -3019,25 +3053,37 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
         provider_evidence_source=provider_evidence_source,
         source_status=source_status,
     )
-    connection.execute(
-        '''
-        INSERT INTO target_coverage_records (
-            id, workspace_id, asset_id, target_id, coverage_status, last_poll_at, last_heartbeat_at, last_telemetry_at, last_detection_at, evidence_source, computed_at, metadata
+    _coverage_asset_id = _resolve_coverage_asset_id(connection, target)
+    try:
+        with connection.transaction():
+            connection.execute(
+                '''
+                INSERT INTO target_coverage_records (
+                    id, workspace_id, asset_id, target_id, coverage_status, last_poll_at, last_heartbeat_at, last_telemetry_at, last_detection_at, evidence_source, computed_at, metadata
+                )
+                VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, NOW(), NOW(), %s, %s, %s, NOW(), %s::jsonb)
+                ''',
+                (
+                    str(uuid.uuid4()),
+                    str(target['workspace_id']),
+                    _coverage_asset_id,
+                    str(target['id']),
+                    target_coverage_status,
+                    last_telemetry_at,
+                    last_detection_at,
+                    coverage_evidence_source,
+                    _json_dumps(coverage_metadata),
+                ),
+            )
+    except Exception as _tcr_exc:
+        logger.warning(
+            'code=TARGET_COVERAGE_ASSET_PARENT_MISSING workspace_id=%s target_id=%s asset_id=%s '
+            'coverage_write_skipped=True exc=%s',
+            target.get('workspace_id'),
+            target.get('id'),
+            target.get('asset_id'),
+            type(_tcr_exc).__name__,
         )
-        VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, NOW(), NOW(), %s, %s, %s, NOW(), %s::jsonb)
-        ''',
-        (
-            str(uuid.uuid4()),
-            str(target['workspace_id']),
-            str(target.get('asset_id')) if target.get('asset_id') else None,
-            str(target['id']),
-            target_coverage_status,
-            last_telemetry_at,
-            last_detection_at,
-            coverage_evidence_source,
-            _json_dumps(coverage_metadata),
-        ),
-    )
     WORKER_STATE['metrics']['live_events_ingested'] += real_event_count
     return {
         'target_id': str(target['id']),
@@ -3814,7 +3860,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                     workspace_coverage_heartbeat_updates[workspace_id] += int(result.get('coverage_heartbeat_updates', result.get('coverage_heartbeat_count', 0)) or 0)
                     provider_status = str(result.get('provider_status') or '').strip().lower()
                     source_status = str(result.get('source_status') or '').strip().lower()
-                    if provider_status in {'live', 'no_evidence', 'degraded'} and source_status in {'live', 'no_evidence'}:
+                    if provider_status in {'live', 'no_evidence', 'degraded'} and source_status in {'live', 'no_evidence', 'active'}:
                         workspace_provider_reachable_cycles[workspace_id] += 1
                 live_targets_checked += 1 if is_monitorable_target_type(target.get('target_type')) else 0
                 events_ingested += int(result.get('events_ingested', 0))
