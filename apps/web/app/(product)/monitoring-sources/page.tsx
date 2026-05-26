@@ -470,6 +470,14 @@ export default function MonitoringSourcesPage() {
                           >
                             {enablingTargetId === target.id ? 'Enabling…' : 'Enable target'}
                           </button>
+                        ) : targetNextAction(target) === 'View telemetry' && target.id ? (
+                          <Link
+                            href={`/monitoring-sources/${encodeURIComponent(target.id)}/telemetry`}
+                            prefetch={false}
+                            style={{ color: 'var(--text-accent)', fontSize: '0.82rem', textDecoration: 'none' }}
+                          >
+                            View telemetry
+                          </Link>
                         ) : (
                           <span style={{ color: 'var(--text-accent)', fontSize: '0.82rem' }}>
                             {targetNextAction(target)}

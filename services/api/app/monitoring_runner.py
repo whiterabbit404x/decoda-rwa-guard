@@ -7943,3 +7943,49 @@ def list_monitoring_worker_errors(request: Request, *, limit: int = 50) -> dict[
             'worker_errors': [_json_safe_value(dict(row)) for row in worker_rows],
             'target_errors': [_json_safe_value(dict(row)) for row in target_rows],
         }
+
+
+def list_target_telemetry(request: Request, *, target_id: str, limit: int = 50) -> dict[str, Any]:
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user = authenticate_with_connection(connection, request)
+        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        rows = connection.execute(
+            '''
+            SELECT
+                te.id,
+                te.workspace_id,
+                te.target_id,
+                te.provider_type,
+                te.event_type AS source_type,
+                te.evidence_source,
+                te.observed_at,
+                te.ingested_at,
+                te.payload_json,
+                t.chain AS chain_id,
+                mer.block_number
+            FROM telemetry_events te
+            LEFT JOIN targets t
+              ON t.id = te.target_id
+             AND t.workspace_id = te.workspace_id
+            LEFT JOIN LATERAL (
+                SELECT block_number
+                FROM monitoring_event_receipts
+                WHERE workspace_id = te.workspace_id
+                  AND target_id = te.target_id
+                ORDER BY id DESC
+                LIMIT 1
+            ) mer ON true
+            WHERE te.workspace_id = %s::uuid
+              AND te.target_id = %s::uuid
+            ORDER BY te.observed_at DESC
+            LIMIT %s
+            ''',
+            (workspace_id, target_id, max(1, min(limit, 200))),
+        ).fetchall()
+        return {
+            'telemetry': [_json_safe_value(dict(row)) for row in rows],
+            'target_id': target_id,
+            'workspace_id': str(workspace_id),
+        }
