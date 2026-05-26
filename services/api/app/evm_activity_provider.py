@@ -23,6 +23,40 @@ class ActivityEvent:
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_evm_rpc_url() -> str:
+    """Prefer STAGING_EVM_RPC_URL, fall back to EVM_RPC_URL."""
+    return (os.getenv('STAGING_EVM_RPC_URL') or os.getenv('EVM_RPC_URL') or '').strip()
+
+
+def probe_rpc_health(rpc_url: str | None = None) -> dict[str, Any]:
+    """
+    Call eth_chainId and eth_blockNumber against the configured RPC endpoint.
+
+    Returns a dict with keys:
+      ok: bool
+      chain_id_hex: str | None
+      chain_id_int: int | None
+      block_number_hex: str | None
+      block_number_int: int | None
+      error: str | None
+    """
+    url = (rpc_url or _resolve_evm_rpc_url()).strip()
+    if not url:
+        return {'ok': False, 'chain_id_hex': None, 'chain_id_int': None, 'block_number_hex': None, 'block_number_int': None, 'error': 'rpc_url_not_configured'}
+    client = JsonRpcClient(url)
+    try:
+        chain_hex = str(client.call('eth_chainId', []) or '')
+        block_hex = str(client.call('eth_blockNumber', []) or '')
+    except Exception as exc:
+        return {'ok': False, 'chain_id_hex': None, 'chain_id_int': None, 'block_number_hex': None, 'block_number_int': None, 'error': str(exc)[:200]}
+    chain_int = _hex_to_int(chain_hex)
+    block_int = _hex_to_int(block_hex)
+    if chain_int is None or block_int is None:
+        return {'ok': False, 'chain_id_hex': chain_hex or None, 'chain_id_int': chain_int, 'block_number_hex': block_hex or None, 'block_number_int': block_int, 'error': 'invalid_rpc_response'}
+    return {'ok': True, 'chain_id_hex': chain_hex, 'chain_id_int': chain_int, 'block_number_hex': block_hex, 'block_number_int': block_int, 'error': None}
+
+
 TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 APPROVAL_TOPIC = '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925'
 
@@ -263,7 +297,7 @@ async def _ws_subscribe_new_head(ws_url: str, timeout_seconds: float = 1.0) -> i
 
 
 def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc_client: RpcClient | None = None) -> list[ActivityEvent]:
-    rpc_url = (os.getenv('EVM_RPC_URL') or '').strip()
+    rpc_url = _resolve_evm_rpc_url()
     if not rpc_url:
         return []
     network = str(target.get('chain_network') or 'ethereum').strip().lower()

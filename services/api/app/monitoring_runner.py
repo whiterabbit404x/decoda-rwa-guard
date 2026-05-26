@@ -1091,15 +1091,19 @@ def _persist_live_coverage_telemetry(
     # Persist a telemetry_events row so the telemetry page and runtime summary
     # canonical_last_telemetry_at reflect successful live RPC polls even when
     # no blockchain events (transfers, etc.) were observed in this cycle.
+    from services.api.app.evm_activity_provider import CHAIN_MAP as _CHAIN_MAP
+    _chain_network = str(target.get('chain_network') or 'ethereum').strip().lower()
+    _chain_id_int = (_CHAIN_MAP.get(_chain_network) or {}).get('chain_id') or int(os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or 1)
+    _chain_id_hex = hex(_chain_id_int)
     _telem_payload = {
         'telemetry_kind': 'coverage',
-        'chain_id': 1,
+        'chain_id': _chain_id_int,
         'block_number': provider_result.latest_block,
         'provider_name': provider_result.provider_name,
         'source_type': provider_result.source_type,
         'checkpoint': provider_result.checkpoint,
         'raw_response': {
-            'eth_chainId': '0x1',
+            'eth_chainId': _chain_id_hex,
             'eth_blockNumber': hex(int(provider_result.latest_block or 0)),
         },
         'monitored_system_id': str(target.get('monitored_system_id') or '') or None,

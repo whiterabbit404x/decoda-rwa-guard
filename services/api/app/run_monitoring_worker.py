@@ -39,11 +39,47 @@ def _compute_next_sleep_seconds(
     return min(max_sleep_seconds, next_sleep_seconds)
 
 
+def _resolve_worker_enabled_env() -> None:
+    """
+    Honor STAGING_WORKER_ENABLED (preferred) and WORKER_ENABLED (fallback)
+    as aliases for LIVE_MODE_ENABLED so Railway staging workers start correctly
+    without requiring a separate LIVE_MODE_ENABLED variable.
+    """
+    _truthy = {'1', 'true', 'yes', 'on'}
+    staging_flag = (os.getenv('STAGING_WORKER_ENABLED') or '').strip().lower()
+    base_flag = (os.getenv('WORKER_ENABLED') or '').strip().lower()
+    if staging_flag in _truthy or base_flag in _truthy:
+        os.environ.setdefault('LIVE_MODE_ENABLED', 'true')
+
+
+def _log_startup_provider_status(logger: logging.Logger) -> None:
+    """Emit safe startup log lines for provider configuration. Never prints secrets."""
+    from services.api.app.evm_activity_provider import _resolve_evm_rpc_url
+    rpc_url = _resolve_evm_rpc_url()
+    evm_rpc_configured = bool(rpc_url)
+    staging_worker_enabled = (os.getenv('STAGING_WORKER_ENABLED') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    base_worker_enabled = (os.getenv('WORKER_ENABLED') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    live_mode_env = (os.getenv('LIVE_MODE_ENABLED') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    worker_enabled = staging_worker_enabled or base_worker_enabled or live_mode_env
+    chain_id_raw = (os.getenv('STAGING_EVM_CHAIN_ID') or os.getenv('EVM_CHAIN_ID') or '').strip()
+    chain_id_configured = int(chain_id_raw) if chain_id_raw.isdigit() else None
+    provider_mode = 'live' if (evm_rpc_configured and worker_enabled) else 'disabled'
+    logger.info(
+        'worker_startup_provider_status worker_enabled=%s evm_rpc_configured=%s chain_id_configured=%s provider_mode=%s',
+        worker_enabled,
+        evm_rpc_configured,
+        chain_id_configured,
+        provider_mode,
+    )
+
+
 def main() -> int:
     logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO').upper(), format='%(asctime)s %(levelname)s %(name)s %(message)s')
     logger = logging.getLogger(__name__)
+    _resolve_worker_enabled_env()
     args = parse_args()
     logger.info('monitoring worker starting')
+    _log_startup_provider_status(logger)
     identity = runtime_environment_identity()
     logger.info(
         'monitoring worker runtime identity app_mode=%s live_mode=%s railway_environment=%s railway_service=%s database_backend=%s database_fingerprint=%s',
