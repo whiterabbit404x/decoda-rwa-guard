@@ -7967,7 +7967,7 @@ def list_target_telemetry(request: Request, *, target_id: str, limit: int = 50) 
                 te.observed_at,
                 te.ingested_at,
                 te.payload_json,
-                t.chain AS chain_id,
+                t.chain_network AS chain_id,
                 mer.block_number
             FROM telemetry_events te
             LEFT JOIN targets t
