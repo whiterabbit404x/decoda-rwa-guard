@@ -5,7 +5,12 @@ import logging
 import os
 import time
 
-from services.api.app.activity_providers import validate_monitoring_config_or_raise
+from services.api.app.activity_providers import (
+    effective_evm_chain_id,
+    effective_evm_rpc_url,
+    effective_worker_enabled,
+    validate_monitoring_config_or_raise,
+)
 from services.api.app.monitoring_runner import run_monitoring_cycle
 from services.api.app.pilot import runtime_environment_identity, startup_schema_init_plan
 
@@ -61,6 +66,34 @@ def main() -> int:
         args.limit,
         args.once,
     )
+    # Safe env resolution log: never print the secret value, only presence/derived facts.
+    _worker_enabled = effective_worker_enabled()
+    _rpc_configured = bool(effective_evm_rpc_url())
+    _chain_id = effective_evm_chain_id() or None
+    _provider_mode = 'live' if _rpc_configured else 'disabled'
+    logger.info(
+        'monitoring worker env_resolution worker_enabled=%s evm_rpc_configured=%s '
+        'chain_id_configured=%s provider_mode=%s '
+        'staging_rpc_url_present=%s base_rpc_url_present=%s '
+        'staging_chain_id_present=%s base_chain_id_present=%s '
+        'staging_worker_enabled_present=%s base_worker_enabled_present=%s',
+        _worker_enabled,
+        _rpc_configured,
+        _chain_id,
+        _provider_mode,
+        bool((os.getenv('STAGING_EVM_RPC_URL') or '').strip()),
+        bool((os.getenv('EVM_RPC_URL') or '').strip()),
+        bool((os.getenv('STAGING_EVM_CHAIN_ID') or '').strip()),
+        bool((os.getenv('EVM_CHAIN_ID') or '').strip()),
+        bool((os.getenv('STAGING_WORKER_ENABLED') or '').strip()),
+        bool((os.getenv('WORKER_ENABLED') or '').strip()),
+    )
+    if not _worker_enabled:
+        logger.warning(
+            'monitoring worker disabled by env flag worker_enabled=false; '
+            'cycle loop will not start (set STAGING_WORKER_ENABLED=true or WORKER_ENABLED=true to enable)'
+        )
+        return 0
     validate_monitoring_config_or_raise()
     schema_plan = startup_schema_init_plan(process_role='worker')
     logger.info(

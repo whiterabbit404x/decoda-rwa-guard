@@ -17,6 +17,9 @@ from psycopg import errors as psycopg_errors
 from services.api.app.activity_providers import (
     ActivityEvent,
     ActivityProviderResult,
+    effective_evm_chain_id,
+    effective_evm_rpc_url,
+    effective_worker_enabled,
     fetch_target_activity_result,
     monitoring_ingestion_runtime,
 )
@@ -3529,7 +3532,9 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             (worker_name,),
         )
         # Repair misclassified default providers for real Ethereum targets so
-        # live polling targets are eligible for the worker loop.
+        # live polling targets are eligible for the worker loop.  Match by
+        # chain_network OR chain_id = 1 to cover targets created via the direct
+        # monitoring target UI that only persist chain_id.
         connection.execute(
             '''
             UPDATE monitoring_configs mc
@@ -3542,8 +3547,11 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
               AND COALESCE(t.enabled, FALSE) = TRUE
               AND COALESCE(t.monitoring_enabled, FALSE) = TRUE
               AND t.workspace_id IS NOT NULL
-              AND LOWER(COALESCE(t.chain_network, '')) IN ('ethereum', 'ethereum-mainnet', 'mainnet', 'eth-mainnet')
-              AND LOWER(COALESCE(mc.provider_type, '')) IN ('default', 'unknown')
+              AND (
+                  LOWER(COALESCE(t.chain_network, '')) IN ('ethereum', 'ethereum-mainnet', 'mainnet', 'eth-mainnet')
+                  OR COALESCE(t.chain_id, 0) = 1
+              )
+              AND LOWER(COALESCE(mc.provider_type, '')) IN ('default', 'unknown', '')
             ''',
         )
         candidate_systems = connection.execute(
@@ -3604,7 +3612,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 "SELECT COUNT(*) AS c FROM monitoring_configs WHERE enabled = TRUE",
             ).fetchone()
             logger.info(
-                'monitoring_candidate_breakdown total_targets=%s enabled_targets=%s orphan_targets=%s valid_asset_linked_targets=%s enabled_monitored_systems=%s enabled_monitoring_configs=%s total_candidate_targets=%s',
+                'monitoring_candidate_breakdown total_targets=%s enabled_targets=%s orphan_targets=%s valid_asset_linked_targets=%s enabled_monitored_systems=%s enabled_monitoring_configs=%s total_candidate_targets=%s candidate_targets_count=%s selected_live_targets_count=%s',
                 int((_total_targets or {}).get('c') or 0),
                 int((_enabled_targets or {}).get('c') or 0),
                 int((_orphan_targets or {}).get('c') or 0),
@@ -3612,7 +3620,74 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 int((_enabled_monitored_systems or {}).get('c') or 0),
                 int((_enabled_monitoring_configs or {}).get('c') or 0),
                 len(candidate_systems),
+                len(candidate_systems),
+                len(candidate_systems),
             )
+        except Exception:
+            pass
+        # Per-target skip diagnostics: surface why enabled targets are not in
+        # the candidate set so operators can see "no live targets" failures.
+        try:
+            skipped_targets = connection.execute(
+                '''
+                SELECT t.id AS target_id,
+                       t.workspace_id,
+                       LOWER(COALESCE(t.chain_network, '')) AS chain_network,
+                       t.chain_id,
+                       CASE
+                           WHEN t.deleted_at IS NOT NULL THEN 'target_deleted'
+                           WHEN COALESCE(t.enabled, FALSE) IS NOT TRUE THEN 'target_disabled'
+                           WHEN COALESCE(t.monitoring_enabled, FALSE) IS NOT TRUE THEN 'target_monitoring_disabled'
+                           WHEN t.workspace_id IS NULL THEN 'workspace_missing'
+                           WHEN t.asset_id IS NULL THEN 'asset_link_missing'
+                           WHEN NOT EXISTS (
+                               SELECT 1 FROM monitored_systems ms
+                               WHERE ms.target_id = t.id
+                                 AND ms.workspace_id = t.workspace_id
+                                 AND COALESCE(ms.is_enabled, TRUE) = TRUE
+                           ) THEN 'monitored_system_missing_or_disabled'
+                           WHEN NOT EXISTS (
+                               SELECT 1 FROM monitoring_configs mc
+                               WHERE mc.target_id = t.id
+                                 AND mc.workspace_id = t.workspace_id
+                                 AND COALESCE(mc.enabled, FALSE) = TRUE
+                           ) THEN 'monitoring_config_missing_or_disabled'
+                           WHEN NOT EXISTS (
+                               SELECT 1 FROM monitoring_configs mc
+                               WHERE mc.target_id = t.id
+                                 AND mc.workspace_id = t.workspace_id
+                                 AND COALESCE(mc.enabled, FALSE) = TRUE
+                                 AND LOWER(COALESCE(mc.provider_type, '')) = 'evm_rpc'
+                           ) THEN 'provider_type_not_evm_rpc'
+                           ELSE 'unknown'
+                       END AS skipped_reason
+                FROM targets t
+                WHERE t.deleted_at IS NULL
+                  AND COALESCE(t.enabled, FALSE) = TRUE
+                  AND NOT EXISTS (
+                      SELECT 1 FROM monitored_systems ms2
+                      JOIN monitoring_configs mc2
+                        ON mc2.target_id = ms2.target_id
+                       AND mc2.workspace_id = ms2.workspace_id
+                      WHERE ms2.target_id = t.id
+                        AND ms2.workspace_id = t.workspace_id
+                        AND COALESCE(ms2.is_enabled, TRUE) = TRUE
+                        AND COALESCE(mc2.enabled, FALSE) = TRUE
+                        AND LOWER(COALESCE(mc2.provider_type, '')) = 'evm_rpc'
+                  )
+                LIMIT 25
+                '''
+            ).fetchall()
+            for _srow in skipped_targets:
+                _s = dict(_srow)
+                logger.info(
+                    'skipped_target_reason target_id=%s workspace_id=%s chain_network=%s chain_id=%s skipped_reason=%s',
+                    _s.get('target_id'),
+                    _s.get('workspace_id'),
+                    _s.get('chain_network') or 'unknown',
+                    _s.get('chain_id'),
+                    _s.get('skipped_reason'),
+                )
         except Exception:
             pass
         cycle_workspace_ids: set[str] = set()
@@ -4720,9 +4795,10 @@ def production_claim_validator() -> dict[str, Any]:
         'no_fallback_or_synthetic_sources': False,
     }
     reason = None
-    if checks['live_or_hybrid_mode'] and checks['live_monitoring_enabled'] and (os.getenv('EVM_RPC_URL') or '').strip():
+    _rpc_url_effective = effective_evm_rpc_url()
+    if checks['live_or_hybrid_mode'] and checks['live_monitoring_enabled'] and _rpc_url_effective:
         try:
-            chain_id_hex = JsonRpcClient((os.getenv('EVM_RPC_URL') or '').strip()).call('eth_chainId', [])
+            chain_id_hex = JsonRpcClient(_rpc_url_effective).call('eth_chainId', [])
             checks['evm_rpc_reachable'] = bool(chain_id_hex)
         except Exception as exc:
             reason = f'evm_rpc_unreachable:{exc.__class__.__name__}'

@@ -263,7 +263,7 @@ async def _ws_subscribe_new_head(ws_url: str, timeout_seconds: float = 1.0) -> i
 
 
 def fetch_evm_activity(target: dict[str, Any], since_ts: datetime | None, *, rpc_client: RpcClient | None = None) -> list[ActivityEvent]:
-    rpc_url = (os.getenv('EVM_RPC_URL') or '').strip()
+    rpc_url = (os.getenv('STAGING_EVM_RPC_URL') or '').strip() or (os.getenv('EVM_RPC_URL') or '').strip()
     if not rpc_url:
         return []
     network = str(target.get('chain_network') or 'ethereum').strip().lower()

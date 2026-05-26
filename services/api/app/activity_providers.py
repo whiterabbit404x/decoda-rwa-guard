@@ -88,9 +88,46 @@ def live_monitoring_enabled() -> bool:
     return str(os.getenv('LIVE_MONITORING_ENABLED', 'true')).strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
+_TRUTHY_FLAG_VALUES = {'1', 'true', 'yes', 'on'}
+
+
+def effective_evm_rpc_url() -> str:
+    """Return the EVM RPC URL preferring STAGING_EVM_RPC_URL over EVM_RPC_URL."""
+    staging = (os.getenv('STAGING_EVM_RPC_URL') or '').strip()
+    if staging:
+        return staging
+    return (os.getenv('EVM_RPC_URL') or '').strip()
+
+
+def effective_evm_chain_id() -> str:
+    """Return the EVM chain id preferring STAGING_EVM_CHAIN_ID over EVM_CHAIN_ID."""
+    staging = (os.getenv('STAGING_EVM_CHAIN_ID') or '').strip()
+    if staging:
+        return staging
+    base = (os.getenv('EVM_CHAIN_ID') or '').strip()
+    if base:
+        return base
+    return (os.getenv('CHAIN_ID') or '').strip()
+
+
+def effective_worker_enabled() -> bool:
+    """Return True if either STAGING_WORKER_ENABLED or WORKER_ENABLED is truthy.
+
+    Defaults to True when neither is set so that existing deployments continue
+    to run the worker loop without explicit opt-in.
+    """
+    staging = (os.getenv('STAGING_WORKER_ENABLED') or '').strip().lower()
+    if staging:
+        return staging in _TRUTHY_FLAG_VALUES
+    base = (os.getenv('WORKER_ENABLED') or '').strip().lower()
+    if base:
+        return base in _TRUTHY_FLAG_VALUES
+    return True
+
+
 def live_monitoring_requirements() -> dict[str, bool]:
     return {
-        'evm_rpc_url': bool((os.getenv('EVM_RPC_URL') or '').strip()),
+        'evm_rpc_url': bool(effective_evm_rpc_url()),
     }
 
 
