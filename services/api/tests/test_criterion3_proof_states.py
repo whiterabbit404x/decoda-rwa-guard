@@ -627,3 +627,64 @@ def test_script_staging_env_vars_create_live_provider_ready(
     # The "not configured" message must not appear when STAGING_EVM_RPC_URL is set.
     joined = ' '.join(lpe.get('missing') or [])
     assert 'not configured' not in joined
+
+
+# ---------------------------------------------------------------------------
+# Poll-only without telemetry does not pass blocker 3
+# ---------------------------------------------------------------------------
+
+def test_poll_only_without_telemetry_does_not_pass_blocker_3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker poll without rpc_polling telemetry must not satisfy criterion 3.
+
+    Even if checked=1 and receipts_written=1, live_evidence_ready requires
+    an actual live telemetry event (source_type=rpc_polling).  A coverage-only
+    poll (no rpc_polling telemetry event) must leave live_evidence_ready=False.
+    """
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
+
+    result = build_live_evidence_proof(chain_evidence={
+        'evidence_source': 'live',
+        'monitoring_checked_count': 1,
+        'receipts_written': 1,
+        # coverage timestamp exists but no rpc_polling source_type and no telemetry_event_id
+        'last_telemetry_at': '2026-01-01T00:01:00Z',
+    })
+
+    assert result['live_evidence_ready'] is False, (
+        'Poll-only coverage (no rpc_polling telemetry event) must not pass blocker 3; '
+        f'got live_evidence_ready={result["live_evidence_ready"]}'
+    )
+    assert result['live_provider_ready'] is True
+    assert result['live_telemetry_ready'] is False, (
+        'live_telemetry_ready must be False when source_type=rpc_polling event is absent'
+    )
+
+
+def test_worker_poll_with_live_rpc_telemetry_increments_live_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live rpc_polling telemetry event satisfies live_telemetry_ready=True.
+
+    When the worker persists a telemetry_events row with source_type=rpc_polling
+    and evidence_source=live, the proof chain's live_telemetry_ready flag must
+    flip to True.  This is distinct from just having checked>0.
+    """
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_abc')
+
+    result = build_live_evidence_proof(chain_evidence={
+        'evidence_source': 'live',
+        'monitoring_checked_count': 1,
+        'receipts_written': 1,
+        'last_telemetry_at': '2026-01-01T00:01:00Z',
+        'source_type': 'rpc_polling',
+        'telemetry_event_id': 'tel-rpc-001',
+    })
+
+    assert result['live_provider_ready'] is True
+    assert result['live_telemetry_ready'] is True, (
+        'A rpc_polling telemetry event must set live_telemetry_ready=True'
+    )
