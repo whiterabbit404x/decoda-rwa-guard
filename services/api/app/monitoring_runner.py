@@ -1122,7 +1122,7 @@ def _persist_live_coverage_telemetry(
             observed_at, evidence_source, payload_hash, payload_json, idempotency_key
         )
         VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s)
-        ON CONFLICT (workspace_id, target_id, idempotency_key) DO NOTHING
+        ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
         """,
         (
             str(uuid.uuid4()),
@@ -2799,7 +2799,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
                 id, workspace_id, asset_id, target_id, provider_type, event_type, observed_at, evidence_source, payload_hash, payload_json, idempotency_key
             )
             VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s)
-            ON CONFLICT (workspace_id, target_id, idempotency_key) DO NOTHING
+            ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
             """,
             (
                 str(uuid.uuid4()),
@@ -3446,12 +3446,12 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
         _verify_monitoring_fk_alignment(connection)
         if not _telemetry_idempotency_index_guard(connection):
             error_message = (
-                'Telemetry idempotency index is missing; apply migration 0075 or later repair migration '
-                'before live polling.'
+                'Telemetry idempotency index is missing; apply migration 0088 '
+                '(or 0075/0086) before live polling.'
             )
             logger.error(
                 'code=TELEMETRY_IDEMPOTENCY_INDEX_MISSING '
-                'hint=apply_migration_0075_or_later_repair_migration '
+                'hint=apply_migration_0088_fix_live_coverage_telemetry_upsert_constraint '
                 'action=degrade_worker_and_skip_cycle'
             )
             connection.execute(

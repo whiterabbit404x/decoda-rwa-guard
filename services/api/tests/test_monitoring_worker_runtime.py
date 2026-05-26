@@ -77,6 +77,9 @@ class _FakeConnection:
                 row.setdefault('workspace_id', target.get('workspace_exists_id') or 'ws-1')
                 rows.append(row)
             return _Result(rows=rows)
+        if 'SELECT EXISTS' in normalized and 'pg_get_indexdef' in normalized:
+            # Catalog guard: report telemetry idempotency index as present in tests.
+            return _Result(row={'ok': True})
         if normalized.startswith('SELECT 1 FROM targets WHERE id'):
             # Parent guard check: target was just fetched, so it always exists in tests.
             return _Result(row={'exists': 1})
@@ -1347,3 +1350,191 @@ def test_monitoring_cycle_with_one_candidate_proceeds_past_heartbeat(monkeypatch
     assert heartbeat_written[0][3] == 'healthy'
     assert summary['checked'] == 1
     assert processed_targets == ['candidate-target']
+
+
+# ---------------------------------------------------------------------------
+# Tests for _persist_live_coverage_telemetry ON CONFLICT fix (migration 0088)
+# ---------------------------------------------------------------------------
+
+class _TelemetryConn:
+    """Minimal fake connection that records telemetry_events inserts."""
+
+    def __init__(self, *, raise_on_conflict: bool = False):
+        self.telemetry_rows: dict[tuple, dict] = {}
+        self.telemetry_inserts_attempted = 0
+        self.raise_on_conflict = raise_on_conflict
+
+    def execute(self, query, params=None):
+        normalized = ' '.join(str(query).split())
+        if 'INSERT INTO telemetry_events' in normalized:
+            self.telemetry_inserts_attempted += 1
+            if self.raise_on_conflict:
+                raise RuntimeError(
+                    'psycopg.errors.InvalidColumnReference: there is no unique or '
+                    'exclusion constraint matching the ON CONFLICT specification'
+                )
+            if params:
+                key = (str(params[1]), str(params[3]), str(params[10]))
+                self.telemetry_rows.setdefault(key, {'params': params})
+        return _Result()
+
+
+def _make_provider_result():
+    from services.api.app.activity_providers import ActivityProviderResult
+    return ActivityProviderResult(
+        mode='live',
+        status='live',
+        evidence_state='REAL_EVIDENCE',
+        truthfulness_state='NOT_CLAIM_SAFE',
+        synthetic=False,
+        provider_name='evm_activity_provider',
+        provider_kind='rpc',
+        evidence_present=True,
+        recent_real_event_count=0,
+        last_real_event_at=None,
+        events=[],
+        latest_block=25180126,
+        checkpoint='coverage:25180126',
+        checkpoint_age_seconds=None,
+        degraded_reason=None,
+        error_code=None,
+        source_type='rpc_polling',
+        reason_code='LIVE_PROVIDER_OK',
+        claim_safe=False,
+        detection_outcome='NO_EVIDENCE',
+    )
+
+
+def _make_target() -> dict:
+    return {
+        'id': '00000000-0000-0000-0000-aaaaaaaaaaaa',
+        'workspace_id': '00000000-0000-0000-0000-bbbbbbbbbbbb',
+        'asset_id': '00000000-0000-0000-0000-cccccccccccc',
+        'chain_network': 'ethereum',
+        'monitored_system_id': '00000000-0000-0000-0000-dddddddddddd',
+    }
+
+
+def test_persist_live_coverage_telemetry_does_not_crash() -> None:
+    """_persist_live_coverage_telemetry must not raise on a successful call."""
+    conn = _TelemetryConn()
+    monitoring_runner._persist_live_coverage_telemetry(
+        conn,
+        target=_make_target(),
+        provider_result=_make_provider_result(),
+        observed_at=datetime.now(timezone.utc),
+    )
+    assert conn.telemetry_inserts_attempted >= 1
+
+
+def test_persist_live_coverage_telemetry_on_conflict_includes_where_predicate() -> None:
+    """The ON CONFLICT clause must include WHERE idempotency_key IS NOT NULL to match
+    the partial unique index idx_telemetry_events_workspace_target_idempotency."""
+    import inspect
+    source = inspect.getsource(monitoring_runner._persist_live_coverage_telemetry)
+    assert 'WHERE idempotency_key IS NOT NULL' in source, (
+        'ON CONFLICT for telemetry_events must include WHERE idempotency_key IS NOT NULL '
+        'to match the partial unique index; without it PostgreSQL raises InvalidColumnReference.'
+    )
+
+
+def test_persist_live_coverage_telemetry_idempotent_on_duplicate_block() -> None:
+    """Two calls with the same block number must not produce duplicate telemetry rows."""
+    conn = _TelemetryConn()
+    provider_result = _make_provider_result()
+    observed_at = datetime.now(timezone.utc)
+    target = _make_target()
+
+    monitoring_runner._persist_live_coverage_telemetry(
+        conn, target=target, provider_result=provider_result, observed_at=observed_at
+    )
+    monitoring_runner._persist_live_coverage_telemetry(
+        conn, target=target, provider_result=provider_result, observed_at=observed_at
+    )
+
+    assert conn.telemetry_inserts_attempted == 2
+    assert len(conn.telemetry_rows) == 1, 'duplicate block must deduplicate via ON CONFLICT'
+
+
+def test_rpc_polling_live_coverage_persists_telemetry_row() -> None:
+    """A successful rpc_polling cycle must write at least one telemetry_events row."""
+    conn = _TelemetryConn()
+    monitoring_runner._persist_live_coverage_telemetry(
+        conn,
+        target=_make_target(),
+        provider_result=_make_provider_result(),
+        observed_at=datetime.now(timezone.utc),
+    )
+    assert len(conn.telemetry_rows) >= 1
+    row_params = next(iter(conn.telemetry_rows.values()))['params']
+    evidence_source = row_params[7]
+    event_type = row_params[5]
+    assert evidence_source == 'live', 'telemetry row must carry evidence_source=live'
+    assert event_type == 'rpc_polling', 'telemetry row must carry event_type=rpc_polling'
+
+
+def test_worker_checked_count_increases_per_target(monkeypatch) -> None:
+    """run_monitoring_cycle must increment checked for each processed target."""
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': f'live-target-{i}',
+            'name': f'Live Target {i}',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-live',
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        }
+        for i in range(3)
+    ]
+    connection = _FakeConnection(due_targets)
+    processed: list[str] = []
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _conn: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda _conn, target, triggered_by_user_id=None: processed.append(target['id']) or {
+            'alerts_generated': 0,
+            'events_ingested': 0,
+            'target_id': target['id'],
+            'status': 'completed',
+        },
+    )
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+
+    assert summary['checked'] >= 1, 'checked count must increase when targets are processed'
+    assert len(processed) >= 1, 'at least one target must be processed'
+
+
+def test_poll_only_without_telemetry_does_not_satisfy_live_evidence_ready() -> None:
+    """A poll without a persisted telemetry row must not satisfy live_evidence_ready."""
+    from services.api.app.paid_launch_readiness import build_live_evidence_proof
+
+    result = build_live_evidence_proof(chain_evidence={
+        'provider_ready': True,
+        'evidence_source': 'live',
+        'source_type': 'rpc_polling',
+        'latest_live_telemetry_at': None,
+        'rpc_polling_telemetry_count': 0,
+        'monitoring_checked_count': 1,
+        'receipts_written': 0,
+        'detections_count': 0,
+        'alerts_count': 0,
+        'incidents_count': 0,
+        'response_actions_count': 0,
+        'evidence_count': 0,
+        'detection_telemetry_linked': False,
+        'alert_detection_linked': False,
+        'incident_alert_linked': False,
+    })
+
+    assert result['live_evidence_ready'] is False, (
+        'poll-only without persisted telemetry must not satisfy live_evidence_ready'
+    )
