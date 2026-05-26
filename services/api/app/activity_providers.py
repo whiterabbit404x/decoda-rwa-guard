@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 import os
 
-from services.api.app.evm_activity_provider import fetch_evm_activity
+from services.api.app.evm_activity_provider import fetch_evm_activity, probe_rpc_health, _resolve_evm_rpc_url
 from services.api.app.monitoring_mode import (
     MonitoringModeError,
     resolve_monitoring_mode,
@@ -90,7 +90,7 @@ def live_monitoring_enabled() -> bool:
 
 def live_monitoring_requirements() -> dict[str, bool]:
     return {
-        'evm_rpc_url': bool((os.getenv('EVM_RPC_URL') or '').strip()),
+        'evm_rpc_url': bool(_resolve_evm_rpc_url()),
     }
 
 
@@ -104,7 +104,7 @@ def monitoring_ingestion_runtime() -> dict[str, Any]:
     if not live_enabled:
         return {'mode': mode, 'source': 'degraded', 'degraded': True, 'reason': 'LIVE_MONITORING_ENABLED=false'}
     if not req['evm_rpc_url']:
-        return {'mode': mode, 'source': 'degraded', 'degraded': True, 'reason': 'EVM_RPC_URL missing'}
+        return {'mode': mode, 'source': 'degraded', 'degraded': True, 'reason': 'STAGING_EVM_RPC_URL / EVM_RPC_URL missing'}
     source = 'websocket' if ws_url else 'polling'
     return {'mode': mode, 'source': source, 'degraded': False, 'reason': None}
 
@@ -232,6 +232,19 @@ def fetch_target_activity_result(target: dict[str, Any], since_ts: datetime | No
                 detection_outcome='NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE',
             )
         if coverage_evidence_present:
+            # No blockchain events found, but RPC is reachable (fetch_evm_activity succeeded).
+            # Probe eth_chainId + eth_blockNumber to get the real current block for telemetry.
+            if latest_block is None:
+                rpc_probe = probe_rpc_health()
+                if rpc_probe['ok']:
+                    latest_block = rpc_probe['block_number_int']
+                    logger.info(
+                        'coverage_rpc_probe_ok chain_id=%s block_number=%s',
+                        rpc_probe['chain_id_int'],
+                        latest_block,
+                    )
+                else:
+                    logger.warning('coverage_rpc_probe_failed error=%s', rpc_probe.get('error'))
             return ActivityProviderResult(
                 mode=mode,
                 status='live',
