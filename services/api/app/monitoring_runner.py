@@ -3441,6 +3441,24 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             ''',
             (worker_name,),
         )
+        # Repair misclassified default providers for real Ethereum targets so
+        # live polling targets are eligible for the worker loop.
+        connection.execute(
+            '''
+            UPDATE monitoring_configs mc
+            SET provider_type = 'evm_rpc',
+                updated_at = NOW()
+            FROM targets t
+            WHERE t.id = mc.target_id
+              AND t.workspace_id = mc.workspace_id
+              AND t.deleted_at IS NULL
+              AND COALESCE(t.enabled, FALSE) = TRUE
+              AND COALESCE(t.monitoring_enabled, FALSE) = TRUE
+              AND t.workspace_id IS NOT NULL
+              AND LOWER(COALESCE(t.chain_network, '')) = 'ethereum'
+              AND LOWER(COALESCE(mc.provider_type, '')) IN ('default', 'unknown')
+            ''',
+        )
         candidate_systems = connection.execute(
             '''
             SELECT ms.id AS monitored_system_id,
@@ -3460,6 +3478,11 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
             JOIN assets a ON a.id = t.asset_id AND a.workspace_id = t.workspace_id AND a.deleted_at IS NULL
             JOIN monitoring_configs mc ON mc.target_id = t.id AND mc.workspace_id = t.workspace_id
             WHERE t.deleted_at IS NULL
+              AND t.workspace_id IS NOT NULL
+              AND COALESCE(t.enabled, FALSE) = TRUE
+              AND COALESCE(t.monitoring_enabled, FALSE) = TRUE
+              AND LOWER(COALESCE(mc.provider_type, '')) = 'evm_rpc'
+              AND LOWER(COALESCE(mc.provider_type, '')) NOT IN ('default')
               AND COALESCE(mc.enabled, FALSE) = TRUE
               AND mc.provider_type NOT IN ('demo', 'simulator', 'replay', 'unknown', 'target_bridge', 'guided_workflow')
             ORDER BY COALESCE(ms.last_heartbeat, t.last_checked_at, '1970-01-01'::timestamptz) ASC, ms.created_at ASC
