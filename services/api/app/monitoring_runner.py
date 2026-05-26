@@ -3404,9 +3404,11 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                    t.is_active
             FROM monitored_systems ms
             JOIN targets t ON t.id = ms.target_id
+            JOIN assets a ON a.id = t.asset_id AND a.workspace_id = t.workspace_id AND a.deleted_at IS NULL
             JOIN monitoring_configs mc ON mc.target_id = t.id AND mc.workspace_id = t.workspace_id
             WHERE t.deleted_at IS NULL
               AND COALESCE(mc.enabled, FALSE) = TRUE
+              AND mc.provider_type NOT IN ('demo', 'simulator', 'replay', 'unknown', 'target_bridge', 'guided_workflow')
             ORDER BY COALESCE(ms.last_heartbeat, t.last_checked_at, '1970-01-01'::timestamptz) ASC, ms.created_at ASC
             ''',
         ).fetchall()
@@ -6395,6 +6397,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         }
         canonical_reporting_target_ids = canonical_reporting_targets_from_events | canonical_reporting_targets_from_coverage
         canonical_reporting_systems = int(len(canonical_reporting_target_ids))
+        # Detect contradiction: monitored_system rows exist visually but no telemetry-based
+        # reporting exists. This means targets are configured but the worker hasn't polled them.
+        _loose_target_rows_flag = bool(enabled_system_count > 0 and canonical_reporting_systems == 0)
         target_reporting_without_telemetry_count = 0
         for target_id, coverage_row in coverage_by_target.items():
             if target_id in canonical_reporting_target_ids:
@@ -6795,6 +6800,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         )
         summary['runtime_error_code'] = runtime_error_code
         summary['runtime_degraded_reason'] = runtime_degraded_reason
+        if _loose_target_rows_flag:
+            _cf = list(summary.get('contradiction_flags') or [])
+            _gf = list(summary.get('guard_flags') or [])
+            if 'target_rows_exist_without_reporting_systems' not in _cf:
+                _cf.append('target_rows_exist_without_reporting_systems')
+                summary['contradiction_flags'] = sorted(_cf)
+            if 'target_rows_exist_without_reporting_systems' not in _gf:
+                _gf.append('target_rows_exist_without_reporting_systems')
+                summary['guard_flags'] = sorted(_gf)
         if runtime_degraded_reason == 'partial_query_failure' and str(summary.get('status_reason', '')).startswith('guard:'):
             summary['status_reason'] = 'runtime_status_degraded:partial_query_failure'
         summary['field_reason_codes'] = dict(field_reason_codes)

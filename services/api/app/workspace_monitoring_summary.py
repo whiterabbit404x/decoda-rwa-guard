@@ -114,6 +114,8 @@ HARD_GUARD_FLAGS = {
     'incident_without_alert',
     'response_action_without_case',
     'evidence_export_without_source_truthfulness',
+    # Canonical graph contradictions
+    'target_rows_exist_without_reporting_systems',
 }
 HARD_GUARD_PRIORITY = (
     'offline_with_current_telemetry',
@@ -148,6 +150,8 @@ HARD_GUARD_PRIORITY = (
     'incident_without_alert',
     'response_action_without_case',
     'evidence_export_without_source_truthfulness',
+    # Canonical graph contradictions
+    'target_rows_exist_without_reporting_systems',
 )
 
 

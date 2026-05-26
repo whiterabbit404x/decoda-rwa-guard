@@ -7995,6 +7995,8 @@ def _validate_target_payload(payload: dict[str, Any]) -> dict[str, Any]:
     settlement_endpoint = str(payload.get('settlement_endpoint', '')).strip() or None
     asset_label = str(payload.get('asset_label', '')).strip() or None
     chain_id = int(_coerce_number(payload.get('chain_id'), 0) or 0) or None
+    if chain_id is None and str(chain_network or '').strip().lower() in {'ethereum-mainnet', 'ethereum', 'eth', 'mainnet'}:
+        chain_id = 1
     if contract_identifier and len(contract_identifier) > 150:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='contract_identifier exceeds 150 chars.')
     if wallet_address and not re.match(r'^0x[a-fA-F0-9]{40}$', wallet_address):
@@ -9891,6 +9893,23 @@ def create_or_repair_treasury_settlement_monitoring_target(request: Request) -> 
         }
 
 
+_EVM_CHAIN_NETWORKS: frozenset[str] = frozenset({
+    'ethereum', 'ethereum-mainnet', 'eth', 'mainnet',
+    'ethereum-goerli', 'ethereum-sepolia', 'ethereum-holesky',
+    'polygon', 'polygon-mainnet', 'matic', 'polygon-mumbai',
+    'arbitrum', 'arbitrum-one', 'arbitrum-mainnet', 'arbitrum-goerli',
+    'optimism', 'optimism-mainnet', 'optimism-goerli',
+    'base', 'base-mainnet', 'base-goerli',
+    'avalanche', 'avalanche-c', 'avax',
+    'bsc', 'binance-smart-chain', 'bnb',
+})
+
+
+def _provider_type_for_chain(chain_network: str) -> str:
+    """Return canonical provider_type for a chain_network. EVM chains use evm_rpc."""
+    return 'evm_rpc' if str(chain_network or '').strip().lower() in _EVM_CHAIN_NETWORKS else 'live'
+
+
 def _sync_canonical_monitoring_target_state(
     connection: Any,
     *,
@@ -9899,8 +9918,9 @@ def _sync_canonical_monitoring_target_state(
     asset_id: str | None,
     enabled: bool,
     monitoring_enabled: bool,
+    chain_network: str = '',
 ) -> None:
-    provider_type = 'target_bridge'
+    provider_type = _provider_type_for_chain(chain_network)
     # Pass NULL for asset_id: monitored_targets.asset_id references asset_registry(id)
     # but asset_id here comes from assets(id). Migration 0079 drops the FK so either
     # value is valid, but NULL is correct until asset_registry is populated from assets.
@@ -10068,11 +10088,28 @@ def create_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
             asset_id=validated['asset_id'],
             enabled=bool(validated['enabled']),
             monitoring_enabled=bool(validated['monitoring_enabled']),
+            chain_network=validated.get('chain_network', ''),
         )
         if validated['enabled'] and validated['monitoring_enabled']:
             result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id)
             if result.get('status') != 'ok':
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Enabled targets require a valid linked asset before monitoring can start.')
+            # Create direct monitoring_config keyed by targets.id for the worker candidate query.
+            # The canonical sync above uses monitored_targets.id which the worker cannot find.
+            _direct_cfg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'target-direct-config:{workspace_id}:{target_id}'))
+            _direct_provider_type = _provider_type_for_chain(validated.get('chain_network', ''))
+            connection.execute(
+                '''
+                INSERT INTO monitoring_configs (id, workspace_id, asset_id, target_id, enabled, cadence_seconds, provider_type, created_at, updated_at)
+                VALUES (%s::uuid, %s::uuid, NULL, %s::uuid, TRUE, 300, %s, NOW(), NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    enabled = TRUE,
+                    provider_type = EXCLUDED.provider_type,
+                    updated_at = NOW()
+                ''',
+                (_direct_cfg_id, workspace_id, target_id, _direct_provider_type),
+            )
         log_audit(connection, action='target.create', entity_type='target', entity_id=target_id, request=request, user_id=user['id'], workspace_id=workspace_id, metadata={'target_type': validated['target_type']})
         connection.commit()
         return _load_target_row(connection, workspace_id=workspace_id, target_id=target_id)
@@ -10170,11 +10207,26 @@ def update_target(target_id: str, payload: dict[str, Any], request: Request) -> 
             asset_id=validated['asset_id'],
             enabled=bool(validated['enabled']),
             monitoring_enabled=bool(validated['monitoring_enabled']),
+            chain_network=validated.get('chain_network', ''),
         )
         if validated['enabled'] and validated['monitoring_enabled']:
             result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id)
             if result.get('status') != 'ok':
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Enabled targets require a valid linked asset before monitoring can start.')
+            _direct_cfg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'target-direct-config:{workspace_id}:{target_id}'))
+            _direct_provider_type = _provider_type_for_chain(validated.get('chain_network', ''))
+            connection.execute(
+                '''
+                INSERT INTO monitoring_configs (id, workspace_id, asset_id, target_id, enabled, cadence_seconds, provider_type, created_at, updated_at)
+                VALUES (%s::uuid, %s::uuid, NULL, %s::uuid, TRUE, 300, %s, NOW(), NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    enabled = TRUE,
+                    provider_type = EXCLUDED.provider_type,
+                    updated_at = NOW()
+                ''',
+                (_direct_cfg_id, workspace_id, target_id, _direct_provider_type),
+            )
         else:
             connection.execute(
                 "UPDATE monitored_systems SET is_enabled = FALSE, runtime_status = 'offline', status = 'paused' WHERE target_id = %s::uuid AND workspace_id = %s",
@@ -10480,6 +10532,7 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
         )
         workspace_id_value = workspace_context['workspace_id']
         asset_id_value = str(row.get('asset_id') or '') or None
+        _chain_network_value = str(row.get('chain_network') or '') if isinstance(row, dict) else ''
         _sync_canonical_monitoring_target_state(
             connection,
             workspace_id=workspace_id_value,
@@ -10487,6 +10540,7 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
             asset_id=asset_id_value,
             enabled=enabled,
             monitoring_enabled=enabled,
+            chain_network=_chain_network_value,
         )
         if enabled:
             result = ensure_monitored_system_for_target(connection, target_id=target_id, workspace_id=workspace_id_value)
@@ -10502,24 +10556,22 @@ def set_target_enabled(target_id: str, enabled: bool, request: Request) -> dict[
                 )
             # Upsert monitoring_configs keyed by targets.id so the monitoring runner
             # candidate query (JOIN monitoring_configs mc ON mc.target_id = t.id) can
-            # find this target. The canonical sync above links to monitored_targets.id
-            # which is a different UUID. asset_id is NULL here because monitoring_configs
-            # previously had a FK to asset_registry(id) (migration 0079 fixes this);
-            # using NULL avoids any residual FK violation on environments not yet migrated.
+            # find this target. Provider_type reflects the actual chain protocol.
             monitoring_config_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'target-direct-config:{workspace_id_value}:{target_id}'))
+            _enable_provider_type = _provider_type_for_chain(_chain_network_value)
             connection.execute(
                 '''
                 INSERT INTO monitoring_configs (id, workspace_id, asset_id, target_id, enabled, cadence_seconds, provider_type, created_at, updated_at)
-                VALUES (%s::uuid, %s::uuid, NULL, %s::uuid, TRUE, 300, 'live', NOW(), NOW())
+                VALUES (%s::uuid, %s::uuid, NULL, %s::uuid, TRUE, 300, %s, NOW(), NOW())
                 ON CONFLICT (id)
                 DO UPDATE SET
                     asset_id = EXCLUDED.asset_id,
                     enabled = TRUE,
                     cadence_seconds = 300,
-                    provider_type = 'live',
+                    provider_type = EXCLUDED.provider_type,
                     updated_at = NOW()
                 ''',
-                (monitoring_config_id, workspace_id_value, target_id),
+                (monitoring_config_id, workspace_id_value, target_id, _enable_provider_type),
             )
         else:
             connection.execute(
