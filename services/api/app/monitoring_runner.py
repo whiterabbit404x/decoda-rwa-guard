@@ -3388,6 +3388,36 @@ def _verify_monitoring_fk_alignment(connection: Any) -> dict[str, Any]:
     return {'aligned': aligned, 'misaligned': misaligned}
 
 
+def _telemetry_idempotency_index_guard(connection: Any) -> bool:
+    """Verify telemetry_events has partial unique idempotency index required for live polling."""
+    try:
+        row = connection.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_index i ON i.indrelid = c.oid
+                JOIN pg_class idx ON idx.oid = i.indexrelid
+                JOIN pg_indexes pi
+                  ON pi.schemaname = n.nspname
+                 AND pi.tablename = c.relname
+                 AND pi.indexname = idx.relname
+                WHERE c.relname = 'telemetry_events'
+                  AND i.indisunique = TRUE
+                  AND pg_get_indexdef(i.indexrelid) ILIKE '%(workspace_id, target_id, idempotency_key)%'
+                  AND pg_get_indexdef(i.indexrelid) ILIKE '%WHERE (idempotency_key IS NOT NULL)%'
+            ) AS ok
+            """
+        ).fetchone()
+    except Exception:
+        logger.exception('code=TELEMETRY_IDEMPOTENCY_INDEX_GUARD_FAILED')
+        return False
+    if isinstance(row, dict):
+        return bool(row.get('ok'))
+    return bool((row or [False])[0])
+
+
 def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int = 50, trigger_type: str = 'scheduler') -> dict[str, Any]:
     trigger_type = _normalize_monitoring_run_trigger_type(trigger_type)
     ingestion_runtime = monitoring_ingestion_runtime()
@@ -3410,6 +3440,63 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         _verify_monitoring_fk_alignment(connection)
+        if not _telemetry_idempotency_index_guard(connection):
+            error_message = (
+                'Telemetry idempotency index is missing; apply migration 0075 or later repair migration '
+                'before live polling.'
+            )
+            logger.error(
+                'code=TELEMETRY_IDEMPOTENCY_INDEX_MISSING '
+                'hint=apply_migration_0075_or_later_repair_migration '
+                'action=degrade_worker_and_skip_cycle'
+            )
+            connection.execute(
+                '''
+                INSERT INTO monitoring_worker_state (
+                    worker_name,
+                    running,
+                    status,
+                    last_started_at,
+                    last_heartbeat_at,
+                    last_cycle_at,
+                    last_cycle_due_targets,
+                    last_cycle_targets_checked,
+                    last_cycle_alerts_generated,
+                    last_error,
+                    updated_at
+                )
+                VALUES (%s, TRUE, 'degraded', NOW(), NOW(), NOW(), 0, 0, 0, %s, NOW())
+                ON CONFLICT (worker_name)
+                DO UPDATE SET
+                    running = TRUE,
+                    status = 'degraded',
+                    last_heartbeat_at = NOW(),
+                    last_cycle_at = NOW(),
+                    last_cycle_due_targets = 0,
+                    last_cycle_targets_checked = 0,
+                    last_cycle_alerts_generated = 0,
+                    last_error = EXCLUDED.last_error,
+                    updated_at = NOW()
+                ''',
+                (worker_name, error_message),
+            )
+            return {
+                'checked': 0,
+                'due_count': 0,
+                'alerts_generated': 0,
+                'live_targets_checked': 0,
+                'events_ingested': 0,
+                'real_events_detected': 0,
+                'coverage_heartbeat_updates': 0,
+                'incidents_created': 0,
+                'monitored_systems_updated': 0,
+                'runs': [],
+                'degraded': True,
+                'degraded_reason': 'telemetry_idempotency_index_missing',
+                'error': error_message,
+                'live_mode': True,
+                'ingestion_mode': ingestion_runtime.get('source', 'live'),
+            }
         workspace_run_ids: dict[str, str] = {}
         workspace_systems_checked: dict[str, int] = defaultdict(int)
         workspace_assets_checked: dict[str, set[str]] = defaultdict(set)
