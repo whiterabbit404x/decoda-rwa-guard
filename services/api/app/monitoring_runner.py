@@ -1118,7 +1118,7 @@ def _persist_live_coverage_telemetry(
             observed_at, evidence_source, payload_hash, payload_json, idempotency_key
         )
         VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s)
-        ON CONFLICT (workspace_id, target_id, idempotency_key) DO NOTHING
+        ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
         """,
         (
             str(uuid.uuid4()),
@@ -2795,7 +2795,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
                 id, workspace_id, asset_id, target_id, provider_type, event_type, observed_at, evidence_source, payload_hash, payload_json, idempotency_key
             )
             VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s)
-            ON CONFLICT (workspace_id, target_id, idempotency_key) DO NOTHING
+            ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
             """,
             (
                 str(uuid.uuid4()),

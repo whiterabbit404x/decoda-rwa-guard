@@ -77,6 +77,9 @@ class _FakeConnection:
                 row.setdefault('workspace_id', target.get('workspace_exists_id') or 'ws-1')
                 rows.append(row)
             return _Result(rows=rows)
+        if 'pg_get_indexdef' in normalized and 'telemetry_events' in normalized:
+            # _telemetry_idempotency_index_guard: return ok=True so the cycle proceeds.
+            return _Result(row={'ok': True})
         if normalized.startswith('SELECT 1 FROM targets WHERE id'):
             # Parent guard check: target was just fetched, so it always exists in tests.
             return _Result(row={'exists': 1})
@@ -1347,3 +1350,74 @@ def test_monitoring_cycle_with_one_candidate_proceeds_past_heartbeat(monkeypatch
     assert heartbeat_written[0][3] == 'healthy'
     assert summary['checked'] == 1
     assert processed_targets == ['candidate-target']
+
+
+# ---------------------------------------------------------------------------
+# ON CONFLICT / telemetry_events partial-index alignment guard
+# ---------------------------------------------------------------------------
+
+def test_telemetry_events_on_conflict_has_partial_index_predicate():
+    """Both telemetry_events ON CONFLICT clauses must include WHERE idempotency_key IS NOT NULL.
+
+    Migration 0086 created a partial unique index on telemetry_events
+    (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL.
+    PostgreSQL requires ON CONFLICT to match the partial index predicate exactly;
+    omitting WHERE raises InvalidColumnReference at runtime.
+    """
+    import pathlib
+    src = (pathlib.Path(__file__).parents[1] / 'app' / 'monitoring_runner.py').read_text(encoding='utf-8')
+    occurrences = src.count(
+        'ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING'
+    )
+    bad_occurrences = src.count(
+        'ON CONFLICT (workspace_id, target_id, idempotency_key) DO NOTHING'
+    )
+    assert occurrences >= 2, (
+        f'Expected at least 2 ON CONFLICT clauses with WHERE predicate, found {occurrences}. '
+        'Both _persist_live_coverage_telemetry and the event-loop INSERT must include '
+        'WHERE idempotency_key IS NOT NULL to match the partial unique index.'
+    )
+    assert bad_occurrences == 0, (
+        f'Found {bad_occurrences} ON CONFLICT clause(s) without WHERE predicate; '
+        'these will crash with psycopg.errors.InvalidColumnReference at runtime.'
+    )
+
+
+def test_live_coverage_poll_increments_checked_count(monkeypatch):
+    """A successful live provider poll must increment checked=1 in the cycle summary."""
+    now = datetime.now(timezone.utc)
+    due_targets = [
+        {
+            'id': 'live-target-1',
+            'name': 'Live Target',
+            'monitoring_enabled': True,
+            'enabled': True,
+            'is_active': True,
+            'workspace_exists_id': 'ws-live',
+            'last_checked_at': None,
+            'monitoring_interval_seconds': 300,
+            'created_at': now,
+        }
+    ]
+    connection = _FakeConnection(due_targets)
+
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _connection: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _fake_pg(connection))
+    monkeypatch.setattr(
+        monitoring_runner,
+        'process_monitoring_target',
+        lambda _connection, target, triggered_by_user_id=None: {
+            'alerts_generated': 0,
+            'events_ingested': 0,
+            'live_targets': 1,
+            'real_events': 0,
+            'target_id': target['id'],
+            'status': 'live_coverage',
+        },
+    )
+
+    summary = monitoring_runner.run_monitoring_cycle(worker_name='test-worker', limit=10)
+    assert summary['checked'] == 1, (
+        f'Expected checked=1 after successful live poll; got {summary["checked"]}'
+    )

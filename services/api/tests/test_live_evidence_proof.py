@@ -726,3 +726,106 @@ def test_script_live_evidence_chain_rejects_non_live_source(
     lpe = result['live_provider_evidence']
     assert lpe['live_evidence_ready'] is False
     assert lpe['chain']['telemetry_event_id'] is None
+
+
+# ---------------------------------------------------------------------------
+# ON CONFLICT / telemetry upsert alignment — live coverage telemetry path
+# ---------------------------------------------------------------------------
+
+def test_live_coverage_telemetry_on_conflict_targets_partial_index_predicate() -> None:
+    """monitoring_runner.py ON CONFLICT clauses for telemetry_events must match the partial index.
+
+    Migration 0086/0087 created:
+      CREATE UNIQUE INDEX ... ON telemetry_events (workspace_id, target_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+
+    Without the WHERE predicate in ON CONFLICT PostgreSQL raises InvalidColumnReference
+    and the worker crashes after a successful live RPC poll (coverage_timestamp_update_checkpoint).
+    """
+    import pathlib
+    src = (pathlib.Path(__file__).parents[1] / 'app' / 'monitoring_runner.py').read_text(encoding='utf-8')
+    correct = 'ON CONFLICT (workspace_id, target_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING'
+    broken = 'ON CONFLICT (workspace_id, target_id, idempotency_key) DO NOTHING'
+    assert correct in src, (
+        'telemetry_events ON CONFLICT must include WHERE idempotency_key IS NOT NULL '
+        'to match the partial unique index from migration 0086/0087'
+    )
+    assert broken not in src, (
+        'Found bare ON CONFLICT without WHERE predicate; this crashes with '
+        'psycopg.errors.InvalidColumnReference at runtime'
+    )
+
+
+def test_persist_live_coverage_telemetry_does_not_crash_on_upsert() -> None:
+    """_persist_live_coverage_telemetry must not raise on the telemetry_events INSERT.
+
+    Regression guard: before the fix the ON CONFLICT clause did not match the
+    partial unique index and raised InvalidColumnReference, crashing the worker
+    after every successful live RPC poll.
+    """
+    import uuid as _uuid
+    from datetime import datetime, timezone
+    from contextlib import contextmanager
+
+    class _CapConn:
+        def __init__(self):
+            self.executed: list[str] = []
+
+        def execute(self, query, params=None):
+            self.executed.append(str(query).strip())
+
+        @contextmanager
+        def transaction(self):
+            yield
+
+    from services.api.app import monitoring_runner as mr
+    from services.api.app.activity_providers import ActivityProviderResult
+
+    conn = _CapConn()
+    target = {
+        'id': str(_uuid.uuid4()),
+        'workspace_id': str(_uuid.uuid4()),
+        'asset_id': str(_uuid.uuid4()),
+        'monitored_system_id': None,
+        'chain_network': 'ethereum',
+        'contract_identifier': '0xABC',
+        'wallet_address': None,
+    }
+    provider_result = ActivityProviderResult(
+        mode='live',
+        status='live',
+        evidence_state='NO_EVIDENCE',
+        truthfulness_state='CLAIM_SAFE',
+        synthetic=False,
+        provider_name='evm_activity_provider',
+        provider_kind='rpc',
+        evidence_present=True,
+        recent_real_event_count=0,
+        last_real_event_at=None,
+        events=[],
+        latest_block=20_000_000,
+        checkpoint='block:20000000',
+        checkpoint_age_seconds=5,
+        degraded_reason=None,
+        error_code=None,
+        source_type='rpc_polling',
+        reason_code='NO_EVIDENCE',
+        claim_safe=True,
+        detection_outcome='NO_EVIDENCE',
+    )
+
+    # Must not raise InvalidColumnReference or any other exception
+    mr._persist_live_coverage_telemetry(
+        conn,
+        target=target,
+        provider_result=provider_result,
+        observed_at=datetime.now(timezone.utc),
+    )
+
+    telemetry_inserts = [q for q in conn.executed if 'telemetry_events' in q.lower()]
+    assert telemetry_inserts, '_persist_live_coverage_telemetry must INSERT into telemetry_events'
+    last_insert = telemetry_inserts[-1]
+    assert 'WHERE idempotency_key IS NOT NULL' in last_insert, (
+        'ON CONFLICT must include WHERE idempotency_key IS NOT NULL; '
+        f'got: {last_insert!r}'
+    )
