@@ -3455,7 +3455,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
               AND COALESCE(t.enabled, FALSE) = TRUE
               AND COALESCE(t.monitoring_enabled, FALSE) = TRUE
               AND t.workspace_id IS NOT NULL
-              AND LOWER(COALESCE(t.chain_network, '')) = 'ethereum'
+              AND LOWER(COALESCE(t.chain_network, '')) IN ('ethereum', 'ethereum-mainnet', 'mainnet', 'eth-mainnet')
               AND LOWER(COALESCE(mc.provider_type, '')) IN ('default', 'unknown')
             ''',
         )
@@ -8082,7 +8082,7 @@ def list_target_telemetry(request: Request, *, target_id: str, limit: int = 50) 
                         chain_id = None
             if chain_id in (None, ''):
                 chain_network = str(item.get('chain_network') or '').strip().lower()
-                chain_id = '1' if chain_network == 'ethereum' else (chain_network or None)
+                chain_id = '1' if chain_network in {'ethereum', 'ethereum-mainnet', 'mainnet', 'eth-mainnet'} else (chain_network or None)
             block_number = payload.get('block_number')
             if block_number in (None, ''):
                 raw_block_hex = str(raw_response.get('eth_blockNumber') or '').strip().lower()
