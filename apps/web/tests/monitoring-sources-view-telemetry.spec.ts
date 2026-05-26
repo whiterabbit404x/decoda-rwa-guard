@@ -153,3 +153,38 @@ test('proxy route passes workspace header to backend', () => {
   expect(proxyRouteSource).toContain('x-workspace-id');
   expect(proxyRouteSource).toContain('X-Workspace-Id');
 });
+
+// --- Spelling: no telemtry typo anywhere ---
+
+test('telemetry route folder is spelled correctly (not telemtry)', () => {
+  const dir = path.join(
+    __dirname,
+    '..',
+    'app',
+    '(product)',
+    'monitoring-sources',
+    '[targetId]',
+    'telemetry',
+  );
+  expect(fs.existsSync(dir)).toBe(true);
+  const typoDir = path.join(
+    __dirname,
+    '..',
+    'app',
+    '(product)',
+    'monitoring-sources',
+    '[targetId]',
+    'telemtry',
+  );
+  expect(fs.existsSync(typoDir)).toBe(false);
+});
+
+test('View telemetry link uses /telemetry spelling (not /telemtry)', () => {
+  expect(monitoringPageSource).not.toContain('/telemtry');
+  expect(monitoringPageSource).toContain('/telemetry');
+});
+
+test('proxy route URL uses /telemetry spelling (not /telemtry)', () => {
+  expect(proxyRouteSource).not.toContain('telemtry');
+  expect(proxyRouteSource).toContain('telemetry');
+});

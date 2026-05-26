@@ -7946,6 +7946,10 @@ def list_monitoring_worker_errors(request: Request, *, limit: int = 50) -> dict[
 
 
 def list_target_telemetry(request: Request, *, target_id: str, limit: int = 50) -> dict[str, Any]:
+    try:
+        uuid.UUID(target_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='target_id must be a valid UUID.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
@@ -7984,8 +7988,13 @@ def list_target_telemetry(request: Request, *, target_id: str, limit: int = 50) 
             ''',
             (workspace_id, target_id, max(1, min(limit, 200))),
         ).fetchall()
-        return {
-            'telemetry': [_json_safe_value(dict(row)) for row in rows],
+        telemetry = [_json_safe_value(dict(row)) for row in rows]
+        result: dict[str, Any] = {
+            'telemetry': telemetry,
             'target_id': target_id,
             'workspace_id': str(workspace_id),
+            'live_telemetry_ready': len(telemetry) > 0,
         }
+        if not telemetry:
+            result['message'] = 'No live telemetry has been persisted for this target yet.'
+        return result
