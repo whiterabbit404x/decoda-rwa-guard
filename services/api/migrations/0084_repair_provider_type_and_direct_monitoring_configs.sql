@@ -8,6 +8,8 @@
 --
 -- Safe to run multiple times (idempotent via ON CONFLICT DO NOTHING / WHERE NOT EXISTS).
 
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- 1. Update monitored_targets: change provider_type from 'target_bridge' to 'evm_rpc'
 --    for entries that reference Ethereum mainnet targets.
 UPDATE monitored_targets mt
@@ -68,11 +70,7 @@ INSERT INTO monitoring_configs (
     updated_at
 )
 SELECT
-    -- Deterministic UUID matching the application logic in create_target/enable_target
-    encode(
-        sha256(('target-direct-config:' || t.workspace_id::text || ':' || t.id::text)::bytea),
-        'hex'
-    )::uuid,
+    gen_random_uuid(),
     t.workspace_id,
     NULL,
     t.id,
