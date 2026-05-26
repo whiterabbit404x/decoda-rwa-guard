@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -1086,6 +1087,53 @@ def _persist_live_coverage_telemetry(
             _json_dumps(payload),
             observed_at,
         ),
+    )
+    # Persist a telemetry_events row so the telemetry page and runtime summary
+    # canonical_last_telemetry_at reflect successful live RPC polls even when
+    # no blockchain events (transfers, etc.) were observed in this cycle.
+    _telem_payload = {
+        'telemetry_kind': 'coverage',
+        'block_number': provider_result.latest_block,
+        'provider_name': provider_result.provider_name,
+        'source_type': provider_result.source_type,
+        'checkpoint': provider_result.checkpoint,
+        'monitored_system_id': str(target.get('monitored_system_id') or '') or None,
+        'target_id': str(target['id']),
+        'workspace_id': str(target['workspace_id']),
+    }
+    _telem_payload_json = _json_dumps(_telem_payload)
+    _telem_idempotency = (
+        f"{target['workspace_id']}:{target['id']}:coverage_poll:"
+        f"{provider_result.latest_block or int(observed_at.timestamp())}"
+    )
+    connection.execute(
+        """
+        INSERT INTO telemetry_events (
+            id, workspace_id, asset_id, target_id, provider_type, event_type,
+            observed_at, evidence_source, payload_hash, payload_json, idempotency_key
+        )
+        VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, %s)
+        ON CONFLICT (workspace_id, target_id, idempotency_key) DO NOTHING
+        """,
+        (
+            str(uuid.uuid4()),
+            str(target['workspace_id']),
+            str(target['asset_id']) if target.get('asset_id') else None,
+            str(target['id']),
+            'evm_rpc',
+            'rpc_polling',
+            observed_at,
+            'live',
+            hashlib.sha256(_telem_payload_json.encode('utf-8')).hexdigest(),
+            _telem_payload_json,
+            _telem_idempotency,
+        ),
+    )
+    logger.info(
+        'telemetry_event_persisted workspace_id=%s target_id=%s provider_type=evm_rpc event_type=rpc_polling block_number=%s',
+        target.get('workspace_id'),
+        target.get('id'),
+        provider_result.latest_block,
     )
 
 
@@ -6264,6 +6312,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             SELECT MAX(observed_at) AS ts
             FROM telemetry_events
             WHERE workspace_id = %s::uuid
+              AND evidence_source = 'live'
+              AND event_type IN ('rpc_polling', 'live_provider')
+              AND provider_type IN ('evm_rpc', 'live_provider')
             ''',
             (workspace_id,),
         ).fetchone()
