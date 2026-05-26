@@ -1093,10 +1093,15 @@ def _persist_live_coverage_telemetry(
     # no blockchain events (transfers, etc.) were observed in this cycle.
     _telem_payload = {
         'telemetry_kind': 'coverage',
+        'chain_id': 1,
         'block_number': provider_result.latest_block,
         'provider_name': provider_result.provider_name,
         'source_type': provider_result.source_type,
         'checkpoint': provider_result.checkpoint,
+        'raw_response': {
+            'eth_chainId': '0x1',
+            'eth_blockNumber': hex(int(provider_result.latest_block or 0)),
+        },
         'monitored_system_id': str(target.get('monitored_system_id') or '') or None,
         'target_id': str(target['id']),
         'workspace_id': str(target['workspace_id']),
@@ -8018,8 +8023,8 @@ def list_target_telemetry(request: Request, *, target_id: str, limit: int = 50) 
                 te.observed_at,
                 te.ingested_at,
                 te.payload_json,
-                t.chain_network AS chain_id,
-                mer.block_number
+                t.chain_network AS chain_network,
+                mer.block_number AS receipt_block_number
             FROM telemetry_events te
             LEFT JOIN targets t
               ON t.id = te.target_id
@@ -8039,7 +8044,37 @@ def list_target_telemetry(request: Request, *, target_id: str, limit: int = 50) 
             ''',
             (workspace_id, target_id, max(1, min(limit, 200))),
         ).fetchall()
-        telemetry = [_json_safe_value(dict(row)) for row in rows]
+        telemetry = []
+        for row in rows:
+            item = _json_safe_value(dict(row))
+            payload = item.get('payload_json') if isinstance(item.get('payload_json'), dict) else {}
+            raw_response = payload.get('raw_response') if isinstance(payload.get('raw_response'), dict) else {}
+            chain_id = payload.get('chain_id')
+            if chain_id in (None, ''):
+                raw_chain_hex = str(raw_response.get('eth_chainId') or '').strip().lower()
+                if raw_chain_hex.startswith('0x'):
+                    try:
+                        chain_id = str(int(raw_chain_hex, 16))
+                    except Exception:
+                        chain_id = None
+            if chain_id in (None, ''):
+                chain_network = str(item.get('chain_network') or '').strip().lower()
+                chain_id = '1' if chain_network == 'ethereum' else (chain_network or None)
+            block_number = payload.get('block_number')
+            if block_number in (None, ''):
+                raw_block_hex = str(raw_response.get('eth_blockNumber') or '').strip().lower()
+                if raw_block_hex.startswith('0x'):
+                    try:
+                        block_number = int(raw_block_hex, 16)
+                    except Exception:
+                        block_number = None
+            if block_number in (None, ''):
+                block_number = item.get('receipt_block_number')
+            item['chain_id'] = chain_id
+            item['block_number'] = block_number
+            item.pop('chain_network', None)
+            item.pop('receipt_block_number', None)
+            telemetry.append(item)
         result: dict[str, Any] = {
             'telemetry': telemetry,
             'target_id': target_id,

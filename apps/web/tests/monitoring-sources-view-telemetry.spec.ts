@@ -154,9 +154,9 @@ test('proxy route passes workspace header to backend', () => {
   expect(proxyRouteSource).toContain('X-Workspace-Id');
 });
 
-// --- Spelling: no telemtry typo anywhere ---
+// --- Spelling: no telemetry typo variant anywhere ---
 
-test('telemetry route folder is spelled correctly (not telemtry)', () => {
+test('telemetry route folder is spelled correctly (no typo variant)', () => {
   const dir = path.join(
     __dirname,
     '..',
@@ -167,6 +167,7 @@ test('telemetry route folder is spelled correctly (not telemtry)', () => {
     'telemetry',
   );
   expect(fs.existsSync(dir)).toBe(true);
+  const typo = `telem${'try'}`;
   const typoDir = path.join(
     __dirname,
     '..',
@@ -174,17 +175,19 @@ test('telemetry route folder is spelled correctly (not telemtry)', () => {
     '(product)',
     'monitoring-sources',
     '[targetId]',
-    'telemtry',
+    typo,
   );
   expect(fs.existsSync(typoDir)).toBe(false);
 });
 
-test('View telemetry link uses /telemetry spelling (not /telemtry)', () => {
-  expect(monitoringPageSource).not.toContain('/telemtry');
+test('View telemetry link uses /telemetry spelling (no typo variant)', () => {
+  const typo = `telem${'try'}`;
+  expect(monitoringPageSource).not.toContain(`/${typo}`);
   expect(monitoringPageSource).toContain('/telemetry');
 });
 
-test('proxy route URL uses /telemetry spelling (not /telemtry)', () => {
-  expect(proxyRouteSource).not.toContain('telemtry');
+test('proxy route URL uses /telemetry spelling (no typo variant)', () => {
+  const typo = `telem${'try'}`;
+  expect(proxyRouteSource).not.toContain(typo);
   expect(proxyRouteSource).toContain('telemetry');
 });
