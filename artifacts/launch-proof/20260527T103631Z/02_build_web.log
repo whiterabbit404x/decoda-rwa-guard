@@ -1,0 +1,104 @@
+> phase1-treasury-monorepo@0.1.0 build:web
+> NEXT_PUBLIC_LIVE_MODE_ENABLED=false API_URL=https://api.example.com npm run build --workspace apps/web
+
+
+> @phase1/web@0.1.0 build
+> NEXT_TELEMETRY_DISABLED=1 NEXT_PUBLIC_LIVE_MODE_ENABLED=${NEXT_PUBLIC_LIVE_MODE_ENABLED:-false} API_URL=${API_URL:-https://api.example.com} next build
+
+   ▲ Next.js 15.5.18
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 9.5s
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/8) ...
+   Generating static pages (2/8) 
+   Generating static pages (4/8) 
+   Generating static pages (6/8) 
+ ✓ Generating static pages (8/8)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                                                       Size  First Load JS
+┌ ƒ /                                                            182 B         106 kB
+├ ○ /_not-found                                                  989 B         103 kB
+├ ƒ /alerts                                                    4.02 kB         122 kB
+├ ƒ /api/auth/csrf                                               214 B         103 kB
+├ ƒ /api/auth/forgot-password                                    214 B         103 kB
+├ ƒ /api/auth/me                                                 214 B         103 kB
+├ ƒ /api/auth/mfa/complete-signin                                214 B         103 kB
+├ ƒ /api/auth/mfa/confirm                                        214 B         103 kB
+├ ƒ /api/auth/mfa/disable                                        214 B         103 kB
+├ ƒ /api/auth/mfa/enroll                                         214 B         103 kB
+├ ƒ /api/auth/resend-verification                                214 B         103 kB
+├ ƒ /api/auth/reset-password                                     214 B         103 kB
+├ ƒ /api/auth/select-workspace                                   214 B         103 kB
+├ ƒ /api/auth/signin                                             214 B         103 kB
+├ ƒ /api/auth/signout                                            214 B         103 kB
+├ ƒ /api/auth/signout-all                                        214 B         103 kB
+├ ƒ /api/auth/signup                                             214 B         103 kB
+├ ƒ /api/auth/verify-email                                       214 B         103 kB
+├ ƒ /api/auth/workspaces                                         214 B         103 kB
+├ ƒ /api/build-info                                              214 B         103 kB
+├ ƒ /api/dashboard-page-data                                     214 B         103 kB
+├ ƒ /api/health                                                  214 B         103 kB
+├ ƒ /api/monitoring/sources                                      214 B         103 kB
+├ ƒ /api/monitoring/systems                                      214 B         103 kB
+├ ƒ /api/monitoring/systems/reconcile                            214 B         103 kB
+├ ƒ /api/monitoring/systems/repair/treasury-settlement-target    214 B         103 kB
+├ ƒ /api/monitoring/targets/[targetId]/enable                    214 B         103 kB
+├ ƒ /api/monitoring/targets/[targetId]/repair                    214 B         103 kB
+├ ƒ /api/monitoring/targets/[targetId]/telemetry                 214 B         103 kB
+├ ƒ /api/ops/monitoring/runtime-status                           214 B         103 kB
+├ ƒ /api/runtime-config                                          214 B         103 kB
+├ ƒ /assets                                                    6.28 kB         120 kB
+├ ƒ /compliance                                                2.17 kB         109 kB
+├ ƒ /dashboard                                                 6.91 kB         121 kB
+├ ƒ /evidence                                                  5.67 kB         124 kB
+├ ƒ /exports                                                     214 B         103 kB
+├ ƒ /help                                                        182 B         106 kB
+├ ƒ /history                                                   3.35 kB         114 kB
+├ ƒ /incidents                                                 5.74 kB         124 kB
+├ ƒ /integrations                                              5.39 kB         119 kB
+├ ƒ /monitored-systems                                           214 B         103 kB
+├ ƒ /monitoring-sources                                        4.57 kB         118 kB
+├ ƒ /monitoring-sources/[targetId]/telemetry                   2.62 kB         113 kB
+├ ƒ /monitoring-sources/monitored-systems                      5.64 kB         113 kB
+├ ƒ /monitoring-sources/targets                                2.09 kB         109 kB
+├ ƒ /onboarding                                                3.26 kB         117 kB
+├ ƒ /privacy                                                     182 B         106 kB
+├ ƒ /reset-password                                              991 B         103 kB
+├ ƒ /resilience                                                  214 B         103 kB
+├ ƒ /response-actions                                          5.16 kB         123 kB
+├ ƒ /security                                                    182 B         106 kB
+├ ƒ /settings                                                  6.32 kB         117 kB
+├ ƒ /settings/security                                         2.57 kB         113 kB
+├ ƒ /sign-in                                                   4.63 kB         115 kB
+├ ○ /sign-out                                                    404 B         107 kB
+├ ƒ /sign-up                                                   2.71 kB         113 kB
+├ ƒ /support                                                     182 B         106 kB
+├ ƒ /system-health                                               508 B         114 kB
+├ ƒ /system-health/readiness                                   4.47 kB         115 kB
+├ ƒ /targets                                                     214 B         103 kB
+├ ƒ /templates                                                   724 B         108 kB
+├ ƒ /terms                                                       182 B         106 kB
+├ ƒ /threat                                                    4.35 kB         122 kB
+├ ƒ /trust                                                       182 B         106 kB
+├ ƒ /verify-email                                                957 B         103 kB
+└ ƒ /workspaces                                                1.47 kB         112 kB
++ First Load JS shared by all                                   102 kB
+  ├ chunks/18-4ce5efc64451836b.js                              46.3 kB
+  ├ chunks/87c73c54-24122e7b92478d00.js                        54.2 kB
+  └ other shared chunks (total)                                1.92 kB
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+
+ ⚠ Warning: Next.js inferred your workspace root, but it may not be correct.
+ We detected multiple lockfiles and selected the directory of /home/user/decoda-rwa-guard/package-lock.json as the root directory.
+ To silence this warning, set `outputFileTracingRoot` in your Next.js config, or consider removing one of the lockfiles if it's not needed.
+   See https://nextjs.org/docs/app/api-reference/config/next-config-js/output#caveats for more information.
+ Detected additional lockfiles: 
+   * /home/user/decoda-rwa-guard/apps/web/package-lock.json

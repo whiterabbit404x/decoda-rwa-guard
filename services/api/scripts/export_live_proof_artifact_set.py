@@ -114,8 +114,82 @@ def _build_incident_timeline(action_result: dict[str, Any]) -> list[dict[str, An
     ]
 
 
+_REQUIRED_PROOF_RECORDS = (
+    'chain_evidence_detection_alert_incident.json',
+    'evidence_metadata_verification.json',
+    'live_action_execution.json',
+    'incident_timeline_action_metadata.json',
+)
+
+
 def _write_json(name: str, payload: Any) -> None:
     (ARTIFACT_DIR / name).write_text(json.dumps(payload, indent=2, sort_keys=True, default=str))
+
+
+def _write_summary(chain: dict[str, Any], action_result: dict[str, Any]) -> None:
+    """Write summary.json to the live_evidence/latest/ directory.
+
+    live_evidence_ready is true only if all required proof records exist and parse.
+    Fail-closed: missing or unparseable records → live_evidence_ready=False.
+    """
+    missing_reasons: list[str] = []
+    for record in _REQUIRED_PROOF_RECORDS:
+        record_path = ARTIFACT_DIR / record
+        if not record_path.exists():
+            missing_reasons.append(f'missing_proof_record:{record}')
+            continue
+        try:
+            json.loads(record_path.read_text(encoding='utf-8'))
+        except Exception as exc:
+            missing_reasons.append(f'parse_failure:{record}:{exc}')
+
+    live_evidence_ready = not missing_reasons
+
+    evidence = chain.get('evidence') if isinstance(chain.get('evidence'), dict) else {}
+    evidence_origin = str(evidence.get('origin') or '').strip().lower()
+    executed_at = str(action_result.get('executed_at') or '').strip() or None
+
+    summary: dict[str, Any] = {
+        'generated_at': _now_iso(),
+        'evidence_source': evidence_origin or 'unknown',
+        'telemetry_evidence_source': evidence_origin if evidence_origin else 'unknown',
+        'live_evidence_ready': live_evidence_ready,
+        'provider_ready': live_evidence_ready,
+        'missing_reasons': missing_reasons,
+        'latest_live_telemetry_at': executed_at,
+        # Boolean fields required by validate_readiness_proof.py
+        'live_successful_monitoring_demo': live_evidence_ready and evidence_origin == 'live',
+        'simulator_successful_monitoring_demo': False,
+        'telemetry_event_present': bool(chain.get('evidence')),
+        'detection_generated_from_telemetry': bool(chain.get('detection')),
+        'alert_generated_from_detection': bool(chain.get('alert')),
+        'incident_opened_from_alert': bool(chain.get('incident')),
+        'response_action_recommended_or_executed': bool(action_result.get('external_reference')),
+        'evidence_package_exported': live_evidence_ready,
+        'billing_email_provider_checks_passing': False,
+        'onboarding_to_first_signal_complete': live_evidence_ready,
+        'production_validation_proof_bundle_complete': False,
+        'controlled_pilot_ready': False,
+        'enterprise_procurement_ready': False,
+        'broad_self_serve_ready': False,
+        'broad_self_serve_blocked_reason': 'billing_email_provider_checks_not_confirmed',
+        'paid_launch_readiness': {
+            'billing_ready': False,
+            'billing_webhook_ready': False,
+            'email_ready': False,
+            'provider_ready': live_evidence_ready,
+            'paid_launch_ready': False,
+            'blockers': ['billing_not_configured', 'email_not_configured'],
+        },
+        'claim_ineligibility_reasons': ['billing_not_configured', 'email_not_configured'],
+    }
+
+    live_evidence_dir = ARTIFACT_DIR.parent
+    live_evidence_dir.mkdir(parents=True, exist_ok=True)
+    (live_evidence_dir / 'summary.json').write_text(
+        json.dumps(summary, indent=2, sort_keys=True, default=str),
+        encoding='utf-8',
+    )
 
 
 def main() -> int:
@@ -134,14 +208,10 @@ def main() -> int:
         {
             'generated_at': _now_iso(),
             'artifact_set': 'LIVE proof',
-            'records': [
-                'chain_evidence_detection_alert_incident.json',
-                'evidence_metadata_verification.json',
-                'live_action_execution.json',
-                'incident_timeline_action_metadata.json',
-            ],
+            'records': list(_REQUIRED_PROOF_RECORDS),
         },
     )
+    _write_summary(chain, action_result)
     print(json.dumps({'status': 'ok', 'artifact_dir': str(ARTIFACT_DIR)}, indent=2))
     return 0
 

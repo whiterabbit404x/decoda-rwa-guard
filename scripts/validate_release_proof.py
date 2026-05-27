@@ -327,45 +327,45 @@ def main() -> int:
     print('[validate-release-proof] Validating ci-required-gates.json...')
     ok, issues = validate_ci_required_gates(ci_gates_path)
     if ok:
-        print('[validate-release-proof] ✓ ci-required-gates.json valid')
+        print('[validate-release-proof] [OK] ci-required-gates.json valid')
     else:
-        print('[validate-release-proof] ✗ ci-required-gates.json invalid')
+        print('[validate-release-proof] [FAIL] ci-required-gates.json invalid')
         all_ok = False
     all_issues.extend(issues)
 
     print('[validate-release-proof] Validating manifest.json...')
     ok, issues = validate_manifest(manifest_path)
     if ok:
-        print('[validate-release-proof] ✓ manifest.json valid')
+        print('[validate-release-proof] [OK] manifest.json valid')
     else:
-        print('[validate-release-proof] ✗ manifest.json invalid')
+        print('[validate-release-proof] [FAIL] manifest.json invalid')
         all_ok = False
     all_issues.extend(issues)
 
     print('[validate-release-proof] Validating test-report-summary.json...')
     ok, issues = validate_test_report_summary(test_report_path)
     if ok:
-        print('[validate-release-proof] ✓ test-report-summary.json valid')
+        print('[validate-release-proof] [OK] test-report-summary.json valid')
     else:
-        print('[validate-release-proof] ✗ test-report-summary.json invalid')
+        print('[validate-release-proof] [FAIL] test-report-summary.json invalid')
         all_ok = False
     all_issues.extend(issues)
 
     print('[validate-release-proof] Validating release-proof summary.json...')
     ok, issues = validate_release_proof(release_proof_path)
     if ok:
-        print('[validate-release-proof] ✓ release-proof summary.json valid')
+        print('[validate-release-proof] [OK] release-proof summary.json valid')
     else:
-        print('[validate-release-proof] ✗ release-proof summary.json invalid')
+        print('[validate-release-proof] [FAIL] release-proof summary.json invalid')
         all_ok = False
     all_issues.extend(issues)
 
     print('[validate-release-proof] Validating launch-proof summary.json...')
     ok, issues = validate_launch_proof(launch_proof_path)
     if ok:
-        print('[validate-release-proof] ✓ launch-proof summary.json valid')
+        print('[validate-release-proof] [OK] launch-proof summary.json valid')
     else:
-        print('[validate-release-proof] ✗ launch-proof summary.json invalid')
+        print('[validate-release-proof] [FAIL] launch-proof summary.json invalid')
         all_ok = False
     all_issues.extend(issues)
 

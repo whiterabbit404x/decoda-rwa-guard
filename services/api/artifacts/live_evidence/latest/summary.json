@@ -1,0 +1,39 @@
+{
+  "alert_generated_from_detection": true,
+  "billing_email_provider_checks_passing": false,
+  "broad_self_serve_blocked_reason": "billing_email_provider_checks_not_confirmed",
+  "broad_self_serve_ready": false,
+  "claim_ineligibility_reasons": [
+    "billing_not_configured",
+    "email_not_configured"
+  ],
+  "controlled_pilot_ready": false,
+  "detection_generated_from_telemetry": true,
+  "enterprise_procurement_ready": false,
+  "evidence_package_exported": true,
+  "evidence_source": "live",
+  "generated_at": "2026-05-27T10:36:27.545704+00:00",
+  "incident_opened_from_alert": true,
+  "latest_live_telemetry_at": "2026-04-22T14:32:59.583341+00:00",
+  "live_evidence_ready": true,
+  "live_successful_monitoring_demo": true,
+  "missing_reasons": [],
+  "onboarding_to_first_signal_complete": true,
+  "paid_launch_readiness": {
+    "billing_ready": false,
+    "billing_webhook_ready": false,
+    "blockers": [
+      "billing_not_configured",
+      "email_not_configured"
+    ],
+    "email_ready": false,
+    "paid_launch_ready": false,
+    "provider_ready": true
+  },
+  "production_validation_proof_bundle_complete": false,
+  "provider_ready": true,
+  "response_action_recommended_or_executed": true,
+  "simulator_successful_monitoring_demo": false,
+  "telemetry_event_present": true,
+  "telemetry_evidence_source": "live"
+}

@@ -34,8 +34,8 @@ def _contains_reason_code(container: object, code: str) -> bool:
     return str(container or '').strip().lower() == code.lower()
 
 
-def _read_json_payload(api_url: str, path: str, headers: dict[str, str], *, method: str = 'GET') -> tuple[int, dict[str, object]]:
-    req = Request(f"{api_url.rstrip('/')}/{path.lstrip('/')}", headers=headers, method=method)
+def _read_json_payload(url: str, headers: dict[str, str], *, method: str = 'GET') -> tuple[int, dict[str, object]]:
+    req = Request(url, headers=headers, method=method)
     with urlopen(req, timeout=20) as resp:  # nosec B310
         status = int(getattr(resp, 'status', 200) or 200)
         payload = json.loads(resp.read().decode('utf-8'))
@@ -57,7 +57,10 @@ def _status_reason_indicates_unavailable(reason: str) -> bool:
 
 
 def main() -> int:
-    api_url = (os.getenv('API_URL') or 'http://localhost:8000').strip().rstrip('/')
+    monitoring_runtime_status_url = (os.getenv('MONITORING_RUNTIME_STATUS_URL') or '').strip().rstrip('/')
+    staging_api_url = (os.getenv('STAGING_API_URL') or '').strip().rstrip('/')
+    api_url = (os.getenv('API_URL') or staging_api_url or 'http://localhost:8000').strip().rstrip('/')
+    runtime_status_url = monitoring_runtime_status_url or f"{api_url}/ops/monitoring/runtime-status"
     token = os.getenv('PILOT_AUTH_TOKEN', '').strip()
     workspace_id = (os.getenv('RUNTIME_STATUS_WORKSPACE_ID') or os.getenv('WORKSPACE_ID') or '').strip()
     now = datetime.now(timezone.utc)
@@ -72,11 +75,11 @@ def main() -> int:
         headers['X-Workspace-Id'] = workspace_id
 
     try:
-        reconcile_status, reconcile_payload = _read_json_payload(api_url, '/monitoring/systems/reconcile', headers, method='POST')
-        status_code, payload = _read_json_payload(api_url, '/ops/monitoring/runtime-status', headers)
-        detections_status, detections_payload = _read_json_payload(api_url, '/detections?limit=50', headers)
-        alerts_status, alerts_payload = _read_json_payload(api_url, '/alerts?status_value=open', headers)
-        incidents_status, incidents_payload = _read_json_payload(api_url, '/incidents?status_value=open', headers)
+        reconcile_status, reconcile_payload = _read_json_payload(f"{api_url}/monitoring/systems/reconcile", headers, method='POST')
+        status_code, payload = _read_json_payload(runtime_status_url, headers)
+        detections_status, detections_payload = _read_json_payload(f"{api_url}/detections?limit=50", headers)
+        alerts_status, alerts_payload = _read_json_payload(f"{api_url}/alerts?status_value=open", headers)
+        incidents_status, incidents_payload = _read_json_payload(f"{api_url}/incidents?status_value=open", headers)
     except HTTPError as exc:
         detail = exc.read().decode('utf-8', errors='replace') if hasattr(exc, 'read') else str(exc)
         print(json.dumps({'ok': False, 'error': 'runtime_status_http_error', 'status_code': exc.code, 'detail': detail}, indent=2))
@@ -260,6 +263,7 @@ def main() -> int:
     result = {
         'ok': ok,
         'api_url': api_url,
+        'runtime_status_url': runtime_status_url,
         'workspace_id': workspace_runtime_id,
         'workspace_slug': workspace_slug,
         'reconcile_created_or_updated': reconciled_rows,

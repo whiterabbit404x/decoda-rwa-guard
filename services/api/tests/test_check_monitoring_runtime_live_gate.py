@@ -258,3 +258,71 @@ def test_runtime_live_gate_fails_when_escalation_alerts_have_no_incident_workflo
     assert body['ok'] is False
     failures = '\n'.join(body['failures'])
     assert 'incident workflow must be populated when escalation is required; high/critical open alerts are missing linked incidents.' in failures
+
+
+def test_runtime_live_gate_uses_staging_api_url_when_api_url_not_set(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """STAGING_API_URL is used as base URL when API_URL is absent."""
+    captured_urls: list[str] = []
+
+    def fake_urlopen(req: object, *_a: object, **_kw: object) -> _FakeResponse:
+        captured_urls.append(getattr(req, 'full_url', str(req)))
+        return _FakeResponse(
+            {'reconcile': {'created_or_updated': 1}, 'monitored_systems_count': 1}
+            if len(captured_urls) == 1
+            else _healthy_payload()
+            if len(captured_urls) == 2
+            else {'detections': [{'id': 'det-1', 'linked_evidence_count': 1, 'chain_tx_hash': '0xabc'}]}
+            if len(captured_urls) == 3
+            else {'alerts': [{'id': 'alert-1', 'severity': 'high', 'status': 'open', 'incident_id': 'inc-1'}]}
+            if len(captured_urls) == 4
+            else {'incidents': [{'id': 'inc-1'}]}
+        )
+
+    monkeypatch.setattr(check_monitoring_runtime_live_gate, 'urlopen', fake_urlopen)
+    monkeypatch.setenv('STAGING_API_URL', 'http://staging.example.com')
+    monkeypatch.delenv('API_URL', raising=False)
+    monkeypatch.delenv('MONITORING_RUNTIME_STATUS_URL', raising=False)
+
+    code = check_monitoring_runtime_live_gate.main()
+    assert code == 0
+
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert payload['api_url'] == 'http://staging.example.com'
+    assert 'staging.example.com' in payload['runtime_status_url']
+    assert all('staging.example.com' in url for url in captured_urls)
+
+
+def test_runtime_live_gate_uses_monitoring_runtime_status_url_for_runtime_endpoint(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """MONITORING_RUNTIME_STATUS_URL overrides the runtime-status endpoint URL."""
+    captured_urls: list[str] = []
+
+    def fake_urlopen(req: object, *_a: object, **_kw: object) -> _FakeResponse:
+        captured_urls.append(getattr(req, 'full_url', str(req)))
+        return _FakeResponse(
+            {'reconcile': {'created_or_updated': 1}, 'monitored_systems_count': 1}
+            if len(captured_urls) == 1
+            else _healthy_payload()
+            if len(captured_urls) == 2
+            else {'detections': [{'id': 'det-1', 'linked_evidence_count': 1, 'chain_tx_hash': '0xabc'}]}
+            if len(captured_urls) == 3
+            else {'alerts': [{'id': 'alert-1', 'severity': 'high', 'status': 'open', 'incident_id': 'inc-1'}]}
+            if len(captured_urls) == 4
+            else {'incidents': [{'id': 'inc-1'}]}
+        )
+
+    monkeypatch.setattr(check_monitoring_runtime_live_gate, 'urlopen', fake_urlopen)
+    monkeypatch.setenv('API_URL', 'http://api.example.com')
+    monkeypatch.setenv('MONITORING_RUNTIME_STATUS_URL', 'http://monitor.example.com/ops/monitoring/runtime-status')
+    monkeypatch.delenv('STAGING_API_URL', raising=False)
+
+    code = check_monitoring_runtime_live_gate.main()
+    assert code == 0
+
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert payload['runtime_status_url'] == 'http://monitor.example.com/ops/monitoring/runtime-status'
+    # The runtime-status call should go to the MONITORING_RUNTIME_STATUS_URL
+    assert captured_urls[1] == 'http://monitor.example.com/ops/monitoring/runtime-status'
+    # Other endpoints use API_URL base
+    assert all('api.example.com' in url for url in [captured_urls[0]] + captured_urls[2:])

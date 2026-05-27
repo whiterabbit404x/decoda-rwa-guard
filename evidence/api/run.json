@@ -1,0 +1,13 @@
+{
+  "generated_at": "2026-05-27T10:38:38.181801+00:00",
+  "status": "missing_configuration",
+  "returncode": null,
+  "required_env": [
+    "STAGING_BASE_URL",
+    "STAGING_API_URL",
+    "STAGING_EVIDENCE_EMAIL",
+    "STAGING_EVIDENCE_PASSWORD"
+  ],
+  "trace_enabled": false,
+  "detail": "Missing required staging credentials/config: STAGING_BASE_URL, STAGING_API_URL, STAGING_EVIDENCE_EMAIL, STAGING_EVIDENCE_PASSWORD"
+}
