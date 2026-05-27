@@ -1115,6 +1115,60 @@ def _persist_live_coverage_telemetry(
         f"{target['workspace_id']}:{target['id']}:coverage_poll:"
         f"{provider_result.latest_block or int(observed_at.timestamp())}"
     )
+    # Validate that target.asset_id exists in asset_registry before inserting
+    # telemetry_events (which has a FK to asset_registry, not to assets).
+    # targets.asset_id → assets(id), but telemetry_events.asset_id → asset_registry(id).
+    # If the UUID is missing from asset_registry, repair by inserting a row with
+    # the same UUID so the FK is satisfied.  If repair fails, persist telemetry
+    # with asset_id=NULL (nullable column) and log a structured warning.
+    _raw_asset_id = target.get('asset_id')
+    _asset_id_str = str(_raw_asset_id) if _raw_asset_id else None
+    _telem_asset_id: str | None = None
+    if _asset_id_str:
+        _ws_id_str = str(target['workspace_id'])
+        _ar_row = connection.execute(
+            'SELECT id FROM asset_registry WHERE id = %s::uuid LIMIT 1',
+            (_asset_id_str,),
+        ).fetchone()
+        if _ar_row:
+            _telem_asset_id = _asset_id_str
+        else:
+            _contract_id = str(target.get('contract_identifier') or '').strip()
+            _wallet_addr = str(target.get('wallet_address') or '').strip()
+            _ar_type = 'smart_contract' if _contract_id else ('wallet' if _wallet_addr else 'smart_contract')
+            _ar_addr = _contract_id or _wallet_addr or str(target['id'])
+            _ar_chain = _chain_network or 'ethereum'
+            try:
+                connection.execute(
+                    '''
+                    INSERT INTO asset_registry (
+                        id, workspace_id, type, address_or_identifier, chain, status, created_at, updated_at
+                    )
+                    VALUES (%s::uuid, %s::uuid, %s, %s, %s, 'active', NOW(), NOW())
+                    ON CONFLICT DO NOTHING
+                    ''',
+                    (_asset_id_str, _ws_id_str, _ar_type, _ar_addr, _ar_chain),
+                )
+                _ar_verify = connection.execute(
+                    'SELECT id FROM asset_registry WHERE id = %s::uuid LIMIT 1',
+                    (_asset_id_str,),
+                ).fetchone()
+                if _ar_verify:
+                    _telem_asset_id = _asset_id_str
+                    logger.info(
+                        'code=LIVE_TELEMETRY_ASSET_REGISTRY_REPAIRED asset_id=%s workspace_id=%s target_id=%s chain=%s',
+                        _asset_id_str, _ws_id_str, target.get('id'), _ar_chain,
+                    )
+                else:
+                    logger.warning(
+                        'code=LIVE_TELEMETRY_ASSET_FK_MISSING asset_id=%s workspace_id=%s target_id=%s bad_asset_id=%s',
+                        _asset_id_str, _ws_id_str, target.get('id'), _asset_id_str,
+                    )
+            except Exception as _ar_exc:
+                logger.warning(
+                    'code=LIVE_TELEMETRY_ASSET_FK_MISSING asset_id=%s workspace_id=%s target_id=%s error=%s',
+                    _asset_id_str, _ws_id_str, target.get('id'), _safe_error_message(_ar_exc),
+                )
     connection.execute(
         """
         INSERT INTO telemetry_events (
@@ -1127,7 +1181,7 @@ def _persist_live_coverage_telemetry(
         (
             str(uuid.uuid4()),
             str(target['workspace_id']),
-            str(target['asset_id']) if target.get('asset_id') else None,
+            _telem_asset_id,
             str(target['id']),
             'evm_rpc',
             'rpc_polling',

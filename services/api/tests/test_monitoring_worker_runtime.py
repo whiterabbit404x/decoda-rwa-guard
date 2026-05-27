@@ -1357,15 +1357,37 @@ def test_monitoring_cycle_with_one_candidate_proceeds_past_heartbeat(monkeypatch
 # ---------------------------------------------------------------------------
 
 class _TelemetryConn:
-    """Minimal fake connection that records telemetry_events inserts."""
+    """Minimal fake connection that records telemetry_events inserts.
 
-    def __init__(self, *, raise_on_conflict: bool = False):
+    asset_registry_has_row=True (default) pre-populates the default target's
+    asset_id so the new asset_registry check in _persist_live_coverage_telemetry
+    finds an existing row without triggering a repair INSERT.
+    """
+
+    def __init__(self, *, raise_on_conflict: bool = False, asset_registry_has_row: bool = True):
         self.telemetry_rows: dict[tuple, dict] = {}
         self.telemetry_inserts_attempted = 0
         self.raise_on_conflict = raise_on_conflict
+        # Simulated asset_registry rows by id string
+        self.asset_registry_rows: set[str] = set()
+        if asset_registry_has_row:
+            self.asset_registry_rows.add('00000000-0000-0000-0000-cccccccccccc')
+        self.asset_registry_inserts = 0
+        self.asset_registry_repairs = 0
 
     def execute(self, query, params=None):
         normalized = ' '.join(str(query).split())
+        if 'SELECT id FROM asset_registry' in normalized:
+            asset_id = str(params[0]).rstrip('::uuid').strip() if params else ''
+            row = {'id': asset_id} if asset_id in self.asset_registry_rows else None
+            return _Result(row=row)
+        if 'INSERT INTO asset_registry' in normalized:
+            self.asset_registry_inserts += 1
+            if params:
+                inserted_id = str(params[0]).rstrip('::uuid').strip()
+                self.asset_registry_rows.add(inserted_id)
+                self.asset_registry_repairs += 1
+            return _Result()
         if 'INSERT INTO telemetry_events' in normalized:
             self.telemetry_inserts_attempted += 1
             if self.raise_on_conflict:
@@ -1538,3 +1560,118 @@ def test_poll_only_without_telemetry_does_not_satisfy_live_evidence_ready() -> N
     assert result['live_evidence_ready'] is False, (
         'poll-only without persisted telemetry must not satisfy live_evidence_ready'
     )
+
+
+# ---------------------------------------------------------------------------
+# asset_registry FK repair tests
+# ---------------------------------------------------------------------------
+
+def test_persist_live_coverage_telemetry_uses_existing_asset_registry_row() -> None:
+    """When asset_registry row already exists, telemetry uses that asset_id without repair."""
+    conn = _TelemetryConn(asset_registry_has_row=True)
+    monitoring_runner._persist_live_coverage_telemetry(
+        conn,
+        target=_make_target(),
+        provider_result=_make_provider_result(),
+        observed_at=datetime.now(timezone.utc),
+    )
+    assert conn.asset_registry_inserts == 0, 'no repair insert needed when asset_registry row exists'
+    assert conn.telemetry_inserts_attempted == 1
+    row = next(iter(conn.telemetry_rows.values()))
+    assert row['params'][2] == '00000000-0000-0000-0000-cccccccccccc', (
+        'telemetry asset_id must equal target asset_id when row already in asset_registry'
+    )
+
+
+def test_persist_live_coverage_telemetry_repairs_missing_asset_registry() -> None:
+    """When asset_registry row is missing, worker inserts it then persists telemetry."""
+    conn = _TelemetryConn(asset_registry_has_row=False)
+    target = {**_make_target(), 'contract_identifier': '0xABC123', 'wallet_address': None}
+    monitoring_runner._persist_live_coverage_telemetry(
+        conn,
+        target=target,
+        provider_result=_make_provider_result(),
+        observed_at=datetime.now(timezone.utc),
+    )
+    assert conn.asset_registry_repairs >= 1, 'worker must repair missing asset_registry row'
+    assert conn.telemetry_inserts_attempted == 1
+    row = next(iter(conn.telemetry_rows.values()))
+    assert row['params'][2] == '00000000-0000-0000-0000-cccccccccccc', (
+        'telemetry asset_id must equal target asset_id after successful repair'
+    )
+
+
+def test_persist_live_coverage_telemetry_null_asset_id_on_failed_repair() -> None:
+    """When asset_registry repair raises, telemetry is persisted with asset_id=NULL (no crash)."""
+
+    class _FailingRepairConn(_TelemetryConn):
+        def execute(self, query, params=None):
+            normalized = ' '.join(str(query).split())
+            if 'INSERT INTO asset_registry' in normalized:
+                raise RuntimeError('simulated FK repair failure')
+            return super().execute(query, params)
+
+    conn = _FailingRepairConn(asset_registry_has_row=False)
+    # Must not raise — the worker handles the repair exception and falls back to NULL
+    monitoring_runner._persist_live_coverage_telemetry(
+        conn,
+        target=_make_target(),
+        provider_result=_make_provider_result(),
+        observed_at=datetime.now(timezone.utc),
+    )
+    assert conn.telemetry_inserts_attempted == 1, 'telemetry insert must proceed even when repair fails'
+    row = next(iter(conn.telemetry_rows.values()))
+    assert row['params'][2] is None, 'asset_id must be NULL when asset_registry repair failed'
+
+
+def test_persist_live_coverage_telemetry_no_asset_id_inserts_null() -> None:
+    """Target with asset_id=None must persist telemetry with asset_id=NULL (no repair attempted)."""
+    conn = _TelemetryConn(asset_registry_has_row=False)
+    target = {**_make_target(), 'asset_id': None}
+    monitoring_runner._persist_live_coverage_telemetry(
+        conn,
+        target=target,
+        provider_result=_make_provider_result(),
+        observed_at=datetime.now(timezone.utc),
+    )
+    assert conn.asset_registry_inserts == 0, 'no asset_registry insert when target has no asset_id'
+    assert conn.telemetry_inserts_attempted == 1
+    row = next(iter(conn.telemetry_rows.values()))
+    assert row['params'][2] is None, 'telemetry asset_id must be NULL when target has no asset_id'
+
+
+def test_live_evidence_ready_false_until_full_chain() -> None:
+    """live_evidence_ready stays False for partial chains (telemetry-only, detection-only, etc.)."""
+    from services.api.app.paid_launch_readiness import build_live_evidence_proof
+
+    partial_states = [
+        # telemetry persisted but no detection
+        {
+            'provider_ready': True, 'evidence_source': 'live',
+            'source_type': 'rpc_polling',
+            'latest_live_telemetry_at': '2026-05-22T12:00:00+00:00',
+            'rpc_polling_telemetry_count': 1, 'monitoring_checked_count': 1,
+            'receipts_written': 1, 'detections_count': 0, 'alerts_count': 0,
+            'incidents_count': 0, 'response_actions_count': 0, 'evidence_count': 0,
+            'detection_telemetry_linked': False,
+            'alert_detection_linked': False,
+            'incident_alert_linked': False,
+        },
+        # detection present but no alert
+        {
+            'provider_ready': True, 'evidence_source': 'live',
+            'source_type': 'rpc_polling',
+            'latest_live_telemetry_at': '2026-05-22T12:00:00+00:00',
+            'rpc_polling_telemetry_count': 1, 'monitoring_checked_count': 1,
+            'receipts_written': 1, 'detections_count': 1, 'alerts_count': 0,
+            'incidents_count': 0, 'response_actions_count': 0, 'evidence_count': 0,
+            'detection_telemetry_linked': True,
+            'alert_detection_linked': False,
+            'incident_alert_linked': False,
+        },
+    ]
+    for state in partial_states:
+        result = build_live_evidence_proof(chain_evidence=state)
+        assert result['live_evidence_ready'] is False, (
+            f'live_evidence_ready must be False for partial chain: {state}'
+        )
