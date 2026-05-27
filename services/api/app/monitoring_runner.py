@@ -5857,7 +5857,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     ).get('c')
                     or 0
                 )
-                detections_count = int((latest_detection_count_row or {}).get('c') or 0) if 'latest_detection_count_row' in locals() else 0
+                latest_detection_count_row = connection.execute(
+                    f'SELECT COUNT(*) AS c FROM detections {"WHERE workspace_id = %s" if workspace_id else ""}',
+                    scoped_params,
+                ).fetchone()
+                detections_count = int((latest_detection_count_row or {}).get('c') or 0)
                 alerts_count = int((open_alerts or {}).get('c') or 0)
                 incidents_count = int((open_incidents or {}).get('c') or 0)
                 response_actions_count = int(
@@ -6533,9 +6537,18 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         legacy_last_telemetry_at = telemetry_candidates[0][0] if telemetry_candidates else None
         legacy_telemetry_kind = telemetry_candidates[0][1] if telemetry_candidates else None
         last_coverage_telemetry_at = live_coverage_receipts_workspace_latest or legacy_last_coverage_telemetry_at
+        # evm_rpc/rpc_polling rows in telemetry_events are coverage polls.
+        # When monitoring_event_receipts and monitored_systems haven't written a
+        # coverage timestamp yet, fall back to canonical_last_telemetry_at so
+        # coverage_fresh is accurate and freshness_status is set correctly.
+        if canonical_last_telemetry_at is not None:
+            if last_coverage_telemetry_at is None or canonical_last_telemetry_at > last_coverage_telemetry_at:
+                last_coverage_telemetry_at = canonical_last_telemetry_at
         last_telemetry_at = canonical_last_telemetry_at or legacy_last_telemetry_at
+        # 'coverage' is the recognized kind in build_workspace_monitoring_summary;
+        # evm_rpc/rpc_polling polling events are coverage telemetry by definition.
         telemetry_kind = (
-            'canonical_telemetry_events' if canonical_last_telemetry_at is not None
+            'coverage' if canonical_last_telemetry_at is not None
             else (legacy_telemetry_kind if legacy_last_telemetry_at is not None else None)
         )
         latest_target_coverage_rows = connection.execute(
@@ -6896,6 +6909,19 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         configuration_reason = configuration_diagnostics.get('configuration_reason')
         primary_reason = configuration_reason
         configuration_reason_codes = list(configuration_diagnostics.get('reason_codes') or [])
+        # When canonical telemetry_events has recent live rows but workspace_configured
+        # is False (e.g., stale asset linkage in monitored_systems), override to prevent
+        # the OFFLINE status. Telemetry being persisted proves monitoring is running;
+        # this surfaces as LIMITED COVERAGE rather than OFFLINE.
+        if not workspace_configured and canonical_last_telemetry_at is not None:
+            _telem_age_for_config = int((now - canonical_last_telemetry_at).total_seconds())
+            if _telem_age_for_config <= telemetry_window_seconds:
+                workspace_configured = True
+                if 'telemetry_active_configuration_incomplete' not in configuration_reason_codes:
+                    configuration_reason_codes.append('telemetry_active_configuration_incomplete')
+                if configuration_reason is None:
+                    configuration_reason = 'telemetry_active_configuration_incomplete'
+                primary_reason = configuration_reason
         if not workspace_configured:
             logger.warning(
                 'monitoring_workspace_configuration_diagnostics workspace_id=%s workspace_slug=%s reason_codes=%s diagnostics=%s',
@@ -7667,6 +7693,26 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         payload['last_telemetry_source'] = runtime_last_telemetry_source
         payload['last_detection_at'] = runtime_last_detection_at.isoformat() if runtime_last_detection_at else None
         payload['last_detection_source'] = runtime_last_detection_source
+        # latest_live_telemetry_at: MAX(observed_at) from telemetry_events for live evm_rpc/rpc_polling rows.
+        latest_live_telemetry_at = canonical_last_telemetry_at.isoformat() if canonical_last_telemetry_at else None
+        payload['latest_live_telemetry_at'] = latest_live_telemetry_at
+        summary['latest_live_telemetry_at'] = latest_live_telemetry_at
+        # live_evidence_ready: True only when the full evidence chain is complete.
+        # A telemetry row alone is NOT sufficient — the chain requires:
+        # telemetry → detection → alert → incident → response action → evidence package.
+        live_evidence_ready = bool(
+            canonical_last_telemetry_at is not None
+            and int(detections_count) > 0
+            and int(alerts_count) > 0
+            and int(incidents_count) > 0
+            and int(response_actions_count) > 0
+            and int(evidence_count) > 0
+        )
+        payload['live_evidence_ready'] = live_evidence_ready
+        summary['live_evidence_ready'] = live_evidence_ready
+        if isinstance(payload.get('workspace_monitoring_summary'), dict):
+            payload['workspace_monitoring_summary']['live_evidence_ready'] = live_evidence_ready
+            payload['workspace_monitoring_summary']['latest_live_telemetry_at'] = latest_live_telemetry_at
         if isinstance(payload.get('workspace_monitoring_summary'), dict):
             payload['workspace_monitoring_summary']['background_loop_health'] = dict(background_loop_health)
         logger.info(
