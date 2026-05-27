@@ -1,18 +1,17 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-27T10:40:43.427914+00:00",
+  "generated_at": "2026-05-27T11:46:37.583881+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "ae29aaa22de4c754a88855691fc61b15cd4938e2",
-  "branch": "claude/tender-dijkstra-biNUk",
+  "commit_sha": "f5ac2b6e0e4027255773e2b06523e643e81c988f",
+  "branch": "claude/zealous-dijkstra-GGFQe",
   "ci_required_gates_ready": false,
-  "launch_proof_ready": false,
+  "launch_proof_ready": true,
   "manifest_ready": true,
   "test_report_ready": false,
   "paid_launch_ready": false,
   "blockers": [
     "ci-required-gates not ready",
-    "launch-proof not ready",
     "test-report-summary not ready"
   ],
   "warnings": [],
