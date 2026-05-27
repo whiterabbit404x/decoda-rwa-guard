@@ -568,3 +568,374 @@ def test_case14_output_schema_complete(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
     for key in required_chain_keys:
         assert key in chain, f'Missing required chain key: {key}'
+
+
+# ===========================================================================
+# export_live_evidence_chain.py tests
+# ===========================================================================
+
+from scripts.export_live_evidence_chain import export_live_evidence_chain
+
+
+def _write_service_artifacts(
+    base_dir: Path,
+    *,
+    summary_source: str = 'live',
+    evidence_source: str = 'live',
+    telemetry_sources: list[str] | None = None,
+    telemetry_source_types: list[str | None] | None = None,
+    live_evidence_ready: bool = True,
+) -> None:
+    """Write a minimal set of service artifacts to base_dir."""
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    summary: dict = {
+        'evidence_source': summary_source,
+        'live_evidence_ready': live_evidence_ready,
+        'provider_ready': True,
+        'latest_live_telemetry_at': '2026-05-22T12:00:00+00:00',
+        'telemetry_event_present': True,
+        'detection_generated_from_telemetry': True,
+        'alert_generated_from_detection': True,
+        'incident_opened_from_alert': True,
+        'response_action_recommended_or_executed': True,
+    }
+    (base_dir / 'summary.json').write_text(json.dumps(summary))
+
+    evidence: dict = {
+        'workspace_id': 'ws-001',
+        'evidence_source': evidence_source,
+        'chain': {
+            'asset_id': 'asset-001',
+            'target_id': 'target-001',
+            'monitoring_config_id': 'mc-001',
+            'monitoring_run_id': 'run-001',
+            'telemetry_event_id': 'tel-live-001',
+            'detection_id': 'det-live-001',
+            'alert_id': 'alert-live-001',
+            'incident_id': 'inc-live-001',
+            'response_action_id': 'ra-live-001',
+            'evidence_package_id': 'pkg-live-001',
+        },
+    }
+    (base_dir / 'evidence.json').write_text(json.dumps(evidence))
+
+    if telemetry_sources is None:
+        telemetry_sources = ['live']
+    if telemetry_source_types is None:
+        telemetry_source_types = [None] * len(telemetry_sources)
+
+    events = []
+    for i, (src, st) in enumerate(zip(telemetry_sources, telemetry_source_types)):
+        ev: dict = {
+            'id': f'tel-live-00{i + 1}',
+            'evidence_source': src,
+            'event_type': 'transfer_observed',
+            'observed_at': '2026-05-22T12:00:00+00:00',
+        }
+        if st is not None:
+            ev['source_type'] = st
+        events.append(ev)
+    (base_dir / 'telemetry_events.json').write_text(json.dumps(events))
+
+
+# ---------------------------------------------------------------------------
+# Rejection tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('bad_source', ['guided_simulator', 'simulator', 'fixture'])
+def test_export_rejects_bad_evidence_source_in_evidence_json(
+    tmp_path: Path,
+    bad_source: str,
+) -> None:
+    """evidence.json with a simulator/fixture evidence_source must be rejected."""
+    artifacts_dir = tmp_path / 'service_artifacts'
+    output_file = tmp_path / 'live_evidence_chain.json'
+    _write_service_artifacts(
+        artifacts_dir,
+        summary_source='live',
+        evidence_source=bad_source,
+    )
+
+    rc = export_live_evidence_chain(
+        service_artifacts_dir=artifacts_dir,
+        output_file=output_file,
+    )
+
+    assert rc == 1
+    assert not output_file.exists(), 'chain file must NOT be written when evidence is rejected'
+
+
+@pytest.mark.parametrize('bad_source', ['guided_simulator', 'simulator', 'fixture'])
+def test_export_rejects_bad_evidence_source_in_summary(
+    tmp_path: Path,
+    bad_source: str,
+) -> None:
+    """summary.json reporting a simulator/fixture source must be rejected."""
+    artifacts_dir = tmp_path / 'service_artifacts'
+    output_file = tmp_path / 'live_evidence_chain.json'
+    _write_service_artifacts(
+        artifacts_dir,
+        summary_source=bad_source,
+        evidence_source='live',
+    )
+
+    rc = export_live_evidence_chain(
+        service_artifacts_dir=artifacts_dir,
+        output_file=output_file,
+    )
+
+    assert rc == 1
+    assert not output_file.exists()
+
+
+@pytest.mark.parametrize('bad_source', ['guided_simulator', 'simulator', 'fixture'])
+def test_export_rejects_bad_evidence_source_in_telemetry(
+    tmp_path: Path,
+    bad_source: str,
+) -> None:
+    """Telemetry event with simulator/fixture evidence_source must be rejected."""
+    artifacts_dir = tmp_path / 'service_artifacts'
+    output_file = tmp_path / 'live_evidence_chain.json'
+    _write_service_artifacts(
+        artifacts_dir,
+        telemetry_sources=[bad_source],
+    )
+
+    rc = export_live_evidence_chain(
+        service_artifacts_dir=artifacts_dir,
+        output_file=output_file,
+    )
+
+    assert rc == 1
+    assert not output_file.exists()
+
+
+@pytest.mark.parametrize('bad_source_type', ['websocket', 'http_polling', 'manual', 'demo'])
+def test_export_rejects_non_rpc_polling_source_type(
+    tmp_path: Path,
+    bad_source_type: str,
+) -> None:
+    """Telemetry event with source_type != 'rpc_polling' must be rejected."""
+    artifacts_dir = tmp_path / 'service_artifacts'
+    output_file = tmp_path / 'live_evidence_chain.json'
+    _write_service_artifacts(
+        artifacts_dir,
+        telemetry_sources=['live'],
+        telemetry_source_types=[bad_source_type],
+    )
+
+    rc = export_live_evidence_chain(
+        service_artifacts_dir=artifacts_dir,
+        output_file=output_file,
+    )
+
+    assert rc == 1
+    assert not output_file.exists()
+
+
+def test_export_rejects_when_live_evidence_ready_false(tmp_path: Path) -> None:
+    """summary.json with live_evidence_ready=false must be rejected."""
+    artifacts_dir = tmp_path / 'service_artifacts'
+    output_file = tmp_path / 'live_evidence_chain.json'
+    _write_service_artifacts(
+        artifacts_dir,
+        live_evidence_ready=False,
+    )
+
+    rc = export_live_evidence_chain(
+        service_artifacts_dir=artifacts_dir,
+        output_file=output_file,
+    )
+
+    assert rc == 1
+    assert not output_file.exists()
+
+
+def test_export_rejects_missing_summary(tmp_path: Path) -> None:
+    """Missing summary.json must cause a fail-closed exit."""
+    artifacts_dir = tmp_path / 'service_artifacts'
+    artifacts_dir.mkdir(parents=True)
+    output_file = tmp_path / 'live_evidence_chain.json'
+    # No files written
+
+    rc = export_live_evidence_chain(
+        service_artifacts_dir=artifacts_dir,
+        output_file=output_file,
+    )
+
+    assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# Success path
+# ---------------------------------------------------------------------------
+
+def test_export_accepts_live_rpc_polling_evidence(tmp_path: Path) -> None:
+    """Valid live evidence with source_type=rpc_polling must produce a chain file."""
+    artifacts_dir = tmp_path / 'service_artifacts'
+    output_file = tmp_path / 'live_evidence_chain.json'
+    _write_service_artifacts(
+        artifacts_dir,
+        telemetry_source_types=['rpc_polling'],
+    )
+
+    rc = export_live_evidence_chain(
+        service_artifacts_dir=artifacts_dir,
+        output_file=output_file,
+    )
+
+    assert rc == 0
+    assert output_file.exists(), 'chain file must be written on success'
+
+    chain = json.loads(output_file.read_text())
+    assert chain['evidence_source'] == 'live'
+    assert chain['source_type'] == 'rpc_polling'
+    assert chain['telemetry_event_id'] == 'tel-live-001'
+    assert chain['detection_id'] == 'det-live-001'
+    assert chain['alert_id'] == 'alert-live-001'
+    assert chain['evidence_package_id'] == 'pkg-live-001'
+    assert chain['incident_id'] == 'inc-live-001' or chain['response_action_id'] == 'ra-live-001'
+
+
+def test_export_accepts_live_evidence_without_explicit_source_type(tmp_path: Path) -> None:
+    """Live evidence without source_type defaults to rpc_polling in the output."""
+    artifacts_dir = tmp_path / 'service_artifacts'
+    output_file = tmp_path / 'live_evidence_chain.json'
+    _write_service_artifacts(
+        artifacts_dir,
+        telemetry_source_types=[None],  # no source_type in telemetry event
+    )
+
+    rc = export_live_evidence_chain(
+        service_artifacts_dir=artifacts_dir,
+        output_file=output_file,
+    )
+
+    assert rc == 0
+    chain = json.loads(output_file.read_text())
+    assert chain['source_type'] == 'rpc_polling'
+
+
+# ---------------------------------------------------------------------------
+# generate_live_evidence_proof loads from default chain file path
+# ---------------------------------------------------------------------------
+
+_SCRIPT_RPC_PATCH = 'scripts.generate_live_evidence_proof._rpc_call'
+
+
+def test_generate_loads_chain_from_default_file_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    generate_live_evidence_proof() falls back to
+    artifacts/live-evidence-proof/latest/live_evidence_chain.json
+    when LIVE_EVIDENCE_CHAIN_JSON and LIVE_EVIDENCE_CHAIN_FILE are unset.
+    This is the LIVE_EVIDENCE_CHAIN_FILE default-path behaviour.
+    """
+    for var in _PROVIDER_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    # Write a valid live chain to the default path under tmp_path
+    chain_file = (
+        tmp_path / 'artifacts' / 'live-evidence-proof' / 'latest' / 'live_evidence_chain.json'
+    )
+    chain_file.parent.mkdir(parents=True, exist_ok=True)
+    chain_data = {
+        'evidence_source': 'live',
+        'source_type': 'rpc_polling',
+        'telemetry_event_id': 'tel-default-path-001',
+        'detection_id': 'det-default-path-001',
+        'alert_id': 'alert-default-path-001',
+        'incident_id': 'inc-default-path-001',
+        'response_action_id': None,
+        'evidence_package_id': 'pkg-default-path-001',
+        'observed_at': '2026-05-22T12:00:00+00:00',
+    }
+    chain_file.write_text(json.dumps(chain_data))
+
+    import scripts.generate_live_evidence_proof as _mod
+
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
+        with patch.object(_mod, 'REPO_ROOT', tmp_path):
+            result = generate_live_evidence_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['live_evidence_ready'] is True
+    assert lpe['chain']['telemetry_event_id'] == 'tel-default-path-001'
+    assert lpe['evidence_source'] == 'live'
+
+
+def test_generate_default_chain_file_with_simulator_source_is_ignored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    If the default chain file exists but contains guided_simulator evidence,
+    it must be rejected and live_evidence_ready must remain false.
+    """
+    for var in _PROVIDER_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    chain_file = (
+        tmp_path / 'artifacts' / 'live-evidence-proof' / 'latest' / 'live_evidence_chain.json'
+    )
+    chain_file.parent.mkdir(parents=True, exist_ok=True)
+    bad_chain = {
+        'evidence_source': 'guided_simulator',
+        'source_type': 'rpc_polling',
+        'telemetry_event_id': 'tel-sim-001',
+        'detection_id': 'det-sim-001',
+        'alert_id': 'alert-sim-001',
+        'incident_id': 'inc-sim-001',
+        'response_action_id': None,
+        'evidence_package_id': 'pkg-sim-001',
+    }
+    chain_file.write_text(json.dumps(bad_chain))
+
+    import scripts.generate_live_evidence_proof as _mod
+
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c4cca')):
+        with patch.object(_mod, 'REPO_ROOT', tmp_path):
+            result = generate_live_evidence_proof()
+
+    lpe = result['live_provider_evidence']
+    assert lpe['live_evidence_ready'] is False
+    assert lpe['chain']['telemetry_event_id'] is None
+
+
+# ---------------------------------------------------------------------------
+# No secret value printed in logs
+# ---------------------------------------------------------------------------
+
+def test_export_does_not_print_rpc_url_or_secrets(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The exporter must not print any secret-looking tokens in its output."""
+    artifacts_dir = tmp_path / 'service_artifacts'
+    output_file = tmp_path / 'live_evidence_chain.json'
+    _write_service_artifacts(artifacts_dir)
+
+    export_live_evidence_chain(
+        service_artifacts_dir=artifacts_dir,
+        output_file=output_file,
+    )
+
+    out = capsys.readouterr().out
+    # No URL segments that could contain secrets
+    assert 'https://' not in out
+    assert 'infura.io' not in out
+    # No raw ID values that are longer than 40 chars (not printing big secrets)
+    for line in out.splitlines():
+        tokens = line.split('=', 1)
+        if len(tokens) == 2:
+            value = tokens[1].strip()
+            assert len(value) < 200, f'Suspicious long value in output: {value[:60]}...'

@@ -357,9 +357,10 @@ def test_run_with_good_env_and_live_ready_artifact_returns_zero(
     )
 
     assert rc == 0
-    # All five proof commands were invoked.
-    assert len(recorder.calls) == 5
+    # All six proof commands were invoked (export chain + 5 original).
+    assert len(recorder.calls) == 6
     labels = [label for label, _ in recorder.calls]
+    assert any('Export live evidence chain' in lbl for lbl in labels)
     assert any('Live evidence proof' in lbl for lbl in labels)
     assert any('generate-live-evidence-proof' in lbl for lbl in labels)
     assert any('generate-staging-proof' in lbl for lbl in labels)
@@ -404,8 +405,8 @@ def test_run_with_good_env_but_fail_closed_artifact_returns_nonzero(
     )
 
     assert rc == 1
-    # All commands still ran (diagnostic completeness).
-    assert len(recorder.calls) == 5
+    # All six commands still ran (diagnostic completeness).
+    assert len(recorder.calls) == 6
     out = capsys.readouterr().out
     assert 'BLOCKER 3: FAIL' in out
     assert 'live_evidence_ready=False' in out
@@ -444,7 +445,7 @@ def test_run_propagates_subprocess_failures_but_reports_pass_when_artifact_ready
 
     def runner(label: str, cmd: list[str]) -> int:
         call_index['i'] += 1
-        return 1 if call_index['i'] == 5 else 0
+        return 1 if call_index['i'] == 6 else 0
 
     rc = run_staging_live_evidence_proof(
         env=_good_env(),
