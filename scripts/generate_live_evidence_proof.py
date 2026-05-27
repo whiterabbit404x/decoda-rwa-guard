@@ -168,6 +168,43 @@ NO_LIVE_EVENT_REASON = (
 )
 
 
+def _query_db_latest_live_telemetry(workspace_id: str | None = None) -> dict[str, Any]:
+    """
+    Query telemetry_events for the most recent live RPC polling row.
+
+    Only used as a fallback when RPC env vars are absent.  Returns a dict with
+    'observed_at' (str ISO) and 'row_count' (int) on success; empty dict on
+    any error so callers can treat it as a soft dependency.
+    """
+    try:
+        from services.api.app.monitoring_runner import pg_connection
+        conn = pg_connection()
+        params_list: list[Any] = []
+        workspace_clause = ''
+        if workspace_id:
+            workspace_clause = 'AND workspace_id = %s::uuid'
+            params_list.append(workspace_id)
+        row = conn.execute(
+            f'''
+            SELECT MAX(observed_at) AS ts, COUNT(*) AS c
+            FROM telemetry_events
+            WHERE evidence_source = 'live'
+              AND event_type IN (\'rpc_polling\', \'live_provider\')
+              AND provider_type IN (\'evm_rpc\', \'live_provider\')
+              AND observed_at IS NOT NULL
+              {workspace_clause}
+            ''',
+            params_list or None,
+        ).fetchone()
+        if row and row.get('ts') is not None:
+            ts = row['ts']
+            ts_str = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts)
+            return {'observed_at': ts_str, 'row_count': int(row.get('c') or 0)}
+    except Exception:
+        pass
+    return {}
+
+
 def _load_live_evidence_chain_from_env() -> dict[str, Any] | None:
     """
     Load a real live-event evidence chain from env vars.
@@ -282,6 +319,8 @@ def generate_live_evidence_proof(
     # --- Provider-level check: RPC URL required ---
     if not rpc_ok:
         provider_missing.append('EVM_RPC_URL or STAGING_EVM_RPC_URL not configured')
+        workspace_id_for_lookup = _env_val('WORKSPACE_ID') or _env_val('STAGING_WORKSPACE_ID') or None
+        db_telemetry = _query_db_latest_live_telemetry(workspace_id_for_lookup)
         return _build_fail_result(
             now=now,
             provider_ready=False,
@@ -295,6 +334,7 @@ def generate_live_evidence_proof(
             worker_enabled=worker_enabled,
             missing=provider_missing + evidence_missing,
             contradiction_flags=contradiction_flags,
+            db_telemetry=db_telemetry,
         )
 
     # --- Evidence-level checks (don't block provider_ready) ---
@@ -588,10 +628,17 @@ def _build_fail_result(
     worker_enabled: bool,
     missing: list[str],
     contradiction_flags: list[str],
+    db_telemetry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # live_provider_ready: RPC responded and we have block data.
     receipt_present = block_number_observed is not None
     live_provider_ready = provider_ready and receipt_present
+    db = db_telemetry or {}
+    db_telemetry_at = db.get('observed_at')
+    # live_telemetry_ready from DB: proves the worker DID push live telemetry
+    # rows to the DB, even when RPC URL is not configured in this environment.
+    # Does NOT imply live_evidence_ready (detection→alert→incident chain absent).
+    db_telemetry_ready = bool(db_telemetry_at and int(db.get('row_count') or 0) > 0)
     return {
         'schema_version': 1,
         'generated_at': now,
@@ -607,12 +654,12 @@ def _build_fail_result(
             'worker_enabled': worker_enabled,
             'live_provider_ready': live_provider_ready,
             'live_provider_receipt_ready': receipt_present,
-            'live_telemetry_ready': False,
+            'live_telemetry_ready': db_telemetry_ready,
             'live_detection_ready': False,
             'live_alert_ready': False,
             'live_incident_ready': False,
-            'evidence_source': 'unknown',
-            'latest_live_telemetry_at': None,
+            'evidence_source': 'live' if db_telemetry_ready else 'unknown',
+            'latest_live_telemetry_at': db_telemetry_at,
             'live_evidence_ready': False,
             'chain': _empty_chain(),
             'missing': missing,

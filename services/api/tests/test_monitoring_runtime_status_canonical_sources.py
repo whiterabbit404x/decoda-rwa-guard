@@ -68,13 +68,14 @@ class _Ctx:
 
 
 class _CanonicalConn(_Conn):
-    def __init__(self, *, telemetry_events=False, coverage_with_resolved_basis=False, receipts=False, monitored_last_coverage=False, target_evaluations=False, legacy_detection=False):
+    def __init__(self, *, telemetry_events=False, coverage_with_resolved_basis=False, receipts=False, monitored_last_coverage=False, target_evaluations=False, legacy_detection=False, stale_heartbeat=False):
         self.telemetry_events = telemetry_events
         self.coverage_with_resolved_basis = coverage_with_resolved_basis
         self.receipts = receipts
         self.monitored_last_coverage = monitored_last_coverage
         self.target_evaluations = target_evaluations
         self.legacy_detection = legacy_detection
+        self.stale_heartbeat = stale_heartbeat
 
     def execute(self, q, p=None):
         qn = ' '.join(str(q).split())
@@ -84,7 +85,8 @@ class _CanonicalConn(_Conn):
         if 'FROM monitored_targets' in qn:
             return _Result(rows=[{'id': 't1', 'workspace_id': _Ctx.workspace_id, 'asset_id': 'a1', 'enabled': True}])
         if 'FROM monitored_systems' in qn:
-            return _Result(rows=[{'id': 's1', 'target_id': 't1', 'asset_id': 'a1', 'is_enabled': True, 'last_event_at': None, 'last_heartbeat': now, 'last_coverage_telemetry_at': (now - timedelta(seconds=8)) if self.monitored_last_coverage else None}])
+            heartbeat_ts = (now - timedelta(seconds=700)) if self.stale_heartbeat else now
+            return _Result(rows=[{'id': 's1', 'target_id': 't1', 'asset_id': 'a1', 'is_enabled': True, 'last_event_at': None, 'last_heartbeat': heartbeat_ts, 'last_coverage_telemetry_at': (now - timedelta(seconds=8)) if self.monitored_last_coverage else None}])
         if 'FROM monitoring_event_receipts' in qn:
             if self.receipts:
                 return _Result(rows=[{'monitored_system_id': 's1', 'received_at': now - timedelta(seconds=5)}])
@@ -231,3 +233,76 @@ def test_runtime_status_uses_canonical_timestamp_columns(monkeypatch):
         assert "event_type IN ('rpc_polling', 'live_provider')" in joined
         assert "provider_type IN ('evm_rpc', 'live_provider')" in joined
         assert 'observed_at IS NOT NULL' in joined
+
+
+# ---------------------------------------------------------------------------
+# Scenario A: fresh canonical telemetry promotes evidence_source and reporting
+# ---------------------------------------------------------------------------
+
+def test_scenario_a_fresh_canonical_telemetry_promotes_evidence_and_reporting(monkeypatch):
+    """With live telemetry_events rows, evidence_source='live', reporting_systems>=1, status not offline."""
+    payload = _runtime_payload(monkeypatch, telemetry_events=True)
+    assert payload['reporting_systems_count'] >= 1, 'reporting_systems must be >= 1 when canonical telemetry exists'
+    assert payload.get('evidence_source') == 'live', 'evidence_source must be live'
+    assert payload['runtime_status'] != 'offline', 'runtime_status must not be offline when fresh telemetry exists'
+    summary = payload.get('workspace_monitoring_summary', {})
+    assert summary.get('reporting_systems_count', 0) >= 1
+    assert summary.get('runtime_status') != 'offline'
+
+
+# ---------------------------------------------------------------------------
+# Scenario B: stale heartbeat does not suppress live evidence when telemetry is fresh
+# ---------------------------------------------------------------------------
+
+def test_scenario_b_stale_heartbeat_does_not_suppress_live_canonical_telemetry(monkeypatch):
+    """A stale worker heartbeat must not force offline/idle when fresh canonical telemetry exists."""
+    payload = _runtime_payload(monkeypatch, telemetry_events=True, stale_heartbeat=True)
+    assert payload['runtime_status'] != 'offline', 'stale heartbeat must not cause offline when telemetry is fresh'
+    assert payload.get('evidence_source') == 'live', 'evidence_source must remain live despite stale heartbeat'
+    assert payload['reporting_systems_count'] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Scenario C: workspace_configured=False + fresh telemetry → degraded, not offline
+# ---------------------------------------------------------------------------
+
+def test_scenario_c_unconfigured_workspace_with_fresh_telemetry_is_degraded_not_offline(monkeypatch):
+    """When workspace is unconfigured but live telemetry exists, status must be degraded, not offline."""
+    # _CanonicalConn always returns c=0 for COUNT queries so workspace_configured=False
+    payload = _runtime_payload(monkeypatch, telemetry_events=True)
+    assert payload['runtime_status'] == 'degraded', (
+        f'expected degraded when workspace unconfigured + fresh telemetry, got {payload["runtime_status"]!r}'
+    )
+    assert payload.get('evidence_source') == 'live'
+
+
+# ---------------------------------------------------------------------------
+# Scenario D: no canonical telemetry, no legacy → reporting=0, evidence_source='none', offline
+# ---------------------------------------------------------------------------
+
+def test_scenario_d_no_canonical_telemetry_gives_zero_reporting_and_offline(monkeypatch):
+    """Without any canonical telemetry, reporting_systems=0, evidence_source='none', status='offline'."""
+    payload = _runtime_payload(monkeypatch)
+    assert payload['reporting_systems_count'] == 0
+    assert payload.get('evidence_source') == 'none'
+    assert payload['runtime_status'] == 'offline'
+
+
+# ---------------------------------------------------------------------------
+# Scenario E: simulator ingestion mode overrides live telemetry source label
+# ---------------------------------------------------------------------------
+
+def test_scenario_e_simulator_mode_overrides_evidence_source(monkeypatch):
+    """Even when telemetry_events rows exist, simulator ingestion_mode must produce evidence_source='simulator'."""
+    monkeypatch.setattr(monitoring_runner, 'resolve_workspace_context_for_request', lambda *_a, **_k: ({'id': 'u'}, {'workspace_id': _Ctx.workspace_id, 'workspace': {'slug': _Ctx.workspace_slug}}, True))
+    monkeypatch.setattr(monitoring_runner, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(monitoring_runner, 'ensure_monitoring_runtime_schema_capabilities', lambda *_a, **_k: None)
+    monkeypatch.setattr(monitoring_runner, 'pg_connection', lambda: _CanonicalConn(telemetry_events=True))
+    monkeypatch.setattr(monitoring_runner, 'get_monitoring_health', lambda: {'worker_running': True, 'source_type': 'polling', 'ingestion_mode': 'simulator'})
+    monkeypatch.setattr(monitoring_runner, 'live_mode_enabled', lambda: True)
+    monitoring_runner.RUNTIME_STATUS_WORKSPACE_CACHE.clear()
+    monitoring_runner.RUNTIME_STATUS_SUMMARY_CACHE.clear()
+    payload = monitoring_runner.monitoring_runtime_status()
+    assert payload.get('evidence_source') == 'simulator', (
+        'simulator ingestion_mode must always produce evidence_source=simulator regardless of telemetry rows'
+    )

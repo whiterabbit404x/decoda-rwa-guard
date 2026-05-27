@@ -6533,9 +6533,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         legacy_last_telemetry_at = telemetry_candidates[0][0] if telemetry_candidates else None
         legacy_telemetry_kind = telemetry_candidates[0][1] if telemetry_candidates else None
         last_coverage_telemetry_at = live_coverage_receipts_workspace_latest or legacy_last_coverage_telemetry_at
+        if canonical_last_telemetry_at is not None and (
+            last_coverage_telemetry_at is None or canonical_last_telemetry_at > last_coverage_telemetry_at
+        ):
+            last_coverage_telemetry_at = canonical_last_telemetry_at
         last_telemetry_at = canonical_last_telemetry_at or legacy_last_telemetry_at
         telemetry_kind = (
-            'canonical_telemetry_events' if canonical_last_telemetry_at is not None
+            'target_event' if canonical_last_telemetry_at is not None
             else (legacy_telemetry_kind if legacy_last_telemetry_at is not None else None)
         )
         latest_target_coverage_rows = connection.execute(
@@ -6562,17 +6566,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             '''
             SELECT DISTINCT te.target_id
             FROM telemetry_events te
-            JOIN monitored_targets mt
-              ON mt.workspace_id = te.workspace_id
-             AND mt.id = te.target_id
-             AND mt.enabled = TRUE
-            JOIN monitoring_configs mc
-              ON mc.workspace_id = mt.workspace_id
-             AND mc.target_id = mt.id
-             AND mc.enabled = TRUE
-             AND (mc.asset_id IS NULL OR mc.asset_id = mt.asset_id)
+            JOIN targets t
+              ON t.workspace_id = te.workspace_id
+             AND t.id = te.target_id
+             AND t.enabled = TRUE
+             AND t.deleted_at IS NULL
             WHERE te.workspace_id = %s::uuid
               AND te.ingested_at >= %s
+              AND te.evidence_source = 'live'
+              AND te.target_id IS NOT NULL
             ''',
             (workspace_id, now - timedelta(seconds=telemetry_window_seconds)),
         ).fetchall()
@@ -6589,15 +6591,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     tcr.metadata,
                     tcr.computed_at
                 FROM target_coverage_records tcr
-                JOIN monitored_targets mt
-                  ON mt.workspace_id = tcr.workspace_id
-                 AND mt.id = tcr.target_id
-                 AND mt.enabled = TRUE
-                JOIN monitoring_configs mc
-                  ON mc.workspace_id = mt.workspace_id
-                 AND mc.target_id = mt.id
-                 AND mc.enabled = TRUE
-                 AND (mc.asset_id IS NULL OR mc.asset_id = mt.asset_id)
+                JOIN targets t
+                  ON t.workspace_id = tcr.workspace_id
+                 AND t.id = tcr.target_id
+                 AND t.enabled = TRUE
+                 AND t.deleted_at IS NULL
                 WHERE tcr.workspace_id = %s::uuid
                   AND tcr.coverage_status = 'reporting'
                   AND tcr.last_telemetry_at IS NOT NULL
@@ -6828,9 +6826,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             or int((broken_targets or {}).get('c') or 0) > 0
             or not provider_reachable
         )
+        canonical_telemetry_is_fresh = bool(
+            canonical_last_telemetry_at is not None
+            and int((now - canonical_last_telemetry_at).total_seconds()) <= telemetry_window_seconds
+        )
         evidence_source_live = bool(
             str(health.get('ingestion_mode') or '').strip().lower() not in {'demo', 'simulator', 'replay'}
-            and not provider_degraded_or_unreachable
+            and (not provider_degraded_or_unreachable or canonical_telemetry_is_fresh)
             and coverage_fresh
             and reporting_systems > 0
         )
@@ -6911,7 +6913,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         coverage_only_warning = dict(_WORKSPACE_COVERAGE_ONLY_STREAK.get(str(workspace_id), {}))
         coverage_only_warning_state = str(coverage_only_warning.get('state') or '').strip()
         coverage_only_warning_active = bool(coverage_only_warning.get('active') and coverage_only_warning_state == 'coverage_only_persistent_no_evidence')
-        if not workspace_configured:
+        if not workspace_configured and not canonical_telemetry_is_fresh:
             logger.info(
                 'monitoring_runtime_status_branch workspace_id=%s workspace_slug=%s branch=offline_unconfigured configuration_reason=%s',
                 workspace_id,
@@ -6919,6 +6921,14 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 configuration_reason,
             )
             runtime_status_summary = 'offline'
+        elif not workspace_configured and canonical_telemetry_is_fresh:
+            logger.info(
+                'monitoring_runtime_status_branch workspace_id=%s workspace_slug=%s branch=degraded_telemetry_live_but_workspace_unconfigured configuration_reason=%s',
+                workspace_id,
+                workspace_slug,
+                configuration_reason,
+            )
+            runtime_status_summary = 'degraded'
         elif evidence_source != 'live':
             runtime_status_summary = 'idle'
         elif reporting_systems <= 0 or not coverage_fresh:
@@ -7609,6 +7619,28 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             'last_detection_source': runtime_last_detection_source,
             'proof_chain_status': proof_chain_status,
             'proof_chain_correlation_id': proof_chain_correlation_id,
+            'detection_chain_visibility': {
+                'telemetry_visible': canonical_last_telemetry_at is not None,
+                'detection_visible': canonical_last_detection_at is not None,
+                'alert_visible': int((open_alerts or {}).get('c') or 0) > 0,
+                'incident_visible': int((open_incidents or {}).get('c') or 0) > 0,
+                'chain_complete': proof_chain_status == 'complete',
+                'missing_steps': list(proof_chain_missing_reason_codes),
+                'message': (
+                    'Detection chain complete.'
+                    if proof_chain_status == 'complete'
+                    else (
+                        'Live telemetry verified; detection chain not yet established. '
+                        'Awaiting first detection event from the monitoring worker.'
+                        if canonical_last_telemetry_at is not None and canonical_last_detection_at is None
+                        else (
+                            'Detection chain incomplete: ' + ', '.join(proof_chain_missing_reason_codes)
+                            if proof_chain_missing_reason_codes
+                            else 'Detection chain status unavailable.'
+                        )
+                    )
+                ),
+            },
             'contradiction_flags': list(summary.get('contradiction_flags') or []),
             'top_banner_reasons': list(summary.get('top_banner_reasons') or []),
             'workspace_monitoring_summary': summary,
