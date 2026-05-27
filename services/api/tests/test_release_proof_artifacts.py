@@ -548,3 +548,22 @@ def test_all_five_artifacts_validate_together(artifact_dirs: dict[str, Path], mo
     assert (release_dir / 'manifest.json').exists()
     assert (release_dir / 'test-report-summary.json').exists()
     assert (launch_dir / 'summary.json').exists()
+
+
+def test_validate_release_proof_output_is_ascii_safe(artifact_dirs: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    """validate_release_proof.py must not output characters that crash Windows GBK/cp1252 consoles."""
+    import io
+    import subprocess
+
+    result = subprocess.run(
+        ['python', 'scripts/validate_release_proof.py'],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        encoding='utf-8',
+    )
+    combined = result.stdout + result.stderr
+    # Verify no non-ASCII characters are emitted (prevents UnicodeEncodeError on Windows consoles)
+    try:
+        combined.encode('ascii')
+    except UnicodeEncodeError as exc:
+        pytest.fail(f'validate_release_proof.py emits non-ASCII output that would crash Windows GBK consoles: {exc}')

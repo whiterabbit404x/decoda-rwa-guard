@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+IS_WINDOWS = platform.system() == 'Windows'
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ARTIFACT_ROOT = REPO_ROOT / 'artifacts' / 'launch-proof'
@@ -43,7 +46,8 @@ def run_step(
         command,
         cwd=REPO_ROOT,
         env=env,
-        text=True,
+        encoding='utf-8',
+        errors='replace',
         capture_output=True,
     )
     output = (process.stdout + '\n' + process.stderr).strip() + '\n'
@@ -110,6 +114,22 @@ def main() -> int:
     runbook_evidence_dir = artifact_dir / 'runbook-evidence'
     runtime_gate_env = env.copy()
     runtime_gate_env['RUNTIME_STATUS_GATE_EVIDENCE_PATH'] = str(runbook_evidence_dir / 'runtime_status_pre_release_gate.json')
+
+    npm_cmd = 'npm.cmd' if IS_WINDOWS else 'npm'
+
+    # On Windows, make is not available; use the Python equivalents directly.
+    if IS_WINDOWS:
+        no_billing_env = env.copy()
+        no_billing_env['BILLING_PROVIDER'] = 'none'
+        no_billing_env['VALIDATION_MODE'] = 'no_billing_pilot'
+        validate_no_billing_cmd = ['python', 'services/api/scripts/validate_staging.py']
+        validate_production_cmd = ['python', 'services/api/scripts/validate_production_readiness.py']
+        validate_no_billing_env = no_billing_env
+    else:
+        validate_no_billing_cmd = ['make', 'validate-no-billing-launch']
+        validate_production_cmd = ['make', 'validate-production']
+        validate_no_billing_env = env
+
     steps: list[ProofStep] = [
         run_step(
             name='00_assert_no_billing_mode',
@@ -126,16 +146,16 @@ def main() -> int:
             artifact_dir=artifact_dir,
             env=env,
         ),
-        run_step(name='01_npm_ci', command=['npm', 'ci'], artifact_dir=artifact_dir),
-        run_step(name='02_build_web', command=['npm', 'run', 'build:web'], artifact_dir=artifact_dir),
+        run_step(name='01_npm_ci', command=[npm_cmd, 'ci'], artifact_dir=artifact_dir),
+        run_step(name='02_build_web', command=[npm_cmd, 'run', 'build:web'], artifact_dir=artifact_dir),
         run_step(
             name='03_runtime_status_pre_release_gate',
             command=['python', 'services/api/scripts/check_monitoring_runtime_live_gate.py'],
             artifact_dir=artifact_dir,
             env=runtime_gate_env,
         ),
-        run_step(name='04_validate_no_billing_launch', command=['make', 'validate-no-billing-launch'], artifact_dir=artifact_dir, env=env),
-        run_step(name='05_validate_production', command=['make', 'validate-production'], artifact_dir=artifact_dir, env=env, required=False),
+        run_step(name='04_validate_no_billing_launch', command=validate_no_billing_cmd, artifact_dir=artifact_dir, env=validate_no_billing_env),
+        run_step(name='05_validate_production', command=validate_production_cmd, artifact_dir=artifact_dir, env=env, required=False),
     ]
 
     missing_staging = [name for name in REQUIRED_STAGING_ENV if not os.getenv(name, '').strip()]

@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T16:48:49.486436+00:00",
+  "generated_at": "2026-05-27T10:40:43.434760+00:00",
   "release_channel": "local",
-  "commit_sha": "02bd9379f9a780496fa3afcf8c1f7258181d3e10",
-  "branch": "claude/sweet-lamport-pcHzX",
+  "commit_sha": "ae29aaa22de4c754a88855691fc61b15cd4938e2",
+  "branch": "claude/tender-dijkstra-biNUk",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "8b8cb3ff3a0a19f2999da586838527723970c7335c8bb37aad169d18a1ac6489",
-      "size_bytes": 784,
+      "sha256": "c2bff81091081b63f462ae3f2b57f5ad9982abdc26c627bda2d940389bc93a8e",
+      "size_bytes": 786,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "8fb03b13904b4f563a7eb144162dcdf59c68f5f88c7f0dff7ef6f08c0e56be04",
-      "size_bytes": 2106,
+      "sha256": "b8bca492bb1db773be312ab8073df31d53848fdb18e0a2aee08b0f0f4ac5e884",
+      "size_bytes": 2108,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "c600e4b592bd02a72adc3edf11b420ece1205184544774505d0e1dc74099c848",
+      "sha256": "0479366a6016be8d2291d7cd7384183d6e7ea7b101b774a16bd7ede5897debca",
       "size_bytes": 819,
       "required": true,
       "status": "present"

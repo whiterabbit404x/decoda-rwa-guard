@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T16:48:49.471582+00:00",
-  "commit_sha": "02bd9379f9a780496fa3afcf8c1f7258181d3e10",
-  "branch": "claude/sweet-lamport-pcHzX",
+  "generated_at": "2026-05-27T10:40:43.420594+00:00",
+  "commit_sha": "ae29aaa22de4c754a88855691fc61b15cd4938e2",
+  "branch": "claude/tender-dijkstra-biNUk",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
