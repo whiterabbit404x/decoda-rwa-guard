@@ -193,17 +193,23 @@ def test_e_missing_staging_worker(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# F. Missing live provider proof blocks broad_paid_saas_ready.
+# F. Missing live provider proof with no service summary fallback fails closed.
 # ---------------------------------------------------------------------------
-def test_f_missing_live_provider_proof_blocks_broad_paid_saas(tmp_path: Path) -> None:
-    # No launch proof artifact exists
+def test_f_missing_live_provider_proof_blocks_broad_paid_saas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No launch proof artifact exists and no service summary fallback
     missing_launch_proof = tmp_path / 'launch-proof' / 'latest' / 'summary.json'
+
+    # Patch REPO_ROOT so the service summary fallback also misses (tmp_path has no summary)
+    import scripts.generate_staging_launch_proof as _sglp
+    monkeypatch.setattr(_sglp, 'REPO_ROOT', tmp_path)
 
     result = build_live_provider_validation('staging', missing_launch_proof)
 
     assert result['live_evidence_ready'] is False
     assert result['status'] == 'fail'
-    assert any('launch-proof' in b or 'live' in b.lower() for b in result['blockers'])
+    assert any('launch-proof' in b or 'live' in b.lower() or 'unavailable' in b.lower() for b in result['blockers'])
 
 
 # ---------------------------------------------------------------------------

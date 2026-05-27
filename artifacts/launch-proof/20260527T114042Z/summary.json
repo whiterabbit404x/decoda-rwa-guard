@@ -1,0 +1,93 @@
+{
+  "generated_at": "2026-05-27T11:42:41.708057+00:00",
+  "repository": "/home/user/decoda-rwa-guard",
+  "ok": false,
+  "steps": [
+    {
+      "name": "00_assert_no_billing_mode",
+      "command": [
+        "python",
+        "-c",
+        "import os,sys;provider=os.getenv('BILLING_PROVIDER','').strip().lower();print(f'BILLING_PROVIDER={provider or \"(unset)\"}');sys.exit(0 if provider=='none' else 1)"
+      ],
+      "required": true,
+      "status": "pass",
+      "returncode": 0,
+      "log_file": "artifacts/launch-proof/20260527T114042Z/00_assert_no_billing_mode.log",
+      "note": ""
+    },
+    {
+      "name": "01_npm_ci",
+      "command": [
+        "npm",
+        "ci"
+      ],
+      "required": true,
+      "status": "pass",
+      "returncode": 0,
+      "log_file": "artifacts/launch-proof/20260527T114042Z/01_npm_ci.log",
+      "note": ""
+    },
+    {
+      "name": "02_build_web",
+      "command": [
+        "npm",
+        "run",
+        "build:web"
+      ],
+      "required": true,
+      "status": "pass",
+      "returncode": 0,
+      "log_file": "artifacts/launch-proof/20260527T114042Z/02_build_web.log",
+      "note": ""
+    },
+    {
+      "name": "03_runtime_status_pre_release_gate",
+      "command": [
+        "python",
+        "services/api/scripts/check_monitoring_runtime_live_gate.py"
+      ],
+      "required": true,
+      "status": "fail",
+      "returncode": 2,
+      "log_file": "artifacts/launch-proof/20260527T114042Z/03_runtime_status_pre_release_gate.log",
+      "note": ""
+    },
+    {
+      "name": "04_validate_no_billing_launch",
+      "command": [
+        "make",
+        "validate-no-billing-launch"
+      ],
+      "required": true,
+      "status": "fail",
+      "returncode": 2,
+      "log_file": "artifacts/launch-proof/20260527T114042Z/04_validate_no_billing_launch.log",
+      "note": ""
+    },
+    {
+      "name": "05_validate_production",
+      "command": [
+        "make",
+        "validate-production"
+      ],
+      "required": false,
+      "status": "fail",
+      "returncode": 2,
+      "log_file": "artifacts/launch-proof/20260527T114042Z/05_validate_production.log",
+      "note": ""
+    },
+    {
+      "name": "06_optional_staging_evidence",
+      "command": [
+        "python",
+        "scripts/staging/run_evidence_flow.py"
+      ],
+      "required": false,
+      "status": "skip",
+      "returncode": null,
+      "log_file": "n/a",
+      "note": "Skipped because missing env vars: STAGING_BASE_URL, STAGING_API_URL, STAGING_EVIDENCE_EMAIL, STAGING_EVIDENCE_PASSWORD"
+    }
+  ]
+}

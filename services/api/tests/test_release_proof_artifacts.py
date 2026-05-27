@@ -88,16 +88,25 @@ def test_generator_creates_all_three_artifacts(artifact_dirs: dict[str, Path], m
     assert 'launch_mode' in launch_proof
 
 
-# Test B: Missing live evidence makes broad_paid_saas_ready false
+# Test B: broad_paid_saas_ready is always false in local mode
 def test_missing_live_evidence_blocks_broad_paid_saas() -> None:
-    """Verify missing live evidence prevents broad paid SaaS readiness."""
+    """Verify broad_paid_saas_ready is never true in local mode.
+
+    Live evidence may now be sourced from the canonical service summary when no
+    EVM_RPC_URL is configured, so blockers may or may not include 'live evidence'.
+    The key invariant is that broad_paid_saas_ready is always false in local mode
+    because billing, email, and CI gates cannot pass locally.
+    """
     from scripts.generate_release_proof import generate_launch_proof
 
     launch_proof = generate_launch_proof(mode='local')
 
-    # In local mode without live evidence, broad_paid_saas_ready must be false
+    # broad_paid_saas_ready must never be true in local mode (fail-closed invariant)
     assert launch_proof['broad_paid_saas_ready'] is False
-    assert 'live evidence' in ' '.join(launch_proof.get('blockers', [])).lower()
+    # paid_launch_ready is also always false in local mode
+    assert launch_proof['paid_launch_ready'] is False
+    # There must always be at least one blocker in local mode
+    assert len(launch_proof.get('blockers', [])) > 0
 
 
 # Test C: Missing CI gate makes release_status fail

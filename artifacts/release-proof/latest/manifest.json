@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-27T10:40:43.434760+00:00",
+  "generated_at": "2026-05-27T11:46:37.592020+00:00",
   "release_channel": "local",
-  "commit_sha": "ae29aaa22de4c754a88855691fc61b15cd4938e2",
-  "branch": "claude/tender-dijkstra-biNUk",
+  "commit_sha": "f5ac2b6e0e4027255773e2b06523e643e81c988f",
+  "branch": "claude/zealous-dijkstra-GGFQe",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "c2bff81091081b63f462ae3f2b57f5ad9982abdc26c627bda2d940389bc93a8e",
-      "size_bytes": 786,
+      "sha256": "bd9c3ff75edebbff163f888353605c1c8692e7a620a25808b6d9bf145a48131e",
+      "size_bytes": 756,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "b8bca492bb1db773be312ab8073df31d53848fdb18e0a2aee08b0f0f4ac5e884",
-      "size_bytes": 2108,
+      "sha256": "cbf94002f75ec5529d1ce361cb4ffff8e220ee536250e835220cbfd6e0fd7e30",
+      "size_bytes": 1855,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "0479366a6016be8d2291d7cd7384183d6e7ea7b101b774a16bd7ede5897debca",
-      "size_bytes": 819,
+      "sha256": "aac7c344a3f1bdbc80a6d923f66999eb8d86954d79eb75842c0c7226ab9d49a8",
+      "size_bytes": 759,
       "required": true,
       "status": "present"
     }

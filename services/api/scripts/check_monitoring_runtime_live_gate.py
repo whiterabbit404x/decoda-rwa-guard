@@ -59,7 +59,9 @@ def _status_reason_indicates_unavailable(reason: str) -> bool:
 def main() -> int:
     monitoring_runtime_status_url = (os.getenv('MONITORING_RUNTIME_STATUS_URL') or '').strip().rstrip('/')
     staging_api_url = (os.getenv('STAGING_API_URL') or '').strip().rstrip('/')
-    api_url = (os.getenv('API_URL') or staging_api_url or 'http://localhost:8000').strip().rstrip('/')
+    # Priority: STAGING_API_URL > API_URL > localhost (STAGING_API_URL preferred in CI envs)
+    api_url = (staging_api_url or os.getenv('API_URL') or 'http://localhost:8000').strip().rstrip('/')
+    # Priority: MONITORING_RUNTIME_STATUS_URL > STAGING_API_URL/ops/... > API_URL/ops/... > localhost
     runtime_status_url = monitoring_runtime_status_url or f"{api_url}/ops/monitoring/runtime-status"
     token = os.getenv('PILOT_AUTH_TOKEN', '').strip()
     workspace_id = (os.getenv('RUNTIME_STATUS_WORKSPACE_ID') or os.getenv('WORKSPACE_ID') or '').strip()
