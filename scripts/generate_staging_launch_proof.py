@@ -296,19 +296,8 @@ def build_live_provider_validation(
         chain_evidence_package_id = chain_data.get('evidence_package_id') or None
 
         if not live_evidence_ready:
-            # Canonical proof not ready — check service summary to avoid stale-artifact
-            # contradiction (service live=true vs top-level proof live=false).
-            svc = _svc_summary_live()
-            if svc is not None:
-                live_evidence_ready = True
-                evidence_source = 'live'
-                latest_live_telemetry_at = svc.get('latest_live_telemetry_at')
-                provider_health_checked = True
-                provider_mode = 'live'
-                worker_enabled = True
-            else:
-                for miss in (lpe.get('missing') or []):
-                    blockers.append(str(miss))
+            for miss in (lpe.get('missing') or []):
+                blockers.append(str(miss))
 
     elif launch_proof is not None:
         # Backward compatibility: read from launch-proof artifact
@@ -365,31 +354,19 @@ def build_live_provider_validation(
         chain_incident_id = chain_data.get('incident_id') or None
         chain_evidence_package_id = chain_data.get('evidence_package_id') or None
 
-        # If still not ready after reading launch-proof, check service summary.
-        if not live_evidence_ready and evidence_source not in ('simulator', 'fixture'):
-            svc = _svc_summary_live()
-            if svc is not None:
-                live_evidence_ready = True
-                evidence_source = 'live'
-                latest_live_telemetry_at = svc.get('latest_live_telemetry_at')
-                provider_health_checked = True
-                provider_mode = 'live'
-                worker_enabled = True
-                blockers.clear()
-
     else:
-        # No canonical proof or launch-proof — check service summary directly.
-        svc = _svc_summary_live()
-        if svc is not None:
-            live_evidence_ready = True
-            evidence_source = 'live'
-            latest_live_telemetry_at = svc.get('latest_live_telemetry_at')
-            provider_health_checked = True
-            provider_mode = 'live'
-            worker_enabled = True
-        else:
-            blockers.append('launch-proof artifact missing; cannot verify live provider evidence')
-            evidence_source = 'unavailable'
+        # No canonical proof or launch-proof — fail closed.
+        blockers.append('launch-proof artifact missing; cannot verify live provider evidence')
+        evidence_source = 'unavailable'
+
+    # Contradiction guard: live_evidence_ready=true requires evm_rpc_configured=true.
+    # A service summary or stale artifact cannot substitute for real provider secrets.
+    if live_evidence_ready and not evm_rpc_configured:
+        live_evidence_ready = False
+        blockers.append(
+            'live_evidence_ready downgraded: evm_rpc_configured=false; '
+            'real EVM provider secrets required to claim live evidence'
+        )
 
     # Derive provider_mode from env when not set from proof
     if provider_mode == 'disabled' and evm_rpc_configured:

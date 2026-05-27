@@ -726,22 +726,6 @@ def main(strict: bool = False) -> int:
     now = datetime.now(timezone.utc).isoformat()
     result = generate_live_evidence_proof()
 
-    # When no RPC URL is available, fall back to the canonical service live summary.
-    # The service summary is produced by the backend from real database state and is
-    # never simulator data.  Using it preserves fail-closed semantics while avoiding
-    # stale-artifact contradictions: service live_evidence_ready=true must not coexist
-    # with top-level live-evidence-proof live_evidence_ready=false after generation.
-    lpe = result.get('live_provider_evidence', {})
-    if not lpe.get('live_evidence_ready'):
-        service_summary = _load_service_live_summary()
-        if service_summary is not None:
-            print(
-                '[generate-live-evidence-proof] No RPC URL configured; '
-                'falling back to canonical service live evidence summary.'
-            )
-            result = _build_proof_from_service_summary(service_summary, now)
-            lpe = result.get('live_provider_evidence', {})
-
     out_dir = REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest'
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / 'summary.json'

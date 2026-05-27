@@ -113,20 +113,19 @@ def test_build_proof_from_service_summary_workflow_flags_propagated() -> None:
 # main() service summary fallback — no contradiction after generation
 # ---------------------------------------------------------------------------
 
-def test_main_no_contradiction_when_service_summary_is_live(
+def test_main_fails_closed_without_rpc_url_even_with_service_summary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """
-    Key invariant: service_summary.live_evidence_ready=true must not coexist with
-    top-level proof live_evidence_ready=false after main() runs.
+    Fail-closed invariant: main() must never set live_evidence_ready=true when no
+    EVM_RPC_URL is configured, even when the service summary reports live evidence.
 
-    When no EVM_RPC_URL is configured but the service summary proves live evidence,
-    main() must write a proof with live_evidence_ready=true.
+    A committed service summary artifact cannot substitute for real provider secrets.
     """
     _clear_provider_env(monkeypatch)
 
-    # Write live service summary to tmp
+    # Write live service summary to tmp (would have caused the fallback before)
     svc_file = tmp_path / 'svc_summary.json'
     svc_file.write_text(json.dumps(_live_service_summary()), encoding='utf-8')
 
@@ -135,26 +134,23 @@ def test_main_no_contradiction_when_service_summary_is_live(
     out_dir.mkdir(parents=True)
     out_path = out_dir / 'summary.json'
 
-    # Patch module-level paths
     monkeypatch.setattr(_glep_mod, '_SERVICE_LIVE_SUMMARY_PATH', svc_file)
 
-    import importlib
     import unittest.mock as _mock
 
     with _mock.patch.object(_glep_mod, 'REPO_ROOT', tmp_path):
-        rc = _glep_mod.main(strict=False)
+        _glep_mod.main(strict=False)
 
-    # Artifact was written by main()
     assert out_path.exists(), 'main() must write the artifact'
     written = json.loads(out_path.read_text())
     lpe = written['live_provider_evidence']
 
-    assert lpe['live_evidence_ready'] is True, (
-        f'Contradiction: service_summary.live_evidence_ready=true but '
-        f'top-level proof live_evidence_ready={lpe["live_evidence_ready"]}'
+    assert lpe['live_evidence_ready'] is False, (
+        f'Fail-closed violated: live_evidence_ready={lpe["live_evidence_ready"]!r} '
+        f'without EVM_RPC_URL; service summary must not substitute for provider secrets'
     )
-    assert lpe['provider_ready'] is True
-    assert lpe['evidence_source'] == 'live'
+    assert lpe['provider_ready'] is False
+    assert lpe['evidence_source'] == 'unknown'
 
 
 def test_main_still_fails_closed_without_service_summary(

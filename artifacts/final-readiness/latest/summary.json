@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-26T04:53:39.092213+00:00",
-  "mode": "local",
-  "strict": true,
+  "generated_at": "2026-05-27T12:46:04.457282+00:00",
+  "mode": "ci",
+  "strict": false,
   "overall_score": 90,
   "controlled_pilot_ready": true,
   "broad_paid_saas_ready": false,
@@ -97,7 +97,7 @@
       "note": ""
     },
     "live_evidence_readiness": {
-      "status": "fail",
+      "status": "pass",
       "source": "launch_proof",
       "note": ""
     },
@@ -109,7 +109,7 @@
     "staging_validation": {
       "status": "fail",
       "source": "staging_proof",
-      "note": "staging_launch_ready=False, mode='local'"
+      "note": "staging_launch_ready=False, mode='ci'"
     }
   },
   "blockers": [
@@ -117,7 +117,6 @@
     "billing_webhook_ready=false",
     "email_ready=false",
     "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
-    "provider_ready=false",
     "staging proof: staging_launch_ready=false; BILLING_PROVIDER not configured"
   ],
   "warnings": [
@@ -131,5 +130,5 @@
     "/home/user/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
   ],
   "safe_to_sell_broadly_today": false,
-  "safe_to_sell_reason": "Cannot sell broadly from local mode. Run with --mode staging --strict or --mode production --strict using real provider credentials and live evidence."
+  "safe_to_sell_reason": "Cannot sell broadly from ci mode. Run with --mode staging --strict or --mode production --strict using real provider credentials and live evidence."
 }

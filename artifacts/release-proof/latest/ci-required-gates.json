@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-27T11:46:37.574882+00:00",
-  "commit_sha": "f5ac2b6e0e4027255773e2b06523e643e81c988f",
-  "branch": "claude/zealous-dijkstra-GGFQe",
-  "release_channel": "local",
+  "generated_at": "2026-05-27T12:46:07.295424+00:00",
+  "commit_sha": "d2fb1aa1d71320c29ad5b4fc36853a371e447b1d",
+  "branch": "claude/cool-cannon-33JHr",
+  "release_channel": "ci",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
   "required_gates": {
