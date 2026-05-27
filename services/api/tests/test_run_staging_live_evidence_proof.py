@@ -357,9 +357,10 @@ def test_run_with_good_env_and_live_ready_artifact_returns_zero(
     )
 
     assert rc == 0
-    # All six proof commands were invoked (export chain + 5 original).
-    assert len(recorder.calls) == 6
+    # All seven proof commands were invoked (write step + export chain + 5 original).
+    assert len(recorder.calls) == 7
     labels = [label for label, _ in recorder.calls]
+    assert any('Write live rpc_polling artifacts' in lbl for lbl in labels)
     assert any('Export live evidence chain' in lbl for lbl in labels)
     assert any('Live evidence proof' in lbl for lbl in labels)
     assert any('generate-live-evidence-proof' in lbl for lbl in labels)
@@ -405,8 +406,8 @@ def test_run_with_good_env_but_fail_closed_artifact_returns_nonzero(
     )
 
     assert rc == 1
-    # All six commands still ran (diagnostic completeness).
-    assert len(recorder.calls) == 6
+    # All seven commands still ran (diagnostic completeness).
+    assert len(recorder.calls) == 7
     out = capsys.readouterr().out
     assert 'BLOCKER 3: FAIL' in out
     assert 'live_evidence_ready=False' in out

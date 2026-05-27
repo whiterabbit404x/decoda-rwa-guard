@@ -161,6 +161,7 @@ jobs:
       - name: Preflight - check staging live env
         if: steps.secrets.outputs.present == 'true'
         env:
+          # Secrets mapped for check_staging_live_env.py
           STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
           STAGING_EVM_CHAIN_ID: ${{ secrets.STAGING_EVM_CHAIN_ID }}
           STAGING_WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
@@ -168,9 +169,25 @@ jobs:
         # GitHub Actions also masks secret values in logs as a second layer.
         run: make check-staging-live-env
 
+      - name: Diagnose live evidence configuration
+        if: steps.secrets.outputs.present == 'true'
+        env:
+          # Secrets mapped for diagnose_live_evidence.py (prints booleans only,
+          # never secret values). Runs before the proof so the log shows the
+          # exact configuration state at proof time.
+          STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
+          STAGING_EVM_CHAIN_ID: ${{ secrets.STAGING_EVM_CHAIN_ID }}
+          STAGING_WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+        run: python scripts/diagnose_live_evidence.py
+
       - name: Run staging live evidence proof
         if: steps.secrets.outputs.present == 'true'
         env:
+          # Secrets mapped for run_staging_live_evidence_proof.py and all
+          # sub-scripts it spawns as subprocesses (they inherit this env):
+          #   write_live_rpc_polling_artifacts.py
+          #   export_live_evidence_chain.py
+          #   generate_live_evidence_proof.py
           STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
           STAGING_EVM_CHAIN_ID: ${{ secrets.STAGING_EVM_CHAIN_ID }}
           STAGING_WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
