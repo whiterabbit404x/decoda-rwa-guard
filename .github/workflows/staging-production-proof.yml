@@ -1,0 +1,301 @@
+name: Staging Production Proof
+
+# Two-tier workflow for proving blocker 4 (staging/production environment proof):
+#
+#   1. structural-fail-closed-validation
+#        Runs on every pull_request, push, and workflow_dispatch.
+#        Needs no secrets. Proves the validator correctly fails closed when
+#        required staging env vars are absent. PRs from forks always pass here.
+#
+#   2. real-staging-production-proof
+#        Runs only on workflow_dispatch or push to main/master.
+#        Reads the STAGING_* repository secrets. When required secrets are absent
+#        the job clearly reports the gap instead of silently succeeding. When
+#        secrets are present it runs a live health check and generates/validates
+#        a staging proof artifact.
+#
+# Secret values are never echoed. GitHub Actions masks secret values in logs,
+# and all scripts mask URL/key values in their own output. Only boolean
+# presence flags (present: yes / present: no) are logged.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Job A — structural fail-closed validation (no secrets required)
+  # ---------------------------------------------------------------------------
+  structural-fail-closed-validation:
+    name: Blocker 4 structural / fail-closed validation (no secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/api/requirements.txt
+
+      - name: Run staging production proof guardrail tests
+        run: |
+          python -m pytest -q \
+            services/api/tests/test_staging_launch_proof.py \
+            services/api/tests/test_staging_production_proof.py \
+            services/api/tests/test_staging_env_resolution_and_worker.py
+
+      - name: Generate staging launch proof (structural/ci mode — no secrets)
+        run: python scripts/generate_staging_launch_proof.py --mode structural
+
+      - name: Assert proof is fail-closed without staging secrets
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          path = Path('artifacts/staging-proof/latest/summary.json')
+          data = json.loads(path.read_text())
+          slr = data.get('staging_launch_ready')
+          blockers = data.get('blockers', [])
+          required_msgs = [
+              'STAGING_API_URL not configured',
+              'STAGING_APP_URL not configured',
+              'STAGING_DATABASE_URL not configured',
+              'STAGING_AUTH_TOKEN_SECRET not configured',
+              'STAGING_WORKER_ENABLED not configured',
+          ]
+          errors = []
+          if slr is not False:
+              errors.append(
+                  f'expected staging_launch_ready=false without secrets; '
+                  f'got {slr!r}'
+              )
+          for msg in required_msgs:
+              if not any(msg in b for b in blockers):
+                  errors.append(f'expected blocker not found: {msg!r}')
+          if errors:
+              print('FAIL: proof did not fail closed as required:')
+              for e in errors:
+                  print(f'  - {e}')
+              sys.exit(1)
+          print('OK: proof is correctly fail-closed without staging secrets (expected, safe).')
+          PY
+
+      - name: Validate proof with --expect-fail-closed
+        run: |
+          python scripts/validate_staging_launch_proof.py --expect-fail-closed
+
+      - name: Upload structural proof artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-production-proof-structural
+          if-no-files-found: warn
+          retention-days: 30
+          path: artifacts/staging-proof/latest/summary.json
+
+  # ---------------------------------------------------------------------------
+  # Job B — real staging production proof (uses STAGING_* secrets)
+  # ---------------------------------------------------------------------------
+  real-staging-production-proof:
+    name: Blocker 4 real staging production proof (uses STAGING_* secrets)
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Primary staging secrets — must be configured in GitHub repo secrets.
+      STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
+      STAGING_APP_URL: ${{ secrets.STAGING_APP_URL }}
+      STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+      STAGING_AUTH_TOKEN_SECRET: ${{ secrets.STAGING_AUTH_TOKEN_SECRET }}
+      STAGING_WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+      STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
+      STAGING_EVM_CHAIN_ID: ${{ secrets.STAGING_EVM_CHAIN_ID }}
+      # Fallback names used by existing scripts (STAGING_* takes precedence).
+      EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL || secrets.EVM_RPC_URL }}
+      EVM_CHAIN_ID: ${{ secrets.STAGING_EVM_CHAIN_ID || secrets.EVM_CHAIN_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/api/requirements.txt
+
+      - name: Detect staging secrets (boolean presence only — values never printed)
+        id: detect
+        run: |
+          # Check presence of each required secret. Only prints 'yes'/'no', never values.
+          # GitHub Actions also masks secret contents in logs as a second layer of defense.
+          missing=0
+          for var in STAGING_API_URL STAGING_APP_URL STAGING_DATABASE_URL \
+                     STAGING_AUTH_TOKEN_SECRET STAGING_WORKER_ENABLED; do
+            val="${!var}"
+            if [ -z "$val" ]; then
+              echo "${var} present: no"
+              missing=$((missing + 1))
+            else
+              echo "${var} present: yes"
+            fi
+          done
+          for var in STAGING_EVM_RPC_URL STAGING_EVM_CHAIN_ID; do
+            val="${!var}"
+            if [ -n "$val" ]; then
+              echo "${var} present: yes"
+            else
+              echo "${var} present: no (optional)"
+            fi
+          done
+          if [ "$missing" -gt 0 ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "missing_count=${missing}" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "missing_count=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip (staging secrets not configured)
+        if: steps.detect.outputs.configured != 'true'
+        run: |
+          echo "::notice::Staging production proof skipped — ${{ steps.detect.outputs.missing_count }} required STAGING_* secret(s) are not configured."
+          echo ""
+          echo "Blocker 4 remains: staging/production proof is missing."
+          echo ""
+          echo "To run the real proof and clear blocker 4:"
+          echo "  GitHub repo → Settings → Secrets and variables → Actions"
+          echo "  Add secrets: STAGING_API_URL, STAGING_APP_URL, STAGING_DATABASE_URL,"
+          echo "               STAGING_AUTH_TOKEN_SECRET, STAGING_WORKER_ENABLED"
+          echo ""
+          echo "See docs/STAGING_PRODUCTION_PROOF.md for full setup instructions."
+
+      - name: Confirm STAGING_WORKER_ENABLED is enabled
+        if: steps.detect.outputs.configured == 'true'
+        run: |
+          # Check the actual value, not just presence.
+          # True values: true, 1, yes, enabled (case-insensitive).
+          worker_val="${STAGING_WORKER_ENABLED,,}"
+          if [[ "$worker_val" =~ ^(true|1|yes|enabled)$ ]]; then
+            echo "STAGING_WORKER_ENABLED: enabled"
+          else
+            echo "::error::STAGING_WORKER_ENABLED is present but not enabled."
+            echo "  Value must be one of: true, 1, yes, enabled"
+            echo "  Received a non-truthy value. Staging worker is disabled."
+            exit 1
+          fi
+
+      - name: Probe staging API health endpoint
+        if: steps.detect.outputs.configured == 'true'
+        run: |
+          echo "Probing staging API health endpoint..."
+          status=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 --retry 2 --retry-delay 5 \
+            "${STAGING_API_URL}/health" 2>/dev/null || echo "000")
+          echo "Staging API /health HTTP status: ${status}"
+          if [ "$status" != "200" ]; then
+            echo "::error::Staging API health check failed (HTTP ${status})."
+            echo "  Confirm STAGING_API_URL points to a running staging deployment."
+            exit 1
+          fi
+
+      - name: Probe staging app URL
+        if: steps.detect.outputs.configured == 'true'
+        run: |
+          echo "Probing staging app URL..."
+          status=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 --retry 2 --retry-delay 5 \
+            "${STAGING_APP_URL}" 2>/dev/null || echo "000")
+          echo "Staging app HTTP status: ${status}"
+          # Accept 200 (OK) and common redirects (301, 302).
+          if [ "$status" != "200" ] && [ "$status" != "301" ] && [ "$status" != "302" ]; then
+            echo "::error::Staging app check failed (HTTP ${status})."
+            echo "  Confirm STAGING_APP_URL points to a running staging deployment."
+            exit 1
+          fi
+
+      - name: Validate auth secret presence (no value printed)
+        if: steps.detect.outputs.configured == 'true'
+        run: |
+          # Confirm the auth secret is a non-trivial length without printing it.
+          # GitHub Actions masks the value; this adds a length sanity check.
+          if [ "${#STAGING_AUTH_TOKEN_SECRET}" -lt 16 ]; then
+            echo "::error::STAGING_AUTH_TOKEN_SECRET appears too short for a real secret."
+            exit 1
+          fi
+          echo "STAGING_AUTH_TOKEN_SECRET length check: ok"
+
+      - name: Generate staging production proof
+        if: steps.detect.outputs.configured == 'true'
+        run: |
+          python scripts/generate_staging_launch_proof.py --mode staging
+
+      - name: Validate staging production proof
+        if: steps.detect.outputs.configured == 'true'
+        run: |
+          python scripts/validate_staging_launch_proof.py
+
+      - name: Assert staging_launch_ready in proof
+        if: steps.detect.outputs.configured == 'true'
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          path = Path('artifacts/staging-proof/latest/summary.json')
+          data = json.loads(path.read_text())
+          slr = data.get('staging_launch_ready')
+          blockers = data.get('blockers', [])
+          if slr is not True:
+              print(f'FAIL: staging_launch_ready={slr!r}')
+              if blockers:
+                  print('Remaining blockers:')
+                  for b in blockers:
+                      print(f'  - {b}')
+              sys.exit(1)
+          sv = data.get('staging_launch_validation', {})
+          print('OK: staging_launch_ready=true — staging environment is proven healthy.')
+          print(f'  staging_api_url_present:    {sv.get("staging_api_url_present")}')
+          print(f'  staging_app_url_present:    {sv.get("staging_app_url_present")}')
+          print(f'  staging_database_present:   {sv.get("staging_database_present")}')
+          print(f'  staging_auth_secret_present:{sv.get("staging_auth_secret_present")}')
+          print(f'  staging_worker_enabled:     {sv.get("staging_worker_enabled")}')
+          PY
+
+      - name: Upload real staging production proof artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-production-proof-real
+          if-no-files-found: warn
+          retention-days: 30
+          path: artifacts/staging-proof/latest/summary.json

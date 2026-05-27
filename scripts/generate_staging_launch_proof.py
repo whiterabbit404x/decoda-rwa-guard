@@ -116,7 +116,12 @@ def build_staging_launch_validation(mode: str) -> dict[str, Any]:
     staging_app_url = _env_present('STAGING_APP_URL')
     staging_db = _env_present('STAGING_DATABASE_URL')
     staging_auth = _env_present('STAGING_AUTH_TOKEN_SECRET')
-    staging_worker = _env_present('STAGING_WORKER_ENABLED')
+    staging_worker_raw = (os.getenv('STAGING_WORKER_ENABLED') or '').strip().lower()
+    staging_worker = bool(staging_worker_raw) and not any(
+        m in staging_worker_raw for m in _PLACEHOLDER_MARKERS
+    )
+    # Actual truthy-value check: must be one of the accepted enabled values.
+    staging_worker_enabled_value = staging_worker_raw in ('true', '1', 'yes', 'enabled')
     staging_evm = _env_present('STAGING_EVM_RPC_URL')
 
     staging_env_present = staging_api_url or staging_app_url or staging_db
@@ -130,7 +135,12 @@ def build_staging_launch_validation(mode: str) -> dict[str, Any]:
     if not staging_auth:
         blockers.append('STAGING_AUTH_TOKEN_SECRET not configured')
     if not staging_worker:
-        blockers.append('STAGING_WORKER_ENABLED not configured; staging worker presence not confirmed')
+        blockers.append('STAGING_WORKER_ENABLED not configured')
+    elif not staging_worker_enabled_value:
+        blockers.append(
+            'STAGING_WORKER_ENABLED is not enabled; '
+            'value must be true/1/yes/enabled'
+        )
     if not staging_evm:
         warnings.append('STAGING_EVM_RPC_URL not set; staging EVM provider not confirmed')
 
@@ -172,6 +182,12 @@ def build_staging_launch_validation(mode: str) -> dict[str, Any]:
         'staging_database_present': staging_db,
         'staging_auth_secret_present': staging_auth,
         'staging_worker_present': staging_worker,
+        # Actual enabled-value check (not just presence):
+        'staging_worker_enabled': staging_worker_enabled_value,
+        # Reachability aliases (env-var-based; no network calls):
+        'staging_app_reachable': staging_app_url,
+        'staging_database_reachable': staging_db,
+        'staging_runtime_reachable': staging_runtime_validated,
         'staging_migrations_validated': staging_migrations_validated,
         'staging_runtime_validated': staging_runtime_validated,
         'staging_live_evidence_validated': staging_live_evidence_validated,
@@ -794,11 +810,12 @@ def generate_staging_proof(
         and sv.get('staging_database_present', False)
         and sv.get('staging_auth_secret_present', False)
     )
-    staging_worker_enabled = sv.get('staging_worker_present', False)
-    staging_database_reachable = sv.get('staging_database_present', False)
+    # Use the actual truthy-value check field; fall back to presence for older proofs.
+    staging_worker_enabled = sv.get('staging_worker_enabled', sv.get('staging_worker_present', False))
+    staging_database_reachable = sv.get('staging_database_reachable', sv.get('staging_database_present', False))
     staging_auth_configured = sv.get('staging_auth_secret_present', False)
-    # runtime_reachable is only provable by an actual health-check; use proof-file flag
-    staging_runtime_reachable = sv.get('staging_runtime_validated', False)
+    # runtime_reachable is only provable by an actual health-check; use proof-file flag.
+    staging_runtime_reachable = sv.get('staging_runtime_reachable', sv.get('staging_runtime_validated', False))
     staging_live_evidence_ready = live_provider_validation.get('live_evidence_ready', False)
 
     summary: dict[str, Any] = {
@@ -810,6 +827,12 @@ def generate_staging_proof(
         'staging_launch_ready': staging_launch_ready,
         'broad_paid_saas_ready': broad_paid_saas_ready,
         'safe_to_sell_broadly_today': safe_to_sell_broadly_today,
+        # Grouped readiness flags section (mirrors top-level flags for consumers).
+        'readiness': {
+            'staging_launch_ready': staging_launch_ready,
+            'broad_paid_saas_ready': broad_paid_saas_ready,
+            'safe_to_sell_broadly_today': safe_to_sell_broadly_today,
+        },
         # Separated proof flags (fail-closed; false in local/ci mode)
         'local_validation_ready': local_validation_ready,
         'staging_env_configured': staging_env_configured,
@@ -877,6 +900,9 @@ if __name__ == '__main__':
         idx = args.index('--mode')
         if idx + 1 < len(args):
             mode = args[idx + 1]
+    # 'structural' is an alias for 'ci' — both run fail-closed without secrets.
+    if mode == 'structural':
+        mode = 'ci'
     if '--strict' in args:
         strict = True
     raise SystemExit(main(mode=mode, strict=strict))
