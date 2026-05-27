@@ -283,7 +283,7 @@ def validate_staging_proof(artifact_path: Path) -> tuple[bool, list[str], list[s
             )
 
     # Rule 7: live_evidence_ready=true requires live evidence_source
-    if live_val.get('live_evidence_ready') and ev_source not in ('live', 'live_provider'):
+    if live_val.get('live_evidence_ready') and ev_source not in ('live', 'live_provider', 'live_rpc'):
         errors.append(
             f'OVERCLAIM: live_evidence_ready=true '
             f'but evidence_source={ev_source!r} is not a live source'
@@ -295,6 +295,39 @@ def validate_staging_proof(artifact_path: Path) -> tuple[bool, list[str], list[s
         errors.append(
             f'OVERCLAIM: live_evidence_ready=true '
             f'but contradiction_flags are present: {contradiction_flags[:3]}'
+        )
+
+    # Rule 9: staging_launch_ready=true while provider_ready=false
+    staging_ready = bool(artifact.get('staging_launch_ready'))
+    if staging_ready and not live_val.get('provider_ready'):
+        errors.append(
+            'OVERCLAIM: staging_launch_ready=true '
+            'but live_provider_validation.provider_ready=false'
+        )
+
+    # Rule 10: live_evidence_ready=true while evm_rpc_configured=false
+    if live_val.get('live_evidence_ready') and live_val.get('evm_rpc_configured') is False:
+        errors.append(
+            'OVERCLAIM: live_evidence_ready=true '
+            'but evm_rpc_configured=false (no RPC URL configured)'
+        )
+
+    # Rule 11: freshness_status=current while last_telemetry_at is missing
+    freshness_status = live_val.get('freshness_status')
+    last_telemetry_at = live_val.get('latest_live_telemetry_at')
+    if freshness_status == 'current' and not last_telemetry_at:
+        errors.append(
+            'OVERCLAIM: freshness_status=current '
+            'but latest_live_telemetry_at is missing or null'
+        )
+
+    # Rule 12: monitoring_status=healthy while reporting_systems=0
+    monitoring_status = live_val.get('monitoring_status')
+    reporting_systems = live_val.get('reporting_systems')
+    if monitoring_status == 'healthy' and reporting_systems == 0:
+        errors.append(
+            'OVERCLAIM: monitoring_status=healthy '
+            'but reporting_systems=0 (no reporting systems active)'
         )
 
     # Rule 5: test_mode_detected=true cannot coexist with billing status=pass

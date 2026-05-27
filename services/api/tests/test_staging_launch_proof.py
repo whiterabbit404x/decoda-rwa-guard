@@ -612,6 +612,270 @@ def test_p_controlled_pilot_true_broad_saas_false(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# R. Staging mode blocks service summary fallback.
+# ---------------------------------------------------------------------------
+def test_r_staging_mode_blocks_service_summary_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    In staging mode, build_live_provider_validation must NOT use the service summary
+    fallback to satisfy live_evidence_ready=true.  Missing RPC URL must fail closed.
+    """
+    import scripts.generate_staging_launch_proof as _sglp
+
+    # No launch-proof, no live-evidence-proof artifacts
+    missing_launch_proof = tmp_path / 'launch-proof' / 'latest' / 'summary.json'
+
+    # Write a passing service summary that would rescue live_evidence_ready in local mode
+    svc_dir = tmp_path / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest'
+    svc_dir.mkdir(parents=True, exist_ok=True)
+    svc_summary = {
+        'evidence_source': 'live',
+        'live_evidence_ready': True,
+        'provider_ready': True,
+        'latest_live_telemetry_at': '2026-01-01T00:01:00Z',
+    }
+    (svc_dir / 'summary.json').write_text(json.dumps(svc_summary))
+
+    # Patch REPO_ROOT so _svc_summary_live() finds the fake summary
+    monkeypatch.setattr(_sglp, 'REPO_ROOT', tmp_path)
+    # No EVM_RPC_URL env var set — provider not configured
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+
+    result = build_live_provider_validation('staging', missing_launch_proof)
+
+    # Staging mode must NOT use service summary to pass
+    assert result['live_evidence_ready'] is False, (
+        'staging mode must not rescue live_evidence_ready via service summary fallback'
+    )
+    assert result['status'] == 'fail'
+    assert any('launch-proof' in b or 'live' in b.lower() or 'unavailable' in b.lower()
+               for b in result['blockers'])
+
+
+def test_r_local_mode_allows_service_summary_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    In local mode, build_live_provider_validation is allowed to use the service summary
+    fallback to set live_evidence_ready=true (for local/demo use only).
+    """
+    import scripts.generate_staging_launch_proof as _sglp
+
+    missing_launch_proof = tmp_path / 'launch-proof' / 'latest' / 'summary.json'
+
+    svc_dir = tmp_path / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest'
+    svc_dir.mkdir(parents=True, exist_ok=True)
+    svc_summary = {
+        'evidence_source': 'live',
+        'live_evidence_ready': True,
+        'provider_ready': True,
+        'latest_live_telemetry_at': '2026-01-01T00:01:00Z',
+    }
+    (svc_dir / 'summary.json').write_text(json.dumps(svc_summary))
+
+    monkeypatch.setattr(_sglp, 'REPO_ROOT', tmp_path)
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+
+    result = build_live_provider_validation('local', missing_launch_proof)
+
+    assert result['live_evidence_ready'] is True, (
+        'local mode should allow service summary fallback for live_evidence_ready'
+    )
+
+
+# ---------------------------------------------------------------------------
+# S. Validator: new contradiction guards.
+# ---------------------------------------------------------------------------
+
+def _base_valid_artifact(**overrides: Any) -> dict[str, Any]:
+    """Return a structurally valid staging proof artifact with all required fields."""
+    art: dict[str, Any] = {
+        'schema_version': 1,
+        'generated_at': '2026-01-01T00:00:00+00:00',
+        'mode': 'staging',
+        'strict': False,
+        'release_channel': 'staging',
+        'staging_launch_ready': True,
+        'broad_paid_saas_ready': False,
+        'safe_to_sell_broadly_today': False,
+        'staging_launch_validation': {
+            'status': 'pass',
+            'staging_environment_present': True,
+            'staging_api_url_present': True,
+            'staging_app_url_present': True,
+            'staging_database_present': True,
+            'staging_auth_secret_present': True,
+            'staging_worker_present': True,
+            'staging_migrations_validated': False,
+            'staging_runtime_validated': False,
+            'staging_live_evidence_validated': False,
+            'generated_at': '2026-01-01T00:00:00+00:00',
+            'blockers': [],
+            'warnings': [],
+        },
+        'live_provider_validation': {
+            'status': 'pass',
+            'evm_rpc_configured': True,
+            'chain_id_configured': True,
+            'provider_health_checked': True,
+            'provider_ready': True,
+            'provider_mode': 'live',
+            'worker_enabled': True,
+            'latest_live_telemetry_at': '2026-01-01T00:01:00+00:00',
+            'live_evidence_ready': True,
+            'evidence_source': 'live_provider',
+            'chain': {
+                'telemetry_event_id': 'tel-001',
+                'detection_id': 'det-001',
+                'alert_id': 'alert-001',
+                'incident_id': 'inc-001',
+                'response_action_id': 'ra-001',
+                'evidence_package_id': 'pkg-001',
+            },
+            'missing': [],
+            'contradiction_flags': [],
+            'blockers': [],
+            'warnings': [],
+        },
+        'billing_production_validation': {
+            'status': 'fail',
+            'billing_provider': 'unknown',
+            'live_secret_key_present': False,
+            'webhook_secret_present': False,
+            'price_id_present': False,
+            'webhook_endpoint_validated': False,
+            'test_mode_detected': False,
+            'blockers': ['BILLING_PROVIDER not configured'],
+            'warnings': [],
+        },
+        'email_production_validation': {
+            'status': 'fail',
+            'provider': 'unknown',
+            'api_key_present': False,
+            'sender_present': False,
+            'domain_present': False,
+            'production_sender_validated': False,
+            'blockers': ['EMAIL_PROVIDER not configured'],
+            'warnings': [],
+        },
+        'required_dependencies': {
+            'paid_launch_readiness': 'not_run',
+            'release_proof': 'not_run',
+            'runtime_truthfulness': 'pass',
+            'evidence_export_truthfulness': 'pass',
+            'multi_tenant_isolation': 'pass',
+        },
+        'blockers': ['BILLING_PROVIDER not configured', 'EMAIL_PROVIDER not configured'],
+        'warnings': [],
+    }
+    art.update(overrides)
+    return art
+
+
+def test_s_validator_rejects_staging_launch_ready_with_provider_ready_false(
+    tmp_path: Path,
+) -> None:
+    """Rule 9: staging_launch_ready=true while provider_ready=false must be rejected."""
+    art = _base_valid_artifact()
+    # Set provider_ready=false while staging_launch_ready=true
+    art['live_provider_validation'] = dict(art['live_provider_validation'])
+    art['live_provider_validation']['provider_ready'] = False
+
+    artifact_path = tmp_path / 'summary.json'
+    artifact_path.write_text(json.dumps(art))
+
+    is_valid, errors, _ = validate_staging_proof(artifact_path)
+
+    assert not is_valid
+    assert any('provider_ready' in e and 'OVERCLAIM' in e for e in errors), (
+        f'Expected OVERCLAIM for staging_launch_ready+provider_ready=false; errors={errors}'
+    )
+
+
+def test_s_validator_rejects_live_evidence_ready_with_no_rpc_url(
+    tmp_path: Path,
+) -> None:
+    """Rule 10: live_evidence_ready=true while evm_rpc_configured=false must be rejected."""
+    art = _base_valid_artifact()
+    art['live_provider_validation'] = dict(art['live_provider_validation'])
+    art['live_provider_validation']['evm_rpc_configured'] = False  # no RPC URL
+
+    artifact_path = tmp_path / 'summary.json'
+    artifact_path.write_text(json.dumps(art))
+
+    is_valid, errors, _ = validate_staging_proof(artifact_path)
+
+    assert not is_valid
+    assert any('evm_rpc_configured' in e and 'OVERCLAIM' in e for e in errors), (
+        f'Expected OVERCLAIM for live_evidence_ready+evm_rpc_configured=false; errors={errors}'
+    )
+
+
+def test_s_validator_rejects_freshness_current_without_telemetry_at(
+    tmp_path: Path,
+) -> None:
+    """Rule 11: freshness_status=current while latest_live_telemetry_at is missing => error."""
+    art = _base_valid_artifact()
+    art['live_provider_validation'] = dict(art['live_provider_validation'])
+    art['live_provider_validation']['freshness_status'] = 'current'
+    art['live_provider_validation']['latest_live_telemetry_at'] = None  # missing
+
+    artifact_path = tmp_path / 'summary.json'
+    artifact_path.write_text(json.dumps(art))
+
+    is_valid, errors, _ = validate_staging_proof(artifact_path)
+
+    assert not is_valid
+    assert any('freshness_status' in e and 'OVERCLAIM' in e for e in errors), (
+        f'Expected OVERCLAIM for freshness_status=current without telemetry_at; errors={errors}'
+    )
+
+
+def test_s_validator_rejects_monitoring_healthy_with_zero_reporting_systems(
+    tmp_path: Path,
+) -> None:
+    """Rule 12: monitoring_status=healthy while reporting_systems=0 => error."""
+    art = _base_valid_artifact()
+    art['live_provider_validation'] = dict(art['live_provider_validation'])
+    art['live_provider_validation']['monitoring_status'] = 'healthy'
+    art['live_provider_validation']['reporting_systems'] = 0
+
+    artifact_path = tmp_path / 'summary.json'
+    artifact_path.write_text(json.dumps(art))
+
+    is_valid, errors, _ = validate_staging_proof(artifact_path)
+
+    assert not is_valid
+    assert any('reporting_systems' in e and 'OVERCLAIM' in e for e in errors), (
+        f'Expected OVERCLAIM for monitoring_status=healthy + reporting_systems=0; errors={errors}'
+    )
+
+
+def test_s_validator_accepts_live_rpc_evidence_source(
+    tmp_path: Path,
+) -> None:
+    """Rule 7 (updated): evidence_source=live_rpc must be accepted as a valid live source."""
+    art = _base_valid_artifact()
+    art['live_provider_validation'] = dict(art['live_provider_validation'])
+    art['live_provider_validation']['evidence_source'] = 'live_rpc'
+
+    artifact_path = tmp_path / 'summary.json'
+    artifact_path.write_text(json.dumps(art))
+
+    is_valid, errors, _ = validate_staging_proof(artifact_path)
+
+    # Should not have a Rule 7 error about evidence_source
+    rule7_errors = [e for e in errors if 'is not a live source' in e]
+    assert rule7_errors == [], (
+        f'evidence_source=live_rpc should be accepted as valid live source; '
+        f'unexpected errors: {rule7_errors}'
+    )
+
+
+# ---------------------------------------------------------------------------
 # Q. Existing Session 10-14 test files are present and importable.
 # ---------------------------------------------------------------------------
 def test_q_session_10_14_test_files_present() -> None:

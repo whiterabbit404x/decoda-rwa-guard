@@ -253,10 +253,16 @@ def build_live_provider_validation(
     # evidence chain is still incomplete (e.g., event_count=0).
     _live_ev_proof_active = live_evidence_proof is not None
 
+    # Service summary fallback is ONLY allowed in local/ci mode.
+    # In staging or production mode, live_evidence_ready must come from a real
+    # configured EVM RPC provider — never from a bundled artifact or service summary.
+    _allow_service_fallback = mode not in ('staging', 'production')
+
     # Helper: read canonical service summary as secondary source for live evidence.
-    # Used to resolve stale-artifact contradictions where the canonical proof is stale
-    # but the service itself has already proven live evidence readiness.
+    # Only used in local/ci mode to avoid stale-artifact contradictions.
     def _svc_summary_live() -> dict | None:
+        if not _allow_service_fallback:
+            return None
         svc_path = REPO_ROOT / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest' / 'summary.json'
         if not svc_path.exists():
             return None
@@ -296,8 +302,8 @@ def build_live_provider_validation(
         chain_evidence_package_id = chain_data.get('evidence_package_id') or None
 
         if not live_evidence_ready:
-            # Canonical proof not ready — check service summary to avoid stale-artifact
-            # contradiction (service live=true vs top-level proof live=false).
+            # In staging/production: propagate all missing items as blockers.
+            # In local/ci: allow service summary to resolve stale-artifact contradictions.
             svc = _svc_summary_live()
             if svc is not None:
                 live_evidence_ready = True
@@ -322,7 +328,7 @@ def build_live_provider_validation(
             or ''
         ).strip().lower()
 
-        if ev_source in ('live', 'live_provider'):
+        if ev_source in ('live', 'live_provider', 'live_rpc'):
             evidence_source = 'live_provider'
             if live_ev:
                 live_evidence_ready = True
@@ -365,7 +371,7 @@ def build_live_provider_validation(
         chain_incident_id = chain_data.get('incident_id') or None
         chain_evidence_package_id = chain_data.get('evidence_package_id') or None
 
-        # If still not ready after reading launch-proof, check service summary.
+        # In local/ci mode only: service summary can resolve stale launch-proof.
         if not live_evidence_ready and evidence_source not in ('simulator', 'fixture'):
             svc = _svc_summary_live()
             if svc is not None:
@@ -378,7 +384,9 @@ def build_live_provider_validation(
                 blockers.clear()
 
     else:
-        # No canonical proof or launch-proof — check service summary directly.
+        # No canonical proof or launch-proof.
+        # In local/ci mode: allow service summary fallback.
+        # In staging/production: fail closed — no proof means no live evidence.
         svc = _svc_summary_live()
         if svc is not None:
             live_evidence_ready = True
@@ -390,6 +398,15 @@ def build_live_provider_validation(
         else:
             blockers.append('launch-proof artifact missing; cannot verify live provider evidence')
             evidence_source = 'unavailable'
+
+    # Contradiction guard (staging/production): live_evidence_ready=True without RPC URL.
+    if live_evidence_ready and not evm_rpc_configured and mode in ('staging', 'production'):
+        contradiction_flags.append('live_evidence_ready_without_rpc_url')
+        live_evidence_ready = False
+        blockers.append(
+            'live_evidence_ready cannot be true without EVM_RPC_URL configured; '
+            'set STAGING_EVM_RPC_URL or EVM_RPC_URL'
+        )
 
     # Derive provider_mode from env when not set from proof
     if provider_mode == 'disabled' and evm_rpc_configured:
