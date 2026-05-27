@@ -267,6 +267,12 @@ def validate_staging_proof(artifact_path: Path) -> tuple[bool, list[str], list[s
             f'but evidence_source={ev_source!r}'
         )
 
+    # Rule 6a: live_evidence_ready=true requires evm_rpc_configured=true
+    if live_val.get('live_evidence_ready') and not live_val.get('evm_rpc_configured'):
+        errors.append(
+            'OVERCLAIM: live_evidence_ready=true but evm_rpc_configured=false'
+        )
+
     # Rule 6: live_evidence_ready=true requires full chain IDs to be present
     if live_val.get('live_evidence_ready'):
         chain = live_val.get('chain', {}) if isinstance(live_val.get('chain'), dict) else {}

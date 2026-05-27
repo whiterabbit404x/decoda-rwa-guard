@@ -612,6 +612,182 @@ def test_p_controlled_pilot_true_broad_saas_false(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# R. Validator rejects live_evidence_ready=true with evm_rpc_configured=false.
+# ---------------------------------------------------------------------------
+def test_r_validator_rejects_live_evidence_ready_without_rpc(tmp_path: Path) -> None:
+    """live_evidence_ready=true but evm_rpc_configured=false must be rejected as overclaim."""
+    artifact = {
+        'schema_version': 1,
+        'generated_at': '2026-01-01T00:00:00+00:00',
+        'mode': 'ci',
+        'strict': False,
+        'release_channel': 'local',
+        'staging_launch_ready': False,
+        'broad_paid_saas_ready': False,
+        'safe_to_sell_broadly_today': False,
+        'staging_launch_validation': {
+            'status': 'fail',
+            'staging_environment_present': False,
+            'staging_api_url_present': False,
+            'staging_app_url_present': False,
+            'staging_database_present': False,
+            'staging_auth_secret_present': False,
+            'staging_worker_present': False,
+            'staging_migrations_validated': False,
+            'staging_runtime_validated': False,
+            'staging_live_evidence_validated': False,
+            'generated_at': '2026-01-01T00:00:00+00:00',
+            'blockers': ['STAGING_API_URL not configured'],
+            'warnings': [],
+        },
+        'live_provider_validation': {
+            'status': 'pass',
+            'evm_rpc_configured': False,  # no RPC configured
+            'chain_id_configured': False,
+            'provider_health_checked': False,
+            'provider_ready': False,
+            'provider_mode': 'disabled',
+            'latest_live_telemetry_at': '2026-01-01T00:01:00+00:00',
+            'live_evidence_ready': True,  # overclaim: no RPC but claims ready
+            'evidence_source': 'live',
+            'chain': {
+                'telemetry_event_id': 'tel-001',
+                'detection_id': 'det-001',
+                'alert_id': 'alert-001',
+                'incident_id': 'inc-001',
+                'response_action_id': None,
+                'evidence_package_id': 'pkg-001',
+            },
+            'missing': [],
+            'contradiction_flags': [],
+            'blockers': [],
+            'warnings': [],
+        },
+        'billing_production_validation': {
+            'status': 'fail',
+            'billing_provider': 'unknown',
+            'live_secret_key_present': False,
+            'webhook_secret_present': False,
+            'price_id_present': False,
+            'webhook_endpoint_validated': False,
+            'test_mode_detected': False,
+            'blockers': ['BILLING_PROVIDER not configured'],
+            'warnings': [],
+        },
+        'email_production_validation': {
+            'status': 'fail',
+            'provider': 'unknown',
+            'api_key_present': False,
+            'sender_present': False,
+            'domain_present': False,
+            'production_sender_validated': False,
+            'blockers': ['EMAIL_PROVIDER not configured'],
+            'warnings': [],
+        },
+        'required_dependencies': {
+            'paid_launch_readiness': 'not_run',
+            'release_proof': 'not_run',
+            'runtime_truthfulness': 'pass',
+            'evidence_export_truthfulness': 'pass',
+            'multi_tenant_isolation': 'pass',
+        },
+        'blockers': [],
+        'warnings': [],
+    }
+    path = tmp_path / 'summary.json'
+    path.write_text(json.dumps(artifact))
+
+    is_valid, errors, _ = validate_staging_proof(path)
+
+    assert not is_valid
+    assert any('evm_rpc_configured=false' in e for e in errors), (
+        f'Expected evm_rpc_configured=false overclaim error; got: {errors}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# S. Contradiction guard: service summary fallback must not elevate live_evidence_ready.
+# ---------------------------------------------------------------------------
+def test_s_service_summary_fallback_does_not_elevate_live_evidence_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """
+    Without EVM_RPC_URL, build_live_provider_validation must return
+    live_evidence_ready=False even when a live service summary artifact exists.
+    """
+    import scripts.generate_staging_launch_proof as _sglp
+
+    # Arrange: create a live service summary that previously caused the fallback
+    svc_dir = tmp_path / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest'
+    svc_dir.mkdir(parents=True)
+    (svc_dir / 'summary.json').write_text(json.dumps({
+        'evidence_source': 'live',
+        'provider_ready': True,
+        'live_evidence_ready': True,
+        'latest_live_telemetry_at': '2026-01-01T00:01:00+00:00',
+    }))
+
+    # No EVM_RPC_URL configured
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+
+    # Redirect REPO_ROOT so fallback would read the fake summary if fallback existed
+    monkeypatch.setattr(_sglp, 'REPO_ROOT', tmp_path)
+
+    result = build_live_provider_validation('staging')
+
+    assert result['live_evidence_ready'] is False, (
+        f'Service summary must not substitute for provider secrets; '
+        f'got live_evidence_ready={result["live_evidence_ready"]!r}'
+    )
+    assert result['evm_rpc_configured'] is False
+
+
+# ---------------------------------------------------------------------------
+# T. No-secrets CI proof: live_evidence_ready=false and evidence_source not live.
+# ---------------------------------------------------------------------------
+def test_t_ci_mode_staging_proof_fails_closed_without_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """
+    generate_staging_proof in ci mode with no provider secrets must produce
+    live_evidence_ready=false in live_provider_validation.
+    The staging proof must not overclaim readiness from a stale artifact.
+    """
+    import scripts.generate_staging_launch_proof as _sglp
+
+    # No EVM_RPC_URL, no staging env vars
+    monkeypatch.delenv('EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('STAGING_EVM_RPC_URL', raising=False)
+    monkeypatch.delenv('STAGING_API_URL', raising=False)
+    monkeypatch.delenv('STAGING_APP_URL', raising=False)
+    monkeypatch.delenv('STAGING_DATABASE_URL', raising=False)
+    monkeypatch.delenv('STAGING_AUTH_TOKEN_SECRET', raising=False)
+    monkeypatch.delenv('STAGING_WORKER_ENABLED', raising=False)
+
+    # Redirect REPO_ROOT to tmp so no committed artifacts bleed through
+    monkeypatch.setattr(_sglp, 'REPO_ROOT', tmp_path)
+
+    proof = generate_staging_proof(
+        mode='ci',
+        launch_proof_dir=tmp_path / 'launch-proof' / 'latest',
+        release_proof_dir=tmp_path / 'release-proof' / 'latest',
+        live_evidence_proof_dir=tmp_path / 'live-evidence-proof' / 'latest',
+    )
+
+    lpv = proof['live_provider_validation']
+    assert lpv['live_evidence_ready'] is False, (
+        f'No-secrets CI proof must not claim live_evidence_ready=true; '
+        f'got {lpv["live_evidence_ready"]!r}'
+    )
+    assert lpv['evm_rpc_configured'] is False
+    assert proof['staging_launch_ready'] is False
+    assert proof['broad_paid_saas_ready'] is False
+
+
+# ---------------------------------------------------------------------------
 # Q. Existing Session 10-14 test files are present and importable.
 # ---------------------------------------------------------------------------
 def test_q_session_10_14_test_files_present() -> None:
