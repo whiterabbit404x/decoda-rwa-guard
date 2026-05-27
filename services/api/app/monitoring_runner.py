@@ -6488,6 +6488,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
               AND evidence_source = 'live'
               AND event_type IN ('rpc_polling', 'live_provider')
               AND provider_type IN ('evm_rpc', 'live_provider')
+              AND observed_at IS NOT NULL
             ''',
             (workspace_id,),
         ).fetchone()

@@ -227,3 +227,7 @@ def test_runtime_status_uses_canonical_timestamp_columns(monkeypatch):
     if joined:
         assert 'MAX(created_at) AS ts FROM detection_events' in joined
         assert 'te.ingested_at' in joined
+        assert "FROM telemetry_events WHERE workspace_id = %s::uuid AND evidence_source = 'live'" in joined
+        assert "event_type IN ('rpc_polling', 'live_provider')" in joined
+        assert "provider_type IN ('evm_rpc', 'live_provider')" in joined
+        assert 'observed_at IS NOT NULL' in joined
