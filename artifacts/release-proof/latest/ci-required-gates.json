@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-25T16:48:49.471582+00:00",
-  "commit_sha": "02bd9379f9a780496fa3afcf8c1f7258181d3e10",
-  "branch": "claude/sweet-lamport-pcHzX",
+  "generated_at": "2026-05-27T05:15:57.182748+00:00",
+  "commit_sha": "e5d40b6bc08d3725f13a644427a599a3a4eb97a3",
+  "branch": "claude/beautiful-bohr-49iDy",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
