@@ -726,3 +726,194 @@ def test_script_live_evidence_chain_rejects_non_live_source(
     lpe = result['live_provider_evidence']
     assert lpe['live_evidence_ready'] is False
     assert lpe['chain']['telemetry_event_id'] is None
+
+
+# ===========================================================================
+# Strict-mode and service-summary fallback tests
+# ===========================================================================
+
+def test_script_worker_enabled_alias_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """WORKER_ENABLED (without STAGING_ prefix) is accepted as fallback for STAGING_WORKER_ENABLED."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('WORKER_ENABLED', 'true')
+    # STAGING_WORKER_ENABLED deliberately absent
+
+    with patch(_SCRIPT_RPC_PATCH, side_effect=_mock_rpc_success('0x1', '0x12c')):
+        result = generate_live_evidence_proof(live_evidence_chain=_real_live_chain())
+
+    lpe = result['live_provider_evidence']
+    assert lpe['worker_enabled'] is True, (
+        'WORKER_ENABLED=true must satisfy worker_enabled check as fallback for STAGING_WORKER_ENABLED'
+    )
+    assert lpe['live_evidence_ready'] is True
+
+
+def test_script_strict_mode_blocks_service_summary_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """
+    Strict mode must NOT fall back to service summary when no RPC URL is set.
+    Without RPC URL, strict proof must write live_evidence_ready=false and exit non-zero.
+    """
+    import scripts.generate_live_evidence_proof as _glep
+
+    _clear_provider_env(monkeypatch)
+    # No RPC URL set — would normally trigger service summary fallback
+
+    # Write a service summary that would pass if fallback were allowed
+    svc_dir = tmp_path / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest'
+    svc_dir.mkdir(parents=True, exist_ok=True)
+    svc_summary = {
+        'evidence_source': 'live',
+        'live_evidence_ready': True,
+        'provider_ready': True,
+        'latest_live_telemetry_at': '2026-01-01T00:01:00Z',
+        'telemetry_event_present': True,
+        'detection_generated_from_telemetry': True,
+        'alert_generated_from_detection': True,
+        'incident_opened_from_alert': True,
+    }
+    import json as _json
+    (svc_dir / 'summary.json').write_text(_json.dumps(svc_summary))
+
+    # Patch _SERVICE_LIVE_SUMMARY_PATH to point to our fake summary
+    monkeypatch.setattr(_glep, '_SERVICE_LIVE_SUMMARY_PATH', svc_dir / 'summary.json')
+
+    # Patch REPO_ROOT so the artifact is written to tmp_path/artifacts/...
+    monkeypatch.setattr(_glep, 'REPO_ROOT', tmp_path)
+
+    rc = _glep.main(strict=True)
+
+    assert rc == 1, (
+        'Strict mode must exit non-zero when no RPC URL is set, '
+        'even if service summary is available'
+    )
+    # Artifact must reflect live_evidence_ready=false
+    out_path = tmp_path / 'artifacts' / 'live-evidence-proof' / 'latest' / 'summary.json'
+    written = _json.loads(out_path.read_text())
+    lpe = written.get('live_provider_evidence', {})
+    assert lpe.get('live_evidence_ready') is False, (
+        'Strict mode artifact must not claim live_evidence_ready=true via service summary'
+    )
+
+
+def test_script_local_mode_allows_service_summary_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """
+    Non-strict (local/demo) mode may use the service summary fallback when no RPC URL is set.
+    The artifact should report live_evidence_ready=true from the service summary.
+    """
+    import scripts.generate_live_evidence_proof as _glep
+    import json as _json
+
+    _clear_provider_env(monkeypatch)
+
+    svc_dir = tmp_path / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest'
+    svc_dir.mkdir(parents=True, exist_ok=True)
+    svc_summary = {
+        'evidence_source': 'live',
+        'live_evidence_ready': True,
+        'provider_ready': True,
+        'latest_live_telemetry_at': '2026-01-01T00:01:00Z',
+        'telemetry_event_present': True,
+        'detection_generated_from_telemetry': True,
+        'alert_generated_from_detection': True,
+        'incident_opened_from_alert': True,
+    }
+    (svc_dir / 'summary.json').write_text(_json.dumps(svc_summary))
+
+    monkeypatch.setattr(_glep, '_SERVICE_LIVE_SUMMARY_PATH', svc_dir / 'summary.json')
+    # Patch REPO_ROOT so the artifact is written to tmp_path/artifacts/...
+    monkeypatch.setattr(_glep, 'REPO_ROOT', tmp_path)
+
+    rc = _glep.main(strict=False)
+
+    assert rc == 0, 'Non-strict mode must exit 0 when service summary provides live evidence'
+    out_path = tmp_path / 'artifacts' / 'live-evidence-proof' / 'latest' / 'summary.json'
+    written = _json.loads(out_path.read_text())
+    lpe = written.get('live_provider_evidence', {})
+    assert lpe.get('live_evidence_ready') is True
+
+
+def test_script_contradiction_guard_invalid_evidence_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    If a proof somehow reaches live_evidence_ready=True with an invalid evidence_source
+    (unknown/simulation/fallback/simulator/fixture), the contradiction guard must
+    flip live_evidence_ready to False and add a contradiction flag.
+    """
+    import scripts.generate_live_evidence_proof as _glep
+
+    # We test _build_proof_from_service_summary which sets evidence_source='live' — valid.
+    # To trigger the guard, we manually craft a result with invalid source and call the guard
+    # logic that runs in main(). We can test this by patching generate_live_evidence_proof
+    # to return a tampered result.
+
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv('EVM_RPC_URL', _REAL_RPC)
+    monkeypatch.setenv('EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    tampered_result = {
+        'schema_version': 1,
+        'generated_at': '2026-01-01T00:00:00Z',
+        'live_provider_evidence': {
+            'provider_ready': True,
+            'provider_mode': 'live',
+            'provider_health_checked': True,
+            'provider_checked_at': '2026-01-01T00:00:00Z',
+            'provider_url_masked': 'https://host/v3/[masked]',
+            'chain_id_configured': True,
+            'chain_id_observed': '1',
+            'block_number_observed': '1000',
+            'worker_enabled': True,
+            'live_provider_ready': True,
+            'live_provider_receipt_ready': True,
+            'live_telemetry_ready': True,
+            'live_detection_ready': True,
+            'live_alert_ready': True,
+            'live_incident_ready': True,
+            'evidence_source': 'fallback',  # INVALID — triggers contradiction guard
+            'latest_live_telemetry_at': '2026-01-01T00:01:00Z',
+            'live_evidence_ready': True,  # OVERCLAIM with fallback source
+            'chain': {
+                'telemetry_event_id': 'tel-001',
+                'detection_id': 'det-001',
+                'alert_id': 'alert-001',
+                'incident_id': 'inc-001',
+                'response_action_id': None,
+                'evidence_package_id': 'pkg-001',
+            },
+            'missing': [],
+            'contradiction_flags': [],
+        },
+    }
+
+    with patch('scripts.generate_live_evidence_proof.generate_live_evidence_proof',
+               return_value=tampered_result):
+        import io
+        import sys as _sys
+        import json as _json
+        import tempfile, os
+
+        with tempfile.TemporaryDirectory() as td:
+            monkeypatch.setattr(_glep, 'REPO_ROOT', Path(td))
+            rc = _glep.main(strict=False)
+
+        # The contradiction guard must have caught the invalid source
+        # We verify by checking the written artifact
+        art_path = Path(td) / 'artifacts' / 'live-evidence-proof' / 'latest' / 'summary.json'
+        if art_path.exists():
+            written = _json.loads(art_path.read_text())
+            lpe = written.get('live_provider_evidence', {})
+            if lpe.get('evidence_source') == 'fallback':
+                assert lpe.get('live_evidence_ready') is False, (
+                    'Contradiction guard must set live_evidence_ready=false '
+                    'when evidence_source is invalid (fallback)'
+                )

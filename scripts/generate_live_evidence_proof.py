@@ -275,7 +275,7 @@ def generate_live_evidence_proof(
     base_chain_id = _env_val('EVM_CHAIN_ID') or _env_val('CHAIN_ID')
     effective_chain_id_raw = staging_chain_id if staging_chain_id else base_chain_id
 
-    worker_enabled_raw = _env_val('STAGING_WORKER_ENABLED')
+    worker_enabled_raw = _env_val('STAGING_WORKER_ENABLED') or _env_val('WORKER_ENABLED')
     worker_enabled = worker_enabled_raw.lower() in ('1', 'true', 'yes', 'on')
 
     rpc_ok = bool(effective_rpc) and not _has_placeholder(effective_rpc)
@@ -727,20 +727,49 @@ def main(strict: bool = False) -> int:
     result = generate_live_evidence_proof()
 
     # When no RPC URL is available, fall back to the canonical service live summary.
-    # The service summary is produced by the backend from real database state and is
-    # never simulator data.  Using it preserves fail-closed semantics while avoiding
-    # stale-artifact contradictions: service live_evidence_ready=true must not coexist
-    # with top-level live-evidence-proof live_evidence_ready=false after generation.
+    # This fallback is DISABLED in strict mode: strict/staging/production proofs must
+    # use a real configured RPC provider.  Local/demo mode may use the service summary
+    # when no RPC URL is configured, but the artifact is labeled for demo use only.
     lpe = result.get('live_provider_evidence', {})
     if not lpe.get('live_evidence_ready'):
-        service_summary = _load_service_live_summary()
-        if service_summary is not None:
+        if strict:
             print(
-                '[generate-live-evidence-proof] No RPC URL configured; '
-                'falling back to canonical service live evidence summary.'
+                '[generate-live-evidence-proof] Strict mode: '
+                'service summary fallback disabled. '
+                'Configure STAGING_EVM_RPC_URL or EVM_RPC_URL for strict proof.'
             )
-            result = _build_proof_from_service_summary(service_summary, now)
-            lpe = result.get('live_provider_evidence', {})
+        else:
+            service_summary = _load_service_live_summary()
+            if service_summary is not None:
+                print(
+                    '[generate-live-evidence-proof] No RPC URL configured; '
+                    'falling back to canonical service live evidence summary '
+                    '(local/demo mode only — not valid for strict/staging proof).'
+                )
+                result = _build_proof_from_service_summary(service_summary, now)
+                lpe = result.get('live_provider_evidence', {})
+
+    # Contradiction guard: live_evidence_ready=True with an invalid evidence_source.
+    # This catches programmatic errors regardless of the code path that produced the proof.
+    lpe = result.get('live_provider_evidence', {})
+    if lpe.get('live_evidence_ready'):
+        ev_src = str(lpe.get('evidence_source') or '').strip().lower()
+        _invalid_sources = frozenset({'unknown', 'simulation', 'fallback', 'simulator', 'fixture'})
+        if ev_src in _invalid_sources:
+            print(
+                f'[generate-live-evidence-proof] CONTRADICTION: '
+                f'live_evidence_ready=true but evidence_source={ev_src!r}; '
+                f'setting live_evidence_ready=false'
+            )
+            lpe = dict(lpe)
+            lpe['live_evidence_ready'] = False
+            contradiction_list = list(lpe.get('contradiction_flags') or [])
+            contradiction_list.append(
+                f'live_evidence_ready_with_invalid_source: evidence_source={ev_src!r}'
+            )
+            lpe['contradiction_flags'] = contradiction_list
+            result = dict(result)
+            result['live_provider_evidence'] = lpe
 
     out_dir = REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest'
     out_dir.mkdir(parents=True, exist_ok=True)

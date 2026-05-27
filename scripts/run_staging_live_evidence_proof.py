@@ -103,7 +103,7 @@ def read_provider_env(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     else:
         chain_id, chain_source = '', 'STAGING_EVM_CHAIN_ID / EVM_CHAIN_ID'
 
-    worker_raw = _env_val(env, 'STAGING_WORKER_ENABLED')
+    worker_raw = _env_val(env, 'STAGING_WORKER_ENABLED') or _env_val(env, 'WORKER_ENABLED')
 
     return {
         'rpc_url': rpc_url,
