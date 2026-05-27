@@ -14,6 +14,15 @@ jobs:
     name: Paid launch billing/email/provider readiness gates
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      EVM_RPC_URL: ${{ secrets.EVM_RPC_URL }}
+      EVM_CHAIN_ID: ${{ secrets.EVM_CHAIN_ID }}
+      STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
+      STAGING_EVM_CHAIN_ID: ${{ secrets.STAGING_EVM_CHAIN_ID }}
+      STAGING_WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+      WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+      LIVE_MONITORING_ENABLED: ${{ secrets.LIVE_MONITORING_ENABLED }}
+      MONITORING_INGESTION_MODE: ${{ secrets.MONITORING_INGESTION_MODE }}
 
     steps:
       - name: Checkout
@@ -28,6 +37,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r services/api/requirements.txt
+
+      - name: Check live provider secrets are present
+        run: |
+          test -n "$EVM_RPC_URL"
+          test -n "$EVM_CHAIN_ID"
+          test -n "$STAGING_EVM_RPC_URL"
+          test -n "$STAGING_EVM_CHAIN_ID"
+          test -n "$STAGING_WORKER_ENABLED"
+          test -n "$LIVE_MONITORING_ENABLED"
+          test -n "$MONITORING_INGESTION_MODE"
 
       - name: Run paid launch readiness tests
         run: python -m pytest services/api/tests/test_paid_launch_readiness.py -q
