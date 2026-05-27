@@ -1,0 +1,268 @@
+BILLING_PROVIDER=none VALIDATION_MODE=no_billing_pilot python services/api/scripts/validate_staging.py
+{
+  "mode": "no_billing_pilot",
+  "ok": false,
+  "category_status": {
+    "local_repo_integrity": "fail",
+    "frontend_build_reproducibility": "pass",
+    "browser_e2e_runtime": "pass",
+    "api_runtime_readiness": "fail",
+    "live_provider_configuration": "pass",
+    "staging_evidence": "pass"
+  },
+  "checks": [
+    {
+      "category": "local_repo_integrity",
+      "name": "api_production_startup_validation",
+      "command": [
+        "pytest",
+        "-q",
+        "services/api/tests/test_production_startup_validation.py"
+      ],
+      "status": "fail",
+      "detail": "==================================== ERRORS ====================================\n__ ERROR collecting services/api/tests/test_production_startup_validation.py ___\nImportError while importing test module '/home/user/decoda-rwa-guard/services/api/tests/test_production_startup_validation.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\nservices/api/tests/test_production_startup_validation.py:7: in <module>\n    from fastapi.testclient import TestClient\nE   ModuleNotFoundError: No module named 'fastapi'\n=========================== short test summary info ============================\nERROR services/api/tests/test_production_startup_validation.py\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n1 error in 0.13s",
+      "remediation": [],
+      "metadata": {
+        "returncode": 2
+      }
+    },
+    {
+      "category": "local_repo_integrity",
+      "name": "api_billing_runtime_validation",
+      "command": [
+        "pytest",
+        "-q",
+        "services/api/tests/test_billing_runtime.py"
+      ],
+      "status": "fail",
+      "detail": "==================================== ERRORS ====================================\n_________ ERROR collecting services/api/tests/test_billing_runtime.py __________\nImportError while importing test module '/home/user/decoda-rwa-guard/services/api/tests/test_billing_runtime.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\nservices/api/tests/test_billing_runtime.py:10: in <module>\n    from fastapi import HTTPException\nE   ModuleNotFoundError: No module named 'fastapi'\n=========================== short test summary info ============================\nERROR services/api/tests/test_billing_runtime.py\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n1 error in 0.13s",
+      "remediation": [],
+      "metadata": {
+        "returncode": 2
+      }
+    },
+    {
+      "category": "local_repo_integrity",
+      "name": "api_auth_health_diagnostics",
+      "command": [
+        "pytest",
+        "-q",
+        "services/api/tests/test_auth_health_diagnostics.py"
+      ],
+      "status": "fail",
+      "detail": "==================================== ERRORS ====================================\n_____ ERROR collecting services/api/tests/test_auth_health_diagnostics.py ______\nImportError while importing test module '/home/user/decoda-rwa-guard/services/api/tests/test_auth_health_diagnostics.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\nservices/api/tests/test_auth_health_diagnostics.py:9: in <module>\n    from fastapi import HTTPException, Request\nE   ModuleNotFoundError: No module named 'fastapi'\n=========================== short test summary info ============================\nERROR services/api/tests/test_auth_health_diagnostics.py\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n1 error in 0.13s",
+      "remediation": [],
+      "metadata": {
+        "returncode": 2
+      }
+    },
+    {
+      "category": "frontend_build_reproducibility",
+      "name": "node_bootstrap_prerequisites",
+      "command": [
+        "npm",
+        "ci"
+      ],
+      "status": "pass",
+      "detail": "Node/Next.js dependencies are present for validation.",
+      "remediation": [],
+      "metadata": {}
+    },
+    {
+      "category": "frontend_build_reproducibility",
+      "name": "frontend_runtime_alignment",
+      "command": [
+        "python",
+        "scripts/check_frontend_runtime_alignment.py"
+      ],
+      "status": "pass",
+      "detail": "{\n  \"ok\": true,\n  \"checks\": [\n    {\n      \"name\": \"web.next declared vs lock workspace\",\n      \"expected\": \"15.5.18\",\n      \"actual\": \"15.5.18\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"web.next declared vs lock installed\",\n      \"expected\": \"15.5.18\",\n      \"actual\": \"15.5.18\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"root playwright declared vs lock installed\",\n      \"expected\": \"1.55.1\",\n      \"actual\": \"1.55.1\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"root @playwright/test declared vs lock installed\",\n      \"expected\": \"1.55.1\",\n      \"actual\": \"1.55.1\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"web.next declared vs installed runtime\",\n      \"expected\": \"15.5.18\",\n      \"actual\": \"15.5.18\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"root playwright declared vs installed runtime\",\n      \"expected\": \"1.55.1\",\n      \"actual\": \"1.55.1\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"root @playwright/test declared vs installed runtime\",\n      \"expected\": \"1.55.1\",\n      \"actual\": \"1.55.1\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"next workspace binary available\",\n      \"expected\": true,\n      \"actual\": true,\n      \"ok\": true\n    }\n  ],\n  \"remediation\": [\n    \"Update package.json versions to match the lockfile or regenerate package-lock.json from a trusted npm install.\",\n    \"Run `npm install --package-lock-only` after adjusting versions, then rerun this check.\",\n    \"If installed runtime differs, delete node_modules and run `npm ci`.\",\n    \"If `next` is missing at runtime (`next: not found`), run `npm ci` from repo root so workspace binaries are linked.\"\n  ]\n}",
+      "remediation": [
+        "Resolve package.json/package-lock.json drift, then rerun.",
+        "Use `npm ci` for deterministic install before build validation."
+      ],
+      "metadata": {
+        "returncode": 0
+      }
+    },
+    {
+      "category": "frontend_build_reproducibility",
+      "name": "web_build",
+      "command": [
+        "npm",
+        "run",
+        "build",
+        "--workspace",
+        "apps/web"
+      ],
+      "status": "pass",
+      "detail": "> @phase1/web@0.1.0 build\n> NEXT_TELEMETRY_DISABLED=1 NEXT_PUBLIC_LIVE_MODE_ENABLED=${NEXT_PUBLIC_LIVE_MODE_ENABLED:-false} API_URL=${API_URL:-https://api.example.com} next build\n\n   \u25b2 Next.js 15.5.18\n\n   Creating an optimized production build ...\n \u2713 Compiled successfully in 3.5s\n   Linting and checking validity of types ...\n   Collecting page data ...\n   Generating static pages (0/8) ...\n   Generating static pages (2/8) \n   Generating static pages (4/8) \n   Generating static pages (6/8) \n \u2713 Generating static pages (8/8)\n   Finalizing page optimization ...\n   Collecting build traces ...\n\nRoute (app)                                                       Size  First Load JS\n\u250c \u0192 /                                                            182 B         106 kB\n\u251c \u25cb /_not-found                                                  989 B         103 kB\n\u251c \u0192 /alerts                                                    4.02 kB         122 kB\n\u251c \u0192 /api/auth/csrf                                               214 B         103 kB\n\u251c \u0192 /api/auth/forgot-password                                    214 B         103 kB\n\u251c \u0192 /api/auth/me                                                 214 B         103 kB\n\u251c \u0192 /api/auth/mfa/complete-signin                                214 B         103 kB\n\u251c \u0192 /api/auth/mfa/confirm                                        214 B         103 kB\n\u251c \u0192 /api/auth/mfa/disable                                        214 B         103 kB\n\u251c \u0192 /api/auth/mfa/enroll                                         214 B         103 kB\n\u251c \u0192 /api/auth/resend-verification                                214 B         103 kB\n\u251c \u0192 /api/auth/reset-password                                     214 B         103 kB\n\u251c \u0192 /api/auth/select-workspace                                   214 B         103 kB\n\u251c \u0192 /api/auth/signin                                             214 B         103 kB\n\u251c \u0192 /api/auth/signout                                            214 B         103 kB\n\u251c \u0192 /api/auth/signout-all                                        214 B         103 kB\n\u251c \u0192 /api/auth/signup                                             214 B         103 kB\n\u251c \u0192 /api/auth/verify-email                                       214 B         103 kB\n\u251c \u0192 /api/auth/workspaces                                         214 B         103 kB\n\u251c \u0192 /api/build-info                                              214 B         103 kB\n\u251c \u0192 /api/dashboard-page-data                                     214 B         103 kB\n\u251c \u0192 /api/health                                                  214 B         103 kB\n\u251c \u0192 /api/monitoring/sources                                      214 B         103 kB\n\u251c \u0192 /api/monitoring/systems                                      214 B         103 kB\n\u251c \u0192 /api/monitoring/systems/reconcile                            214 B         103 kB\n\u251c \u0192 /api/monitoring/systems/repair/treasury-settlement-target    214 B         103 kB\n\u251c \u0192 /api/monitoring/targets/[targetId]/enable                    214 B         103 kB\n\u251c \u0192 /api/monitoring/targets/[targetId]/repair                    214 B         103 kB\n\u251c \u0192 /api/monitoring/targets/[targetId]/telemetry                 214 B         103 kB\n\u251c \u0192 /api/ops/monitoring/runtime-status                           214 B         103 kB\n\u251c \u0192 /api/runtime-config                                          214 B         103 kB\n\u251c \u0192 /assets                                                    6.28 kB         120 kB\n\u251c \u0192 /compliance                                                2.17 kB         109 kB\n\u251c \u0192 /dashboard                                                 6.91 kB         121 kB\n\u251c \u0192 /evidence                                                  5.67 kB         124 kB\n\u251c \u0192 /exports                                                     214 B         103 kB\n\u251c \u0192 /help                                                        182 B         106 kB\n\u251c \u0192 /history                                                   3.35 kB         114 kB\n\u251c \u0192 /incidents                                                 5.74 kB         124 kB\n\u251c \u0192 /integrations                                              5.39 kB         119 kB\n\u251c \u0192 /monitored-systems                                           214 B         103 kB\n\u251c \u0192 /monitoring-sources                                        4.57 kB         118 kB\n\u251c \u0192 /monitoring-sources/[targetId]/telemetry                   2.62 kB         113 kB\n\u251c \u0192 /monitoring-sources/monitored-systems                      5.64 kB         113 kB\n\u251c \u0192 /monitoring-sources/targets                                2.09 kB         109 kB\n\u251c \u0192 /onboarding                                                3.26 kB         117 kB\n\u251c \u0192 /privacy                                                     182 B         106 kB\n\u251c \u0192 /reset-password                                              991 B         103 kB\n\u251c \u0192 /resilience                                                  214 B         103 kB\n\u251c \u0192 /response-actions                                          5.16 kB         123 kB\n\u251c \u0192 /security                                                    182 B         106 kB\n\u251c \u0192 /settings                                                  6.32 kB         117 kB\n\u251c \u0192 /settings/security                                         2.57 kB         113 kB\n\u251c \u0192 /sign-in                                                   4.63 kB         115 kB\n\u251c \u25cb /sign-out                                                    404 B         107 kB\n\u251c \u0192 /sign-up                                                   2.71 kB         113 kB\n\u251c \u0192 /support                                                     182 B         106 kB\n\u251c \u0192 /system-health                                               508 B         114 kB\n\u251c \u0192 /system-health/readiness                                   4.47 kB         115 kB\n\u251c \u0192 /targets                                                     214 B         103 kB\n\u251c \u0192 /templates                                                   724 B         108 kB\n\u251c \u0192 /terms                                                       182 B         106 kB\n\u251c \u0192 /threat                                                    4.35 kB         122 kB\n\u251c \u0192 /trust                                                       182 B         106 kB\n\u251c \u0192 /verify-email                                                957 B         103 kB\n\u2514 \u0192 /workspaces                                                1.47 kB         112 kB\n+ First Load JS shared by all                                   102 kB\n  \u251c chunks/18-4ce5efc64451836b.js                              46.3 kB\n  \u251c chunks/87c73c54-24122e7b92478d00.js                        54.2 kB\n  \u2514 other shared chunks (total)                                1.92 kB\n\n\n\u25cb  (Static)   prerendered as static content\n\u0192  (Dynamic)  server-rendered on demand\n\n\n \u26a0 Warning: Next.js inferred your workspace root, but it may not be correct.\n We detected multiple lockfiles and selected the directory of /home/user/decoda-rwa-guard/package-lock.json as the root directory.\n To silence this warning, set `outputFileTracingRoot` in your Next.js config, or consider removing one of the lockfiles if it's not needed.\n   See https://nextjs.org/docs/app/api-reference/config/next-config-js/output#caveats for more information.\n Detected additional lockfiles: \n   * /home/user/decoda-rwa-guard/apps/web/package-lock.json",
+      "remediation": [
+        "Run `npm ci` and re-run build with required Vercel-style env vars."
+      ],
+      "metadata": {
+        "returncode": 0
+      }
+    },
+    {
+      "category": "browser_e2e_runtime",
+      "name": "playwright_browser_install",
+      "command": [
+        "npx",
+        "playwright",
+        "install",
+        "chromium"
+      ],
+      "status": "skip",
+      "detail": "Downloading Chromium 140.0.7339.186 (playwright build v1193)\u001b[2m from https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\u001b[22m\nDownloading Chromium 140.0.7339.186 (playwright build v1193)\u001b[2m from https://playwright.download.prss.microsoft.com/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\u001b[22m\nDownloading Chromium 140.0.7339.186 (playwright build v1193)\u001b[2m from https://cdn.playwright.dev/builds/chromium/1193/chromium-linux.zip\u001b[22m\nDownloading Chromium 140.0.7339.186 (playwright build v1193)\u001b[2m from https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\u001b[22m\nDownloading Chromium 140.0.7339.186 (playwright build v1193)\u001b[2m from https://playwright.download.prss.microsoft.com/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\u001b[22m\nFailed to install browsers\nError: Failed to download Chromium 140.0.7339.186 (playwright build v1193), caused by\nError: Download failure, code=1\n    at ChildProcess.<anonymous> (/home/user/decoda-rwa-guard/node_modules/playwright-core/lib/server/registry/browserFetcher.js:94:32)\n    at ChildProcess.emit (node:events:519:28)\n    at ChildProcess._handle.onexit (node:internal/child_process:293:12)\n\nError: Download failed: server returned code 403 body 'Host not in allowlist'. URL: https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\n    at IncomingMessage.handleError (/home/user/decoda-rwa-guard/node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js:56:23)\n    at IncomingMessage.emit (node:events:531:35)\n    at endReadableNT (node:internal/streams/readable:1698:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)\nError: Download failed: server returned code 403 body 'Host not in allowlist'. URL: https://playwright.download.prss.microsoft.com/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\n    at IncomingMessage.handleError (/home/user/decoda-rwa-guard/node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js:56:23)\n    at IncomingMessage.emit (node:events:531:35)\n    at endReadableNT (node:internal/streams/readable:1698:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)\nError: Download failed: server returned code 403 body 'Host not in allowlist'. URL: https://cdn.playwright.dev/builds/chromium/1193/chromium-linux.zip\n    at IncomingMessage.handleError (/home/user/decoda-rwa-guard/node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js:56:23)\n    at IncomingMessage.emit (node:events:531:35)\n    at endReadableNT (node:internal/streams/readable:1698:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)\nError: Download failed: server returned code 403 body 'Host not in allowlist'. URL: https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\n    at IncomingMessage.handleError (/home/user/decoda-rwa-guard/node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js:56:23)\n    at IncomingMessage.emit (node:events:531:35)\n    at endReadableNT (node:internal/streams/readable:1698:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)\nError: Download failed: server returned code 403 body 'Host not in allowlist'. URL: https://playwright.download.prss.microsoft.com/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\n    at IncomingMessage.handleError (/home/user/decoda-rwa-guard/node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js:56:23)\n    at IncomingMessage.emit (node:events:531:35)\n    at endReadableNT (node:internal/streams/readable:1698:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)\n\nSkipped in no-billing pilot mode because browser runtime download was blocked by network policy.",
+      "remediation": [
+        "Install Chromium runtime manually with `npx playwright install chromium`."
+      ],
+      "metadata": {
+        "returncode": 1
+      }
+    },
+    {
+      "category": "browser_e2e_runtime",
+      "name": "playwright_runtime_policy",
+      "command": [
+        "npx",
+        "playwright",
+        "install",
+        "chromium"
+      ],
+      "status": "pass",
+      "detail": "No-billing pilot mode allows browser runtime to be skipped when ALLOW_BROWSER_RUNTIME_SKIP=true or when Chromium download is blocked by network policy.",
+      "remediation": [
+        "Provision browser runtime in CI/staging runners to execute browser smoke checks."
+      ],
+      "metadata": {}
+    },
+    {
+      "category": "browser_e2e_runtime",
+      "name": "playwright_runtime_detection",
+      "command": [
+        "node",
+        "-e",
+        "playwright runtime detection"
+      ],
+      "status": "skip",
+      "detail": "Skipped in no-billing pilot mode because Chromium runtime is unavailable and browser runtime skip policy is active.",
+      "remediation": [
+        "Run `make install-web-test-runtime` on a network-enabled runner before broad-sale launch gates."
+      ],
+      "metadata": {
+        "state": "missing_browser",
+        "pkg": "/home/user/decoda-rwa-guard/node_modules/playwright/package.json",
+        "path": "/opt/pw-browsers/chromium-1193/chrome-linux/chrome"
+      }
+    },
+    {
+      "category": "browser_e2e_runtime",
+      "name": "web_local_smoke",
+      "command": [
+        "python",
+        "scripts/run_web_local_smoke.py"
+      ],
+      "status": "skip",
+      "detail": "Skipped because Playwright runtime is not ready.",
+      "remediation": [
+        "Run `make install-web-test-runtime` on a network-enabled runner before broad-sale launch gates."
+      ],
+      "metadata": {}
+    },
+    {
+      "category": "api_runtime_readiness",
+      "name": "api_readiness_contract",
+      "command": [
+        "pytest",
+        "-q",
+        "services/api/tests/test_production_startup_validation.py",
+        "services/api/tests/test_auth_health_diagnostics.py"
+      ],
+      "status": "fail",
+      "detail": "==================================== ERRORS ====================================\n__ ERROR collecting services/api/tests/test_production_startup_validation.py ___\nImportError while importing test module '/home/user/decoda-rwa-guard/services/api/tests/test_production_startup_validation.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\nservices/api/tests/test_production_startup_validation.py:7: in <module>\n    from fastapi.testclient import TestClient\nE   ModuleNotFoundError: No module named 'fastapi'\n_____ ERROR collecting services/api/tests/test_auth_health_diagnostics.py ______\nImportError while importing test module '/home/user/decoda-rwa-guard/services/api/tests/test_auth_health_diagnostics.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\nservices/api/tests/test_auth_health_diagnostics.py:9: in <module>\n    from fastapi import HTTPException, Request\nE   ModuleNotFoundError: No module named 'fastapi'\n=========================== short test summary info ============================\nERROR services/api/tests/test_production_startup_validation.py\nERROR services/api/tests/test_auth_health_diagnostics.py\n!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!\n2 errors in 0.13s",
+      "remediation": [
+        "Resolve startup/readiness diagnostics failures before launch gate."
+      ],
+      "metadata": {
+        "returncode": 2
+      }
+    },
+    {
+      "category": "api_runtime_readiness",
+      "name": "runtime_status_live_gate",
+      "command": [
+        "python",
+        "services/api/scripts/check_monitoring_runtime_live_gate.py"
+      ],
+      "status": "fail",
+      "detail": "{\n  \"ok\": false,\n  \"error\": \"runtime_status_connection_error\",\n  \"detail\": \"<urlopen error [Errno 111] Connection refused>\"\n}",
+      "remediation": [
+        "Confirm /ops/monitoring/runtime-status returns live workspace identity, fresh telemetry, and non-zero configured/reporting coverage counts.",
+        "Resolve any runtime_status_degraded/runtime_status_unavailable states before demo or launch approval."
+      ],
+      "metadata": {
+        "returncode": 2
+      }
+    },
+    {
+      "category": "live_provider_configuration",
+      "name": "provider_smoke",
+      "command": [
+        "python",
+        "services/api/scripts/smoke_live_providers.py"
+      ],
+      "status": "pass",
+      "detail": "{\n  \"ok\": true,\n  \"validation_mode\": \"no_billing_pilot\",\n  \"checks\": [\n    {\n      \"name\": \"email_provider\",\n      \"status\": \"not_configured\",\n      \"detail\": \"EMAIL_PROVIDER=console; live verification email evidence requires resend.\",\n      \"remediation\": [\n        \"Set EMAIL_PROVIDER=resend, EMAIL_FROM, and EMAIL_RESEND_API_KEY for launch evidence.\"\n      ],\n      \"metadata\": {}\n    },\n    {\n      \"name\": \"billing_provider\",\n      \"status\": \"not_configured\",\n      \"detail\": \"BILLING_PROVIDER=none; acceptable for pilot, not broad sale.\",\n      \"remediation\": [\n        \"Use paddle or stripe before broad launch.\"\n      ],\n      \"metadata\": {}\n    },\n    {\n      \"name\": \"redis_requirement\",\n      \"status\": \"not_configured\",\n      \"detail\": \"REDIS_URL is not set (allowed only outside production).\",\n      \"remediation\": [\n        \"Set REDIS_URL in staging/production to mirror launch topology.\"\n      ],\n      \"metadata\": {}\n    },\n    {\n      \"name\": \"staging_api_readiness\",\n      \"status\": \"not_configured\",\n      \"detail\": \"STAGING_API_URL is not set.\",\n      \"remediation\": [\n        \"Set STAGING_API_URL to run readiness probe.\"\n      ],\n      \"metadata\": {}\n    },\n    {\n      \"name\": \"live_chain_monitoring\",\n      \"status\": \"not_configured\",\n      \"detail\": \"EVM_RPC_URL not set; chain monitoring checks skipped.\",\n      \"remediation\": [\n        \"Set EVM_RPC_URL for live chain monitoring evidence.\"\n      ],\n      \"metadata\": {}\n    },\n    {\n      \"name\": \"slack_oauth_provider\",\n      \"status\": \"not_configured\",\n      \"detail\": \"Slack OAuth self-serve install is unavailable because SLACK_CLIENT_ID or SLACK_CLIENT_SECRET is missing.\",\n      \"remediation\": [\n        \"Set SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, and SLACK_OAUTH_REDIRECT_URI for GA self-serve setup.\"\n      ],\n      \"metadata\": {}\n    }\n  ],\n  \"status_counts\": {\n    \"configured_unverified\": 6\n  }\n}",
+      "remediation": [
+        "Configure real provider environment variables and verify staging API readiness URL."
+      ],
+      "metadata": {
+        "returncode": 0
+      }
+    },
+    {
+      "category": "staging_evidence",
+      "name": "staging_evidence_flow",
+      "command": [
+        "python",
+        "scripts/staging/run_evidence_flow.py"
+      ],
+      "status": "pass",
+      "detail": "Staging evidence flow skipped: Missing required staging credentials/config: STAGING_BASE_URL, STAGING_API_URL, STAGING_EVIDENCE_EMAIL, STAGING_EVIDENCE_PASSWORD",
+      "remediation": [
+        "Set required STAGING_* environment variables, then rerun evidence flow."
+      ],
+      "metadata": {
+        "returncode": 0
+      }
+    }
+  ]
+}
+
+Release Validation Summary
+- local_repo_integrity: FAIL
+  [FAIL] api_production_startup_validation
+  [FAIL] api_billing_runtime_validation
+  [FAIL] api_auth_health_diagnostics
+- frontend_build_reproducibility: PASS
+  [PASS] node_bootstrap_prerequisites
+  [PASS] frontend_runtime_alignment
+  [PASS] web_build
+- browser_e2e_runtime: PASS
+  [SKIP] playwright_browser_install
+  [PASS] playwright_runtime_policy
+  [SKIP] playwright_runtime_detection
+  [SKIP] web_local_smoke
+- api_runtime_readiness: FAIL
+  [FAIL] api_readiness_contract
+    remediation: Resolve startup/readiness diagnostics failures before launch gate.
+  [FAIL] runtime_status_live_gate
+    remediation: Confirm /ops/monitoring/runtime-status returns live workspace identity, fresh telemetry, and non-zero configured/reporting coverage counts.
+- live_provider_configuration: PASS
+  [PASS] provider_smoke
+- staging_evidence: PASS
+  [PASS] staging_evidence_flow
+
+make: *** [Makefile:79: validate-no-billing-launch] Error 1
