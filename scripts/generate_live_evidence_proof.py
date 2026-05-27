@@ -433,9 +433,24 @@ def generate_live_evidence_proof(
         )
 
     # --- Look for real live-event evidence; never synthesise from RPC alone ---
+    # Sources checked in order:
+    #   a) explicit live_evidence_chain argument
+    #   b) LIVE_EVIDENCE_CHAIN_JSON env var
+    #   c) LIVE_EVIDENCE_CHAIN_FILE env var
+    #   d) artifacts/live-evidence-proof/latest/live_evidence_chain.json (default path)
     real_chain = _validated_live_evidence_chain(live_evidence_chain)
     if real_chain is None:
         real_chain = _validated_live_evidence_chain(_load_live_evidence_chain_from_env())
+    if real_chain is None:
+        _default_chain_file = (
+            REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest' / 'live_evidence_chain.json'
+        )
+        if _default_chain_file.exists():
+            try:
+                with open(_default_chain_file) as _f:
+                    real_chain = _validated_live_evidence_chain(json.load(_f))
+            except Exception:
+                pass
 
     # --- Evidence-level issue: RPC works but no matching live event observed ---
     if real_chain is None:

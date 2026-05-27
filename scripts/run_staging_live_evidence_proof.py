@@ -355,6 +355,10 @@ def _proof_commands() -> list[tuple[str, list[str]]]:
     scripts_dir = REPO_ROOT / 'scripts'
     return [
         (
+            'Export live evidence chain',
+            [py, str(scripts_dir / 'export_live_evidence_chain.py')],
+        ),
+        (
             'Live evidence proof (real RPC, strict)',
             [py, str(scripts_dir / 'generate_live_evidence_proof.py'), '--strict'],
         ),

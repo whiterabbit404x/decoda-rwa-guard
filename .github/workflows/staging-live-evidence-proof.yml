@@ -185,5 +185,6 @@ jobs:
           retention-days: 30
           path: |
             artifacts/live-evidence-proof/latest/summary.json
+            artifacts/live-evidence-proof/latest/live_evidence_chain.json
             artifacts/staging-proof/latest/summary.json
             artifacts/final-readiness/latest/summary.json
