@@ -14,6 +14,31 @@ jobs:
     name: Paid launch billing/email/provider readiness gates
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # Provider / live monitoring secrets
+      EVM_RPC_URL: ${{ secrets.EVM_RPC_URL }}
+      EVM_CHAIN_ID: ${{ secrets.EVM_CHAIN_ID }}
+      STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
+      STAGING_EVM_CHAIN_ID: ${{ secrets.STAGING_EVM_CHAIN_ID }}
+      STAGING_WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+      WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+      LIVE_MONITORING_ENABLED: ${{ secrets.LIVE_MONITORING_ENABLED }}
+      MONITORING_INGESTION_MODE: ${{ secrets.MONITORING_INGESTION_MODE }}
+      LIVE_PROVIDER_PROOF_PRESENT: ${{ secrets.LIVE_PROVIDER_PROOF_PRESENT }}
+      # Billing secrets (Stripe is the supported live billing provider in code)
+      BILLING_PROVIDER: ${{ secrets.BILLING_PROVIDER }}
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      STRIPE_PRICE_ID: ${{ secrets.STRIPE_PRICE_ID }}
+      # Email secrets (one of sendgrid / resend / smtp is required)
+      EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      EMAIL_DOMAIN: ${{ secrets.EMAIL_DOMAIN }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -31,6 +56,100 @@ jobs:
 
       - name: Run paid launch readiness tests
         run: python -m pytest services/api/tests/test_paid_launch_readiness.py -q
+
+      - name: Diagnose paid launch env presence
+        run: |
+          python - <<'PY'
+          import os
+          names = [
+            "EVM_RPC_URL",
+            "EVM_CHAIN_ID",
+            "STAGING_EVM_RPC_URL",
+            "STAGING_EVM_CHAIN_ID",
+            "STAGING_WORKER_ENABLED",
+            "WORKER_ENABLED",
+            "LIVE_MONITORING_ENABLED",
+            "MONITORING_INGESTION_MODE",
+            "LIVE_PROVIDER_PROOF_PRESENT",
+            "BILLING_PROVIDER",
+            "STRIPE_SECRET_KEY",
+            "STRIPE_WEBHOOK_SECRET",
+            "STRIPE_PRICE_ID",
+            "EMAIL_PROVIDER",
+            "EMAIL_FROM",
+            "EMAIL_DOMAIN",
+            "RESEND_API_KEY",
+            "SENDGRID_API_KEY",
+            "SMTP_HOST",
+            "SMTP_USER",
+            "SMTP_PASSWORD",
+            "STAGING_API_URL",
+            "STAGING_APP_URL",
+            "STAGING_DATABASE_URL",
+            "STAGING_AUTH_TOKEN_SECRET",
+          ]
+          for name in names:
+            print(f"{name}: {'present' if os.getenv(name) else 'missing'}")
+          PY
+
+      - name: Run paid launch reads
+        run: |
+          python - <<'PY'
+          import os, sys
+          sys.path.insert(0, '.')
+          from services.api.app.paid_launch_readiness import build_paid_launch_readiness
+
+          out = build_paid_launch_readiness()
+
+          # Per-section readiness summary (never prints secret values).
+          sections = [
+              ("billing_ready", out.get("billing_ready"), out.get("billing_status"), out.get("billing_missing_env", [])),
+              ("billing_webhook_ready", out.get("billing_webhook_ready"), out.get("billing_webhook_status"), []),
+              ("email_ready", out.get("email_ready"), out.get("email_status"), out.get("email_missing_env", [])),
+              ("provider_ready", out.get("provider_ready"), out.get("provider_status"), out.get("provider_missing_env", [])),
+              ("live_monitoring_ready", out.get("live_provider_proof_ready"), "ready" if out.get("live_provider_proof_ready") else "blocked", []),
+          ]
+          print("Paid launch readiness sections:")
+          for name, ready, status, missing in sections:
+              print(f"  - {name}={ready} ({status})")
+              if missing:
+                  print(f"      missing_env: {sorted(set(missing))}")
+
+          # Deduplicated missing-secret list across sections.
+          seen = set()
+          missing_secrets = []
+          for m in (
+              out.get("provider_missing_env", [])
+              + out.get("billing_missing_env", [])
+              + out.get("email_missing_env", [])
+          ):
+              if m and m not in seen:
+                  seen.add(m)
+                  missing_secrets.append(m)
+
+          paid_launch_ready = bool(out.get("paid_launch_ready"))
+          print(f"paid_launch_ready={paid_launch_ready} ({out.get('paid_launch_status')})")
+
+          if not paid_launch_ready:
+              failing_sections = [name for name, ready, _, _ in sections if not ready]
+              print("Paid launch gate FAILED.")
+              print(f"  failing_sections: {failing_sections}")
+              if missing_secrets:
+                  print(
+                      "  missing_secrets (set these GitHub Actions secrets to unblock): "
+                      + ", ".join(missing_secrets)
+                  )
+              else:
+                  print("  missing_secrets: <none reported; failure is from blockers below>")
+              blockers = out.get("paid_launch_blockers") or []
+              if blockers:
+                  print("  blockers:")
+                  for b in blockers:
+                      print(f"    - {b}")
+              sys.exit(1)
+
+          print("Paid launch gate: all required secrets present and readiness checks pass.")
+          PY
 
       - name: Generate release proof artifacts
         if: always()
