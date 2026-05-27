@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-27T12:46:04.457282+00:00",
-  "mode": "ci",
-  "strict": false,
+  "generated_at": "2026-05-27T17:20:27.768565+00:00",
+  "mode": "local",
+  "strict": true,
   "overall_score": 90,
   "controlled_pilot_ready": true,
   "broad_paid_saas_ready": false,
@@ -109,7 +109,7 @@
     "staging_validation": {
       "status": "fail",
       "source": "staging_proof",
-      "note": "staging_launch_ready=False, mode='ci'"
+      "note": "staging_launch_ready=False, mode='local'"
     }
   },
   "blockers": [
@@ -130,5 +130,5 @@
     "/home/user/decoda-rwa-guard/artifacts/final-readiness/latest/summary.json"
   ],
   "safe_to_sell_broadly_today": false,
-  "safe_to_sell_reason": "Cannot sell broadly from ci mode. Run with --mode staging --strict or --mode production --strict using real provider credentials and live evidence."
+  "safe_to_sell_reason": "Cannot sell broadly from local mode. Run with --mode staging --strict or --mode production --strict using real provider credentials and live evidence."
 }

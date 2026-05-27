@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-27T12:46:07.313594+00:00",
-  "release_channel": "ci",
-  "commit_sha": "d2fb1aa1d71320c29ad5b4fc36853a371e447b1d",
-  "branch": "claude/cool-cannon-33JHr",
+  "generated_at": "2026-05-27T17:20:38.926269+00:00",
+  "release_channel": "local",
+  "commit_sha": "1c1e94ea22ffdbc8c1689e3aa88fd9515ed5d52f",
+  "branch": "claude/laughing-archimedes-GvUFP",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "5c1fcd452f097df0ac222371eb8d47ffedb313c5b481194abe98752ad7e52a75",
-      "size_bytes": 748,
+      "sha256": "ede22bedeefc10eb200100dec5a98cc655d828c5d34514a51366201d61070bf8",
+      "size_bytes": 759,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "d875209432be7ffdd3018292f721395c25291126965509b0c8192e805e5e7bc6",
-      "size_bytes": 1847,
+      "sha256": "123b2f7a87ae84c363e2ce29ef5552f1a0d36508b0c388f1b0441ef8c65700c7",
+      "size_bytes": 1858,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "f14407cf3f777e22c33a59db7a4a8315884de6e413f42fe70484781c5c514e2e",
+      "sha256": "865eba82982ac77dd139375ad0b1d218928ac1d01ceca8cfbc8ae1b073bbb3b9",
       "size_bytes": 759,
       "required": true,
       "status": "present"

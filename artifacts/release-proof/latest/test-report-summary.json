@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-27T12:46:07.309200+00:00",
-  "release_channel": "ci",
-  "commit_sha": "d2fb1aa1d71320c29ad5b4fc36853a371e447b1d",
-  "branch": "claude/cool-cannon-33JHr",
+  "generated_at": "2026-05-27T17:20:38.921817+00:00",
+  "release_channel": "local",
+  "commit_sha": "1c1e94ea22ffdbc8c1689e3aa88fd9515ed5d52f",
+  "branch": "claude/laughing-archimedes-GvUFP",
   "test_suites": {
     "release_proof_artifacts": {
       "name": "release-proof-artifacts",
@@ -15,6 +15,8 @@
     }
   },
   "overall_status": "fail",
-  "blockers": [],
+  "blockers": [
+    "test suite not executed in local mode"
+  ],
   "warnings": []
 }
