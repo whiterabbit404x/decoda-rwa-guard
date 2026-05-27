@@ -81,6 +81,12 @@ validate-no-billing-launch:
 test-paid-launch-readiness:
 	python -m pytest services/api/tests/test_paid_launch_readiness.py -q
 
+write-live-rpc-polling-artifacts:
+	python scripts/write_live_rpc_polling_artifacts.py
+
+diagnose-live-evidence:
+	python scripts/diagnose_live_evidence.py
+
 generate-live-evidence-proof:
 	python scripts/generate_live_evidence_proof.py
 
