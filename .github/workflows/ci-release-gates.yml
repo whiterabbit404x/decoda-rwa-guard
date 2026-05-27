@@ -14,6 +14,30 @@ jobs:
     name: Paid launch billing/email/provider readiness gates
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # Provider secrets
+      EVM_RPC_URL: ${{ secrets.EVM_RPC_URL }}
+      EVM_CHAIN_ID: ${{ secrets.EVM_CHAIN_ID }}
+      STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
+      STAGING_EVM_CHAIN_ID: ${{ secrets.STAGING_EVM_CHAIN_ID }}
+      STAGING_WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+      WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+      LIVE_MONITORING_ENABLED: ${{ secrets.LIVE_MONITORING_ENABLED }}
+      MONITORING_INGESTION_MODE: ${{ secrets.MONITORING_INGESTION_MODE }}
+      # Billing secrets
+      BILLING_PROVIDER: ${{ secrets.BILLING_PROVIDER }}
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      STRIPE_PRICE_ID: ${{ secrets.STRIPE_PRICE_ID }}
+      # Email secrets
+      EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      EMAIL_DOMAIN: ${{ secrets.EMAIL_DOMAIN }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -29,8 +53,76 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r services/api/requirements.txt
 
+      - name: Diagnose paid launch env presence
+        run: |
+          python - <<'PY'
+          import os
+          names = [
+            "EVM_RPC_URL",
+            "EVM_CHAIN_ID",
+            "STAGING_EVM_RPC_URL",
+            "STAGING_EVM_CHAIN_ID",
+            "STAGING_WORKER_ENABLED",
+            "WORKER_ENABLED",
+            "LIVE_MONITORING_ENABLED",
+            "MONITORING_INGESTION_MODE",
+            "BILLING_PROVIDER",
+            "STRIPE_SECRET_KEY",
+            "STRIPE_WEBHOOK_SECRET",
+            "STRIPE_PRICE_ID",
+            "RESEND_API_KEY",
+            "SENDGRID_API_KEY",
+            "SMTP_HOST",
+            "SMTP_USER",
+            "SMTP_PASSWORD",
+            "EMAIL_PROVIDER",
+            "EMAIL_FROM",
+            "EMAIL_DOMAIN",
+            "LIVE_PROVIDER_PROOF_PRESENT",
+          ]
+          for name in names:
+            value = os.getenv(name)
+            print(f"{name}: {'present' if value else 'missing'}")
+          PY
+
       - name: Run paid launch readiness tests
         run: python -m pytest services/api/tests/test_paid_launch_readiness.py -q
+
+      - name: Run paid launch reads
+        run: |
+          python - <<'PY'
+          import os, sys
+          sys.path.insert(0, '.')
+          from services.api.app.paid_launch_readiness import build_paid_launch_readiness
+          out = build_paid_launch_readiness()
+          print(f"provider_ready={out['provider_ready']} ({out['provider_status']})")
+          print(f"billing_ready={out['billing_ready']} ({out['billing_status']})")
+          print(f"billing_webhook_ready={out['billing_webhook_ready']} ({out['billing_webhook_status']})")
+          print(f"email_ready={out['email_ready']} ({out['email_status']})")
+          print(f"paid_launch_ready={out['paid_launch_ready']} ({out['paid_launch_status']})")
+          seen = set()
+          missing_secrets = []
+          for m in (
+            out.get('provider_missing_env', [])
+            + out.get('billing_missing_env', [])
+            + out.get('email_missing_env', [])
+          ):
+            if m not in seen:
+              seen.add(m)
+              missing_secrets.append(m)
+          if not out['paid_launch_ready']:
+            if missing_secrets:
+              print(
+                "Paid launch gate failed because these GitHub Actions secrets are missing: "
+                + ", ".join(missing_secrets)
+              )
+            else:
+              print("Paid launch gate blocked:")
+              for b in out['paid_launch_blockers']:
+                print(f"  - {b}")
+            sys.exit(1)
+          print("Paid launch gate: all required secrets present and readiness checks pass.")
+          PY
 
       - name: Generate release proof artifacts
         if: always()
