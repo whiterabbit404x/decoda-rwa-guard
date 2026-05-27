@@ -6484,6 +6484,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         canonical_last_heartbeat_at = _parse_ts((canonical_last_heartbeat_row or {}).get('ts') if isinstance(canonical_last_heartbeat_row, dict) else None)
         canonical_last_heartbeat_at = canonical_last_heartbeat_at or last_system_heartbeat or _parse_ts(health.get('last_heartbeat_at'))
         canonical_last_telemetry_source = 'telemetry_events.observed_at'
+        # Mirror the Target Telemetry page: same workspace-scoped live evm_rpc/rpc_polling
+        # rows that the customer sees, additionally requiring a block_number so we only
+        # count poll cycles that proved chain reachability. block_number lives in
+        # payload_json (no dedicated column), so we test for a non-empty JSON value.
         canonical_last_telemetry_row = connection.execute(
             '''
             SELECT MAX(observed_at) AS ts
@@ -6493,6 +6497,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
               AND event_type IN ('rpc_polling', 'live_provider')
               AND provider_type IN ('evm_rpc', 'live_provider')
               AND observed_at IS NOT NULL
+              AND COALESCE(payload_json->>'block_number', '') <> ''
             ''',
             (workspace_id,),
         ).fetchone()
@@ -7710,9 +7715,33 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         )
         payload['live_evidence_ready'] = live_evidence_ready
         summary['live_evidence_ready'] = live_evidence_ready
+        # Telemetry exists but evidence chain is incomplete — surface as LIMITED COVERAGE.
+        # We must not show 'live' / 'healthy' until detection → alert → incident → response
+        # → evidence are all present; we must also not regress past LIMITED into OFFLINE,
+        # because monitoring IS producing live telemetry.
+        recent_canonical_live_telemetry = bool(
+            canonical_last_telemetry_at is not None
+            and int((now - canonical_last_telemetry_at).total_seconds()) <= telemetry_window_seconds
+        )
+        if recent_canonical_live_telemetry and not live_evidence_ready:
+            if summary.get('runtime_status') in {'live', 'healthy'}:
+                summary['runtime_status'] = 'degraded'
+            elif summary.get('runtime_status') == 'offline':
+                summary['runtime_status'] = 'degraded'
+            if summary.get('monitoring_status') in {'live', 'offline'}:
+                summary['monitoring_status'] = 'limited'
+            existing_reason_codes = list(summary.get('reason_codes') or [])
+            if 'limited_coverage_evidence_chain_incomplete' not in existing_reason_codes:
+                existing_reason_codes.append('limited_coverage_evidence_chain_incomplete')
+                summary['reason_codes'] = sorted(set(existing_reason_codes))
+            payload['runtime_status'] = summary['runtime_status']
+            payload['monitoring_status'] = summary['monitoring_status']
         if isinstance(payload.get('workspace_monitoring_summary'), dict):
             payload['workspace_monitoring_summary']['live_evidence_ready'] = live_evidence_ready
             payload['workspace_monitoring_summary']['latest_live_telemetry_at'] = latest_live_telemetry_at
+            if recent_canonical_live_telemetry and not live_evidence_ready:
+                payload['workspace_monitoring_summary']['runtime_status'] = summary['runtime_status']
+                payload['workspace_monitoring_summary']['monitoring_status'] = summary['monitoring_status']
         if isinstance(payload.get('workspace_monitoring_summary'), dict):
             payload['workspace_monitoring_summary']['background_loop_health'] = dict(background_loop_health)
         logger.info(

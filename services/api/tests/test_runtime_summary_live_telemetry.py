@@ -423,3 +423,137 @@ def test_stale_canonical_telemetry_does_not_prevent_offline(monkeypatch):
         f'Stale telemetry (1 hour old) must not claim live evidence_source; '
         f'got {evidence_source!r}'
     )
+
+
+# ---------------------------------------------------------------------------
+# 9. Canonical telemetry query mirrors the Target Telemetry page filters
+#    (evm_rpc / rpc_polling / live / block_number IS NOT NULL).
+# ---------------------------------------------------------------------------
+
+def test_canonical_telemetry_query_filters_match_target_telemetry_page():
+    """The runtime summary must read the SAME telemetry_events rows the Target
+    Telemetry page already surfaces: workspace-scoped, evidence_source='live',
+    evm_rpc/rpc_polling, observed_at present, block_number present."""
+    import pathlib
+    src = (pathlib.Path(__file__).parents[1] / 'app' / 'monitoring_runner.py').read_text(encoding='utf-8')
+    # Locate the canonical_last_telemetry_at query block by its anchor comment.
+    anchor = src.find('canonical_last_telemetry_source = \'telemetry_events.observed_at\'')
+    assert anchor != -1, 'canonical_last_telemetry_at query block not found'
+    query_window = src[anchor:anchor + 1200]
+    assert 'FROM telemetry_events' in query_window
+    assert "evidence_source = 'live'" in query_window
+    assert "event_type IN ('rpc_polling', 'live_provider')" in query_window
+    assert "provider_type IN ('evm_rpc', 'live_provider')" in query_window
+    assert 'observed_at IS NOT NULL' in query_window
+    assert "payload_json->>'block_number'" in query_window, (
+        'runtime summary query must require block_number to be present in payload_json '
+        'so it counts only telemetry rows that proved chain reachability'
+    )
+
+
+def test_runtime_summary_query_excludes_rows_without_block_number(monkeypatch):
+    """When telemetry_events rows lack block_number, MAX(observed_at) returns
+    None and the runtime banner must report telemetry as unavailable."""
+
+    class _NoBlockNumberConn(_BaseConn):
+        def execute(self, q, p=None):
+            qn = ' '.join(str(q).split())
+            if 'FROM workspaces' in qn and 'slug' in qn:
+                return _Result(row={'id': WORKSPACE_ID, 'slug': 'ws'})
+            if (
+                'FROM telemetry_events' in qn
+                and 'MAX(observed_at) AS ts' in qn
+                and "payload_json->>'block_number'" in qn
+            ):
+                # Block_number filter excludes rows without one -> query returns NULL.
+                return _Result(row={'ts': None})
+            if 'COUNT(*)' in qn or 'COUNT(' in qn:
+                return _Result(row={'c': 0})
+            if 'MAX(' in qn:
+                return _Result(row={'ts': None})
+            if 'SELECT' in qn:
+                return _Result(rows=[], row={})
+            return _Result(row={})
+
+    payload = _get_payload(monkeypatch, _NoBlockNumberConn())
+    assert payload.get('latest_live_telemetry_at') is None, (
+        'latest_live_telemetry_at must be None when no telemetry_events rows carry block_number'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 10. LIMITED COVERAGE when telemetry exists but evidence chain is incomplete
+# ---------------------------------------------------------------------------
+
+def test_monitoring_status_is_limited_when_telemetry_exists_but_chain_incomplete(monkeypatch):
+    """Telemetry rows alone must surface as LIMITED COVERAGE on the banner.
+    monitoring_status must be 'limited' (not 'live' and not 'offline') so the
+    frontend renders LIMITED COVERAGE rather than OFFLINE."""
+    conn = _LiveTelemetryConn(telemetry_age_seconds=5)
+    payload = _get_payload(monkeypatch, conn)
+
+    summary = payload.get('workspace_monitoring_summary', {})
+    monitoring_status = summary.get('monitoring_status') or payload.get('monitoring_status')
+    assert monitoring_status == 'limited', (
+        f'monitoring_status must be "limited" (LIMITED COVERAGE) when telemetry exists '
+        f'but detection/alert/incident/response/evidence chain is incomplete; '
+        f'got {monitoring_status!r}'
+    )
+
+
+def test_runtime_status_is_not_live_when_chain_incomplete(monkeypatch):
+    """Even with recent live telemetry, runtime_status must NOT be 'live' (or
+    'healthy') until the full evidence chain exists. Otherwise we claim full
+    monitoring health on telemetry-only state."""
+    conn = _LiveTelemetryConn(telemetry_age_seconds=5)
+    payload = _get_payload(monkeypatch, conn)
+
+    summary = payload.get('workspace_monitoring_summary', {})
+    runtime_status = summary.get('runtime_status') or payload.get('runtime_status')
+    assert runtime_status not in {'live', 'healthy'}, (
+        f'runtime_status must not be "live"/"healthy" when evidence chain is '
+        f'incomplete (telemetry only); got {runtime_status!r}'
+    )
+
+
+def test_reason_codes_flag_limited_coverage_when_chain_incomplete(monkeypatch):
+    """The summary must publish a machine-readable reason code so the UI can
+    explain LIMITED COVERAGE."""
+    conn = _LiveTelemetryConn(telemetry_age_seconds=5)
+    payload = _get_payload(monkeypatch, conn)
+
+    summary = payload.get('workspace_monitoring_summary', {})
+    reason_codes = summary.get('reason_codes') or []
+    assert 'limited_coverage_evidence_chain_incomplete' in reason_codes, (
+        f'reason_codes must include limited_coverage_evidence_chain_incomplete when '
+        f'live telemetry exists but downstream chain is missing; got {reason_codes!r}'
+    )
+
+
+def test_runtime_status_recovers_to_non_offline_with_full_chain(monkeypatch):
+    """When the full chain (telemetry → detection → alert → incident → response
+    → evidence) is present, the LIMITED COVERAGE downgrade must NOT trigger,
+    so runtime_status is free to escalate to live/healthy."""
+    conn = _LiveTelemetryConn(
+        telemetry_age_seconds=5,
+        detections=1,
+        alerts=1,
+        incidents=1,
+        response_actions=1,
+        evidence=1,
+    )
+    payload = _get_payload(monkeypatch, conn)
+
+    summary = payload.get('workspace_monitoring_summary', {})
+    runtime_status = summary.get('runtime_status') or payload.get('runtime_status')
+    monitoring_status = summary.get('monitoring_status') or payload.get('monitoring_status')
+    reason_codes = summary.get('reason_codes') or []
+    assert runtime_status != 'offline', (
+        f'runtime_status must not be offline with full evidence chain; got {runtime_status!r}'
+    )
+    assert monitoring_status != 'offline', (
+        f'monitoring_status must not be offline with full evidence chain; got {monitoring_status!r}'
+    )
+    assert 'limited_coverage_evidence_chain_incomplete' not in reason_codes, (
+        f'limited_coverage reason code must NOT be set when chain is complete; got {reason_codes!r}'
+    )
