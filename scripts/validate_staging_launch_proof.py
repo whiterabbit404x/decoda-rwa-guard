@@ -322,7 +322,56 @@ def validate_staging_proof(artifact_path: Path) -> tuple[bool, list[str], list[s
     return is_valid, errors, warnings
 
 
-def main(artifact_path: Path | None = None) -> int:
+_REQUIRED_FAIL_CLOSED_BLOCKERS = [
+    'STAGING_API_URL not configured',
+    'STAGING_APP_URL not configured',
+    'STAGING_DATABASE_URL not configured',
+    'STAGING_AUTH_TOKEN_SECRET not configured',
+]
+
+
+def _validate_expect_fail_closed(artifact: dict) -> list[str]:
+    """Extra checks for --expect-fail-closed: proof must be fail-closed."""
+    errors: list[str] = []
+    if artifact.get('staging_launch_ready'):
+        errors.append('FAIL-CLOSED VIOLATION: staging_launch_ready=true but expected false')
+    if artifact.get('broad_paid_saas_ready'):
+        errors.append('FAIL-CLOSED VIOLATION: broad_paid_saas_ready=true but expected false')
+    if artifact.get('safe_to_sell_broadly_today'):
+        errors.append('FAIL-CLOSED VIOLATION: safe_to_sell_broadly_today=true but expected false')
+    blockers = artifact.get('blockers', [])
+    if not blockers:
+        errors.append('FAIL-CLOSED VIOLATION: no blockers present; proof must have blockers when secrets absent')
+    sv = artifact.get('staging_launch_validation', {})
+    for expected in _REQUIRED_FAIL_CLOSED_BLOCKERS:
+        all_blockers = blockers + sv.get('blockers', [])
+        if not any(expected in b for b in all_blockers):
+            errors.append(f'FAIL-CLOSED VIOLATION: required blocker missing: {expected!r}')
+    return errors
+
+
+def _validate_strict(artifact: dict) -> list[str]:
+    """Extra checks for --strict: proof must be fully ready."""
+    errors: list[str] = []
+    if not artifact.get('staging_launch_ready'):
+        errors.append('STRICT FAIL: staging_launch_ready=false')
+    blockers = artifact.get('blockers', [])
+    if blockers:
+        errors.append(f'STRICT FAIL: {len(blockers)} blocker(s) present')
+    sv = artifact.get('staging_launch_validation', {})
+    for field in ('staging_api_url_present', 'staging_app_url_present',
+                  'staging_database_present', 'staging_auth_secret_present',
+                  'staging_worker_present'):
+        if not sv.get(field):
+            errors.append(f'STRICT FAIL: staging_launch_validation.{field}=false')
+    return errors
+
+
+def main(
+    artifact_path: Path | None = None,
+    expect_fail_closed: bool = False,
+    strict: bool = False,
+) -> int:
     if artifact_path is None:
         artifact_path = REPO_ROOT / 'artifacts' / 'staging-proof' / 'latest' / 'summary.json'
 
@@ -335,29 +384,55 @@ def main(artifact_path: Path | None = None) -> int:
 
     is_valid, errors, warnings = validate_staging_proof(artifact_path)
 
+    # Load artifact for extra checks
+    extra_errors: list[str] = []
+    if (expect_fail_closed or strict) and artifact_path.exists():
+        try:
+            artifact = json.loads(artifact_path.read_text())
+            if expect_fail_closed:
+                extra_errors.extend(_validate_expect_fail_closed(artifact))
+            if strict:
+                extra_errors.extend(_validate_strict(artifact))
+        except Exception as exc:
+            extra_errors.append(f'could not load artifact for extra checks: {exc}')
+
     if warnings:
         print('[validate-staging-launch-proof] Warnings:')
         for w in warnings:
             print(f'  - {w}')
 
-    if errors:
+    all_errors = errors + extra_errors
+    if all_errors:
         print('[validate-staging-launch-proof] FAIL — validation errors:')
-        for e in errors:
+        for e in all_errors:
             print(f'  - {e}')
         return 1
 
+    mode_label = 'fail-closed' if expect_fail_closed else ('strict' if strict else 'structural')
     print(
-        '[validate-staging-launch-proof] PASS — '
-        'artifact is structurally valid and fail-closed'
+        f'[validate-staging-launch-proof] PASS ({mode_label}) — '
+        'artifact is valid'
     )
     return 0
 
 
 if __name__ == '__main__':
     artifact_path = None
+    expect_fail_closed = False
+    strict = False
     args = sys.argv[1:]
-    if '--artifact-path' in args:
-        idx = args.index('--artifact-path')
-        if idx + 1 < len(args):
-            artifact_path = Path(args[idx + 1])
-    raise SystemExit(main(artifact_path=artifact_path))
+    # --proof and --artifact-path are synonyms
+    for flag in ('--artifact-path', '--proof'):
+        if flag in args:
+            idx = args.index(flag)
+            if idx + 1 < len(args):
+                artifact_path = Path(args[idx + 1])
+    if '--expect-fail-closed' in args:
+        expect_fail_closed = True
+    if '--strict' in args:
+        strict = True
+    raise SystemExit(main(
+        artifact_path=artifact_path,
+        expect_fail_closed=expect_fail_closed,
+        strict=strict,
+    ))
