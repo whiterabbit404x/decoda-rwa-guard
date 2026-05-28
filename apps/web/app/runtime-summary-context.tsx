@@ -91,6 +91,16 @@ function deriveProviderHealth(payload: import('./monitoring-status-contract').Mo
   let status: ProviderHealthInfo['status'] = 'unknown';
   if (reachable === true || health === 'healthy') status = 'connected';
   else if (reachable === false || health === 'degraded') status = 'not_connected';
+  // Fallback: use target_coverage metadata when direct provider fields are absent.
+  // The production flat API response returns provider_status inside target_coverage[].metadata.
+  if (status === 'unknown' && Array.isArray(payload.target_coverage) && payload.target_coverage.length > 0) {
+    const hasLive = payload.target_coverage.some((tc) => tc?.metadata?.provider_status === 'live');
+    if (hasLive) {
+      status = 'connected';
+    } else if (payload.target_coverage.some((tc) => tc?.metadata?.provider_status === 'degraded')) {
+      status = 'not_connected';
+    }
+  }
   const errorMessage = status === 'not_connected'
     ? ((payload.degraded_reason as string | null | undefined) ?? 'Provider not reachable. Check EVM_RPC_URL / STAGING_EVM_RPC_URL.')
     : null;

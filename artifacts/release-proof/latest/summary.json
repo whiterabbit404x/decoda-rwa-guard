@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T15:20:44.563936+00:00",
+  "generated_at": "2026-05-28T16:42:13.700722+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "230904a19dd30a0c720674b59c097de957e570ed",
-  "branch": "claude/blissful-clarke-rOr3Y",
+  "commit_sha": "60066fcbfb7dd5966ed888041f4fe00a8eecfc57",
+  "branch": "claude/busy-sagan-1I5D7",
   "ci_required_gates_ready": false,
   "launch_proof_ready": false,
   "manifest_ready": true,

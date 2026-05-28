@@ -129,8 +129,22 @@ export type WorkspaceMonitoringRuntime = {
   workflow_steps: unknown[];
 };
 
+export type TargetCoverageRecord = {
+  coverage_status: 'reporting' | 'stale' | 'silent' | 'unavailable' | string;
+  evidence_source?: 'live' | 'simulator' | 'replay' | 'none' | string;
+  metadata?: {
+    source_status?: string;
+    provider_status?: 'live' | 'degraded' | 'no_evidence' | 'error' | string;
+    telemetry_basis?: {
+      kind?: 'telemetry_event' | 'none' | string;
+      event_id?: string;
+    };
+  };
+};
+
 export type MonitoringRuntimeStatus = {
   workspace_monitoring_runtime?: WorkspaceMonitoringRuntime;
+  target_coverage?: TargetCoverageRecord[];
   continuity_slo?: {
     pass?: boolean;
     heartbeat_age_seconds?: number | null;

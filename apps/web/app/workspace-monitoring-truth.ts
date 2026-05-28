@@ -292,7 +292,11 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
 }
 
 export function resolveWorkspaceMonitoringTruth(status: MonitoringRuntimeStatus | null): WorkspaceMonitoringTruth {
-  const truth = resolveWorkspaceMonitoringTruthFromSummary(status?.workspace_monitoring_summary);
+  // The production /ops/monitoring/runtime-status endpoint returns top-level fields directly
+  // (no nested workspace_monitoring_summary). Fall back to the flat status object so all fields
+  // (protected_assets, reporting_systems, last_poll_at, contradiction_flags, etc.) are read.
+  const summarySource = status?.workspace_monitoring_summary ?? (status as unknown as WorkspaceMonitoringSummary | null);
+  const truth = resolveWorkspaceMonitoringTruthFromSummary(summarySource);
   const workspaceRecord = (status as Record<string, unknown> | null)?.workspace;
   const workspaceName = workspaceRecord && typeof workspaceRecord === 'object'
     ? asTrimmedString((workspaceRecord as Record<string, unknown>).name)
