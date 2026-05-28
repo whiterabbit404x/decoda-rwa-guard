@@ -116,7 +116,9 @@ def build_staging_launch_validation(mode: str) -> dict[str, Any]:
     staging_app_url = _env_present('STAGING_APP_URL')
     staging_db = _env_present('STAGING_DATABASE_URL')
     staging_auth = _env_present('STAGING_AUTH_TOKEN_SECRET')
-    staging_worker = _env_present('STAGING_WORKER_ENABLED')
+    # Worker must be explicitly truthy (true/1/yes/enabled); bare presence is not enough.
+    _worker_raw = (_env_val('STAGING_WORKER_ENABLED') or '').strip().lower()
+    staging_worker = _worker_raw in ('true', '1', 'yes', 'enabled')
     staging_evm = _env_present('STAGING_EVM_RPC_URL')
 
     staging_env_present = staging_api_url or staging_app_url or staging_db
@@ -831,18 +833,25 @@ def generate_staging_proof(
     return _redact_obj(summary)
 
 
-def main(mode: str = 'local', strict: bool = False) -> int:
+def main(mode: str = 'local', strict: bool = False, out_path: Path | None = None) -> int:
     print(f'[generate-staging-launch-proof] mode={mode} strict={strict}')
 
-    out_dir = REPO_ROOT / 'artifacts' / 'staging-proof' / 'latest'
+    if out_path is None:
+        out_dir = REPO_ROOT / 'artifacts' / 'staging-proof' / 'latest'
+        out_path = out_dir / 'summary.json'
+    else:
+        out_dir = out_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
     summary = generate_staging_proof(mode=mode, strict=strict)
 
-    out_path = out_dir / 'summary.json'
     with open(out_path, 'w') as f:
         json.dump(summary, f, indent=2)
-    print(f'[generate-staging-launch-proof] wrote {out_path.relative_to(REPO_ROOT)}')
+    try:
+        display = out_path.relative_to(REPO_ROOT)
+    except ValueError:
+        display = out_path
+    print(f'[generate-staging-launch-proof] wrote {display}')
 
     staging_ready = summary['staging_launch_ready']
     broad_ready = summary['broad_paid_saas_ready']
@@ -872,11 +881,18 @@ def main(mode: str = 'local', strict: bool = False) -> int:
 if __name__ == '__main__':
     mode = 'local'
     strict = False
+    out_path: Path | None = None
     args = sys.argv[1:]
     if '--mode' in args:
         idx = args.index('--mode')
         if idx + 1 < len(args):
-            mode = args[idx + 1]
+            raw_mode = args[idx + 1]
+            # 'structural' is a backward-compatible alias for 'ci' (fail-closed, no secrets)
+            mode = 'ci' if raw_mode == 'structural' else raw_mode
     if '--strict' in args:
         strict = True
-    raise SystemExit(main(mode=mode, strict=strict))
+    if '--out' in args:
+        idx = args.index('--out')
+        if idx + 1 < len(args):
+            out_path = Path(args[idx + 1])
+    raise SystemExit(main(mode=mode, strict=strict, out_path=out_path))

@@ -813,3 +813,292 @@ def test_q_session_10_14_test_files_present() -> None:
     assert any(f.exists() for f in mt_options), (
         'No multi-tenant isolation test file found; Session 14 coverage broken.'
     )
+
+
+# ---------------------------------------------------------------------------
+# U. Missing all staging env vars => fail-closed, not ready, required blockers.
+# ---------------------------------------------------------------------------
+def test_u_missing_all_staging_env_vars_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """All required staging env vars absent => fail-closed with required blockers."""
+    for var in (
+        'STAGING_API_URL', 'STAGING_APP_URL', 'STAGING_DATABASE_URL',
+        'STAGING_AUTH_TOKEN_SECRET', 'STAGING_WORKER_ENABLED',
+        'EVM_RPC_URL', 'STAGING_EVM_RPC_URL',
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    import scripts.generate_staging_launch_proof as _sglp
+    monkeypatch.setattr(_sglp, 'REPO_ROOT', tmp_path)
+
+    proof = generate_staging_proof(
+        mode='ci',
+        launch_proof_dir=tmp_path / 'launch-proof' / 'latest',
+        release_proof_dir=tmp_path / 'release-proof' / 'latest',
+        live_evidence_proof_dir=tmp_path / 'live-evidence-proof' / 'latest',
+    )
+
+    assert proof['staging_launch_ready'] is False
+    assert proof['broad_paid_saas_ready'] is False
+    assert proof['safe_to_sell_broadly_today'] is False
+    assert len(proof['blockers']) > 0
+
+    sv_blockers = proof.get('staging_launch_validation', {}).get('blockers', [])
+    all_blockers = proof['blockers'] + sv_blockers
+    for expected in (
+        'STAGING_API_URL not configured',
+        'STAGING_APP_URL not configured',
+        'STAGING_DATABASE_URL not configured',
+        'STAGING_AUTH_TOKEN_SECRET not configured',
+    ):
+        assert any(expected in b for b in all_blockers), (
+            f'Required blocker missing: {expected!r}\nAll blockers: {all_blockers}'
+        )
+
+    # Validator --expect-fail-closed must pass
+    from scripts.validate_staging_launch_proof import (
+        _validate_expect_fail_closed,
+        validate_staging_proof as _vsp,
+    )
+    out = tmp_path / 'summary.json'
+    import json as _json
+    out.write_text(_json.dumps(proof))
+    fc_errors = _validate_expect_fail_closed(proof)
+    assert not fc_errors, f'--expect-fail-closed check failed: {fc_errors}'
+
+
+# ---------------------------------------------------------------------------
+# V. Env vars present but worker disabled => not ready.
+# ---------------------------------------------------------------------------
+def test_v_worker_disabled_blocks_staging_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """STAGING_WORKER_ENABLED absent or falsy => staging_launch_ready=false."""
+    _set_all_staging_env(monkeypatch)
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'false')
+
+    result = build_staging_launch_validation('staging')
+
+    assert result['staging_worker_present'] is False
+    assert result['status'] == 'fail'
+    assert any('STAGING_WORKER_ENABLED' in b for b in result['blockers'])
+
+
+# ---------------------------------------------------------------------------
+# W. Mocked API/app/database healthy => staging env checks pass.
+# ---------------------------------------------------------------------------
+def test_w_all_staging_env_present_passes_staging_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When all required env vars are set and non-placeholder, status=pass in staging mode."""
+    # Use URLs that do not contain placeholder markers (avoid .example TLD)
+    monkeypatch.setenv('STAGING_API_URL', 'https://api-staging.decoda.io')
+    monkeypatch.setenv('STAGING_APP_URL', 'https://staging.decoda.io')
+    monkeypatch.setenv('STAGING_DATABASE_URL', 'postgresql://user:pass@db.staging.decoda.io:5432/guard')
+    monkeypatch.setenv('STAGING_AUTH_TOKEN_SECRET', 'a-sufficiently-long-secret-value-here')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+
+    result = build_staging_launch_validation('staging')
+
+    assert result['staging_api_url_present'] is True
+    assert result['staging_app_url_present'] is True
+    assert result['staging_database_present'] is True
+    assert result['staging_auth_secret_present'] is True
+    assert result['staging_worker_present'] is True
+    assert result['status'] == 'pass'
+    assert not result['blockers']
+
+
+# ---------------------------------------------------------------------------
+# X. Blockers exist but staging_launch_ready=true => strict validator fails.
+# ---------------------------------------------------------------------------
+def test_x_strict_validator_rejects_blockers_with_staging_launch_ready(
+    tmp_path: Path,
+) -> None:
+    """--strict validator must fail if blockers exist alongside staging_launch_ready=true."""
+    from scripts.validate_staging_launch_proof import _validate_strict
+
+    artifact = {
+        'schema_version': 1,
+        'generated_at': '2026-01-01T00:00:00+00:00',
+        'mode': 'staging',
+        'strict': True,
+        'release_channel': 'staging',
+        'staging_launch_ready': True,
+        'broad_paid_saas_ready': False,
+        'safe_to_sell_broadly_today': False,
+        'staging_launch_validation': {
+            'status': 'pass',
+            'staging_environment_present': True,
+            'staging_api_url_present': True,
+            'staging_app_url_present': True,
+            'staging_database_present': True,
+            'staging_auth_secret_present': True,
+            'staging_worker_present': True,
+            'staging_migrations_validated': False,
+            'staging_runtime_validated': False,
+            'staging_live_evidence_validated': False,
+            'generated_at': '2026-01-01T00:00:00+00:00',
+            'blockers': [],
+            'warnings': [],
+        },
+        'live_provider_validation': {
+            'status': 'fail',
+            'evm_rpc_configured': False,
+            'chain_id_configured': False,
+            'provider_health_checked': False,
+            'provider_ready': False,
+            'provider_mode': 'disabled',
+            'live_evidence_ready': False,
+            'evidence_source': 'unknown',
+            'chain': {
+                'telemetry_event_id': None,
+                'detection_id': None,
+                'alert_id': None,
+                'incident_id': None,
+                'response_action_id': None,
+                'evidence_package_id': None,
+            },
+            'missing': ['EVM_RPC_URL not configured'],
+            'contradiction_flags': [],
+            'blockers': ['EVM_RPC_URL not configured'],
+            'warnings': [],
+        },
+        'billing_production_validation': {
+            'status': 'fail',
+            'billing_provider': 'unknown',
+            'live_secret_key_present': False,
+            'webhook_secret_present': False,
+            'price_id_present': False,
+            'webhook_endpoint_validated': False,
+            'test_mode_detected': False,
+            'blockers': ['BILLING_PROVIDER not configured'],
+            'warnings': [],
+        },
+        'email_production_validation': {
+            'status': 'fail',
+            'provider': 'unknown',
+            'api_key_present': False,
+            'sender_present': False,
+            'domain_present': False,
+            'production_sender_validated': False,
+            'blockers': ['EMAIL_PROVIDER not configured'],
+            'warnings': [],
+        },
+        'required_dependencies': {
+            'paid_launch_readiness': 'not_run',
+            'release_proof': 'not_run',
+            'runtime_truthfulness': 'pass',
+            'evidence_export_truthfulness': 'pass',
+            'multi_tenant_isolation': 'pass',
+        },
+        'blockers': ['EVM_RPC_URL not configured', 'BILLING_PROVIDER not configured'],
+        'warnings': [],
+    }
+    path = tmp_path / 'summary.json'
+    import json as _json
+    path.write_text(_json.dumps(artifact))
+
+    strict_errors = _validate_strict(artifact)
+    assert any('blocker' in e.lower() for e in strict_errors), (
+        f'Expected strict blocker error; got: {strict_errors}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Y. safe_to_sell_broadly_today=true while staging_launch_ready=false => strict validator fails.
+# ---------------------------------------------------------------------------
+def test_y_strict_validator_rejects_safe_to_sell_without_staging_launch_ready(
+    tmp_path: Path,
+) -> None:
+    """safe_to_sell_broadly_today=true while staging_launch_ready=false must be rejected."""
+    from scripts.validate_staging_launch_proof import validate_staging_proof as _vsp
+
+    artifact = {
+        'schema_version': 1,
+        'generated_at': '2026-01-01T00:00:00+00:00',
+        'mode': 'staging',
+        'strict': False,
+        'release_channel': 'staging',
+        'staging_launch_ready': False,
+        'broad_paid_saas_ready': False,
+        'safe_to_sell_broadly_today': True,  # overclaim
+        'staging_launch_validation': {
+            'status': 'fail',
+            'staging_environment_present': False,
+            'staging_api_url_present': False,
+            'staging_app_url_present': False,
+            'staging_database_present': False,
+            'staging_auth_secret_present': False,
+            'staging_worker_present': False,
+            'staging_migrations_validated': False,
+            'staging_runtime_validated': False,
+            'staging_live_evidence_validated': False,
+            'generated_at': '2026-01-01T00:00:00+00:00',
+            'blockers': ['STAGING_API_URL not configured'],
+            'warnings': [],
+        },
+        'live_provider_validation': {
+            'status': 'fail',
+            'evm_rpc_configured': False,
+            'chain_id_configured': False,
+            'provider_health_checked': False,
+            'provider_ready': False,
+            'provider_mode': 'disabled',
+            'live_evidence_ready': False,
+            'evidence_source': 'unknown',
+            'chain': {
+                'telemetry_event_id': None,
+                'detection_id': None,
+                'alert_id': None,
+                'incident_id': None,
+                'response_action_id': None,
+                'evidence_package_id': None,
+            },
+            'missing': [],
+            'contradiction_flags': [],
+            'blockers': [],
+            'warnings': [],
+        },
+        'billing_production_validation': {
+            'status': 'fail',
+            'billing_provider': 'unknown',
+            'live_secret_key_present': False,
+            'webhook_secret_present': False,
+            'price_id_present': False,
+            'webhook_endpoint_validated': False,
+            'test_mode_detected': False,
+            'blockers': ['BILLING_PROVIDER not configured'],
+            'warnings': [],
+        },
+        'email_production_validation': {
+            'status': 'fail',
+            'provider': 'unknown',
+            'api_key_present': False,
+            'sender_present': False,
+            'domain_present': False,
+            'production_sender_validated': False,
+            'blockers': ['EMAIL_PROVIDER not configured'],
+            'warnings': [],
+        },
+        'required_dependencies': {
+            'paid_launch_readiness': 'not_run',
+            'release_proof': 'not_run',
+            'runtime_truthfulness': 'pass',
+            'evidence_export_truthfulness': 'pass',
+            'multi_tenant_isolation': 'pass',
+        },
+        'blockers': ['STAGING_API_URL not configured', 'BILLING_PROVIDER not configured'],
+        'warnings': [],
+    }
+    path = tmp_path / 'summary.json'
+    import json as _json
+    path.write_text(_json.dumps(artifact))
+
+    is_valid, errors, _ = _vsp(path)
+    assert not is_valid
+    assert any('safe_to_sell_broadly_today' in e and 'broad_paid_saas_ready' in e for e in errors), (
+        f'Expected overclaim error for safe_to_sell without broad_paid_saas_ready; got: {errors}'
+    )
