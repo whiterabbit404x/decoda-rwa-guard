@@ -9,6 +9,9 @@ DbErrorClassification = Literal[
     'network_unreachable',
     'db_unavailable',
     'auth_error',
+    'connection_closed',
+    'missing_table',
+    'query_error',
     'unknown_db_error',
 ]
 
@@ -46,6 +49,26 @@ _DB_UNAVAILABLE_PATTERNS = (
     'remaining connection slots are reserved',
     'too many connections',
     'server closed the connection unexpectedly',
+)
+
+_CONNECTION_CLOSED_PATTERNS = (
+    'connection is closed',
+    'connection already closed',
+    'the connection was closed',
+)
+
+_MISSING_TABLE_PATTERNS = (
+    'relation',
+    'does not exist',
+    'undefined table',
+    'undefined column',
+)
+
+_QUERY_ERROR_PATTERNS = (
+    'syntax error',
+    'column',
+    'ambiguous',
+    'invalid input syntax',
 )
 
 _KEYVALUE_HOST_PATTERN = re.compile(r'(?:^|\s)host\s*=\s*([^\s]+)')
@@ -91,6 +114,15 @@ def classify_db_error(exc: Exception) -> DbErrorClassification:
     if any(pattern in message for pattern in _DB_UNAVAILABLE_PATTERNS):
         return 'db_unavailable'
 
+    if any(pattern in message for pattern in _CONNECTION_CLOSED_PATTERNS):
+        return 'connection_closed'
+
+    if any(p in message for p in _MISSING_TABLE_PATTERNS) and 'does not exist' in message:
+        return 'missing_table'
+
+    if any(pattern in message for pattern in _QUERY_ERROR_PATTERNS):
+        return 'query_error'
+
     return 'unknown_db_error'
 
 
@@ -100,6 +132,9 @@ def db_error_reason_label(classification: DbErrorClassification) -> str:
         'network_unreachable': 'Database network unreachable',
         'db_unavailable': 'Database temporarily unavailable',
         'auth_error': 'Database authentication failed',
+        'connection_closed': 'Database connection closed unexpectedly',
+        'missing_table': 'Required database table or column missing',
+        'query_error': 'Database query error',
         'unknown_db_error': 'Unknown database error',
     }
     return labels.get(classification, 'Unknown database error')
