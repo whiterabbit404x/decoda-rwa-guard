@@ -6365,10 +6365,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         # Fallback: if monitoring hasn't produced a count yet, use direct asset registry count
         if protected_assets_count == 0 and workspace_id:
             try:
-                _direct_row = connection.execute(
-                    'SELECT COUNT(DISTINCT id) AS c FROM assets WHERE workspace_id = %s::uuid AND deleted_at IS NULL',
-                    (workspace_id,),
-                ).fetchone()
+                with pg_connection() as _assets_conn:
+                    _direct_row = _assets_conn.execute(
+                        'SELECT COUNT(DISTINCT id) AS c FROM assets WHERE workspace_id = %s::uuid AND deleted_at IS NULL',
+                        (workspace_id,),
+                    ).fetchone()
                 _direct_count = int((_direct_row or {}).get('c') or 0)
                 if _direct_count > 0:
                     protected_assets_count = _direct_count
@@ -6464,421 +6465,422 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if isinstance(latest_detection_metadata, dict)
             else None
         )
-        canonical_last_poll_row = connection.execute(
-            '''
-            SELECT MAX(COALESCE(poll_finished_at, poll_started_at)) AS ts
-            FROM monitoring_polls
-            WHERE workspace_id = %s::uuid
-            ''',
-            (workspace_id,),
-        ).fetchone()
-        last_poll_at = _parse_ts((canonical_last_poll_row or {}).get('ts') if isinstance(canonical_last_poll_row, dict) else None)
-        canonical_last_heartbeat_row = connection.execute(
-            '''
-            SELECT MAX(last_heartbeat_at) AS ts
-            FROM monitoring_heartbeats
-            WHERE workspace_id = %s::uuid
-            ''',
-            (workspace_id,),
-        ).fetchone()
-        canonical_last_heartbeat_at = _parse_ts((canonical_last_heartbeat_row or {}).get('ts') if isinstance(canonical_last_heartbeat_row, dict) else None)
-        canonical_last_heartbeat_at = canonical_last_heartbeat_at or last_system_heartbeat or _parse_ts(health.get('last_heartbeat_at'))
-        canonical_last_telemetry_source = 'telemetry_events.observed_at'
-        # Mirror the Target Telemetry page: same workspace-scoped live evm_rpc/rpc_polling
-        # rows that the customer sees, additionally requiring a block_number so we only
-        # count poll cycles that proved chain reachability. block_number lives in
-        # payload_json (no dedicated column), so we test for a non-empty JSON value.
-        canonical_last_telemetry_row = connection.execute(
-            '''
-            SELECT MAX(observed_at) AS ts
-            FROM telemetry_events
-            WHERE workspace_id = %s::uuid
-              AND evidence_source = 'live'
-              AND event_type IN ('rpc_polling', 'live_provider')
-              AND provider_type IN ('evm_rpc', 'live_provider')
-              AND observed_at IS NOT NULL
-              AND COALESCE(payload_json->>'block_number', '') <> ''
-            ''',
-            (workspace_id,),
-        ).fetchone()
-        canonical_last_telemetry_at = _parse_ts((canonical_last_telemetry_row or {}).get('ts') if isinstance(canonical_last_telemetry_row, dict) else None)
-        canonical_last_detection_source = 'detection_events.created_at'
-        canonical_last_detection_row = connection.execute(
-            '''
-            SELECT MAX(created_at) AS ts
-            FROM detection_events
-            WHERE workspace_id = %s::uuid
-            ''',
-            (workspace_id,),
-        ).fetchone()
-        canonical_last_detection_at = _parse_ts((canonical_last_detection_row or {}).get('ts') if isinstance(canonical_last_detection_row, dict) else None)
-        telemetry_candidates: list[tuple[datetime, str]] = []
-        coverage_telemetry_candidates: list[datetime] = []
-        receipts_reporting_systems = 0
-        for receipt_ts in live_coverage_receipts_by_system.values():
-            if int((now - receipt_ts).total_seconds()) <= telemetry_window_seconds:
-                receipts_reporting_systems += 1
-        logger.info(
-            'monitoring_runtime_coverage_receipts workspace_id=%s coverage_telemetry_persisted_count=%s receipts_reporting_systems=%s',
-            workspace_id,
-            live_coverage_receipts_persisted_count,
-            receipts_reporting_systems,
-        )
-        for row in enabled_rows:
-            system_id = str(row.get('id') or '').strip()
-            coverage_primary_ts = _parse_ts(row.get('last_coverage_telemetry_at'))
-            coverage_receipt_ts = live_coverage_receipts_by_system.get(system_id)
-            coverage_ts = coverage_primary_ts
-            if coverage_receipt_ts is not None and (coverage_ts is None or coverage_receipt_ts > coverage_ts):
-                coverage_ts = coverage_receipt_ts
-            target_event_ts = _parse_ts(row.get('last_event_at'))
-            if coverage_ts is not None:
-                coverage_telemetry_candidates.append(coverage_ts)
-                telemetry_candidates.append((coverage_ts, 'coverage'))
-            if target_event_ts is not None:
-                telemetry_candidates.append((target_event_ts, 'target_event'))
-        telemetry_candidates.sort(key=lambda item: item[0], reverse=True)
-        legacy_last_coverage_telemetry_at = max(coverage_telemetry_candidates) if coverage_telemetry_candidates else live_coverage_receipts_workspace_latest
-        legacy_last_telemetry_at = telemetry_candidates[0][0] if telemetry_candidates else None
-        legacy_telemetry_kind = telemetry_candidates[0][1] if telemetry_candidates else None
-        last_coverage_telemetry_at = live_coverage_receipts_workspace_latest or legacy_last_coverage_telemetry_at
-        # evm_rpc/rpc_polling rows in telemetry_events are coverage polls.
-        # When monitoring_event_receipts and monitored_systems haven't written a
-        # coverage timestamp yet, fall back to canonical_last_telemetry_at so
-        # coverage_fresh is accurate and freshness_status is set correctly.
-        if canonical_last_telemetry_at is not None:
-            if last_coverage_telemetry_at is None or canonical_last_telemetry_at > last_coverage_telemetry_at:
-                last_coverage_telemetry_at = canonical_last_telemetry_at
-        last_telemetry_at = canonical_last_telemetry_at or legacy_last_telemetry_at
-        # 'coverage' is the recognized kind in build_workspace_monitoring_summary;
-        # evm_rpc/rpc_polling polling events are coverage telemetry by definition.
-        telemetry_kind = (
-            'coverage' if canonical_last_telemetry_at is not None
-            else (legacy_telemetry_kind if legacy_last_telemetry_at is not None else None)
-        )
-        latest_target_coverage_rows = connection.execute(
-            '''
-            SELECT DISTINCT ON (target_id)
-                target_id,
-                coverage_status,
-                last_telemetry_at,
-                evidence_source,
-                computed_at,
-                metadata
-            FROM target_coverage_records
-            WHERE workspace_id = %s::uuid
-            ORDER BY target_id, computed_at DESC
-            ''',
-            (workspace_id,),
-        ).fetchall()
-        coverage_by_target = {
-            str((row or {}).get('target_id') or ''): dict(row)
-            for row in (latest_target_coverage_rows or [])
-            if str((row or {}).get('target_id') or '').strip()
-        }
-        canonical_reporting_event_rows = connection.execute(
-            '''
-            SELECT DISTINCT te.target_id
-            FROM telemetry_events te
-            JOIN monitored_targets mt
-              ON mt.workspace_id = te.workspace_id
-             AND mt.id = te.target_id
-             AND mt.enabled = TRUE
-            JOIN monitoring_configs mc
-              ON mc.workspace_id = mt.workspace_id
-             AND mc.target_id = mt.id
-             AND mc.enabled = TRUE
-             AND (mc.asset_id IS NULL OR mc.asset_id = mt.asset_id)
-            WHERE te.workspace_id = %s::uuid
-              AND te.ingested_at >= %s
-            ''',
-            (workspace_id, now - timedelta(seconds=telemetry_window_seconds)),
-        ).fetchall()
-        canonical_reporting_targets_from_events: set[str] = {
-            str((row or {}).get('target_id') or '').strip()
-            for row in (canonical_reporting_event_rows or [])
-            if str((row or {}).get('target_id') or '').strip()
-        }
-        canonical_reporting_coverage_rows = connection.execute(
-            '''
-            WITH latest_coverage AS (
-                SELECT DISTINCT ON (tcr.target_id)
-                    tcr.target_id,
-                    tcr.metadata,
-                    tcr.computed_at
-                FROM target_coverage_records tcr
+        with pg_connection() as connection:
+            canonical_last_poll_row = connection.execute(
+                '''
+                SELECT MAX(COALESCE(poll_finished_at, poll_started_at)) AS ts
+                FROM monitoring_polls
+                WHERE workspace_id = %s::uuid
+                ''',
+                (workspace_id,),
+            ).fetchone()
+            last_poll_at = _parse_ts((canonical_last_poll_row or {}).get('ts') if isinstance(canonical_last_poll_row, dict) else None)
+            canonical_last_heartbeat_row = connection.execute(
+                '''
+                SELECT MAX(last_heartbeat_at) AS ts
+                FROM monitoring_heartbeats
+                WHERE workspace_id = %s::uuid
+                ''',
+                (workspace_id,),
+            ).fetchone()
+            canonical_last_heartbeat_at = _parse_ts((canonical_last_heartbeat_row or {}).get('ts') if isinstance(canonical_last_heartbeat_row, dict) else None)
+            canonical_last_heartbeat_at = canonical_last_heartbeat_at or last_system_heartbeat or _parse_ts(health.get('last_heartbeat_at'))
+            canonical_last_telemetry_source = 'telemetry_events.observed_at'
+            # Mirror the Target Telemetry page: same workspace-scoped live evm_rpc/rpc_polling
+            # rows that the customer sees, additionally requiring a block_number so we only
+            # count poll cycles that proved chain reachability. block_number lives in
+            # payload_json (no dedicated column), so we test for a non-empty JSON value.
+            canonical_last_telemetry_row = connection.execute(
+                '''
+                SELECT MAX(observed_at) AS ts
+                FROM telemetry_events
+                WHERE workspace_id = %s::uuid
+                  AND evidence_source = 'live'
+                  AND event_type IN ('rpc_polling', 'live_provider')
+                  AND provider_type IN ('evm_rpc', 'live_provider')
+                  AND observed_at IS NOT NULL
+                  AND COALESCE(payload_json->>'block_number', '') <> ''
+                ''',
+                (workspace_id,),
+            ).fetchone()
+            canonical_last_telemetry_at = _parse_ts((canonical_last_telemetry_row or {}).get('ts') if isinstance(canonical_last_telemetry_row, dict) else None)
+            canonical_last_detection_source = 'detection_events.created_at'
+            canonical_last_detection_row = connection.execute(
+                '''
+                SELECT MAX(created_at) AS ts
+                FROM detection_events
+                WHERE workspace_id = %s::uuid
+                ''',
+                (workspace_id,),
+            ).fetchone()
+            canonical_last_detection_at = _parse_ts((canonical_last_detection_row or {}).get('ts') if isinstance(canonical_last_detection_row, dict) else None)
+            telemetry_candidates: list[tuple[datetime, str]] = []
+            coverage_telemetry_candidates: list[datetime] = []
+            receipts_reporting_systems = 0
+            for receipt_ts in live_coverage_receipts_by_system.values():
+                if int((now - receipt_ts).total_seconds()) <= telemetry_window_seconds:
+                    receipts_reporting_systems += 1
+            logger.info(
+                'monitoring_runtime_coverage_receipts workspace_id=%s coverage_telemetry_persisted_count=%s receipts_reporting_systems=%s',
+                workspace_id,
+                live_coverage_receipts_persisted_count,
+                receipts_reporting_systems,
+            )
+            for row in enabled_rows:
+                system_id = str(row.get('id') or '').strip()
+                coverage_primary_ts = _parse_ts(row.get('last_coverage_telemetry_at'))
+                coverage_receipt_ts = live_coverage_receipts_by_system.get(system_id)
+                coverage_ts = coverage_primary_ts
+                if coverage_receipt_ts is not None and (coverage_ts is None or coverage_receipt_ts > coverage_ts):
+                    coverage_ts = coverage_receipt_ts
+                target_event_ts = _parse_ts(row.get('last_event_at'))
+                if coverage_ts is not None:
+                    coverage_telemetry_candidates.append(coverage_ts)
+                    telemetry_candidates.append((coverage_ts, 'coverage'))
+                if target_event_ts is not None:
+                    telemetry_candidates.append((target_event_ts, 'target_event'))
+            telemetry_candidates.sort(key=lambda item: item[0], reverse=True)
+            legacy_last_coverage_telemetry_at = max(coverage_telemetry_candidates) if coverage_telemetry_candidates else live_coverage_receipts_workspace_latest
+            legacy_last_telemetry_at = telemetry_candidates[0][0] if telemetry_candidates else None
+            legacy_telemetry_kind = telemetry_candidates[0][1] if telemetry_candidates else None
+            last_coverage_telemetry_at = live_coverage_receipts_workspace_latest or legacy_last_coverage_telemetry_at
+            # evm_rpc/rpc_polling rows in telemetry_events are coverage polls.
+            # When monitoring_event_receipts and monitored_systems haven't written a
+            # coverage timestamp yet, fall back to canonical_last_telemetry_at so
+            # coverage_fresh is accurate and freshness_status is set correctly.
+            if canonical_last_telemetry_at is not None:
+                if last_coverage_telemetry_at is None or canonical_last_telemetry_at > last_coverage_telemetry_at:
+                    last_coverage_telemetry_at = canonical_last_telemetry_at
+            last_telemetry_at = canonical_last_telemetry_at or legacy_last_telemetry_at
+            # 'coverage' is the recognized kind in build_workspace_monitoring_summary;
+            # evm_rpc/rpc_polling polling events are coverage telemetry by definition.
+            telemetry_kind = (
+                'coverage' if canonical_last_telemetry_at is not None
+                else (legacy_telemetry_kind if legacy_last_telemetry_at is not None else None)
+            )
+            latest_target_coverage_rows = connection.execute(
+                '''
+                SELECT DISTINCT ON (target_id)
+                    target_id,
+                    coverage_status,
+                    last_telemetry_at,
+                    evidence_source,
+                    computed_at,
+                    metadata
+                FROM target_coverage_records
+                WHERE workspace_id = %s::uuid
+                ORDER BY target_id, computed_at DESC
+                ''',
+                (workspace_id,),
+            ).fetchall()
+            coverage_by_target = {
+                str((row or {}).get('target_id') or ''): dict(row)
+                for row in (latest_target_coverage_rows or [])
+                if str((row or {}).get('target_id') or '').strip()
+            }
+            canonical_reporting_event_rows = connection.execute(
+                '''
+                SELECT DISTINCT te.target_id
+                FROM telemetry_events te
                 JOIN monitored_targets mt
-                  ON mt.workspace_id = tcr.workspace_id
-                 AND mt.id = tcr.target_id
+                  ON mt.workspace_id = te.workspace_id
+                 AND mt.id = te.target_id
                  AND mt.enabled = TRUE
                 JOIN monitoring_configs mc
                   ON mc.workspace_id = mt.workspace_id
                  AND mc.target_id = mt.id
                  AND mc.enabled = TRUE
                  AND (mc.asset_id IS NULL OR mc.asset_id = mt.asset_id)
-                WHERE tcr.workspace_id = %s::uuid
-                  AND tcr.coverage_status = 'reporting'
-                  AND tcr.last_telemetry_at IS NOT NULL
-                ORDER BY tcr.target_id, tcr.computed_at DESC
-            )
-            SELECT lc.target_id
-            FROM latest_coverage lc
-            JOIN telemetry_events te
-              ON te.workspace_id = %s::uuid
-             AND te.target_id = lc.target_id
-             AND te.id::text = (lc.metadata->'telemetry_basis'->>'event_id')
-            WHERE lc.computed_at >= %s
-              AND COALESCE(lc.metadata->'telemetry_basis'->>'kind', '') = 'telemetry_event'
-              AND COALESCE(lc.metadata->'telemetry_basis'->>'event_id', '') <> ''
-            ''',
-            (workspace_id, workspace_id, now - timedelta(seconds=telemetry_window_seconds)),
-        ).fetchall()
-        canonical_reporting_targets_from_coverage: set[str] = {
-            str((row or {}).get('target_id') or '').strip()
-            for row in (canonical_reporting_coverage_rows or [])
-            if str((row or {}).get('target_id') or '').strip()
-        }
-        canonical_reporting_target_ids = canonical_reporting_targets_from_events | canonical_reporting_targets_from_coverage
-        canonical_reporting_systems = int(len(canonical_reporting_target_ids))
-        # Detect contradiction: monitored_system rows exist visually but no telemetry-based
-        # reporting exists. This means targets are configured but the worker hasn't polled them.
-        _loose_target_rows_flag = bool(enabled_system_count > 0 and canonical_reporting_systems == 0)
-        target_reporting_without_telemetry_count = 0
-        for target_id, coverage_row in coverage_by_target.items():
-            if target_id in canonical_reporting_target_ids:
-                continue
-            if str((coverage_row or {}).get('coverage_status') or '').strip().lower() != 'reporting':
-                continue
-            target_reporting_without_telemetry_count += 1
-        legacy_row_reporting_systems = sum(
-            1 for row in enabled_rows
-            if _parse_ts(row.get('last_coverage_telemetry_at')) is not None
-            and int((now - _parse_ts(row.get('last_coverage_telemetry_at'))).total_seconds()) <= telemetry_window_seconds
-        )
-        effective_reporting_systems = canonical_reporting_systems or legacy_row_reporting_systems or receipts_reporting_systems
-        reporting_systems = effective_reporting_systems
-        coverage_heartbeat_count = int(reporting_systems)
-        real_event_count = int(recent_real_event_count)
-        raw_recent_evidence_state = (
-            str((latest_detection_metadata or {}).get('evidence_state') or latest_detection_payload.get('evidence_state') or 'missing')
-            if isinstance(latest_detection_payload, dict)
-            else 'missing'
-        )
-        effective_recent_evidence_state = (
-            'no_evidence'
-            if coverage_heartbeat_count > 0 and real_event_count <= 0
-            else raw_recent_evidence_state
-        )
-        recent_evidence_reason_code = 'coverage_only_no_events' if coverage_heartbeat_count > 0 and real_event_count <= 0 else None
-        logger.info(
-            'monitoring_reporting_systems workspace_id=%s reporting_systems=%s status_reason=%s',
-            workspace_id,
-            reporting_systems,
-            f'fresh_coverage_window_{telemetry_window_seconds}s',
-        )
-        chain_open_alerts_count = int((open_alerts or {}).get('c') or 0)
-        chain_open_incidents_count = int((open_incidents or {}).get('c') or 0)
-        _mark_query_checkpoint('select_proof_chain_last_detection')
-        try:
-            linked_detection_row = connection.execute(
-                    f'''
-                SELECT MAX(COALESCE(de.created_at, te.ingested_at)) AS detected_at
-                FROM alerts a
-                JOIN detection_events de
-                  ON de.workspace_id = a.workspace_id
-                 AND de.id = a.detection_event_id
+                WHERE te.workspace_id = %s::uuid
+                  AND te.ingested_at >= %s
+                ''',
+                (workspace_id, now - timedelta(seconds=telemetry_window_seconds)),
+            ).fetchall()
+            canonical_reporting_targets_from_events: set[str] = {
+                str((row or {}).get('target_id') or '').strip()
+                for row in (canonical_reporting_event_rows or [])
+                if str((row or {}).get('target_id') or '').strip()
+            }
+            canonical_reporting_coverage_rows = connection.execute(
+                '''
+                WITH latest_coverage AS (
+                    SELECT DISTINCT ON (tcr.target_id)
+                        tcr.target_id,
+                        tcr.metadata,
+                        tcr.computed_at
+                    FROM target_coverage_records tcr
+                    JOIN monitored_targets mt
+                      ON mt.workspace_id = tcr.workspace_id
+                     AND mt.id = tcr.target_id
+                     AND mt.enabled = TRUE
+                    JOIN monitoring_configs mc
+                      ON mc.workspace_id = mt.workspace_id
+                     AND mc.target_id = mt.id
+                     AND mc.enabled = TRUE
+                     AND (mc.asset_id IS NULL OR mc.asset_id = mt.asset_id)
+                    WHERE tcr.workspace_id = %s::uuid
+                      AND tcr.coverage_status = 'reporting'
+                      AND tcr.last_telemetry_at IS NOT NULL
+                    ORDER BY tcr.target_id, tcr.computed_at DESC
+                )
+                SELECT lc.target_id
+                FROM latest_coverage lc
                 JOIN telemetry_events te
-                  ON te.workspace_id = de.workspace_id
-                 AND te.id = de.telemetry_event_id
-                WHERE a.status IN ('open','acknowledged','investigating')
-                  {'AND a.workspace_id = %s' if workspace_id else ''}
+                  ON te.workspace_id = %s::uuid
+                 AND te.target_id = lc.target_id
+                 AND te.id::text = (lc.metadata->'telemetry_basis'->>'event_id')
+                WHERE lc.computed_at >= %s
+                  AND COALESCE(lc.metadata->'telemetry_basis'->>'kind', '') = 'telemetry_event'
+                  AND COALESCE(lc.metadata->'telemetry_basis'->>'event_id', '') <> ''
                 ''',
-                scoped_params,
-            ).fetchone()
-        except Exception as exc:
-            _record_optional_query_failure(
-                exc=exc,
-                checkpoint_label='select_proof_chain_last_detection',
-                impacted_fields=['last_detection_at'],
-                reason_code='optional_table_unavailable',
-                error_code='runtime_optional_query_failed',
+                (workspace_id, workspace_id, now - timedelta(seconds=telemetry_window_seconds)),
+            ).fetchall()
+            canonical_reporting_targets_from_coverage: set[str] = {
+                str((row or {}).get('target_id') or '').strip()
+                for row in (canonical_reporting_coverage_rows or [])
+                if str((row or {}).get('target_id') or '').strip()
+            }
+            canonical_reporting_target_ids = canonical_reporting_targets_from_events | canonical_reporting_targets_from_coverage
+            canonical_reporting_systems = int(len(canonical_reporting_target_ids))
+            # Detect contradiction: monitored_system rows exist visually but no telemetry-based
+            # reporting exists. This means targets are configured but the worker hasn't polled them.
+            _loose_target_rows_flag = bool(enabled_system_count > 0 and canonical_reporting_systems == 0)
+            target_reporting_without_telemetry_count = 0
+            for target_id, coverage_row in coverage_by_target.items():
+                if target_id in canonical_reporting_target_ids:
+                    continue
+                if str((coverage_row or {}).get('coverage_status') or '').strip().lower() != 'reporting':
+                    continue
+                target_reporting_without_telemetry_count += 1
+            legacy_row_reporting_systems = sum(
+                1 for row in enabled_rows
+                if _parse_ts(row.get('last_coverage_telemetry_at')) is not None
+                and int((now - _parse_ts(row.get('last_coverage_telemetry_at'))).total_seconds()) <= telemetry_window_seconds
             )
-            linked_detection_row = None
-        linked_detection_row_payload = linked_detection_row if isinstance(linked_detection_row, dict) else {}
-        linked_detection_timestamp_reported = 'detected_at' in linked_detection_row_payload
-        linked_last_detection_at = _parse_ts(linked_detection_row_payload.get('detected_at'))
-        if linked_last_detection_at is not None:
-            latest_detection_at = linked_last_detection_at
-        legacy_proof_chain_gaps_count = 0
-        try:
-            legacy_chain_row = connection.execute(
-                f'''
-                SELECT COUNT(*) AS c
-                FROM alerts a
-                WHERE a.status IN ('open','acknowledged','investigating')
-                  AND {'a.workspace_id = %s AND' if workspace_id else ''}
-                  (
-                    a.detection_id IS NULL
-                    OR NOT EXISTS (
-                        SELECT 1
-                        FROM detections d
-                        WHERE d.workspace_id = a.workspace_id
-                          AND d.id = a.detection_id
-                          AND EXISTS (
-                              SELECT 1
-                              FROM detection_evidence dev
-                              WHERE dev.workspace_id = d.workspace_id
-                                AND dev.detection_id = d.id
-                          )
-                    )
-                  )
-                ''',
-                scoped_params,
-            ).fetchone()
-            legacy_proof_chain_gaps_count = int((legacy_chain_row or {}).get('c') or 0)
-        except Exception:
+            effective_reporting_systems = canonical_reporting_systems or legacy_row_reporting_systems or receipts_reporting_systems
+            reporting_systems = effective_reporting_systems
+            coverage_heartbeat_count = int(reporting_systems)
+            real_event_count = int(recent_real_event_count)
+            raw_recent_evidence_state = (
+                str((latest_detection_metadata or {}).get('evidence_state') or latest_detection_payload.get('evidence_state') or 'missing')
+                if isinstance(latest_detection_payload, dict)
+                else 'missing'
+            )
+            effective_recent_evidence_state = (
+                'no_evidence'
+                if coverage_heartbeat_count > 0 and real_event_count <= 0
+                else raw_recent_evidence_state
+            )
+            recent_evidence_reason_code = 'coverage_only_no_events' if coverage_heartbeat_count > 0 and real_event_count <= 0 else None
+            logger.info(
+                'monitoring_reporting_systems workspace_id=%s reporting_systems=%s status_reason=%s',
+                workspace_id,
+                reporting_systems,
+                f'fresh_coverage_window_{telemetry_window_seconds}s',
+            )
+            chain_open_alerts_count = int((open_alerts or {}).get('c') or 0)
+            chain_open_incidents_count = int((open_incidents or {}).get('c') or 0)
+            _mark_query_checkpoint('select_proof_chain_last_detection')
+            try:
+                linked_detection_row = connection.execute(
+                        f'''
+                    SELECT MAX(COALESCE(de.created_at, te.ingested_at)) AS detected_at
+                    FROM alerts a
+                    JOIN detection_events de
+                      ON de.workspace_id = a.workspace_id
+                     AND de.id = a.detection_event_id
+                    JOIN telemetry_events te
+                      ON te.workspace_id = de.workspace_id
+                     AND te.id = de.telemetry_event_id
+                    WHERE a.status IN ('open','acknowledged','investigating')
+                      {'AND a.workspace_id = %s' if workspace_id else ''}
+                    ''',
+                    scoped_params,
+                ).fetchone()
+            except Exception as exc:
+                _record_optional_query_failure(
+                    exc=exc,
+                    checkpoint_label='select_proof_chain_last_detection',
+                    impacted_fields=['last_detection_at'],
+                    reason_code='optional_table_unavailable',
+                    error_code='runtime_optional_query_failed',
+                )
+                linked_detection_row = None
+            linked_detection_row_payload = linked_detection_row if isinstance(linked_detection_row, dict) else {}
+            linked_detection_timestamp_reported = 'detected_at' in linked_detection_row_payload
+            linked_last_detection_at = _parse_ts(linked_detection_row_payload.get('detected_at'))
+            if linked_last_detection_at is not None:
+                latest_detection_at = linked_last_detection_at
             legacy_proof_chain_gaps_count = 0
-        canonical_incident_timeline_gap_count = 0
-        try:
-            canonical_incident_timeline_gap_row = connection.execute(
-                f'''
-                SELECT COUNT(*) AS c
-                FROM incidents i
-                WHERE i.status IN ('open','acknowledged')
-                  AND {'i.workspace_id = %s AND' if workspace_id else ''}
-                  NOT EXISTS (
-                      SELECT 1
-                      FROM incident_timeline it
-                      WHERE it.workspace_id = i.workspace_id
-                        AND it.incident_id = i.id
-                  )
-                ''',
-                scoped_params,
-            ).fetchone()
-            canonical_incident_timeline_gap_count = int((canonical_incident_timeline_gap_row or {}).get('c') or 0)
-        except Exception:
+            try:
+                legacy_chain_row = connection.execute(
+                    f'''
+                    SELECT COUNT(*) AS c
+                    FROM alerts a
+                    WHERE a.status IN ('open','acknowledged','investigating')
+                      AND {'a.workspace_id = %s AND' if workspace_id else ''}
+                      (
+                        a.detection_id IS NULL
+                        OR NOT EXISTS (
+                            SELECT 1
+                            FROM detections d
+                            WHERE d.workspace_id = a.workspace_id
+                              AND d.id = a.detection_id
+                              AND EXISTS (
+                                  SELECT 1
+                                  FROM detection_evidence dev
+                                  WHERE dev.workspace_id = d.workspace_id
+                                    AND dev.detection_id = d.id
+                              )
+                        )
+                      )
+                    ''',
+                    scoped_params,
+                ).fetchone()
+                legacy_proof_chain_gaps_count = int((legacy_chain_row or {}).get('c') or 0)
+            except Exception:
+                legacy_proof_chain_gaps_count = 0
             canonical_incident_timeline_gap_count = 0
-        canonical_governance_alert_gap_count = 0
-        try:
-            canonical_governance_alert_gap_row = connection.execute(
-                f'''
-                SELECT COUNT(*) AS c
-                FROM governance_actions ga
-                WHERE ga.alert_id IS NOT NULL
-                  AND {'ga.workspace_id = %s AND' if workspace_id else ''}
-                  NOT EXISTS (
-                      SELECT 1
-                      FROM alerts a
-                      WHERE a.workspace_id = ga.workspace_id
-                        AND a.id = ga.alert_id
-                  )
-                ''',
-                scoped_params,
-            ).fetchone()
-            canonical_governance_alert_gap_count = int((canonical_governance_alert_gap_row or {}).get('c') or 0)
-        except Exception:
+            try:
+                canonical_incident_timeline_gap_row = connection.execute(
+                    f'''
+                    SELECT COUNT(*) AS c
+                    FROM incidents i
+                    WHERE i.status IN ('open','acknowledged')
+                      AND {'i.workspace_id = %s AND' if workspace_id else ''}
+                      NOT EXISTS (
+                          SELECT 1
+                          FROM incident_timeline it
+                          WHERE it.workspace_id = i.workspace_id
+                            AND it.incident_id = i.id
+                      )
+                    ''',
+                    scoped_params,
+                ).fetchone()
+                canonical_incident_timeline_gap_count = int((canonical_incident_timeline_gap_row or {}).get('c') or 0)
+            except Exception:
+                canonical_incident_timeline_gap_count = 0
             canonical_governance_alert_gap_count = 0
-        canonical_governance_incident_gap_count = 0
-        try:
-            canonical_governance_incident_gap_row = connection.execute(
-                f'''
-                SELECT COUNT(*) AS c
-                FROM governance_actions ga
-                WHERE ga.incident_id IS NOT NULL
-                  AND {'ga.workspace_id = %s AND' if workspace_id else ''}
-                  NOT EXISTS (
-                      SELECT 1
-                      FROM incidents i
-                      WHERE i.workspace_id = ga.workspace_id
-                        AND i.id = ga.incident_id
-                  )
-                ''',
-                scoped_params,
-            ).fetchone()
-            canonical_governance_incident_gap_count = int((canonical_governance_incident_gap_row or {}).get('c') or 0)
-        except Exception:
+            try:
+                canonical_governance_alert_gap_row = connection.execute(
+                    f'''
+                    SELECT COUNT(*) AS c
+                    FROM governance_actions ga
+                    WHERE ga.alert_id IS NOT NULL
+                      AND {'ga.workspace_id = %s AND' if workspace_id else ''}
+                      NOT EXISTS (
+                          SELECT 1
+                          FROM alerts a
+                          WHERE a.workspace_id = ga.workspace_id
+                            AND a.id = ga.alert_id
+                      )
+                    ''',
+                    scoped_params,
+                ).fetchone()
+                canonical_governance_alert_gap_count = int((canonical_governance_alert_gap_row or {}).get('c') or 0)
+            except Exception:
+                canonical_governance_alert_gap_count = 0
             canonical_governance_incident_gap_count = 0
-        proof_chain_missing_reason_codes: list[str] = []
-        if raw_open_alerts_count > chain_open_alerts_count:
-            proof_chain_missing_reason_codes.append('alerts_without_canonical_detection_event')
-        if raw_open_incidents_count > chain_open_incidents_count:
-            proof_chain_missing_reason_codes.append('incidents_without_proof_chain_alert')
-        # Only fire integrity gap checks when canonical evidence pipeline has real data.
-        # Without canonical data, gap queries may reflect legacy rows or mock artifacts.
-        _canonical_proof_check_enabled = bool(
-            canonical_reporting_systems > 0
-            or canonical_last_telemetry_at is not None
-            or canonical_last_detection_at is not None
-        )
-        if _canonical_proof_check_enabled and canonical_incident_timeline_gap_count > 0:
-            proof_chain_missing_reason_codes.append('incidents_without_timeline_linkage')
-        if _canonical_proof_check_enabled and canonical_governance_alert_gap_count > 0:
-            proof_chain_missing_reason_codes.append('governance_actions_without_alert_linkage')
-        if _canonical_proof_check_enabled and canonical_governance_incident_gap_count > 0:
-            proof_chain_missing_reason_codes.append('governance_actions_without_incident_linkage')
-        if chain_open_alerts_count > 0 and linked_detection_timestamp_reported and latest_detection_at is None:
-            proof_chain_missing_reason_codes.append('missing_linked_detection_timestamp')
-        proof_chain_status = 'incomplete' if proof_chain_missing_reason_codes else 'complete'
-        proof_chain_correlation_id = str(
-            uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                (
-                    f'monitoring-proof-chain:{workspace_id or "global"}:{now.date().isoformat()}:'
-                    f'{chain_open_alerts_count}:{chain_open_incidents_count}:'
-                    f'{latest_detection_at.isoformat() if latest_detection_at else "none"}:'
-                    f'{",".join(sorted(proof_chain_missing_reason_codes)) or "ok"}'
-                ),
+            try:
+                canonical_governance_incident_gap_row = connection.execute(
+                    f'''
+                    SELECT COUNT(*) AS c
+                    FROM governance_actions ga
+                    WHERE ga.incident_id IS NOT NULL
+                      AND {'ga.workspace_id = %s AND' if workspace_id else ''}
+                      NOT EXISTS (
+                          SELECT 1
+                          FROM incidents i
+                          WHERE i.workspace_id = ga.workspace_id
+                            AND i.id = ga.incident_id
+                      )
+                    ''',
+                    scoped_params,
+                ).fetchone()
+                canonical_governance_incident_gap_count = int((canonical_governance_incident_gap_row or {}).get('c') or 0)
+            except Exception:
+                canonical_governance_incident_gap_count = 0
+            proof_chain_missing_reason_codes: list[str] = []
+            if raw_open_alerts_count > chain_open_alerts_count:
+                proof_chain_missing_reason_codes.append('alerts_without_canonical_detection_event')
+            if raw_open_incidents_count > chain_open_incidents_count:
+                proof_chain_missing_reason_codes.append('incidents_without_proof_chain_alert')
+            # Only fire integrity gap checks when canonical evidence pipeline has real data.
+            # Without canonical data, gap queries may reflect legacy rows or mock artifacts.
+            _canonical_proof_check_enabled = bool(
+                canonical_reporting_systems > 0
+                or canonical_last_telemetry_at is not None
+                or canonical_last_detection_at is not None
             )
-        )
-        coverage_fresh = bool(
-            last_coverage_telemetry_at is not None
-            and int((now - last_coverage_telemetry_at).total_seconds()) <= telemetry_window_seconds
-        )
-        provider_reachable = bool(
-            (claim_validator.get('checks') or {}).get('provider_reachable_or_backfilling')
-            or str(health.get('source_type') or '').strip().lower() in {'polling', 'websocket', 'rpc_backfill'}
-        )
-        provider_degraded_or_unreachable = bool(
-            health.get('last_error')
-            or health.get('degraded')
-            or degraded_reason
-            or stale_heartbeat
-            or int((broken_targets or {}).get('c') or 0) > 0
-            or not provider_reachable
-        )
-        evidence_source_live = bool(
-            str(health.get('ingestion_mode') or '').strip().lower() not in {'demo', 'simulator', 'replay'}
-            and not provider_degraded_or_unreachable
-            and coverage_fresh
-            and reporting_systems > 0
-        )
-        source_of_evidence = (
-            'simulator'
-            if str(health.get('ingestion_mode') or '').strip().lower() in {'demo', 'simulator'}
-            else ('live' if evidence_source_live and coverage_fresh else 'replay_or_none')
-        )
-        # Guard invariant: coverage_status != 'reporting' or coverage_telemetry_at is None should never be
-        # interpreted as live target telemetry evidence.
-        if source_of_evidence == 'live':
-            telemetry_kind = 'coverage'
-        evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if canonical_last_telemetry_at else 'none'))
-        latest_provider_rows = connection.execute(
-            '''
-            SELECT DISTINCT ON (provider_type, COALESCE(target_id, '00000000-0000-0000-0000-000000000000'::uuid))
-                provider_type,
-                target_id,
-                status,
-                checked_at,
-                latency_ms,
-                error_message,
-                evidence_source,
-                metadata
-            FROM provider_health_records
-            WHERE workspace_id = %s::uuid
-            ORDER BY provider_type, COALESCE(target_id, '00000000-0000-0000-0000-000000000000'::uuid), checked_at DESC
-            ''',
-            (workspace_id,),
-        ).fetchall()
+            if _canonical_proof_check_enabled and canonical_incident_timeline_gap_count > 0:
+                proof_chain_missing_reason_codes.append('incidents_without_timeline_linkage')
+            if _canonical_proof_check_enabled and canonical_governance_alert_gap_count > 0:
+                proof_chain_missing_reason_codes.append('governance_actions_without_alert_linkage')
+            if _canonical_proof_check_enabled and canonical_governance_incident_gap_count > 0:
+                proof_chain_missing_reason_codes.append('governance_actions_without_incident_linkage')
+            if chain_open_alerts_count > 0 and linked_detection_timestamp_reported and latest_detection_at is None:
+                proof_chain_missing_reason_codes.append('missing_linked_detection_timestamp')
+            proof_chain_status = 'incomplete' if proof_chain_missing_reason_codes else 'complete'
+            proof_chain_correlation_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    (
+                        f'monitoring-proof-chain:{workspace_id or "global"}:{now.date().isoformat()}:'
+                        f'{chain_open_alerts_count}:{chain_open_incidents_count}:'
+                        f'{latest_detection_at.isoformat() if latest_detection_at else "none"}:'
+                        f'{",".join(sorted(proof_chain_missing_reason_codes)) or "ok"}'
+                    ),
+                )
+            )
+            coverage_fresh = bool(
+                last_coverage_telemetry_at is not None
+                and int((now - last_coverage_telemetry_at).total_seconds()) <= telemetry_window_seconds
+            )
+            provider_reachable = bool(
+                (claim_validator.get('checks') or {}).get('provider_reachable_or_backfilling')
+                or str(health.get('source_type') or '').strip().lower() in {'polling', 'websocket', 'rpc_backfill'}
+            )
+            provider_degraded_or_unreachable = bool(
+                health.get('last_error')
+                or health.get('degraded')
+                or degraded_reason
+                or stale_heartbeat
+                or int((broken_targets or {}).get('c') or 0) > 0
+                or not provider_reachable
+            )
+            evidence_source_live = bool(
+                str(health.get('ingestion_mode') or '').strip().lower() not in {'demo', 'simulator', 'replay'}
+                and not provider_degraded_or_unreachable
+                and coverage_fresh
+                and reporting_systems > 0
+            )
+            source_of_evidence = (
+                'simulator'
+                if str(health.get('ingestion_mode') or '').strip().lower() in {'demo', 'simulator'}
+                else ('live' if evidence_source_live and coverage_fresh else 'replay_or_none')
+            )
+            # Guard invariant: coverage_status != 'reporting' or coverage_telemetry_at is None should never be
+            # interpreted as live target telemetry evidence.
+            if source_of_evidence == 'live':
+                telemetry_kind = 'coverage'
+            evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if canonical_last_telemetry_at else 'none'))
+            latest_provider_rows = connection.execute(
+                '''
+                SELECT DISTINCT ON (provider_type, COALESCE(target_id, '00000000-0000-0000-0000-000000000000'::uuid))
+                    provider_type,
+                    target_id,
+                    status,
+                    checked_at,
+                    latency_ms,
+                    error_message,
+                    evidence_source,
+                    metadata
+                FROM provider_health_records
+                WHERE workspace_id = %s::uuid
+                ORDER BY provider_type, COALESCE(target_id, '00000000-0000-0000-0000-000000000000'::uuid), checked_at DESC
+                ''',
+                (workspace_id,),
+            ).fetchall()
         provider_health = [dict(row) for row in (latest_provider_rows or [])]
         target_coverage = [dict(row) for row in coverage_by_target.values()]
         logger.info(
@@ -7967,9 +7969,28 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         raise
     except psycopg.Error as exc:
         workspace_id, workspace_slug = _workspace_context_from_request(request)
-        db_classification = classify_db_error(exc)
+        _exc_msg_lower = str(exc).lower()
+        _is_closed_connection = 'connection is closed' in _exc_msg_lower
+        if _is_closed_connection:
+            logger.warning(
+                'monitoring_runtime_status_connection_closed_retry workspace_id=%s workspace_slug=%s checkpoint=%s',
+                workspace_id,
+                workspace_slug,
+                last_query_checkpoint,
+            )
+            try:
+                return _monitoring_runtime_status_impl()
+            except Exception:
+                logger.warning(
+                    'monitoring_runtime_status_connection_closed_retry_failed workspace_id=%s workspace_slug=%s',
+                    workspace_id,
+                    workspace_slug,
+                )
+        db_classification = 'connection_closed' if _is_closed_connection else classify_db_error(exc)
         if db_classification == 'quota_exceeded':
             db_status_reason = 'Database quota exceeded'
+        elif db_classification == 'connection_closed':
+            db_status_reason = 'Database connection closed unexpectedly'
         else:
             db_status_reason = 'Database unavailable'
         reason_tokens = ['runtime_status_degraded', 'database_error', 'stage_query']

@@ -42,8 +42,13 @@ def test_classify_detects_db_unavailable_patterns() -> None:
     assert classify_db_error(exc) == 'db_unavailable'
 
 
-def test_classify_returns_unknown_for_unmapped_errors() -> None:
+def test_classify_returns_query_error_for_syntax_errors() -> None:
     exc = RuntimeError('syntax error at or near "CREATE"')
+    assert classify_db_error(exc) == 'query_error'
+
+
+def test_classify_returns_unknown_for_truly_unmapped_errors() -> None:
+    exc = RuntimeError('something completely unexpected and unclassifiable xyz123')
     assert classify_db_error(exc) == 'unknown_db_error'
 
 
