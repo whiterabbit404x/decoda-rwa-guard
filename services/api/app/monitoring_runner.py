@@ -312,7 +312,10 @@ def _workspace_coverage_only_state(
             'duration_seconds': 0,
             'threshold_seconds': MONITORING_COVERAGE_ONLY_WARNING_SECONDS,
         }
-    condition_met = bool(provider_reachable and int(coverage_heartbeat_updates) > 0 and int(real_events_detected) <= 0)
+    # Coverage telemetry rows written to telemetry_events (coverage_heartbeat_updates > 0)
+    # are live evidence. Only flag the streak when the provider is reachable but nothing
+    # at all was persisted — neither real blockchain events nor coverage telemetry.
+    condition_met = bool(provider_reachable and int(real_events_detected) <= 0 and int(coverage_heartbeat_updates) <= 0)
     existing = _WORKSPACE_COVERAGE_ONLY_STREAK.get(workspace_key)
     if condition_met:
         if isinstance(existing, dict):
@@ -6399,7 +6402,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         valid_asset_linked_targets = healthy_enabled_targets_count
         enabled_monitored_systems = sum(1 for row in monitored_rows if monitored_system_row_enabled(row))
         valid_target_system_links = valid_target_system_link_count
-        persisted_enabled_config_count = _count_persisted_enabled_monitoring_configs(connection, workspace_id)
+        logger.info('runtime_status_query_stage_start workspace_id=%s stage=persisted_config_count', workspace_id)
+        try:
+            with pg_connection() as _cfg_conn:
+                persisted_enabled_config_count = _count_persisted_enabled_monitoring_configs(_cfg_conn, workspace_id)
+            logger.info('runtime_status_query_stage_success workspace_id=%s stage=persisted_config_count result=%s', workspace_id, persisted_enabled_config_count)
+        except Exception:
+            persisted_enabled_config_count = 0
         if persisted_enabled_config_count == 0 and monitorable_enabled_targets > 0:
             # monitoring_configs query unavailable (missing table or test mock) - fall back to target count
             persisted_enabled_config_count = monitorable_enabled_targets
@@ -6465,7 +6474,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if isinstance(latest_detection_metadata, dict)
             else None
         )
+        logger.info('runtime_status_query_stage_start workspace_id=%s stage=post_aggregation_canonical checkpoint=%s', workspace_id, last_query_checkpoint)
         with pg_connection() as connection:
+            _mark_query_checkpoint('canonical_post_aggregation')
             canonical_last_poll_row = connection.execute(
                 '''
                 SELECT MAX(COALESCE(poll_finished_at, poll_started_at)) AS ts
@@ -6881,6 +6892,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 ''',
                 (workspace_id,),
             ).fetchall()
+        logger.info('runtime_status_query_stage_success workspace_id=%s stage=post_aggregation_canonical', workspace_id)
         provider_health = [dict(row) for row in (latest_provider_rows or [])]
         target_coverage = [dict(row) for row in coverage_by_target.values()]
         logger.info(
@@ -7970,21 +7982,33 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
     except psycopg.Error as exc:
         workspace_id, workspace_slug = _workspace_context_from_request(request)
         _exc_msg_lower = str(exc).lower()
-        _is_closed_connection = 'connection is closed' in _exc_msg_lower
+        _is_closed_connection = (
+            'connection is closed' in _exc_msg_lower
+            or 'connection already closed' in _exc_msg_lower
+            or 'the connection was closed' in _exc_msg_lower
+        )
         if _is_closed_connection:
             logger.warning(
-                'monitoring_runtime_status_connection_closed_retry workspace_id=%s workspace_slug=%s checkpoint=%s',
+                'monitoring_runtime_status_connection_closed_retry workspace_id=%s workspace_slug=%s checkpoint=%s stage=%s',
                 workspace_id,
                 workspace_slug,
                 last_query_checkpoint,
+                last_query_checkpoint or 'unknown',
             )
             try:
-                return _monitoring_runtime_status_impl()
-            except Exception:
-                logger.warning(
-                    'monitoring_runtime_status_connection_closed_retry_failed workspace_id=%s workspace_slug=%s',
+                _retry_result = _monitoring_runtime_status_impl()
+                logger.info(
+                    'monitoring_runtime_status_connection_closed_retry_success workspace_id=%s workspace_slug=%s',
                     workspace_id,
                     workspace_slug,
+                )
+                return _retry_result
+            except Exception:
+                logger.warning(
+                    'monitoring_runtime_status_connection_closed_retry_failed workspace_id=%s workspace_slug=%s checkpoint=%s',
+                    workspace_id,
+                    workspace_slug,
+                    last_query_checkpoint,
                 )
         db_classification = 'connection_closed' if _is_closed_connection else classify_db_error(exc)
         if db_classification == 'quota_exceeded':
@@ -7994,6 +8018,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         else:
             db_status_reason = 'Database unavailable'
         reason_tokens = ['runtime_status_degraded', 'database_error', 'stage_query']
+        if _is_closed_connection:
+            reason_tokens.append('database_error.connection_closed')
         if last_query_checkpoint:
             reason_tokens.append(_safe_checkpoint_reason_token(last_query_checkpoint))
         reason_tokens.append(f'db_classification_{db_classification}')

@@ -163,9 +163,13 @@ def test_retry_once_when_canonical_block_raises_connection_closed(monkeypatch):
     def _counting_pg():
         pg_call_count[0] += 1
         call_num = pg_call_count[0]
-        # Call 2 is the second with-block (canonical queries) in the first impl run.
-        # Simulate a stale/closed connection at that point.
-        if call_num == 2:
+        # pg_connection() calls per impl run:
+        #   1 - main queries block
+        #   2 - configs block (new, added in connection-retry fix)
+        #   3 - post-aggregation canonical block ← inject closed connection here
+        # The error at call 3 propagates up and triggers retry of the whole impl.
+        # Calls 4,5,6 are the second run (all succeed).
+        if call_num == 3:
             yield _ClosedConn()
         else:
             yield _FullConn(now - timedelta(seconds=30))
@@ -187,10 +191,10 @@ def test_retry_once_when_canonical_block_raises_connection_closed(monkeypatch):
 
     payload = monitoring_runner.monitoring_runtime_status()
 
-    # Retry must have happened: at least 4 total pg_connection calls
-    # (2 from the failing first attempt + 2 from the retry)
-    assert pg_call_count[0] >= 4, (
-        f"Expected ≥4 pg_connection calls (2 per impl run × 2 runs), got {pg_call_count[0]}"
+    # Retry must have happened: at least 6 total pg_connection calls
+    # (3 per impl run × 2 runs: 1 main + 1 configs + 1 post-aggregation)
+    assert pg_call_count[0] >= 6, (
+        f"Expected ≥6 pg_connection calls (3 per impl run × 2 runs), got {pg_call_count[0]}"
     )
     # The retry returned a valid payload, not the degraded offline fallback
     assert payload.get('status') != 'Offline'
