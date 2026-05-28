@@ -116,6 +116,10 @@ HARD_GUARD_FLAGS = {
     'evidence_export_without_source_truthfulness',
     # Canonical graph contradictions
     'target_rows_exist_without_reporting_systems',
+    # Proof chain gating: telemetry present but no persisted proof chain
+    'live_telemetry_without_proof_chain',
+    # Proof chain gating: detection exists but alert/incident not yet created
+    'live_proof_chain_incomplete',
 }
 HARD_GUARD_PRIORITY = (
     'offline_with_current_telemetry',
@@ -152,6 +156,9 @@ HARD_GUARD_PRIORITY = (
     'evidence_export_without_source_truthfulness',
     # Canonical graph contradictions
     'target_rows_exist_without_reporting_systems',
+    # Proof chain gating
+    'live_telemetry_without_proof_chain',
+    'live_proof_chain_incomplete',
 )
 
 
@@ -500,6 +507,7 @@ def build_workspace_monitoring_summary(
     active_incidents_count: int = 0,
     response_actions_count: int = 0,
     evidence_packages_count: int = 0,
+    detections_count: int | None = None,
     db_persistence_available: bool = True,
     db_persistence_reason: str | None = None,
     last_alert_at: datetime | None = None,
@@ -642,6 +650,24 @@ def build_workspace_monitoring_summary(
         or int(active_incidents_count) <= 0
     ):
         contradiction_flags.append('evidence_package_without_detection_alert_incident_chain')
+    # Gate LIVE on full proof chain when the caller supplies a detections_count.
+    # Only fires when detections_count is explicitly provided (not the default None)
+    # so that legacy callers that omit the parameter are not affected.
+    if detections_count is not None:
+        _live_gate_applies = (
+            normalized_reporting > 0
+            and freshness_status == 'fresh'
+            and normalized_evidence == 'live_provider'
+        )
+        if _live_gate_applies and int(detections_count) == 0:
+            contradiction_flags.append('live_telemetry_without_proof_chain')
+        # Detection exists but alert/incident chain is incomplete.
+        if (
+            _live_gate_applies
+            and int(detections_count) > 0
+            and (int(active_alerts_count) <= 0 or int(active_incidents_count) <= 0)
+        ):
+            contradiction_flags.append('live_proof_chain_incomplete')
 
     # Session 13 — canonical truthfulness contradiction guards
     signal_freshness = build_signal_freshness(

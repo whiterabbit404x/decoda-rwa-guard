@@ -3132,6 +3132,7 @@ def process_monitoring_target(connection: Any, target: dict[str, Any], *, trigge
                 WHERE workspace_id = %s::uuid
                   AND target_id = %s::uuid
                   AND status IN ('open', 'acknowledged', 'investigating')
+                  AND COALESCE(alert_type, '') <> 'monitoring_proof'
                   AND (
                         last_seen_at IS NULL
                         OR last_seen_at < NOW() - INTERVAL '30 seconds'
@@ -3477,6 +3478,282 @@ def _telemetry_idempotency_index_guard(connection: Any) -> bool:
     if isinstance(row, dict):
         return bool(row.get('ok'))
     return bool((row or [False])[0])
+
+
+LIVE_RPC_PROOF_CHAIN_DEDUPE_WINDOW_HOURS = int(os.getenv('LIVE_RPC_PROOF_CHAIN_DEDUPE_WINDOW_HOURS', '6'))
+
+
+def _ensure_workspace_live_rpc_proof_chain(
+    connection: Any,
+    *,
+    workspace_id: str,
+) -> dict[str, Any]:
+    """Create a live-proof detection → alert → incident → response-action chain from the
+    most recent live RPC coverage telemetry event for this workspace.
+
+    Idempotent: skips creation when a live_rpc_telemetry_proof detection was already
+    created within LIVE_RPC_PROOF_CHAIN_DEDUPE_WINDOW_HOURS hours.
+    Returns a result dict with 'created' flag and IDs of records created/found.
+    """
+    dedupe_cutoff = utc_now() - timedelta(hours=max(1, LIVE_RPC_PROOF_CHAIN_DEDUPE_WINDOW_HOURS))
+    existing_detection = connection.execute(
+        '''
+        SELECT d.id, d.linked_alert_id, d.monitored_system_id
+        FROM detections d
+        WHERE d.workspace_id = %s::uuid
+          AND d.detection_type = 'live_rpc_telemetry_proof'
+          AND d.source_rule = 'monitoring.live_rpc_coverage.proof'
+          AND d.created_at >= %s
+        ORDER BY d.created_at DESC
+        LIMIT 1
+        ''',
+        (workspace_id, dedupe_cutoff),
+    ).fetchone()
+    if existing_detection is not None:
+        return {
+            'created': False,
+            'reason': 'deduplicated',
+            'detection_id': str((existing_detection.get('id') if isinstance(existing_detection, dict) else existing_detection[0]) or ''),
+        }
+
+    telemetry_row = connection.execute(
+        '''
+        SELECT te.id, te.target_id, te.asset_id, te.observed_at, te.payload_json
+        FROM telemetry_events te
+        WHERE te.workspace_id = %s::uuid
+          AND te.evidence_source = 'live'
+          AND te.event_type IN ('rpc_polling', 'live_provider')
+          AND te.provider_type IN ('evm_rpc', 'live_provider')
+          AND COALESCE(te.payload_json->>'block_number', '') <> ''
+        ORDER BY te.observed_at DESC, te.ingested_at DESC
+        LIMIT 1
+        ''',
+        (workspace_id,),
+    ).fetchone()
+    if telemetry_row is None:
+        return {'created': False, 'reason': 'no_live_telemetry'}
+
+    telemetry_row = dict(telemetry_row)
+    telemetry_event_id = str(telemetry_row.get('id') or '')
+    target_id = str(telemetry_row.get('target_id') or '')
+    asset_id = str(telemetry_row.get('asset_id') or '') or None
+    payload_json = telemetry_row.get('payload_json') or {}
+    if isinstance(payload_json, str):
+        try:
+            import json as _json
+            payload_json = _json.loads(payload_json)
+        except Exception:
+            payload_json = {}
+    block_number = payload_json.get('block_number')
+    chain_id = payload_json.get('chain_id') or 1
+    provider_name = str(payload_json.get('provider_name') or 'evm_rpc')
+
+    monitored_system_row = connection.execute(
+        '''
+        SELECT ms.id, ms.asset_id
+        FROM monitored_systems ms
+        WHERE ms.workspace_id = %s::uuid AND ms.target_id = %s::uuid
+          AND COALESCE(ms.is_enabled, TRUE) = TRUE
+        ORDER BY ms.created_at DESC
+        LIMIT 1
+        ''',
+        (workspace_id, target_id),
+    ).fetchone()
+    monitored_system_id = str((monitored_system_row or {}).get('id') or '') or None if isinstance(monitored_system_row, dict) else (str((monitored_system_row or [None])[0] or '') or None)
+
+    creator_row = connection.execute(
+        'SELECT created_by_user_id FROM workspaces WHERE id = %s::uuid LIMIT 1',
+        (workspace_id,),
+    ).fetchone()
+    user_id = str((creator_row.get('created_by_user_id') if isinstance(creator_row, dict) else (creator_row or [None])[0]) or '') if creator_row else ''
+    if not user_id:
+        return {'created': False, 'reason': 'no_workspace_user'}
+
+    protected_asset_id: str | None = None
+    if asset_id:
+        asset_check = connection.execute(
+            'SELECT id FROM assets WHERE id = %s::uuid AND workspace_id = %s::uuid LIMIT 1',
+            (asset_id, workspace_id),
+        ).fetchone()
+        if asset_check:
+            protected_asset_id = asset_id
+
+    observed_at = utc_now()
+    detection_id = str(uuid.uuid4())
+    alert_id = str(uuid.uuid4())
+    incident_id = str(uuid.uuid4())
+    response_action_id = str(uuid.uuid4())
+    detection_evidence_id = str(uuid.uuid4())
+    monitoring_run_id = str(uuid.uuid4())
+    title = 'Live RPC telemetry proof detection'
+    evidence_summary = (
+        f'Ethereum RPC provider returned a live block (chain_id={chain_id}, '
+        f'block_number={block_number}) and telemetry was persisted for this monitored target. '
+        'This is a controlled live monitoring proof — not an attack or threat signal.'
+    )
+    raw_evidence = {
+        'telemetry_event_id': telemetry_event_id,
+        'target_id': target_id,
+        'block_number': block_number,
+        'chain_id': chain_id,
+        'provider_name': provider_name,
+        'provider_type': 'evm_rpc',
+        'event_type': 'rpc_polling',
+        'evidence_source': 'live_rpc_polling',
+        'proof_type': 'live_rpc_telemetry_proof',
+        'controlled_proof': True,
+    }
+    connection.execute(
+        '''
+        INSERT INTO detections (
+            id, workspace_id, monitored_system_id, protected_asset_id,
+            detection_type, severity, confidence, title, evidence_summary,
+            evidence_source, source_rule, status, detected_at,
+            raw_evidence_json, monitoring_run_id, linked_alert_id,
+            created_at, updated_at
+        ) VALUES (
+            %s, %s::uuid, %s::uuid, %s::uuid,
+            'live_rpc_telemetry_proof', 'low', 0.95, %s, %s,
+            'live', 'monitoring.live_rpc_coverage.proof', 'open', NOW(),
+            %s::jsonb, %s::uuid, %s::uuid,
+            NOW(), NOW()
+        )
+        ''',
+        (
+            detection_id, workspace_id, monitored_system_id, protected_asset_id,
+            title, evidence_summary,
+            _json_dumps(raw_evidence), monitoring_run_id, alert_id,
+        ),
+    )
+    connection.execute(
+        '''
+        INSERT INTO detection_evidence (
+            id, workspace_id, detection_id, evidence_type, evidence_summary,
+            source, raw_reference, raw_payload_json, created_at
+        ) VALUES (
+            %s, %s::uuid, %s::uuid, 'live_rpc_telemetry_proof', %s,
+            'live', %s, %s::jsonb, NOW()
+        )
+        ''',
+        (
+            detection_evidence_id, workspace_id, detection_id,
+            f'Live RPC coverage telemetry for target {target_id} block={block_number}.',
+            f'telemetry_event://{telemetry_event_id}',
+            _json_dumps(raw_evidence),
+        ),
+    )
+    alert_dedupe = f'live_rpc_proof:{workspace_id}:{target_id}'
+    connection.execute(
+        '''
+        INSERT INTO alerts (
+            id, workspace_id, user_id, analysis_run_id, target_id,
+            alert_type, title, severity, status,
+            source_service, source, summary, payload,
+            matched_patterns, reasons, recommended_action,
+            degraded, dedupe_signature, detection_id,
+            occurrence_count, first_seen_at, last_seen_at,
+            created_at, updated_at
+        ) VALUES (
+            %s, %s::uuid, %s::uuid, NULL, %s::uuid,
+            'monitoring_proof', %s, 'informational', 'open',
+            'monitoring-worker', 'live', %s, %s::jsonb,
+            %s::jsonb, %s::jsonb, 'review_live_provider_evidence',
+            FALSE, %s, %s::uuid,
+            1, NOW(), NOW(),
+            NOW(), NOW()
+        )
+        ''',
+        (
+            alert_id, workspace_id, user_id, target_id,
+            'Live telemetry proof alert',
+            f'Live RPC provider confirmed block {block_number} on chain {chain_id}. Controlled live monitoring proof.',
+            _json_dumps(raw_evidence),
+            _json_dumps([]),
+            _json_dumps(['live_rpc_coverage_confirmed']),
+            alert_dedupe, detection_id,
+        ),
+    )
+    timeline = [
+        {'event': 'provider_poll_succeeded', 'at': observed_at.isoformat(), 'block_number': block_number},
+        {'event': 'telemetry_persisted', 'at': observed_at.isoformat(), 'telemetry_event_id': telemetry_event_id},
+        {'event': 'detection_created', 'at': observed_at.isoformat(), 'detection_id': detection_id},
+        {'event': 'alert_created', 'at': observed_at.isoformat(), 'alert_id': alert_id},
+        {'event': 'incident_opened', 'at': observed_at.isoformat(), 'incident_id': incident_id},
+    ]
+    connection.execute(
+        '''
+        INSERT INTO incidents (
+            id, workspace_id, user_id, analysis_run_id, target_id,
+            event_type, title, severity, status,
+            source_alert_id, summary, linked_alert_ids, timeline,
+            payload, created_at, updated_at
+        ) VALUES (
+            %s, %s::uuid, %s::uuid, NULL, %s::uuid,
+            'live_rpc_telemetry_proof',
+            'Live monitoring proof incident',
+            'informational', 'open',
+            %s::uuid, %s, %s::jsonb, %s::jsonb,
+            %s::jsonb, NOW(), NOW()
+        )
+        ''',
+        (
+            incident_id, workspace_id, user_id, target_id,
+            alert_id,
+            'Controlled live proof that telemetry can trigger detection, alert, incident, and evidence workflow.',
+            _json_dumps([alert_id]),
+            _json_dumps(timeline),
+            _json_dumps(raw_evidence),
+        ),
+    )
+    connection.execute(
+        'UPDATE alerts SET incident_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid',
+        (incident_id, alert_id),
+    )
+    connection.execute(
+        '''
+        INSERT INTO response_actions (
+            id, workspace_id, incident_id, alert_id,
+            action_type, mode, status, result_summary,
+            execution_metadata, created_by_user_id, approved_by_user_id,
+            created_at
+        ) VALUES (
+            %s, %s::uuid, %s::uuid, %s::uuid,
+            'review_live_provider_evidence', 'live_enforcement', 'recommended',
+            'Review live RPC telemetry proof: verify provider, telemetry, detection, alert, and evidence chain.',
+            %s::jsonb, %s::uuid, NULL, NOW()
+        )
+        ''',
+        (
+            response_action_id, workspace_id, incident_id, alert_id,
+            _json_dumps({
+                'evidence_source': 'live_rpc_polling',
+                'telemetry_event_id': telemetry_event_id,
+                'detection_id': detection_id,
+                'alert_id': alert_id,
+                'incident_id': incident_id,
+                'block_number': block_number,
+                'chain_id': chain_id,
+                'controlled_proof': True,
+            }),
+            user_id,
+        ),
+    )
+    logger.info(
+        'live_rpc_proof_chain_created workspace_id=%s target_id=%s detection_id=%s alert_id=%s incident_id=%s block_number=%s',
+        workspace_id, target_id, detection_id, alert_id, incident_id, block_number,
+    )
+    return {
+        'created': True,
+        'telemetry_event_id': telemetry_event_id,
+        'detection_id': detection_id,
+        'detection_evidence_id': detection_evidence_id,
+        'alert_id': alert_id,
+        'incident_id': incident_id,
+        'response_action_id': response_action_id,
+        'target_id': target_id,
+        'block_number': block_number,
+        'chain_id': chain_id,
+    }
 
 
 def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int = 50, trigger_type: str = 'scheduler') -> dict[str, Any]:
@@ -4170,6 +4447,12 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         warning_state.get('threshold_seconds'),
                     )
             for workspace_id in sorted(cycle_workspace_ids):
+                if int(workspace_coverage_heartbeat_updates.get(workspace_id, 0)) > 0:
+                    try:
+                        with connection.transaction():
+                            _ensure_workspace_live_rpc_proof_chain(connection, workspace_id=workspace_id)
+                    except Exception:
+                        logger.warning('live_rpc_proof_chain_failed workspace_id=%s', workspace_id)
                 active_alerts_row = connection.execute(
                     """
                     SELECT COUNT(*) AS c
@@ -6597,15 +6880,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                         '''
                         SELECT DISTINCT te.target_id
                         FROM telemetry_events te
-                        JOIN monitored_targets mt
-                          ON mt.workspace_id = te.workspace_id
-                         AND mt.id = te.target_id
-                         AND mt.enabled = TRUE
+                        JOIN targets t
+                          ON t.workspace_id = te.workspace_id
+                         AND t.id = te.target_id
+                         AND COALESCE(t.enabled, FALSE) = TRUE
+                         AND t.deleted_at IS NULL
                         JOIN monitoring_configs mc
-                          ON mc.workspace_id = mt.workspace_id
-                         AND mc.target_id = mt.id
-                         AND mc.enabled = TRUE
-                         AND (mc.asset_id IS NULL OR mc.asset_id = mt.asset_id)
+                          ON mc.workspace_id = t.workspace_id
+                         AND mc.target_id = t.id
+                         AND COALESCE(mc.enabled, FALSE) = TRUE
                         WHERE te.workspace_id = %s::uuid
                           AND te.ingested_at >= %s
                         ''',
@@ -6624,15 +6907,15 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                                 tcr.metadata,
                                 tcr.computed_at
                             FROM target_coverage_records tcr
-                            JOIN monitored_targets mt
-                              ON mt.workspace_id = tcr.workspace_id
-                             AND mt.id = tcr.target_id
-                             AND mt.enabled = TRUE
+                            JOIN targets t
+                              ON t.workspace_id = tcr.workspace_id
+                             AND t.id = tcr.target_id
+                             AND COALESCE(t.enabled, FALSE) = TRUE
+                             AND t.deleted_at IS NULL
                             JOIN monitoring_configs mc
-                              ON mc.workspace_id = mt.workspace_id
-                             AND mc.target_id = mt.id
-                             AND mc.enabled = TRUE
-                             AND (mc.asset_id IS NULL OR mc.asset_id = mt.asset_id)
+                              ON mc.workspace_id = t.workspace_id
+                             AND mc.target_id = t.id
+                             AND COALESCE(mc.enabled, FALSE) = TRUE
                             WHERE tcr.workspace_id = %s::uuid
                               AND tcr.coverage_status = 'reporting'
                               AND tcr.last_telemetry_at IS NOT NULL
@@ -7084,6 +7367,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             active_alerts_count=int((open_alerts or {}).get('c') or 0),
             alerts_without_detection_count=int(open_alerts_without_evidence_count),
             active_incidents_count=int((open_incidents or {}).get('c') or 0),
+            response_actions_count=int(response_actions_count),
+            evidence_packages_count=int(evidence_count),
+            detections_count=int(detections_count),
             db_persistence_available=db_persistence_available,
             db_persistence_reason=db_persistence_reason,
         )
