@@ -6040,6 +6040,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 )
                 open_alerts = {'c': 0}
                 open_alerts_without_evidence_count = int(raw_open_alerts_count)
+            legacy_open_alerts_row = None
             legacy_open_alerts_without_evidence_count = 0
             try:
                 legacy_open_alerts_row = connection.execute(
@@ -6066,6 +6067,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 )
             except Exception:
                 legacy_open_alerts_without_evidence_count = int(raw_open_alerts_count)
+            # Alerts backed by the legacy proof-chain path (detection_id + detection_evidence) are
+            # not counted in the primary detection_event_id query.  Use the most generous count.
+            open_alerts_without_evidence_count = min(open_alerts_without_evidence_count, legacy_open_alerts_without_evidence_count)
             _mark_query_checkpoint('count_open_incidents_raw')
             raw_open_incidents_count = 0
             if use_precomputed_active_counts:
@@ -6101,6 +6105,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                          AND te.id = de.telemetry_event_id
                         WHERE a.status IN ('open','acknowledged','investigating')
                           {'AND a.workspace_id = %s' if workspace_id else ''}
+                        UNION
+                        SELECT a.id, a.incident_id
+                        FROM alerts a
+                        JOIN detections d
+                          ON d.id = a.detection_id
+                         AND d.workspace_id = a.workspace_id
+                        WHERE a.status IN ('open','acknowledged','investigating')
+                          AND EXISTS (
+                              SELECT 1
+                              FROM detection_evidence de
+                              WHERE de.workspace_id = d.workspace_id
+                                AND de.detection_id = d.id
+                          )
+                          {'AND a.workspace_id = %s' if workspace_id else ''}
                     )
                     SELECT COUNT(DISTINCT i.id) AS c
                     FROM incidents i
@@ -6119,7 +6137,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                       )
                       {'AND i.workspace_id = %s' if workspace_id else ''}
                     ''',
-                    scoped_params + scoped_params if workspace_id else (),
+                    scoped_params + scoped_params + scoped_params if workspace_id else (),
                 ).fetchone()
             except Exception as exc:
                 _record_optional_query_failure(
@@ -7032,7 +7050,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                         reporting_systems,
                         f'fresh_coverage_window_{telemetry_window_seconds}s',
                     )
-                    chain_open_alerts_count = int((open_alerts or {}).get('c') or 0)
+                    # Include legacy-path alerts (detection_id + detection_evidence) in the chain count
+                    chain_open_alerts_count = max(
+                        int((open_alerts or {}).get('c') or 0),
+                        int((legacy_open_alerts_row or {}).get('c') or 0),
+                    )
                     chain_open_incidents_count = int((open_incidents or {}).get('c') or 0)
                     _mark_query_checkpoint('select_proof_chain_last_detection')
                     try:
@@ -7660,14 +7682,17 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                 continuity_reason_codes.append('coverage_only_persistent_no_evidence')
             summary['continuity_reason_codes'] = continuity_reason_codes
         runtime_last_telemetry_at = canonical_last_telemetry_at if canonical_runtime_truth_enabled else (canonical_last_telemetry_at or legacy_last_telemetry_at)
-        runtime_last_detection_at = canonical_last_detection_at if canonical_runtime_truth_enabled else (canonical_last_detection_at or latest_detection_at)
+        # Always fall back to latest_detection_at (detections table) when canonical_last_detection_at is None.
+        # Proof-chain detections land in detections, not detection_events, so canonical may be None
+        # even when a real detection exists.
+        runtime_last_detection_at = canonical_last_detection_at or latest_detection_at
         runtime_last_telemetry_source = canonical_last_telemetry_source if runtime_last_telemetry_at is not None else None
         runtime_last_detection_source = canonical_last_detection_source if runtime_last_detection_at is not None else None
         canonical_guard_noncanonical_timestamp = bool(
             canonical_runtime_truth_enabled
             and (
-                (runtime_last_telemetry_at is not None and runtime_last_telemetry_at != canonical_last_telemetry_at)
-                or (runtime_last_detection_at is not None and runtime_last_detection_at != canonical_last_detection_at)
+                (runtime_last_telemetry_at is not None and canonical_last_telemetry_at is not None and runtime_last_telemetry_at != canonical_last_telemetry_at)
+                or (runtime_last_detection_at is not None and canonical_last_detection_at is not None and runtime_last_detection_at != canonical_last_detection_at)
             )
         )
         legacy_only_reporting_without_canonical = bool(
@@ -7692,8 +7717,9 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             and canonical_reporting_systems > 0
             and (runtime_status_summary == 'healthy' or evidence_source == 'live')
         )
-        telemetry_timestamp_noncanonical = bool(runtime_last_telemetry_at is not None and runtime_last_telemetry_source != 'telemetry_events')
-        detection_timestamp_noncanonical = bool(runtime_last_detection_at is not None and runtime_last_detection_source != 'detection_events')
+        # Use startswith to handle source strings like 'telemetry_events.observed_at' / 'detection_events.created_at'
+        telemetry_timestamp_noncanonical = bool(runtime_last_telemetry_at is not None and not str(runtime_last_telemetry_source or '').startswith('telemetry_events'))
+        detection_timestamp_noncanonical = bool(runtime_last_detection_at is not None and not str(runtime_last_detection_source or '').startswith('detection_events'))
 
         summary_freshness_status = str(summary.get('telemetry_freshness') or '').strip().lower()
         summary_confidence_status = str(summary.get('confidence') or '').strip().lower()
