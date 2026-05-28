@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-27T12:46:07.295424+00:00",
-  "commit_sha": "d2fb1aa1d71320c29ad5b4fc36853a371e447b1d",
-  "branch": "claude/cool-cannon-33JHr",
-  "release_channel": "ci",
+  "generated_at": "2026-05-28T06:22:35.549742+00:00",
+  "commit_sha": "d03d09c19253a6da7cc14219bd9b835ea4a34b34",
+  "branch": "claude/peaceful-galileo-dSGlY",
+  "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
   "required_gates": {
