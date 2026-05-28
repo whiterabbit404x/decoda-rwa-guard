@@ -6,6 +6,23 @@ import { usePilotAuth } from './pilot-auth-context';
 import { fetchRuntimeStatusDeduped } from './runtime-status-client';
 import { resolveWorkspaceMonitoringTruth, type WorkspaceMonitoringTruth } from './workspace-monitoring-truth';
 
+export type ProviderHealthInfo = {
+  name: string;
+  status: 'connected' | 'not_connected' | 'unknown';
+  chain: string | null;
+  last_check: string | null;
+  error_message: string | null;
+};
+
+export type WorkerHealthInfo = {
+  status: 'running' | 'stopped' | 'unknown';
+  last_heartbeat: string | null;
+  last_poll: string | null;
+  last_telemetry: string | null;
+  consecutive_failures: number;
+  next_poll: string | null;
+};
+
 type RuntimeSummaryContextValue = {
   summary: WorkspaceMonitoringTruth;
   runtime: import('./monitoring-status-contract').WorkspaceMonitoringRuntime | null;
@@ -16,6 +33,8 @@ type RuntimeSummaryContextValue = {
   missingLabel: string;
   nextActionLabel: string;
   fixCtaLabel: string;
+  providerHealth: ProviderHealthInfo;
+  workerHealth: WorkerHealthInfo;
 };
 
 const REASON_CODE_MESSAGES: Record<string, string> = {
@@ -60,18 +79,63 @@ function defaultSummary(): WorkspaceMonitoringTruth {
   return resolveWorkspaceMonitoringTruth(null);
 }
 
+function deriveProviderHealth(payload: import('./monitoring-status-contract').MonitoringRuntimeStatus | null): ProviderHealthInfo {
+  if (!payload) {
+    return { name: 'Ethereum RPC', status: 'unknown', chain: null, last_check: null, error_message: 'Runtime status unavailable' };
+  }
+  const reachable = payload.provider_reachable;
+  const health = payload.provider_health;
+  const name = (payload.provider_name as string | null | undefined) ?? 'Ethereum RPC';
+  const chain = (payload.provider_kind as string | null | undefined) ?? null;
+  const lastCheck = (payload.refreshed_at as string | null | undefined) ?? null;
+  let status: ProviderHealthInfo['status'] = 'unknown';
+  if (reachable === true || health === 'healthy') status = 'connected';
+  else if (reachable === false || health === 'degraded') status = 'not_connected';
+  const errorMessage = status === 'not_connected'
+    ? ((payload.degraded_reason as string | null | undefined) ?? 'Provider not reachable. Check EVM_RPC_URL / STAGING_EVM_RPC_URL.')
+    : null;
+  return { name, status, chain, last_check: lastCheck, error_message: errorMessage };
+}
+
+function deriveWorkerHealth(
+  payload: import('./monitoring-status-contract').MonitoringRuntimeStatus | null,
+  summary: WorkspaceMonitoringTruth,
+): WorkerHealthInfo {
+  const loopHealth = payload?.background_loop_health;
+  const loopRunning = payload?.loop_running ?? loopHealth?.loop_running;
+  let status: WorkerHealthInfo['status'] = 'unknown';
+  if (loopRunning === true) status = 'running';
+  else if (loopRunning === false) status = 'stopped';
+  else if (summary.last_heartbeat_at) status = 'running';
+  const consecutiveFailures = payload?.consecutive_failures ?? loopHealth?.consecutive_failures ?? 0;
+  const nextPoll = payload?.next_retry_at ?? loopHealth?.next_retry_at ?? null;
+  return {
+    status,
+    last_heartbeat: summary.last_heartbeat_at,
+    last_poll: summary.last_poll_at,
+    last_telemetry: summary.last_telemetry_at,
+    consecutive_failures: Number(consecutiveFailures ?? 0),
+    next_poll: nextPoll as string | null,
+  };
+}
+
 export function RuntimeSummaryProvider({ children }: { children: React.ReactNode }) {
   const { authHeaders, isAuthenticated } = usePilotAuth();
   const [summary, setSummary] = useState<WorkspaceMonitoringTruth>(defaultSummary);
   const [runtime, setRuntime] = useState<import('./monitoring-status-contract').WorkspaceMonitoringRuntime | null>(null);
+  const [rawPayload, setRawPayload] = useState<import('./monitoring-status-contract').MonitoringRuntimeStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!isAuthenticated) return;
     setLoading(true);
     void fetchRuntimeStatusDeduped(authHeaders())
-      .then((payload) => { setSummary(resolveWorkspaceMonitoringTruth(payload)); setRuntime(payload?.workspace_monitoring_runtime ?? null); })
-      .catch(() => { setSummary(resolveWorkspaceMonitoringTruth(null)); setRuntime(null); })
+      .then((payload) => {
+        setSummary(resolveWorkspaceMonitoringTruth(payload));
+        setRuntime(payload?.workspace_monitoring_runtime ?? null);
+        setRawPayload(payload ?? null);
+      })
+      .catch(() => { setSummary(resolveWorkspaceMonitoringTruth(null)); setRuntime(null); setRawPayload(null); })
       .finally(() => setLoading(false));
   }, [authHeaders, isAuthenticated]);
 
@@ -87,8 +151,10 @@ export function RuntimeSummaryProvider({ children }: { children: React.ReactNode
     const fixCtaLabel = nextRequiredAction === 'resolve_runtime_contradictions'
       ? 'Fix monitoring contradictions'
       : 'Review monitoring setup';
-    return { summary, runtime, loading, reasonMessageForCode, evidenceLabel, existsLabel, missingLabel, nextActionLabel, fixCtaLabel };
-  }, [summary, runtime, loading]);
+    const providerHealth = deriveProviderHealth(rawPayload);
+    const workerHealth = deriveWorkerHealth(rawPayload, summary);
+    return { summary, runtime, loading, reasonMessageForCode, evidenceLabel, existsLabel, missingLabel, nextActionLabel, fixCtaLabel, providerHealth, workerHealth };
+  }, [summary, runtime, rawPayload, loading]);
 
   return <RuntimeSummaryContext.Provider value={value}>{children}</RuntimeSummaryContext.Provider>;
 }

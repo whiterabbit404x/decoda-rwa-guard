@@ -132,7 +132,10 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   const workspaceConfigured = Boolean(summary.workspace_configured);
   const runtimeStatusLabel = String(runtimeStatus ?? '').trim().toLowerCase();
   const normalizedRuntimeStatus = runtimeStatusLabel === 'healthy' ? 'live' : runtimeStatusLabel;
-  const normalizedMonitoringStatus = normalizeMonitoringStatus(summary.monitoring_status, normalizedRuntimeStatus as WorkspaceMonitoringTruth['runtime_status']);
+  const normalizedMonitoringStatus = normalizeMonitoringStatus(
+    summary.monitoring_status ?? (summary as Record<string, unknown>).monitoring_mode,
+    normalizedRuntimeStatus as WorkspaceMonitoringTruth['runtime_status'],
+  );
   const normalizedTelemetryFreshness = telemetryFreshness === 'fresh' || telemetryFreshness === 'stale' || telemetryFreshness === 'unavailable'
     ? telemetryFreshness
     : ((summary as Record<string, unknown>).freshness_status as WorkspaceMonitoringTruth['telemetry_freshness']) ?? 'unavailable';
@@ -155,20 +158,99 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
         .map((value) => asTrimmedString(value))
         .filter((value): value is string => Boolean(value))
     : [];
+  // Hard guard priority order: top entry wins for status_reason override.
+  const GUARD_PRIORITY = [
+    'offline_with_current_telemetry',
+    'idle_runtime_with_active_monitoring_claim',
+    'live_monitoring_without_reporting_systems',
+    'live_telemetry_verified_without_timestamp',
+    'telemetry_unavailable_with_high_confidence',
+    'workspace_unconfigured_with_coverage',
+    'workspace_configured_missing_required_links',
+    'heartbeat_without_telemetry_timestamp',
+    'poll_without_telemetry_timestamp',
+    'coverage_only_persistent_no_evidence',
+  ] as const;
+
   const derivedContradictionFlags = [...contradictionFlags];
-  if (normalizedRuntimeStatus === 'live' && reportingSystemsCount === 0) {
-    derivedContradictionFlags.push('live_monitoring_without_reporting_systems');
+  const derivedHardGuards: string[] = [];
+
+  function addGuard(flag: string) {
+    derivedContradictionFlags.push(flag);
+    derivedHardGuards.push(flag);
   }
-  if (lastPollAt && !lastTelemetryAt && !lastCoverageTelemetryAt) {
-    derivedContradictionFlags.push('poll_without_telemetry_timestamp');
+
+  // runtime offline but telemetry claims current/fresh
+  if (normalizedRuntimeStatus === 'offline' && (lastTelemetryAt !== null || normalizedTelemetryFreshness === 'fresh')) {
+    addGuard('offline_with_current_telemetry');
   }
+
+  // idle runtime with active monitoring claims (skip when caller already explains why via degraded reason)
+  if (
+    normalizedRuntimeStatus === 'idle' &&
+    !resolvedStatusReason?.startsWith('runtime_status_degraded') &&
+    (normalizedTelemetryFreshness === 'fresh' || lastTelemetryAt !== null || lastCoverageTelemetryAt !== null)
+  ) {
+    addGuard('idle_runtime_with_active_monitoring_claim');
+  }
+
+  // no reporting systems but runtime/freshness claims coverage
+  if (reportingSystemsCount === 0 && (normalizedRuntimeStatus === 'live' || normalizedTelemetryFreshness === 'fresh')) {
+    addGuard('live_monitoring_without_reporting_systems');
+  }
+
+  // claims fresh telemetry quality but no timestamp exists
+  if (normalizedTelemetryFreshness === 'fresh' && lastTelemetryAt === null && lastCoverageTelemetryAt === null) {
+    addGuard('live_telemetry_verified_without_timestamp');
+  }
+
+  // telemetry unavailable but confidence claims high
+  if (normalizedTelemetryFreshness === 'unavailable' && normalizedConfidence === 'high') {
+    addGuard('telemetry_unavailable_with_high_confidence');
+  }
+
+  // workspace not configured but systems or assets exist
+  if (!workspaceConfigured && (monitoredSystemsCount > 0 || protectedAssetsCount > 0)) {
+    addGuard('workspace_unconfigured_with_coverage');
+  }
+
+  // configured workspace but persisted enabled config count is explicitly 0
+  const persistedEnabledConfigCount = (summary as Record<string, unknown>).persisted_enabled_config_count;
+  const validProtectedAssetCountForGuard = Number((summary as Record<string, unknown>).valid_protected_asset_count ?? 0);
+  if (workspaceConfigured && persistedEnabledConfigCount === 0 && validProtectedAssetCountForGuard > 0) {
+    addGuard('workspace_configured_missing_required_links');
+  }
+
+  // heartbeat exists but no telemetry and no poll (poll guard below is more specific)
+  if (lastHeartbeatAt !== null && lastTelemetryAt === null && lastCoverageTelemetryAt === null && lastPollAt === null) {
+    addGuard('heartbeat_without_telemetry_timestamp');
+  }
+
+  // poll ran but no telemetry arrived
+  if (lastPollAt !== null && lastTelemetryAt === null && lastCoverageTelemetryAt === null) {
+    addGuard('poll_without_telemetry_timestamp');
+  }
+
+  // coverage-only persistent no-evidence from continuity signals or explicit status_reason
+  if (
+    continuityReasonCodes.includes('coverage_only_persistent_no_evidence') ||
+    resolvedStatusReason === 'coverage_only_persistent_no_evidence'
+  ) {
+    addGuard('coverage_only_persistent_no_evidence');
+  }
+
   const normalizedContradictionFlags = [...new Set(derivedContradictionFlags)].sort();
+
   const declaredGuardFlags = Array.isArray(summary.guard_flags)
     ? (summary.guard_flags as unknown[])
         .map((value) => asTrimmedString(value))
         .filter((value): value is string => Boolean(value))
     : [];
-  const normalizedGuardFlags = [...new Set(declaredGuardFlags)].sort();
+  const normalizedGuardFlags = [...new Set([...declaredGuardFlags, ...derivedHardGuards])].sort();
+
+  // Derive guard-priority status_reason: top-priority fired guard wins over null input reason.
+  const topFiredGuard = GUARD_PRIORITY.find((g) => derivedHardGuards.includes(g));
+  const guardStatusReason = topFiredGuard ? `guard:${topFiredGuard}` : null;
   const reasonCodes = Array.isArray((summary as Record<string, unknown>).reason_codes)
     ? ((summary as Record<string, unknown>).reason_codes as unknown[])
         .map((value) => asTrimmedString(value))
@@ -197,7 +279,7 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
     evidence_source_summary: normalizedEvidenceSource,
     continuity_status: continuityStatus,
     continuity_reason_codes: continuityReasonCodes,
-    status_reason: resolvedStatusReason,
+    status_reason: guardStatusReason ?? resolvedStatusReason,
     db_failure_classification: dbFailureClassification,
     db_failure_reason: dbFailureReason,
     contradiction_flags: normalizedContradictionFlags,

@@ -72,7 +72,8 @@ export function getMonitoringStatus(asset: Asset): { label: string; variant: Pil
   if (asset?.has_heartbeat === false) {
     return { label: 'Not reporting', variant: 'warning' };
   }
-  if (asset?.has_telemetry === false) {
+  // fail-closed: only show "Monitoring" when telemetry is explicitly confirmed
+  if (asset?.has_telemetry !== true) {
     return { label: 'Waiting for telemetry', variant: 'neutral' };
   }
   if (asset?.telemetry_fresh === false) {
