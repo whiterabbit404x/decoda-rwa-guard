@@ -983,6 +983,8 @@ def test_monitor_checkpoint_upsert_and_load():
 
 
 def test_workspace_coverage_only_warning_not_triggered_on_fresh_startup(monkeypatch):
+    # With coverage_heartbeat_updates > 0, coverage telemetry IS being persisted.
+    # The streak must not build up at all — coverage telemetry is live evidence.
     monkeypatch.setattr(monitoring_runner, 'MONITORING_COVERAGE_ONLY_WARNING_SECONDS', 20 * 60)
     monitoring_runner._WORKSPACE_COVERAGE_ONLY_STREAK.clear()
     now = datetime(2026, 4, 24, 12, 0, tzinfo=timezone.utc)
@@ -997,11 +999,13 @@ def test_workspace_coverage_only_warning_not_triggered_on_fresh_startup(monkeypa
 
     assert state['active'] is False
     assert state['state'] is None
-    assert state['cycle_count'] == 1
+    # coverage > 0 means condition not met → streak stays at 0
+    assert state['cycle_count'] == 0
     assert state['duration_seconds'] == 0
 
 
 def test_workspace_coverage_only_warning_triggers_after_sustained_no_evidence(monkeypatch):
+    # Warning fires only when NEITHER coverage telemetry NOR real events are persisted.
     monkeypatch.setattr(monitoring_runner, 'MONITORING_COVERAGE_ONLY_WARNING_SECONDS', 20 * 60)
     monitoring_runner._WORKSPACE_COVERAGE_ONLY_STREAK.clear()
     first_cycle = datetime(2026, 4, 24, 12, 0, tzinfo=timezone.utc)
@@ -1011,14 +1015,14 @@ def test_workspace_coverage_only_warning_triggers_after_sustained_no_evidence(mo
         workspace_id='ws-1',
         cycle_at=first_cycle,
         provider_reachable=True,
-        coverage_heartbeat_updates=2,
+        coverage_heartbeat_updates=0,  # nothing persisted — streak starts
         real_events_detected=0,
     )
     state = monitoring_runner._workspace_coverage_only_state(
         workspace_id='ws-1',
         cycle_at=later_cycle,
         provider_reachable=True,
-        coverage_heartbeat_updates=2,
+        coverage_heartbeat_updates=0,  # still nothing persisted
         real_events_detected=0,
     )
 
