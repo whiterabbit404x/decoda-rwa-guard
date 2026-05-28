@@ -89,6 +89,78 @@ def _load_json_artifact(path: Path) -> dict[str, Any] | None:
         return None
 
 
+BLOCKER4_SCOPE = 'staging-production-proof'
+
+
+def _make_live_provider_stub() -> dict[str, Any]:
+    """Live provider validation stub for blocker-4-only scope (not evaluated)."""
+    return {
+        'status': 'not_applicable',
+        'evm_rpc_configured': False,
+        'chain_id_configured': False,
+        'chain_id_observed': None,
+        'provider_health_checked': False,
+        'provider_ready': False,
+        'provider_mode': 'disabled',
+        'worker_enabled': False,
+        'latest_live_telemetry_at': None,
+        'live_evidence_ready': False,
+        'evidence_source': 'not_applicable',
+        'chain': {
+            'telemetry_event_id': None,
+            'detection_id': None,
+            'alert_id': None,
+            'incident_id': None,
+            'response_action_id': None,
+            'evidence_package_id': None,
+        },
+        'missing': [],
+        'contradiction_flags': [],
+        'blockers': [],
+        'warnings': ['live_provider_validation not evaluated in staging-production-proof scope'],
+    }
+
+
+def _make_billing_stub() -> dict[str, Any]:
+    """Billing validation stub for blocker-4-only scope (not evaluated)."""
+    return {
+        'status': 'not_applicable',
+        'billing_provider': 'unknown',
+        'live_secret_key_present': False,
+        'webhook_secret_present': False,
+        'price_id_present': False,
+        'webhook_endpoint_validated': False,
+        'test_mode_detected': False,
+        'blockers': [],
+        'warnings': ['billing_production_validation not evaluated in staging-production-proof scope'],
+    }
+
+
+def _make_email_stub() -> dict[str, Any]:
+    """Email validation stub for blocker-4-only scope (not evaluated)."""
+    return {
+        'status': 'not_applicable',
+        'provider': 'unknown',
+        'api_key_present': False,
+        'sender_present': False,
+        'domain_present': False,
+        'production_sender_validated': False,
+        'blockers': [],
+        'warnings': ['email_production_validation not evaluated in staging-production-proof scope'],
+    }
+
+
+def _make_deps_stub() -> dict[str, str]:
+    """Required dependencies stub for blocker-4-only scope (not evaluated)."""
+    return {
+        'paid_launch_readiness': 'not_applicable',
+        'release_proof': 'not_applicable',
+        'runtime_truthfulness': 'not_applicable',
+        'evidence_export_truthfulness': 'not_applicable',
+        'multi_tenant_isolation': 'not_applicable',
+    }
+
+
 # ---------------------------------------------------------------------------
 # Staging launch validation
 # ---------------------------------------------------------------------------
@@ -695,12 +767,88 @@ def build_required_dependencies(
 
 
 # ---------------------------------------------------------------------------
+# Blocker-4-only proof (staging-production-proof scope)
+# ---------------------------------------------------------------------------
+
+def _generate_blocker4_proof(mode: str, strict: bool) -> dict[str, Any]:
+    """
+    Generate staging launch proof for the staging-production-proof scope.
+
+    Validates ONLY staging deployment requirements:
+      STAGING_API_URL, STAGING_APP_URL, STAGING_DATABASE_URL,
+      STAGING_AUTH_TOKEN_SECRET, STAGING_WORKER_ENABLED.
+
+    Does NOT evaluate: live provider, billing, email, release proof,
+    paid_launch_readiness, or any other broad paid-SaaS prerequisites.
+
+    staging_launch_ready=True when all required STAGING_* vars are present,
+    STAGING_WORKER_ENABLED is truthy, and mode is staging/production.
+
+    broad_paid_saas_ready and safe_to_sell_broadly_today are always False
+    in this scope — billing/email are not evaluated here.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    staging_validation = build_staging_launch_validation(mode)
+
+    all_blockers: list[str] = list(staging_validation.get('blockers', []))
+    all_warnings: list[str] = list(staging_validation.get('warnings', []))
+
+    staging_launch_ready = (
+        staging_validation.get('status') == 'pass'
+        and mode in ('staging', 'production')
+    )
+
+    sv = staging_validation
+    staging_env_configured = (
+        sv.get('staging_api_url_present', False)
+        and sv.get('staging_app_url_present', False)
+        and sv.get('staging_database_present', False)
+        and sv.get('staging_auth_secret_present', False)
+    )
+    staging_worker_enabled = sv.get('staging_worker_present', False)
+
+    summary: dict[str, Any] = {
+        'schema_version': 1,
+        'scope': BLOCKER4_SCOPE,
+        'generated_at': now,
+        'mode': mode,
+        'strict': strict,
+        'release_channel': 'staging' if mode in ('staging', 'production') else 'local',
+        'staging_launch_ready': staging_launch_ready,
+        'broad_paid_saas_ready': False,
+        'safe_to_sell_broadly_today': False,
+        'readiness': {
+            'staging_launch_ready': staging_launch_ready,
+            'broad_paid_saas_ready': False,
+            'safe_to_sell_broadly_today': False,
+        },
+        'local_validation_ready': mode in ('local', 'ci') and not sv.get('blockers'),
+        'staging_env_configured': staging_env_configured,
+        'staging_runtime_reachable': sv.get('staging_runtime_validated', False),
+        'staging_worker_enabled': staging_worker_enabled,
+        'staging_database_reachable': sv.get('staging_database_present', False),
+        'staging_auth_configured': sv.get('staging_auth_secret_present', False),
+        'staging_live_evidence_ready': False,
+        'staging_launch_validation': staging_validation,
+        'live_provider_validation': _make_live_provider_stub(),
+        'billing_production_validation': _make_billing_stub(),
+        'email_production_validation': _make_email_stub(),
+        'required_dependencies': _make_deps_stub(),
+        'blockers': sorted(set(all_blockers)),
+        'warnings': sorted(set(all_warnings)),
+    }
+
+    return _redact_obj(summary)
+
+
+# ---------------------------------------------------------------------------
 # Main proof generator
 # ---------------------------------------------------------------------------
 
 def generate_staging_proof(
     mode: str = 'local',
     strict: bool = False,
+    scope: str = '',
     launch_proof_dir: Path | None = None,
     release_proof_dir: Path | None = None,
     live_evidence_proof_dir: Path | None = None,
@@ -708,7 +856,11 @@ def generate_staging_proof(
     """
     Build and return the staging launch proof summary.
 
-    Fail-closed rules:
+    scope='staging-production-proof' (BLOCKER4_SCOPE) activates blocker-4-only
+    evaluation: only staging deployment env vars are checked; billing, email,
+    live provider, and dependency gates are excluded from blockers.
+
+    Fail-closed rules (default/full scope):
     - staging_launch_ready: true only when staging env valid + live provider
       pass + mode is staging/production.
     - broad_paid_saas_ready: true only when all four validations pass + all
@@ -716,6 +868,9 @@ def generate_staging_proof(
     - safe_to_sell_broadly_today: true only when broad_paid_saas_ready is true
       and no critical blockers remain.
     """
+    if scope == BLOCKER4_SCOPE:
+        return _generate_blocker4_proof(mode=mode, strict=strict)
+
     if launch_proof_dir is None:
         launch_proof_dir = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest'
     if release_proof_dir is None:
@@ -833,8 +988,13 @@ def generate_staging_proof(
     return _redact_obj(summary)
 
 
-def main(mode: str = 'local', strict: bool = False, out_path: Path | None = None) -> int:
-    print(f'[generate-staging-launch-proof] mode={mode} strict={strict}')
+def main(
+    mode: str = 'local',
+    strict: bool = False,
+    scope: str = '',
+    out_path: Path | None = None,
+) -> int:
+    print(f'[generate-staging-launch-proof] mode={mode} strict={strict} scope={scope or "full"}')
 
     if out_path is None:
         out_dir = REPO_ROOT / 'artifacts' / 'staging-proof' / 'latest'
@@ -843,7 +1003,7 @@ def main(mode: str = 'local', strict: bool = False, out_path: Path | None = None
         out_dir = out_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    summary = generate_staging_proof(mode=mode, strict=strict)
+    summary = generate_staging_proof(mode=mode, strict=strict, scope=scope)
 
     with open(out_path, 'w') as f:
         json.dump(summary, f, indent=2)
@@ -871,9 +1031,16 @@ def main(mode: str = 'local', strict: bool = False, out_path: Path | None = None
         for w in summary['warnings']:
             print(f'  - {w}')
 
-    if strict and not broad_ready:
-        print('[generate-staging-launch-proof] FAIL: broad_paid_saas_ready=false in strict mode')
-        return 1
+    if strict:
+        if scope == BLOCKER4_SCOPE:
+            if not staging_ready:
+                print('[generate-staging-launch-proof] FAIL: staging_launch_ready=false in strict mode '
+                      '(scope=staging-production-proof)')
+                return 1
+        else:
+            if not broad_ready:
+                print('[generate-staging-launch-proof] FAIL: broad_paid_saas_ready=false in strict mode')
+                return 1
 
     return 0
 
@@ -881,6 +1048,7 @@ def main(mode: str = 'local', strict: bool = False, out_path: Path | None = None
 if __name__ == '__main__':
     mode = 'local'
     strict = False
+    scope = ''
     out_path: Path | None = None
     args = sys.argv[1:]
     if '--mode' in args:
@@ -891,8 +1059,12 @@ if __name__ == '__main__':
             mode = 'ci' if raw_mode == 'structural' else raw_mode
     if '--strict' in args:
         strict = True
+    if '--scope' in args:
+        idx = args.index('--scope')
+        if idx + 1 < len(args):
+            scope = args[idx + 1]
     if '--out' in args:
         idx = args.index('--out')
         if idx + 1 < len(args):
             out_path = Path(args[idx + 1])
-    raise SystemExit(main(mode=mode, strict=strict, out_path=out_path))
+    raise SystemExit(main(mode=mode, strict=strict, scope=scope, out_path=out_path))

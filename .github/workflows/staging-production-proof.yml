@@ -153,6 +153,19 @@ jobs:
             echo "::add-mask::$EVM_RPC_URL"
           fi
 
+      - name: Resolve EVM env vars (STAGING_EVM_RPC_URL takes precedence)
+        run: |
+          # Set EVM_RPC_URL from STAGING_EVM_RPC_URL when EVM_RPC_URL is absent.
+          # Values are never printed; only presence flags are echoed.
+          if [ -z "$EVM_RPC_URL" ] && [ -n "$STAGING_EVM_RPC_URL" ]; then
+            echo "EVM_RPC_URL=$STAGING_EVM_RPC_URL" >> "$GITHUB_ENV"
+            echo "EVM_RPC_URL resolved from STAGING_EVM_RPC_URL (presence: yes)"
+          fi
+          if [ -z "$EVM_CHAIN_ID" ] && [ -n "$STAGING_EVM_CHAIN_ID" ]; then
+            echo "EVM_CHAIN_ID=$STAGING_EVM_CHAIN_ID" >> "$GITHUB_ENV"
+            echo "EVM_CHAIN_ID resolved from STAGING_EVM_CHAIN_ID (presence: yes)"
+          fi
+
       - name: Print secret presence (values never printed)
         run: |
           echo "STAGING_API_URL present:          $([ -n "$STAGING_API_URL" ] && echo yes || echo no)"
@@ -218,6 +231,7 @@ jobs:
         run: |
           python scripts/generate_staging_launch_proof.py \
             --mode staging \
+            --scope staging-production-proof \
             --strict \
             --out artifacts/staging-production-proof/real/summary.json
 
@@ -225,6 +239,7 @@ jobs:
         run: |
           python scripts/validate_staging_launch_proof.py \
             --strict \
+            --scope staging-production-proof \
             --proof artifacts/staging-production-proof/real/summary.json
 
       - name: Print proof summary
@@ -238,9 +253,14 @@ jobs:
               print('Proof file not found.')
               sys.exit(0)
           data = json.loads(path.read_text())
+          scope = data.get('scope', 'full')
+          print(f"scope:                     {scope}")
           print(f"staging_launch_ready:      {data.get('staging_launch_ready')}")
           print(f"broad_paid_saas_ready:     {data.get('broad_paid_saas_ready')}")
           print(f"safe_to_sell_broadly_today: {data.get('safe_to_sell_broadly_today')}")
+          if scope == 'staging-production-proof':
+              print("(broad_paid_saas_ready and safe_to_sell_broadly_today are not evaluated "
+                    "in staging-production-proof scope)")
           blockers = data.get('blockers', [])
           if blockers:
               print(f"blockers ({len(blockers)}):")

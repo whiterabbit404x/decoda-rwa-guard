@@ -371,6 +371,7 @@ def main(
     artifact_path: Path | None = None,
     expect_fail_closed: bool = False,
     strict: bool = False,
+    scope: str = '',
 ) -> int:
     if artifact_path is None:
         artifact_path = REPO_ROOT / 'artifacts' / 'staging-proof' / 'latest' / 'summary.json'
@@ -383,6 +384,22 @@ def main(
     print(f'[validate-staging-launch-proof] validating: {display_path}')
 
     is_valid, errors, warnings = validate_staging_proof(artifact_path)
+
+    # Detect effective scope from CLI flag or from artifact field.
+    effective_scope = scope
+    if not effective_scope and artifact_path.exists():
+        try:
+            _artifact_data = json.loads(artifact_path.read_text())
+            effective_scope = _artifact_data.get('scope', '')
+        except Exception:
+            pass
+
+    # In blocker4 scope, broad_paid_saas_ready=False is expected — suppress those warnings.
+    if effective_scope == 'staging-production-proof':
+        warnings = [
+            w for w in warnings
+            if 'broad_paid_saas_ready' not in w and 'safe_to_sell' not in w
+        ]
 
     # Load artifact for extra checks
     extra_errors: list[str] = []
@@ -409,6 +426,8 @@ def main(
         return 1
 
     mode_label = 'fail-closed' if expect_fail_closed else ('strict' if strict else 'structural')
+    if effective_scope:
+        mode_label = f'{mode_label} (scope={effective_scope})'
     print(
         f'[validate-staging-launch-proof] PASS ({mode_label}) — '
         'artifact is valid'
@@ -420,6 +439,7 @@ if __name__ == '__main__':
     artifact_path = None
     expect_fail_closed = False
     strict = False
+    scope = ''
     args = sys.argv[1:]
     # --proof and --artifact-path are synonyms
     for flag in ('--artifact-path', '--proof'):
@@ -431,8 +451,13 @@ if __name__ == '__main__':
         expect_fail_closed = True
     if '--strict' in args:
         strict = True
+    if '--scope' in args:
+        idx = args.index('--scope')
+        if idx + 1 < len(args):
+            scope = args[idx + 1]
     raise SystemExit(main(
         artifact_path=artifact_path,
         expect_fail_closed=expect_fail_closed,
         strict=strict,
+        scope=scope,
     ))
