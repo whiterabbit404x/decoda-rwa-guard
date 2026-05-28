@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T15:20:44.570454+00:00",
+  "generated_at": "2026-05-28T16:42:13.708794+00:00",
   "release_channel": "local",
-  "commit_sha": "230904a19dd30a0c720674b59c097de957e570ed",
-  "branch": "claude/blissful-clarke-rOr3Y",
+  "commit_sha": "60066fcbfb7dd5966ed888041f4fe00a8eecfc57",
+  "branch": "claude/busy-sagan-1I5D7",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "93f6e0589319dc197d8214447f8a9aa009926e8361fc260a020acce751848c20",
-      "size_bytes": 786,
+      "sha256": "6616720c56d19f77af016605de4aa78202a19af0daba82cd2dd6812e8c8ce015",
+      "size_bytes": 781,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "ed7516aaef9b0fcf5b1c7d5df27ae528251ffecf4cb8aa07590a5af0ccd9eac1",
-      "size_bytes": 2108,
+      "sha256": "bc9e888449bea82ebf9ee36cd1ec553e1283e2fe3b40ed9c2353b1ee1ba55bcc",
+      "size_bytes": 2103,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "2d4ac6236963bbdcc5834b64c05bbb1b1d5a7057ec46c67d3ad366d0860cb95a",
+      "sha256": "fc3c146470ed4d41a0a898f5d95b4fcc97c34e2b3da163c31332875d7a5c34cb",
       "size_bytes": 819,
       "required": true,
       "status": "present"
