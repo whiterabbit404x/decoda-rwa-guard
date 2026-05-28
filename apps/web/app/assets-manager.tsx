@@ -96,15 +96,16 @@ function assetNextAction(asset: Asset): string {
 
   const monStatus = asset?.monitoring_link_status;
   if (!monStatus || monStatus === 'not_configured' || monStatus === 'target_missing') {
-    return 'Create monitoring target';
+    return 'Connect provider';
   }
   if (monStatus === 'system_missing' || asset?.has_linked_monitored_system === false) {
-    return 'Enable monitored system';
+    return 'Start worker';
   }
-  if (asset?.has_heartbeat === false) return 'Start simulator signal';
-  if (asset?.has_telemetry === false) return 'Wait for telemetry';
+  if (asset?.has_heartbeat === false) return 'Start worker';
+  if (asset?.has_telemetry !== true) return 'Verify telemetry';
   if ((asset?.open_incidents ?? 0) > 0) return 'Open incident';
   if ((asset?.active_alerts ?? 0) > 0) return 'View alerts';
+  if (asset?.last_detection_at) return 'View detections';
   return 'View detections';
 }
 
@@ -143,7 +144,7 @@ export default function AssetsManager({ apiUrl }: Props) {
   async function load() {
     const normalizedApiUrl = normalizeApiBaseUrl(apiUrl);
     if (!normalizedApiUrl || !isValidApiBaseUrl(normalizedApiUrl)) {
-      setSubmitError('Cannot load assets because NEXT_PUBLIC_API_URL / API_URL is missing or invalid for this deployment.');
+      setSubmitError('Unable to load assets: API endpoint is not configured. Contact your administrator or check System Health.');
       return;
     }
     const headers = authHeaders();
@@ -211,7 +212,7 @@ export default function AssetsManager({ apiUrl }: Props) {
     try {
       const normalizedApiUrl = normalizeApiBaseUrl(apiUrl);
       if (!normalizedApiUrl || !isValidApiBaseUrl(normalizedApiUrl)) {
-        setSubmitError('Cannot create this asset because NEXT_PUBLIC_API_URL / API_URL is missing or invalid for this deployment.');
+        setSubmitError('Unable to create asset: API endpoint is not configured. Contact your administrator or check System Health.');
         return;
       }
       const headers = authHeaders();
@@ -389,7 +390,7 @@ export default function AssetsManager({ apiUrl }: Props) {
                     <button type="button" className="btn btn-secondary" disabled={actionLoadingAssetId === asset.id} onClick={() => { void runNextAction(asset, action); }}>
                       {actionLoadingAssetId === asset.id ? 'Verifying…' : 'Verify asset'}
                     </button>
-                  ) : (action === 'Create monitoring target' || action === 'Enable monitored system') ? (
+                  ) : (action === 'Connect provider' || action === 'Start worker' || action === 'Verify telemetry') ? (
                     <Link href="/monitoring-sources" prefetch={false} className="btn btn-secondary">{action}</Link>
                   ) : (
                     <span style={{ fontSize: '0.8rem', color: 'var(--text-accent)' }}>{action}</span>

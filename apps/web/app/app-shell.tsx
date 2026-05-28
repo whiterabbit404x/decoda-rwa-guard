@@ -102,6 +102,10 @@ function RouteTransitionLogger({ pathname }: { pathname: string }) {
   return null;
 }
 
+function containsDiagnosticEnvVars(message: string): boolean {
+  return /API_URL|NEXT_PUBLIC|ALLOW_LOCAL_API_FALLBACK/i.test(message);
+}
+
 export default function AppShell({ children, topBanner }: { children: React.ReactNode; topBanner?: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -188,7 +192,7 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
             </p>
           </div>
 
-          {error ? <p className="statusLine" style={{ fontSize: '0.78rem', color: 'var(--danger-fg)' }}>{error}</p> : null}
+          {error && !containsDiagnosticEnvVars(error) ? <p className="statusLine" style={{ fontSize: '0.78rem', color: 'var(--danger-fg)' }}>{error}</p> : null}
         </aside>
 
         {/* ── Content area ────────────────────────────── */}

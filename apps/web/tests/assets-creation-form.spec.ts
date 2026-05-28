@@ -15,7 +15,8 @@ test('assets manager includes explicit validation and clear create states', () =
   expect(assets).toContain('Asset created successfully.');
   expect(assets).toContain('Asset create failed');
   expect(assets).toContain('classifyApiTransportError');
-  expect(assets).toContain('NEXT_PUBLIC_API_URL / API_URL is missing or invalid');
+  expect(assets).toContain('API endpoint is not configured');
+  expect(assets).not.toContain('NEXT_PUBLIC_API_URL / API_URL is missing or invalid');
   expect(assets).toContain('Your session is missing or expired. Please sign in again.');
   expect(assets).toContain('response.status === 401 || response.status === 403');
   expect(assets).toContain('await signOut();');
