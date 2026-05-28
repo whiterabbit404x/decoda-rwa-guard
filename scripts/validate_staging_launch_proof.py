@@ -246,8 +246,14 @@ def validate_staging_proof(artifact_path: Path) -> tuple[bool, list[str], list[s
                     f'but required dependency {dep_key!r}={dep_status!r}'
                 )
 
-    # Rule 3: blockers present → broad/safe cannot be true
+    # Rule 3: blockers present → staging_launch_ready/broad/safe cannot be true
     blockers = artifact.get('blockers', [])
+    staging_launch_ready = bool(artifact.get('staging_launch_ready'))
+    if blockers and staging_launch_ready:
+        errors.append(
+            f'OVERCLAIM: staging_launch_ready=true '
+            f'but artifact has {len(blockers)} blocker(s)'
+        )
     if blockers and broad_ready:
         errors.append(
             f'OVERCLAIM: broad_paid_saas_ready=true '
@@ -322,7 +328,16 @@ def validate_staging_proof(artifact_path: Path) -> tuple[bool, list[str], list[s
     return is_valid, errors, warnings
 
 
-def main(artifact_path: Path | None = None) -> int:
+_REQUIRED_FAIL_CLOSED_BLOCKERS = [
+    'STAGING_API_URL not configured',
+    'STAGING_APP_URL not configured',
+    'STAGING_DATABASE_URL not configured',
+    'STAGING_AUTH_TOKEN_SECRET not configured',
+    'STAGING_WORKER_ENABLED not configured',
+]
+
+
+def main(artifact_path: Path | None = None, expect_fail_closed: bool = False) -> int:
     if artifact_path is None:
         artifact_path = REPO_ROOT / 'artifacts' / 'staging-proof' / 'latest' / 'summary.json'
 
@@ -334,6 +349,52 @@ def main(artifact_path: Path | None = None) -> int:
     print(f'[validate-staging-launch-proof] validating: {display_path}')
 
     is_valid, errors, warnings = validate_staging_proof(artifact_path)
+
+    if expect_fail_closed:
+        # In fail-closed mode: verify the proof is structurally valid AND
+        # that staging_launch_ready=false (i.e. correctly fail-closed without secrets).
+        if errors:
+            print('[validate-staging-launch-proof] FAIL — structural errors in fail-closed check:')
+            for e in errors:
+                print(f'  - {e}')
+            return 1
+
+        try:
+            artifact = json.loads(artifact_path.read_text())
+        except Exception as exc:
+            print(f'[validate-staging-launch-proof] FAIL — cannot read artifact: {exc}')
+            return 1
+
+        staging_launch_ready = artifact.get('staging_launch_ready')
+        if staging_launch_ready is not False:
+            print(
+                '[validate-staging-launch-proof] FAIL — '
+                f'expected fail-closed (staging_launch_ready=false) '
+                f'but got staging_launch_ready={staging_launch_ready!r}'
+            )
+            return 1
+
+        proof_blockers = artifact.get('blockers', [])
+        missing_expected = [
+            req for req in _REQUIRED_FAIL_CLOSED_BLOCKERS
+            if not any(req in b for b in proof_blockers)
+        ]
+        if missing_expected:
+            print('[validate-staging-launch-proof] FAIL — expected fail-closed blockers absent:')
+            for mb in missing_expected:
+                print(f'  - {mb!r}')
+            return 1
+
+        if warnings:
+            print('[validate-staging-launch-proof] Warnings:')
+            for w in warnings:
+                print(f'  - {w}')
+
+        print(
+            '[validate-staging-launch-proof] PASS — '
+            'proof is structurally valid and correctly fail-closed (expected).'
+        )
+        return 0
 
     if warnings:
         print('[validate-staging-launch-proof] Warnings:')
@@ -355,9 +416,12 @@ def main(artifact_path: Path | None = None) -> int:
 
 if __name__ == '__main__':
     artifact_path = None
+    expect_fail_closed = False
     args = sys.argv[1:]
     if '--artifact-path' in args:
         idx = args.index('--artifact-path')
         if idx + 1 < len(args):
             artifact_path = Path(args[idx + 1])
-    raise SystemExit(main(artifact_path=artifact_path))
+    if '--expect-fail-closed' in args:
+        expect_fail_closed = True
+    raise SystemExit(main(artifact_path=artifact_path, expect_fail_closed=expect_fail_closed))
