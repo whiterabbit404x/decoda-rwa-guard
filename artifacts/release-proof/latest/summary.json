@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T16:42:13.700722+00:00",
+  "generated_at": "2026-05-28T17:38:56.453218+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "60066fcbfb7dd5966ed888041f4fe00a8eecfc57",
-  "branch": "claude/busy-sagan-1I5D7",
+  "commit_sha": "e45967024345a72a43491248fe121cf7c91ebff4",
+  "branch": "claude/focused-curie-8RC2y",
   "ci_required_gates_ready": false,
   "launch_proof_ready": false,
   "manifest_ready": true,

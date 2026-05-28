@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T16:42:13.704631+00:00",
+  "generated_at": "2026-05-28T17:38:56.457905+00:00",
   "release_channel": "local",
-  "commit_sha": "60066fcbfb7dd5966ed888041f4fe00a8eecfc57",
-  "branch": "claude/busy-sagan-1I5D7",
+  "commit_sha": "e45967024345a72a43491248fe121cf7c91ebff4",
+  "branch": "claude/focused-curie-8RC2y",
   "test_suites": {
     "release_proof_artifacts": {
       "name": "release-proof-artifacts",

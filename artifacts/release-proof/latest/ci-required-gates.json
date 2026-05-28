@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T16:42:13.691819+00:00",
-  "commit_sha": "60066fcbfb7dd5966ed888041f4fe00a8eecfc57",
-  "branch": "claude/busy-sagan-1I5D7",
+  "generated_at": "2026-05-28T17:38:56.443512+00:00",
+  "commit_sha": "e45967024345a72a43491248fe121cf7c91ebff4",
+  "branch": "claude/focused-curie-8RC2y",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,

@@ -7404,6 +7404,24 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             runtime_status_reason = 'coverage_only_persistent_no_evidence'
         if workspace_configured and runtime_error_code and not runtime_status_reason:
             runtime_status_reason = 'runtime_status_degraded:partial_query_failure'
+        # Promote 'healthy' → 'live' once the full telemetry → detection → alert →
+        # incident → response_action → evidence chain is verified with no proof-chain
+        # gaps and no orphan alerts/incidents without detection linkage.
+        if (
+            runtime_status_summary == 'healthy'
+            and workspace_configured
+            and reporting_systems > 0
+            and last_telemetry_at is not None
+            and (canonical_last_detection_at is not None or latest_detection_at is not None)
+            and int(alerts_count) > 0
+            and int(incidents_count) > 0
+            and int(response_actions_count) > 0
+            and int(evidence_count) > 0
+            and open_alerts_without_evidence_count == 0
+            and incidents_without_alert_count == 0
+            and not proof_chain_missing_reason_codes
+        ):
+            runtime_status_summary = 'live'
         missing_telemetry_only = bool(
             workspace_configured
             and enabled_system_count > 0

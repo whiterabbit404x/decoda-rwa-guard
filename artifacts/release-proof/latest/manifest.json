@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T16:42:13.708794+00:00",
+  "generated_at": "2026-05-28T17:38:56.462491+00:00",
   "release_channel": "local",
-  "commit_sha": "60066fcbfb7dd5966ed888041f4fe00a8eecfc57",
-  "branch": "claude/busy-sagan-1I5D7",
+  "commit_sha": "e45967024345a72a43491248fe121cf7c91ebff4",
+  "branch": "claude/focused-curie-8RC2y",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "6616720c56d19f77af016605de4aa78202a19af0daba82cd2dd6812e8c8ce015",
-      "size_bytes": 781,
+      "sha256": "22db5fe7136f37c401dd6616f77af678d8c8f525a402d596633babef9bd0d45c",
+      "size_bytes": 784,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "bc9e888449bea82ebf9ee36cd1ec553e1283e2fe3b40ed9c2353b1ee1ba55bcc",
-      "size_bytes": 2103,
+      "sha256": "0229b89fd268279863fba96a1f58ea9fdd07fe04d3ced5cf318af965f5d0be72",
+      "size_bytes": 2106,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "fc3c146470ed4d41a0a898f5d95b4fcc97c34e2b3da163c31332875d7a5c34cb",
+      "sha256": "95052c21d8c58292c7b76f8b5e609b85dfa4a8b5b9837402e219c54b39486a3a",
       "size_bytes": 819,
       "required": true,
       "status": "present"
