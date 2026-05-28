@@ -153,7 +153,9 @@ def _check_live_evidence() -> tuple[bool, list[str]]:
         except Exception:
             return False
 
-    # Primary: canonical live-evidence-proof artifact (new path)
+    # Primary: canonical live-evidence-proof artifact (strict source of truth).
+    # When this artifact exists and reports false, that answer is authoritative —
+    # no service summary fallback can override it.
     canonical_path = REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest' / 'summary.json'
     if canonical_path.exists():
         try:
@@ -161,10 +163,6 @@ def _check_live_evidence() -> tuple[bool, list[str]]:
                 proof = json.load(f)
             lpe = proof.get('live_provider_evidence', {})
             if lpe.get('live_evidence_ready') is True:
-                return True, []
-            # Canonical artifact present but not ready — check service summary before
-            # reporting failure, to handle the stale-artifact contradiction.
-            if _service_summary_is_live():
                 return True, []
             missing = lpe.get('missing', [])
             if missing:
@@ -176,9 +174,6 @@ def _check_live_evidence() -> tuple[bool, list[str]]:
             return False, blockers
         except Exception as e:
             blockers.append(f'failed to read live-evidence-proof: {e}')
-            # Still check service summary on read error
-            if _service_summary_is_live():
-                return True, []
             return False, blockers
 
     # Secondary: service summary (covers the case where canonical artifact hasn't been

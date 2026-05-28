@@ -1,17 +1,18 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T06:22:35.558777+00:00",
+  "generated_at": "2026-05-28T15:20:44.563936+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "d03d09c19253a6da7cc14219bd9b835ea4a34b34",
-  "branch": "claude/peaceful-galileo-dSGlY",
+  "commit_sha": "230904a19dd30a0c720674b59c097de957e570ed",
+  "branch": "claude/blissful-clarke-rOr3Y",
   "ci_required_gates_ready": false,
-  "launch_proof_ready": true,
+  "launch_proof_ready": false,
   "manifest_ready": true,
   "test_report_ready": false,
   "paid_launch_ready": false,
   "blockers": [
     "ci-required-gates not ready",
+    "launch-proof not ready",
     "test-report-summary not ready"
   ],
   "warnings": [],

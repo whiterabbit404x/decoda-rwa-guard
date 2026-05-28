@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T06:22:35.563243+00:00",
+  "generated_at": "2026-05-28T15:20:44.567190+00:00",
   "release_channel": "local",
-  "commit_sha": "d03d09c19253a6da7cc14219bd9b835ea4a34b34",
-  "branch": "claude/peaceful-galileo-dSGlY",
+  "commit_sha": "230904a19dd30a0c720674b59c097de957e570ed",
+  "branch": "claude/blissful-clarke-rOr3Y",
   "test_suites": {
     "release_proof_artifacts": {
       "name": "release-proof-artifacts",

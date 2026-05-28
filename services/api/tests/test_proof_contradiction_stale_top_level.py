@@ -183,20 +183,24 @@ def test_main_still_fails_closed_without_service_summary(
 # _check_live_evidence (generate_release_proof) resolves stale contradiction
 # ---------------------------------------------------------------------------
 
-def test_check_live_evidence_uses_service_summary_when_canonical_is_stale(
+def test_check_live_evidence_canonical_false_is_authoritative(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """
-    _check_live_evidence must return True when the canonical live-evidence-proof
-    says live_evidence_ready=false but the service summary says live_evidence_ready=true.
+    Strict-source-of-truth invariant: _check_live_evidence must return False when the
+    canonical live-evidence-proof says live_evidence_ready=false, even when the service
+    summary says live_evidence_ready=true.
+
+    The canonical live-evidence-proof artifact is the strict source of truth.
+    A stale service summary cannot override it.
     """
     import scripts.generate_release_proof as _grp_mod
 
-    # Write stale canonical proof (live_evidence_ready=false)
+    # Write canonical proof that explicitly says false
     canonical_dir = tmp_path / 'artifacts' / 'live-evidence-proof' / 'latest'
     canonical_dir.mkdir(parents=True)
-    stale_proof = {
+    canonical_proof = {
         'schema_version': 1,
         'live_provider_evidence': {
             'provider_ready': False,
@@ -205,24 +209,24 @@ def test_check_live_evidence_uses_service_summary_when_canonical_is_stale(
             'contradiction_flags': [],
         },
     }
-    (canonical_dir / 'summary.json').write_text(json.dumps(stale_proof), encoding='utf-8')
+    (canonical_dir / 'summary.json').write_text(json.dumps(canonical_proof), encoding='utf-8')
 
-    # Write live service summary
+    # Write a live service summary — must NOT override the canonical false result
     svc_dir = tmp_path / 'services' / 'api' / 'artifacts' / 'live_evidence' / 'latest'
     svc_dir.mkdir(parents=True)
     (svc_dir / 'summary.json').write_text(
         json.dumps(_live_service_summary()), encoding='utf-8'
     )
 
-    # Patch REPO_ROOT so the function reads from tmp_path
     import unittest.mock as _mock
     with _mock.patch.object(_grp_mod, 'REPO_ROOT', tmp_path):
         ok, blockers = _grp_mod._check_live_evidence()
 
-    assert ok is True, (
-        f'Expected live evidence OK when service summary is live; blockers={blockers}'
+    assert ok is False, (
+        f'Strict-source-of-truth violated: canonical says false but _check_live_evidence '
+        f'returned True; blockers={blockers}'
     )
-    assert blockers == []
+    assert blockers, 'Expected at least one blocker when canonical live-evidence-proof is false'
 
 
 def test_check_live_evidence_fails_closed_when_both_missing(

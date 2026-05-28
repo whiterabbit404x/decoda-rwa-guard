@@ -3738,9 +3738,64 @@ def _ensure_workspace_live_rpc_proof_chain(
             user_id,
         ),
     )
+    evidence_id = str(uuid.uuid4())
+    proof_tx_hash = f'live_proof:{workspace_id}'
+    evidence_raw_payload = {
+        'proof_type': 'live_rpc_telemetry_proof',
+        'evidence_source': 'live_rpc_polling',
+        'provider_type': 'evm_rpc',
+        'telemetry_event_id': telemetry_event_id,
+        'detection_id': detection_id,
+        'alert_id': alert_id,
+        'incident_id': incident_id,
+        'response_action_id': response_action_id,
+        'workspace_id': workspace_id,
+        'target_id': target_id,
+        'chain_id': chain_id,
+        'block_number': block_number,
+        'source_type': 'rpc_polling',
+        'controlled_proof': True,
+        'attack_claim': False,
+    }
+    connection.execute(
+        '''
+        INSERT INTO evidence (
+            id, workspace_id, asset_id, target_id, alert_id,
+            chain, block_number, tx_hash, log_index,
+            event_type, severity, risk_score,
+            summary, source_provider,
+            raw_payload_json, observed_at, created_at,
+            monitored_system_id
+        ) VALUES (
+            %s, %s::uuid, %s::uuid, %s::uuid, %s::uuid,
+            %s, %s, %s, 0,
+            'live_rpc_telemetry_proof', 'informational', 0.0,
+            %s, 'evm_rpc',
+            %s::jsonb, NOW(), NOW(),
+            %s::uuid
+        )
+        ON CONFLICT (target_id, tx_hash, log_index, event_type)
+        DO UPDATE SET
+            alert_id = EXCLUDED.alert_id,
+            block_number = EXCLUDED.block_number,
+            raw_payload_json = EXCLUDED.raw_payload_json,
+            observed_at = EXCLUDED.observed_at
+        ''',
+        (
+            evidence_id, workspace_id, protected_asset_id, target_id, alert_id,
+            str(chain_id), block_number, proof_tx_hash,
+            (
+                f'Live RPC telemetry proof evidence — Ethereum RPC provider confirmed block '
+                f'{block_number} on chain {chain_id}. Controlled live monitoring proof, '
+                'not an attack or threat signal.'
+            ),
+            _json_dumps(evidence_raw_payload),
+            monitored_system_id,
+        ),
+    )
     logger.info(
-        'live_rpc_proof_chain_created workspace_id=%s target_id=%s detection_id=%s alert_id=%s incident_id=%s block_number=%s',
-        workspace_id, target_id, detection_id, alert_id, incident_id, block_number,
+        'live_rpc_proof_chain_created workspace_id=%s target_id=%s detection_id=%s alert_id=%s incident_id=%s evidence_id=%s block_number=%s',
+        workspace_id, target_id, detection_id, alert_id, incident_id, evidence_id, block_number,
     )
     return {
         'created': True,
@@ -3750,6 +3805,7 @@ def _ensure_workspace_live_rpc_proof_chain(
         'alert_id': alert_id,
         'incident_id': incident_id,
         'response_action_id': response_action_id,
+        'evidence_id': evidence_id,
         'target_id': target_id,
         'block_number': block_number,
         'chain_id': chain_id,

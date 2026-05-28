@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T06:22:35.554431+00:00",
+  "generated_at": "2026-05-28T15:20:44.560580+00:00",
   "launch_mode": "pilot",
-  "pilot_ready": true,
+  "pilot_ready": false,
   "paid_launch_ready": false,
   "controlled_pilot_ready": true,
   "broad_paid_saas_ready": false,
@@ -10,15 +10,17 @@
     "billing_ready": false,
     "billing_webhook_ready": false,
     "email_ready": false,
-    "provider_ready": true,
-    "live_evidence_ready": true,
+    "provider_ready": false,
+    "live_evidence_ready": false,
     "ci_required_gates_ready": false
   },
   "blockers": [
     "billing not ready",
     "billing webhook not ready",
     "ci gates not ready",
-    "email not ready"
+    "email not ready",
+    "live evidence not ready",
+    "provider not ready"
   ],
   "warnings": [],
   "artifact_paths": {

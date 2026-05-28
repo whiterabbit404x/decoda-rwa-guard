@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T06:22:35.567370+00:00",
+  "generated_at": "2026-05-28T15:20:44.570454+00:00",
   "release_channel": "local",
-  "commit_sha": "d03d09c19253a6da7cc14219bd9b835ea4a34b34",
-  "branch": "claude/peaceful-galileo-dSGlY",
+  "commit_sha": "230904a19dd30a0c720674b59c097de957e570ed",
+  "branch": "claude/blissful-clarke-rOr3Y",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "5843c2b1710f4bec50a0e45a599a8dd93507fb00b0d0c799a340802b6a1ce7ee",
-      "size_bytes": 756,
+      "sha256": "93f6e0589319dc197d8214447f8a9aa009926e8361fc260a020acce751848c20",
+      "size_bytes": 786,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "c64b0617f2df84a2cea6944018d5e60ccd988365e3071e25b7bb8c2d27d5a64e",
-      "size_bytes": 1855,
+      "sha256": "ed7516aaef9b0fcf5b1c7d5df27ae528251ffecf4cb8aa07590a5af0ccd9eac1",
+      "size_bytes": 2108,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "6c184abcdfee6e7fdceed8fe7b0bbcc2e92bfd4458370f8ed71539eec2c9a840",
-      "size_bytes": 759,
+      "sha256": "2d4ac6236963bbdcc5834b64c05bbb1b1d5a7057ec46c67d3ad366d0860cb95a",
+      "size_bytes": 819,
       "required": true,
       "status": "present"
     }
