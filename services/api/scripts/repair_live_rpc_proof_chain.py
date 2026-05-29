@@ -39,12 +39,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from services.api.app.pilot import (  # noqa: E402
-    _database_connect_options,
-    _resolve_database_url_for_connection,
-    database_url,
-    load_psycopg,
-)
+# pilot imports are deferred inside _get_connection() so this module can be
+# imported in test environments where fastapi is not installed.
 
 # Flags that must be absent for the runtime to show LIVE.
 BLOCKING_FLAGS = frozenset({
@@ -68,6 +64,12 @@ def _str(val: Any) -> str:
 
 
 def _get_connection() -> Any:
+    from services.api.app.pilot import (  # noqa: PLC0415
+        _database_connect_options,
+        _resolve_database_url_for_connection,
+        database_url,
+        load_psycopg,
+    )
     db_url = database_url()
     if not db_url:
         print('ERROR: DATABASE_URL is not set.', file=sys.stderr)
