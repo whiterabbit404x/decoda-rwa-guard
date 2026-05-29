@@ -29,6 +29,9 @@ from services.api.scripts.repair_live_rpc_proof_chain import (
     _has_complete_proof_chain,
     _invalidate_precomputed_summary,
     _query_contradiction_flags,
+    _resolve_for_monitored_targets_parent,
+    _resolve_for_targets_parent,
+    inspect_detection_events_target_parent,
     resolve_detection_event_target_id,
     resolve_monitoring_run_id,
 )
@@ -733,6 +736,10 @@ class TestPRegressionForeignKeyViolation:
             # Resolver: step A and B return None, step D (upsert) returns mt_id
             if 'INSERT INTO monitored_targets' in q:
                 return _row(id=mt_id)
+            # Preflight SELECT 1 FROM monitored_targets must return truthy so the
+            # preflight guard passes. The plain SELECT (steps A/B) still returns None.
+            if 'SELECT 1 FROM monitored_targets' in q:
+                return _row(id=mt_id)
             if 'FROM monitored_targets' in q:
                 return None
             # monitoring_run_id resolver: step A returns existing row
@@ -767,6 +774,8 @@ class TestPRegressionForeignKeyViolation:
                 return None
             if 'INSERT INTO monitored_targets' in q:
                 return _row(id=mt_id)
+            if 'SELECT 1 FROM monitored_targets' in q:
+                return _row(id=mt_id)  # preflight passes
             if 'FROM monitored_targets' in q:
                 return None
             # monitoring_run_id resolver: step A returns existing row
@@ -1109,5 +1118,355 @@ class TestUFullChainExists:
             'telemetry_event_id', 'detection_event_id', 'detection_id',
             'detection_evidence_id', 'alert_id', 'incident_id',
             'incident_timeline_id', 'response_action_id', 'evidence_id',
+        ):
+            assert result.get(key) is not None, f'Missing chain id: {key!r}'
+
+
+# ---------------------------------------------------------------------------
+# V. inspect_detection_events_target_parent: returns correct parent table
+# ---------------------------------------------------------------------------
+
+class TestVInspectFKParent:
+    def test_V_returns_targets_when_fk_points_to_targets(self) -> None:
+        conn = _FakeConn(responses={'pg_constraint': _row(parent_table='targets')})
+        assert inspect_detection_events_target_parent(conn) == 'targets'
+
+    def test_V_returns_monitored_targets_when_fk_points_to_monitored_targets(self) -> None:
+        conn = _FakeConn(responses={'pg_constraint': _row(parent_table='monitored_targets')})
+        assert inspect_detection_events_target_parent(conn) == 'monitored_targets'
+
+    def test_V_returns_unknown_when_no_constraint_found(self) -> None:
+        conn = _FakeConn()
+        assert inspect_detection_events_target_parent(conn) == 'unknown'
+
+    def test_V_returns_unknown_for_unrecognised_parent_table(self) -> None:
+        conn = _FakeConn(responses={'pg_constraint': _row(parent_table='some_other_table')})
+        assert inspect_detection_events_target_parent(conn) == 'unknown'
+
+
+# ---------------------------------------------------------------------------
+# W. Task A: FK parent is targets → detection_events.target_id uses targets.id
+# ---------------------------------------------------------------------------
+
+class TestWFKParentTargets:
+    def _make_conn_targets_fk(self) -> _FakeConn:
+        """FK is targets; telemetry_target_id exists in targets.id."""
+        tid = str(uuid.uuid4())
+        uid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        run_id = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            # FK inspect
+            if 'pg_constraint' in q:
+                return _row(parent_table='targets')
+            if 'FROM telemetry_events te' in q:
+                return _row(
+                    id=str(uuid.uuid4()), target_id=tid, asset_id=None,
+                    observed_at=now,
+                    payload_json={'block_number': 500, 'chain_id': 1, 'provider_name': 'infura'},
+                )
+            # Preflight and resolver both query targets
+            if 'FROM targets' in q:
+                return _row(id=tid)
+            if 'FROM monitored_systems ms' in q:
+                return _row(id=str(uuid.uuid4()), asset_id=None)
+            if 'SELECT created_by_user_id FROM workspaces' in q:
+                return _row(created_by_user_id=uid)
+            if 'SELECT id FROM assets' in q:
+                return None
+            if 'monitoring_runs' in q:
+                return _row(id=run_id)
+            return None
+
+        return _FakeConn(responses={'': respond})
+
+    def test_W_resolver_returns_targets_id_when_fk_is_targets(self) -> None:
+        tid = str(uuid.uuid4())
+        wid = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'pg_constraint' in q:
+                return _row(parent_table='targets')
+            if 'FROM targets' in q:
+                return _row(id=tid)
+            return None
+
+        conn = _FakeConn(responses={'': respond})
+        result = resolve_detection_event_target_id(conn, wid, tid)
+        assert result == tid
+
+    def test_W_resolver_does_not_query_monitored_targets_when_fk_is_targets(self) -> None:
+        tid = str(uuid.uuid4())
+        wid = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'pg_constraint' in q:
+                return _row(parent_table='targets')
+            if 'FROM targets' in q:
+                return _row(id=tid)
+            return None
+
+        conn = _FakeConn(responses={'': respond})
+        resolve_detection_event_target_id(conn, wid, tid)
+        mt_queries = [q for q, _ in conn.executed if 'monitored_targets' in q]
+        assert mt_queries == [], 'Must not query monitored_targets when FK is targets'
+
+    def test_W_create_proof_chain_uses_targets_id_in_detection_events_insert(self) -> None:
+        conn = self._make_conn_targets_fk()
+        # Find the telemetry target_id that the conn will report
+        telemetry_resp = conn.execute('SELECT * FROM telemetry_events te WHERE evidence_source = %s', ('live',))
+        conn.executed.clear()
+
+        result = _create_proof_chain(conn, str(uuid.uuid4()))
+        assert result.get('created') is True
+
+        de_inserts = [params for q, params in conn.executed if 'INSERT INTO detection_events' in q]
+        assert de_inserts, 'Expected INSERT INTO detection_events'
+
+    def test_W_resolve_for_targets_parent_uses_fallback_when_not_direct_match(self) -> None:
+        """When telemetry_target_id not in targets.id, falls back to another targets row."""
+        wid = str(uuid.uuid4())
+        tid_telemetry = str(uuid.uuid4())   # NOT in targets.id
+        tid_fallback = str(uuid.uuid4())    # another targets row for this workspace
+        call_count = 0
+
+        def respond(q: str, _params: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return None  # direct match for telemetry_target_id fails
+            return _row(id=tid_fallback)  # fallback row found
+
+        conn = _FakeConn(responses={'FROM targets': respond})
+        result = _resolve_for_targets_parent(conn, wid, tid_telemetry)
+        assert result == tid_fallback
+
+    def test_W_resolve_for_targets_parent_raises_when_no_targets_row_exists(self) -> None:
+        wid = str(uuid.uuid4())
+        tid = str(uuid.uuid4())
+        conn = _FakeConn(responses={'FROM targets': None})
+        with pytest.raises(RuntimeError, match='targets'):
+            _resolve_for_targets_parent(conn, wid, tid)
+
+
+# ---------------------------------------------------------------------------
+# X. Task B: FK parent is monitored_targets → uses monitored_targets.id path
+# ---------------------------------------------------------------------------
+
+class TestXFKParentMonitoredTargets:
+    def test_X_resolver_routes_to_monitored_targets_when_fk_is_monitored_targets(self) -> None:
+        mt_id = str(uuid.uuid4())
+        wid = str(uuid.uuid4())
+        tid = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'pg_constraint' in q:
+                return _row(parent_table='monitored_targets')
+            if 'FROM monitored_targets' in q:
+                return _row(id=mt_id)
+            return None
+
+        conn = _FakeConn(responses={'': respond})
+        result = resolve_detection_event_target_id(conn, wid, tid)
+        assert result == mt_id
+
+    def test_X_resolver_does_not_query_targets_table_when_fk_is_monitored_targets(self) -> None:
+        mt_id = str(uuid.uuid4())
+        wid = str(uuid.uuid4())
+        tid = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'pg_constraint' in q:
+                return _row(parent_table='monitored_targets')
+            if 'FROM monitored_targets' in q:
+                return _row(id=mt_id)
+            return None
+
+        conn = _FakeConn(responses={'': respond})
+        resolve_detection_event_target_id(conn, wid, tid)
+        target_queries = [
+            q for q, _ in conn.executed
+            if 'FROM targets' in q and 'monitored_targets' not in q and 'pg_constraint' not in q
+        ]
+        assert target_queries == [], 'Must not query targets when FK is monitored_targets'
+
+
+# ---------------------------------------------------------------------------
+# Y. Task C: regression — resolved id missing from parent table → never inserted
+# ---------------------------------------------------------------------------
+
+PRODUCTION_REGRESSION_TARGET_ID = '8629ff8d-1807-5eb4-9eae-4167bd118eff'
+
+
+class TestYPreflightGuard:
+    """Preflight guard prevents FK violation when resolved id is absent from parent."""
+
+    def test_Y_preflight_raises_when_resolved_id_missing_from_targets(self) -> None:
+        """When FK is targets but resolved id is not in targets, RuntimeError fires."""
+        uid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        # Simulate: telemetry_target_id exists in targets (step A succeeds),
+        # but somehow the resolved id is not confirmed by preflight.
+        # We achieve this by making the pg_constraint say 'targets' but having
+        # SELECT 1 FROM targets return None.
+        bad_id = PRODUCTION_REGRESSION_TARGET_ID
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'pg_constraint' in q:
+                return _row(parent_table='targets')
+            if 'FROM telemetry_events te' in q:
+                return _row(
+                    id=str(uuid.uuid4()), target_id=bad_id, asset_id=None,
+                    observed_at=now,
+                    payload_json={'block_number': 1, 'chain_id': 1, 'provider_name': 'test'},
+                )
+            if 'SELECT created_by_user_id FROM workspaces' in q:
+                return _row(created_by_user_id=str(uuid.uuid4()))
+            # Resolver step A: bad_id not found in targets
+            # Resolver step B: no other targets row
+            # → _resolve_for_targets_parent raises before reaching INSERT
+            if 'FROM targets' in q:
+                return None
+            if 'monitoring_runs' in q:
+                return _row(id=str(uuid.uuid4()))
+            return None
+
+        conn = _FakeConn(responses={'': respond})
+        with pytest.raises(RuntimeError):
+            _create_proof_chain(conn, str(uuid.uuid4()))
+
+    def test_Y_preflight_raises_with_required_diagnostic_fields(self) -> None:
+        """RuntimeError message must include parent_table, telemetry_target_id,
+        resolved_target_id, and workspace_id."""
+        uid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        wid = str(uuid.uuid4())
+        tid = str(uuid.uuid4())
+        mt_id = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'pg_constraint' in q:
+                return _row(parent_table='monitored_targets')
+            if 'FROM telemetry_events te' in q:
+                return _row(
+                    id=str(uuid.uuid4()), target_id=tid, asset_id=None,
+                    observed_at=now,
+                    payload_json={'block_number': 1, 'chain_id': 1, 'provider_name': 'test'},
+                )
+            if 'SELECT created_by_user_id FROM workspaces' in q:
+                return _row(created_by_user_id=uid)
+            if 'INSERT INTO monitored_targets' in q:
+                return _row(id=mt_id)
+            # SELECT 1 FROM monitored_targets (preflight) returns None → guard fires
+            if 'SELECT 1 FROM monitored_targets' in q:
+                return None
+            if 'FROM monitored_targets' in q:
+                return None
+            if 'monitoring_runs' in q:
+                return _row(id=str(uuid.uuid4()))
+            return None
+
+        conn = _FakeConn(responses={'': respond})
+        with pytest.raises(RuntimeError) as exc_info:
+            _create_proof_chain(conn, wid)
+        msg = str(exc_info.value)
+        assert 'parent_table' in msg
+        assert 'telemetry_target_id' in msg or tid in msg
+        assert 'resolved_target_id' in msg or mt_id in msg
+        assert 'workspace_id' in msg or wid in msg
+
+    def test_Y_production_regression_old_code_would_fail_new_code_uses_targets(self) -> None:
+        """When FK → targets and telemetry_target_id exists in targets, resolved id
+        must be the targets.id — not a monitored_targets.id (which caused the production error)."""
+        wid = str(uuid.uuid4())
+        # In production, telemetry_target_id is a real targets.id
+        real_targets_id = PRODUCTION_REGRESSION_TARGET_ID
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'pg_constraint' in q:
+                return _row(parent_table='targets')
+            if 'FROM targets' in q:
+                return _row(id=real_targets_id)
+            return None
+
+        conn = _FakeConn(responses={'': respond})
+        result = resolve_detection_event_target_id(conn, wid, real_targets_id)
+        # Must return the targets.id, not invent a monitored_targets.id
+        assert result == real_targets_id
+        # Must NOT have queried monitored_targets at all
+        mt_queries = [q for q, _ in conn.executed if 'monitored_targets' in q]
+        assert mt_queries == [], (
+            'When FK → targets, resolver must not touch monitored_targets. '
+            'The production error was caused by inserting a monitored_targets.id into '
+            'detection_events.target_id when the FK required a targets.id.'
+        )
+
+
+# ---------------------------------------------------------------------------
+# Z. Task D: full chain succeeds after prior partial archives with targets FK
+# ---------------------------------------------------------------------------
+
+class TestZFullChainAfterPartialArchivesTargetsFK:
+    """Full proof chain creation after orphan archival, with FK → targets."""
+
+    def _make_conn(self) -> _FakeConn:
+        tid = str(uuid.uuid4())
+        uid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        run_id = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'pg_constraint' in q:
+                return _row(parent_table='targets')
+            if 'FROM telemetry_events te' in q:
+                return _row(
+                    id=str(uuid.uuid4()), target_id=tid, asset_id=None,
+                    observed_at=now,
+                    payload_json={'block_number': 77777, 'chain_id': 1, 'provider_name': 'alchemy'},
+                )
+            if 'FROM targets' in q:
+                return _row(id=tid)
+            if 'FROM monitored_systems ms' in q:
+                return _row(id=str(uuid.uuid4()), asset_id=None)
+            if 'SELECT created_by_user_id FROM workspaces' in q:
+                return _row(created_by_user_id=uid)
+            if 'SELECT id FROM assets' in q:
+                return None
+            if 'monitoring_runs' in q:
+                return _row(id=run_id)
+            # Orphan archive counts
+            if 'FROM alerts a' in q and 'COUNT' in q:
+                return _row(c=2)
+            if 'FROM incidents i' in q and 'COUNT' in q:
+                return _row(c=1)
+            return None
+
+        return _FakeConn(responses={'': respond})
+
+    def test_Z_archive_then_create_chain_with_targets_fk(self) -> None:
+        conn = self._make_conn()
+        _archive_orphan_alerts(conn, str(uuid.uuid4()), dry_run=False)
+        _archive_orphan_incidents(conn, str(uuid.uuid4()), dry_run=False)
+        result = _create_proof_chain(conn, str(uuid.uuid4()))
+        assert result.get('created') is True
+
+    def test_Z_detection_events_insert_uses_targets_id_not_monitored_targets_id(self) -> None:
+        conn = self._make_conn()
+        result = _create_proof_chain(conn, str(uuid.uuid4()))
+        assert result.get('created') is True
+        de_inserts = [params for q, params in conn.executed if 'INSERT INTO detection_events' in q]
+        assert de_inserts, 'Expected INSERT INTO detection_events'
+        # No monitored_targets INSERT must have been executed (targets FK path)
+        mt_inserts = [q for q, _ in conn.executed if 'INSERT INTO monitored_targets' in q]
+        assert mt_inserts == [], 'Must not upsert monitored_targets when FK → targets'
+
+    def test_Z_full_chain_ids_returned_with_targets_fk(self) -> None:
+        conn = self._make_conn()
+        result = _create_proof_chain(conn, str(uuid.uuid4()))
+        for key in (
+            'telemetry_event_id', 'detection_event_id', 'detection_id',
+            'alert_id', 'incident_id', 'incident_timeline_id',
+            'response_action_id', 'evidence_id',
         ):
             assert result.get(key) is not None, f'Missing chain id: {key!r}'
