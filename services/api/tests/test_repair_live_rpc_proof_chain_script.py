@@ -1470,3 +1470,189 @@ class TestZFullChainAfterPartialArchivesTargetsFK:
             'response_action_id', 'evidence_id',
         ):
             assert result.get(key) is not None, f'Missing chain id: {key!r}'
+
+
+# ---------------------------------------------------------------------------
+# AA. FK-safe insertion order regression tests
+#
+# A. detections INSERT must NOT include linked_alert_id referencing a non-existent alert.
+# B. detection is inserted before the alert; linked_alert_id starts as NULL.
+# C. After alert creation, detection.linked_alert_id is updated via UPDATE.
+# D. Re-running does not duplicate detection/alert (covered by TestT — referenced here).
+# E. Full chain exists (covered by TestU — referenced here).
+# ---------------------------------------------------------------------------
+
+def _make_fk_order_conn() -> _FakeConn:
+    """Fake connection that records all SQL in order for FK-ordering assertions.
+
+    SELECT 1 FROM alerts returns a truthy row so the post-alert UPDATE fires.
+    """
+    tid = str(uuid.uuid4())
+    uid = str(uuid.uuid4())
+    run_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+
+    def respond(q: str, _params: Any) -> Any:
+        if 'FROM telemetry_events te' in q:
+            return _row(
+                id=str(uuid.uuid4()), target_id=tid, asset_id=None,
+                observed_at=now,
+                payload_json={'block_number': 55555, 'chain_id': 1, 'provider_name': 'test'},
+            )
+        if 'FROM monitored_systems ms' in q:
+            return _row(id=str(uuid.uuid4()), asset_id=None)
+        if 'SELECT created_by_user_id FROM workspaces' in q:
+            return _row(created_by_user_id=uid)
+        if 'SELECT id FROM assets' in q:
+            return None
+        if 'monitored_targets' in q:
+            return _row(id=tid)
+        if 'monitoring_runs' in q:
+            return _row(id=run_id)
+        # Return truthy for the post-alert validation SELECT so the UPDATE fires.
+        if 'SELECT 1 FROM alerts WHERE id' in q:
+            return _row(exists=1)
+        return None
+
+    return _FakeConn(responses={'': respond})
+
+
+class TestAAFKSafeInsertionOrder:
+    """Regression tests for the FK-safe detection → alert → update-detection order.
+
+    Production error was:
+        psycopg.errors.ForeignKeyViolation: insert or update on table "detections"
+        violates foreign key constraint "detections_linked_alert_id_fkey"
+    Cause: detections.linked_alert_id was set to a future alert_id before the alert row existed.
+    """
+
+    def test_AA_detection_insert_does_not_include_alert_id_in_params(self) -> None:
+        """Test A: the detection INSERT must not reference alert_id as linked_alert_id."""
+        conn = _make_fk_order_conn()
+        result = _create_proof_chain(conn, str(uuid.uuid4()))
+        assert result.get('created') is True
+
+        alert_id = result['alert_id']
+        det_inserts = [(q, p) for q, p in conn.executed if 'INSERT INTO detections' in q]
+        assert det_inserts, 'Expected INSERT INTO detections'
+        _query, params = det_inserts[0]
+        assert alert_id not in params, (
+            f'Detection INSERT must NOT include alert_id={alert_id!r} as linked_alert_id — '
+            'the alert row does not exist yet at INSERT time (FK violation).'
+        )
+
+    def test_AA_detection_insert_precedes_alert_insert(self) -> None:
+        """Test B: the detection row must be inserted before the alert row."""
+        conn = _make_fk_order_conn()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+
+        det_positions = [i for i, (q, _) in enumerate(conn.executed) if 'INSERT INTO detections' in q]
+        alert_positions = [i for i, (q, _) in enumerate(conn.executed) if 'INSERT INTO alerts' in q]
+        assert det_positions, 'Expected INSERT INTO detections'
+        assert alert_positions, 'Expected INSERT INTO alerts'
+        assert det_positions[0] < alert_positions[0], (
+            'Detection must be inserted before the alert — '
+            f'got detection at index {det_positions[0]}, alert at {alert_positions[0]}'
+        )
+
+    def test_AA_linked_alert_id_set_via_update_after_alert_exists(self) -> None:
+        """Test C: after the alert INSERT, an UPDATE sets detection.linked_alert_id."""
+        conn = _make_fk_order_conn()
+        result = _create_proof_chain(conn, str(uuid.uuid4()))
+        assert result.get('created') is True
+
+        alert_id = result['alert_id']
+        detection_id = result['detection_id']
+
+        # Find the UPDATE that sets linked_alert_id
+        update_stmts = [
+            (i, q, p) for i, (q, p) in enumerate(conn.executed)
+            if 'UPDATE detections' in q and 'linked_alert_id' in q
+        ]
+        assert update_stmts, (
+            'Expected UPDATE detections SET linked_alert_id=... after alert insert'
+        )
+        _idx, _q, params = update_stmts[0]
+        assert alert_id in params, (
+            f'UPDATE detections must use alert_id={alert_id!r}'
+        )
+        assert detection_id in params, (
+            f'UPDATE detections must target detection_id={detection_id!r}'
+        )
+
+    def test_AA_update_detection_linked_alert_id_follows_alert_insert(self) -> None:
+        """Test C (ordering): the UPDATE must come after INSERT INTO alerts."""
+        conn = _make_fk_order_conn()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+
+        alert_positions = [i for i, (q, _) in enumerate(conn.executed) if 'INSERT INTO alerts' in q]
+        update_positions = [
+            i for i, (q, _) in enumerate(conn.executed)
+            if 'UPDATE detections' in q and 'linked_alert_id' in q
+        ]
+        assert alert_positions, 'Expected INSERT INTO alerts'
+        assert update_positions, 'Expected UPDATE detections SET linked_alert_id'
+        assert alert_positions[0] < update_positions[0], (
+            'UPDATE detections.linked_alert_id must follow INSERT INTO alerts — '
+            f'alert insert at index {alert_positions[0]}, update at {update_positions[0]}'
+        )
+
+    def test_AA_validation_select_precedes_update(self) -> None:
+        """Test C (validation): SELECT 1 FROM alerts must precede the UPDATE detections."""
+        conn = _make_fk_order_conn()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+
+        validate_positions = [
+            i for i, (q, _) in enumerate(conn.executed)
+            if 'SELECT 1 FROM alerts WHERE id' in q
+        ]
+        update_positions = [
+            i for i, (q, _) in enumerate(conn.executed)
+            if 'UPDATE detections' in q and 'linked_alert_id' in q
+        ]
+        assert validate_positions, 'Expected SELECT 1 FROM alerts WHERE id (validation)'
+        assert update_positions, 'Expected UPDATE detections SET linked_alert_id'
+        assert validate_positions[0] < update_positions[0], (
+            'Validation SELECT must precede UPDATE detections.linked_alert_id'
+        )
+
+    def test_AA_no_update_when_alert_validation_fails(self) -> None:
+        """If the alert validation SELECT returns None, linked_alert_id must not be updated."""
+        tid = str(uuid.uuid4())
+        uid = str(uuid.uuid4())
+        run_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'FROM telemetry_events te' in q:
+                return _row(
+                    id=str(uuid.uuid4()), target_id=tid, asset_id=None,
+                    observed_at=now,
+                    payload_json={'block_number': 1, 'chain_id': 1, 'provider_name': 'test'},
+                )
+            if 'FROM monitored_systems ms' in q:
+                return _row(id=str(uuid.uuid4()), asset_id=None)
+            if 'SELECT created_by_user_id FROM workspaces' in q:
+                return _row(created_by_user_id=uid)
+            if 'SELECT id FROM assets' in q:
+                return None
+            if 'monitored_targets' in q:
+                return _row(id=tid)
+            if 'monitoring_runs' in q:
+                return _row(id=run_id)
+            # Validation SELECT returns None — simulates failed alert insert
+            if 'SELECT 1 FROM alerts WHERE id' in q:
+                return None
+            return None
+
+        conn = _FakeConn(responses={'': respond})
+        result = _create_proof_chain(conn, str(uuid.uuid4()))
+        assert result.get('created') is True
+
+        update_stmts = [
+            q for q, _ in conn.executed
+            if 'UPDATE detections' in q and 'linked_alert_id' in q
+        ]
+        assert update_stmts == [], (
+            'Must not UPDATE detection.linked_alert_id when alert validation returns None'
+        )

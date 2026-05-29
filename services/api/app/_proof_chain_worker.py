@@ -500,27 +500,30 @@ def _ensure_workspace_live_rpc_proof_chain(
         ),
     )
 
-    # 2. Legacy detections row — required for last_detection_at and legacy coverage.
+    # 2. Legacy detections row — inserted with linked_alert_id = NULL.
+    #    linked_alert_id is a FK to alerts(id); the alert does not exist yet at this
+    #    point, so passing alert_id here would raise ForeignKeyViolation.  The column
+    #    is back-filled via UPDATE after the alert row is confirmed to exist (step 4b).
     connection.execute(
         '''
         INSERT INTO detections (
             id, workspace_id, monitored_system_id, protected_asset_id,
             detection_type, severity, confidence, title, evidence_summary,
             evidence_source, source_rule, status, detected_at,
-            raw_evidence_json, monitoring_run_id, linked_alert_id,
+            raw_evidence_json, monitoring_run_id,
             created_at, updated_at
         ) VALUES (
             %s, %s::uuid, %s::uuid, %s::uuid,
             'live_rpc_telemetry_proof', 'low', 0.95, %s, %s,
             'live', 'monitoring.live_rpc_coverage.proof', 'open', NOW(),
-            %s::jsonb, %s::uuid, %s::uuid,
+            %s::jsonb, %s::uuid,
             NOW(), NOW()
         )
         ''',
         (
             detection_id, workspace_id, monitored_system_id, protected_asset_id,
             title, evidence_summary,
-            _json_dumps(raw_evidence), monitoring_run_id, alert_id,
+            _json_dumps(raw_evidence), monitoring_run_id,
         ),
     )
 
@@ -579,6 +582,19 @@ def _ensure_workspace_live_rpc_proof_chain(
             detection_event_id, workspace_id,
         ),
     )
+
+    # 4b. Validate alert row exists, then back-fill detection.linked_alert_id.
+    #     FK ordering requires the alert to be present before the detection column
+    #     references it.  The SELECT confirms the row is visible in this transaction.
+    _alert_confirmed = connection.execute(
+        'SELECT 1 FROM alerts WHERE id = %s::uuid',
+        (alert_id,),
+    ).fetchone()
+    if _alert_confirmed:
+        connection.execute(
+            'UPDATE detections SET linked_alert_id = %s::uuid, updated_at = NOW() WHERE id = %s::uuid',
+            (alert_id, detection_id),
+        )
 
     # 5. Incident (linked to alert via source_alert_id).
     timeline_entries = [
