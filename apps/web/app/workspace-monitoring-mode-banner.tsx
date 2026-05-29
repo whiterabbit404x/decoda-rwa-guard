@@ -9,6 +9,13 @@ type BannerState = 'LIVE' | 'LIMITED_COVERAGE' | 'SETUP_REQUIRED' | 'OFFLINE';
 function deriveBannerState(truth: WorkspaceMonitoringTruth): BannerState {
   if (hasLiveTelemetry(truth) && hasRealTelemetryBackedChain(truth)) return 'LIVE';
   if (truth.db_failure_reason) return 'OFFLINE';
+  // Backend-authoritative live verdict: trust live_runtime_verified or a clean live runtime
+  // (no derived guard flags) when the API has not reported an error.
+  if (
+    truth.status_reason !== 'summary_unavailable' &&
+    (truth.status_reason === 'live_runtime_verified' ||
+      (truth.runtime_status === 'live' && (truth.guard_flags ?? []).length === 0))
+  ) return 'LIVE';
   // Only show OFFLINE when the API returned a confirmed offline status — not when the
   // runtime-status call itself failed (status_reason === 'summary_unavailable').
   const runtimeApiMissing = truth.status_reason === 'summary_unavailable';

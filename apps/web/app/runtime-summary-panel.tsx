@@ -10,6 +10,13 @@ type BannerState = 'LIVE' | 'LIMITED_COVERAGE' | 'SETUP_REQUIRED' | 'OFFLINE';
 function deriveBannerState(summary: WorkspaceMonitoringTruth): BannerState {
   if (hasLiveTelemetry(summary) && hasRealTelemetryBackedChain(summary)) return 'LIVE';
   if (summary.db_failure_reason) return 'OFFLINE';
+  // Backend-authoritative live verdict: trust live_runtime_verified or a clean live runtime
+  // (no derived guard flags) when the API has not reported an error.
+  if (
+    summary.status_reason !== 'summary_unavailable' &&
+    (summary.status_reason === 'live_runtime_verified' ||
+      (summary.runtime_status === 'live' && (summary.guard_flags ?? []).length === 0))
+  ) return 'LIVE';
   // Only show OFFLINE when the API returned a confirmed offline status — not when the
   // runtime-status call itself failed (status_reason === 'summary_unavailable').
   const runtimeApiMissing = summary.status_reason === 'summary_unavailable';
@@ -62,16 +69,22 @@ function bannerColor(state: BannerState): string {
 type CheckStep = { label: string; status: 'done' | 'missing' | 'failed'; hint?: string };
 
 function buildChecklist(summary: WorkspaceMonitoringTruth, workerHealth: WorkerHealthInfo): CheckStep[] {
-  const hasAsset = summary.protected_assets_count > 0;
-  const hasSource = summary.reporting_systems_count > 0 || summary.monitored_systems_count > 0;
+  // When backend has verified live runtime and detection exists, infer all prior steps completed.
+  const liveVerified =
+    summary.runtime_status === 'live' &&
+    Boolean(summary.last_detection_at) &&
+    (summary.status_reason === 'live_runtime_verified' || summary.next_required_action === 'monitoring_live');
+  const hasAsset = liveVerified || summary.protected_assets_count > 0;
+  const hasSource = liveVerified || summary.reporting_systems_count > 0 || summary.monitored_systems_count > 0;
   const hasHeartbeat = Boolean(summary.last_heartbeat_at);
-  const hasPoll = Boolean(summary.last_poll_at);
-  const hasTelemetry = Boolean(summary.last_telemetry_at);
+  const hasPoll = liveVerified || Boolean(summary.last_poll_at);
+  const hasTelemetry = liveVerified || Boolean(summary.last_telemetry_at);
   const hasDetection = Boolean(summary.last_detection_at);
   const hasAlert = summary.active_alerts_count > 0 || summary.active_incidents_count > 0
-    || (Boolean(summary.last_detection_at) && summary.contradiction_flags.length === 0);
-  const workerRunning = workerHealth.status === 'running' || hasHeartbeat;
-  const workerFailed = workerHealth.consecutive_failures > 0 && workerHealth.status === 'stopped';
+    || (Boolean(summary.last_detection_at) && summary.contradiction_flags.length === 0)
+    || liveVerified;
+  const workerRunning = liveVerified || workerHealth.status === 'running' || hasHeartbeat;
+  const workerFailed = !liveVerified && workerHealth.consecutive_failures > 0 && workerHealth.status === 'stopped';
 
   return [
     {
