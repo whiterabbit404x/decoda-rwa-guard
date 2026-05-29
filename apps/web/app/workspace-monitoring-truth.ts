@@ -132,10 +132,16 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   const workspaceConfigured = Boolean(summary.workspace_configured);
   const runtimeStatusLabel = String(runtimeStatus ?? '').trim().toLowerCase();
   const normalizedRuntimeStatus = runtimeStatusLabel === 'healthy' ? 'live' : runtimeStatusLabel;
-  const normalizedMonitoringStatus = normalizeMonitoringStatus(
+  const rawMonitoringStatus = normalizeMonitoringStatus(
     summary.monitoring_status ?? (summary as Record<string, unknown>).monitoring_mode,
     normalizedRuntimeStatus as WorkspaceMonitoringTruth['runtime_status'],
   );
+  // When the backend has authoritatively verified live runtime, trust it — the flat
+  // response shape may omit monitoring_status, which would otherwise default to 'limited'.
+  const normalizedMonitoringStatus: WorkspaceMonitoringTruth['monitoring_status'] =
+    resolvedStatusReason === 'live_runtime_verified' && normalizedRuntimeStatus === 'live'
+      ? 'live'
+      : rawMonitoringStatus;
   const normalizedTelemetryFreshness = telemetryFreshness === 'fresh' || telemetryFreshness === 'stale' || telemetryFreshness === 'unavailable'
     ? telemetryFreshness
     : ((summary as Record<string, unknown>).freshness_status as WorkspaceMonitoringTruth['telemetry_freshness']) ?? 'unavailable';
@@ -221,7 +227,13 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   }
 
   // workspace not configured but systems or assets exist
-  if (!workspaceConfigured && (monitoredSystemsCount > 0 || protectedAssetsCount > 0)) {
+  // Suppress when backend has authoritatively verified live runtime — the backend owns
+  // workspace_configured state and may not echo it in every flat response shape.
+  if (
+    resolvedStatusReason !== 'live_runtime_verified' &&
+    !workspaceConfigured &&
+    (monitoredSystemsCount > 0 || protectedAssetsCount > 0)
+  ) {
     addGuard('workspace_unconfigured_with_coverage');
   }
 

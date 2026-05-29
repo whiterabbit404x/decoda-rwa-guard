@@ -68,6 +68,18 @@ function normalizeStatus(
   if (truth.db_failure_reason) {
     return runtimeStatus === 'offline' || monitoringStatus === 'offline' ? 'offline' : 'degraded';
   }
+  // Backend-authoritative live verdict: when the backend explicitly verified live runtime
+  // with no database failure and no critical contradictions from the backend itself, trust it.
+  // This path fires before frontend-derived guard checks so that non-critical guards
+  // (e.g. workspace_unconfigured_with_coverage) cannot demote a backend-verified live state.
+  if (
+    !truth.db_failure_reason &&
+    runtimeStatus === 'live' &&
+    truth.status_reason === 'live_runtime_verified' &&
+    !hasCriticalContradiction
+  ) {
+    return 'live';
+  }
   if (contradictionFlags.length > 0) {
     return runtimeStatus === 'offline' || monitoringStatus === 'offline' ? 'offline' : 'degraded';
   }
