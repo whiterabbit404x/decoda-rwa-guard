@@ -165,6 +165,74 @@ def resolve_detection_event_target_id(
     )
 
 
+def resolve_monitoring_run_id(
+    conn: Any,
+    workspace_id: str,
+) -> str:
+    """Return a valid monitoring_runs.id for use as detections.monitoring_run_id.
+
+    detections.monitoring_run_id FK (detections_monitoring_run_id_fkey) references
+    monitoring_runs(id).  Generating a random UUID and passing it directly violates
+    this FK.  This function ensures the id exists in monitoring_runs first.
+
+    Resolution order:
+    A. Find newest existing monitoring_runs row for this workspace.
+    B. If none found, INSERT a new row with all required (NOT NULL) columns.
+    C. Re-query to confirm the row is visible and return its id.
+    D. Raise a clear error if the row cannot be confirmed after INSERT.
+    """
+    # A. Find newest existing row for this workspace.
+    existing = conn.execute(
+        '''
+        SELECT id FROM monitoring_runs
+        WHERE workspace_id = %s::uuid
+        ORDER BY started_at DESC
+        LIMIT 1
+        ''',
+        (workspace_id,),
+    ).fetchone()
+    if existing:
+        return _str(existing.get('id'))
+
+    # B. No existing row — insert one with all required schema columns.
+    #    status='completed' and trigger_type='repair_script' are descriptive and safe.
+    new_run_id = str(uuid.uuid4())
+    inserted = conn.execute(
+        '''
+        INSERT INTO monitoring_runs (
+            id, workspace_id, started_at, completed_at, status,
+            trigger_type, systems_checked_count, assets_checked_count,
+            detections_created_count, alerts_created_count,
+            telemetry_records_seen_count, notes
+        ) VALUES (
+            %s::uuid, %s::uuid, NOW(), NOW(), 'completed',
+            'repair_script', 0, 0, 1, 1, 1,
+            'Created by repair_live_rpc_proof_chain script'
+        )
+        RETURNING id
+        ''',
+        (new_run_id, workspace_id),
+    ).fetchone()
+
+    resolved_id = _str((inserted or {}).get('id')) or new_run_id
+
+    # C. Re-query to confirm the FK will be satisfied.
+    confirmed = conn.execute(
+        'SELECT 1 FROM monitoring_runs WHERE id = %s::uuid',
+        (resolved_id,),
+    ).fetchone()
+    if confirmed:
+        return resolved_id
+
+    # D. Raise with diagnostics so the caller knows exactly what failed.
+    raise RuntimeError(
+        f'resolve_monitoring_run_id: monitoring_runs row id={resolved_id!r} '
+        f'not found after INSERT for workspace_id={workspace_id!r}. '
+        f'Verify monitoring_runs table exists and workspace_id FK is valid. '
+        f'Do NOT insert detections.monitoring_run_id={resolved_id!r} — FK would be violated.'
+    )
+
+
 def _find_workspace_id(conn: Any, env_workspace_id: str) -> str:
     if env_workspace_id:
         row = conn.execute(
@@ -648,7 +716,8 @@ def _create_proof_chain(conn: Any, workspace_id: str) -> dict[str, Any]:
     response_action_id = str(uuid.uuid4())
     detection_evidence_id = str(uuid.uuid4())
     incident_timeline_id = str(uuid.uuid4())
-    monitoring_run_id = str(uuid.uuid4())
+    # Resolve a real monitoring_runs.id — never pass a random UUID that has no parent row.
+    monitoring_run_id = resolve_monitoring_run_id(conn, workspace_id)
 
     evidence_summary = (
         f'Ethereum RPC provider returned a live block (chain_id={chain_id}, '

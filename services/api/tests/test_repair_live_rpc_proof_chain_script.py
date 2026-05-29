@@ -30,6 +30,7 @@ from services.api.scripts.repair_live_rpc_proof_chain import (
     _invalidate_precomputed_summary,
     _query_contradiction_flags,
     resolve_detection_event_target_id,
+    resolve_monitoring_run_id,
 )
 
 
@@ -207,6 +208,8 @@ class TestFCreateProofChain:
         uid = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
 
+        mr_id = str(uuid.uuid4())
+
         def respond(q: str, _params: Any) -> Any:
             if 'FROM telemetry_events te' in q:
                 return _row(
@@ -225,6 +228,9 @@ class TestFCreateProofChain:
             # Resolver step A: simulate telemetry target_id existing in monitored_targets.id
             if 'FROM monitored_targets' in q or 'INTO monitored_targets' in q:
                 return _row(id=tid)
+            # monitoring_run_id resolver: step A returns existing row so no INSERT needed
+            if 'monitoring_runs' in q:
+                return _row(id=mr_id)
             # All other INSERT/UPDATE statements return None
             return None
 
@@ -235,6 +241,7 @@ class TestFCreateProofChain:
             'SELECT created_by_user_id FROM workspaces': respond,
             'SELECT id FROM assets': respond,
             'monitored_targets': respond,
+            'monitoring_runs': respond,
         }
         return conn
 
@@ -637,6 +644,9 @@ class TestODetectionEventsUsesMonitoredTargetsId:
             # Resolver step A returns mt_id (different from tid)
             if 'FROM monitored_targets' in q or 'INTO monitored_targets' in q:
                 return _row(id=mt_id)
+            # monitoring_run_id resolver: step A returns existing row
+            if 'monitoring_runs' in q:
+                return _row(id=str(uuid.uuid4()))
             return None
 
         conn = _FakeConn(responses={'': respond})
@@ -725,6 +735,9 @@ class TestPRegressionForeignKeyViolation:
                 return _row(id=mt_id)
             if 'FROM monitored_targets' in q:
                 return None
+            # monitoring_run_id resolver: step A returns existing row
+            if 'monitoring_runs' in q:
+                return _row(id=str(uuid.uuid4()))
             return None
 
         conn = _FakeConn(responses={'': respond})
@@ -756,6 +769,9 @@ class TestPRegressionForeignKeyViolation:
                 return _row(id=mt_id)
             if 'FROM monitored_targets' in q:
                 return None
+            # monitoring_run_id resolver: step A returns existing row
+            if 'monitoring_runs' in q:
+                return _row(id=str(uuid.uuid4()))
             return None
 
         conn = _FakeConn(responses={'': respond})
@@ -770,3 +786,328 @@ class TestPRegressionForeignKeyViolation:
         assert mt_id in de_params, (
             'detection_events must use the resolved monitored_targets.id'
         )
+
+
+# ---------------------------------------------------------------------------
+# Q. resolve_monitoring_run_id: step A — finds existing row for workspace
+# Task item 6A: detections.monitoring_run_id FK is satisfied
+# ---------------------------------------------------------------------------
+
+class TestQResolveMonitoringRunIdExisting:
+    def test_Q_returns_existing_row_id(self) -> None:
+        wid = str(uuid.uuid4())
+        existing_run_id = str(uuid.uuid4())
+        conn = _FakeConn(responses={'monitoring_runs': _row(id=existing_run_id)})
+        result = resolve_monitoring_run_id(conn, wid)
+        assert result == existing_run_id
+
+    def test_Q_does_not_insert_when_existing_row_found(self) -> None:
+        wid = str(uuid.uuid4())
+        existing_run_id = str(uuid.uuid4())
+        conn = _FakeConn(responses={'monitoring_runs': _row(id=existing_run_id)})
+        resolve_monitoring_run_id(conn, wid)
+        inserts = [q for q, _ in conn.executed if 'INSERT INTO monitoring_runs' in q]
+        assert inserts == [], 'Must not INSERT when existing row found'
+
+    def test_Q_detections_insert_uses_resolved_id_not_random_uuid(self) -> None:
+        """detections.monitoring_run_id must match an id that exists in monitoring_runs."""
+        wid = str(uuid.uuid4())
+        existing_run_id = str(uuid.uuid4())
+        tid = str(uuid.uuid4())
+        uid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'FROM telemetry_events te' in q:
+                return _row(
+                    id=str(uuid.uuid4()), target_id=tid, asset_id=None,
+                    observed_at=now,
+                    payload_json={'block_number': 5000, 'chain_id': 1, 'provider_name': 'test'},
+                )
+            if 'FROM monitored_systems ms' in q:
+                return _row(id=str(uuid.uuid4()), asset_id=None)
+            if 'SELECT created_by_user_id FROM workspaces' in q:
+                return _row(created_by_user_id=uid)
+            if 'SELECT id FROM assets' in q:
+                return None
+            if 'monitored_targets' in q:
+                return _row(id=tid)
+            if 'monitoring_runs' in q:
+                return _row(id=existing_run_id)
+            return None
+
+        conn = _FakeConn(responses={'': respond})
+        _create_proof_chain(conn, wid)
+
+        det_inserts = [params for q, params in conn.executed if 'INSERT INTO detections' in q]
+        assert det_inserts, 'Expected INSERT INTO detections'
+        det_params = det_inserts[0]
+        assert existing_run_id in det_params, (
+            f'detections INSERT must use resolved monitoring_run_id={existing_run_id!r}'
+        )
+
+
+# ---------------------------------------------------------------------------
+# R. resolve_monitoring_run_id: step B — creates row when none exists
+# Task item 6C: if no monitoring_runs row exists, the script creates one first
+# ---------------------------------------------------------------------------
+
+class TestRResolveMonitoringRunIdCreatesRow:
+    def test_R_inserts_row_when_none_exists(self) -> None:
+        wid = str(uuid.uuid4())
+        new_id = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'INSERT INTO monitoring_runs' in q:
+                return _row(id=new_id)
+            if 'SELECT 1 FROM monitoring_runs' in q:
+                return _row(exists=1)  # non-empty dict is truthy — confirms the row
+            return None  # Step A SELECT returns None (no existing row)
+
+        conn = _FakeConn(responses={'monitoring_runs': respond})
+        result = resolve_monitoring_run_id(conn, wid)
+        assert result == new_id
+        inserts = [q for q, _ in conn.executed if 'INSERT INTO monitoring_runs' in q]
+        assert inserts, 'Expected INSERT INTO monitoring_runs when no row exists'
+
+    def test_R_insert_includes_all_required_columns(self) -> None:
+        wid = str(uuid.uuid4())
+        new_id = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'INSERT INTO monitoring_runs' in q:
+                return _row(id=new_id)
+            if 'SELECT 1 FROM monitoring_runs' in q:
+                return _row(exists=1)
+            return None
+
+        conn = _FakeConn(responses={'monitoring_runs': respond})
+        resolve_monitoring_run_id(conn, wid)
+        inserts = [q for q, _ in conn.executed if 'INSERT INTO monitoring_runs' in q]
+        assert inserts, 'Expected INSERT INTO monitoring_runs'
+        insert_q = inserts[0]
+        for col in ('workspace_id', 'started_at', 'status', 'trigger_type',
+                    'systems_checked_count', 'detections_created_count'):
+            assert col in insert_q, f'INSERT must include required column {col!r}'
+
+    def test_R_insert_uses_correct_workspace_id(self) -> None:
+        wid = str(uuid.uuid4())
+        new_id = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'INSERT INTO monitoring_runs' in q:
+                return _row(id=new_id)
+            if 'SELECT 1 FROM monitoring_runs' in q:
+                return _row(exists=1)
+            return None
+
+        conn = _FakeConn(responses={'monitoring_runs': respond})
+        resolve_monitoring_run_id(conn, wid)
+        inserts = [(q, p) for q, p in conn.executed if 'INSERT INTO monitoring_runs' in q]
+        assert inserts, 'Expected INSERT INTO monitoring_runs'
+        _, params = inserts[0]
+        assert wid in params, (
+            'INSERT INTO monitoring_runs must use the correct workspace_id'
+        )
+
+    def test_R_raises_when_requery_returns_nothing(self) -> None:
+        """If INSERT succeeds but re-query returns nothing, raise a clear RuntimeError."""
+        wid = str(uuid.uuid4())
+        new_id = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'INSERT INTO monitoring_runs' in q:
+                return _row(id=new_id)
+            return None  # Both step-A SELECT and step-C re-query return None
+
+        conn = _FakeConn(responses={'monitoring_runs': respond})
+        with pytest.raises(RuntimeError, match='monitoring_runs'):
+            resolve_monitoring_run_id(conn, wid)
+
+
+# ---------------------------------------------------------------------------
+# S. Task item 6B: no random orphan monitoring_run_id inserted
+# The monitoring_run_id in the detections INSERT must come from resolve_monitoring_run_id,
+# not from uuid.uuid4() called inline.
+# ---------------------------------------------------------------------------
+
+class TestSNoRandomOrphanMonitoringRunId:
+    def test_S_detections_insert_param_matches_resolved_monitoring_run_id(self) -> None:
+        """The id used in the detections INSERT must be the one returned by the resolver."""
+        wid = str(uuid.uuid4())
+        canonical_run_id = str(uuid.uuid4())  # What the resolver will return
+        tid = str(uuid.uuid4())
+        uid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'FROM telemetry_events te' in q:
+                return _row(
+                    id=str(uuid.uuid4()), target_id=tid, asset_id=None,
+                    observed_at=now,
+                    payload_json={'block_number': 42, 'chain_id': 1, 'provider_name': 'test'},
+                )
+            if 'FROM monitored_systems ms' in q:
+                return _row(id=str(uuid.uuid4()), asset_id=None)
+            if 'SELECT created_by_user_id FROM workspaces' in q:
+                return _row(created_by_user_id=uid)
+            if 'SELECT id FROM assets' in q:
+                return None
+            if 'monitored_targets' in q:
+                return _row(id=tid)
+            if 'monitoring_runs' in q:
+                return _row(id=canonical_run_id)
+            return None
+
+        conn = _FakeConn(responses={'': respond})
+        _create_proof_chain(conn, wid)
+
+        det_inserts = [params for q, params in conn.executed if 'INSERT INTO detections' in q]
+        assert det_inserts, 'Expected INSERT INTO detections'
+        det_params = det_inserts[0]
+        assert canonical_run_id in det_params, (
+            'detections INSERT must use the id returned by resolve_monitoring_run_id, '
+            f'not a random uuid. Expected {canonical_run_id!r} in params.'
+        )
+
+
+# ---------------------------------------------------------------------------
+# T. Task item 6D: re-running after partial failure succeeds (idempotency)
+# ---------------------------------------------------------------------------
+
+class TestTIdempotentAfterPartialFailure:
+    def _make_conn_for_rerun(self, *, has_complete_chain: bool) -> _FakeConn:
+        tid = str(uuid.uuid4())
+        uid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        run_id = str(uuid.uuid4())
+        det_id = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            # Complete-chain check (has_complete_proof_chain)
+            if 'FROM detections d' in q and 'live_rpc_telemetry_proof' in q:
+                return _row(id=det_id) if has_complete_chain else None
+            if 'FROM telemetry_events te' in q:
+                return _row(
+                    id=str(uuid.uuid4()), target_id=tid, asset_id=None,
+                    observed_at=now,
+                    payload_json={'block_number': 9999, 'chain_id': 1, 'provider_name': 'test'},
+                )
+            if 'FROM monitored_systems ms' in q:
+                return _row(id=str(uuid.uuid4()), asset_id=None)
+            if 'SELECT created_by_user_id FROM workspaces' in q:
+                return _row(created_by_user_id=uid)
+            if 'SELECT id FROM assets' in q:
+                return None
+            if 'monitored_targets' in q:
+                return _row(id=tid)
+            if 'monitoring_runs' in q:
+                return _row(id=run_id)
+            return _row(c=0)
+
+        return _FakeConn(responses={'': respond})
+
+    def test_T_creates_chain_when_previous_attempt_was_incomplete(self) -> None:
+        conn = self._make_conn_for_rerun(has_complete_chain=False)
+        result = _create_proof_chain(conn, str(uuid.uuid4()))
+        assert result.get('created') is True, (
+            'Re-run after partial failure must create the proof chain'
+        )
+
+    def test_T_does_not_duplicate_chain_when_already_complete(self) -> None:
+        conn = self._make_conn_for_rerun(has_complete_chain=True)
+        assert _has_complete_proof_chain(conn, str(uuid.uuid4())) is True
+
+    def test_T_monitoring_run_id_always_resolved_not_random(self) -> None:
+        """Even on re-run, monitoring_run_id must come from resolve, not uuid.uuid4()."""
+        conn = self._make_conn_for_rerun(has_complete_chain=False)
+        result = _create_proof_chain(conn, str(uuid.uuid4()))
+        assert result.get('created') is True
+        det_inserts = [params for q, params in conn.executed if 'INSERT INTO detections' in q]
+        assert det_inserts, 'Expected INSERT INTO detections on re-run'
+
+
+# ---------------------------------------------------------------------------
+# U. Task item 6E: full chain exists
+# telemetry_event → detection_event → detection → detection_evidence →
+# alert → incident → incident_timeline → response_action → evidence
+# ---------------------------------------------------------------------------
+
+class TestUFullChainExists:
+    def _make_full_chain_conn(self) -> _FakeConn:
+        tid = str(uuid.uuid4())
+        uid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        run_id = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'FROM telemetry_events te' in q:
+                return _row(
+                    id=str(uuid.uuid4()), target_id=tid, asset_id=None,
+                    observed_at=now,
+                    payload_json={'block_number': 99999, 'chain_id': 1, 'provider_name': 'test'},
+                )
+            if 'FROM monitored_systems ms' in q:
+                return _row(id=str(uuid.uuid4()), asset_id=None)
+            if 'SELECT created_by_user_id FROM workspaces' in q:
+                return _row(created_by_user_id=uid)
+            if 'SELECT id FROM assets' in q:
+                return None
+            if 'monitored_targets' in q:
+                return _row(id=tid)
+            if 'monitoring_runs' in q:
+                return _row(id=run_id)
+            return None
+
+        return _FakeConn(responses={'': respond})
+
+    def test_U_creates_detection_events_row(self) -> None:
+        conn = self._make_full_chain_conn()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+        assert any('INSERT INTO detection_events' in q for q, _ in conn.executed)
+
+    def test_U_creates_detections_row(self) -> None:
+        conn = self._make_full_chain_conn()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+        assert any('INSERT INTO detections' in q for q, _ in conn.executed)
+
+    def test_U_creates_detection_evidence_row(self) -> None:
+        conn = self._make_full_chain_conn()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+        assert any('INSERT INTO detection_evidence' in q for q, _ in conn.executed)
+
+    def test_U_creates_alert_row(self) -> None:
+        conn = self._make_full_chain_conn()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+        assert any('INSERT INTO alerts' in q for q, _ in conn.executed)
+
+    def test_U_creates_incident_row(self) -> None:
+        conn = self._make_full_chain_conn()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+        assert any('INSERT INTO incidents' in q for q, _ in conn.executed)
+
+    def test_U_creates_incident_timeline_row(self) -> None:
+        conn = self._make_full_chain_conn()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+        assert any('INSERT INTO incident_timeline' in q for q, _ in conn.executed)
+
+    def test_U_creates_response_action_row(self) -> None:
+        conn = self._make_full_chain_conn()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+        assert any('INSERT INTO response_actions' in q for q, _ in conn.executed)
+
+    def test_U_creates_evidence_row(self) -> None:
+        conn = self._make_full_chain_conn()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+        assert any('INSERT INTO evidence' in q for q, _ in conn.executed)
+
+    def test_U_result_has_all_chain_ids(self) -> None:
+        conn = self._make_full_chain_conn()
+        result = _create_proof_chain(conn, str(uuid.uuid4()))
+        assert result.get('created') is True
+        for key in (
+            'telemetry_event_id', 'detection_event_id', 'detection_id',
+            'detection_evidence_id', 'alert_id', 'incident_id',
+            'incident_timeline_id', 'response_action_id', 'evidence_id',
+        ):
+            assert result.get(key) is not None, f'Missing chain id: {key!r}'
