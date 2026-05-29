@@ -2221,7 +2221,11 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             _tc_list = target_coverage if isinstance(target_coverage, list) else []
             if _tc_list:
                 _all_reporting = all(
-                    isinstance(e, dict) and str(e.get('provider_status') or '').lower() in {'live', 'reporting', 'active'}
+                    isinstance(e, dict) and (
+                        str(e.get('provider_status') or '').lower() in {'live', 'reporting', 'active'}
+                        or str(e.get('coverage_status') or '').lower() == 'reporting'
+                        or str((e.get('metadata') or {}).get('provider_status') or '').lower() in {'live', 'reporting', 'active'}
+                    )
                     for e in _tc_list
                 )
                 target_coverage_status = 'reporting' if _all_reporting else 'partial'
@@ -2310,7 +2314,7 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             'provider_health': provider_health if provider_health is not None else [],
             'target_coverage': target_coverage if target_coverage is not None else [],
             'provider_health_records': list(payload.get('provider_health_records') or []),
-            'target_coverage_records': list(payload.get('target_coverage_records') or []),
+            'target_coverage_records': list(payload.get('target_coverage_records') or target_coverage or []),
             'provider_health_status': str(provider_health_status or 'unknown'),
             'target_coverage_status': str(target_coverage_status or 'unknown'),
         }

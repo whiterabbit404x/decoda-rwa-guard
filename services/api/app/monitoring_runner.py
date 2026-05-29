@@ -7241,13 +7241,20 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             },
         )
         summary['next_required_action'] = resolve_next_required_action(summary.get('runtime_setup_chain'))
+        # Coverage telemetry proves event ingestion is running when no raw blockchain events
+        # exist yet (quiescent network). Use canonical_last_telemetry_at as fallback so the
+        # continuity SLO does not falsely degrade when all targets are reporting live coverage.
+        _continuity_last_event_at = recent_last_real_event_at or (
+            canonical_last_telemetry_at if evidence_source == 'live' else None
+        )
+        _continuity_last_detection_at = detection_pipeline_checkpoint_at or canonical_last_detection_at
         continuity_evaluation = evaluate_workspace_monitoring_continuity(
             now=now,
             workspace_configured=workspace_configured,
             worker_running=runner_alive,
             last_heartbeat_at=last_heartbeat,
-            last_event_at=recent_last_real_event_at,
-            last_detection_at=detection_pipeline_checkpoint_at,
+            last_event_at=_continuity_last_event_at,
+            last_detection_at=_continuity_last_detection_at,
             heartbeat_ttl_seconds=max(WORKER_HEARTBEAT_TTL_SECONDS, MONITOR_POLL_INTERVAL_SECONDS * 3),
             telemetry_window_seconds=telemetry_window_seconds,
             detection_window_seconds=max(900, MONITOR_POLL_INTERVAL_SECONDS * 10),
@@ -7340,7 +7347,8 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             and all(
                 r in {
                     'event_ingestion_missing', 'detection_pipeline_offline',
-                    'detection_pipeline_missing', 'continuity_slo_failed', 'continuity_not_evaluated',
+                    'detection_pipeline_missing', 'detection_pipeline_stale',
+                    'continuity_slo_failed', 'continuity_not_evaluated',
                 }
                 for r in (summary.get('continuity_reason_codes') or [])
             )

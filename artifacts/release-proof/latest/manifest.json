@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-29T10:08:56.213944+00:00",
+  "generated_at": "2026-05-29T10:47:03.452445+00:00",
   "release_channel": "local",
-  "commit_sha": "4eda929d428f712f79742f3190efef4545a9e20d",
-  "branch": "claude/sweet-gates-Y5FjH",
+  "commit_sha": "4f1c6b0d63e3fb80771fe1df201e413ed1329061",
+  "branch": "claude/dreamy-mendel-ZJdhd",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "1535c096b758bd61c01ad5a5b064fe55db793bec9610b6b060c06af071996f44",
-      "size_bytes": 782,
+      "sha256": "6c07b66bfd0652640921c3b1c8ebe1c2e6382409d5ca2a7eda40605d1c8b72da",
+      "size_bytes": 784,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "b55f9880bd8f04ea85b45f2edc87c9a1dd4c9fd3897199f8c7c4acc944575bef",
-      "size_bytes": 2104,
+      "sha256": "2ac3ae6bf50c386dbe6d8b39072906c13beffe3554eac7fcc71e45167a1c0c07",
+      "size_bytes": 2106,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "89099b42a8a985da1f3c4c54deec2a0c83ffdcd437e2c5edb5e47a4af96e4944",
+      "sha256": "9a6207bcd1344f091ad3aaedb6c65805eeb874d791f8e9b9c9868a0306211b9c",
       "size_bytes": 819,
       "required": true,
       "status": "present"

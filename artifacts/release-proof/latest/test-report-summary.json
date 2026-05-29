@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-29T10:08:56.209973+00:00",
+  "generated_at": "2026-05-29T10:47:03.449557+00:00",
   "release_channel": "local",
-  "commit_sha": "4eda929d428f712f79742f3190efef4545a9e20d",
-  "branch": "claude/sweet-gates-Y5FjH",
+  "commit_sha": "4f1c6b0d63e3fb80771fe1df201e413ed1329061",
+  "branch": "claude/dreamy-mendel-ZJdhd",
   "test_suites": {
     "release_proof_artifacts": {
       "name": "release-proof-artifacts",
