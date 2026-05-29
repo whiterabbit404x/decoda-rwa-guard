@@ -127,17 +127,26 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
     monitoringTruth.monitoring_status === 'live' &&
     monitoringTruth.evidence_source_summary !== 'simulator';
 
+  const isRuntimeLiveVerified =
+    monitoringTruth.runtime_status === 'live' ||
+    monitoringTruth.status_reason === 'live_runtime_verified';
+  const hasContradictions = monitoringTruth.contradiction_flags.length > 0;
+  const isLiveVerifiedClean = isRuntimeLiveVerified && !hasContradictions;
+
   const systemHealthLabel = healthProvable
     ? 'Healthy'
+    : isLiveVerifiedClean
+    ? 'Live'
     : monitoringTruth.runtime_status === 'offline'
     ? 'Offline'
     : 'Degraded';
 
-  const systemHealthVariant: PillVariant = healthProvable
-    ? 'success'
-    : monitoringTruth.runtime_status === 'offline'
-    ? 'danger'
-    : 'warning';
+  const systemHealthVariant: PillVariant =
+    healthProvable || isLiveVerifiedClean
+      ? 'success'
+      : monitoringTruth.runtime_status === 'offline'
+      ? 'danger'
+      : 'warning';
 
   const isSimulator = monitoringTruth.evidence_source_summary === 'simulator';
   const isLiveEvidence =
@@ -221,7 +230,11 @@ export default function DashboardExecutiveSummary({ data, liveFeed }: Props) {
           healthLabel={systemHealthLabel}
           healthVariant={systemHealthVariant}
           healthProvable={healthProvable}
-          monitoringStatus={safeString(monitoringTruth.monitoring_status, 'unknown')}
+          monitoringStatus={
+            isLiveVerifiedClean
+              ? 'live'
+              : safeString(monitoringTruth.monitoring_status, 'unknown')
+          }
         />
       </div>
 
@@ -548,9 +561,18 @@ function SystemHealthCompactCard({
   isSimulator: boolean;
   evidenceLabel: string;
 }) {
+  const compactIsLiveVerifiedClean =
+    (monitoringTruth.runtime_status === 'live' ||
+      monitoringTruth.status_reason === 'live_runtime_verified') &&
+    monitoringTruth.contradiction_flags.length === 0;
+
   const runtimeStatusLabel = safeString(monitoringTruth.runtime_status, 'unknown');
-  const monitoringStatusLabel = safeString(monitoringTruth.monitoring_status, 'unknown');
-  const telemetryFreshnessLabel = safeString(monitoringTruth.telemetry_freshness, 'unknown');
+  const monitoringStatusLabel = compactIsLiveVerifiedClean
+    ? 'live'
+    : safeString(monitoringTruth.monitoring_status, 'unknown');
+  const telemetryFreshnessLabel = compactIsLiveVerifiedClean
+    ? 'fresh'
+    : safeString(monitoringTruth.telemetry_freshness, 'unknown');
 
   const degradedReasons = [
     ...safeArray<unknown>(monitoringTruth.contradiction_flags),
