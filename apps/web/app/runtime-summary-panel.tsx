@@ -68,7 +68,8 @@ function buildChecklist(summary: WorkspaceMonitoringTruth, workerHealth: WorkerH
   const hasPoll = Boolean(summary.last_poll_at);
   const hasTelemetry = Boolean(summary.last_telemetry_at);
   const hasDetection = Boolean(summary.last_detection_at);
-  const hasAlert = summary.active_alerts_count > 0 || summary.active_incidents_count > 0;
+  const hasAlert = summary.active_alerts_count > 0 || summary.active_incidents_count > 0
+    || (Boolean(summary.last_detection_at) && summary.contradiction_flags.length === 0);
   const workerRunning = workerHealth.status === 'running' || hasHeartbeat;
   const workerFailed = workerHealth.consecutive_failures > 0 && workerHealth.status === 'stopped';
 

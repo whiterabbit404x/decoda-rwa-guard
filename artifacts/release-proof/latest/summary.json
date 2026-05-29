@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T17:38:56.453218+00:00",
+  "generated_at": "2026-05-29T10:08:56.206911+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "e45967024345a72a43491248fe121cf7c91ebff4",
-  "branch": "claude/focused-curie-8RC2y",
+  "commit_sha": "4eda929d428f712f79742f3190efef4545a9e20d",
+  "branch": "claude/sweet-gates-Y5FjH",
   "ci_required_gates_ready": false,
   "launch_proof_ready": false,
   "manifest_ready": true,

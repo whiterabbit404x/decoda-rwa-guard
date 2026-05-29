@@ -424,7 +424,7 @@ def resolve_next_required_action(runtime_setup_chain: dict[str, Any] | None) -> 
         step_id = str(step.get('id') or '').strip()
         if step_id:
             return NEXT_ACTION_BY_STEP.get(step_id, 'review_reason_codes')
-    return 'review_reason_codes'
+    return 'monitoring_live'
 
 
 def build_runtime_setup_chain(*, counters: dict[str, int], timestamps: dict[str, str | None]) -> dict[str, Any]:

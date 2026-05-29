@@ -7222,6 +7222,7 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         summary['last_coverage_telemetry_at'] = last_coverage_telemetry_at.isoformat() if last_coverage_telemetry_at else None
         summary['runtime_setup_chain'] = build_runtime_setup_chain(
             counters={
+                'workspaces_count': 1 if workspace_configured else 0,
                 'assets_count': int(protected_assets_count),
                 'verified_assets_count': int(verified_assets_count),
                 'targets_count': int(healthy_enabled_targets_count),
@@ -7583,12 +7584,17 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             if runtime_status_reason is None:
                 runtime_status_reason = 'no_fresh_live_coverage_telemetry'
                 summary['status_reason'] = runtime_status_reason
-        if runtime_status_summary not in {'healthy', 'degraded', 'offline', 'fail', 'idle'}:
+        if runtime_status_summary not in {'live', 'healthy', 'degraded', 'offline', 'fail', 'idle'}:
             runtime_status_summary = 'degraded' if workspace_configured else 'offline'
             summary['runtime_status'] = runtime_status_summary
             summary['monitoring_status'] = 'limited' if workspace_configured else 'offline'
             runtime_status_reason = runtime_status_reason or 'runtime_status_normalized_from_noncanonical_state'
             summary['status_reason'] = runtime_status_reason
+        if runtime_status_summary == 'live':
+            if not runtime_status_reason:
+                runtime_status_reason = 'live_runtime_verified'
+                summary['status_reason'] = runtime_status_reason
+            summary['next_required_action'] = 'monitoring_live'
         if workspace_configured and runtime_status_summary == 'idle' and runtime_status_reason:
             logger.info(
                 'monitoring_runtime_limited_coverage workspace_id=%s chosen_evidence_source=%s status_reason=%s reporting_systems=%s coverage_fresh=%s',
@@ -7868,7 +7874,13 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             configuration_reason,
             runtime_status_reason,
         )
-        provider_health = 'healthy' if str(payload.get('recent_evidence_state')) == 'real' and int(payload.get('recent_real_event_count') or 0) > 0 else 'degraded'
+        provider_health = (
+            'healthy' if (
+                (str(payload.get('recent_evidence_state')) == 'real' and int(payload.get('recent_real_event_count') or 0) > 0)
+                or (evidence_source == 'live' and reporting_systems > 0 and coverage_fresh)
+            )
+            else 'degraded'
+        )
         live_coverage_mode = 'HYBRID' if monitoring_mode_raw == 'hybrid' else 'LIVE'
         mode = str(health.get('operational_mode') or health.get('mode') or live_coverage_mode).upper()
         active_live_coverage = bool(
