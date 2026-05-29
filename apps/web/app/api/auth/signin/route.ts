@@ -1,6 +1,7 @@
-import { dynamic, proxyAuthRequest, revalidate } from 'app/api/auth/_shared/proxy';
+import { proxyAuthRequest } from 'app/api/auth/_shared/proxy';
 
-export { dynamic, revalidate };
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 export async function POST(request: Request) {
   return proxyAuthRequest(request, '/auth/signin', 'POST', { cookieAction: 'set-session' });
