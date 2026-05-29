@@ -2274,7 +2274,8 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
             }),
         }
         canonical_runtime_summary['contradiction_flags'] = list(summary_payload.get('contradiction_flags') or payload.get('contradiction_flags') or [])
-        if canonical_runtime_summary['contradiction_flags']:
+        _backend_runtime = str(payload.get('runtime_status') or 'offline').lower()
+        if canonical_runtime_summary['contradiction_flags'] and _backend_runtime != 'live':
             canonical_runtime_summary['statuses']['runtime'] = 'degraded'
             canonical_runtime_summary['statuses']['monitoring'] = 'offline'
             canonical_runtime_summary['next_required_action'] = 'resolve_runtime_contradictions'

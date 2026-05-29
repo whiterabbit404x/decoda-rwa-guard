@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-29T10:47:03.446691+00:00",
+  "generated_at": "2026-05-29T15:13:06.943703+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "4f1c6b0d63e3fb80771fe1df201e413ed1329061",
-  "branch": "claude/dreamy-mendel-ZJdhd",
+  "commit_sha": "2a69e596746ac3b5222c5058301280d089941d7a",
+  "branch": "claude/zealous-thompson-En4Rl",
   "ci_required_gates_ready": false,
   "launch_proof_ready": false,
   "manifest_ready": true,
