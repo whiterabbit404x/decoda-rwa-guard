@@ -224,6 +224,41 @@ test.describe('Dashboard Executive Summary - source-level contracts', () => {
     expect(simGuardIdx).toBeGreaterThan(healthProvableIdx);
   });
 
+  test('runtime_status live with no contradiction_flags shows Live badge not Degraded', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('isRuntimeLiveVerified');
+    expect(source).toContain('hasContradictions');
+    expect(source).toContain('isLiveVerifiedClean');
+    expect(source).toContain("? 'Live'");
+    const liveVerifiedIdx = source.indexOf('isRuntimeLiveVerified');
+    const liveLabelIdx = source.indexOf("? 'Live'");
+    expect(liveVerifiedIdx).toBeGreaterThan(-1);
+    expect(liveLabelIdx).toBeGreaterThan(-1);
+    expect(liveVerifiedIdx).toBeLessThan(liveLabelIdx);
+  });
+
+  test('status_reason live_runtime_verified is treated as live verification', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain("status_reason === 'live_runtime_verified'");
+  });
+
+  test('top mini row monitoring status shows live when runtime is live verified', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('isLiveVerifiedClean');
+    // The monitoringStatus prop passed to SystemHealthMetricCard derives 'live' when live verified
+    const liveVerifiedCleanIdx = source.indexOf('isLiveVerifiedClean');
+    const liveLiteralIdx = source.indexOf("? 'live'");
+    expect(liveVerifiedCleanIdx).toBeGreaterThan(-1);
+    expect(liveLiteralIdx).toBeGreaterThan(-1);
+    expect(liveVerifiedCleanIdx).toBeLessThan(liveLiteralIdx);
+  });
+
+  test('compact card monitoring and telemetry rows show live/fresh when runtime is live verified', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('compactIsLiveVerifiedClean');
+    expect(source).toContain("? 'fresh'");
+  });
+
   test('runtime null arrays remain guarded for active_alerts and latest_incidents', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
     expect(source).toContain('function safeArray');
