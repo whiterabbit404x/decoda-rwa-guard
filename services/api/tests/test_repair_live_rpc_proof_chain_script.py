@@ -34,6 +34,7 @@ from services.api.scripts.repair_live_rpc_proof_chain import (
     inspect_detection_events_target_parent,
     resolve_detection_event_target_id,
     resolve_monitoring_run_id,
+    resolve_response_action_mode,
 )
 
 
@@ -1656,3 +1657,224 @@ class TestAAFKSafeInsertionOrder:
         assert update_stmts == [], (
             'Must not UPDATE detection.linked_alert_id when alert validation returns None'
         )
+
+
+# ---------------------------------------------------------------------------
+# BB. Response action mode/status/action_type constraint regression tests
+#
+# Production error:
+#     psycopg.errors.CheckViolation: new row for relation "response_actions"
+#     violates check constraint "response_actions_mode_check"
+#     Failing value: mode = live_enforcement
+#
+# Root cause: both script and worker hardcoded invalid values that violate
+# the constraints added in migration 0052:
+#   response_actions_mode_check:    mode IN ('simulated','recommended','live')
+#   response_actions_status_check:  status IN ('pending','executed','failed','canceled')
+#   response_actions_type_check:    action_type IN ('freeze_wallet','block_transaction',
+#                                     'revoke_approval','disable_monitored_system',
+#                                     'suppress_rule','notify_team')
+#
+# A. production-like constraint does NOT allow 'live_enforcement'
+# B. resolve_response_action_mode chooses the correct valid mode
+# C. _create_proof_chain INSERT uses valid mode, status, and action_type
+# D. full proof chain returns all expected chain IDs
+# ---------------------------------------------------------------------------
+
+def _make_production_mode_constraint_conn() -> _FakeConn:
+    """Return a FakeConn that serves the production-like response_actions_mode_check."""
+    def respond(q: str, _params: Any) -> Any:
+        if 'pg_get_constraintdef' in q and 'response_actions_mode_check' in q:
+            return _row(**{'def': "CHECK (mode IN ('simulated', 'recommended', 'live'))"})
+        return None
+    return _FakeConn(responses={'': respond})
+
+
+def _make_fk_order_conn_with_mode_constraint() -> _FakeConn:
+    """Like _make_fk_order_conn but also responds with the production mode constraint."""
+    tid = str(uuid.uuid4())
+    uid = str(uuid.uuid4())
+    run_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+
+    def respond(q: str, _params: Any) -> Any:
+        if 'pg_get_constraintdef' in q and 'response_actions_mode_check' in q:
+            return _row(**{'def': "CHECK (mode IN ('simulated', 'recommended', 'live'))"})
+        if 'FROM telemetry_events te' in q:
+            return _row(
+                id=str(uuid.uuid4()), target_id=tid, asset_id=None,
+                observed_at=now,
+                payload_json={'block_number': 55555, 'chain_id': 1, 'provider_name': 'test'},
+            )
+        if 'FROM monitored_systems ms' in q:
+            return _row(id=str(uuid.uuid4()), asset_id=None)
+        if 'SELECT created_by_user_id FROM workspaces' in q:
+            return _row(created_by_user_id=uid)
+        if 'SELECT id FROM assets' in q:
+            return None
+        if 'monitored_targets' in q:
+            return _row(id=tid)
+        if 'monitoring_runs' in q:
+            return _row(id=run_id)
+        if 'SELECT 1 FROM alerts WHERE id' in q:
+            return _row(exists=1)
+        return None
+
+    return _FakeConn(responses={'': respond})
+
+
+class TestBBResponseActionConstraintRegression:
+    """Regression tests for the response_actions CheckViolation fix.
+
+    A. production-like constraint excludes 'live_enforcement'
+    B. resolve_response_action_mode returns valid mode per constraint
+    C. _create_proof_chain INSERT uses valid mode, status, action_type
+    D. full proof chain chain IDs are returned
+    """
+
+    # --- A: production constraint does not allow live_enforcement ---
+
+    def test_BB_A_production_constraint_excludes_live_enforcement(self) -> None:
+        """A: with production constraint ('simulated','recommended','live'), resolved
+        mode must not be 'live_enforcement'."""
+        conn = _make_production_mode_constraint_conn()
+        mode = resolve_response_action_mode(conn)
+        assert mode != 'live_enforcement', (
+            f"resolve_response_action_mode returned {mode!r} but 'live_enforcement' "
+            "is not in the production constraint CHECK (mode IN "
+            "('simulated','recommended','live'))"
+        )
+
+    def test_BB_A_resolved_mode_in_production_allowed_set(self) -> None:
+        """A: resolved mode is in the production allowed set."""
+        conn = _make_production_mode_constraint_conn()
+        mode = resolve_response_action_mode(conn)
+        assert mode in ('simulated', 'recommended', 'live'), (
+            f"resolve_response_action_mode returned {mode!r} which is not in the "
+            "production constraint allowed set ('simulated','recommended','live')"
+        )
+
+    # --- B: resolve_response_action_mode chooses the best valid mode ---
+
+    def test_BB_B_chooses_live_with_production_constraint(self) -> None:
+        """B: when constraint is ('simulated','recommended','live'), returns 'live'."""
+        conn = _make_production_mode_constraint_conn()
+        assert resolve_response_action_mode(conn) == 'live'
+
+    def test_BB_B_prefers_live_enforcement_if_constraint_allows_it(self) -> None:
+        """B: if a future constraint includes 'live_enforcement', it takes priority."""
+        def respond(q: str, _params: Any) -> Any:
+            if 'pg_get_constraintdef' in q and 'response_actions_mode_check' in q:
+                return _row(**{'def': "CHECK (mode IN ('simulated', 'recommended', 'live', 'live_enforcement'))"})
+            return None
+        conn = _FakeConn(responses={'': respond})
+        assert resolve_response_action_mode(conn) == 'live_enforcement'
+
+    def test_BB_B_fallback_to_live_when_constraint_absent(self) -> None:
+        """B: if no constraint row is found, falls back to 'live'."""
+        assert resolve_response_action_mode(_FakeConn(responses={})) == 'live'
+
+    def test_BB_B_skips_simulated_when_choosing_non_sim_mode(self) -> None:
+        """B: 'simulated' is never chosen when a non-simulated mode is available."""
+        def respond(q: str, _params: Any) -> Any:
+            if 'pg_get_constraintdef' in q and 'response_actions_mode_check' in q:
+                return _row(**{'def': "CHECK (mode IN ('simulated', 'live'))"})
+            return None
+        conn = _FakeConn(responses={'': respond})
+        mode = resolve_response_action_mode(conn)
+        assert mode == 'live'
+        assert mode != 'simulated'
+
+    # --- C: _create_proof_chain INSERT uses valid values ---
+
+    def test_BB_C_insert_does_not_hardcode_live_enforcement_mode(self) -> None:
+        """C: 'live_enforcement' must not appear in the response_actions INSERT."""
+        conn = _make_fk_order_conn_with_mode_constraint()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+
+        ra_inserts = [(q, p) for q, p in conn.executed if 'INSERT INTO response_actions' in q]
+        assert ra_inserts, 'Expected INSERT INTO response_actions'
+        for q, params in ra_inserts:
+            assert 'live_enforcement' not in q, (
+                "INSERT SQL must not hardcode 'live_enforcement' as a string literal"
+            )
+            assert 'live_enforcement' not in (params or ()), (
+                "INSERT params must not include 'live_enforcement'"
+            )
+
+    def test_BB_C_insert_does_not_use_invalid_status_recommended(self) -> None:
+        """C: status='recommended' is not valid; must not appear in INSERT."""
+        conn = _make_fk_order_conn_with_mode_constraint()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+
+        ra_inserts = [(q, p) for q, p in conn.executed if 'INSERT INTO response_actions' in q]
+        assert ra_inserts, 'Expected INSERT INTO response_actions'
+        for q, params in ra_inserts:
+            assert "'recommended'" not in q, (
+                "INSERT SQL must not hardcode status='recommended' "
+                "(not in production status_check constraint)"
+            )
+            assert 'recommended' not in (params or ()), (
+                "INSERT params must not include 'recommended' as status value"
+            )
+
+    def test_BB_C_insert_does_not_use_invalid_action_type(self) -> None:
+        """C: action_type='review_live_provider_evidence' is not valid; must not appear."""
+        conn = _make_fk_order_conn_with_mode_constraint()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+
+        ra_inserts = [(q, p) for q, p in conn.executed if 'INSERT INTO response_actions' in q]
+        assert ra_inserts, 'Expected INSERT INTO response_actions'
+        for q, params in ra_inserts:
+            assert 'review_live_provider_evidence' not in q, (
+                "INSERT SQL must not hardcode 'review_live_provider_evidence' "
+                "(not in production type_check constraint)"
+            )
+            assert 'review_live_provider_evidence' not in (params or ()), (
+                "INSERT params must not include 'review_live_provider_evidence'"
+            )
+
+    def test_BB_C_insert_uses_pending_status(self) -> None:
+        """C: newly created response action must have status='pending'."""
+        conn = _make_fk_order_conn_with_mode_constraint()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+
+        ra_inserts = [(q, p) for q, p in conn.executed if 'INSERT INTO response_actions' in q]
+        assert ra_inserts, 'Expected INSERT INTO response_actions'
+        _, params = ra_inserts[0]
+        assert 'pending' in (params or ()), (
+            "INSERT INTO response_actions must use status='pending'"
+        )
+
+    def test_BB_C_insert_uses_valid_action_type(self) -> None:
+        """C: action_type must be in the production type_check allowed set."""
+        allowed_types = {
+            'freeze_wallet', 'block_transaction', 'revoke_approval',
+            'disable_monitored_system', 'suppress_rule', 'notify_team',
+        }
+        conn = _make_fk_order_conn_with_mode_constraint()
+        _create_proof_chain(conn, str(uuid.uuid4()))
+
+        ra_inserts = [(q, p) for q, p in conn.executed if 'INSERT INTO response_actions' in q]
+        assert ra_inserts, 'Expected INSERT INTO response_actions'
+        _, params = ra_inserts[0]
+        action_type_in_params = [p for p in (params or ()) if p in allowed_types]
+        assert action_type_in_params, (
+            f"INSERT params must contain a valid action_type from {allowed_types}; "
+            f"got params: {params}"
+        )
+
+    # --- D: full proof chain IDs are returned ---
+
+    def test_BB_D_full_proof_chain_ids_returned(self) -> None:
+        """D: full proof chain is still created and returns all expected chain IDs."""
+        conn = _make_fk_order_conn_with_mode_constraint()
+        result = _create_proof_chain(conn, str(uuid.uuid4()))
+        for key in (
+            'telemetry_event_id', 'detection_event_id', 'detection_id',
+            'alert_id', 'incident_id', 'incident_timeline_id',
+            'response_action_id', 'evidence_id',
+        ):
+            assert result.get(key) is not None, (
+                f'proof chain must return {key!r}; full result: {result}'
+            )

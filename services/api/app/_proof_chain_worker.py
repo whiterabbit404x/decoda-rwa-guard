@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -246,6 +247,35 @@ def _resolve_monitoring_run_id(
         f'_resolve_monitoring_run_id: monitoring_runs row id={resolved_id!r} '
         f'not found after INSERT for workspace_id={workspace_id!r}.'
     )
+
+
+def _resolve_response_action_mode(connection: Any) -> str:
+    """Query pg_constraint for response_actions_mode_check and return the best valid mode.
+
+    Priority: 'live_enforcement' > 'live' > 'recommended' > 'advisory' > 'manual' >
+    first non-simulated value > first allowed value.
+
+    Falls back to 'live' if the constraint is absent or unparseable.
+    """
+    row = connection.execute(
+        """
+        SELECT pg_get_constraintdef(oid) AS def
+        FROM pg_constraint
+        WHERE conname = 'response_actions_mode_check'
+          AND conrelid = 'response_actions'::regclass
+        LIMIT 1
+        """,
+    ).fetchone()
+    if row:
+        defn = str((row.get('def') if isinstance(row, dict) else row[0]) or '')
+        allowed = re.findall(r"'([^']+)'", defn)
+        if allowed:
+            for preferred in ('live_enforcement', 'live', 'recommended', 'advisory', 'manual'):
+                if preferred in allowed:
+                    return preferred
+            non_simulated = [v for v in allowed if v != 'simulated']
+            return non_simulated[0] if non_simulated else allowed[0]
+    return 'live'
 
 
 def _ensure_workspace_live_rpc_proof_chain(
@@ -677,6 +707,7 @@ def _ensure_workspace_live_rpc_proof_chain(
     )
 
     # 8. Response action.
+    response_action_mode = _resolve_response_action_mode(connection)
     connection.execute(
         '''
         INSERT INTO response_actions (
@@ -686,13 +717,14 @@ def _ensure_workspace_live_rpc_proof_chain(
             created_at
         ) VALUES (
             %s, %s::uuid, %s::uuid, %s::uuid,
-            'review_live_provider_evidence', 'live_enforcement', 'recommended',
+            %s, %s, %s,
             'Review live RPC telemetry proof: verify provider, telemetry, detection, alert, and evidence chain.',
             %s::jsonb, %s::uuid, NULL, NOW()
         )
         ''',
         (
             response_action_id, workspace_id, incident_id, alert_id,
+            'notify_team', response_action_mode, 'pending',
             _json_dumps({
                 'evidence_source': 'live_rpc_polling',
                 'telemetry_event_id': telemetry_event_id,

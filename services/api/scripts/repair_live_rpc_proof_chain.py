@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -313,6 +314,36 @@ def resolve_monitoring_run_id(
         f'Verify monitoring_runs table exists and workspace_id FK is valid. '
         f'Do NOT insert detections.monitoring_run_id={resolved_id!r} — FK would be violated.'
     )
+
+
+def resolve_response_action_mode(conn: Any) -> str:
+    """Query pg_constraint for response_actions_mode_check and return the best valid mode.
+
+    Priority: 'live_enforcement' > 'live' > 'recommended' > 'advisory' > 'manual' >
+    first non-simulated value > first allowed value.
+
+    Falls back to 'live' if the constraint is absent or unparseable so the caller
+    never inserts a hardcoded value that may violate the check constraint.
+    """
+    row = conn.execute(
+        """
+        SELECT pg_get_constraintdef(oid) AS def
+        FROM pg_constraint
+        WHERE conname = 'response_actions_mode_check'
+          AND conrelid = 'response_actions'::regclass
+        LIMIT 1
+        """,
+    ).fetchone()
+    if row:
+        defn = str((row.get('def') if isinstance(row, dict) else row[0]) or '')
+        allowed = re.findall(r"'([^']+)'", defn)
+        if allowed:
+            for preferred in ('live_enforcement', 'live', 'recommended', 'advisory', 'manual'):
+                if preferred in allowed:
+                    return preferred
+            non_simulated = [v for v in allowed if v != 'simulated']
+            return non_simulated[0] if non_simulated else allowed[0]
+    return 'live'
 
 
 def _find_workspace_id(conn: Any, env_workspace_id: str) -> str:
@@ -1039,6 +1070,7 @@ def _create_proof_chain(conn: Any, workspace_id: str) -> dict[str, Any]:
     )
 
     # 8. Response action
+    response_action_mode = resolve_response_action_mode(conn)
     conn.execute(
         """
         INSERT INTO response_actions (
@@ -1048,13 +1080,14 @@ def _create_proof_chain(conn: Any, workspace_id: str) -> dict[str, Any]:
             created_at
         ) VALUES (
             %s, %s::uuid, %s::uuid, %s::uuid,
-            'review_live_provider_evidence', 'live_enforcement', 'recommended',
+            %s, %s, %s,
             'Review live RPC telemetry proof: verify provider, telemetry, detection, alert, and evidence chain.',
             %s::jsonb, %s::uuid, NULL, NOW()
         )
         """,
         (
             response_action_id, workspace_id, incident_id, alert_id,
+            'notify_team', response_action_mode, 'pending',
             _json_dumps({
                 'evidence_source': 'live_rpc_polling',
                 'telemetry_event_id': telemetry_event_id,
