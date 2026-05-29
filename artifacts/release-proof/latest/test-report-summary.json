@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T17:38:56.457905+00:00",
+  "generated_at": "2026-05-29T10:08:56.209973+00:00",
   "release_channel": "local",
-  "commit_sha": "e45967024345a72a43491248fe121cf7c91ebff4",
-  "branch": "claude/focused-curie-8RC2y",
+  "commit_sha": "4eda929d428f712f79742f3190efef4545a9e20d",
+  "branch": "claude/sweet-gates-Y5FjH",
   "test_suites": {
     "release_proof_artifacts": {
       "name": "release-proof-artifacts",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T06:22:27.090177+00:00",
+  "generated_at": "2026-05-29T10:08:47.789504+00:00",
   "mode": "local",
   "strict": true,
   "overall_score": 90,
@@ -97,7 +97,7 @@
       "note": ""
     },
     "live_evidence_readiness": {
-      "status": "pass",
+      "status": "fail",
       "source": "launch_proof",
       "note": ""
     },
@@ -117,6 +117,7 @@
     "billing_webhook_ready=false",
     "email_ready=false",
     "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
+    "provider_ready=false",
     "staging proof: staging_launch_ready=false; BILLING_PROVIDER not configured"
   ],
   "warnings": [

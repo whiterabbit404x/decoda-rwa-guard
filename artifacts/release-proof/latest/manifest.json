@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-28T17:38:56.462491+00:00",
+  "generated_at": "2026-05-29T10:08:56.213944+00:00",
   "release_channel": "local",
-  "commit_sha": "e45967024345a72a43491248fe121cf7c91ebff4",
-  "branch": "claude/focused-curie-8RC2y",
+  "commit_sha": "4eda929d428f712f79742f3190efef4545a9e20d",
+  "branch": "claude/sweet-gates-Y5FjH",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "22db5fe7136f37c401dd6616f77af678d8c8f525a402d596633babef9bd0d45c",
-      "size_bytes": 784,
+      "sha256": "1535c096b758bd61c01ad5a5b064fe55db793bec9610b6b060c06af071996f44",
+      "size_bytes": 782,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "0229b89fd268279863fba96a1f58ea9fdd07fe04d3ced5cf318af965f5d0be72",
-      "size_bytes": 2106,
+      "sha256": "b55f9880bd8f04ea85b45f2edc87c9a1dd4c9fd3897199f8c7c4acc944575bef",
+      "size_bytes": 2104,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "95052c21d8c58292c7b76f8b5e609b85dfa4a8b5b9837402e219c54b39486a3a",
+      "sha256": "89099b42a8a985da1f3c4c54deec2a0c83ffdcd437e2c5edb5e47a4af96e4944",
       "size_bytes": 819,
       "required": true,
       "status": "present"
