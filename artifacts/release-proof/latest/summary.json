@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-29T10:08:56.206911+00:00",
+  "generated_at": "2026-05-29T10:47:03.446691+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "4eda929d428f712f79742f3190efef4545a9e20d",
-  "branch": "claude/sweet-gates-Y5FjH",
+  "commit_sha": "4f1c6b0d63e3fb80771fe1df201e413ed1329061",
+  "branch": "claude/dreamy-mendel-ZJdhd",
   "ci_required_gates_ready": false,
   "launch_proof_ready": false,
   "manifest_ready": true,
