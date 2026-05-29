@@ -2207,6 +2207,31 @@ def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
         if isinstance(target_coverage, (str, int, float, bool)) and target_coverage_status is None:
             target_coverage_status = str(target_coverage)
             target_coverage = []
+        # Upgrade provider_health_status to 'healthy' when live telemetry proves provider is active,
+        # so empty provider_health_records does not degrade status when canonical facts are live.
+        if provider_health_status in {'degraded', None}:
+            _ph_rpt = int(payload.get('reporting_systems') or 0)
+            _ph_ev = str(payload.get('evidence_source') or '').lower()
+            _ph_fresh = str(payload.get('freshness_status') or '').lower()
+            if _ph_rpt > 0 and _ph_ev in {'live', 'live_provider'} and _ph_fresh == 'fresh':
+                provider_health_status = 'healthy'
+        # Derive target_coverage_status from target_coverage entries, or from canonical runtime facts
+        # when target_coverage_records is empty but reporting systems are confirmed live.
+        if target_coverage_status is None:
+            _tc_list = target_coverage if isinstance(target_coverage, list) else []
+            if _tc_list:
+                _all_reporting = all(
+                    isinstance(e, dict) and str(e.get('provider_status') or '').lower() in {'live', 'reporting', 'active'}
+                    for e in _tc_list
+                )
+                target_coverage_status = 'reporting' if _all_reporting else 'partial'
+            else:
+                _tc_rpt = int(payload.get('reporting_systems') or 0)
+                _tc_cfg = int(payload.get('configured_systems') or payload.get('enabled_systems') or 0)
+                _tc_ev = str(payload.get('evidence_source') or '').lower()
+                _tc_fresh = str(payload.get('freshness_status') or '').lower()
+                if _tc_rpt > 0 and _tc_cfg > 0 and _tc_rpt >= _tc_cfg and _tc_ev in {'live', 'live_provider'} and _tc_fresh == 'fresh':
+                    target_coverage_status = 'reporting'
         summary = payload.get('workspace_monitoring_summary') if isinstance(payload.get('workspace_monitoring_summary'), dict) else {}
         summary_payload = summary if isinstance(summary, dict) else {}
 
