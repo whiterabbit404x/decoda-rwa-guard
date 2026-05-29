@@ -6932,6 +6932,26 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
                     if source_of_evidence == 'live':
                         telemetry_kind = 'coverage'
                     evidence_source = 'live' if source_of_evidence == 'live' else ('simulator' if source_of_evidence == 'simulator' else ('replay' if canonical_last_telemetry_at else 'none'))
+                    # When the proof chain is complete and canonical live telemetry is fresh,
+                    # the worker has demonstrably ingested real provider data even if the
+                    # reporting_systems JOIN returned zero rows (a transient metadata race).
+                    # Override evidence_source to 'live' so downstream status logic does not
+                    # fall through to the idle/replay path and falsely degrade the runtime.
+                    if (
+                        evidence_source != 'live'
+                        and source_of_evidence != 'simulator'
+                        and proof_chain_status == 'complete'
+                        and canonical_last_telemetry_at is not None
+                        and coverage_fresh
+                        and int((now - canonical_last_telemetry_at).total_seconds()) <= telemetry_window_seconds
+                        and str(health.get('ingestion_mode') or '').strip().lower() not in {'demo', 'simulator', 'replay'}
+                        and not provider_degraded_or_unreachable
+                    ):
+                        evidence_source = 'live'
+                        source_of_evidence = 'live'
+                        telemetry_kind = 'coverage'
+                        reporting_systems = max(reporting_systems, 1)
+                        canonical_reporting_systems = max(canonical_reporting_systems, 1)
                     latest_provider_rows = connection.execute(
                         '''
                         SELECT DISTINCT ON (provider_type, COALESCE(target_id, '00000000-0000-0000-0000-000000000000'::uuid))
@@ -7241,12 +7261,11 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
             },
         )
         summary['next_required_action'] = resolve_next_required_action(summary.get('runtime_setup_chain'))
-        # Coverage telemetry proves event ingestion is running when no raw blockchain events
-        # exist yet (quiescent network). Use canonical_last_telemetry_at as fallback so the
-        # continuity SLO does not falsely degrade when all targets are reporting live coverage.
-        _continuity_last_event_at = recent_last_real_event_at or (
-            canonical_last_telemetry_at if evidence_source == 'live' else None
-        )
+        # canonical_last_telemetry_at is already filtered to live telemetry_events in SQL,
+        # so it is safe to use as the event-ingestion fallback regardless of evidence_source.
+        # Gating on evidence_source == 'live' creates a circular dependency: reporting_systems
+        # transiently zero → evidence_source='replay' → last_event_at=None → event_ingestion_missing.
+        _continuity_last_event_at = recent_last_real_event_at or canonical_last_telemetry_at
         _continuity_last_detection_at = detection_pipeline_checkpoint_at or canonical_last_detection_at
         continuity_evaluation = evaluate_workspace_monitoring_continuity(
             now=now,
@@ -7339,10 +7358,10 @@ def monitoring_runtime_status(request: Request | None = None) -> dict[str, Any]:
         summary['worker_heartbeat_age_seconds'] = summary.get('heartbeat_age_seconds')
         summary['continuity_failed_checks'] = continuity_failed_checks
         # Coverage-only workspaces with fresh telemetry: exempt from event_ingestion_missing degradation.
-        # Coverage telemetry proves monitoring is running; absence of raw events is expected in quiescent environments.
+        # coverage_fresh already proves live telemetry is flowing; requiring evidence_source == 'live'
+        # here creates the same circular dependency as _continuity_last_event_at above.
         _coverage_continuity_exempt = bool(
             coverage_fresh
-            and evidence_source == 'live'
             and continuity_status == 'degraded'
             and all(
                 r in {
