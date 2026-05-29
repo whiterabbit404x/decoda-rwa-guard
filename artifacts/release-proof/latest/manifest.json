@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-29T10:47:03.452445+00:00",
+  "generated_at": "2026-05-29T15:13:06.952783+00:00",
   "release_channel": "local",
-  "commit_sha": "4f1c6b0d63e3fb80771fe1df201e413ed1329061",
-  "branch": "claude/dreamy-mendel-ZJdhd",
+  "commit_sha": "2a69e596746ac3b5222c5058301280d089941d7a",
+  "branch": "claude/zealous-thompson-En4Rl",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "6c07b66bfd0652640921c3b1c8ebe1c2e6382409d5ca2a7eda40605d1c8b72da",
-      "size_bytes": 784,
+      "sha256": "eaddd1e8c42d9277af7290753472e6db9dd16674147ce7a98e691cf11e409e37",
+      "size_bytes": 787,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "2ac3ae6bf50c386dbe6d8b39072906c13beffe3554eac7fcc71e45167a1c0c07",
-      "size_bytes": 2106,
+      "sha256": "dcaaa4e1c9f5e62c6f00ec6b9fd6d8f06115f644373fb519a78a8500a3a078b7",
+      "size_bytes": 2109,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "9a6207bcd1344f091ad3aaedb6c65805eeb874d791f8e9b9c9868a0306211b9c",
+      "sha256": "ecd2f54401f48c0970c9c929e6a85025be1bf24b1318c90ac2e5a8a0fcfe1ac2",
       "size_bytes": 819,
       "required": true,
       "status": "present"
