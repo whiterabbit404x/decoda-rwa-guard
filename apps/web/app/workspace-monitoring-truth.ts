@@ -195,12 +195,23 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   }
 
   // no reporting systems but runtime/freshness claims coverage
-  if (reportingSystemsCount === 0 && (normalizedRuntimeStatus === 'live' || normalizedTelemetryFreshness === 'fresh')) {
+  // Suppress this guard when the backend has already verified the live state authoritatively.
+  if (
+    resolvedStatusReason !== 'live_runtime_verified' &&
+    reportingSystemsCount === 0 &&
+    (normalizedRuntimeStatus === 'live' || normalizedTelemetryFreshness === 'fresh')
+  ) {
     addGuard('live_monitoring_without_reporting_systems');
   }
 
   // claims fresh telemetry quality but no timestamp exists
-  if (normalizedTelemetryFreshness === 'fresh' && lastTelemetryAt === null && lastCoverageTelemetryAt === null) {
+  // Suppress when backend has explicitly verified live runtime (it may not return raw timestamps).
+  if (
+    resolvedStatusReason !== 'live_runtime_verified' &&
+    normalizedTelemetryFreshness === 'fresh' &&
+    lastTelemetryAt === null &&
+    lastCoverageTelemetryAt === null
+  ) {
     addGuard('live_telemetry_verified_without_timestamp');
   }
 
