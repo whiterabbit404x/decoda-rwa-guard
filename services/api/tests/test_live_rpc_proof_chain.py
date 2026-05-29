@@ -6,10 +6,13 @@ C. Full proof chain (detection + alert + incident + response + evidence) → sta
 D. Launch proof: summary fields require full chain to be truthy
 E. _build_summary helper exports consistent chain field set
 F. monitoring_status == 'live' only when full proof chain exists (no guard flags)
+G. _ensure_workspace_live_rpc_proof_chain worker path: canonical + legacy chain created
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
@@ -357,3 +360,205 @@ def test_F_status_transitions_to_live_only_when_full_chain_present() -> None:
 
 def test_F_proof_chain_guard_flag_in_hard_guard_set() -> None:
     assert 'live_telemetry_without_proof_chain' in HARD_GUARD_FLAGS
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# G. _ensure_workspace_live_rpc_proof_chain: worker creates canonical + legacy chain
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _Row(dict):
+    """psycopg3 dict_row rows behave like plain dicts."""
+
+
+def _row(**kw: Any) -> _Row:
+    return _Row(kw)
+
+
+class _Result:
+    def __init__(self, row: Any = None) -> None:
+        self._row = row
+
+    def fetchone(self) -> Any:
+        return self._row
+
+
+class _WorkerFakeConn:
+    """Fake psycopg connection for _ensure_workspace_live_rpc_proof_chain tests.
+
+    By default every SELECT returns None (no complete chain, no telemetry) unless
+    overridden via `overrides`.  All INSERT/UPDATE calls are recorded in `executed`.
+    """
+
+    def __init__(self, overrides: dict[str, Any] | None = None) -> None:
+        self._overrides = overrides or {}
+        self.executed: list[tuple[str, Any]] = []
+
+    def execute(self, query: str, params: Any = ()) -> _Result:
+        q = ' '.join(str(query).split())
+        self.executed.append((q, params))
+        for keyword, value in self._overrides.items():
+            if keyword in q:
+                if callable(value):
+                    return _Result(value(q, params))
+                return _Result(value)
+        return _Result(None)
+
+
+def _make_worker_conn(
+    *,
+    has_complete_chain: bool = False,
+    has_telemetry: bool = True,
+    has_monitored_system: bool = True,
+) -> _WorkerFakeConn:
+    """Build a fake connection for _ensure_workspace_live_rpc_proof_chain."""
+    tid = str(uuid.uuid4())
+    uid = str(uuid.uuid4())
+    msid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+
+    def respond(q: str, _params: Any) -> Any:
+        # Complete-chain existence check (deduplication guard)
+        if 'FROM detections d' in q and 'live_rpc_telemetry_proof' in q and 'detection_event_id IS NOT NULL' in q:
+            return _row(id=str(uuid.uuid4())) if has_complete_chain else None
+        # Telemetry fetch
+        if 'FROM telemetry_events te' in q and 'evidence_source' in q:
+            if not has_telemetry:
+                return None
+            return _row(
+                id=str(uuid.uuid4()),
+                target_id=tid,
+                asset_id=None,
+                observed_at=now,
+                payload_json={'block_number': 99999, 'chain_id': 1, 'provider_name': 'alchemy'},
+            )
+        # monitored_systems
+        if 'FROM monitored_systems ms' in q:
+            return _row(id=msid, asset_id=None) if has_monitored_system else None
+        # workspace creator
+        if 'SELECT created_by_user_id FROM workspaces' in q:
+            return _row(created_by_user_id=uid)
+        # asset check
+        if 'SELECT id FROM assets' in q:
+            return None
+        # All INSERTs/UPDATEs return None
+        return None
+
+    conn = _WorkerFakeConn(overrides={'': respond})
+    return conn
+
+
+class TestGWorkerProofChainCreation:
+    """Worker path (_ensure_workspace_live_rpc_proof_chain) creates the full chain."""
+
+    def _run(self, conn: _WorkerFakeConn) -> dict[str, Any]:
+        from services.api.app._proof_chain_worker import _ensure_workspace_live_rpc_proof_chain
+        return _ensure_workspace_live_rpc_proof_chain(conn, workspace_id=str(uuid.uuid4()))
+
+    def test_G_returns_created_true_with_all_expected_keys(self) -> None:
+        conn = _make_worker_conn()
+        result = self._run(conn)
+        assert result.get('created') is True
+        expected = {
+            'detection_event_id', 'detection_id', 'detection_evidence_id',
+            'alert_id', 'incident_id', 'incident_timeline_id',
+            'response_action_id', 'evidence_id',
+            'telemetry_event_id', 'target_id', 'block_number', 'chain_id',
+        }
+        missing = expected - set(result.keys())
+        assert missing == set(), f'Missing keys: {missing}'
+
+    def test_G_inserts_detection_events_row(self) -> None:
+        conn = _make_worker_conn()
+        self._run(conn)
+        inserts = [q for q, _ in conn.executed if 'INSERT INTO detection_events' in q]
+        assert inserts, 'Expected INSERT INTO detection_events for canonical path'
+
+    def test_G_alert_insert_includes_detection_event_id(self) -> None:
+        conn = _make_worker_conn()
+        self._run(conn)
+        alert_inserts = [q for q, _ in conn.executed if 'INSERT INTO alerts' in q]
+        assert alert_inserts, 'Expected INSERT INTO alerts'
+        assert 'detection_event_id' in alert_inserts[0], (
+            'Alert INSERT must include detection_event_id column'
+        )
+
+    def test_G_alert_insert_includes_legacy_detection_id(self) -> None:
+        conn = _make_worker_conn()
+        self._run(conn)
+        alert_inserts = [q for q, _ in conn.executed if 'INSERT INTO alerts' in q]
+        assert 'detection_id' in alert_inserts[0], (
+            'Alert INSERT must include legacy detection_id column'
+        )
+
+    def test_G_inserts_incident_timeline_row(self) -> None:
+        conn = _make_worker_conn()
+        self._run(conn)
+        inserts = [q for q, _ in conn.executed if 'INSERT INTO incident_timeline' in q]
+        assert inserts, 'Expected INSERT INTO incident_timeline'
+
+    def test_G_inserts_detection_evidence_row(self) -> None:
+        conn = _make_worker_conn()
+        self._run(conn)
+        inserts = [q for q, _ in conn.executed if 'INSERT INTO detection_evidence' in q]
+        assert inserts, 'Expected INSERT INTO detection_evidence (legacy path)'
+
+    def test_G_inserts_evidence_row(self) -> None:
+        conn = _make_worker_conn()
+        self._run(conn)
+        inserts = [q for q, _ in conn.executed if 'INSERT INTO evidence' in q]
+        assert inserts, 'Expected INSERT INTO evidence'
+
+    def test_G_incomplete_chain_not_deduplicated(self) -> None:
+        # has_complete_chain=False means the deduplication check returns None,
+        # so the worker must NOT short-circuit — it should create a new chain.
+        conn = _make_worker_conn(has_complete_chain=False)
+        result = self._run(conn)
+        assert result.get('reason') != 'deduplicated', (
+            'Incomplete chain must not be returned as deduplicated'
+        )
+        assert result.get('created') is True
+
+    def test_G_complete_chain_is_deduplicated(self) -> None:
+        conn = _make_worker_conn(has_complete_chain=True)
+        result = self._run(conn)
+        assert result.get('created') is False
+        assert result.get('reason') == 'deduplicated'
+
+    def test_G_orphan_alerts_archived_before_new_chain_created(self) -> None:
+        # When no complete chain exists, UPDATE alerts (orphan archival) must run
+        # before the new chain INSERTs.
+        conn = _make_worker_conn(has_complete_chain=False)
+        self._run(conn)
+        update_alerts = [i for i, (q, _) in enumerate(conn.executed) if 'UPDATE alerts' in q]
+        insert_detection_events = [i for i, (q, _) in enumerate(conn.executed) if 'INSERT INTO detection_events' in q]
+        assert update_alerts, 'Expected UPDATE alerts for orphan archival'
+        assert insert_detection_events, 'Expected INSERT INTO detection_events'
+        assert update_alerts[0] < insert_detection_events[0], (
+            'Orphan alert archival must happen before new chain is inserted'
+        )
+
+    def test_G_orphan_incidents_archived_before_new_chain_created(self) -> None:
+        conn = _make_worker_conn(has_complete_chain=False)
+        self._run(conn)
+        update_incidents = [i for i, (q, _) in enumerate(conn.executed) if 'UPDATE incidents' in q and 'SET status' in q and 'FROM alerts a' in q]
+        insert_detection_events = [i for i, (q, _) in enumerate(conn.executed) if 'INSERT INTO detection_events' in q]
+        assert update_incidents, 'Expected UPDATE incidents for orphan archival'
+        assert update_incidents[0] < insert_detection_events[0], (
+            'Orphan incident archival must happen before new chain is inserted'
+        )
+
+    def test_G_no_telemetry_returns_no_live_telemetry(self) -> None:
+        conn = _make_worker_conn(has_telemetry=False)
+        result = self._run(conn)
+        assert result.get('created') is False
+        assert result.get('reason') == 'no_live_telemetry'
+
+    def test_G_detection_event_id_in_return_value(self) -> None:
+        conn = _make_worker_conn()
+        result = self._run(conn)
+        assert result.get('detection_event_id') is not None
+
+    def test_G_incident_timeline_id_in_return_value(self) -> None:
+        conn = _make_worker_conn()
+        result = self._run(conn)
+        assert result.get('incident_timeline_id') is not None
