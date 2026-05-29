@@ -98,8 +98,10 @@ def test_runtime_status_contradiction_guard_conditions_present_for_canonical_sou
     assert "evidence_source == 'live'" in source
     assert "runtime_status_summary == 'healthy' and reporting_systems <= 0" in source
     assert '(last_heartbeat is not None or last_poll_at is not None)' in source
-    assert "runtime_last_telemetry_source != 'telemetry_events'" in source
-    assert "runtime_last_detection_source != 'detection_events'" in source
+    # The guard now uses startswith() to tolerate qualified canonical source
+    # strings like 'telemetry_events.observed_at' / 'detection_events.created_at'.
+    assert "str(runtime_last_telemetry_source or '').startswith('telemetry_events')" in source
+    assert "str(runtime_last_detection_source or '').startswith('detection_events')" in source
 
 
 def test_runtime_status_legacy_inputs_cannot_control_canonical_runtime_truth_fields():

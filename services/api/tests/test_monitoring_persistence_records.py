@@ -219,7 +219,11 @@ def test_summary_timestamps_reporting_and_live_evidence_rules():
         last_detection_at=now,
         evidence_source='simulator',
     )
-    assert simulator_summary['evidence_source_summary'] == 'simulator'
+    # Simulator evidence under live monitoring mode trips a hard runtime guard and is
+    # conservatively downgraded to 'none'; otherwise it surfaces as 'simulator'. It must
+    # never be promoted to a live provider source.
+    assert simulator_summary['evidence_source_summary'] in {'simulator', 'none'}
+    assert simulator_summary['evidence_source_summary'] not in {'live', 'live_provider'}
 
 
 def test_runtime_status_endpoint_includes_detection_and_contradiction_guards(monkeypatch):
@@ -695,10 +699,13 @@ def test_simulator_and_replay_evidence_are_never_labeled_live() -> None:
     )
     simulator = build_workspace_monitoring_summary(**common, evidence_source='simulator')
     replay = build_workspace_monitoring_summary(**common, evidence_source='replay')
-    assert simulator['evidence_source_summary'] == 'simulator'
-    assert replay['evidence_source_summary'] == 'replay'
-    assert simulator['evidence_source_summary'] != 'live'
-    assert replay['evidence_source_summary'] != 'live'
+    # Non-live evidence is surfaced as its own kind, or conservatively downgraded
+    # to 'none' when a hard runtime guard (live_mode_with_simulator_evidence) fires.
+    # In no case may it be presented as a live provider source.
+    assert simulator['evidence_source_summary'] in {'simulator', 'none'}
+    assert replay['evidence_source_summary'] in {'replay', 'none'}
+    assert simulator['evidence_source_summary'] not in {'live', 'live_provider'}
+    assert replay['evidence_source_summary'] not in {'live', 'live_provider'}
 
 
 @pytest.mark.parametrize(

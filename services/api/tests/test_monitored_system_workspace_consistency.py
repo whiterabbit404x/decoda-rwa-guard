@@ -246,11 +246,14 @@ def test_reconcile_workspace_requires_eligible_targets(monkeypatch):
     monkeypatch.setattr(pilot, 'pg_connection', lambda: _fake_pg(conn))
     monkeypatch.setattr(pilot, '_require_workspace_admin', lambda *_a, **_k: ({'id': 'user-2'}, {'workspace_id': 'ws-2', 'workspace': {'id': 'ws-2'}}))
 
-    with pytest.raises(HTTPException) as exc:
-        pilot.reconcile_workspace_monitored_systems(request)
+    # Reconcile no longer hard-fails when a workspace has no eligible targets; it
+    # completes gracefully, records them as skipped, and reports an empty system set
+    # so the workspace can still be repaired/observed without a 500.
+    result = pilot.reconcile_workspace_monitored_systems(request)
 
-    assert exc.value.status_code == 500
-    assert exc.value.detail['stage'] == 'verify_eligible_targets'
+    assert result['reconcile']['eligible_targets'] == 0
+    assert result['reconcile']['skipped_reasons'].get('no_eligible_targets') == 1
+    assert result['monitored_systems_count'] == 0
 
 
 def test_reconcile_workspace_validates_runtime_debug_assertions(monkeypatch):

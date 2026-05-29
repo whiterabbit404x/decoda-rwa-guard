@@ -29,6 +29,8 @@ class _Conn:
 
     def execute(self, query, params=None):
         q = ' '.join(str(query).split())
+        if 'COUNT(*) AS c FROM detections' in q:
+            return _Result({'c': 1})
         if 'FROM alerts' in q:
             return _Result({'c': 1})
         if 'FROM incidents' in q:
@@ -1530,8 +1532,12 @@ def test_runtime_status_workspace_scoped_path_preserves_coverage_telemetry_field
                         }
                     ]
                 )
+            # Complete live proof chain: fresh live coverage is only truthfully
+            # reportable as healthy when detection → alert → incident exist.
+            if 'COUNT(*) AS c FROM detections' in q:
+                return _Result({'c': 1})
             if 'FROM alerts' in q or 'FROM incidents' in q:
-                return _Result({'c': 0})
+                return _Result({'c': 1})
             if 'COUNT(*) AS target_count' in q and 'COUNT(DISTINCT t.asset_id) AS asset_count' in q:
                 return _Result({'target_count': 1, 'asset_count': 1})
             if 'SELECT t.id' in q and 'FROM targets t' in q and 'JOIN assets a' in q:
@@ -1799,6 +1805,8 @@ def test_runtime_status_live_with_fresh_coverage_telemetry_without_target_events
                 return _Result(rows=[{'id': 'target-1', 'asset_id': 'asset-1'}])
             if 'FROM analysis_runs' in q:
                 return _Result({'created_at': now, 'response_payload': {'metadata': {'recent_real_event_count': 0, 'detection_outcome': 'NO_CONFIRMED_ANOMALY_FROM_REAL_EVIDENCE'}}})
+            if 'COUNT(*) AS c FROM detections' in q:
+                return _Result({'c': 1})
             if 'FROM detections' in q:
                 return _Result({'detected_at': now - timedelta(seconds=30)})
             return super().execute(query, params)
