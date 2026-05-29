@@ -419,6 +419,8 @@ def _make_worker_conn(
     msid = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
 
+    run_id = str(uuid.uuid4())
+
     def respond(q: str, _params: Any) -> Any:
         # Complete-chain existence check (deduplication guard)
         if 'FROM detections d' in q and 'live_rpc_telemetry_proof' in q and 'detection_event_id IS NOT NULL' in q:
@@ -447,6 +449,9 @@ def _make_worker_conn(
         # asset check
         if 'SELECT id FROM assets' in q:
             return None
+        # monitoring_run_id resolver: step A returns existing row so no INSERT needed
+        if 'monitoring_runs' in q:
+            return _row(id=run_id)
         # All INSERTs/UPDATEs return None
         return None
 

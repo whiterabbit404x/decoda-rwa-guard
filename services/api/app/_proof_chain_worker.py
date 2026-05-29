@@ -113,6 +113,64 @@ def _resolve_detection_event_target_id(
     )
 
 
+def _resolve_monitoring_run_id(
+    connection: Any,
+    workspace_id: str,
+) -> str:
+    """Return a valid monitoring_runs.id for use as detections.monitoring_run_id.
+
+    Identical resolution logic to resolve_monitoring_run_id in the repair script.
+    Never passes a random UUID that has no parent row in monitoring_runs.
+    """
+    existing = connection.execute(
+        '''
+        SELECT id FROM monitoring_runs
+        WHERE workspace_id = %s::uuid
+        ORDER BY started_at DESC
+        LIMIT 1
+        ''',
+        (workspace_id,),
+    ).fetchone()
+    if existing:
+        _id = existing.get('id') if isinstance(existing, dict) else existing[0]
+        return str(_id or '')
+
+    new_run_id = str(uuid.uuid4())
+    inserted = connection.execute(
+        '''
+        INSERT INTO monitoring_runs (
+            id, workspace_id, started_at, completed_at, status,
+            trigger_type, systems_checked_count, assets_checked_count,
+            detections_created_count, alerts_created_count,
+            telemetry_records_seen_count, notes
+        ) VALUES (
+            %s::uuid, %s::uuid, NOW(), NOW(), 'completed',
+            'repair_script', 0, 0, 1, 1, 1,
+            'Created by _proof_chain_worker'
+        )
+        RETURNING id
+        ''',
+        (new_run_id, workspace_id),
+    ).fetchone()
+
+    resolved_id = new_run_id
+    if inserted:
+        _id = inserted.get('id') if isinstance(inserted, dict) else inserted[0]
+        resolved_id = str(_id or '') or new_run_id
+
+    confirmed = connection.execute(
+        'SELECT 1 FROM monitoring_runs WHERE id = %s::uuid',
+        (resolved_id,),
+    ).fetchone()
+    if confirmed:
+        return resolved_id
+
+    raise RuntimeError(
+        f'_resolve_monitoring_run_id: monitoring_runs row id={resolved_id!r} '
+        f'not found after INSERT for workspace_id={workspace_id!r}.'
+    )
+
+
 def _ensure_workspace_live_rpc_proof_chain(
     connection: Any,
     *,
@@ -305,7 +363,8 @@ def _ensure_workspace_live_rpc_proof_chain(
     response_action_id = str(uuid.uuid4())
     detection_evidence_id = str(uuid.uuid4())
     incident_timeline_id = str(uuid.uuid4())
-    monitoring_run_id = str(uuid.uuid4())
+    # Resolve a real monitoring_runs.id — never pass a random UUID that has no parent row.
+    monitoring_run_id = _resolve_monitoring_run_id(connection, workspace_id)
     title = 'Live RPC telemetry proof detection'
     evidence_summary = (
         f'Ethereum RPC provider returned a live block (chain_id={chain_id}, '
