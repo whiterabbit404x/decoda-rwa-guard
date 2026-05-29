@@ -381,6 +381,9 @@ class _Result:
     def fetchone(self) -> Any:
         return self._row
 
+    def fetchall(self) -> list[Any]:
+        return [self._row] if self._row is not None else []
+
 
 class _WorkerFakeConn:
     """Fake psycopg connection for _ensure_workspace_live_rpc_proof_chain tests.
@@ -431,6 +434,10 @@ def _make_worker_conn(
                 observed_at=now,
                 payload_json={'block_number': 99999, 'chain_id': 1, 'provider_name': 'alchemy'},
             )
+        # Resolver step A: simulate tid existing in monitored_targets.id so the
+        # resolver succeeds immediately without needing a real upsert.
+        if 'FROM monitored_targets' in q or 'INTO monitored_targets' in q:
+            return _row(id=tid)
         # monitored_systems
         if 'FROM monitored_systems ms' in q:
             return _row(id=msid, asset_id=None) if has_monitored_system else None

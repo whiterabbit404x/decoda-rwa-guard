@@ -29,6 +29,7 @@ from services.api.scripts.repair_live_rpc_proof_chain import (
     _has_complete_proof_chain,
     _invalidate_precomputed_summary,
     _query_contradiction_flags,
+    resolve_detection_event_target_id,
 )
 
 
@@ -221,7 +222,10 @@ class TestFCreateProofChain:
                 return _row(created_by_user_id=uid)
             if 'SELECT id FROM assets' in q:
                 return None
-            # All INSERT statements return None
+            # Resolver step A: simulate telemetry target_id existing in monitored_targets.id
+            if 'FROM monitored_targets' in q or 'INTO monitored_targets' in q:
+                return _row(id=tid)
+            # All other INSERT/UPDATE statements return None
             return None
 
         conn = _FakeConn()
@@ -230,6 +234,7 @@ class TestFCreateProofChain:
             'FROM monitored_systems ms': respond,
             'SELECT created_by_user_id FROM workspaces': respond,
             'SELECT id FROM assets': respond,
+            'monitored_targets': respond,
         }
         return conn
 
@@ -463,3 +468,305 @@ class TestJInvalidatePrecomputedSummary:
         updates = [q for q, _ in conn.executed if 'UPDATE monitoring_workspace_runtime_summary' in q]
         assert 'updated_at' in updates[0], 'UPDATE must set updated_at'
         assert 'INTERVAL' in updates[0], 'updated_at must be set to a past time via INTERVAL'
+
+
+# ---------------------------------------------------------------------------
+# L. resolve_detection_event_target_id: step A — direct id match
+# Test B from task: telemetry target already exists in monitored_targets.id
+# ---------------------------------------------------------------------------
+
+class TestLResolveDirectMatch:
+    def test_L_returns_target_id_when_it_exists_in_monitored_targets(self) -> None:
+        tid = str(uuid.uuid4())
+        wid = str(uuid.uuid4())
+        # Step A: monitored_targets has a row with id = tid
+        conn = _FakeConn(responses={
+            'FROM monitored_targets': _row(id=tid),
+        })
+        result = resolve_detection_event_target_id(conn, wid, tid)
+        assert result == tid
+
+    def test_L_does_not_execute_upsert_when_direct_match_found(self) -> None:
+        tid = str(uuid.uuid4())
+        wid = str(uuid.uuid4())
+        conn = _FakeConn(responses={'FROM monitored_targets': _row(id=tid)})
+        resolve_detection_event_target_id(conn, wid, tid)
+        inserts = [q for q, _ in conn.executed if 'INSERT INTO monitored_targets' in q]
+        assert inserts == [], 'Should not upsert when direct match exists'
+
+
+# ---------------------------------------------------------------------------
+# M. resolve_detection_event_target_id: step B — resolve via target_identifier
+# Test A from task: telemetry_target_id is targets.id, resolve to monitored_targets.id
+# ---------------------------------------------------------------------------
+
+class TestMResolveViaTargetIdentifier:
+    def test_M_returns_monitored_targets_id_via_target_identifier(self) -> None:
+        tid = str(uuid.uuid4())          # targets.id stored as target_identifier
+        mt_id = str(uuid.uuid4())        # monitored_targets.id (different UUID)
+        wid = str(uuid.uuid4())
+        call_count = 0
+
+        def respond(q: str, _params: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
+            # Step A: direct id check returns None (tid ≠ monitored_targets.id)
+            if call_count == 1:
+                return None
+            # Step B: target_identifier lookup returns mt_id
+            return _row(id=mt_id)
+
+        conn = _FakeConn(responses={'FROM monitored_targets': respond})
+        result = resolve_detection_event_target_id(conn, wid, tid)
+        assert result == mt_id, 'Should return monitored_targets.id from target_identifier lookup'
+
+    def test_M_does_not_upsert_when_identifier_match_found(self) -> None:
+        tid = str(uuid.uuid4())
+        mt_id = str(uuid.uuid4())
+        wid = str(uuid.uuid4())
+        call_count = 0
+
+        def respond(q: str, _params: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
+            return None if call_count == 1 else _row(id=mt_id)
+
+        conn = _FakeConn(responses={'FROM monitored_targets': respond})
+        resolve_detection_event_target_id(conn, wid, tid)
+        inserts = [q for q, _ in conn.executed if 'INSERT INTO monitored_targets' in q]
+        assert inserts == [], 'Should not upsert when identifier match exists'
+
+
+# ---------------------------------------------------------------------------
+# N. resolve_detection_event_target_id: step D — upsert when no row exists
+# Test C from task: no monitored_targets row → creates one
+# ---------------------------------------------------------------------------
+
+class TestNResolveUpsert:
+    def test_N_upserts_monitored_targets_when_no_row_exists(self) -> None:
+        tid = str(uuid.uuid4())
+        wid = str(uuid.uuid4())
+        new_mt_id = str(uuid.uuid4())
+        call_count = 0
+
+        def respond(q: str, _params: Any) -> Any:
+            nonlocal call_count
+            if 'INSERT INTO monitored_targets' in q:
+                return _row(id=new_mt_id)
+            call_count += 1
+            return None  # Steps A and B both return None
+
+        conn = _FakeConn(responses={
+            'FROM monitored_targets': respond,
+            'INSERT INTO monitored_targets': respond,
+        })
+        result = resolve_detection_event_target_id(conn, wid, tid)
+        assert result == new_mt_id
+        inserts = [q for q, _ in conn.executed if 'INSERT INTO monitored_targets' in q]
+        assert inserts, 'Should execute INSERT INTO monitored_targets when no row exists'
+
+    def test_N_upsert_uses_on_conflict_for_idempotency(self) -> None:
+        wid = str(uuid.uuid4())
+        tid = str(uuid.uuid4())
+        new_id = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'INSERT INTO monitored_targets' in q:
+                return _row(id=new_id)
+            return None
+
+        conn = _FakeConn(responses={
+            'FROM monitored_targets': respond,
+            'INSERT INTO monitored_targets': respond,
+        })
+        resolve_detection_event_target_id(conn, wid, tid)
+        inserts = [q for q, _ in conn.executed if 'INSERT INTO monitored_targets' in q]
+        assert inserts, 'INSERT should have been executed'
+        assert 'ON CONFLICT' in inserts[0], 'INSERT must use ON CONFLICT for idempotency'
+        assert 'RETURNING id' in inserts[0], 'INSERT must use RETURNING id'
+
+    def test_N_upsert_uses_evm_rpc_provider_type(self) -> None:
+        wid = str(uuid.uuid4())
+        tid = str(uuid.uuid4())
+        new_id = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'INSERT INTO monitored_targets' in q:
+                return _row(id=new_id)
+            return None
+
+        conn = _FakeConn(responses={
+            'FROM monitored_targets': respond,
+            'INSERT INTO monitored_targets': respond,
+        })
+        resolve_detection_event_target_id(conn, wid, tid)
+        inserts = [q for q, _ in conn.executed if 'INSERT INTO monitored_targets' in q]
+        assert inserts, 'INSERT should have been executed'
+        assert 'evm_rpc' in inserts[0], "Upserted row must use provider_type='evm_rpc'"
+
+
+# ---------------------------------------------------------------------------
+# O. detect_detection_events insert uses monitored_targets.id, not targets.id
+# Test D from task: detection_events insert never uses a non-parent target id
+# ---------------------------------------------------------------------------
+
+class TestODetectionEventsUsesMonitoredTargetsId:
+    def test_O_detection_events_insert_uses_resolved_id_not_raw_target_id(self) -> None:
+        """The target_id param to the detection_events INSERT must be the resolved
+        monitored_targets.id, not the raw telemetry targets.id."""
+        tid = str(uuid.uuid4())       # targets.id (raw telemetry target)
+        mt_id = str(uuid.uuid4())     # monitored_targets.id (resolved)
+        uid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'FROM telemetry_events te' in q:
+                return _row(
+                    id=str(uuid.uuid4()),
+                    target_id=tid,
+                    asset_id=None,
+                    observed_at=now,
+                    payload_json={'block_number': 99, 'chain_id': 1, 'provider_name': 'test'},
+                )
+            if 'FROM monitored_systems ms' in q:
+                return _row(id=str(uuid.uuid4()), asset_id=None)
+            if 'SELECT created_by_user_id FROM workspaces' in q:
+                return _row(created_by_user_id=uid)
+            if 'SELECT id FROM assets' in q:
+                return None
+            # Resolver step A returns mt_id (different from tid)
+            if 'FROM monitored_targets' in q or 'INTO monitored_targets' in q:
+                return _row(id=mt_id)
+            return None
+
+        conn = _FakeConn(responses={'': respond})
+        _create_proof_chain(conn, str(uuid.uuid4()))
+
+        de_inserts = [params for q, params in conn.executed if 'INSERT INTO detection_events' in q]
+        assert de_inserts, 'Expected INSERT INTO detection_events'
+        # The third positional param to detection_events is asset_id (None), the fourth
+        # is target_id.  params tuple: (detection_event_id, workspace_id, asset_id, target_id, ...)
+        de_params = de_inserts[0]
+        assert tid not in de_params, (
+            f'detection_events must not use raw targets.id={tid!r} as target_id; '
+            f'use monitored_targets.id={mt_id!r} instead'
+        )
+        assert mt_id in de_params, (
+            f'detection_events must use the resolved monitored_targets.id={mt_id!r}'
+        )
+
+
+# ---------------------------------------------------------------------------
+# P. Regression: exact production error — target in targets but not monitored_targets
+# Test E from task
+# ---------------------------------------------------------------------------
+
+REGRESSION_TARGET_ID = 'c42efa96-e22f-48e2-bd3f-be486689b9b5'
+
+
+class TestPRegressionForeignKeyViolation:
+    """Regression test for the exact production ForeignKeyViolation.
+
+    target_id=c42efa96 exists in the targets table but was not present in
+    monitored_targets.id.  The repair script must resolve a valid monitored_targets.id
+    before inserting detection_events and must not raise ForeignKeyViolation.
+    """
+
+    def test_P_resolves_monitored_targets_id_for_regression_target(self) -> None:
+        wid = str(uuid.uuid4())
+        mt_id = str(uuid.uuid4())   # the monitored_targets.id that should be returned
+
+        # Step A returns None (regression_target not in monitored_targets.id)
+        # Step B also returns None (no target_identifier row yet)
+        # Step D (upsert) returns mt_id
+        call_count = 0
+
+        def respond(q: str, _params: Any) -> Any:
+            nonlocal call_count
+            if 'INSERT INTO monitored_targets' in q:
+                return _row(id=mt_id)
+            call_count += 1
+            return None  # A and B both return None
+
+        conn = _FakeConn(responses={
+            'FROM monitored_targets': respond,
+            'INSERT INTO monitored_targets': respond,
+        })
+        result = resolve_detection_event_target_id(conn, wid, REGRESSION_TARGET_ID)
+        # Must NOT use the regression targets.id directly; must return the upserted mt_id
+        assert result != REGRESSION_TARGET_ID, (
+            'Resolver must not return the raw targets.id when it is not in monitored_targets'
+        )
+        assert result == mt_id
+
+    def test_P_create_proof_chain_does_not_raise_foreign_key_violation(self) -> None:
+        """Full create_proof_chain flow with the regression target_id must not raise."""
+        uid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        mt_id = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'FROM telemetry_events te' in q:
+                return _row(
+                    id=str(uuid.uuid4()),
+                    target_id=REGRESSION_TARGET_ID,
+                    asset_id=None,
+                    observed_at=now,
+                    payload_json={'block_number': 20000000, 'chain_id': 1, 'provider_name': 'alchemy'},
+                )
+            if 'FROM monitored_systems ms' in q:
+                return _row(id=str(uuid.uuid4()), asset_id=None)
+            if 'SELECT created_by_user_id FROM workspaces' in q:
+                return _row(created_by_user_id=uid)
+            if 'SELECT id FROM assets' in q:
+                return None
+            # Resolver: step A and B return None, step D (upsert) returns mt_id
+            if 'INSERT INTO monitored_targets' in q:
+                return _row(id=mt_id)
+            if 'FROM monitored_targets' in q:
+                return None
+            return None
+
+        conn = _FakeConn(responses={'': respond})
+        # Must not raise any exception (in production this raised ForeignKeyViolation)
+        result = _create_proof_chain(conn, str(uuid.uuid4()))
+        assert result.get('created') is True
+
+    def test_P_detection_events_insert_uses_resolved_not_regression_id(self) -> None:
+        uid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        mt_id = str(uuid.uuid4())
+
+        def respond(q: str, _params: Any) -> Any:
+            if 'FROM telemetry_events te' in q:
+                return _row(
+                    id=str(uuid.uuid4()),
+                    target_id=REGRESSION_TARGET_ID,
+                    asset_id=None,
+                    observed_at=now,
+                    payload_json={'block_number': 20000000, 'chain_id': 1, 'provider_name': 'alchemy'},
+                )
+            if 'FROM monitored_systems ms' in q:
+                return _row(id=str(uuid.uuid4()), asset_id=None)
+            if 'SELECT created_by_user_id FROM workspaces' in q:
+                return _row(created_by_user_id=uid)
+            if 'SELECT id FROM assets' in q:
+                return None
+            if 'INSERT INTO monitored_targets' in q:
+                return _row(id=mt_id)
+            if 'FROM monitored_targets' in q:
+                return None
+            return None
+
+        conn = _FakeConn(responses={'': respond})
+        _create_proof_chain(conn, str(uuid.uuid4()))
+
+        de_inserts = [params for q, params in conn.executed if 'INSERT INTO detection_events' in q]
+        assert de_inserts, 'Expected INSERT INTO detection_events'
+        de_params = de_inserts[0]
+        assert REGRESSION_TARGET_ID not in de_params, (
+            'detection_events must not use regression targets.id c42efa96 directly'
+        )
+        assert mt_id in de_params, (
+            'detection_events must use the resolved monitored_targets.id'
+        )

@@ -80,6 +80,91 @@ def _get_connection() -> Any:
     return psycopg.connect(resolved, row_factory=dict_row, **options)
 
 
+def resolve_detection_event_target_id(
+    conn: Any,
+    workspace_id: str,
+    telemetry_target_id: str,
+) -> str:
+    """Return a valid monitored_targets.id for use as detection_events.target_id.
+
+    detection_events.target_id FK references monitored_targets(id). Telemetry
+    events store targets.id (the canonical targets table), which is a different
+    UUID namespace than monitored_targets.id. This function bridges the gap.
+
+    Resolution order:
+    A. telemetry_target_id already exists in monitored_targets.id → use directly.
+    B. Find monitored_targets row via target_identifier = telemetry_target_id
+       (target_identifier stores the targets.id text per pilot.py canonical sync).
+    D. No row found → upsert using the deterministic UUID5 from pilot.py, returning id.
+    E. Preflight: verify the row exists; raise with diagnostics if upsert returned nothing.
+    """
+    # A. Direct match: telemetry_target_id is already a valid monitored_targets.id.
+    direct = conn.execute(
+        'SELECT id FROM monitored_targets WHERE id = %s::uuid AND workspace_id = %s::uuid LIMIT 1',
+        (telemetry_target_id, workspace_id),
+    ).fetchone()
+    if direct:
+        return _str(direct.get('id'))
+
+    # B. Link via target_identifier (stores targets.id::text, set by canonical sync in pilot.py).
+    by_identifier = conn.execute(
+        """
+        SELECT id FROM monitored_targets
+        WHERE workspace_id = %s::uuid AND target_identifier = %s
+        ORDER BY enabled DESC, created_at DESC
+        LIMIT 1
+        """,
+        (workspace_id, telemetry_target_id),
+    ).fetchone()
+    if by_identifier:
+        return _str(by_identifier.get('id'))
+
+    # D. Upsert a monitored_targets row using the same deterministic UUID5 that
+    #    pilot.py uses so the row is findable by existing canonical-sync queries.
+    canonical_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'canonical-target:{workspace_id}:{telemetry_target_id}'))
+    upserted = conn.execute(
+        """
+        INSERT INTO monitored_targets (
+            id, workspace_id, asset_id, provider_type,
+            target_identifier, enabled, status, created_at, updated_at
+        ) VALUES (
+            %s::uuid, %s::uuid, NULL, 'evm_rpc',
+            %s, TRUE, 'active', NOW(), NOW()
+        )
+        ON CONFLICT (workspace_id, provider_type, target_identifier)
+        DO UPDATE SET
+            enabled = TRUE,
+            status  = 'active',
+            updated_at = NOW()
+        RETURNING id
+        """,
+        (canonical_id, workspace_id, telemetry_target_id),
+    ).fetchone()
+    if upserted:
+        return _str(upserted.get('id'))
+
+    # E. Preflight: should not reach here after a successful upsert.
+    available = conn.execute(
+        """
+        SELECT id, target_identifier, provider_type
+        FROM monitored_targets
+        WHERE workspace_id = %s::uuid
+        ORDER BY created_at DESC
+        LIMIT 5
+        """,
+        (workspace_id,),
+    ).fetchall() or []
+    raise RuntimeError(
+        f'resolve_detection_event_target_id: cannot resolve monitored_targets.id '
+        f'for telemetry_target_id={telemetry_target_id!r} workspace_id={workspace_id!r}. '
+        f'Upsert returned no row. Mapping column: monitored_targets.target_identifier. '
+        f'Available rows: {[dict(r) for r in available]}. '
+        f'Suggested fix: ensure a monitored_targets row exists with '
+        f'(workspace_id=%s, provider_type=evm_rpc, target_identifier=%s) '
+        f'or investigate why the INSERT returned nothing.'
+    )
+
+
 def _find_workspace_id(conn: Any, env_workspace_id: str) -> str:
     if env_workspace_id:
         row = conn.execute(
@@ -514,6 +599,12 @@ def _create_proof_chain(conn: Any, workspace_id: str) -> dict[str, Any]:
     chain_id = payload_json.get('chain_id') or 1
     provider_name = str(payload_json.get('provider_name') or 'evm_rpc')
 
+    # Resolve monitored_targets.id for detection_events FK.
+    # detection_events.target_id references monitored_targets(id). Telemetry events
+    # store targets.id, which is a different UUID. Never use targets.id directly as
+    # detection_events.target_id unless that id also exists in monitored_targets.
+    detection_event_target_id = resolve_detection_event_target_id(conn, workspace_id, target_id)
+
     # Find monitored_system for FK linkage
     monitored_system_row = conn.execute(
         """
@@ -579,7 +670,9 @@ def _create_proof_chain(conn: Any, workspace_id: str) -> dict[str, Any]:
         'attack_claim': False,
     }
 
-    # 1. Canonical detection_events row (required for active_alerts_count in monitoring_runner)
+    # 1. Canonical detection_events row (required for active_alerts_count in monitoring_runner).
+    #    Use detection_event_target_id (monitored_targets.id) not target_id (targets.id)
+    #    to satisfy detection_events.target_id FK → monitored_targets(id).
     conn.execute(
         """
         INSERT INTO detection_events (
@@ -593,7 +686,7 @@ def _create_proof_chain(conn: Any, workspace_id: str) -> dict[str, Any]:
         )
         """,
         (
-            detection_event_id, workspace_id, protected_asset_id, target_id,
+            detection_event_id, workspace_id, protected_asset_id, detection_event_target_id,
             telemetry_event_id, evidence_summary,
         ),
     )
