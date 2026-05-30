@@ -8,7 +8,7 @@ import os
 import uuid
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any
 from fastapi import HTTPException, Request, status
 import psycopg
@@ -4051,50 +4051,62 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                         (worker_name, target['id'], target['workspace_id']),
                     )
                     result = process_monitoring_target(connection, target)
-                    monitored_system_id = due_system_ids.get(str(target['id']))
-                    if monitored_system_id:
-                        runtime_status, freshness_status, confidence_status, coverage_reason = _derive_system_runtime_state(
-                            result,
-                            is_enabled=True,
-                        )
-                        status_params = (runtime_status, 'active', monitored_system_id)
-                        if runtime_status not in {'provisioning', 'healthy', 'idle', 'degraded'}:
-                            status_params = (runtime_status, 'error' if runtime_status == 'failed' else 'paused', monitored_system_id)
-                        connection.execute(
-                            '''
-                            UPDATE monitored_systems
-                            SET last_heartbeat = NOW(),
-                                runtime_status = %s,
-                                status = %s
-                            WHERE id = %s::uuid
-                              AND workspace_id = %s::uuid
-                            ''',
-                            (*status_params, str(target['workspace_id'])),
-                        )
-                        connection.execute(
-                            '''
-                            UPDATE monitored_systems ms
-                            SET last_heartbeat = NOW(),
-                                last_event_at = COALESCE(%s, last_event_at),
-                                last_coverage_telemetry_at = COALESCE(%s, last_coverage_telemetry_at),
-                                freshness_status = %s,
-                                confidence_status = %s,
-                                coverage_reason = %s,
-                                last_error_text = NULL
-                            WHERE ms.id = %s::uuid
-                              AND ms.workspace_id = %s::uuid
-                            ''',
-                            (
-                                result.get('last_event_at') or target.get('watcher_last_event_at'),
-                                result.get('live_coverage_telemetry_at'),
-                                freshness_status,
-                                confidence_status,
-                                coverage_reason,
-                                monitored_system_id,
-                                str(target['workspace_id']),
-                            ),
-                        )
-                        monitored_systems_updated += 1
+                monitored_system_id = due_system_ids.get(str(target['id']))
+                if monitored_system_id:
+                    runtime_status, freshness_status, confidence_status, coverage_reason = _derive_system_runtime_state(
+                        result,
+                        is_enabled=True,
+                    )
+                    status_params = (runtime_status, 'active', monitored_system_id)
+                    if runtime_status not in {'provisioning', 'healthy', 'idle', 'degraded'}:
+                        status_params = (runtime_status, 'error' if runtime_status == 'failed' else 'paused', monitored_system_id)
+                    for _deadlock_attempt in range(3):
+                        try:
+                            with connection.transaction():
+                                connection.execute(
+                                    '''
+                                    UPDATE monitored_systems
+                                    SET last_heartbeat = NOW(),
+                                        runtime_status = %s,
+                                        status = %s
+                                    WHERE id = %s::uuid
+                                      AND workspace_id = %s::uuid
+                                    ''',
+                                    (*status_params, str(target['workspace_id'])),
+                                )
+                                connection.execute(
+                                    '''
+                                    UPDATE monitored_systems ms
+                                    SET last_heartbeat = NOW(),
+                                        last_event_at = COALESCE(%s, last_event_at),
+                                        last_coverage_telemetry_at = COALESCE(%s, last_coverage_telemetry_at),
+                                        freshness_status = %s,
+                                        confidence_status = %s,
+                                        coverage_reason = %s,
+                                        last_error_text = NULL
+                                    WHERE ms.id = %s::uuid
+                                      AND ms.workspace_id = %s::uuid
+                                    ''',
+                                    (
+                                        result.get('last_event_at') or target.get('watcher_last_event_at'),
+                                        result.get('live_coverage_telemetry_at'),
+                                        freshness_status,
+                                        confidence_status,
+                                        coverage_reason,
+                                        monitored_system_id,
+                                        str(target['workspace_id']),
+                                    ),
+                                )
+                            monitored_systems_updated += 1
+                            break
+                        except psycopg_errors.DeadlockDetected:
+                            if _deadlock_attempt < 2:
+                                sleep(0.05 * (2 ** _deadlock_attempt))
+                            else:
+                                logger.warning(
+                                    'deadlock_retry_exhausted monitored_system_id=%s workspace_id=%s',
+                                    monitored_system_id, str(target['workspace_id']),
+                                )
                 connection.execute("UPDATE monitoring_polls SET poll_finished_at = NOW(), status = %s, error_message = NULL WHERE id = %s::uuid", ('completed', poll_id))
                 alerts_generated += int(result['alerts_generated'])
                 if workspace_id:
@@ -4134,7 +4146,7 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                             ('error', target['id'], target['workspace_id']),
                         )
                         monitored_system_id = due_system_ids.get(str(target['id']))
-                        if monitored_system_id:
+                        if monitored_system_id and not isinstance(exc, psycopg_errors.DeadlockDetected):
                             # Keep explicit status transition text stable for regression checks:
                             # 'error', status = 'error'
                             connection.execute(

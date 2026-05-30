@@ -245,12 +245,20 @@ export function resolveWorkspaceMonitoringTruthFromSummary(summary: WorkspaceMon
   }
 
   // heartbeat exists but no telemetry and no poll (poll guard below is more specific)
-  if (lastHeartbeatAt !== null && lastTelemetryAt === null && lastCoverageTelemetryAt === null && lastPollAt === null) {
+  // Suppress when backend has authoritatively verified live runtime — it may not return raw timestamps.
+  if (
+    resolvedStatusReason !== 'live_runtime_verified' &&
+    lastHeartbeatAt !== null && lastTelemetryAt === null && lastCoverageTelemetryAt === null && lastPollAt === null
+  ) {
     addGuard('heartbeat_without_telemetry_timestamp');
   }
 
   // poll ran but no telemetry arrived
-  if (lastPollAt !== null && lastTelemetryAt === null && lastCoverageTelemetryAt === null) {
+  // Suppress when backend has authoritatively verified live runtime — it may not return raw timestamps.
+  if (
+    resolvedStatusReason !== 'live_runtime_verified' &&
+    lastPollAt !== null && lastTelemetryAt === null && lastCoverageTelemetryAt === null
+  ) {
     addGuard('poll_without_telemetry_timestamp');
   }
 
