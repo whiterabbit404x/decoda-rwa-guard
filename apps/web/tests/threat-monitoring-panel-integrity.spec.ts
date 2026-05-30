@@ -277,3 +277,122 @@ test('ThreatPageHeader always renders Export evidence link', () => {
   expect(header).toContain('href="/exports"');
   expect(header).toContain('Export evidence');
 });
+
+// ─── 12. Detection truth model — evaluation vs active records ─────────────────
+
+test('panel splits detectionOk into detectionEvaluationOk and activeDetectionRecordsOk', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  expect(panel).toContain('detectionEvaluationOk');
+  expect(panel).toContain('activeDetectionRecordsOk');
+  // Old combined detectionOk must not exist
+  expect(panel).not.toContain('const detectionOk');
+});
+
+test('pipeline Detection shows Evaluated when lastDetectionAt exists but no active detection records', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  // Detection: Complete only when activeDetectionRecordsOk; Evaluated when only evaluation ran
+  const nodeStatusesText = panel.slice(
+    panel.indexOf('const nodeStatuses:'),
+    panel.indexOf('// Empty state'),
+  );
+  expect(nodeStatusesText).toContain('activeDetectionRecordsOk');
+  expect(nodeStatusesText).toContain("'Evaluated'");
+  // Complete must be gated on activeDetectionRecordsOk not detectionOk
+  const detectionLine = nodeStatusesText.match(/Detection:.*,/)?.[0] ?? '';
+  expect(detectionLine).toContain('activeDetectionRecordsOk');
+  expect(detectionLine).not.toContain('detectionOk');
+});
+
+test('Next Required Action does not say Detection exists when active detections are zero', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  // Case G must be gated on activeDetectionRecordsOk
+  const caseGBlock = panel.slice(panel.indexOf('// Case G'), panel.indexOf('// Case H'));
+  expect(caseGBlock).toContain('activeDetectionRecordsOk');
+  expect(caseGBlock).not.toContain('detectionOk');
+});
+
+test('detection-feed shows No active detections title when telemetry and evaluation exist but no records', () => {
+  const feed = appSource('threat/detection-feed.tsx');
+  expect(feed).toContain('No active detections');
+  expect(feed).toContain('lastDetectionAt');
+  expect(feed).toContain('lastTelemetryAt');
+});
+
+test('detection-feed shows context-aware empty state for waiting-for-evaluation case', () => {
+  const feed = appSource('threat/detection-feed.tsx');
+  expect(feed).toContain('Waiting for detection evaluation');
+  expect(feed).toContain('Waiting for telemetry');
+});
+
+// ─── 13. Evidence and Response nodes in pipeline ──────────────────────────────
+
+test('pipeline workflow PIPELINE_NODES includes Evidence and Response', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  const nodesMatch = panel.match(/const PIPELINE_NODES = \[([\s\S]*?)\] as const/);
+  expect(nodesMatch).not.toBeNull();
+  const nodesText = nodesMatch![1];
+  expect(nodesText).toContain("'Evidence'");
+  expect(nodesText).toContain("'Response'");
+});
+
+test('nodeStatuses includes Evidence and Response entries', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  const nodeStatusesText = panel.slice(
+    panel.indexOf('const nodeStatuses:'),
+    panel.indexOf('// Empty state'),
+  );
+  expect(nodeStatusesText).toContain('Evidence:');
+  expect(nodeStatusesText).toContain('Response:');
+});
+
+// ─── 14. Incident and Alert use Not required instead of Blocked ───────────────
+
+test('pipeline Incident uses Not required when no active alerts not Blocked', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  const nodeStatusesText = panel.slice(
+    panel.indexOf('const nodeStatuses:'),
+    panel.indexOf('// Empty state'),
+  );
+  const incidentLine = nodeStatusesText.match(/Incident:.*,/)?.[0] ?? '';
+  expect(incidentLine).toContain('Not required');
+  expect(incidentLine).not.toContain("'Blocked'");
+});
+
+test('pipeline Alert uses Not required when evaluation ran but no active detections', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  const nodeStatusesText = panel.slice(
+    panel.indexOf('const nodeStatuses:'),
+    panel.indexOf('// Empty state'),
+  );
+  const alertLine = nodeStatusesText.match(/Alert:.*,/)?.[0] ?? '';
+  expect(alertLine).toContain('Not required');
+  expect(alertLine).not.toContain("'Blocked'");
+});
+
+// ─── 15. Generate Simulator Signal only in simulator mode ─────────────────────
+
+test('Generate Simulator Signal string only appears inside isSimulatorMode guard', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  const occurrences = [...panel.matchAll(/Generate Simulator Signal/g)];
+  // Every occurrence must be preceded by isSimulatorMode within 300 chars
+  for (const match of occurrences) {
+    const precedingText = panel.slice(Math.max(0, (match.index ?? 0) - 300), match.index ?? 0);
+    expect(precedingText).toContain('isSimulatorMode');
+  }
+});
+
+// ─── 16. No anomalies endpoint fetch ─────────────────────────────────────────
+
+test('threat-monitoring-panel does not fetch /anomalies endpoint (duplicate guard)', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  expect(panel).not.toContain('/anomalies');
+});
+
+// ─── 17. No mojibake in detection-feed ───────────────────────────────────────
+
+test('detection-feed has no mojibake characters', () => {
+  const feed = appSource('threat/detection-feed.tsx');
+  expect(feed).not.toContain('闻');
+  expect(feed).not.toContain('鰹');
+  expect(feed).not.toContain('�');
+});

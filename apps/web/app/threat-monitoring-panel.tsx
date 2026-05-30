@@ -26,7 +26,7 @@ import TechnicalRuntimeDetails from './threat/technical-runtime-details';
 import { buildDetectionRecords } from './threat/build-detection-records';
 
 type TabKey = 'overview' | 'telemetry' | 'detections';
-type NodeStatus = 'Complete' | 'Pending' | 'Blocked' | 'Degraded' | 'Configured';
+type NodeStatus = 'Complete' | 'Pending' | 'Blocked' | 'Degraded' | 'Configured' | 'Evaluated' | 'Waiting' | 'Not required';
 
 type TelemetryEvent = {
   id: string;
@@ -58,6 +58,8 @@ const PIPELINE_NODES = [
   'Detection',
   'Alert',
   'Incident',
+  'Evidence',
+  'Response',
 ] as const;
 
 const TABS = [
@@ -125,6 +127,9 @@ function nodeStatusVariant(status: NodeStatus): PillVariant {
   if (status === 'Degraded') return 'warning';
   if (status === 'Blocked') return 'danger';
   if (status === 'Configured') return 'info';
+  if (status === 'Evaluated') return 'info';
+  if (status === 'Waiting') return 'neutral';
+  if (status === 'Not required') return 'neutral';
   return 'neutral';
 }
 
@@ -219,7 +224,11 @@ export default function ThreatMonitoringPanel() {
   const heartbeatOk = !!lastHeartbeatAt;
   const pollOk = !!lastPollAt;
   const telemetryOk = !!lastTelemetryAt || telemetry.length > 0;
-  const detectionOk = !!lastDetectionAt || detections.length > 0;
+  // detectionEvaluationOk: the detection engine has run at least once (lastDetectionAt exists)
+  // activeDetectionRecordsOk: there are current visible detection records (detections.length > 0)
+  // These must be kept separate to avoid contradictions in KPIs, feed, and next-action copy.
+  const detectionEvaluationOk = !!lastDetectionAt;
+  const activeDetectionRecordsOk = detections.length > 0;
   const alertOk = activeAlerts > 0;
   const incidentOk = openIncidents > 0;
 
@@ -230,13 +239,15 @@ export default function ThreatMonitoringPanel() {
     Heartbeat: !systemOk ? 'Blocked' : heartbeatOk ? 'Complete' : 'Pending',
     Poll: !heartbeatOk ? 'Blocked' : pollOk ? 'Complete' : 'Pending',
     Telemetry: !heartbeatOk ? 'Blocked' : telemetryOk ? 'Complete' : 'Pending',
-    Detection: !telemetryOk ? 'Blocked' : detectionOk ? 'Complete' : 'Pending',
-    Alert: !detectionOk ? 'Blocked' : alertOk ? 'Complete' : 'Pending',
-    Incident: !alertOk ? 'Blocked' : incidentOk ? 'Complete' : 'Pending',
+    Detection: !telemetryOk ? 'Blocked' : activeDetectionRecordsOk ? 'Complete' : detectionEvaluationOk ? 'Evaluated' : 'Waiting',
+    Alert: alertOk ? 'Complete' : activeDetectionRecordsOk ? 'Waiting' : detectionEvaluationOk ? 'Not required' : 'Waiting',
+    Incident: incidentOk ? 'Complete' : alertOk ? 'Waiting' : 'Not required',
+    Evidence: telemetryOk ? 'Complete' : 'Waiting',
+    Response: (alertOk || incidentOk) ? 'Waiting' : 'Not required',
   };
 
-  // Empty state / next required action per spec cases A-D
-  type Blocker = { title: string; body: string; ctaHref: string; ctaLabel: string };
+  // Empty state / next required action per spec cases A-H
+  type Blocker = { title: string; body: string; ctaHref: string; ctaLabel: string; severity?: 'warning' | 'info' };
 
   function getBlocker(): Blocker | null {
     // Case A
@@ -286,8 +297,8 @@ export default function ThreatMonitoringPanel() {
         ctaLabel: isSimulatorMode ? 'Generate Simulator Signal' : 'Check Worker Status',
       };
     }
-    // Case F
-    if (!detectionOk) {
+    // Case F: telemetry exists but detection evaluation has not run yet
+    if (!detectionEvaluationOk) {
       return {
         title: 'Telemetry has been received, but no detection has been generated yet.',
         body: 'Run detection evaluation to generate detections from received telemetry.',
@@ -295,13 +306,32 @@ export default function ThreatMonitoringPanel() {
         ctaLabel: 'Run Detection',
       };
     }
-    // Case G
-    if (!alertOk) {
+    // Case F2: evaluation ran but no active detection records — normal healthy state
+    if (detectionEvaluationOk && !activeDetectionRecordsOk) {
+      return {
+        title: 'No active detections requiring alerting.',
+        body: 'Detection evaluation has run, but no current detection records require an alert. Monitoring will open detections automatically when qualifying RWA risk signals are observed.',
+        ctaHref: '/monitoring-sources',
+        ctaLabel: 'Review monitoring coverage',
+        severity: 'info',
+      };
+    }
+    // Case G: active detection records exist but no alert opened yet
+    if (activeDetectionRecordsOk && !alertOk) {
       return {
         title: 'Detection exists, but no alert has been opened yet.',
-        body: 'Open an alert for the existing detections.',
+        body: 'Review the detection records and open an alert if escalation is required.',
         ctaHref: '/alerts',
-        ctaLabel: 'Open Alert',
+        ctaLabel: 'Review detections',
+      };
+    }
+    // Case H: alert exists but no incident opened yet
+    if (alertOk && !incidentOk) {
+      return {
+        title: 'Alert exists, but no incident has been opened yet.',
+        body: 'Review the active alerts and open an incident if escalation is required.',
+        ctaHref: '/incidents',
+        ctaLabel: 'Open incident queue',
       };
     }
     return null;
@@ -654,16 +684,27 @@ export default function ThreatMonitoringPanel() {
           />
 
           {/* Detection feed */}
-          <DetectionFeed detections={feedDetections} loading={dataLoading} />
+          <DetectionFeed
+            detections={feedDetections}
+            loading={dataLoading}
+            lastTelemetryAt={lastTelemetryAt}
+            lastDetectionAt={lastDetectionAt}
+          />
 
           {/* Next Required Action card */}
           {blocker ? (
             <article
               className="dataCard"
               aria-label="Next Required Action"
-              style={{ borderColor: 'var(--warning-bdr)', marginBottom: '1.75rem' }}
+              style={{
+                borderColor: blocker.severity === 'info' ? 'var(--info-bdr)' : 'var(--warning-bdr)',
+                marginBottom: '1.75rem',
+              }}
             >
-              <p className="sectionEyebrow" style={{ color: 'var(--warning-fg)' }}>
+              <p
+                className="sectionEyebrow"
+                style={{ color: blocker.severity === 'info' ? 'var(--info-fg)' : 'var(--warning-fg)' }}
+              >
                 Next Required Action
               </p>
               <h4 style={{ margin: '0.25rem 0 0.5rem', fontSize: '1.0625rem' }}>{blocker.title}</h4>
