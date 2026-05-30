@@ -20,11 +20,11 @@ test('threat page keeps all major operations panels and simulator/live labels', 
   expect(overviewCard).toContain('aria-label="Security Overview"');
   expect(chainSection).toContain('aria-label="Alert Incident Response Chain"');
   expect(responseSection).toContain('aria-label="Response Actions"');
-  expect(threat).toContain('Recent Monitoring Runs');
-  expect(threat).toContain('Recent Detections');
-  expect(threat).toContain('Alerts');
-  expect(threat).toContain('Incidents');
-  expect(threat).toContain('Response Actions');
+  expect(threat).toContain('DetectionFeed');
+  expect(threat).toContain('detectionRecords');
+  expect(threat).toContain('openAlerts');
+  expect(threat).toContain('activeIncidents');
+  expect(threat).toContain('ResponseActionPanel');
   expect(threat).toContain('Evidence source');
 
   expect(threat).toContain('Simulator evidence');

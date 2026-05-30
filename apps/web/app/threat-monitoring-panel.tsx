@@ -343,6 +343,16 @@ export default function ThreatMonitoringPanel() {
     return fmt(lastTelemetryAt);
   }
 
+  // Evidence freshness: map runtime freshness label to customer-grade copy
+  function evidenceFreshnessLabel(): string {
+    const raw = (summary.telemetry_freshness ?? '').toLowerCase();
+    if (!raw || raw === 'unavailable' || raw === 'unknown') return 'Unknown';
+    if (raw === 'fresh' || raw === 'current') return 'Fresh';
+    if (raw.includes('stale')) return 'Stale';
+    if (raw === 'missing' || raw === 'none') return 'Missing';
+    return summary.telemetry_freshness || 'Unknown';
+  }
+
   // Top detection types aggregation
   const detectionTypeCounts = detections.reduce<Record<string, number>>((acc, d) => {
     const type = d.detection_type ?? 'Unknown';
@@ -451,8 +461,8 @@ export default function ThreatMonitoringPanel() {
         />
         <MetricTile
           label="Evidence Freshness"
-          value={runtimeLoading ? '-' : (summary.telemetry_freshness || 'Unavailable')}
-          meta={summary.confidence ? `Confidence: ${summary.confidence}` : undefined}
+          value={runtimeLoading ? '-' : evidenceFreshnessLabel()}
+          meta={summary.confidence ? `Confidence: ${summary.confidence}` : 'Runtime evidence state'}
         />
       </div>
 
@@ -781,18 +791,31 @@ export default function ThreatMonitoringPanel() {
               Loading telemetry...
             </p>
           ) : telemetry.length === 0 ? (
-            <EmptyStateBlocker
-              title="No telemetry events"
-              body={
-                assetOk && systemOk
-                  ? 'Assets and monitoring targets exist — waiting for first live telemetry event from the worker.'
-                  : !lastTelemetryAt
-                    ? 'No telemetry event has been received yet. The worker may be reporting but no events have arrived.'
-                    : 'No telemetry events found.'
-              }
-              ctaHref={isSimulatorMode ? '/monitored-systems' : '/monitoring-sources'}
-              ctaLabel={isSimulatorMode ? 'Generate Simulator Signal' : 'Check Monitoring Sources'}
-            />
+            lastTelemetryAt ? (
+              <div style={{ padding: '2.5rem 1rem', textAlign: 'center' }}>
+                <p style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-secondary)', margin: '0 0 0.75rem' }}>
+                  Runtime telemetry freshness
+                </p>
+                <p className="muted" style={{ fontSize: '0.9375rem', maxWidth: '42rem', margin: '0 auto 1.25rem' }}>
+                  Telemetry list is not loaded in this view.
+                  {` Latest runtime telemetry received: ${fmt(lastTelemetryAt)}.`}
+                </p>
+                <Link href="/monitoring-sources" prefetch={false} className="btn btn-secondary">
+                  Review monitoring coverage
+                </Link>
+              </div>
+            ) : (
+              <EmptyStateBlocker
+                title="No telemetry events"
+                body={
+                  assetOk && systemOk
+                    ? 'Assets and monitoring targets exist — waiting for first live telemetry event from the worker.'
+                    : 'No telemetry event has been received yet. The worker may be reporting but no events have arrived.'
+                }
+                ctaHref={isSimulatorMode ? '/monitored-systems' : '/monitoring-sources'}
+                ctaLabel={isSimulatorMode ? 'Generate Simulator Signal' : 'Check Monitoring Sources'}
+              />
+            )
           ) : (
             <TableShell headers={TELEMETRY_HEADERS} compact>
               {telemetry.map((event) => {
@@ -832,10 +855,16 @@ export default function ThreatMonitoringPanel() {
             </p>
           ) : detections.length === 0 ? (
             <EmptyStateBlocker
-              title="No detections"
-              body="No detection has been generated yet. Ensure telemetry is flowing and detection evaluation is enabled."
+              title={lastTelemetryAt && lastDetectionAt ? 'No active detections' : 'No detections yet'}
+              body={
+                lastTelemetryAt && lastDetectionAt
+                  ? 'Telemetry is flowing and detection evaluation has run. No current RWA risk signal has crossed an alert threshold.'
+                  : lastTelemetryAt
+                    ? 'Telemetry is flowing. Detection records will appear once monitoring rules evaluate incoming signals.'
+                    : 'No detection has been generated yet. Ensure telemetry is flowing and detection evaluation is enabled.'
+              }
               ctaHref="/monitoring-sources"
-              ctaLabel="Check Monitoring Sources"
+              ctaLabel="Review monitoring coverage"
             />
           ) : (
             <TableShell headers={DETECTION_HEADERS} compact>

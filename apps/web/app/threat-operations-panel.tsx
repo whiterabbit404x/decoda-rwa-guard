@@ -2944,6 +2944,50 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         loopHealthInternals={technicalDetails.loopHealthInternals}
         proofChainInternals={technicalDetails.proofChainInternals}
       />
+      {evidenceDrawer ? (
+        <div role="dialog" aria-label="Evidence details" style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 200,
+          }}
+          onClick={() => setEvidenceDrawer(null)}
+        >
+          <div
+            style={{
+              background: 'var(--card-bg, #0d1627)',
+              border: '1px solid var(--border)',
+              borderRadius: '12px',
+              padding: '1.5rem',
+              maxWidth: '680px',
+              width: '100%',
+              maxHeight: '80vh',
+              overflow: 'auto',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="sectionEyebrow">Open evidence drawer</p>
+            <h3 style={{ margin: '0.25rem 0 1rem', fontSize: '1.1rem' }}>{evidenceDrawer.title}</h3>
+            <p style={{ fontSize: '0.9375rem', marginBottom: '1rem' }}>
+              Summary: {evidenceDrawer.summary || 'No evidence summary available.'}
+            </p>
+            <pre style={{ fontSize: '0.8rem', background: 'rgba(255,255,255,0.04)', borderRadius: '8px', padding: '1rem', overflow: 'auto', maxHeight: '20rem' }}>
+              {JSON.stringify(evidenceDrawer.raw ?? { message: 'No raw evidence found.' }, null, 2)}
+            </pre>
+            <button
+              type="button"
+              className="secondaryCta"
+              style={{ marginTop: '1rem' }}
+              onClick={() => setEvidenceDrawer(null)}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
