@@ -22,6 +22,9 @@ type Props = {
   capabilities: string[];
   actions: ResponseAction[];
   loading?: boolean;
+  isSimulatorMode?: boolean;
+  hasOpenAlerts?: boolean;
+  hasOpenIncidents?: boolean;
 };
 
 const RESPONSE_ACTION_STATE_LABELS: Record<ResponseActionState, string> = {
@@ -34,21 +37,31 @@ const RESPONSE_ACTION_STATE_LABELS: Record<ResponseActionState, string> = {
   rolled_back: 'Rolled back',
 };
 
-export default function ResponseActionPanel({ capabilities, actions, loading = false }: Props) {
-  const capabilityLabels = capabilities.length > 0 ? capabilities : ['Simulation only'];
+export default function ResponseActionPanel({
+  capabilities,
+  actions,
+  loading = false,
+  isSimulatorMode = false,
+  hasOpenAlerts = false,
+  hasOpenIncidents = false,
+}: Props) {
+  const showNoActionMessage = !loading && actions.length === 0 && !isSimulatorMode && !hasOpenAlerts && !hasOpenIncidents;
 
   return (
     <article className="dataCard" aria-label="Response Actions" id="response-actions">
       <p className="sectionEyebrow">Response actions</p>
       <h3>Operational actions</h3>
       <div className="chipRow">
-        {capabilityLabels.map((label) => (
+        {capabilities.map((label) => (
           <span className="ruleChip" key={label}>{label}</span>
         ))}
       </div>
       <div className="stack" role="status" aria-live="polite">
         {loading ? <p>Loading response actions…</p> : null}
-        {!loading && actions.length === 0 ? <p>No response actions available.</p> : null}
+        {showNoActionMessage ? (
+          <p>No response action required. Monitoring is active and no open alert has escalated to an incident.</p>
+        ) : null}
+        {!loading && actions.length === 0 && isSimulatorMode ? <p>No simulator response actions available.</p> : null}
         {actions.map((action) => (
           <div className="stack stackCompact" key={action.id}>
             <p className="mutedText">{RESPONSE_ACTION_STATE_LABELS[action.state]}</p>
@@ -56,7 +69,19 @@ export default function ResponseActionPanel({ capabilities, actions, loading = f
           </div>
         ))}
       </div>
-      <div className="buttonRow"><Link href="/alerts" prefetch={false}>Review alerts</Link><Link href="/incidents" prefetch={false}>Open incident queue</Link></div>
+      {!isSimulatorMode ? (
+        <div className="buttonRow">
+          <Link href="/alerts" prefetch={false}>Review alerts</Link>
+          <Link href="/incidents" prefetch={false}>Open incident queue</Link>
+          <Link href="/monitoring-sources" prefetch={false}>Configure response policy</Link>
+          <Link href="/exports" prefetch={false}>Export evidence</Link>
+        </div>
+      ) : (
+        <div className="buttonRow">
+          <Link href="/alerts" prefetch={false}>Review alerts</Link>
+          <Link href="/incidents" prefetch={false}>Open incident queue</Link>
+        </div>
+      )}
     </article>
   );
 }

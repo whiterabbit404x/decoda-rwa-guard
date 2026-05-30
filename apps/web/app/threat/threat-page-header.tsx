@@ -54,19 +54,20 @@ export default function ThreatPageHeader({ showLiveTelemetry, ensuringProofChain
         </div>
         <div className="monitoringHeaderActions">
           <button type="button" className="secondaryCta" onClick={onRefreshNow}>Refresh now</button>
-          <button
-            type="button"
-            className="secondaryCta"
-            disabled={proofChainDisabled}
-            onClick={onGenerateProofChain}
-            title={proofChainReason}
-          >
-            {ensuringProofChain ? THREAT_COPY.generatingEvidencePackage : THREAT_COPY.generateEvidencePackage}
-          </button>
+          {!proofChainDisabled ? (
+            <button
+              type="button"
+              className="secondaryCta"
+              onClick={onGenerateProofChain}
+              title={proofChainReason}
+            >
+              {ensuringProofChain ? THREAT_COPY.generatingEvidencePackage : THREAT_COPY.generateEvidencePackage}
+            </button>
+          ) : null}
           <Link href="/alerts" prefetch={false} className="secondaryCta">Review alerts</Link>
           <Link href="/incidents" prefetch={false} className="secondaryCta">Open incident queue</Link>
-          <Link href="/monitored-systems" prefetch={false} className="secondaryCta">Manage monitored systems</Link>
           <Link href="/exports" prefetch={false} className="secondaryCta">Export evidence</Link>
+          <Link href="/monitored-systems" prefetch={false} className="secondaryCta">Manage monitored systems</Link>
         </div>
       </div>
     </article>

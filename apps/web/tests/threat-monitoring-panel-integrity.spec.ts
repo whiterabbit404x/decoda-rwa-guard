@@ -196,3 +196,84 @@ test('TechnicalRuntimeDetails component uses <details> for collapsible rendering
   expect(tech).toContain('<details className="tableMeta">');
   expect(tech).not.toContain('<details open');
 });
+
+// ─── 8. Workflow contradiction: System must not be Blocked when systems are running ──
+
+test('pipeline Target status uses targetInferred to avoid Pending when systems exist', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  // The fix: infer target presence from monitoredSystems/reportingSystems
+  expect(panel).toContain('targetInferred');
+  expect(panel).toContain('effectiveTargetOk');
+});
+
+test('pipeline System is never Blocked when effectiveTargetOk is used as guard', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  // System must be gated on effectiveTargetOk not raw targetOk
+  expect(panel).toContain("!effectiveTargetOk ? 'Blocked'");
+  // Raw targetOk must not gate System status
+  const systemStatusLine = panel.match(/System:.*Blocked.*/)?.[0] ?? '';
+  expect(systemStatusLine).not.toContain('!targetOk');
+});
+
+test('pipeline Target shows Configured when target is inferred from running systems', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  expect(panel).toContain("targetInferred ? 'Configured'");
+});
+
+// ─── 9. Telemetry contradiction: no plain "No events yet" when runtime telemetry exists ──
+
+test('Telemetry Volume card does not say plain "No events yet" when lastTelemetryAt exists', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  // Must be guarded: "No events yet" only appears inside an !lastTelemetryAt branch
+  expect(panel).toContain('Telemetry list is not loaded in this view.');
+  expect(panel).toContain('Latest runtime telemetry received:');
+  // Verify "No events yet" is inside an else branch gated by lastTelemetryAt
+  const telVolumeBlock = panel.slice(
+    panel.indexOf('Telemetry Volume'),
+    panel.indexOf('Top Detection Types'),
+  );
+  const lastTelemetryGuardPos = telVolumeBlock.indexOf('lastTelemetryAt ?');
+  const noEventsPos = telVolumeBlock.indexOf('No events yet');
+  expect(lastTelemetryGuardPos).toBeGreaterThan(-1);
+  expect(noEventsPos).toBeGreaterThan(lastTelemetryGuardPos);
+});
+
+// ─── 10. Live mode does not render "Simulation signal" ────────────────────────
+
+test('ResponseActionPanel does not unconditionally default to Simulation only capability', () => {
+  const panel = appSource('threat/response-action-panel.tsx');
+  // Must not have the fallback that always shows 'Simulation only' when capabilities is empty
+  expect(panel).not.toContain("capabilities.length > 0 ? capabilities : ['Simulation only']");
+});
+
+test('threat-monitoring-panel passes isSimulatorMode to ResponseActionPanel', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  expect(panel).toContain('isSimulatorMode={isSimulatorMode}');
+});
+
+test('threat-monitoring-panel passes live capabilities in non-simulator mode', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  expect(panel).toContain("'Review alerts'");
+  expect(panel).toContain("'Open incident queue'");
+  expect(panel).toContain("'Configure response policy'");
+  expect(panel).toContain("'Export evidence'");
+  // Live capabilities must be gated on !isSimulatorMode
+  const capBlock = panel.slice(panel.indexOf('isSimulatorMode\n'), panel.indexOf('actions={[]}'));
+  expect(capBlock).toContain('isSimulatorMode');
+});
+
+// ─── 11. Hero does not render disabled "Generate evidence package" as primary action ──
+
+test('ThreatPageHeader hides evidence package button when proofChainDisabled is true', () => {
+  const header = appSource('threat/threat-page-header.tsx');
+  // Button must be conditional on !proofChainDisabled, not unconditionally rendered disabled
+  expect(header).toContain('!proofChainDisabled');
+  // Must not have an unconditional disabled button as primary action
+  expect(header).not.toContain('disabled={proofChainDisabled}');
+});
+
+test('ThreatPageHeader always renders Export evidence link', () => {
+  const header = appSource('threat/threat-page-header.tsx');
+  expect(header).toContain('href="/exports"');
+  expect(header).toContain('Export evidence');
+});
