@@ -3,8 +3,10 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { usePilotAuth } from '../pilot-auth-context';
+import { useRuntimeSummary } from '../runtime-summary-context';
 
 import type { OnboardingProgress } from '../onboarding-progress';
+import type { WorkspaceMonitoringTruth } from '../workspace-monitoring-truth';
 import RuntimeSummaryPanel from '../runtime-summary-panel';
 import { ActionPanel } from '../components/ui-primitives';
 import { NEXT_ACTION_CTA, ONBOARDING_TOP_STEPPER, WORKFLOW_STEP_ORDER } from '../workflow-steps';
@@ -51,34 +53,75 @@ const STEP_TO_NEXT_ACTION_KEY: Record<string, string> = {
   evidence_export_ready:     'export_evidence_package',
 };
 
+function progressFromRuntimeSummary(summary: WorkspaceMonitoringTruth): OnboardingProgress {
+  const isLive = summary.runtime_status === 'live' || summary.status_reason === 'live_runtime_verified';
+  const hasAssets = isLive || summary.protected_assets_count > 0;
+  const hasSystems = isLive || summary.reporting_systems_count > 0;
+  const steps = [
+    { key: 'asset_added' as const, complete: hasAssets, source: 'automatic' as const },
+    { key: 'target_created' as const, complete: hasAssets, source: 'automatic' as const },
+    { key: 'monitoring_started' as const, complete: hasSystems, source: 'automatic' as const },
+    { key: 'evidence_recorded' as const, complete: isLive, source: 'automatic' as const },
+  ];
+  const completedSteps = steps.filter((s) => s.complete).length;
+  return {
+    workspace_name: summary.workspace_name,
+    steps,
+    completed_steps: completedSteps,
+    total_steps: 4,
+    progress_percent: Math.round((completedSteps / 4) * 100),
+    completed: completedSteps === 4,
+    next_step: steps.find((s) => !s.complete)?.key ?? null,
+    counts: {
+      assets: summary.protected_assets_count,
+      targets: 0,
+      monitoring_targets: summary.reporting_systems_count,
+      evaluated_targets: 0,
+      event_receipts: 0,
+    },
+  };
+}
+
 export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
   const { authHeaders } = usePilotAuth();
+  const { summary } = useRuntimeSummary();
   const [state, setState] = useState<OnboardingProgress | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>('');
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   async function loadState() {
     const response = await fetch(`${apiUrl}/onboarding/progress`, { headers: authHeaders(), cache: 'no-store' });
+    if (response.status === 401) {
+      setSessionExpired(true);
+      return;
+    }
     if (!response.ok) {
       setErrorMsg('Unable to load onboarding progress right now.');
       return;
     }
     setState(await response.json() as OnboardingProgress);
     setErrorMsg('');
+    setSessionExpired(false);
   }
 
   useEffect(() => { void loadState(); }, []);
 
-  const nextStep = useMemo(() => state?.steps.find((step) => !step.complete) ?? null, [state]);
+  // When onboarding/progress is unavailable, derive step completion from runtime-status
+  // so a 401 or transient error does not render the page as OFFLINE.
+  const progressUnavailable = sessionExpired || errorMsg !== '';
+  const effectiveState: OnboardingProgress | null = state ?? (progressUnavailable ? progressFromRuntimeSummary(summary) : null);
+
+  const nextStep = useMemo(() => effectiveState?.steps.find((step) => !step.complete) ?? null, [effectiveState]);
   const nextCopy = nextStep ? STEP_COPY[nextStep.key] : null;
 
   const topStepperSteps = ONBOARDING_TOP_STEPPER.map((step) => ({
     ...step,
-    complete: workflowCompletionFromState(state, step.canonicalStepId),
+    complete: workflowCompletionFromState(effectiveState, step.canonicalStepId),
   }));
   const topStepperCurrentIndex = topStepperSteps.findIndex((step) => !step.complete);
   const topStepperActiveIndex = topStepperCurrentIndex === -1 ? topStepperSteps.length - 1 : topStepperCurrentIndex;
 
-  const workflowSteps = WORKFLOW_STEP_ORDER.map((id) => ({ id, complete: workflowCompletionFromState(state, id) }));
+  const workflowSteps = WORKFLOW_STEP_ORDER.map((id) => ({ id, complete: workflowCompletionFromState(effectiveState, id) }));
   const firstPendingStep = workflowSteps.find((step) => !step.complete);
   const nextActionKey = firstPendingStep
     ? (STEP_TO_NEXT_ACTION_KEY[firstPendingStep.id] ?? 'review_reason_codes')
@@ -144,7 +187,13 @@ export default function OnboardingPageClient({ apiUrl }: { apiUrl: string }) {
         <div className="onboardingCardsRow">
           <ActionPanel title="Next Step">
             <div data-testid="next-step-card">
-              {nextCopy ? (
+              {sessionExpired ? (
+                <p className="onboardingError" data-testid="session-expired-notice">
+                  Session expired, please{' '}
+                  <Link href="/sign-in" prefetch={false} style={{ color: 'var(--text-accent)' }}>sign in again</Link>
+                  {' '}to continue.
+                </p>
+              ) : nextCopy ? (
                 <>
                   <p className="onboardingStepName">{nextCopy.title}</p>
                   <p className="muted">{nextCopy.detail}</p>
