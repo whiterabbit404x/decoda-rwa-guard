@@ -56,9 +56,22 @@ function assetStatusInfo(asset: Asset): { label: string; variant: PillVariant } 
 
 /**
  * Returns monitoring column status.
- * Never returns "Monitoring" unless a valid monitored_system exists and reports telemetry.
+ * Uses backend-computed monitoring_status when available (fail-closed).
+ * Falls back to legacy field logic for backward compatibility.
  */
 export function getMonitoringStatus(asset: Asset): { label: string; variant: PillVariant } {
+  const backendStatus = asset?.monitoring_status;
+  if (backendStatus) {
+    switch (backendStatus) {
+      case 'live_verified': return { label: 'Live telemetry verified', variant: 'success' };
+      case 'covered': return { label: 'Covered', variant: 'success' };
+      case 'waiting_for_telemetry': return { label: 'Waiting for telemetry', variant: 'neutral' };
+      case 'not_configured': return { label: 'Not configured', variant: 'warning' };
+      case 'error': return { label: 'Provider issue', variant: 'danger' };
+      default: break;
+    }
+  }
+  // Legacy fallback for older API responses
   const status = asset?.monitoring_link_status;
   const hasLinkedSystem = asset?.has_linked_monitored_system !== false;
   const systemCount = asset?.monitoring_systems_count ?? (status === 'attached' ? 1 : -1);
@@ -72,7 +85,6 @@ export function getMonitoringStatus(asset: Asset): { label: string; variant: Pil
   if (asset?.has_heartbeat === false) {
     return { label: 'Not reporting', variant: 'warning' };
   }
-  // fail-closed: only show "Monitoring" when telemetry is explicitly confirmed
   if (asset?.has_telemetry !== true) {
     return { label: 'Waiting for telemetry', variant: 'neutral' };
   }
@@ -80,7 +92,7 @@ export function getMonitoringStatus(asset: Asset): { label: string; variant: Pil
     return { label: 'Telemetry stale', variant: 'warning' };
   }
   if (status === 'attached') {
-    return { label: 'Monitoring', variant: 'success' };
+    return { label: 'Live telemetry verified', variant: 'success' };
   }
   return { label: 'Target missing', variant: 'warning' };
 }
@@ -94,11 +106,23 @@ function assetNextAction(asset: Asset): string {
   const vs = asset?.verification_status?.toLowerCase();
   if (!vs || vs === 'unknown' || vs === 'pending' || vs === 'failed') return 'Verify asset';
 
-  const monStatus = asset?.monitoring_link_status;
-  if (!monStatus || monStatus === 'not_configured' || monStatus === 'target_missing') {
-    return 'Connect provider';
+  const monStatus = asset?.monitoring_status;
+  if (monStatus === 'live_verified') {
+    if ((asset?.open_incidents ?? 0) > 0) return 'Open incident';
+    if ((asset?.active_alerts ?? 0) > 0) return 'View alerts';
+    return 'View telemetry';
   }
-  if (monStatus === 'system_missing' || asset?.has_linked_monitored_system === false) {
+  if (monStatus === 'covered') return 'Review monitoring source';
+  if (monStatus === 'waiting_for_telemetry') return 'Verify telemetry';
+  if (monStatus === 'not_configured') return 'Add monitoring source';
+  if (monStatus === 'error') return 'Check provider';
+
+  // Legacy fallback
+  const monLinkStatus = asset?.monitoring_link_status;
+  if (!monLinkStatus || monLinkStatus === 'not_configured' || monLinkStatus === 'target_missing') {
+    return 'Add monitoring source';
+  }
+  if (monLinkStatus === 'system_missing' || asset?.has_linked_monitored_system === false) {
     return 'Start worker';
   }
   if (asset?.has_heartbeat === false) return 'Start worker';
@@ -390,7 +414,11 @@ export default function AssetsManager({ apiUrl }: Props) {
                     <button type="button" className="btn btn-secondary" disabled={actionLoadingAssetId === asset.id} onClick={() => { void runNextAction(asset, action); }}>
                       {actionLoadingAssetId === asset.id ? 'Verifying…' : 'Verify asset'}
                     </button>
-                  ) : (action === 'Connect provider' || action === 'Start worker' || action === 'Verify telemetry') ? (
+                  ) : action === 'View telemetry' && asset.linked_target_id ? (
+                    <Link href={`/monitoring-sources/${encodeURIComponent(String(asset.linked_target_id))}/telemetry`} prefetch={false} className="btn btn-secondary">
+                      View telemetry
+                    </Link>
+                  ) : (action === 'Add monitoring source' || action === 'Start worker' || action === 'Verify telemetry' || action === 'Review monitoring source' || action === 'Check provider') ? (
                     <Link href="/monitoring-sources" prefetch={false} className="btn btn-secondary">{action}</Link>
                   ) : (
                     <span style={{ fontSize: '0.8rem', color: 'var(--text-accent)' }}>{action}</span>

@@ -9289,6 +9289,36 @@ def _validate_asset_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compute_asset_monitoring_coverage(item: dict[str, Any]) -> dict[str, Any]:
+    """Compute monitoring_status, monitoring_label, next_action from asset coverage fields.
+
+    Rules (fail-closed):
+    - live_verified:        target + monitored system + live telemetry confirmed
+    - covered:              target + monitored system + heartbeat but no live telemetry yet
+    - waiting_for_telemetry: target + monitored system but no heartbeat
+    - not_configured:       no linked target or monitored system
+    - error:                target exists but runtime error reported
+    """
+    link_status = str(item.get('monitoring_link_status') or '')
+    has_linked_system = bool(item.get('has_linked_monitored_system'))
+    has_heartbeat = bool(item.get('has_heartbeat'))
+    has_telemetry = bool(item.get('has_telemetry'))
+    linked_target_id = item.get('linked_target_id')
+
+    not_configured = {'monitoring_status': 'not_configured', 'monitoring_label': 'Not configured', 'next_action': 'Add monitoring source'}
+    waiting = {'monitoring_status': 'waiting_for_telemetry', 'monitoring_label': 'Waiting for telemetry', 'next_action': 'Verify telemetry'}
+
+    if not linked_target_id or link_status in ('not_configured', 'target_missing', ''):
+        return not_configured
+    if link_status == 'system_missing' or not has_linked_system:
+        return not_configured
+    if not has_heartbeat:
+        return waiting
+    if has_telemetry:
+        return {'monitoring_status': 'live_verified', 'monitoring_label': 'Live telemetry verified', 'next_action': 'View telemetry'}
+    return waiting
+
+
 def list_assets(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -9356,6 +9386,60 @@ def list_assets(request: Request) -> dict[str, Any]:
                        ) THEN 'attached'
                        ELSE 'system_missing'
                    END AS monitoring_link_status,
+                   (
+                       SELECT t.id
+                       FROM targets t
+                       WHERE t.workspace_id = assets.workspace_id
+                         AND t.asset_id = assets.id
+                         AND t.deleted_at IS NULL
+                       ORDER BY t.created_at ASC
+                       LIMIT 1
+                   ) AS linked_target_id,
+                   (
+                       SELECT t.name
+                       FROM targets t
+                       WHERE t.workspace_id = assets.workspace_id
+                         AND t.asset_id = assets.id
+                         AND t.deleted_at IS NULL
+                       ORDER BY t.created_at ASC
+                       LIMIT 1
+                   ) AS linked_target_name,
+                   EXISTS(
+                       SELECT 1
+                       FROM targets t
+                       JOIN monitored_systems ms ON ms.target_id = t.id AND ms.workspace_id = t.workspace_id
+                       WHERE t.workspace_id = assets.workspace_id
+                         AND t.asset_id = assets.id
+                         AND t.deleted_at IS NULL
+                         AND ms.last_heartbeat IS NOT NULL
+                   ) AS has_heartbeat,
+                   EXISTS(
+                       SELECT 1
+                       FROM targets t
+                       JOIN telemetry_events te ON te.target_id = t.id AND te.workspace_id = t.workspace_id
+                       WHERE t.workspace_id = assets.workspace_id
+                         AND t.asset_id = assets.id
+                         AND t.deleted_at IS NULL
+                         AND te.evidence_source = 'live'
+                   ) AS has_telemetry,
+                   (
+                       SELECT MAX(te.observed_at)
+                       FROM targets t
+                       JOIN telemetry_events te ON te.target_id = t.id AND te.workspace_id = t.workspace_id
+                       WHERE t.workspace_id = assets.workspace_id
+                         AND t.asset_id = assets.id
+                         AND t.deleted_at IS NULL
+                         AND te.evidence_source = 'live'
+                   ) AS last_telemetry_at,
+                   (
+                       SELECT COUNT(*)
+                       FROM targets t
+                       JOIN telemetry_events te ON te.target_id = t.id AND te.workspace_id = t.workspace_id
+                       WHERE t.workspace_id = assets.workspace_id
+                         AND t.asset_id = assets.id
+                         AND t.deleted_at IS NULL
+                         AND te.evidence_source = 'live'
+                   ) AS live_telemetry_count,
                    created_at, updated_at
             FROM assets
             WHERE workspace_id = %s AND deleted_at IS NULL
@@ -9376,6 +9460,7 @@ def list_assets(request: Request) -> dict[str, Any]:
         for row in rows:
             item = _json_safe_value(dict(row))
             item['tags'] = tags_map.get(str(row['id']), [])
+            item.update(_compute_asset_monitoring_coverage(item))
             assets.append(item)
         return {'assets': assets, 'workspace': workspace_context['workspace']}
 

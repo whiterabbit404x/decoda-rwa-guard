@@ -136,6 +136,20 @@ export default function TargetTelemetryPage() {
         ) : null}
       </div>
 
+      <div
+        style={{
+          background: 'var(--surface-secondary, #f8f9fa)',
+          border: '1px solid var(--border-subtle, #e5e7eb)',
+          borderRadius: '6px',
+          padding: '0.75rem 1rem',
+          marginBottom: '1.25rem',
+          fontSize: '0.85rem',
+          color: 'var(--text-secondary)',
+        }}
+      >
+        Each row is a persisted live RPC polling result. Raw responses are retained as evidence so detections, alerts, incidents, and audits can be traced back to provider data.
+      </div>
+
       {loadError ? (
         <p className="statusLine" style={{ color: 'var(--danger-fg)' }}>
           {loadError}
