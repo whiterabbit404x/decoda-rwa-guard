@@ -15,12 +15,45 @@ export type DetectionRecord = {
 
 type Props = { detections: DetectionRecord[]; loading: boolean };
 
+function SeverityBadge({ severity }: { severity: string }) {
+  const s = severity.toLowerCase();
+  const style: React.CSSProperties =
+    s === 'critical' || s === 'high'
+      ? { background: 'var(--danger-bg)', color: 'var(--danger-fg)', border: '1px solid var(--danger-bdr)' }
+      : s === 'medium'
+        ? { background: 'var(--warning-bg)', color: 'var(--warning-fg)', border: '1px solid var(--warning-bdr)' }
+        : { background: 'var(--success-bg)', color: 'var(--success-fg)', border: '1px solid var(--success-bdr)' };
+
+  return (
+    <span style={{ display: 'inline-block', fontSize: '0.75rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: '999px', textTransform: 'uppercase', ...style }}>
+      {severity}
+    </span>
+  );
+}
+
 export default function DetectionFeed({ detections, loading }: Props) {
   return (
     <article className="dataCard" aria-label="Detection Feed">
-      <div className="listHeader"><div><p className="sectionEyebrow">Detection feed</p><h3>Detection records from monitoring rules</h3></div><Link href="/alerts" prefetch={false}>Review alerts</Link></div>
-      {loading ? <p className="muted">Loading detection records…</p> : null}
-      {!loading && detections.length === 0 ? <p className="muted">{THREAT_COPY.noDetectionRecords}</p> : null}
+      <div className="listHeader">
+        <div>
+          <p className="sectionEyebrow">Detection feed</p>
+          <h3 style={{ fontSize: '1.1rem', fontWeight: 700, margin: '0.15rem 0 0' }}>Detection records from monitoring rules</h3>
+        </div>
+        <Link href="/alerts" prefetch={false} className="secondaryCta">Review alerts</Link>
+      </div>
+      {loading ? (
+        <p className="muted" style={{ padding: '2rem 0', textAlign: 'center', fontSize: '0.9rem' }}>Loading detection records…</p>
+      ) : null}
+      {!loading && detections.length === 0 ? (
+        <div style={{ padding: '2.5rem 1rem', textAlign: 'center' }}>
+          <p style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', margin: '0 0 0.5rem', fontWeight: 600 }}>
+            No detections yet
+          </p>
+          <p className="muted" style={{ fontSize: '0.875rem', maxWidth: '36rem', margin: '0 auto' }}>
+            {THREAT_COPY.noDetectionRecords}
+          </p>
+        </div>
+      ) : null}
       {detections.length > 0 ? (
         <div className="tableWrap">
           <table>
@@ -39,14 +72,14 @@ export default function DetectionFeed({ detections, loading }: Props) {
             <tbody>
               {detections.slice(0, 8).map((d) => (
                 <tr key={d.id}>
-                  <td>{d.time}</td>
-                  <td>{d.asset}</td>
-                  <td>{d.detection}</td>
-                  <td>{d.ruleLabel || 'n/a'}</td>
-                  <td>{d.severity}</td>
-                  <td>{d.confidence}</td>
-                  <td>{d.evidence}</td>
-                  <td>{d.status}</td>
+                  <td style={{ fontSize: '0.875rem', whiteSpace: 'nowrap' }}>{d.time}</td>
+                  <td style={{ fontSize: '0.875rem' }}>{d.asset}</td>
+                  <td style={{ fontSize: '0.875rem' }}>{d.detection}</td>
+                  <td style={{ fontSize: '0.875rem' }}>{d.ruleLabel || 'n/a'}</td>
+                  <td><SeverityBadge severity={d.severity} /></td>
+                  <td style={{ fontSize: '0.875rem' }}>{d.confidence}</td>
+                  <td style={{ fontSize: '0.875rem' }}>{d.evidence}</td>
+                  <td style={{ fontSize: '0.875rem' }}>{d.status}</td>
                 </tr>
               ))}
             </tbody>

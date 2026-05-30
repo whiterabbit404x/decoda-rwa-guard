@@ -390,19 +390,40 @@ export default function ThreatMonitoringPanel() {
         ensuringProofChain={false}
         proofChainDisabled
         proofChainReason="Evidence package generation is not available in this view."
+        posture={securityStatus.posture}
         onRefreshNow={() => router.refresh()}
         onGenerateProofChain={() => undefined}
       />
 
-      {/* Top metric cards */}
+      {/* Hero KPI row */}
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(4, 1fr)',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))',
           gap: '1rem',
-          marginBottom: '1.25rem',
+          marginBottom: '1.5rem',
         }}
       >
+        <MetricTile
+          label="Protected Assets"
+          value={runtimeLoading ? '-' : String(protectedAssets)}
+          meta="Assets under guard"
+        />
+        <MetricTile
+          label="Monitoring Systems"
+          value={runtimeLoading ? '-' : String(monitoredSystems)}
+          meta="Configured systems"
+        />
+        <MetricTile
+          label="Open Alerts"
+          value={runtimeLoading ? '-' : String(activeAlerts)}
+          meta={activeAlerts > 0 ? 'Requires review' : 'No open alerts'}
+        />
+        <MetricTile
+          label="Active Incidents"
+          value={runtimeLoading ? '-' : String(openIncidents)}
+          meta={openIncidents > 0 ? 'In progress' : 'No active incidents'}
+        />
         <MetricTile
           label="Telemetry Events"
           value={runtimeLoading || dataLoading ? '-' : String(telemetry.length)}
@@ -442,7 +463,7 @@ export default function ThreatMonitoringPanel() {
       {activeTab === 'overview' ? (
         <div role="tabpanel" aria-label="Overview">
           {/* Top row: security posture + monitoring health */}
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1.5rem', marginBottom: '1.5rem' }}>
             <ThreatOverviewCard securityStatus={securityStatus} loading={runtimeLoading} />
             <MonitoringHealthCard
               heartbeatLabel={heartbeatLabel}
@@ -459,8 +480,8 @@ export default function ThreatMonitoringPanel() {
             style={{
               display: 'grid',
               gridTemplateColumns: '2fr 1fr',
-              gap: '1rem',
-              marginBottom: '1rem',
+              gap: '1.5rem',
+              marginBottom: '1.5rem',
             }}
           >
             {/* Telemetry Volume card */}
@@ -508,7 +529,7 @@ export default function ThreatMonitoringPanel() {
                   ))}
                 </div>
               )}
-              <p className="muted" style={{ fontSize: '0.8rem', marginTop: '0.5rem' }}>
+              <p className="muted" style={{ fontSize: '0.875rem', marginTop: '0.5rem' }}>
                 {telemetry.length} total events
                 {lastTelemetryAt ? ` · Last: ${fmt(lastTelemetryAt)}` : ' · None received'}
               </p>
@@ -549,7 +570,7 @@ export default function ThreatMonitoringPanel() {
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'center',
-                        fontSize: '0.85rem',
+                        fontSize: '0.9rem',
                       }}
                     >
                       <span style={{ color: 'var(--text-secondary)' }}>{type}</span>
@@ -570,19 +591,18 @@ export default function ThreatMonitoringPanel() {
             </article>
           </div>
 
-          {/* Pipeline status →full-width compact chain */}
-          <article className="dataCard" aria-label="Pipeline Status" style={{ marginBottom: '1rem' }}>
-            <p className="sectionEyebrow">
-              Runtime Chain →Asset →Target →System →Heartbeat →Poll →Telemetry →Detection →
-              Alert →Incident
-            </p>
+          {/* Security workflow chain: Telemetry → Detection → Alert → Incident → Evidence → Response */}
+          <article className="dataCard" aria-label="Pipeline Status" style={{ marginBottom: '1.5rem' }}>
+            <p className="sectionEyebrow">Security monitoring workflow</p>
+            <h3 style={{ fontSize: '1rem', fontWeight: 700, margin: '0.25rem 0 1rem', color: 'var(--text-secondary)' }}>
+              Telemetry → Detection → Alert → Incident → Evidence → Response
+            </h3>
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: '0.3rem',
+                gap: '0.5rem',
                 flexWrap: 'wrap',
-                marginTop: '0.65rem',
               }}
             >
               {PIPELINE_NODES.map((node, i) => {
@@ -590,17 +610,17 @@ export default function ThreatMonitoringPanel() {
                 return (
                   <div
                     key={node}
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
                   >
                     <div style={{ textAlign: 'center' }}>
                       <span
                         data-pipeline-node={node}
                         style={{
                           display: 'block',
-                          fontSize: '0.72rem',
+                          fontSize: '0.875rem',
                           fontWeight: 600,
                           color: 'var(--text-secondary)',
-                          marginBottom: '0.25rem',
+                          marginBottom: '0.3rem',
                           letterSpacing: '0.02em',
                         }}
                       >
@@ -612,7 +632,7 @@ export default function ThreatMonitoringPanel() {
                       <span
                         style={{
                           color: 'var(--text-muted)',
-                          fontSize: '0.9rem',
+                          fontSize: '1rem',
                           userSelect: 'none',
                         }}
                       >
@@ -639,13 +659,13 @@ export default function ThreatMonitoringPanel() {
             <article
               className="dataCard"
               aria-label="Next Required Action"
-              style={{ borderColor: 'var(--warning-bdr)' }}
+              style={{ borderColor: 'var(--warning-bdr)', marginBottom: '1.5rem' }}
             >
               <p className="sectionEyebrow" style={{ color: 'var(--warning-fg)' }}>
                 Next Required Action
               </p>
-              <h4 style={{ margin: '0.25rem 0 0.4rem', fontSize: '0.95rem' }}>{blocker.title}</h4>
-              <p className="muted" style={{ marginBottom: '0.75rem' }}>
+              <h4 style={{ margin: '0.25rem 0 0.4rem', fontSize: '1rem' }}>{blocker.title}</h4>
+              <p className="muted" style={{ fontSize: '0.9rem', marginBottom: '0.75rem' }}>
                 {blocker.body}
               </p>
               <Link href={blocker.ctaHref} prefetch={false} className="btn btn-secondary">
@@ -656,12 +676,12 @@ export default function ThreatMonitoringPanel() {
             <article
               className="dataCard"
               aria-label="Next Required Action"
-              style={{ borderColor: 'var(--success-bdr)' }}
+              style={{ borderColor: 'var(--success-bdr)', marginBottom: '1.5rem' }}
             >
               <p className="sectionEyebrow" style={{ color: 'var(--success-fg)' }}>
                 Next Required Action
               </p>
-              <p className="muted">
+              <p className="muted" style={{ fontSize: '0.9rem' }}>
                 {isSimulatorMode
                   ? 'All pipeline stages are active (simulator mode). Review simulated detections and signals.'
                   : 'All pipeline stages are operational. Review detections and respond to active alerts.'}
@@ -669,20 +689,31 @@ export default function ThreatMonitoringPanel() {
             </article>
           )}
 
-          {/* Diagnostics — collapsible technical details */}
-          <TechnicalRuntimeDetails
-            summaryLine={`Runtime: ${summary.runtime_status} · Freshness: ${summary.telemetry_freshness} · Confidence: ${summary.confidence}`}
-            runtimeStatus={summary.runtime_status}
-            monitoringStatus={summary.monitoring_status}
-            telemetryFreshness={summary.telemetry_freshness}
-            confidence={summary.confidence}
-            contradictionFlags={summary.contradiction_flags}
-            guardFlags={summary.guard_flags}
-            dbFailureClassification={summary.db_failure_classification ?? null}
-            statusReason={summary.status_reason}
-            failedEndpoints={[]}
-            staleCollections={[]}
-          />
+          {/* Diagnostics — collapsed section for engineering review */}
+          <section
+            aria-label="Diagnostics"
+            style={{ marginTop: '1rem', borderTop: '1px solid var(--border)', paddingTop: '1.25rem' }}
+          >
+            <p
+              className="sectionEyebrow"
+              style={{ marginBottom: '0.5rem', color: 'var(--text-muted)', fontSize: '0.8rem' }}
+            >
+              Diagnostics
+            </p>
+            <TechnicalRuntimeDetails
+              summaryLine={`Runtime: ${summary.runtime_status} · Freshness: ${summary.telemetry_freshness} · Confidence: ${summary.confidence}`}
+              runtimeStatus={summary.runtime_status}
+              monitoringStatus={summary.monitoring_status}
+              telemetryFreshness={summary.telemetry_freshness}
+              confidence={summary.confidence}
+              contradictionFlags={summary.contradiction_flags}
+              guardFlags={summary.guard_flags}
+              dbFailureClassification={summary.db_failure_classification ?? null}
+              statusReason={summary.status_reason}
+              failedEndpoints={[]}
+              staleCollections={[]}
+            />
+          </section>
         </div>
       ) : null}
 
@@ -712,7 +743,7 @@ export default function ThreatMonitoringPanel() {
                 const ep = evidencePill(event.evidence_source, workspaceEvidenceSource);
                 return (
                   <tr key={event.id}>
-                    <td style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                    <td style={{ fontFamily: 'monospace', fontSize: '0.875rem' }}>
                       {event.id.slice(0, 12)}
                     </td>
                     <td>{event.asset_name ?? '-'}</td>
@@ -756,7 +787,7 @@ export default function ThreatMonitoringPanel() {
                 const ep = evidencePill(det.evidence_source, workspaceEvidenceSource);
                 return (
                   <tr key={det.id}>
-                    <td style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                    <td style={{ fontFamily: 'monospace', fontSize: '0.875rem' }}>
                       {det.id.slice(0, 12)}
                     </td>
                     <td>{det.detection_type ?? '-'}</td>
@@ -777,7 +808,7 @@ export default function ThreatMonitoringPanel() {
                         href="/alerts"
                         prefetch={false}
                         className="btn btn-secondary"
-                        style={{ fontSize: '0.78rem', padding: '0.2rem 0.6rem' }}
+                        style={{ fontSize: '0.875rem', padding: '0.35rem 0.75rem' }}
                       >
                         Open Alert
                       </Link>
@@ -816,7 +847,7 @@ export default function ThreatMonitoringPanel() {
                       : 'var(--success-fg)';
                 return (
                   <tr key={anom.id}>
-                    <td style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                    <td style={{ fontFamily: 'monospace', fontSize: '0.875rem' }}>
                       {anom.id.slice(0, 12)}
                     </td>
                     <td>{anom.pattern ?? '-'}</td>
@@ -836,7 +867,7 @@ export default function ThreatMonitoringPanel() {
                         href="/incidents"
                         prefetch={false}
                         className="btn btn-secondary"
-                        style={{ fontSize: '0.78rem', padding: '0.2rem 0.6rem' }}
+                        style={{ fontSize: '0.875rem', padding: '0.35rem 0.75rem' }}
                       >
                         Investigate
                       </Link>
