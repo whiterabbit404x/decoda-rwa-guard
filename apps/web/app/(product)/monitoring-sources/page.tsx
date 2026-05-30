@@ -150,6 +150,19 @@ function resolveEvidenceSource(system: MonitoredSystemRow): { label: string; var
   return { label: 'none', variant: 'neutral' };
 }
 
+function getTargetDisplayName(target: TargetRow, allTargets: TargetRow[]): string {
+  const name = (target.name ?? '').trim();
+  const isShort = name.length < 3;
+  const isRepeated = name.length > 0 && allTargets.filter((t) => (t.name ?? '').trim() === name).length > 1;
+  if (!name || isShort || isRepeated) {
+    const type = (target.target_type ?? '').toLowerCase();
+    if (type === 'contract' || type === 'smart_contract' || type === 'smart-contract') return 'Smart Contract Monitor';
+    if (type === 'wallet') return 'Ethereum Wallet Monitor';
+    return 'Monitoring Target';
+  }
+  return name;
+}
+
 const TARGET_HEADERS = ['Target Name', 'Type', 'Provider', 'Systems', 'Status', 'Last Poll', 'Next Action'];
 const SYSTEM_HEADERS = [
   'System Name',
@@ -332,7 +345,7 @@ export default function MonitoringSourcesPage() {
     (enableError.includes('400') && enableError.toLowerCase().includes('asset'));
 
   const targetNameById = useMemo(
-    () => new Map(targets.map((target) => [target.id, target.name || 'Unnamed target'])),
+    () => new Map(targets.map((target) => [target.id, getTargetDisplayName(target, targets)])),
     [targets],
   );
 
@@ -436,10 +449,11 @@ export default function MonitoringSourcesPage() {
                   const status = targetStatusPill(target);
                   const systemsDisplay =
                     target.systems_count != null ? String(target.systems_count) : target.monitored_system_id ? '1' : '0';
+                  const displayName = getTargetDisplayName(target, targets);
 
                   return (
                     <tr key={target.id}>
-                      <td style={{ fontWeight: 600 }}>{target.name || 'Unnamed target'}</td>
+                      <td style={{ fontWeight: 600 }}>{displayName}</td>
                       <td>{target.target_type || 'Unknown'}</td>
                       <td>{target.provider || <span className="muted">Default</span>}</td>
                       <td>{systemsDisplay}</td>
