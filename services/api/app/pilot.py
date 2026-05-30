@@ -9289,6 +9289,43 @@ def _validate_asset_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compute_asset_monitoring_status(asset: dict[str, Any], workspace_has_live_telemetry: bool) -> dict[str, Any]:
+    link_status = asset.get('monitoring_link_status')
+    has_system = asset.get('has_linked_monitored_system')
+    has_telemetry = asset.get('has_telemetry')
+    telemetry_fresh = asset.get('telemetry_fresh')
+    linked_target_id = asset.get('linked_target_id')
+
+    if link_status == 'attached' and has_system:
+        if has_telemetry and telemetry_fresh:
+            href = f'/monitoring-sources/{linked_target_id}/telemetry' if linked_target_id else '/monitoring-sources'
+            return {
+                'monitoring_status': 'live_verified',
+                'coverage_reason': 'explicit_asset_target_link',
+                'next_action_label': 'View telemetry',
+                'next_action_href': href,
+            }
+        return {
+            'monitoring_status': 'waiting_for_telemetry',
+            'coverage_reason': 'explicit_asset_target_link',
+            'next_action_label': 'Verify telemetry',
+            'next_action_href': '/monitoring-sources',
+        }
+    if not asset.get('has_monitoring_target') and workspace_has_live_telemetry:
+        return {
+            'monitoring_status': 'not_linked',
+            'coverage_reason': 'workspace_live_telemetry_unlinked',
+            'next_action_label': 'Link monitoring source',
+            'next_action_href': '/monitoring-sources',
+        }
+    return {
+        'monitoring_status': 'not_configured',
+        'coverage_reason': 'no_linked_telemetry',
+        'next_action_label': 'Add monitoring source',
+        'next_action_href': '/monitoring-sources',
+    }
+
+
 def list_assets(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
@@ -9356,6 +9393,63 @@ def list_assets(request: Request) -> dict[str, Any]:
                        ) THEN 'attached'
                        ELSE 'system_missing'
                    END AS monitoring_link_status,
+                   EXISTS(
+                       SELECT 1
+                       FROM targets t
+                       JOIN monitored_systems ms
+                         ON ms.workspace_id = t.workspace_id
+                        AND ms.target_id = t.id
+                       WHERE t.workspace_id = assets.workspace_id
+                         AND t.asset_id = assets.id
+                         AND t.deleted_at IS NULL
+                         AND ms.last_heartbeat IS NOT NULL
+                   ) AS has_heartbeat,
+                   EXISTS(
+                       SELECT 1
+                       FROM targets t
+                       JOIN monitored_systems ms
+                         ON ms.workspace_id = t.workspace_id
+                        AND ms.target_id = t.id
+                       WHERE t.workspace_id = assets.workspace_id
+                         AND t.asset_id = assets.id
+                         AND t.deleted_at IS NULL
+                         AND ms.last_event_at IS NOT NULL
+                   ) AS has_telemetry,
+                   (
+                       SELECT ms.freshness_status = 'fresh'
+                       FROM targets t
+                       JOIN monitored_systems ms
+                         ON ms.workspace_id = t.workspace_id
+                        AND ms.target_id = t.id
+                       WHERE t.workspace_id = assets.workspace_id
+                         AND t.asset_id = assets.id
+                         AND t.deleted_at IS NULL
+                       ORDER BY ms.last_event_at DESC NULLS LAST
+                       LIMIT 1
+                   ) AS telemetry_fresh,
+                   (
+                       SELECT COUNT(*)
+                       FROM targets t
+                       JOIN monitored_systems ms
+                         ON ms.workspace_id = t.workspace_id
+                        AND ms.target_id = t.id
+                       WHERE t.workspace_id = assets.workspace_id
+                         AND t.asset_id = assets.id
+                         AND t.deleted_at IS NULL
+                   ) AS monitoring_systems_count,
+                   (
+                       SELECT t.id
+                       FROM targets t
+                       JOIN monitored_systems ms
+                         ON ms.workspace_id = t.workspace_id
+                        AND ms.target_id = t.id
+                        AND ms.asset_id = t.asset_id
+                       WHERE t.workspace_id = assets.workspace_id
+                         AND t.asset_id = assets.id
+                         AND t.deleted_at IS NULL
+                       ORDER BY t.created_at DESC
+                       LIMIT 1
+                   ) AS linked_target_id,
                    created_at, updated_at
             FROM assets
             WHERE workspace_id = %s AND deleted_at IS NULL
@@ -9363,6 +9457,18 @@ def list_assets(request: Request) -> dict[str, Any]:
             ''',
             (workspace_id,),
         ).fetchall()
+        workspace_live_telemetry_row = connection.execute(
+            '''
+            SELECT EXISTS(
+                SELECT 1 FROM monitored_systems ms
+                WHERE ms.workspace_id = %s
+                  AND ms.last_event_at IS NOT NULL
+                  AND ms.freshness_status = 'fresh'
+            ) AS has_live_telemetry
+            ''',
+            (workspace_id,),
+        ).fetchone()
+        workspace_has_live_telemetry: bool = bool((workspace_live_telemetry_row or {}).get('has_live_telemetry'))
         asset_ids = [str(row['id']) for row in rows]
         tags_map: dict[str, list[str]] = {asset_id: [] for asset_id in asset_ids}
         if asset_ids:
@@ -9376,6 +9482,7 @@ def list_assets(request: Request) -> dict[str, Any]:
         for row in rows:
             item = _json_safe_value(dict(row))
             item['tags'] = tags_map.get(str(row['id']), [])
+            item.update(_compute_asset_monitoring_status(item, workspace_has_live_telemetry))
             assets.append(item)
         return {'assets': assets, 'workspace': workspace_context['workspace']}
 

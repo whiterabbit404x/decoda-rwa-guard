@@ -56,9 +56,26 @@ function assetStatusInfo(asset: Asset): { label: string; variant: PillVariant } 
 
 /**
  * Returns monitoring column status.
+ * Uses backend-computed monitoring_status when available; falls back to field-level logic.
  * Never returns "Monitoring" unless a valid monitored_system exists and reports telemetry.
  */
 export function getMonitoringStatus(asset: Asset): { label: string; variant: PillVariant } {
+  // Backend-computed monitoring_status takes precedence when present
+  const backendStatus = asset?.monitoring_status;
+  if (backendStatus === 'live_verified') {
+    return { label: 'Live telemetry verified', variant: 'success' };
+  }
+  if (backendStatus === 'not_linked') {
+    return { label: 'Telemetry unlinked', variant: 'warning' };
+  }
+  if (backendStatus === 'not_configured') {
+    return { label: 'Not configured', variant: 'neutral' };
+  }
+  if (backendStatus === 'error') {
+    return { label: 'Provider issue', variant: 'danger' };
+  }
+
+  // Fall back to field-level logic (backward compat / when backend_status absent)
   const status = asset?.monitoring_link_status;
   const hasLinkedSystem = asset?.has_linked_monitored_system !== false;
   const systemCount = asset?.monitoring_systems_count ?? (status === 'attached' ? 1 : -1);
@@ -93,6 +110,9 @@ export function monitoringLinkStatusLabel(asset: Asset): string {
 function assetNextAction(asset: Asset): string {
   const vs = asset?.verification_status?.toLowerCase();
   if (!vs || vs === 'unknown' || vs === 'pending' || vs === 'failed') return 'Verify asset';
+
+  // Use backend-computed label when present (covers not_linked, live_verified, etc.)
+  if (asset?.next_action_label) return asset.next_action_label;
 
   const monStatus = asset?.monitoring_link_status;
   if (!monStatus || monStatus === 'not_configured' || monStatus === 'target_missing') {
@@ -390,6 +410,8 @@ export default function AssetsManager({ apiUrl }: Props) {
                     <button type="button" className="btn btn-secondary" disabled={actionLoadingAssetId === asset.id} onClick={() => { void runNextAction(asset, action); }}>
                       {actionLoadingAssetId === asset.id ? 'Verifying…' : 'Verify asset'}
                     </button>
+                  ) : asset?.next_action_href ? (
+                    <Link href={asset.next_action_href} prefetch={false} className="btn btn-secondary">{action}</Link>
                   ) : (action === 'Connect provider' || action === 'Start worker' || action === 'Verify telemetry') ? (
                     <Link href="/monitoring-sources" prefetch={false} className="btn btn-secondary">{action}</Link>
                   ) : (
