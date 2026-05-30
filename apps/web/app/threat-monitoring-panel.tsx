@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 import {
   EmptyStateBlocker,
@@ -14,6 +15,15 @@ import {
 import { resolveApiUrl } from './dashboard-data';
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
+import { buildSecurityWorkspaceStatus } from './security-workspace-status';
+import ThreatPageHeader from './threat/threat-page-header';
+import ThreatOverviewCard from './threat/threat-overview-card';
+import MonitoringHealthCard from './threat/monitoring-health-card';
+import DetectionFeed from './threat/detection-feed';
+import AlertIncidentChain from './threat/alert-incident-chain';
+import ResponseActionPanel from './threat/response-action-panel';
+import TechnicalRuntimeDetails from './threat/technical-runtime-details';
+import { buildDetectionRecords } from './threat/build-detection-records';
 
 type TabKey = 'overview' | 'telemetry' | 'detections' | 'anomalies';
 type NodeStatus = 'Complete' | 'Pending' | 'Blocked' | 'Degraded';
@@ -155,6 +165,7 @@ export default function ThreatMonitoringPanel() {
   const { summary, runtime, loading: runtimeLoading } = useRuntimeSummary();
   const { authHeaders } = usePilotAuth();
   const apiUrl = resolveApiUrl();
+  const router = useRouter();
 
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
   const [telemetry, setTelemetry] = useState<TelemetryEvent[]>([]);
@@ -188,35 +199,17 @@ export default function ThreatMonitoringPanel() {
       try {
         const hdrs = authHeaders();
         const results = await Promise.allSettled([
-          fetch(`${apiUrl}/telemetry`, { headers: hdrs, cache: 'no-store' }),
           fetch(`${apiUrl}/detections`, { headers: hdrs, cache: 'no-store' }),
-          fetch(`${apiUrl}/anomalies`, { headers: hdrs, cache: 'no-store' }),
         ]);
 
         if (cancelled) return;
 
-        const [telRes, detRes, anomRes] = results;
-
-        if (telRes.status === 'fulfilled' && telRes.value.ok) {
-          const json = (await telRes.value.json()) as Record<string, unknown>;
-          if (!cancelled) {
-            setTelemetry(
-              (json.events ?? json.telemetry ?? []) as TelemetryEvent[],
-            );
-          }
-        }
+        const [detRes] = results;
 
         if (detRes.status === 'fulfilled' && detRes.value.ok) {
           const json = (await detRes.value.json()) as Record<string, unknown>;
           if (!cancelled) {
             setDetections((json.detections ?? []) as DetectionRow[]);
-          }
-        }
-
-        if (anomRes.status === 'fulfilled' && anomRes.value.ok) {
-          const json = (await anomRes.value.json()) as Record<string, unknown>;
-          if (!cancelled) {
-            setAnomalies((json.anomalies ?? []) as AnomalyRow[]);
           }
         }
 
@@ -264,7 +257,7 @@ export default function ThreatMonitoringPanel() {
     // Case A
     if (!assetOk) {
       return {
-        title: 'No active protected asset detected in runtime.',
+        title: 'No protected asset exists yet.',
         body: 'If you have already added assets, enable a monitoring target and run repair/reconcile so the runtime summary reflects your configuration. Assets and monitoring targets exist but the runtime summary may not reflect them until the worker runs a cycle.',
         ctaHref: '/monitoring-sources',
         ctaLabel: 'Configure Monitoring',
@@ -304,7 +297,7 @@ export default function ThreatMonitoringPanel() {
         body: isSimulatorMode
           ? 'Trigger a simulator signal to generate the first telemetry event.'
           : 'Waiting for first telemetry event from the monitoring worker.',
-        ctaHref: '/threat',
+        ctaHref: isSimulatorMode ? '/monitored-systems' : '/system-health',
         ctaLabel: isSimulatorMode ? 'Generate Simulator Signal' : 'Check Worker Status',
       };
     }
@@ -313,7 +306,7 @@ export default function ThreatMonitoringPanel() {
       return {
         title: 'Telemetry has been received, but no detection has been generated yet.',
         body: 'Run detection evaluation to generate detections from received telemetry.',
-        ctaHref: '/threat',
+        ctaHref: '/monitoring-sources',
         ctaLabel: 'Run Detection',
       };
     }
@@ -348,8 +341,59 @@ export default function ThreatMonitoringPanel() {
   const blocker = getBlocker();
   const visibleTelemetry = telemetry.slice(0, 12);
 
+  // Build SecurityWorkspaceStatus for ThreatOverviewCard
+  const securityStatus = buildSecurityWorkspaceStatus(
+    {
+      runtime_status: summary.runtime_status,
+      status_reason: summary.status_reason,
+      db_failure_reason: summary.db_failure_reason ?? null,
+      contradiction_flags: summary.contradiction_flags,
+      guard_flags: summary.guard_flags,
+      protected_assets_count: summary.protected_assets_count,
+      monitored_systems_count: summary.monitored_systems_count,
+      reporting_systems_count: summary.reporting_systems_count,
+      active_alerts_count: summary.active_alerts_count,
+      active_incidents_count: summary.active_incidents_count,
+      last_telemetry_at: summary.last_telemetry_at,
+      last_detection_at: summary.last_detection_at ?? null,
+    },
+    detections,
+    [],
+    [],
+    [],
+  );
+
+  // Labels for MonitoringHealthCard
+  const heartbeatLabel = lastHeartbeatAt ? fmt(lastHeartbeatAt) : 'Not received';
+  const pollLabel = lastPollAt ? fmt(lastPollAt) : 'Not received';
+  const telemetryLabel = lastTelemetryAt ? fmt(lastTelemetryAt) : 'No telemetry';
+
+  // Map detections to DetectionRecord[] for DetectionFeed
+  const feedDetections = buildDetectionRecords(
+    detections.map((d) => ({
+      id: d.id,
+      timestamp: d.created_at ?? '',
+      assetName: d.asset_name ?? 'Unknown',
+      title: d.detection_type ?? 'Unknown detection',
+      severity: d.severity ?? 'low',
+      monitoringStatus: d.confidence ?? 'unknown',
+      evidenceSummary: d.evidence_source ?? 'none',
+      state: 'detected',
+    })),
+  );
+
   return (
     <div>
+      {/* Page header with actions */}
+      <ThreatPageHeader
+        showLiveTelemetry={!!lastTelemetryAt && !runtimeLoading}
+        ensuringProofChain={false}
+        proofChainDisabled
+        proofChainReason="Evidence package generation is not available in this view."
+        onRefreshNow={() => router.refresh()}
+        onGenerateProofChain={() => undefined}
+      />
+
       {/* Top metric cards */}
       <div
         style={{
@@ -397,6 +441,20 @@ export default function ThreatMonitoringPanel() {
       {/* Overview tab */}
       {activeTab === 'overview' ? (
         <div role="tabpanel" aria-label="Overview">
+          {/* Top row: security posture + monitoring health */}
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+            <ThreatOverviewCard securityStatus={securityStatus} loading={runtimeLoading} />
+            <MonitoringHealthCard
+              heartbeatLabel={heartbeatLabel}
+              pollLabel={pollLabel}
+              telemetryLabel={telemetryLabel}
+              reportingSystems={summary.reporting_systems_count}
+              configuredSystems={monitoredSystems}
+              freshnessStatus={summary.telemetry_freshness}
+              confidenceStatus={summary.confidence}
+            />
+          </div>
+
           <div
             style={{
               display: 'grid',
@@ -452,7 +510,7 @@ export default function ThreatMonitoringPanel() {
               )}
               <p className="muted" style={{ fontSize: '0.8rem', marginTop: '0.5rem' }}>
                 {telemetry.length} total events
-                {lastTelemetryAt ? ` 閻?Last: ${fmt(lastTelemetryAt)}` : ' 閻?None received'}
+                {lastTelemetryAt ? ` · Last: ${fmt(lastTelemetryAt)}` : ' · None received'}
               </p>
             </article>
             {/* Top Detection Types card */}
@@ -567,6 +625,15 @@ export default function ThreatMonitoringPanel() {
             </div>
           </article>
 
+          {/* Alert → Incident → Response chain */}
+          <AlertIncidentChain alert={null} incident={null} responseAction={null} />
+
+          {/* Response actions */}
+          <ResponseActionPanel capabilities={[]} actions={[]} loading={dataLoading} />
+
+          {/* Detection feed */}
+          <DetectionFeed detections={feedDetections} loading={dataLoading} />
+
           {/* Next Required Action card */}
           {blocker ? (
             <article
@@ -601,6 +668,21 @@ export default function ThreatMonitoringPanel() {
               </p>
             </article>
           )}
+
+          {/* Diagnostics — collapsible technical details */}
+          <TechnicalRuntimeDetails
+            summaryLine={`Runtime: ${summary.runtime_status} · Freshness: ${summary.telemetry_freshness} · Confidence: ${summary.confidence}`}
+            runtimeStatus={summary.runtime_status}
+            monitoringStatus={summary.monitoring_status}
+            telemetryFreshness={summary.telemetry_freshness}
+            confidence={summary.confidence}
+            contradictionFlags={summary.contradiction_flags}
+            guardFlags={summary.guard_flags}
+            dbFailureClassification={summary.db_failure_classification ?? null}
+            statusReason={summary.status_reason}
+            failedEndpoints={[]}
+            staleCollections={[]}
+          />
         </div>
       ) : null}
 
@@ -621,7 +703,7 @@ export default function ThreatMonitoringPanel() {
                     ? 'No telemetry event has been received yet. The worker may be reporting but no events have arrived.'
                     : 'No telemetry events found.'
               }
-              ctaHref={isSimulatorMode ? '/threat' : '/monitoring-sources'}
+              ctaHref={isSimulatorMode ? '/monitored-systems' : '/monitoring-sources'}
               ctaLabel={isSimulatorMode ? 'Generate Simulator Signal' : 'Check Monitoring Sources'}
             />
           ) : (
