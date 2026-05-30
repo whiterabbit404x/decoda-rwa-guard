@@ -13,7 +13,12 @@ export type DetectionRecord = {
   status: string;
 };
 
-type Props = { detections: DetectionRecord[]; loading: boolean };
+type Props = {
+  detections: DetectionRecord[];
+  loading: boolean;
+  lastTelemetryAt?: string | null;
+  lastDetectionAt?: string | null;
+};
 
 function SeverityBadge({ severity }: { severity: string }) {
   const s = severity.toLowerCase();
@@ -31,7 +36,7 @@ function SeverityBadge({ severity }: { severity: string }) {
   );
 }
 
-export default function DetectionFeed({ detections, loading }: Props) {
+export default function DetectionFeed({ detections, loading, lastTelemetryAt, lastDetectionAt }: Props) {
   return (
     <article className="dataCard" aria-label="Detection Feed">
       <div className="listHeader">
@@ -46,15 +51,43 @@ export default function DetectionFeed({ detections, loading }: Props) {
       ) : null}
       {!loading && detections.length === 0 ? (
         <div style={{ padding: '3rem 1rem', textAlign: 'center' }}>
-          <p style={{ fontSize: '1rem', color: 'var(--text-secondary)', margin: '0 0 0.75rem', fontWeight: 600 }}>
-            No detections yet
-          </p>
-          <p className="muted" style={{ fontSize: '0.9375rem', maxWidth: '42rem', margin: '0 auto 1rem' }}>
-            {THREAT_COPY.noDetectionRecords}
-          </p>
-          <Link href="/monitoring-sources" prefetch={false} className="secondaryCta">
-            Review monitoring coverage
-          </Link>
+          {lastTelemetryAt && lastDetectionAt ? (
+            <>
+              <p style={{ fontSize: '1rem', color: 'var(--text-secondary)', margin: '0 0 0.75rem', fontWeight: 600 }}>
+                No active detections
+              </p>
+              <p className="muted" style={{ fontSize: '0.9375rem', maxWidth: '42rem', margin: '0 auto 1rem' }}>
+                Telemetry is flowing and detection evaluation has run. No current RWA risk signal has crossed an alert threshold.
+              </p>
+              <Link href="/monitoring-sources" prefetch={false} className="secondaryCta">
+                Review monitoring coverage
+              </Link>
+            </>
+          ) : lastTelemetryAt && !lastDetectionAt ? (
+            <>
+              <p style={{ fontSize: '1rem', color: 'var(--text-secondary)', margin: '0 0 0.75rem', fontWeight: 600 }}>
+                Waiting for detection evaluation
+              </p>
+              <p className="muted" style={{ fontSize: '0.9375rem', maxWidth: '42rem', margin: '0 auto 1rem' }}>
+                Telemetry is flowing. Detection records will appear once monitoring rules evaluate incoming signals.
+              </p>
+              <Link href="/monitoring-sources" prefetch={false} className="secondaryCta">
+                Review monitoring rules
+              </Link>
+            </>
+          ) : (
+            <>
+              <p style={{ fontSize: '1rem', color: 'var(--text-secondary)', margin: '0 0 0.75rem', fontWeight: 600 }}>
+                Waiting for telemetry
+              </p>
+              <p className="muted" style={{ fontSize: '0.9375rem', maxWidth: '42rem', margin: '0 auto 1rem' }}>
+                Detection evaluation starts after runtime telemetry is received.
+              </p>
+              <Link href="/monitoring-sources" prefetch={false} className="secondaryCta">
+                Review monitoring coverage
+              </Link>
+            </>
+          )}
         </div>
       ) : null}
       {detections.length > 0 ? (
