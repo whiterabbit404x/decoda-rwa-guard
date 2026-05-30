@@ -369,16 +369,36 @@ test('pipeline Alert uses Not required when evaluation ran but no active detecti
   expect(alertLine).not.toContain("'Blocked'");
 });
 
-// ─── 15. Generate Simulator Signal only in simulator mode ─────────────────────
+// ─── 15. Simulator wording guard: no "Generate Simulator Signal" in source ───
 
-test('Generate Simulator Signal string only appears inside isSimulatorMode guard', () => {
+test('threat-monitoring-panel does not contain literal "Generate Simulator Signal"', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
-  const occurrences = [...panel.matchAll(/Generate Simulator Signal/g)];
+  expect(panel).not.toContain('Generate Simulator Signal');
+});
+
+test('simulator CTA uses neutral "Create test signal" wording gated on isSimulatorMode', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  const occurrences = [...panel.matchAll(/Create test signal/g)];
   // Every occurrence must be preceded by isSimulatorMode within 300 chars
   for (const match of occurrences) {
     const precedingText = panel.slice(Math.max(0, (match.index ?? 0) - 300), match.index ?? 0);
     expect(precedingText).toContain('isSimulatorMode');
   }
+});
+
+test('LIVE mode Case E CTA is "Check Worker Status" not simulator wording', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  const caseEBlock = panel.slice(panel.indexOf('// Case E'), panel.indexOf('// Case F'));
+  expect(caseEBlock).toContain('Check Worker Status');
+  expect(caseEBlock).not.toContain('Generate Simulator Signal');
+  expect(caseEBlock).not.toContain('Simulation signal');
+});
+
+test('Case F CTA is "Review monitoring rules" not "Run Detection"', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  const caseFBlock = panel.slice(panel.indexOf('// Case F'), panel.indexOf('// Case F2'));
+  expect(caseFBlock).toContain('Review monitoring rules');
+  expect(caseFBlock).not.toContain('Run Detection');
 });
 
 // ─── 16. No anomalies endpoint fetch ─────────────────────────────────────────

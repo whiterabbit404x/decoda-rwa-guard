@@ -115,13 +115,33 @@ test('Incident pipeline node is Not required when no active alerts', () => {
 
 // ─── 6. LIVE mode simulator wording guard ─────────────────────────────────────
 
-test('Generate Simulator Signal only appears inside isSimulatorMode guard', () => {
+test('threat-monitoring-panel does not contain "Generate Simulator Signal"', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
-  const occurrences = [...panel.matchAll(/Generate Simulator Signal/g)];
+  expect(panel).not.toContain('Generate Simulator Signal');
+});
+
+test('LIVE mode uses "Check Worker Status" not simulator wording in Case E', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  const caseEBlock = panel.slice(panel.indexOf('// Case E'), panel.indexOf('// Case F'));
+  expect(caseEBlock).toContain('Check Worker Status');
+  expect(caseEBlock).not.toContain('Generate Simulator Signal');
+  expect(caseEBlock).not.toContain('Simulation signal');
+});
+
+test('simulator CTA uses neutral "Create test signal" wording gated by isSimulatorMode', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  const occurrences = [...panel.matchAll(/Create test signal/g)];
   for (const match of occurrences) {
     const precedingText = panel.slice(Math.max(0, (match.index ?? 0) - 400), match.index ?? 0);
     expect(precedingText).toContain('isSimulatorMode');
   }
+});
+
+test('Case F CTA is "Review monitoring rules" not fake "Run Detection"', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  const caseFBlock = panel.slice(panel.indexOf('// Case F'), panel.indexOf('// Case F2'));
+  expect(caseFBlock).toContain('Review monitoring rules');
+  expect(caseFBlock).not.toContain('Run Detection');
 });
 
 test('LIVE mode threat page header does not render disabled Generate evidence package as primary action', () => {

@@ -291,19 +291,19 @@ export default function ThreatMonitoringPanel() {
       return {
         title: 'Worker is reporting, but no telemetry event has been received yet.',
         body: isSimulatorMode
-          ? 'Trigger a simulator signal to generate the first telemetry event.'
+          ? 'Trigger a test signal to generate the first telemetry event.'
           : 'Waiting for first telemetry event from the monitoring worker.',
         ctaHref: isSimulatorMode ? '/monitored-systems' : '/system-health',
-        ctaLabel: isSimulatorMode ? 'Generate Simulator Signal' : 'Check Worker Status',
+        ctaLabel: isSimulatorMode ? 'Create test signal' : 'Check Worker Status',
       };
     }
     // Case F: telemetry exists but detection evaluation has not run yet
     if (!detectionEvaluationOk) {
       return {
         title: 'Telemetry has been received, but no detection has been generated yet.',
-        body: 'Run detection evaluation to generate detections from received telemetry.',
+        body: 'Telemetry is flowing. Detection records will appear once monitoring rules evaluate incoming signals.',
         ctaHref: '/monitoring-sources',
-        ctaLabel: 'Run Detection',
+        ctaLabel: 'Review monitoring rules',
       };
     }
     // Case F2: evaluation ran but no active detection records — normal healthy state
@@ -813,7 +813,7 @@ export default function ThreatMonitoringPanel() {
                     : 'No telemetry event has been received yet. The worker may be reporting but no events have arrived.'
                 }
                 ctaHref={isSimulatorMode ? '/monitored-systems' : '/monitoring-sources'}
-                ctaLabel={isSimulatorMode ? 'Generate Simulator Signal' : 'Check Monitoring Sources'}
+                ctaLabel={isSimulatorMode ? 'Create test signal' : 'Check Monitoring Sources'}
               />
             )
           ) : (
