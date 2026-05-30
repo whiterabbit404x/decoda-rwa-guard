@@ -45,13 +45,16 @@ export default function DetectionFeed({ detections, loading }: Props) {
         <p className="muted" style={{ padding: '2rem 0', textAlign: 'center', fontSize: '0.9rem' }}>Loading detection records…</p>
       ) : null}
       {!loading && detections.length === 0 ? (
-        <div style={{ padding: '2.5rem 1rem', textAlign: 'center' }}>
-          <p style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', margin: '0 0 0.5rem', fontWeight: 600 }}>
+        <div style={{ padding: '3rem 1rem', textAlign: 'center' }}>
+          <p style={{ fontSize: '1rem', color: 'var(--text-secondary)', margin: '0 0 0.75rem', fontWeight: 600 }}>
             No detections yet
           </p>
-          <p className="muted" style={{ fontSize: '0.875rem', maxWidth: '36rem', margin: '0 auto' }}>
+          <p className="muted" style={{ fontSize: '0.9375rem', maxWidth: '42rem', margin: '0 auto 1rem' }}>
             {THREAT_COPY.noDetectionRecords}
           </p>
+          <Link href="/monitoring-sources" prefetch={false} className="secondaryCta">
+            Review monitoring coverage
+          </Link>
         </div>
       ) : null}
       {detections.length > 0 ? (

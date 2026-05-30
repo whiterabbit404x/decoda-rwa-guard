@@ -17,52 +17,52 @@ test('/threat route file exists and exports a default page component', () => {
   expect(src).toContain('export default function ThreatPage');
 });
 
-// -- 2. Page title "Threat Monitoring" exists ---------------------
-test('page title "Threat Monitoring" exists', () => {
-  const src = appSource('(product)/threat/page.tsx');
-  expect(src).toContain('<h1>Threat Monitoring</h1>');
+// -- 2. Page title "Threat Monitoring" exists in the header component ---------------------
+test('page title "Threat Monitoring" exists in ThreatPageHeader', () => {
+  const header = appSource('threat/threat-page-header.tsx');
+  expect(header).toContain('Threat Monitoring');
 });
 
-// -- 3. Subtitle is correct ---------------------------------------
-test('page subtitle matches spec', () => {
-  const src = appSource('(product)/threat/page.tsx');
-  expect(src).toContain(
-    'Monitor telemetry, detections, anomalies, and runtime security signals.',
+// -- 3. Subtitle is correct in threat copy ---------------------------------------
+test('page subtitle matches spec in threat-copy', () => {
+  const copy = appSource('threat/threat-copy.ts');
+  expect(copy).toContain(
+    'Monitor telemetry, detections, alerts, incidents, evidence, and response readiness across protected RWA systems.',
   );
 });
 
-// -- 4. Tabs exist exactly: Overview, Telemetry, Detections, Anomalies --
-test('tabs exist exactly: Overview, Telemetry, Detections, Anomalies', () => {
+// -- 4. Tabs exist: Overview, Telemetry, Detections (Anomalies removed — no backend endpoint) --
+test('tabs exist: Overview, Telemetry, Detections', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain("label: 'Overview'");
   expect(panel).toContain("label: 'Telemetry'");
   expect(panel).toContain("label: 'Detections'");
-  expect(panel).toContain("label: 'Anomalies'");
   expect(panel).toContain("key: 'overview'");
   expect(panel).toContain("key: 'telemetry'");
   expect(panel).toContain("key: 'detections'");
-  expect(panel).toContain("key: 'anomalies'");
+  // Anomalies tab removed — no backend /anomalies endpoint
+  expect(panel).not.toContain("label: 'Anomalies'");
+  expect(panel).not.toContain("key: 'anomalies'");
 });
 
-// -- 5. Top metric cards exist exactly ----------------------------
-test('metric card "Telemetry Events" exists', () => {
+// -- 5. Top metric cards exist ----------------------------
+test('metric card "Latest Telemetry" exists (replaces misleading Telemetry Events)', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
-  expect(panel).toContain('Telemetry Events');
+  expect(panel).toContain('Latest Telemetry');
+  // Telemetry Events KPI removed — it always showed 0 because no telemetry list endpoint is loaded
+  expect(panel).not.toContain('Telemetry Events');
 });
 
-test('metric card "Detections" exists', () => {
+test('metric card "Active Detections" exists', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
-  expect(panel).toContain('"Detections"');
+  expect(panel).toContain('Active Detections');
 });
 
-test('metric card "Anomalies" exists', () => {
+test('metric card "Evidence Freshness" exists (replaces Data Freshness)', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
-  expect(panel).toContain('"Anomalies"');
-});
-
-test('metric card "Data Freshness" exists', () => {
-  const panel = appSource('threat-monitoring-panel.tsx');
-  expect(panel).toContain('Data Freshness');
+  expect(panel).toContain('Evidence Freshness');
+  // Anomalies KPI removed — no backend endpoint
+  expect(panel).not.toContain('"Anomalies"');
 });
 
 // -- 6. Telemetry Volume section exists ---------------------------
@@ -162,20 +162,14 @@ test('detections table has column "Confidence"', () => {
   expect(panel).toContain('Confidence');
 });
 
-// -- 11. Anomalies table columns exist ----------------------------
-test('anomalies table has column "Anomaly ID"', () => {
+// -- 11. Anomalies tab/table removed (no backend /anomalies endpoint) -----------
+test('Anomalies tab and table are removed from threat monitoring panel', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
-  expect(panel).toContain('Anomaly ID');
-});
-
-test('anomalies table has column "Pattern"', () => {
-  const panel = appSource('threat-monitoring-panel.tsx');
-  expect(panel).toContain('Pattern');
-});
-
-test('anomalies table has column "First Seen"', () => {
-  const panel = appSource('threat-monitoring-panel.tsx');
-  expect(panel).toContain('First Seen');
+  // All anomaly-specific identifiers must be absent
+  expect(panel).not.toContain('Anomaly ID');
+  expect(panel).not.toContain('First Seen');
+  expect(panel).not.toContain("key: 'anomalies'");
+  expect(panel).not.toContain("label: 'Anomalies'");
 });
 
 // -- 12. Page does not show live_provider for simulator data ------
@@ -239,10 +233,11 @@ test('Case G blocker: no alert', () => {
   expect(panel).toContain('Detection exists, but no alert has been opened yet.');
 });
 
-// -- 16. AppShell / RuntimeSummaryPanel is used -------------------
-test('page uses RuntimeSummaryPanel', () => {
+// -- 16. Page structure -------------------
+test('page does not render RuntimeSummaryPanel at top level', () => {
   const src = appSource('(product)/threat/page.tsx');
-  expect(src).toContain('RuntimeSummaryPanel');
+  // RuntimeSummaryPanel removed from /threat — it was the debug panel that appeared before the SaaS header
+  expect(src).not.toContain('RuntimeSummaryPanel');
 });
 
 test('page uses ThreatMonitoringPanel', () => {

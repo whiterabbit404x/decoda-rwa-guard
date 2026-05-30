@@ -1,5 +1,5 @@
 export const THREAT_COPY = {
-  headerSubtitle: 'Continuous monitoring for protected RWA assets, Treasury-backed instruments, oracle/NAV signals, detections, incidents, and response workflows.',
+  headerSubtitle: 'Monitor telemetry, detections, alerts, incidents, evidence, and response readiness across protected RWA systems.',
   overviewCoverageSummary: 'Continuous monitoring coverage for Treasury-backed assets across custody wallets, issuer contracts, oracle/NAV feeds, and compliance exposure controls.',
   noRecentTelemetry: 'No recent telemetry for this protected system',
   noLiveSignalYet: 'No live telemetry yet from Treasury-backed assets, custody wallets, issuer contracts, or oracle/NAV feeds.',

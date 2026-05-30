@@ -22,10 +22,10 @@ export default function ThreatOverviewCard({ status, securityStatus, loading = f
   return (
     <article className="dataCard" aria-label="Security Overview">
       <p className="sectionEyebrow">Security overview</p>
-      <h3 style={{ fontSize: '1.1rem', fontWeight: 700, margin: '0 0 0.5rem' }}>Threat posture</h3>
+      <h3 style={{ fontSize: '1.125rem', fontWeight: 700, margin: '0 0 0.5rem' }}>Threat posture</h3>
       <p
         style={{
-          fontSize: '1.5rem',
+          fontSize: '1.75rem',
           fontWeight: 800,
           color: loading ? 'var(--text-muted)' : postureStyle.color,
           margin: '0 0 0.5rem',
@@ -42,19 +42,19 @@ export default function ThreatOverviewCard({ status, securityStatus, loading = f
       >
         <div>
           <p className="sectionEyebrow">Protected assets</p>
-          <p style={{ fontSize: '1.5rem', fontWeight: 700, margin: '0.25rem 0 0', color: 'var(--text-primary)' }}>
+          <p style={{ fontSize: '1.75rem', fontWeight: 700, margin: '0.25rem 0 0', color: 'var(--text-primary)' }}>
             {loading ? '—' : resolved.protectedAssets}
           </p>
         </div>
         <div>
           <p className="sectionEyebrow">Monitored systems</p>
-          <p style={{ fontSize: '1.5rem', fontWeight: 700, margin: '0.25rem 0 0', color: 'var(--text-primary)' }}>
+          <p style={{ fontSize: '1.75rem', fontWeight: 700, margin: '0.25rem 0 0', color: 'var(--text-primary)' }}>
             {loading ? '—' : resolved.monitoredSystems}
           </p>
         </div>
         <div>
           <p className="sectionEyebrow">Reporting systems</p>
-          <p style={{ fontSize: '1.5rem', fontWeight: 700, margin: '0.25rem 0 0', color: 'var(--text-primary)' }}>
+          <p style={{ fontSize: '1.75rem', fontWeight: 700, margin: '0.25rem 0 0', color: 'var(--text-primary)' }}>
             {loading ? '—' : resolved.reportingSystems}
           </p>
         </div>
@@ -62,7 +62,7 @@ export default function ThreatOverviewCard({ status, securityStatus, loading = f
           <p className="sectionEyebrow">Open alerts</p>
           <p
             style={{
-              fontSize: '1.5rem',
+              fontSize: '1.75rem',
               fontWeight: 700,
               margin: '0.25rem 0 0',
               color: !loading && resolved.openAlerts > 0 ? 'var(--danger-fg)' : 'var(--text-primary)',
@@ -75,7 +75,7 @@ export default function ThreatOverviewCard({ status, securityStatus, loading = f
           <p className="sectionEyebrow">Active incidents</p>
           <p
             style={{
-              fontSize: '1.5rem',
+              fontSize: '1.75rem',
               fontWeight: 700,
               margin: '0.25rem 0 0',
               color: !loading && resolved.activeIncidents > 0 ? 'var(--warning-fg)' : 'var(--text-primary)',

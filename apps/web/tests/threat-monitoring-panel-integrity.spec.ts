@@ -95,9 +95,9 @@ test('freshnessLabel returns "No telemetry" when last_telemetry_at is null', () 
   expect(panel).toContain("return 'No telemetry'");
 });
 
-test('metric tile for Data Freshness uses freshnessLabel which guards null telemetry', () => {
+test('metric tile for Latest Telemetry uses freshnessLabel which guards null telemetry', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
-  expect(panel).toContain('Data Freshness');
+  expect(panel).toContain('Latest Telemetry');
   expect(panel).toContain('freshnessLabel()');
 });
 
