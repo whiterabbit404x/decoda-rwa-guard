@@ -26,7 +26,7 @@ import TechnicalRuntimeDetails from './threat/technical-runtime-details';
 import { buildDetectionRecords } from './threat/build-detection-records';
 
 type TabKey = 'overview' | 'telemetry' | 'detections';
-type NodeStatus = 'Complete' | 'Pending' | 'Blocked' | 'Degraded';
+type NodeStatus = 'Complete' | 'Pending' | 'Blocked' | 'Degraded' | 'Configured';
 
 type TelemetryEvent = {
   id: string;
@@ -124,6 +124,7 @@ function nodeStatusVariant(status: NodeStatus): PillVariant {
   if (status === 'Complete') return 'success';
   if (status === 'Degraded') return 'warning';
   if (status === 'Blocked') return 'danger';
+  if (status === 'Configured') return 'info';
   return 'neutral';
 }
 
@@ -210,6 +211,11 @@ export default function ThreatMonitoringPanel() {
   const assetOk = protectedAssets > 0;
   const targetOk = monitoringTargets > 0;
   const systemOk = monitoredSystems > 0;
+  const reportingSystems = summary.reporting_systems_count ?? 0;
+  // If monitored or reporting systems > 0, targets must exist even when the explicit
+  // monitoring_targets count is missing from the runtime summary (unavailable vs zero).
+  const targetInferred = !targetOk && (monitoredSystems > 0 || reportingSystems > 0);
+  const effectiveTargetOk = targetOk || targetInferred;
   const heartbeatOk = !!lastHeartbeatAt;
   const pollOk = !!lastPollAt;
   const telemetryOk = !!lastTelemetryAt || telemetry.length > 0;
@@ -219,8 +225,8 @@ export default function ThreatMonitoringPanel() {
 
   const nodeStatuses: Record<(typeof PIPELINE_NODES)[number], NodeStatus> = {
     Asset: assetOk ? 'Complete' : 'Pending',
-    Target: !assetOk ? 'Blocked' : targetOk ? 'Complete' : 'Pending',
-    System: !targetOk ? 'Blocked' : systemOk ? 'Complete' : 'Pending',
+    Target: !assetOk ? 'Blocked' : targetOk ? 'Complete' : targetInferred ? 'Configured' : 'Pending',
+    System: !effectiveTargetOk ? 'Blocked' : systemOk ? 'Complete' : 'Pending',
     Heartbeat: !systemOk ? 'Blocked' : heartbeatOk ? 'Complete' : 'Pending',
     Poll: !heartbeatOk ? 'Blocked' : pollOk ? 'Complete' : 'Pending',
     Telemetry: !heartbeatOk ? 'Blocked' : telemetryOk ? 'Complete' : 'Pending',
@@ -243,7 +249,7 @@ export default function ThreatMonitoringPanel() {
       };
     }
     // Case B
-    if (!targetOk) {
+    if (!effectiveTargetOk) {
       return {
         title: 'No monitoring target is linked to this asset yet.',
         body: 'Create a monitoring target so Decoda can begin collecting runtime signals for this asset.',
@@ -478,8 +484,17 @@ export default function ThreatMonitoringPanel() {
                     fontSize: '0.9rem',
                   }}
                 >
-                  <span style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-secondary)' }}>No events yet</span>
-                  <span>Telemetry will appear here once the monitoring worker delivers signals.</span>
+                  {lastTelemetryAt ? (
+                    <>
+                      <span style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Telemetry list is not loaded in this view.</span>
+                      <span>{`Latest runtime telemetry received: ${fmt(lastTelemetryAt)}.`}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-secondary)' }}>No events yet</span>
+                      <span>Telemetry will appear here once the monitoring worker delivers signals.</span>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div
@@ -625,7 +640,18 @@ export default function ThreatMonitoringPanel() {
           <AlertIncidentChain alert={null} incident={null} responseAction={null} />
 
           {/* Response actions */}
-          <ResponseActionPanel capabilities={[]} actions={[]} loading={dataLoading} />
+          <ResponseActionPanel
+            capabilities={
+              isSimulatorMode
+                ? ['Simulation only']
+                : ['Review alerts', 'Open incident queue', 'Configure response policy', 'Export evidence']
+            }
+            actions={[]}
+            loading={dataLoading}
+            isSimulatorMode={isSimulatorMode}
+            hasOpenAlerts={activeAlerts > 0}
+            hasOpenIncidents={openIncidents > 0}
+          />
 
           {/* Detection feed */}
           <DetectionFeed detections={feedDetections} loading={dataLoading} />
