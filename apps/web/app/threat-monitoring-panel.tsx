@@ -25,7 +25,7 @@ import ResponseActionPanel from './threat/response-action-panel';
 import TechnicalRuntimeDetails from './threat/technical-runtime-details';
 import { buildDetectionRecords } from './threat/build-detection-records';
 
-type TabKey = 'overview' | 'telemetry' | 'detections' | 'anomalies';
+type TabKey = 'overview' | 'telemetry' | 'detections';
 type NodeStatus = 'Complete' | 'Pending' | 'Blocked' | 'Degraded';
 
 type TelemetryEvent = {
@@ -48,15 +48,6 @@ type DetectionRow = {
   created_at?: string | null;
 };
 
-type AnomalyRow = {
-  id: string;
-  pattern?: string | null;
-  asset_name?: string | null;
-  score?: number | null;
-  status?: string | null;
-  first_seen?: string | null;
-};
-
 const PIPELINE_NODES = [
   'Asset',
   'Target',
@@ -73,7 +64,6 @@ const TABS = [
   { key: 'overview', label: 'Overview' },
   { key: 'telemetry', label: 'Telemetry' },
   { key: 'detections', label: 'Detections' },
-  { key: 'anomalies', label: 'Anomalies' },
 ];
 
 const TELEMETRY_HEADERS = [
@@ -94,16 +84,6 @@ const DETECTION_HEADERS = [
   'Confidence',
   'Evidence Source',
   'Created At',
-  'Action',
-];
-
-const ANOMALY_HEADERS = [
-  'Anomaly ID',
-  'Pattern',
-  'Asset',
-  'Score',
-  'Status',
-  'First Seen',
   'Action',
 ];
 
@@ -170,7 +150,6 @@ export default function ThreatMonitoringPanel() {
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
   const [telemetry, setTelemetry] = useState<TelemetryEvent[]>([]);
   const [detections, setDetections] = useState<DetectionRow[]>([]);
-  const [anomalies, setAnomalies] = useState<AnomalyRow[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
 
@@ -383,7 +362,7 @@ export default function ThreatMonitoringPanel() {
   );
 
   return (
-    <div>
+    <div style={{ maxWidth: '1440px', width: '100%', margin: '0 auto' }}>
       {/* Page header with actions */}
       <ThreatPageHeader
         showLiveTelemetry={!!lastTelemetryAt && !runtimeLoading}
@@ -395,13 +374,13 @@ export default function ThreatMonitoringPanel() {
         onGenerateProofChain={() => undefined}
       />
 
-      {/* Hero KPI row */}
+      {/* Hero KPI row — 7 tiles, no misleading raw-count KPIs */}
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))',
-          gap: '1rem',
-          marginBottom: '1.5rem',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+          gap: '1.25rem',
+          marginBottom: '1.75rem',
         }}
       >
         <MetricTile
@@ -415,6 +394,16 @@ export default function ThreatMonitoringPanel() {
           meta="Configured systems"
         />
         <MetricTile
+          label="Latest Telemetry"
+          value={runtimeLoading ? '-' : freshnessLabel()}
+          meta={lastTelemetryAt ? 'Runtime summary signal' : 'Awaiting signal'}
+        />
+        <MetricTile
+          label="Active Detections"
+          value={runtimeLoading || dataLoading ? '-' : String(detections.length)}
+          meta={lastDetectionAt ? fmt(lastDetectionAt) : 'No detections'}
+        />
+        <MetricTile
           label="Open Alerts"
           value={runtimeLoading ? '-' : String(activeAlerts)}
           meta={activeAlerts > 0 ? 'Requires review' : 'No open alerts'}
@@ -425,24 +414,9 @@ export default function ThreatMonitoringPanel() {
           meta={openIncidents > 0 ? 'In progress' : 'No active incidents'}
         />
         <MetricTile
-          label="Telemetry Events"
-          value={runtimeLoading || dataLoading ? '-' : String(telemetry.length)}
-          meta={lastTelemetryAt ? fmt(lastTelemetryAt) : 'No events'}
-        />
-        <MetricTile
-          label="Detections"
-          value={runtimeLoading || dataLoading ? '-' : String(detections.length)}
-          meta={lastDetectionAt ? fmt(lastDetectionAt) : 'No detections'}
-        />
-        <MetricTile
-          label="Anomalies"
-          value={runtimeLoading || dataLoading ? '-' : String(anomalies.length)}
-          meta={anomalies.length > 0 ? 'Active' : 'None detected'}
-        />
-        <MetricTile
-          label="Data Freshness"
-          value={freshnessLabel()}
-          meta={summary.telemetry_freshness}
+          label="Evidence Freshness"
+          value={runtimeLoading ? '-' : (summary.telemetry_freshness || 'Unavailable')}
+          meta={summary.confidence ? `Confidence: ${summary.confidence}` : undefined}
         />
       </div>
 
@@ -463,7 +437,7 @@ export default function ThreatMonitoringPanel() {
       {activeTab === 'overview' ? (
         <div role="tabpanel" aria-label="Overview">
           {/* Top row: security posture + monitoring health */}
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1.5rem', marginBottom: '1.5rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1.5rem', marginBottom: '1.75rem' }}>
             <ThreatOverviewCard securityStatus={securityStatus} loading={runtimeLoading} />
             <MonitoringHealthCard
               heartbeatLabel={heartbeatLabel}
@@ -481,7 +455,7 @@ export default function ThreatMonitoringPanel() {
               display: 'grid',
               gridTemplateColumns: '2fr 1fr',
               gap: '1.5rem',
-              marginBottom: '1.5rem',
+              marginBottom: '1.75rem',
             }}
           >
             {/* Telemetry Volume card */}
@@ -495,14 +469,17 @@ export default function ThreatMonitoringPanel() {
                 <div
                   style={{
                     display: 'flex',
+                    flexDirection: 'column',
                     alignItems: 'center',
                     justifyContent: 'center',
                     height: '8rem',
+                    gap: '0.4rem',
                     color: 'var(--text-muted)',
                     fontSize: '0.9rem',
                   }}
                 >
-                  No telemetry events received
+                  <span style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-secondary)' }}>No events yet</span>
+                  <span>Telemetry will appear here once the monitoring worker delivers signals.</span>
                 </div>
               ) : (
                 <div
@@ -530,8 +507,7 @@ export default function ThreatMonitoringPanel() {
                 </div>
               )}
               <p className="muted" style={{ fontSize: '0.875rem', marginTop: '0.5rem' }}>
-                {telemetry.length} total events
-                {lastTelemetryAt ? ` · Last: ${fmt(lastTelemetryAt)}` : ' · None received'}
+                {lastTelemetryAt ? `· Last: ${fmt(lastTelemetryAt)}` : '· None received'}
               </p>
             </article>
             {/* Top Detection Types card */}
@@ -592,9 +568,9 @@ export default function ThreatMonitoringPanel() {
           </div>
 
           {/* Security workflow chain: Telemetry → Detection → Alert → Incident → Evidence → Response */}
-          <article className="dataCard" aria-label="Pipeline Status" style={{ marginBottom: '1.5rem' }}>
+          <article className="dataCard" aria-label="Pipeline Status" style={{ marginBottom: '1.75rem' }}>
             <p className="sectionEyebrow">Security monitoring workflow</p>
-            <h3 style={{ fontSize: '1rem', fontWeight: 700, margin: '0.25rem 0 1rem', color: 'var(--text-secondary)' }}>
+            <h3 style={{ fontSize: '1.125rem', fontWeight: 700, margin: '0.25rem 0 1.25rem', color: 'var(--text-secondary)' }}>
               Telemetry → Detection → Alert → Incident → Evidence → Response
             </h3>
             <div
@@ -617,10 +593,10 @@ export default function ThreatMonitoringPanel() {
                         data-pipeline-node={node}
                         style={{
                           display: 'block',
-                          fontSize: '0.875rem',
+                          fontSize: '0.9375rem',
                           fontWeight: 600,
                           color: 'var(--text-secondary)',
-                          marginBottom: '0.3rem',
+                          marginBottom: '0.35rem',
                           letterSpacing: '0.02em',
                         }}
                       >
@@ -659,13 +635,13 @@ export default function ThreatMonitoringPanel() {
             <article
               className="dataCard"
               aria-label="Next Required Action"
-              style={{ borderColor: 'var(--warning-bdr)', marginBottom: '1.5rem' }}
+              style={{ borderColor: 'var(--warning-bdr)', marginBottom: '1.75rem' }}
             >
               <p className="sectionEyebrow" style={{ color: 'var(--warning-fg)' }}>
                 Next Required Action
               </p>
-              <h4 style={{ margin: '0.25rem 0 0.4rem', fontSize: '1rem' }}>{blocker.title}</h4>
-              <p className="muted" style={{ fontSize: '0.9rem', marginBottom: '0.75rem' }}>
+              <h4 style={{ margin: '0.25rem 0 0.5rem', fontSize: '1.0625rem' }}>{blocker.title}</h4>
+              <p className="muted" style={{ fontSize: '0.9375rem', marginBottom: '1rem' }}>
                 {blocker.body}
               </p>
               <Link href={blocker.ctaHref} prefetch={false} className="btn btn-secondary">
@@ -676,12 +652,12 @@ export default function ThreatMonitoringPanel() {
             <article
               className="dataCard"
               aria-label="Next Required Action"
-              style={{ borderColor: 'var(--success-bdr)', marginBottom: '1.5rem' }}
+              style={{ borderColor: 'var(--success-bdr)', marginBottom: '1.75rem' }}
             >
               <p className="sectionEyebrow" style={{ color: 'var(--success-fg)' }}>
                 Next Required Action
               </p>
-              <p className="muted" style={{ fontSize: '0.9rem' }}>
+              <p className="muted" style={{ fontSize: '0.9375rem' }}>
                 {isSimulatorMode
                   ? 'All pipeline stages are active (simulator mode). Review simulated detections and signals.'
                   : 'All pipeline stages are operational. Review detections and respond to active alerts.'}
@@ -689,31 +665,44 @@ export default function ThreatMonitoringPanel() {
             </article>
           )}
 
-          {/* Diagnostics — collapsed section for engineering review */}
-          <section
+          {/* Diagnostics — collapsed at bottom, not primary UI */}
+          <details
             aria-label="Diagnostics"
-            style={{ marginTop: '1rem', borderTop: '1px solid var(--border)', paddingTop: '1.25rem' }}
+            style={{ marginTop: '2rem', borderTop: '1px solid var(--border)', paddingTop: '1.25rem' }}
           >
-            <p
-              className="sectionEyebrow"
-              style={{ marginBottom: '0.5rem', color: 'var(--text-muted)', fontSize: '0.8rem' }}
+            <summary
+              style={{
+                cursor: 'pointer',
+                fontSize: '0.875rem',
+                fontWeight: 600,
+                color: 'var(--text-muted)',
+                letterSpacing: '0.03em',
+                userSelect: 'none',
+                listStyle: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+              }}
             >
               Diagnostics
-            </p>
-            <TechnicalRuntimeDetails
-              summaryLine={`Runtime: ${summary.runtime_status} · Freshness: ${summary.telemetry_freshness} · Confidence: ${summary.confidence}`}
-              runtimeStatus={summary.runtime_status}
-              monitoringStatus={summary.monitoring_status}
-              telemetryFreshness={summary.telemetry_freshness}
-              confidence={summary.confidence}
-              contradictionFlags={summary.contradiction_flags}
-              guardFlags={summary.guard_flags}
-              dbFailureClassification={summary.db_failure_classification ?? null}
-              statusReason={summary.status_reason}
-              failedEndpoints={[]}
-              staleCollections={[]}
-            />
-          </section>
+              <span style={{ fontSize: '0.75rem', fontWeight: 400 }}>(technical details)</span>
+            </summary>
+            <div style={{ marginTop: '1rem' }}>
+              <TechnicalRuntimeDetails
+                summaryLine={`Runtime: ${summary.runtime_status} · Freshness: ${summary.telemetry_freshness} · Confidence: ${summary.confidence}`}
+                runtimeStatus={summary.runtime_status}
+                monitoringStatus={summary.monitoring_status}
+                telemetryFreshness={summary.telemetry_freshness}
+                confidence={summary.confidence}
+                contradictionFlags={summary.contradiction_flags}
+                guardFlags={summary.guard_flags}
+                dbFailureClassification={summary.db_failure_classification ?? null}
+                statusReason={summary.status_reason}
+                failedEndpoints={[]}
+                staleCollections={[]}
+              />
+            </div>
+          </details>
         </div>
       ) : null}
 
@@ -821,64 +810,6 @@ export default function ThreatMonitoringPanel() {
         </div>
       ) : null}
 
-      {/* Anomalies tab */}
-      {activeTab === 'anomalies' ? (
-        <div role="tabpanel" aria-label="Anomalies">
-          {dataLoading ? (
-            <p className="muted" style={{ padding: '2rem 0' }}>
-              Loading anomalies...
-            </p>
-          ) : anomalies.length === 0 ? (
-            <EmptyStateBlocker
-              title="No anomalies detected"
-              body="No anomalies have been detected yet. Anomaly detection runs automatically when telemetry is flowing."
-              ctaHref="/monitoring-sources"
-              ctaLabel="Check Monitoring Sources"
-            />
-          ) : (
-            <TableShell headers={ANOMALY_HEADERS} compact>
-              {anomalies.map((anom) => {
-                const score = anom.score ?? 0;
-                const scoreColor =
-                  score > 0.8
-                    ? 'var(--danger-fg)'
-                    : score > 0.5
-                      ? 'var(--warning-fg)'
-                      : 'var(--success-fg)';
-                return (
-                  <tr key={anom.id}>
-                    <td style={{ fontFamily: 'monospace', fontSize: '0.875rem' }}>
-                      {anom.id.slice(0, 12)}
-                    </td>
-                    <td>{anom.pattern ?? '-'}</td>
-                    <td>{anom.asset_name ?? '-'}</td>
-                    <td style={{ color: scoreColor, fontWeight: 600 }}>
-                      {anom.score != null ? anom.score.toFixed(2) : '-'}
-                    </td>
-                    <td>
-                      <StatusPill
-                        label={anom.status ?? 'active'}
-                        variant={anom.status === 'resolved' ? 'success' : 'warning'}
-                      />
-                    </td>
-                    <td style={{ whiteSpace: 'nowrap' }}>{fmt(anom.first_seen)}</td>
-                    <td>
-                      <Link
-                        href="/incidents"
-                        prefetch={false}
-                        className="btn btn-secondary"
-                        style={{ fontSize: '0.875rem', padding: '0.35rem 0.75rem' }}
-                      >
-                        Investigate
-                      </Link>
-                    </td>
-                  </tr>
-                );
-              })}
-            </TableShell>
-          )}
-        </div>
-      ) : null}
     </div>
   );
 }

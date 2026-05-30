@@ -136,7 +136,7 @@ test('ThreatOverviewCard shows Setup required posture label', () => {
   expect(overview).toContain('Setup required');
 });
 
-// --- 9. Diagnostics section is labeled and visually secondary ---
+// --- 9. Diagnostics section uses <details> and is visually secondary ---
 
 test('Diagnostics section wraps TechnicalRuntimeDetails', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
@@ -151,6 +151,16 @@ test('Diagnostics section heading exists', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain('Diagnostics');
   expect(panel).toContain('aria-label="Diagnostics"');
+});
+
+test('Diagnostics uses <details> element for collapsible rendering', () => {
+  const panel = appSource('threat-monitoring-panel.tsx');
+  // Must use <details> (not <section>) so it is collapsed by default
+  expect(panel).toContain('<details');
+  expect(panel).toContain('aria-label="Diagnostics"');
+  // <summary> must label the collapsed section
+  expect(panel).toContain('<summary');
+  expect(panel).toContain('Diagnostics');
 });
 
 // --- 10. Security workflow chain renders Telemetry → Evidence → Response ---
