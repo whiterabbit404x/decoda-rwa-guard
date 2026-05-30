@@ -246,14 +246,15 @@ test('page uses ThreatMonitoringPanel', () => {
 });
 
 // -- 17. Simulator signal CTA only shown in simulator mode --------
-test('Generate Simulator Signal CTA is gated on isSimulatorMode', () => {
+test('simulator CTA uses neutral wording gated on isSimulatorMode (not "Generate Simulator Signal")', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   const caseEBlock = panel.slice(
     panel.indexOf('// Case E'),
     panel.indexOf('// Case F'),
   );
   expect(caseEBlock).toContain('isSimulatorMode');
-  expect(caseEBlock).toContain('Generate Simulator Signal');
+  expect(caseEBlock).toContain('Create test signal');
+  expect(caseEBlock).not.toContain('Generate Simulator Signal');
 });
 
 // -- 18. Page does not contradict itself (no contradiction_flags usage) --
