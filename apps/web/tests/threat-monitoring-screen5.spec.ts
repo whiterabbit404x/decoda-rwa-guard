@@ -11,19 +11,19 @@ function appSource(fileName: string): string {
   return fs.readFileSync(path.join(__dirname, '..', 'app', fileName), 'utf-8');
 }
 
-// 鈹€鈹€ 1. /threat route renders 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 1. /threat route renders -------------------------------------
 test('/threat route file exists and exports a default page component', () => {
   const src = appSource('(product)/threat/page.tsx');
   expect(src).toContain('export default function ThreatPage');
 });
 
-// 鈹€鈹€ 2. Page title "Threat Monitoring" exists 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 2. Page title "Threat Monitoring" exists ---------------------
 test('page title "Threat Monitoring" exists', () => {
   const src = appSource('(product)/threat/page.tsx');
   expect(src).toContain('<h1>Threat Monitoring</h1>');
 });
 
-// 鈹€鈹€ 3. Subtitle is correct 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 3. Subtitle is correct ---------------------------------------
 test('page subtitle matches spec', () => {
   const src = appSource('(product)/threat/page.tsx');
   expect(src).toContain(
@@ -31,7 +31,7 @@ test('page subtitle matches spec', () => {
   );
 });
 
-// 鈹€鈹€ 4. Tabs exist exactly: Overview, Telemetry, Detections, Anomalies 鈹€鈹€
+// -- 4. Tabs exist exactly: Overview, Telemetry, Detections, Anomalies --
 test('tabs exist exactly: Overview, Telemetry, Detections, Anomalies', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain("label: 'Overview'");
@@ -44,7 +44,7 @@ test('tabs exist exactly: Overview, Telemetry, Detections, Anomalies', () => {
   expect(panel).toContain("key: 'anomalies'");
 });
 
-// 鈹€鈹€ 5. Top metric cards exist exactly 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 5. Top metric cards exist exactly ----------------------------
 test('metric card "Telemetry Events" exists', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain('Telemetry Events');
@@ -65,21 +65,21 @@ test('metric card "Data Freshness" exists', () => {
   expect(panel).toContain('Data Freshness');
 });
 
-// 鈹€鈹€ 6. Telemetry Volume section exists 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 6. Telemetry Volume section exists ---------------------------
 test('Telemetry Volume card exists', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain('Telemetry Volume');
   expect(panel).toContain('aria-label="Telemetry Volume"');
 });
 
-// 鈹€鈹€ 7. Top Detection Types section exists 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 7. Top Detection Types section exists ------------------------
 test('Top Detection Types card exists', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain('Top Detection Types');
   expect(panel).toContain('aria-label="Top Detection Types"');
 });
 
-// 鈹€鈹€ 8. Pipeline status includes all 9 nodes 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 8. Pipeline status includes all 9 nodes ----------------------
 test('pipeline includes node Asset', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain("'Asset'");
@@ -125,7 +125,7 @@ test('pipeline includes node Incident', () => {
   expect(panel).toContain("'Incident'");
 });
 
-// 鈹€鈹€ 9. Telemetry table columns exist 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 9. Telemetry table columns exist -----------------------------
 test('telemetry table has column "Event ID"', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain('Event ID');
@@ -146,7 +146,7 @@ test('telemetry table has column "Evidence Source"', () => {
   expect(panel).toContain('Evidence Source');
 });
 
-// 鈹€鈹€ 10. Detections table columns exist 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 10. Detections table columns exist ---------------------------
 test('detections table has column "Detection ID"', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain('Detection ID');
@@ -162,7 +162,7 @@ test('detections table has column "Confidence"', () => {
   expect(panel).toContain('Confidence');
 });
 
-// 鈹€鈹€ 11. Anomalies table columns exist 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 11. Anomalies table columns exist ----------------------------
 test('anomalies table has column "Anomaly ID"', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain('Anomaly ID');
@@ -178,7 +178,7 @@ test('anomalies table has column "First Seen"', () => {
   expect(panel).toContain('First Seen');
 });
 
-// 鈹€鈹€ 12. Page does not show live_provider for simulator data 鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 12. Page does not show live_provider for simulator data ------
 test('evidencePill returns simulator when workspace evidence_source is simulator', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain("workspaceSource === 'simulator'");
@@ -193,20 +193,20 @@ test('evidencePill returns simulator when workspace evidence_source is simulator
   expect(liveProviderBranchPos).toBeGreaterThan(simulatorGuardPos);
 });
 
-// 鈹€鈹€ 13. Page does not show live telemetry when last_telemetry_at is unavailable 鈹€鈹€
+// -- 13. Page does not show live telemetry when last_telemetry_at is unavailable --
 test('freshnessLabel returns "No telemetry" when last_telemetry_at is null', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain("return 'No telemetry'");
 });
 
-// 鈹€鈹€ 14. Page shows exact blocker message when no telemetry exists 鈹€鈹€
+// -- 14. Page shows exact blocker message when no telemetry exists --
 test('page shows exact blocker when no telemetry exists (Case E)', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain(
     'Worker is reporting, but no telemetry event has been received yet.',
   );
 });
-// 鈹€鈹€ 15. Empty state blockers for all pipeline cases 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 15. Empty state blockers for all pipeline cases --------------
 test('Case A blocker: no asset', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   expect(panel).toContain('No protected asset exists yet.');
@@ -239,7 +239,7 @@ test('Case G blocker: no alert', () => {
   expect(panel).toContain('Detection exists, but no alert has been opened yet.');
 });
 
-// 鈹€鈹€ 16. AppShell / RuntimeSummaryPanel is used 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 16. AppShell / RuntimeSummaryPanel is used -------------------
 test('page uses RuntimeSummaryPanel', () => {
   const src = appSource('(product)/threat/page.tsx');
   expect(src).toContain('RuntimeSummaryPanel');
@@ -250,7 +250,7 @@ test('page uses ThreatMonitoringPanel', () => {
   expect(src).toContain('ThreatMonitoringPanel');
 });
 
-// 鈹€鈹€ 17. Simulator signal CTA only shown in simulator mode 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// -- 17. Simulator signal CTA only shown in simulator mode --------
 test('Generate Simulator Signal CTA is gated on isSimulatorMode', () => {
   const panel = appSource('threat-monitoring-panel.tsx');
   const caseEBlock = panel.slice(
@@ -261,7 +261,7 @@ test('Generate Simulator Signal CTA is gated on isSimulatorMode', () => {
   expect(caseEBlock).toContain('Generate Simulator Signal');
 });
 
-// 鈹€鈹€ 18. Page does not contradict itself (no contradiction_flags usage) 鈹€鈹€
+// -- 18. Page does not contradict itself (no contradiction_flags usage) --
 test('page.tsx does not reference contradiction_flags', () => {
   const src = appSource('(product)/threat/page.tsx');
   expect(src).not.toContain('contradiction_flags');
