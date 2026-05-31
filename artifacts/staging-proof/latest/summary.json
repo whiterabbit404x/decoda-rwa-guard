@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-27T12:43:58.367455+00:00",
-  "mode": "ci",
-  "strict": false,
-  "release_channel": "local",
+  "generated_at": "2026-05-27T15:37:11.230857+00:00",
+  "mode": "staging",
+  "strict": true,
+  "release_channel": "staging",
   "staging_launch_ready": false,
   "broad_paid_saas_ready": false,
   "safe_to_sell_broadly_today": false,
@@ -25,7 +25,7 @@
     "staging_migrations_validated": false,
     "staging_runtime_validated": false,
     "staging_live_evidence_validated": false,
-    "generated_at": "2026-05-27T12:43:58.367478+00:00",
+    "generated_at": "2026-05-27T15:37:11.230885+00:00",
     "blockers": [
       "STAGING_API_URL not configured",
       "STAGING_APP_URL not configured",
@@ -119,7 +119,6 @@
     "STAGING_AUTH_TOKEN_SECRET not configured",
     "STAGING_DATABASE_URL not configured",
     "STAGING_WORKER_ENABLED not configured; staging worker presence not confirmed",
-    "cannot reach broad_paid_saas_ready in 'ci' mode; run with --mode staging --strict using real credentials",
     "required dependency failed: paid_launch_readiness",
     "required dependency failed: release_proof"
   ],
