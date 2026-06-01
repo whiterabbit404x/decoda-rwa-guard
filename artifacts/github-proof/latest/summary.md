@@ -1,17 +1,17 @@
 # GitHub ZIP Proof
 
-**Generated:** 2026-06-01T05:12:51.936951+00:00  
-**Repository:**   
-**Branch:** claude/upbeat-hopper-GeHGd  
-**Commit:** b55cfb69205b1a89471118b7ae94111352294b30  
-**Run ID:**   
+**Generated:** 2026-06-01T06:30:30.075719+00:00  
+**Repository:** whiterabbit404x/decoda-rwa-guard  
+**Branch:** main  
+**Commit:** 0ddb94f1da993f1970ddba996efd57351ac583d3  
+**Run ID:** 26739009255  
 **Run URL:** _(see summary.json — not repeated here to avoid caching)_  
 
 ## GitHub Actions Status
 
 | Field | Value |
 |---|---|
-| github_actions_visible_green | NO |
+| github_actions_visible_green | YES |
 | zip_includes_this_proof | YES |
 
 ## Sell-now Proof Fields
