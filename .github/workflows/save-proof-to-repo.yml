@@ -25,6 +25,12 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Generate sell-now proof
+        # Aggregates all proof sources into artifacts/sell-now-proof/latest/.
+        # Must run before write_github_zip_proof.py so github-proof can embed
+        # the sell-now readiness fields.
+        run: python scripts/proof/write_sell_now_proof.py
+
       - name: Generate GitHub ZIP proof
         # GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA,
         # and GITHUB_REF_NAME are standard GitHub Actions environment variables
@@ -33,6 +39,8 @@ jobs:
 
       - name: Stage proof files
         run: |
+          git add artifacts/sell-now-proof/latest/summary.json
+          git add artifacts/sell-now-proof/latest/summary.md
           git add artifacts/github-proof/latest/summary.json
           git add artifacts/github-proof/latest/summary.md
 

@@ -1,13 +1,23 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-01T04:35:49.278881+00:00",
-  "github_actions_visible_green": true,
+  "generated_at": "2026-06-01T05:12:51.936951+00:00",
+  "github_runtime_context": false,
+  "github_actions_visible_green": false,
   "repository": "",
-  "branch": "claude/serene-mccarthy-6CYzy",
-  "commit": "197a110ebe9c6c2413a5f2491e7e4ff104e06243",
+  "branch": "claude/upbeat-hopper-GeHGd",
+  "commit": "b55cfb69205b1a89471118b7ae94111352294b30",
   "run_id": "",
   "run_url": "",
   "zip_includes_this_proof": true,
-  "sell_now_proof": null,
-  "sell_now_proof_note": "artifacts/sell-now-proof/latest/summary.json not found; readiness fields not available"
+  "sell_now_proof": {
+    "sell_now_managed_ready": false,
+    "broad_paid_saas_ready": false,
+    "safe_to_sell_broadly_today": false,
+    "provider_ready": false,
+    "live_evidence_ready": false,
+    "evidence_source": "unknown",
+    "billing_ready": false,
+    "email_ready": false,
+    "_source": "artifacts/sell-now-proof/latest/summary.json"
+  }
 }

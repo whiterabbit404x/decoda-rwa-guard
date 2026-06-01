@@ -100,10 +100,15 @@ def build_summary() -> dict:
     run_id = os.environ.get("GITHUB_RUN_ID", "")
     run_url = _build_run_url()
 
+    # True only when both GITHUB_REPOSITORY and GITHUB_RUN_ID are set, proving
+    # this file was written by a real GitHub Actions runner — not a local run.
+    github_runtime_context = bool(repo and run_id)
+
     summary: dict = {
         "schema_version": 1,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "github_actions_visible_green": True,
+        "github_runtime_context": github_runtime_context,
+        "github_actions_visible_green": github_runtime_context,
         "repository": repo,
         "branch": branch,
         "commit": commit,
