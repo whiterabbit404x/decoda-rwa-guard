@@ -1,9 +1,9 @@
 # GitHub ZIP Proof
 
-**Generated:** 2026-06-01T04:35:49.278881+00:00  
+**Generated:** 2026-06-01T05:12:51.936951+00:00  
 **Repository:**   
-**Branch:** claude/serene-mccarthy-6CYzy  
-**Commit:** 197a110ebe9c6c2413a5f2491e7e4ff104e06243  
+**Branch:** claude/upbeat-hopper-GeHGd  
+**Commit:** b55cfb69205b1a89471118b7ae94111352294b30  
 **Run ID:**   
 **Run URL:** _(see summary.json — not repeated here to avoid caching)_  
 
@@ -11,12 +11,23 @@
 
 | Field | Value |
 |---|---|
-| github_actions_visible_green | YES |
+| github_actions_visible_green | NO |
 | zip_includes_this_proof | YES |
 
 ## Sell-now Proof Fields
 
-_Not available: artifacts/sell-now-proof/latest/summary.json not found; readiness fields not available_
+_Source: `artifacts/sell-now-proof/latest/summary.json`_
+
+| Field | Value |
+|---|---|
+| sell_now_managed_ready | NO |
+| broad_paid_saas_ready | NO |
+| safe_to_sell_broadly_today | NO |
+| provider_ready | NO |
+| live_evidence_ready | NO |
+| evidence_source | unknown |
+| billing_ready | NO |
+| email_ready | NO |
 
 ## What This File Proves
 

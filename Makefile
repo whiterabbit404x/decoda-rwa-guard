@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness test-release-proof-artifacts generate-release-proof validate-release-proof validate-100-percent-readiness generate-staging-proof validate-staging-proof generate-live-evidence-proof run-staging-live-proof check-staging-live-env
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness test-release-proof-artifacts generate-release-proof validate-release-proof validate-100-percent-readiness generate-staging-proof validate-staging-proof generate-live-evidence-proof run-staging-live-proof check-staging-live-env sell-now-proof
 
 up:
 	docker compose up -d
@@ -92,6 +92,9 @@ generate-live-evidence-proof:
 
 check-staging-live-env:
 	python scripts/check_staging_live_env.py
+
+sell-now-proof:
+	python scripts/proof/write_sell_now_proof.py
 
 run-staging-live-proof:
 	python scripts/run_staging_live_evidence_proof.py
