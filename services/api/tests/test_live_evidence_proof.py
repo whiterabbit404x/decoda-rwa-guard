@@ -726,3 +726,169 @@ def test_script_live_evidence_chain_rejects_non_live_source(
     lpe = result['live_provider_evidence']
     assert lpe['live_evidence_ready'] is False
     assert lpe['chain']['telemetry_event_id'] is None
+
+
+# ===========================================================================
+# Service summary fallback: _try_service_summary_fallback()
+# ===========================================================================
+
+import json as _json
+
+import scripts.generate_live_evidence_proof as _lep_module
+from scripts.generate_live_evidence_proof import _try_service_summary_fallback
+
+
+def _make_service_summary(
+    provider_ready: bool = True,
+    live_evidence_ready: bool = True,
+    evidence_source: str = 'live',
+    generated_at: str | None = None,
+    **extra: object,
+) -> dict:
+    from datetime import datetime, timezone
+    if generated_at is None:
+        generated_at = datetime.now(timezone.utc).isoformat()
+    return {
+        'evidence_source': evidence_source,
+        'live_evidence_ready': live_evidence_ready,
+        'provider_ready': provider_ready,
+        'generated_at': generated_at,
+        'latest_live_telemetry_at': datetime.now(timezone.utc).isoformat(),
+        'telemetry_event_present': True,
+        'detection_generated_from_telemetry': True,
+        'alert_generated_from_detection': True,
+        'incident_opened_from_alert': True,
+        'response_action_recommended_or_executed': True,
+        **extra,
+    }
+
+
+def _fresh_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def test_service_summary_live_makes_proof_true(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """API live evidence artifact with provider_ready/live_evidence_ready/evidence_source=live → proof=true."""
+    summary_path = tmp_path / 'summary.json'
+    summary_path.write_text(_json.dumps(_make_service_summary()))
+    monkeypatch.setattr(_lep_module, '_SERVICE_LIVE_SUMMARY_PATH', summary_path)
+
+    result = _try_service_summary_fallback(_fresh_now())
+
+    assert result is not None
+    lpe = result['live_provider_evidence']
+    assert lpe['provider_ready'] is True
+    assert lpe['live_evidence_ready'] is True
+    assert lpe['evidence_source'] == 'live'
+    assert lpe['missing'] == []
+    assert lpe['contradiction_flags'] == []
+
+
+def test_stale_service_summary_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Service summary older than the proof window → fail closed with stale blocker."""
+    from datetime import datetime, timezone, timedelta
+    stale_date = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+    summary_path = tmp_path / 'summary.json'
+    summary_path.write_text(_json.dumps(_make_service_summary(generated_at=stale_date)))
+    monkeypatch.setattr(_lep_module, '_SERVICE_LIVE_SUMMARY_PATH', summary_path)
+    monkeypatch.delenv('LIVE_EVIDENCE_PROOF_MAX_AGE_DAYS', raising=False)
+
+    result = _try_service_summary_fallback(_fresh_now())
+
+    assert result is not None, 'Expected a fail-closed dict, not None'
+    lpe = result['live_provider_evidence']
+    assert lpe['live_evidence_ready'] is False
+    assert any('stale' in m for m in lpe['missing']), f'Expected stale blocker; got: {lpe["missing"]}'
+
+
+def test_missing_generated_at_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Service summary with no generated_at field → fail closed with explanation."""
+    summary_path = tmp_path / 'summary.json'
+    data = _make_service_summary()
+    del data['generated_at']
+    summary_path.write_text(_json.dumps(data))
+    monkeypatch.setattr(_lep_module, '_SERVICE_LIVE_SUMMARY_PATH', summary_path)
+
+    result = _try_service_summary_fallback(_fresh_now())
+
+    assert result is not None
+    lpe = result['live_provider_evidence']
+    assert lpe['live_evidence_ready'] is False
+    assert any('generated_at' in m for m in lpe['missing']), f'Got: {lpe["missing"]}'
+
+
+@pytest.mark.parametrize('bad_source', ['demo', 'simulator', 'fixture', 'unknown', ''])
+def test_disqualifying_source_in_service_summary_returns_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bad_source: str,
+) -> None:
+    """Service summary with demo/simulator/fixture/unknown evidence_source → None (caller keeps original)."""
+    summary_path = tmp_path / 'summary.json'
+    summary_path.write_text(_json.dumps(_make_service_summary(evidence_source=bad_source)))
+    monkeypatch.setattr(_lep_module, '_SERVICE_LIVE_SUMMARY_PATH', summary_path)
+
+    result = _try_service_summary_fallback(_fresh_now())
+
+    assert result is None, f'Expected None for evidence_source={bad_source!r}, got: {result}'
+
+
+def test_missing_service_summary_returns_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No service summary file → returns None so original proof is kept."""
+    monkeypatch.setattr(_lep_module, '_SERVICE_LIVE_SUMMARY_PATH', tmp_path / 'no-such-file.json')
+
+    result = _try_service_summary_fallback(_fresh_now())
+
+    assert result is None
+
+
+def test_contradiction_resolved_by_regenerating_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Contradiction scenario: API evidence says live=true, but RPC-based proof would say false.
+    After applying the service summary fallback, there are no contradictions in sell-now-proof.
+    """
+    # Service summary proves live evidence
+    summary_path = tmp_path / 'summary.json'
+    summary_path.write_text(_json.dumps(_make_service_summary()))
+    monkeypatch.setattr(_lep_module, '_SERVICE_LIVE_SUMMARY_PATH', summary_path)
+
+    # No EVM env vars → RPC-based proof fails
+    for var in [
+        'EVM_RPC_URL', 'STAGING_EVM_RPC_URL', 'EVM_CHAIN_ID', 'STAGING_EVM_CHAIN_ID',
+        'STAGING_WORKER_ENABLED', 'LIVE_EVIDENCE_CHAIN_JSON', 'LIVE_EVIDENCE_CHAIN_FILE',
+    ]:
+        monkeypatch.delenv(var, raising=False)
+
+    # RPC proof fails (expected)
+    from scripts.generate_live_evidence_proof import generate_live_evidence_proof
+    rpc_result = generate_live_evidence_proof()
+    assert not rpc_result['live_provider_evidence'].get('provider_ready')
+
+    # Fallback promotes service summary to live-evidence-proof
+    regenerated = _try_service_summary_fallback(_fresh_now())
+    assert regenerated is not None
+    lpe = regenerated['live_provider_evidence']
+    assert lpe['provider_ready'] is True
+    assert lpe['live_evidence_ready'] is True
+    assert lpe['evidence_source'] == 'live'
+
+    # sell-now-proof built from the regenerated live-evidence-proof has no contradictions
+    REPO_ROOT_TESTS = Path(__file__).resolve().parents[3]
+    sys.path.insert(0, str(REPO_ROOT_TESTS / 'scripts' / 'proof'))
+    from write_sell_now_proof import build_summary
+    api_live = {'provider_ready': True, 'live_evidence_ready': True, 'evidence_source': 'live'}
+    sources = {
+        'github_proof': None,
+        'staging_proof': None,
+        'live_evidence_proof': regenerated,
+        'launch_proof': None,
+        'final_readiness': None,
+        'api_live_evidence': api_live,
+    }
+    summary = build_summary(sources)
+    assert summary['contradiction_flags'] == [], f'Contradiction flags: {summary["contradiction_flags"]}'
+    assert summary['sell_now_managed_ready'] is True

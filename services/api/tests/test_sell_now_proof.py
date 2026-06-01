@@ -367,3 +367,80 @@ def test_api_live_contradicts_live_evidence_proof():
     # live-evidence-proof is authoritative — managed readiness must fail
     assert summary["sell_now_managed_ready"] is False
     assert summary["provider_ready"] is False
+
+
+# ---------------------------------------------------------------------------
+# Test 7: sell_now_managed_ready becomes True when live-evidence-proof is True
+# ---------------------------------------------------------------------------
+
+def test_sell_now_managed_true_when_live_evidence_proof_true():
+    """sell_now_managed_ready=True when live-evidence-proof reports provider_ready=True, evidence_source=live."""
+    sources = {
+        "github_proof": None,
+        "staging_proof": None,
+        "live_evidence_proof": _minimal_live_evidence_proof(
+            provider_ready=True,
+            live_evidence_ready=True,
+            evidence_source="live",
+        ),
+        "launch_proof": None,
+        "final_readiness": None,
+        "api_live_evidence": None,
+    }
+    summary = build_sell_now_summary(sources)
+
+    assert summary["sell_now_managed_ready"] is True
+    assert summary["provider_ready"] is True
+    assert summary["live_evidence_ready"] is True
+    assert summary["evidence_source"] == "live"
+    assert summary["contradiction_flags"] == []
+
+
+def test_sell_now_managed_true_with_consistent_api_live_evidence():
+    """sell_now_managed_ready=True when live-evidence-proof and api_live_evidence agree."""
+    sources = {
+        "github_proof": None,
+        "staging_proof": None,
+        "live_evidence_proof": _minimal_live_evidence_proof(
+            provider_ready=True,
+            live_evidence_ready=True,
+            evidence_source="live",
+        ),
+        "launch_proof": None,
+        "final_readiness": None,
+        "api_live_evidence": {
+            "provider_ready": True,
+            "live_evidence_ready": True,
+            "evidence_source": "live",
+        },
+    }
+    summary = build_sell_now_summary(sources)
+
+    assert summary["sell_now_managed_ready"] is True
+    assert summary["contradiction_flags"] == []
+
+
+def test_broad_paid_saas_not_true_without_staging_billing_email():
+    """broad_paid_saas_ready must not be True unless staging, billing, and email are all True."""
+    sources = {
+        "github_proof": None,
+        "staging_proof": _minimal_staging_proof(True, True, True),
+        "live_evidence_proof": _minimal_live_evidence_proof(
+            provider_ready=True,
+            live_evidence_ready=True,
+            evidence_source="live",
+        ),
+        "launch_proof": _minimal_launch_proof(billing_ready=False, email_ready=False),
+        # final_readiness must agree — claiming broad_paid_saas_ready=True here
+        # would be a contradiction and also block sell_now_managed_ready.
+        "final_readiness": {"broad_paid_saas_ready": False},
+        "api_live_evidence": None,
+    }
+    summary = build_sell_now_summary(sources)
+
+    # sell_now_managed_ready can be True (live evidence is good, no contradictions)
+    assert summary["sell_now_managed_ready"] is True
+    # broad_paid_saas_ready must be False because billing and email are missing
+    assert summary["broad_paid_saas_ready"] is False
+    assert summary["safe_to_sell_broadly_today"] is False
+    assert summary["contradiction_flags"] == []
