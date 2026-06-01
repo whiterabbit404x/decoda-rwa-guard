@@ -1,18 +1,17 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-29T15:13:06.943703+00:00",
+  "generated_at": "2026-06-01T05:32:13.294018+00:00",
   "release_status": "fail",
   "release_channel": "local",
-  "commit_sha": "2a69e596746ac3b5222c5058301280d089941d7a",
-  "branch": "claude/zealous-thompson-En4Rl",
+  "commit_sha": "28371bfc1357b3025563915fdf3138c8ac97dd58",
+  "branch": "claude/pensive-dirac-8uj4q",
   "ci_required_gates_ready": false,
-  "launch_proof_ready": false,
+  "launch_proof_ready": true,
   "manifest_ready": true,
   "test_report_ready": false,
   "paid_launch_ready": false,
   "blockers": [
     "ci-required-gates not ready",
-    "launch-proof not ready",
     "test-report-summary not ready"
   ],
   "warnings": [],

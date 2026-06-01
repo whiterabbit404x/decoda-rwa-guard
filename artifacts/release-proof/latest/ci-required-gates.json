@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-29T15:13:06.933553+00:00",
-  "commit_sha": "2a69e596746ac3b5222c5058301280d089941d7a",
-  "branch": "claude/zealous-thompson-En4Rl",
+  "generated_at": "2026-06-01T05:32:13.284846+00:00",
+  "commit_sha": "28371bfc1357b3025563915fdf3138c8ac97dd58",
+  "branch": "claude/pensive-dirac-8uj4q",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
@@ -34,11 +34,9 @@
       ]
     },
     "live_evidence": {
-      "status": "fail",
-      "summary": "Live evidence not available: live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
-      "blockers": [
-        "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured"
-      ]
+      "status": "pass",
+      "summary": "Live evidence available",
+      "blockers": []
     },
     "frontend_build": {
       "status": "not_run",
@@ -50,7 +48,6 @@
     "billing provider is not configured",
     "billing webhook secret is missing",
     "email provider is not configured",
-    "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
     "live provider configuration is missing",
     "live provider proof is missing"
   ],

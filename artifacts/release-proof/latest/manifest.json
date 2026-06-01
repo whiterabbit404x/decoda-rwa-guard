@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-29T15:13:06.952783+00:00",
+  "generated_at": "2026-06-01T05:32:13.302695+00:00",
   "release_channel": "local",
-  "commit_sha": "2a69e596746ac3b5222c5058301280d089941d7a",
-  "branch": "claude/zealous-thompson-En4Rl",
+  "commit_sha": "28371bfc1357b3025563915fdf3138c8ac97dd58",
+  "branch": "claude/pensive-dirac-8uj4q",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "eaddd1e8c42d9277af7290753472e6db9dd16674147ce7a98e691cf11e409e37",
-      "size_bytes": 787,
+      "sha256": "83b556b1cbf2a249bff6d18131fb17dc31424ddd6c5c2f330f56cbfcbd7766b5",
+      "size_bytes": 753,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "dcaaa4e1c9f5e62c6f00ec6b9fd6d8f06115f644373fb519a78a8500a3a078b7",
-      "size_bytes": 2109,
+      "sha256": "e515285f24b9d30ffd3577a858f633c0f53b20ab7345ac39f7023b11f1194ee1",
+      "size_bytes": 1852,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "ecd2f54401f48c0970c9c929e6a85025be1bf24b1318c90ac2e5a8a0fcfe1ac2",
-      "size_bytes": 819,
+      "sha256": "ad12a0f94928234b2e05f632bb5b2258b49c797c6070decf777b2e2198ae5d0a",
+      "size_bytes": 759,
       "required": true,
       "status": "present"
     }
