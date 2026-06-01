@@ -79,6 +79,10 @@ _PLACEHOLDER_MARKERS = frozenset({
     'example', 'changeme', 'replace-me', 'placeholder', 'test-key', 'your_',
 })
 
+# Maximum age in days for the service live summary artifact to be considered fresh.
+# Override via LIVE_EVIDENCE_PROOF_MAX_AGE_DAYS env var.
+_PROOF_MAX_AGE_DAYS = 90
+
 
 def _env_val(name: str) -> str:
     return (os.getenv(name) or '').strip()
@@ -735,11 +739,110 @@ def _build_proof_from_service_summary(service_summary: dict[str, Any], now: str)
     }
 
 
+def _build_stale_proof_result(now: str, reason: str) -> dict[str, Any]:
+    """Fail-closed proof dict used when the service summary is stale or unparseable."""
+    return _build_fail_result(
+        now=now,
+        provider_ready=False,
+        provider_mode='disabled',
+        provider_health_checked=False,
+        provider_checked_at=None,
+        provider_url_masked='',
+        chain_id_configured=False,
+        chain_id_observed=None,
+        block_number_observed=None,
+        worker_enabled=False,
+        missing=[reason],
+        contradiction_flags=[],
+    )
+
+
+def _try_service_summary_fallback(now: str) -> 'dict[str, Any] | None':
+    """
+    Attempt to build a live evidence proof from the canonical service live summary artifact.
+
+    Called when the RPC-based proof fails (no EVM_RPC_URL configured) so that a
+    pre-existing backend proof can satisfy the live-evidence requirement.
+
+    Fail-closed rules:
+    - Returns None when the artifact is absent or has a disqualifying evidence_source
+      (demo / simulator / fixture / unknown).  None tells the caller to keep the
+      original RPC-failed result.
+    - Returns a failing proof dict (live_evidence_ready=False) when the artifact
+      exists but is stale or is missing generated_at.
+    - Returns a valid proof dict (live_evidence_ready=True) when the artifact is
+      fresh, provider_ready=True, live_evidence_ready=True, evidence_source=live.
+    """
+    path = _SERVICE_LIVE_SUMMARY_PATH
+    if not path.exists():
+        return None
+
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception:
+        return None
+
+    # Disqualifying evidence sources → return None (fail closed, don't emit stale blocker)
+    source = str(data.get('evidence_source') or '').strip().lower()
+    if source != 'live':
+        return None
+
+    if not (data.get('live_evidence_ready') is True and data.get('provider_ready') is True):
+        return None
+
+    # generated_at must exist to verify freshness
+    generated_at_str = str(data.get('generated_at') or '').strip()
+    if not generated_at_str:
+        return _build_stale_proof_result(
+            now,
+            f'{path.name}: missing generated_at field; cannot verify freshness',
+        )
+
+    # Parse and check freshness
+    try:
+        generated_at = datetime.fromisoformat(generated_at_str)
+        if generated_at.tzinfo is None:
+            generated_at = generated_at.replace(tzinfo=timezone.utc)
+        age_days = (datetime.now(timezone.utc) - generated_at).days
+    except Exception as exc:
+        return _build_stale_proof_result(
+            now,
+            f'{path.name}: generated_at not parseable ({exc})',
+        )
+
+    max_age = int(_env_val('LIVE_EVIDENCE_PROOF_MAX_AGE_DAYS') or str(_PROOF_MAX_AGE_DAYS))
+    if age_days > max_age:
+        return _build_stale_proof_result(
+            now,
+            (
+                f'{path.name}: stale proof — generated {age_days} days ago '
+                f'(allowed window: {max_age} days)'
+            ),
+        )
+
+    # Valid and fresh — promote service summary to a full live-evidence proof
+    return _build_proof_from_service_summary(data, now)
+
+
 def main(strict: bool = False) -> int:
     print('[generate-live-evidence-proof] Reading provider env vars...')
 
     now = datetime.now(timezone.utc).isoformat()
     result = generate_live_evidence_proof()
+
+    # When the RPC-based proof fails, fall back to the canonical service live
+    # summary artifact.  This lets a pre-existing backend proof satisfy the
+    # live-evidence requirement in environments without a live RPC URL.
+    lpe = result.get('live_provider_evidence', {})
+    if not lpe.get('provider_ready') and not lpe.get('live_evidence_ready'):
+        fallback = _try_service_summary_fallback(now)
+        if fallback is not None:
+            result = fallback
+            print(
+                '[generate-live-evidence-proof] '
+                f'Fallback: using {_SERVICE_LIVE_SUMMARY_PATH.relative_to(REPO_ROOT)}'
+            )
 
     out_dir = REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest'
     out_dir.mkdir(parents=True, exist_ok=True)
