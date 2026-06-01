@@ -236,6 +236,7 @@ def generate_live_evidence_proof(
     *,
     rpc_url_override: str | None = None,
     live_evidence_chain: dict[str, Any] | None = None,
+    require_current_env: bool = False,
 ) -> dict[str, Any]:
     """
     Build live provider evidence proof. Always fail-closed.
@@ -260,6 +261,10 @@ def generate_live_evidence_proof(
             LIVE_EVIDENCE_CHAIN_FILE env vars. When no valid chain is found and
             RPC is healthy, the proof reports live_provider_ready=True but
             live_evidence_ready=False with the explicit no-live-event reason.
+        require_current_env: When True (PROOF_REQUIRE_CURRENT_ENV=true), committed
+            artifact files are not consulted. Only current environment variables
+            and explicitly passed arguments are trusted. This is required for the
+            no-secrets CI validation job.
     """
     now = datetime.now(timezone.utc).isoformat()
     provider_missing: list[str] = []   # blocks provider_ready
@@ -441,7 +446,10 @@ def generate_live_evidence_proof(
     real_chain = _validated_live_evidence_chain(live_evidence_chain)
     if real_chain is None:
         real_chain = _validated_live_evidence_chain(_load_live_evidence_chain_from_env())
-    if real_chain is None:
+    if real_chain is None and not require_current_env:
+        # Skip this committed file when require_current_env=True so that
+        # historical artifacts can never satisfy live_evidence_ready in the
+        # no-secrets CI validation job.
         _default_chain_file = (
             REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest' / 'live_evidence_chain.json'
         )
@@ -738,8 +746,17 @@ def _build_proof_from_service_summary(service_summary: dict[str, Any], now: str)
 def main(strict: bool = False) -> int:
     print('[generate-live-evidence-proof] Reading provider env vars...')
 
+    require_current_env = _env_val('PROOF_REQUIRE_CURRENT_ENV').lower() in (
+        '1', 'true', 'yes', 'on'
+    )
+    if require_current_env:
+        print(
+            '[generate-live-evidence-proof] PROOF_REQUIRE_CURRENT_ENV=true: '
+            'strict current-env mode; committed artifacts will not be trusted.'
+        )
+
     now = datetime.now(timezone.utc).isoformat()
-    result = generate_live_evidence_proof()
+    result = generate_live_evidence_proof(require_current_env=require_current_env)
 
     out_dir = REPO_ROOT / 'artifacts' / 'live-evidence-proof' / 'latest'
     out_dir.mkdir(parents=True, exist_ok=True)

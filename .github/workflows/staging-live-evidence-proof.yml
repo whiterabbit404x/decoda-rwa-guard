@@ -77,15 +77,34 @@ jobs:
           echo "OK: env checker exited 1 as required when env vars are absent."
 
       - name: Generate live evidence proof (no secrets -> must fail closed)
+        env:
+          PROOF_REQUIRE_CURRENT_ENV: "true"
+          EVM_RPC_URL: ""
+          STAGING_EVM_RPC_URL: ""
+          EVM_CHAIN_ID: ""
+          STAGING_EVM_CHAIN_ID: ""
+          WORKER_ENABLED: ""
+          STAGING_WORKER_ENABLED: ""
         run: make generate-live-evidence-proof
 
       - name: Assert proof fails closed without provider secrets
+        env:
+          PROOF_REQUIRE_CURRENT_ENV: "true"
+          EVM_RPC_URL: ""
+          STAGING_EVM_RPC_URL: ""
+          EVM_CHAIN_ID: ""
+          STAGING_EVM_CHAIN_ID: ""
+          WORKER_ENABLED: ""
+          STAGING_WORKER_ENABLED: ""
         run: |
           python - <<'PY'
           import json, sys
           from pathlib import Path
           path = Path('artifacts/live-evidence-proof/latest/summary.json')
           data = json.loads(path.read_text())
+          print('--- summary.json ---')
+          print(json.dumps(data, indent=2))
+          print('--------------------')
           lpe = data['live_provider_evidence']
           assert lpe['live_evidence_ready'] is False, (
               f'expected fail-closed without secrets; got '
