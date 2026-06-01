@@ -242,3 +242,138 @@ def test_check_live_evidence_fails_closed_when_both_missing(
 
     assert ok is False
     assert blockers
+
+
+# ---------------------------------------------------------------------------
+# save-proof-to-repo workflow approach: LIVE_EVIDENCE_CHAIN_FILE +
+# PROOF_REQUIRE_CURRENT_ENV=true + real RPC → resolves stale contradiction
+# ---------------------------------------------------------------------------
+
+def _mock_rpc_success_side_effect(
+    chain_id_hex: str = '0x1',
+    block_hex: str = '0x12c',
+):
+    """Return a side_effect for _rpc_call that yields chain-id then block-number."""
+    responses = iter([
+        {'result': chain_id_hex, 'jsonrpc': '2.0', 'id': 1},
+        {'result': block_hex,    'jsonrpc': '2.0', 'id': 1},
+        {'result': None},  # eth_getBlockByNumber — not needed for this test
+    ])
+
+    def _side(url, method, params=None, timeout=10):
+        return next(responses)
+
+    return _side
+
+
+def test_workflow_live_chain_file_with_require_current_env_and_rpc(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """
+    Validates the save-proof-to-repo.yml resolution path:
+
+    'Prepare live evidence chain' step writes /tmp/live_evidence_chain.json from
+    the service summary. 'Regenerate live-evidence-proof (with provider secrets)'
+    step sets PROOF_REQUIRE_CURRENT_ENV=true + STAGING_EVM_RPC_URL + STAGING_EVM_CHAIN_ID +
+    STAGING_WORKER_ENABLED=true + LIVE_EVIDENCE_CHAIN_FILE=/tmp/live_evidence_chain.json.
+
+    PROOF_REQUIRE_CURRENT_ENV=true blocks the committed default chain file but NOT
+    the env-var path (LIVE_EVIDENCE_CHAIN_FILE). With a successful RPC call the proof
+    must report provider_ready=true, live_evidence_ready=true, evidence_source='live',
+    eliminating the contradiction that was causing sell_now_managed_ready=false.
+    """
+    _clear_provider_env(monkeypatch)
+
+    # Simulate what the "Prepare live evidence chain" step writes
+    chain = {
+        'evidence_source': 'live',
+        'source_type': 'rpc_polling',
+        'telemetry_event_id': 'tel-workflow-001',
+        'detection_id':       'det-workflow-001',
+        'alert_id':           'alert-workflow-001',
+        'incident_id':        'inc-workflow-001',
+        'response_action_id': None,
+        'evidence_package_id': 'pkg-workflow-001',
+        'observed_at':               '2026-04-22T14:32:59.583341+00:00',
+        'latest_live_telemetry_at':  '2026-04-22T14:32:59.583341+00:00',
+    }
+    chain_file = tmp_path / 'live_evidence_chain.json'
+    chain_file.write_text(json.dumps(chain), encoding='utf-8')
+
+    # Simulate the workflow env for the "with provider secrets" step
+    monkeypatch.setenv('PROOF_REQUIRE_CURRENT_ENV', 'true')
+    monkeypatch.setenv('STAGING_EVM_RPC_URL', 'https://mainnet.infura.io/v3/staging_proj')
+    monkeypatch.setenv('STAGING_EVM_CHAIN_ID', '1')
+    monkeypatch.setenv('STAGING_WORKER_ENABLED', 'true')
+    monkeypatch.setenv('LIVE_EVIDENCE_CHAIN_FILE', str(chain_file))
+
+    import unittest.mock as _mock
+    from scripts.generate_live_evidence_proof import generate_live_evidence_proof
+
+    with _mock.patch(
+        'scripts.generate_live_evidence_proof._rpc_call',
+        side_effect=_mock_rpc_success_side_effect('0x1', '0x12c'),
+    ):
+        result = generate_live_evidence_proof(require_current_env=True)
+
+    lpe = result['live_provider_evidence']
+    assert lpe['provider_ready'] is True, (
+        f'Expected provider_ready=True; got {lpe["provider_ready"]!r}. '
+        f'Missing: {lpe.get("missing")}'
+    )
+    assert lpe['live_evidence_ready'] is True, (
+        f'Expected live_evidence_ready=True; got {lpe["live_evidence_ready"]!r}. '
+        f'Missing: {lpe.get("missing")}'
+    )
+    assert lpe['evidence_source'] == 'live', (
+        f'Expected evidence_source="live"; got {lpe["evidence_source"]!r}'
+    )
+    assert not lpe.get('contradiction_flags'), (
+        f'Expected no contradiction_flags; got {lpe["contradiction_flags"]}'
+    )
+
+
+def test_workflow_no_secrets_remains_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """
+    When no STAGING_EVM_RPC_URL is configured (no-secrets branch of workflow),
+    generate_live_evidence_proof with PROOF_REQUIRE_CURRENT_ENV=true must remain
+    fail-closed even when LIVE_EVIDENCE_CHAIN_FILE is set, because provider_ready
+    is blocked before the chain file is ever read.
+    """
+    _clear_provider_env(monkeypatch)
+
+    # Chain file exists (simulates service summary being live)
+    chain = {
+        'evidence_source': 'live',
+        'source_type': 'rpc_polling',
+        'telemetry_event_id': 'tel-no-secret-001',
+        'detection_id':       'det-no-secret-001',
+        'alert_id':           'alert-no-secret-001',
+        'incident_id':        'inc-no-secret-001',
+        'response_action_id': None,
+        'evidence_package_id': 'pkg-no-secret-001',
+        'observed_at': '2026-04-22T14:32:59.583341+00:00',
+    }
+    chain_file = tmp_path / 'no_secret_chain.json'
+    chain_file.write_text(json.dumps(chain), encoding='utf-8')
+
+    # No RPC URL — simulates the no-secrets workflow branch
+    monkeypatch.setenv('PROOF_REQUIRE_CURRENT_ENV', 'true')
+    monkeypatch.setenv('LIVE_EVIDENCE_CHAIN_FILE', str(chain_file))
+    # STAGING_EVM_RPC_URL deliberately not set
+
+    from scripts.generate_live_evidence_proof import generate_live_evidence_proof
+
+    result = generate_live_evidence_proof(require_current_env=True)
+    lpe = result['live_provider_evidence']
+
+    assert lpe['provider_ready'] is False, (
+        f'Fail-closed violated: provider_ready={lpe["provider_ready"]!r} without RPC URL'
+    )
+    assert lpe['live_evidence_ready'] is False, (
+        f'Fail-closed violated: live_evidence_ready={lpe["live_evidence_ready"]!r} without RPC URL'
+    )
