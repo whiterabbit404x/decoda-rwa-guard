@@ -1,0 +1,50 @@
+name: Save GitHub ZIP Proof
+
+# Run manually to commit proof files into the repository.
+# After running, Code → Download ZIP includes artifacts/github-proof/latest/.
+on:
+  workflow_dispatch:
+
+jobs:
+  save-proof:
+    name: Generate and commit GitHub ZIP proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate GitHub ZIP proof
+        # GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA,
+        # and GITHUB_REF_NAME are standard GitHub Actions environment variables
+        # automatically set by the runner — no secrets involved.
+        run: python scripts/proof/write_github_zip_proof.py
+
+      - name: Stage proof files
+        run: |
+          git add artifacts/github-proof/latest/summary.json
+          git add artifacts/github-proof/latest/summary.md
+
+      - name: Commit proof files (skip if unchanged)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --cached --quiet; then
+            echo "No changes — proof files already up to date."
+          else
+            git commit -m "Save latest GitHub ZIP proof [skip ci]"
+          fi
+
+      - name: Push to main
+        run: git push origin HEAD:main

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-01T04:35:49.278881+00:00",
+  "github_actions_visible_green": true,
+  "repository": "",
+  "branch": "claude/serene-mccarthy-6CYzy",
+  "commit": "197a110ebe9c6c2413a5f2491e7e4ff104e06243",
+  "run_id": "",
+  "run_url": "",
+  "zip_includes_this_proof": true,
+  "sell_now_proof": null,
+  "sell_now_proof_note": "artifacts/sell-now-proof/latest/summary.json not found; readiness fields not available"
+}
