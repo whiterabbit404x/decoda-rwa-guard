@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-29T15:13:06.952783+00:00",
+  "generated_at": "2026-06-01T06:03:00.555118+00:00",
   "release_channel": "local",
-  "commit_sha": "2a69e596746ac3b5222c5058301280d089941d7a",
-  "branch": "claude/zealous-thompson-En4Rl",
+  "commit_sha": "28371bfc1357b3025563915fdf3138c8ac97dd58",
+  "branch": "claude/awesome-thompson-epbMl",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "eaddd1e8c42d9277af7290753472e6db9dd16674147ce7a98e691cf11e409e37",
+      "sha256": "763054b515c686121ad36244b34f28615192505d061e221594d28a9f401eeb67",
       "size_bytes": 787,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "dcaaa4e1c9f5e62c6f00ec6b9fd6d8f06115f644373fb519a78a8500a3a078b7",
+      "sha256": "cc6e606b4326eacd8a265c187cd4a0eaee76ca0934e39966bd197bb509ee7649",
       "size_bytes": 2109,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "ecd2f54401f48c0970c9c929e6a85025be1bf24b1318c90ac2e5a8a0fcfe1ac2",
+      "sha256": "bbb80d55b41003cc3bfd9c325f670d8fc000a8c49c16a08389acad842ae1df89",
       "size_bytes": 819,
       "required": true,
       "status": "present"

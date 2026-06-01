@@ -1,6 +1,6 @@
 # Sell-Now Proof
 
-**Generated:** 2026-06-01T05:12:49.533790+00:00
+**Generated:** 2026-06-01T06:03:08.676463+00:00
 
 ## Readiness Summary
 
@@ -36,7 +36,6 @@
 - evidence_source='unknown': not live evidence
 - contradiction: api/live_evidence says provider_ready=true but live-evidence-proof says provider_ready=false
 - contradiction: api/live_evidence says live_evidence_ready=true (source='live') but live-evidence-proof says live_evidence_ready=false
-- contradiction: github-proof claims github_actions_visible_green=true but run_id or repository is empty (locally generated proof does not prove real CI run)
 - staging_runtime_reachable=false
 - staging_database_reachable=false
 - staging_worker_enabled=false
@@ -51,7 +50,6 @@
 
 - api/live_evidence says provider_ready=true but live-evidence-proof says provider_ready=false
 - api/live_evidence says live_evidence_ready=true (source='live') but live-evidence-proof says live_evidence_ready=false
-- github-proof claims github_actions_visible_green=true but run_id or repository is empty (locally generated proof does not prove real CI run)
 
 ## Safe Claims
 

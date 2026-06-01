@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-29T15:13:06.933553+00:00",
-  "commit_sha": "2a69e596746ac3b5222c5058301280d089941d7a",
-  "branch": "claude/zealous-thompson-En4Rl",
+  "generated_at": "2026-06-01T06:03:00.535278+00:00",
+  "commit_sha": "28371bfc1357b3025563915fdf3138c8ac97dd58",
+  "branch": "claude/awesome-thompson-epbMl",
   "release_channel": "local",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
