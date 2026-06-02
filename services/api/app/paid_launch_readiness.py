@@ -74,27 +74,31 @@ def check_billing_readiness() -> dict[str, Any]:
         }
 
     if provider == 'paddle':
-        billing_required = ['PADDLE_API_KEY']
+        billing_required = ['PADDLE_API_KEY', 'PADDLE_CLIENT_TOKEN', 'PADDLE_ENVIRONMENT']
         webhook_required = ['PADDLE_WEBHOOK_SECRET']
-        price_ids = [
+        # Accept PADDLE_PRICE_ID (simple form) or any PADDLE_PRICE_ID_* (multi-plan form)
+        price_id_plain = _env_ok('PADDLE_PRICE_ID')
+        price_id_variants = [
             k for k, v in os.environ.items()
             if k.startswith('PADDLE_PRICE_ID_') and v.strip() and not _has_placeholder(v.strip())
         ]
+        price_configured = price_id_plain or bool(price_id_variants)
         billing_missing = _missing_from(billing_required)
-        if not price_ids:
-            billing_missing.append('PADDLE_PRICE_ID_*')
+        if not price_configured:
+            billing_missing.append('PADDLE_PRICE_ID')
         webhook_missing = _missing_from(webhook_required)
         billing_ready = not billing_missing
         webhook_ready = not webhook_missing
+        price_env_label = 'PADDLE_PRICE_ID' if price_id_plain else ('PADDLE_PRICE_ID_*' if price_id_variants else 'PADDLE_PRICE_ID')
         return {
             'billing_ready': billing_ready,
             'billing_status': 'ready' if billing_ready else 'missing',
             'billing_reason': (
-                'Paddle billing configured with required credentials and price IDs.'
+                'Paddle billing configured with required credentials, environment, client token, and price ID.'
                 if billing_ready
                 else f'Paddle billing missing required configuration: {billing_missing}'
             ),
-            'billing_required_env': billing_required + ['PADDLE_PRICE_ID_*'] + webhook_required,
+            'billing_required_env': billing_required + ['PADDLE_PRICE_ID'] + webhook_required,
             'billing_missing_env': billing_missing + webhook_missing,
             'billing_webhook_ready': webhook_ready,
             'billing_webhook_status': 'ready' if webhook_ready else 'missing',

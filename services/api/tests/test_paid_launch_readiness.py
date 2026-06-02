@@ -19,7 +19,7 @@ from services.api.app.paid_launch_readiness import (
 _LAUNCH_ENV_VARS = [
     'BILLING_PROVIDER',
     'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PRICE_ID',
-    'PADDLE_API_KEY', 'PADDLE_WEBHOOK_SECRET',
+    'PADDLE_API_KEY', 'PADDLE_CLIENT_TOKEN', 'PADDLE_PRICE_ID', 'PADDLE_WEBHOOK_SECRET', 'PADDLE_ENVIRONMENT',
     'EMAIL_PROVIDER', 'EMAIL_FROM', 'EMAIL_DOMAIN',
     'SENDGRID_API_KEY', 'RESEND_API_KEY', 'EMAIL_RESEND_API_KEY',
     'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD',
@@ -328,8 +328,10 @@ def test_paid_launch_passes_with_paddle_billing(monkeypatch: pytest.MonkeyPatch)
     _clear_launch_env(monkeypatch)
     monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
     monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_abc')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_abc')
+    monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_pro_monthly_abc')
     monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_webhook_testkey_abc')
-    monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_pro_monthly_abc')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
     monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
     monkeypatch.setenv('SENDGRID_API_KEY', 'SG.testApiKey_abc')
     monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
@@ -348,7 +350,9 @@ def test_paddle_billing_blocked_when_webhook_missing(monkeypatch: pytest.MonkeyP
     _clear_launch_env(monkeypatch)
     monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
     monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_abc')
-    monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_pro_monthly_abc')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_abc')
+    monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_pro_monthly_abc')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
     # No PADDLE_WEBHOOK_SECRET
 
     out = build_paid_launch_readiness()
@@ -356,6 +360,94 @@ def test_paddle_billing_blocked_when_webhook_missing(monkeypatch: pytest.MonkeyP
     assert out['billing_webhook_ready'] is False
     assert out['billing_webhook_status'] == 'missing'
     assert out['paid_launch_ready'] is False
+
+
+def test_paddle_proof_accepts_all_required_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BILLING_PROVIDER=paddle is accepted when all required Paddle vars are configured."""
+    _clear_launch_env(monkeypatch)
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_xyz')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_xyz')
+    monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_prod_monthly_xyz')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_testkey_xyz')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
+    monkeypatch.setenv('EMAIL_PROVIDER', 'sendgrid')
+    monkeypatch.setenv('SENDGRID_API_KEY', 'SG.testApiKey_xyz')
+    monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'decoda.io')
+    monkeypatch.setenv('EVM_RPC_URL', 'https://mainnet.infura.io/v3/proj_xyz')
+    monkeypatch.setenv('LIVE_PROVIDER_PROOF_PRESENT', 'true')
+
+    out = build_paid_launch_readiness()
+
+    assert out['paid_launch_ready'] is True
+    assert out['billing_ready'] is True
+    assert out['billing_webhook_ready'] is True
+    assert out['billing_status'] == 'ready'
+    assert out['billing_missing_env'] == []
+    # Stripe vars must NOT be required
+    assert 'STRIPE_SECRET_KEY' not in out.get('billing_missing_env', [])
+    assert 'STRIPE_WEBHOOK_SECRET' not in out.get('billing_missing_env', [])
+
+
+def test_paddle_billing_blocked_when_client_token_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_launch_env(monkeypatch)
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_abc')
+    # No PADDLE_CLIENT_TOKEN
+    monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_pro_monthly_abc')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_webhook_testkey_abc')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
+
+    out = check_billing_readiness()
+
+    assert out['billing_ready'] is False
+    assert 'PADDLE_CLIENT_TOKEN' in out['billing_missing_env']
+
+
+def test_paddle_billing_blocked_when_environment_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_launch_env(monkeypatch)
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_abc')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_abc')
+    monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_pro_monthly_abc')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_webhook_testkey_abc')
+    # No PADDLE_ENVIRONMENT
+
+    out = check_billing_readiness()
+
+    assert out['billing_ready'] is False
+    assert 'PADDLE_ENVIRONMENT' in out['billing_missing_env']
+
+
+def test_paddle_billing_blocked_when_price_id_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_launch_env(monkeypatch)
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_abc')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_abc')
+    # No PADDLE_PRICE_ID or PADDLE_PRICE_ID_*
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_webhook_testkey_abc')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
+
+    out = check_billing_readiness()
+
+    assert out['billing_ready'] is False
+    assert 'PADDLE_PRICE_ID' in out['billing_missing_env']
+
+
+def test_paddle_price_id_variant_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PADDLE_PRICE_ID_PRO (variant form) is also accepted when plain PADDLE_PRICE_ID is absent."""
+    _clear_launch_env(monkeypatch)
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_abc')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_abc')
+    monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_pro_monthly_abc')  # variant form
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_webhook_testkey_abc')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
+
+    out = check_billing_readiness()
+
+    assert out['billing_ready'] is True
 
 
 # Extra: Resend email provider support.
