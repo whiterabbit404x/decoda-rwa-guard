@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness test-release-proof-artifacts generate-release-proof validate-release-proof validate-100-percent-readiness generate-staging-proof validate-staging-proof generate-live-evidence-proof run-staging-live-proof check-staging-live-env sell-now-proof
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness test-release-proof-artifacts generate-release-proof validate-release-proof validate-100-percent-readiness generate-staging-proof validate-staging-proof generate-live-evidence-proof run-staging-live-proof check-staging-live-env sell-now-proof validate-niw-positioning
 
 up:
 	docker compose up -d
@@ -183,3 +183,6 @@ validate-100-percent-readiness:
 	python scripts/generate_staging_launch_proof.py --mode local
 	python scripts/validate_staging_launch_proof.py
 	python scripts/validate_100_percent_readiness.py --mode local
+
+validate-niw-positioning:
+	python scripts/validate_niw_positioning.py

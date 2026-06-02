@@ -2,6 +2,20 @@
 
 This repo now supports a reproducible local Phase 1 workflow without Docker as the primary path. The stable Phase 1 risk-engine remains intact, Feature 2 adds the `threat-engine` service for explainable zero-day exploit mitigation and treasury-token market anomaly detection, Feature 3 adds the `compliance-service` for sovereign-grade compliance wrappers, geopatriation controls, and governance actions, and Feature 4 expands the existing `reconciliation-service` into an interoperability and systemic resilience slice for deterministic cross-chain reconciliation, backstop controls, and local incident logging.
 
+## Strategic Infrastructure Guard positioning
+
+Decoda RWA Guard is positioned as a **Strategic Infrastructure Guard** for tokenized real-world asset (RWA) infrastructure — specifically U.S. Treasury bills, tokenized Treasuries, and debt-market settlement systems operating on distributed ledger networks.
+
+The platform addresses cybersecurity and financial stability risks in tokenized Treasury infrastructure identified by FSOC and aligned with the **2024 U.S. Critical and Emerging Technologies list** under "Data Privacy, Data Security, and Cybersecurity Technologies" (subfields: distributed ledger technologies, digital assets, digital payment technologies, communications and network security, privacy-enhancing technologies).
+
+**Current readiness posture (2026-06-02):**
+- Controlled pilot: ready when `make validate-readiness-proof` passes
+- Broad paid SaaS: **not ready** — billing, email, staging runtime, staging database, staging worker not yet proven in production mode
+
+See [`docs/NIW_STRATEGIC_INFRASTRUCTURE_GUARD.md`](docs/NIW_STRATEGIC_INFRASTRUCTURE_GUARD.md) for the full NIW narrative, national importance case, CET alignment, and evidence map to repo artifacts.
+
+---
+
 ## Mode matrix
 
 Choose the operating mode based on your goal. Authenticated/live workflows require Postgres-backed persistence, but that Postgres can be local or hosted (Neon or equivalent).

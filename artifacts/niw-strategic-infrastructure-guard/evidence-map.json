@@ -1,0 +1,91 @@
+{
+  "schema_version": "1.0",
+  "generated": "2026-06-02",
+  "product_area": "Cybersecurity monitoring platform for tokenized real-world assets (RWAs), with primary focus on U.S. Treasury bills, tokenized Treasuries, and debt-market settlement infrastructure on distributed ledger networks.",
+  "protected_infrastructure": [
+    "Tokenized U.S. Treasury bills and tokenized Treasuries",
+    "On-chain debt-market settlement rails (EVM-compatible chains)",
+    "Oracle price feeds for tokenized asset pools",
+    "Cross-chain reconciliation and backstop controls",
+    "Sovereign compliance and geopatriation control layers",
+    "Workspace-scoped monitoring targets and telemetry pipelines"
+  ],
+  "cet_alignment": {
+    "primary_category": "Data Privacy, Data Security, and Cybersecurity Technologies",
+    "subfields": {
+      "distributed_ledger_technologies": {
+        "description": "Monitoring architecture targets EVM-compatible chains; oracle worker polls on-chain state; event-watcher ingests on-chain settlement events.",
+        "repo_evidence": [
+          "services/oracle-service/",
+          "services/event-watcher/",
+          "services/api/app/monitoring_targets.py"
+        ]
+      },
+      "digital_assets": {
+        "description": "Primary protected asset class is tokenized U.S. Treasury bills and tokenized debt instruments; asset registry models tokenized asset metadata and custody chain.",
+        "repo_evidence": [
+          "services/api/app/assets.py",
+          "services/risk-engine/",
+          "docs/FEATURE1_REAL_ASSET_DETECTION.md"
+        ]
+      },
+      "digital_payment_technologies": {
+        "description": "Settlement reconciliation service monitors cross-chain payment finality and flags reconciliation failures in debt-instrument transfer rails.",
+        "repo_evidence": [
+          "services/reconciliation-service/",
+          "services/api/tests/test_detection_alert_incident_action_chain.py"
+        ]
+      },
+      "communications_and_network_security": {
+        "description": "API gateway enforces workspace-scoped access control; JWT session security with role validation; no cross-tenant data leakage by architecture rule; secret scanning on all proof artifacts.",
+        "repo_evidence": [
+          "services/api/app/auth.py",
+          "services/api/tests/test_workspace_readiness_gate_aggregation.py",
+          "scripts/validate_release_proof.py"
+        ]
+      },
+      "privacy_enhancing_technologies": {
+        "description": "Workspace isolation enforced at data layer; secrets never returned in API responses (boolean presence flags only); audit log provides traceable evidence without exposing raw credentials.",
+        "repo_evidence": [
+          "services/api/app/paid_launch_readiness.py",
+          "services/api/tests/test_paid_launch_readiness.py",
+          "docs/EVIDENCE_EXPORT_TRUTHFULNESS.md"
+        ]
+      }
+    }
+  },
+  "repo_evidence_files": {
+    "runtime_truthfulness": "services/api/tests/test_runtime_truthfulness.py",
+    "detection_alert_incident_chain": "services/api/tests/test_detection_alert_incident_action_chain.py",
+    "workspace_isolation": "services/api/tests/test_workspace_readiness_gate_aggregation.py",
+    "live_vs_simulator_evidence": "services/api/app/paid_launch_readiness.py",
+    "proof_bundle_export": "services/api/tests/test_proof_bundle_export.py",
+    "controlled_pilot_gate": "RELEASE_READY.md",
+    "reconciliation_service": "services/reconciliation-service/",
+    "compliance_service": "services/compliance-service/",
+    "oracle_service": "services/oracle-service/",
+    "threat_engine": "services/threat-engine/",
+    "niw_narrative": "docs/NIW_STRATEGIC_INFRASTRUCTURE_GUARD.md",
+    "evidence_map": "artifacts/niw-strategic-infrastructure-guard/evidence-map.json"
+  },
+  "current_claims_allowed": [
+    "Controlled pilot readiness when make validate-readiness-proof passes with no fail-closed violations",
+    "Live evidence architecture that distinguishes live provider evidence from simulator evidence",
+    "Fail-closed monitoring runtime derived from canonical backend facts (heartbeat, poll, telemetry)",
+    "Full SaaS workflow implemented and tested end-to-end",
+    "Workspace-scoped tenant isolation enforced at data layer",
+    "Exportable evidence chains for regulatory response and audit"
+  ],
+  "prohibited_claims": [
+    "Broad paid SaaS ready — billing, email, staging runtime, staging database, staging worker not yet proven in production mode",
+    "Production deployment confirmed — no staging or production deployment with live credentials has completed to make safe_to_sell_broadly_today=true",
+    "SOC 2, FedRAMP, ISO 27001, or equivalent formal compliance certification",
+    "Regulatory approval from FinCEN, SEC, CFTC, or OCC",
+    "Live monitoring healthy when reporting systems are zero",
+    "Telemetry current when telemetry is missing or stale",
+    "Simulator data presented as live customer evidence"
+  ],
+  "positioning_label": "Strategic Infrastructure Guard",
+  "financial_stability_relevance": "Addresses financial stability monitoring gaps in tokenized Treasury infrastructure identified by FSOC 2023 Annual Report; provides real-time telemetry, fail-closed detection, and evidence chains for on-chain U.S. debt-market settlement systems.",
+  "national_importance_basis": "Tokenized U.S. Treasury bills represent a growing segment of federal debt-market infrastructure; successful exploits could trigger repricing across institutional portfolios, money market funds, and repo markets; nation-state adversaries have demonstrated intent to target blockchain-based financial infrastructure."
+}
