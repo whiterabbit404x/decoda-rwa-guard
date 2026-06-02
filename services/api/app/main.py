@@ -2977,6 +2977,20 @@ async def billing_webhook_paddle(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: process_paddle_webhook(payload, signature_header=signature, timestamp_header=timestamp, raw_body=raw))
 
 
+@app.get('/api/billing/paddle/webhook', summary='Paddle webhook endpoint health check')
+def billing_paddle_webhook_health() -> dict[str, Any]:
+    return {'status': 'paddle_webhook_endpoint_ready'}
+
+
+@app.post('/api/billing/paddle/webhook', summary='Paddle billing webhook (canonical production URL)')
+async def billing_webhook_paddle_canonical(request: Request) -> dict[str, Any]:
+    raw = await request.body()
+    payload = json.loads(raw.decode('utf-8') or '{}')
+    signature = request.headers.get('paddle-signature')
+    timestamp = request.headers.get('paddle-timestamp')
+    return with_auth_schema_json(lambda: process_paddle_webhook(payload, signature_header=signature, timestamp_header=timestamp, raw_body=raw))
+
+
 @app.get('/webhooks', summary='List workspace webhooks')
 def webhooks_list(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: list_webhooks(request))
