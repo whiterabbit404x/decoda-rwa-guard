@@ -1,0 +1,278 @@
+python services/api/scripts/validate_production_readiness.py
+{
+  "mode": "production",
+  "ok": false,
+  "category_status": {
+    "local_repo_integrity": "fail",
+    "frontend_build_reproducibility": "fail",
+    "browser_e2e_runtime": "fail",
+    "api_runtime_readiness": "fail",
+    "live_provider_configuration": "fail",
+    "staging_evidence": "fail"
+  },
+  "checks": [
+    {
+      "category": "local_repo_integrity",
+      "name": "api_production_startup_validation",
+      "command": [
+        "pytest",
+        "-q",
+        "services/api/tests/test_production_startup_validation.py"
+      ],
+      "status": "fail",
+      "detail": "==================================== ERRORS ====================================\n__ ERROR collecting services/api/tests/test_production_startup_validation.py ___\nImportError while importing test module '/home/user/decoda-rwa-guard/services/api/tests/test_production_startup_validation.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\nservices/api/tests/test_production_startup_validation.py:7: in <module>\n    from fastapi.testclient import TestClient\nE   ModuleNotFoundError: No module named 'fastapi'\n=========================== short test summary info ============================\nERROR services/api/tests/test_production_startup_validation.py\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n1 error in 0.14s",
+      "remediation": [],
+      "metadata": {
+        "returncode": 2
+      }
+    },
+    {
+      "category": "local_repo_integrity",
+      "name": "api_billing_runtime_validation",
+      "command": [
+        "pytest",
+        "-q",
+        "services/api/tests/test_billing_runtime.py"
+      ],
+      "status": "fail",
+      "detail": "==================================== ERRORS ====================================\n_________ ERROR collecting services/api/tests/test_billing_runtime.py __________\nImportError while importing test module '/home/user/decoda-rwa-guard/services/api/tests/test_billing_runtime.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\nservices/api/tests/test_billing_runtime.py:10: in <module>\n    from fastapi import HTTPException\nE   ModuleNotFoundError: No module named 'fastapi'\n=========================== short test summary info ============================\nERROR services/api/tests/test_billing_runtime.py\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n1 error in 0.15s",
+      "remediation": [],
+      "metadata": {
+        "returncode": 2
+      }
+    },
+    {
+      "category": "local_repo_integrity",
+      "name": "api_auth_health_diagnostics",
+      "command": [
+        "pytest",
+        "-q",
+        "services/api/tests/test_auth_health_diagnostics.py"
+      ],
+      "status": "fail",
+      "detail": "==================================== ERRORS ====================================\n_____ ERROR collecting services/api/tests/test_auth_health_diagnostics.py ______\nImportError while importing test module '/home/user/decoda-rwa-guard/services/api/tests/test_auth_health_diagnostics.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\nservices/api/tests/test_auth_health_diagnostics.py:9: in <module>\n    from fastapi import HTTPException, Request\nE   ModuleNotFoundError: No module named 'fastapi'\n=========================== short test summary info ============================\nERROR services/api/tests/test_auth_health_diagnostics.py\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n1 error in 0.15s",
+      "remediation": [],
+      "metadata": {
+        "returncode": 2
+      }
+    },
+    {
+      "category": "frontend_build_reproducibility",
+      "name": "node_bootstrap_prerequisites",
+      "command": [
+        "npm",
+        "ci"
+      ],
+      "status": "fail",
+      "detail": "Next.js runtime is missing from node_modules",
+      "remediation": [
+        "Run `npm ci` from repository root to install Node/Next.js dependencies.",
+        "If browser smoke checks are required, run `make install-web-test-runtime`.",
+        "Then rerun `make validate-no-billing-launch`."
+      ],
+      "metadata": {}
+    },
+    {
+      "category": "frontend_build_reproducibility",
+      "name": "frontend_runtime_alignment",
+      "command": [
+        "python",
+        "scripts/check_frontend_runtime_alignment.py"
+      ],
+      "status": "skip",
+      "detail": "Skipped because Node bootstrap prerequisites are missing.",
+      "remediation": [
+        "Run `npm ci` from repository root to install Node/Next.js dependencies.",
+        "If browser smoke checks are required, run `make install-web-test-runtime`.",
+        "Then rerun `make validate-no-billing-launch`."
+      ],
+      "metadata": {}
+    },
+    {
+      "category": "frontend_build_reproducibility",
+      "name": "web_build",
+      "command": [
+        "npm",
+        "run",
+        "build",
+        "--workspace",
+        "apps/web"
+      ],
+      "status": "skip",
+      "detail": "Skipped because Node bootstrap prerequisites are missing.",
+      "remediation": [
+        "Run `npm ci` from repository root to install Node/Next.js dependencies.",
+        "If browser smoke checks are required, run `make install-web-test-runtime`.",
+        "Then rerun `make validate-no-billing-launch`."
+      ],
+      "metadata": {}
+    },
+    {
+      "category": "browser_e2e_runtime",
+      "name": "playwright_browser_install",
+      "command": [
+        "npx",
+        "playwright",
+        "install",
+        "chromium"
+      ],
+      "status": "fail",
+      "detail": "Downloading Chromium 140.0.7339.186 (playwright build v1193)\u001b[2m from https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\u001b[22m\nDownloading Chromium 140.0.7339.186 (playwright build v1193)\u001b[2m from https://playwright.download.prss.microsoft.com/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\u001b[22m\nDownloading Chromium 140.0.7339.186 (playwright build v1193)\u001b[2m from https://cdn.playwright.dev/builds/chromium/1193/chromium-linux.zip\u001b[22m\nDownloading Chromium 140.0.7339.186 (playwright build v1193)\u001b[2m from https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\u001b[22m\nDownloading Chromium 140.0.7339.186 (playwright build v1193)\u001b[2m from https://playwright.download.prss.microsoft.com/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\u001b[22m\nFailed to install browsers\nError: Failed to download Chromium 140.0.7339.186 (playwright build v1193), caused by\nError: Download failure, code=1\n    at ChildProcess.<anonymous> (/home/user/decoda-rwa-guard/node_modules/playwright-core/lib/server/registry/browserFetcher.js:94:32)\n    at ChildProcess.emit (node:events:519:28)\n    at ChildProcess._handle.onexit (node:internal/child_process:293:12)\n\nError: Download failed: server returned code 403 body 'Host not in allowlist'. URL: https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\n    at IncomingMessage.handleError (/home/user/decoda-rwa-guard/node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js:56:23)\n    at IncomingMessage.emit (node:events:531:35)\n    at endReadableNT (node:internal/streams/readable:1698:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)\nError: Download failed: server returned code 403 body 'Host not in allowlist'. URL: https://playwright.download.prss.microsoft.com/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\n    at IncomingMessage.handleError (/home/user/decoda-rwa-guard/node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js:56:23)\n    at IncomingMessage.emit (node:events:531:35)\n    at endReadableNT (node:internal/streams/readable:1698:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)\nError: Download failed: server returned code 403 body 'Host not in allowlist'. URL: https://cdn.playwright.dev/builds/chromium/1193/chromium-linux.zip\n    at IncomingMessage.handleError (/home/user/decoda-rwa-guard/node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js:56:23)\n    at IncomingMessage.emit (node:events:531:35)\n    at endReadableNT (node:internal/streams/readable:1698:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)\nError: Download failed: server returned code 403 body 'Host not in allowlist'. URL: https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\n    at IncomingMessage.handleError (/home/user/decoda-rwa-guard/node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js:56:23)\n    at IncomingMessage.emit (node:events:531:35)\n    at endReadableNT (node:internal/streams/readable:1698:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)\nError: Download failed: server returned code 403 body 'Host not in allowlist'. URL: https://playwright.download.prss.microsoft.com/dbazure/download/playwright/builds/chromium/1193/chromium-linux.zip\n    at IncomingMessage.handleError (/home/user/decoda-rwa-guard/node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js:56:23)\n    at IncomingMessage.emit (node:events:531:35)\n    at endReadableNT (node:internal/streams/readable:1698:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)",
+      "remediation": [
+        "Install Chromium runtime manually with `npx playwright install chromium`."
+      ],
+      "metadata": {
+        "returncode": 1
+      }
+    },
+    {
+      "category": "browser_e2e_runtime",
+      "name": "playwright_runtime_detection",
+      "command": [
+        "node",
+        "-e",
+        "playwright runtime detection"
+      ],
+      "status": "fail",
+      "detail": "Playwright package is installed but Chromium runtime is missing at /opt/pw-browsers/chromium-1193/chrome-linux/chrome",
+      "remediation": [
+        "Run `make install-web-test-runtime` (or `npx playwright install chromium`)."
+      ],
+      "metadata": {
+        "state": "missing_browser",
+        "pkg": "/home/user/decoda-rwa-guard/node_modules/playwright/package.json",
+        "path": "/opt/pw-browsers/chromium-1193/chrome-linux/chrome"
+      }
+    },
+    {
+      "category": "browser_e2e_runtime",
+      "name": "web_local_smoke",
+      "command": [
+        "python",
+        "scripts/run_web_local_smoke.py"
+      ],
+      "status": "skip",
+      "detail": "Skipped because Playwright runtime is not ready.",
+      "remediation": [
+        "Run `make install-web-test-runtime` (or `npx playwright install chromium`)."
+      ],
+      "metadata": {}
+    },
+    {
+      "category": "api_runtime_readiness",
+      "name": "api_readiness_contract",
+      "command": [
+        "pytest",
+        "-q",
+        "services/api/tests/test_production_startup_validation.py",
+        "services/api/tests/test_auth_health_diagnostics.py"
+      ],
+      "status": "fail",
+      "detail": "==================================== ERRORS ====================================\n__ ERROR collecting services/api/tests/test_production_startup_validation.py ___\nImportError while importing test module '/home/user/decoda-rwa-guard/services/api/tests/test_production_startup_validation.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\nservices/api/tests/test_production_startup_validation.py:7: in <module>\n    from fastapi.testclient import TestClient\nE   ModuleNotFoundError: No module named 'fastapi'\n_____ ERROR collecting services/api/tests/test_auth_health_diagnostics.py ______\nImportError while importing test module '/home/user/decoda-rwa-guard/services/api/tests/test_auth_health_diagnostics.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\nservices/api/tests/test_auth_health_diagnostics.py:9: in <module>\n    from fastapi import HTTPException, Request\nE   ModuleNotFoundError: No module named 'fastapi'\n=========================== short test summary info ============================\nERROR services/api/tests/test_production_startup_validation.py\nERROR services/api/tests/test_auth_health_diagnostics.py\n!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!\n2 errors in 0.16s",
+      "remediation": [
+        "Resolve startup/readiness diagnostics failures before launch gate."
+      ],
+      "metadata": {
+        "returncode": 2
+      }
+    },
+    {
+      "category": "api_runtime_readiness",
+      "name": "runtime_status_live_gate",
+      "command": [
+        "python",
+        "services/api/scripts/check_monitoring_runtime_live_gate.py"
+      ],
+      "status": "fail",
+      "detail": "{\n  \"ok\": false,\n  \"error\": \"runtime_status_connection_error\",\n  \"detail\": \"<urlopen error [Errno 111] Connection refused>\"\n}",
+      "remediation": [
+        "Confirm /ops/monitoring/runtime-status returns live workspace identity, fresh telemetry, and non-zero configured/reporting coverage counts.",
+        "Resolve any runtime_status_degraded/runtime_status_unavailable states before demo or launch approval."
+      ],
+      "metadata": {
+        "returncode": 2
+      }
+    },
+    {
+      "category": "api_runtime_readiness",
+      "name": "runtime_status_release_gate",
+      "command": [
+        "python",
+        "services/api/scripts/check_runtime_status_release_gate.py"
+      ],
+      "status": "fail",
+      "detail": "{\n  \"ok\": false,\n  \"api_url\": \"http://localhost:8000\",\n  \"workspace_id\": null,\n  \"workspace_slug\": null,\n  \"attempts\": 3,\n  \"fail_statuses\": [\n    \"degraded\",\n    \"offline\"\n  ],\n  \"observations\": [],\n  \"errors\": [\n    {\n      \"attempt\": 1,\n      \"error\": \"connection_error\",\n      \"detail\": \"<urlopen error [Errno 111] Connection refused>\",\n      \"observed_at\": \"2026-06-02T04:08:59.566397+00:00\"\n    },\n    {\n      \"attempt\": 2,\n      \"error\": \"connection_error\",\n      \"detail\": \"<urlopen error [Errno 111] Connection refused>\",\n      \"observed_at\": \"2026-06-02T04:09:19.569144+00:00\"\n    },\n    {\n      \"attempt\": 3,\n      \"error\": \"connection_error\",\n      \"detail\": \"<urlopen error [Errno 111] Connection refused>\",\n      \"observed_at\": \"2026-06-02T04:09:39.570420+00:00\"\n    }\n  ],\n  \"failures\": [\n    \"attempt 1: connection_error (<urlopen error [Errno 111] Connection refused>)\",\n    \"attempt 2: connection_error (<urlopen error [Errno 111] Connection refused>)\",\n    \"attempt 3: connection_error (<urlopen error [Errno 111] Connection refused>)\"\n  ]\n}",
+      "remediation": [
+        "Resolve degraded/offline runtime-status for configured production workspace(s) before deployment.",
+        "Verify monitoring worker heartbeat and live coverage receipts for the production workspace."
+      ],
+      "metadata": {
+        "returncode": 2
+      }
+    },
+    {
+      "category": "live_provider_configuration",
+      "name": "provider_smoke",
+      "command": [
+        "python",
+        "services/api/scripts/smoke_live_providers.py"
+      ],
+      "status": "fail",
+      "detail": "{\n  \"ok\": false,\n  \"validation_mode\": \"production\",\n  \"checks\": [\n    {\n      \"name\": \"email_provider\",\n      \"status\": \"not_configured\",\n      \"detail\": \"EMAIL_PROVIDER=console; live verification email evidence requires resend.\",\n      \"remediation\": [\n        \"Set EMAIL_PROVIDER=resend, EMAIL_FROM, and EMAIL_RESEND_API_KEY for launch evidence.\"\n      ],\n      \"metadata\": {}\n    },\n    {\n      \"name\": \"billing_provider\",\n      \"status\": \"not_configured\",\n      \"detail\": \"BILLING_PROVIDER=none; acceptable for pilot, not broad sale.\",\n      \"remediation\": [\n        \"Use paddle or stripe before broad launch.\"\n      ],\n      \"metadata\": {}\n    },\n    {\n      \"name\": \"redis_requirement\",\n      \"status\": \"not_configured\",\n      \"detail\": \"REDIS_URL is not set (allowed only outside production).\",\n      \"remediation\": [\n        \"Set REDIS_URL in staging/production to mirror launch topology.\"\n      ],\n      \"metadata\": {}\n    },\n    {\n      \"name\": \"staging_api_readiness\",\n      \"status\": \"not_configured\",\n      \"detail\": \"STAGING_API_URL is not set.\",\n      \"remediation\": [\n        \"Set STAGING_API_URL to run readiness probe.\"\n      ],\n      \"metadata\": {}\n    },\n    {\n      \"name\": \"live_chain_monitoring\",\n      \"status\": \"not_configured\",\n      \"detail\": \"EVM_RPC_URL not set; chain monitoring checks skipped.\",\n      \"remediation\": [\n        \"Set EVM_RPC_URL for live chain monitoring evidence.\"\n      ],\n      \"metadata\": {}\n    },\n    {\n      \"name\": \"slack_oauth_provider\",\n      \"status\": \"not_configured\",\n      \"detail\": \"Slack OAuth self-serve install is unavailable because SLACK_CLIENT_ID or SLACK_CLIENT_SECRET is missing.\",\n      \"remediation\": [\n        \"Set SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, and SLACK_OAUTH_REDIRECT_URI for GA self-serve setup.\"\n      ],\n      \"metadata\": {}\n    }\n  ],\n  \"status_counts\": {\n    \"not_configured\": 6\n  }\n}",
+      "remediation": [
+        "Configure real provider environment variables and verify staging API readiness URL."
+      ],
+      "metadata": {
+        "returncode": 1
+      }
+    },
+    {
+      "category": "staging_evidence",
+      "name": "staging_evidence_flow",
+      "command": [
+        "python",
+        "scripts/staging/run_evidence_flow.py"
+      ],
+      "status": "fail",
+      "detail": "ERROR: Missing required staging credentials/config: STAGING_BASE_URL, STAGING_API_URL, STAGING_EVIDENCE_EMAIL, STAGING_EVIDENCE_PASSWORD. Set these env vars and retry.",
+      "remediation": [
+        "Set required STAGING_* environment variables, then rerun evidence flow."
+      ],
+      "metadata": {
+        "returncode": 1
+      }
+    }
+  ]
+}
+
+Release Validation Summary
+- local_repo_integrity: FAIL
+  [FAIL] api_production_startup_validation
+  [FAIL] api_billing_runtime_validation
+  [FAIL] api_auth_health_diagnostics
+- frontend_build_reproducibility: FAIL
+  [FAIL] node_bootstrap_prerequisites
+    remediation: Run `npm ci` from repository root to install Node/Next.js dependencies.
+  [SKIP] frontend_runtime_alignment
+  [SKIP] web_build
+- browser_e2e_runtime: FAIL
+  [FAIL] playwright_browser_install
+    remediation: Install Chromium runtime manually with `npx playwright install chromium`.
+  [FAIL] playwright_runtime_detection
+    remediation: Run `make install-web-test-runtime` (or `npx playwright install chromium`).
+  [SKIP] web_local_smoke
+- api_runtime_readiness: FAIL
+  [FAIL] api_readiness_contract
+    remediation: Resolve startup/readiness diagnostics failures before launch gate.
+  [FAIL] runtime_status_live_gate
+    remediation: Confirm /ops/monitoring/runtime-status returns live workspace identity, fresh telemetry, and non-zero configured/reporting coverage counts.
+  [FAIL] runtime_status_release_gate
+    remediation: Resolve degraded/offline runtime-status for configured production workspace(s) before deployment.
+- live_provider_configuration: FAIL
+  [FAIL] provider_smoke
+    remediation: Configure real provider environment variables and verify staging API readiness URL.
+- staging_evidence: FAIL
+  [FAIL] staging_evidence_flow
+    remediation: Set required STAGING_* environment variables, then rerun evidence flow.
+
+make: *** [Makefile:65: validate-production] Error 1

@@ -135,7 +135,35 @@ See `artifacts/niw-strategic-infrastructure-guard/evidence-map.json` for machine
 
 ---
 
-## 8. Summary
+## 8. Readiness Truth Table
+
+The following table is the authoritative single-source-of-truth for what may and may not be claimed as of the current repository state. It is derived from `artifacts/launch-proof/latest/summary.json` and must remain consistent with `artifacts/live-evidence-proof/latest/summary.json`, `artifacts/sell-now-proof/latest/summary.json`, and `scripts/validate_niw_positioning.py`.
+
+| Readiness category | Status | Basis |
+|---|---|---|
+| NIW positioning | **ready** | `docs/NIW_STRATEGIC_INFRASTRUCTURE_GUARD.md` + `artifacts/niw-strategic-infrastructure-guard/evidence-map.json` pass `validate_niw_positioning.py` |
+| Live provider evidence | **ready** | `artifacts/live-evidence-proof/latest/summary.json` confirms `provider_ready=true`, `provider_mode=live`, `live_evidence_ready=true`, `evidence_source=live` |
+| Controlled pilot / managed sale | **ready** | `artifacts/sell-now-proof/latest/summary.json` confirms `sell_now_managed_ready=true` |
+| Broad paid SaaS | **not ready** | Staging runtime, staging database, staging worker, billing, and email providers are not yet configured in production mode |
+
+**What may be claimed:**
+- NIW Strategic Infrastructure Guard positioning ready
+- Controlled pilot / managed sale ready
+- Live provider evidence ready
+- not broad paid SaaS ready
+
+**What may not be claimed:**
+- Broad paid SaaS production ready
+- Billing ready
+- Staging runtime fully ready
+- Staging database fully ready
+- Worker fully ready
+
+**Reason broad paid SaaS is not ready:** `STAGING_API_URL`, `STAGING_DATABASE_URL`, `STAGING_WORKER_ENABLED`, `BILLING_PROVIDER`, and `EMAIL_PROVIDER` are not set to production values. Gates remain fail-closed on all unproven blockers.
+
+---
+
+## 9. Summary
 
 Decoda RWA Guard is a cybersecurity platform for tokenized Treasury and RWA settlement infrastructure that:
 
