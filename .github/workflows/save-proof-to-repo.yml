@@ -1,24 +1,20 @@
 name: Save GitHub ZIP Proof
 
 # Run manually to commit proof files into the repository.
-# After running, Code → Download ZIP includes artifacts/github-proof/latest/.
+# After running, Code → Download ZIP includes artifacts/*/latest/ proof files.
 #
 # This workflow:
-#   1. Detects whether STAGING_EVM_RPC_URL is configured as a repository secret.
-#   2. Pre-generates a content-addressable live evidence chain from the committed
-#      service summary (services/api/artifacts/live_evidence/latest/summary.json).
-#   3. If secrets are present: regenerates artifacts/live-evidence-proof/latest/summary.json
-#      using a real RPC call (PROOF_REQUIRE_CURRENT_ENV=true + STAGING_* secrets +
-#      LIVE_EVIDENCE_CHAIN_FILE from step 2). Produces provider_ready=true,
-#      live_evidence_ready=true, evidence_source=live when the provider passes.
-#   4. If secrets are absent: regenerates live-evidence-proof fail-closed
-#      (provider_ready=false) with a fresh timestamp so staleness is explicit.
-#   5. Hard-asserts freshness of artifacts/live-evidence-proof/latest/summary.json
-#      (fails if stale or if STAGING secrets are present but proof is still fail-closed).
-#      When secrets are absent the assertion passes with a notice.
-#   6. Runs sell-now proof and GitHub ZIP proof.
-#   7. Commits all three proof folders (always, even when secrets are absent —
-#      contradiction flags are captured explicitly in sell-now-proof).
+#   1. Exposes staging, billing, email, and EVM provider secrets as env vars.
+#   2. Derives BILLING_PROVIDER and provider-specific email keys from generic secrets.
+#   3. Regenerates live-evidence-proof (live RPC when STAGING_EVM_RPC_URL is set;
+#      fail-closed otherwise).
+#   4. Validates NIW positioning documents.
+#   5. Generates staging-proof and launch-proof using real secrets.
+#   6. Generates sell-now-proof and github-proof from the freshened artifacts.
+#   7. Hard-fails if any secret is present in GitHub but the matching proof field
+#      is still false (secrets-vs-proof guard).
+#   8. Commits all five proof folders: launch-proof, staging-proof,
+#      live-evidence-proof, sell-now-proof, github-proof.
 on:
   workflow_dispatch:
 
@@ -26,9 +22,23 @@ jobs:
   save-proof:
     name: Generate and commit GitHub ZIP proof
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
+
+    env:
+      STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
+      STAGING_APP_URL: ${{ secrets.STAGING_APP_URL }}
+      STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+      STAGING_AUTH_TOKEN_SECRET: ${{ secrets.STAGING_AUTH_TOKEN_SECRET }}
+      STAGING_WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      STRIPE_PRICE_ID: ${{ secrets.STRIPE_PRICE_ID }}
+      EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+      EMAIL_API_KEY: ${{ secrets.EMAIL_API_KEY }}
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      EVM_RPC_URL: ${{ secrets.EVM_RPC_URL }}
 
     steps:
       - name: Checkout main
@@ -41,6 +51,40 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Derive provider variables from secrets
+        # Maps generic secrets to canonical env vars expected by proof scripts.
+        # Sets BILLING_PROVIDER=stripe when STRIPE_SECRET_KEY is present so that
+        # _check_broad_paid_saas_gates() sees billing_configured=true.
+        # Maps EMAIL_API_KEY to the provider-specific key name so that
+        # build_email_production_validation() can detect it.
+        # Never prints secret values.
+        run: |
+          if [ -n "$STRIPE_SECRET_KEY" ]; then
+            echo "BILLING_PROVIDER=stripe" >> "$GITHUB_ENV"
+            echo "Billing provider derived from STRIPE_SECRET_KEY: BILLING_PROVIDER=stripe"
+          fi
+          if [ -n "$EMAIL_API_KEY" ]; then
+            PROVIDER_LOWER=$(echo "${EMAIL_PROVIDER:-}" | tr '[:upper:]' '[:lower:]')
+            case "$PROVIDER_LOWER" in
+              sendgrid)
+                echo "SENDGRID_API_KEY=$EMAIL_API_KEY" >> "$GITHUB_ENV"
+                echo "Email provider key mapped: EMAIL_API_KEY → SENDGRID_API_KEY"
+                ;;
+              resend)
+                echo "RESEND_API_KEY=$EMAIL_API_KEY" >> "$GITHUB_ENV"
+                echo "Email provider key mapped: EMAIL_API_KEY → RESEND_API_KEY"
+                ;;
+              *)
+                echo "::notice::EMAIL_API_KEY is set but EMAIL_PROVIDER='${EMAIL_PROVIDER:-}' is unrecognised; key not mapped"
+                ;;
+            esac
+          fi
 
       - name: Detect staging provider secrets
         id: staging_secrets
@@ -218,17 +262,32 @@ jobs:
               print('The contradiction will be captured in sell-now-proof contradiction_flags.')
           PY
 
+      - name: Validate NIW positioning
+        # Hard fails if any required NIW document or key phrase is missing.
+        run: python scripts/validate_niw_positioning.py
+
+      - name: Generate staging proof
+        # Reads STAGING_* and billing/email env vars set from secrets above.
+        # Produces artifacts/staging-proof/latest/summary.json.
+        run: python scripts/generate_staging_launch_proof.py --mode staging
+
+      - name: Run no-billing launch proof
+        # Runs build gates, runtime checks, and launch validation.
+        # Reads live-evidence-proof and sell-now-proof artifacts for readiness facts.
+        # Produces artifacts/launch-proof/latest/summary.json.
+        run: python scripts/staging/run_no_billing_launch_proof.py
+
       - name: Generate sell-now proof
         # Aggregates all proof sources into artifacts/sell-now-proof/latest/.
-        # Must run after live-evidence-proof is refreshed and before
-        # write_github_zip_proof.py so github-proof can embed the sell-now fields.
+        # Must run after live-evidence-proof, staging-proof, and launch-proof
+        # are refreshed so it reads current artifacts.
         run: python scripts/proof/write_sell_now_proof.py
 
       - name: Warn on sell-now proof contradiction
         # Warns (no hard failure) when sell-now-proof shows provider_ready=false
         # while api/live_evidence reports provider_ready=true.
         #
-        # A hard failure here is not needed: the new "Assert live-evidence-proof
+        # A hard failure here is not needed: the "Assert live-evidence-proof
         # freshness and content" step above already hard-fails when STAGING_EVM_RPC_URL
         # is configured but the proof is still fail-closed.  When secrets are absent
         # the contradiction is expected and is captured explicitly in sell-now-proof
@@ -281,8 +340,81 @@ jobs:
         # automatically set by the runner — no secrets involved.
         run: python scripts/proof/write_github_zip_proof.py
 
+      - name: Print launch proof summary
+        # Prints only the redacted summary. Secret values are never written
+        # to proof artifacts by the scripts.
+        run: cat artifacts/launch-proof/latest/summary.json
+
+      - name: Guard — secrets vs proof consistency
+        # Hard-fails if a secret is present in the GitHub environment but the
+        # corresponding field in the launch proof is still false, which indicates
+        # the secret was not picked up correctly by the proof scripts.
+        # Checks (all fail-closed):
+        #   STAGING_API_URL present  → staging_api_configured must be true
+        #   STAGING_DATABASE_URL present → staging_database_configured must be true
+        #   STRIPE_SECRET_KEY present → billing_configured must be true
+        #   EMAIL_API_KEY present     → email_configured must be true
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+
+          launch_path = Path('artifacts/launch-proof/latest/summary.json')
+          if not launch_path.exists():
+              print('ERROR: artifacts/launch-proof/latest/summary.json not found', file=sys.stderr)
+              sys.exit(1)
+
+          launch = json.loads(launch_path.read_text())
+          broad = launch.get('broad_paid_saas', {})
+
+          failures = []
+
+          if os.getenv('STAGING_API_URL', '').strip():
+              if not broad.get('staging_api_configured', False):
+                  failures.append(
+                      'STAGING_API_URL is set in secrets but staging_api_configured=false '
+                      'in launch-proof — check that the secret value is non-empty and correct.'
+                  )
+
+          if os.getenv('STAGING_DATABASE_URL', '').strip():
+              if not broad.get('staging_database_configured', False):
+                  failures.append(
+                      'STAGING_DATABASE_URL is set in secrets but staging_database_configured=false '
+                      'in launch-proof — check that the secret value is non-empty and correct.'
+                  )
+
+          if os.getenv('STRIPE_SECRET_KEY', '').strip():
+              if not broad.get('billing_configured', False):
+                  failures.append(
+                      'STRIPE_SECRET_KEY is set in secrets but billing_configured=false '
+                      'in launch-proof — BILLING_PROVIDER may not have been derived correctly.'
+                  )
+
+          if os.getenv('EMAIL_API_KEY', '').strip():
+              if not broad.get('email_configured', False):
+                  failures.append(
+                      'EMAIL_API_KEY is set in secrets but email_configured=false '
+                      'in launch-proof — check EMAIL_PROVIDER is set to a recognised value '
+                      '(sendgrid, resend, smtp).'
+                  )
+
+          if failures:
+              print('::error::Secrets-vs-proof guard FAILED', file=sys.stderr)
+              for msg in failures:
+                  print(f'  [FAIL] {msg}', file=sys.stderr)
+              sys.exit(1)
+
+          print('OK: secrets-vs-proof guard passed — all present secrets are reflected in launch-proof.')
+          print(f'  staging_api_configured    = {broad.get("staging_api_configured")}')
+          print(f'  staging_database_configured = {broad.get("staging_database_configured")}')
+          print(f'  billing_configured        = {broad.get("billing_configured")}')
+          print(f'  email_configured          = {broad.get("email_configured")}')
+          PY
+
       - name: Stage proof files
         run: |
+          git add artifacts/launch-proof/latest/
+          git add artifacts/staging-proof/latest/
           git add artifacts/live-evidence-proof/latest/
           git add artifacts/sell-now-proof/latest/
           git add artifacts/github-proof/latest/
@@ -294,7 +426,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes — proof files already up to date."
           else
-            git commit -m "Regenerate live-evidence-proof and sell-now proof [skip ci]"
+            git commit -m "Regenerate proof artifacts from secrets [skip ci]"
           fi
 
       - name: Push to main
