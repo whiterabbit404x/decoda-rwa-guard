@@ -4,20 +4,24 @@ name: Save GitHub ZIP Proof
 # After running, Code → Download ZIP includes artifacts/github-proof/latest/.
 #
 # This workflow:
-#   1. Detects whether STAGING_EVM_RPC_URL is configured as a repository secret.
-#   2. Pre-generates a content-addressable live evidence chain from the committed
+#   1. Validates NIW positioning.
+#   2. Regenerates artifacts/staging-proof/latest/summary.json using real GitHub
+#      secrets so configured=true values replace stale "not configured" blockers.
+#   3. Detects whether STAGING_EVM_RPC_URL is configured as a repository secret.
+#   4. Pre-generates a content-addressable live evidence chain from the committed
 #      service summary (services/api/artifacts/live_evidence/latest/summary.json).
-#   3. If secrets are present: regenerates artifacts/live-evidence-proof/latest/summary.json
+#   5. If secrets are present: regenerates artifacts/live-evidence-proof/latest/summary.json
 #      using a real RPC call (PROOF_REQUIRE_CURRENT_ENV=true + STAGING_* secrets +
-#      LIVE_EVIDENCE_CHAIN_FILE from step 2). Produces provider_ready=true,
+#      LIVE_EVIDENCE_CHAIN_FILE from step 4). Produces provider_ready=true,
 #      live_evidence_ready=true, evidence_source=live when the provider passes.
-#   4. If secrets are absent: regenerates live-evidence-proof fail-closed
+#   6. If secrets are absent: regenerates live-evidence-proof fail-closed
 #      (provider_ready=false) with a fresh timestamp so staleness is explicit.
-#   5. Hard-asserts freshness of artifacts/live-evidence-proof/latest/summary.json
+#   7. Hard-asserts freshness of artifacts/live-evidence-proof/latest/summary.json
 #      (fails if stale or if STAGING secrets are present but proof is still fail-closed).
 #      When secrets are absent the assertion passes with a notice.
-#   6. Runs sell-now proof and GitHub ZIP proof.
-#   7. Commits all three proof folders (always, even when secrets are absent —
+#   8. Runs sell-now proof and no-billing launch proof.
+#   9. Runs GitHub ZIP proof.
+#  10. Commits all proof folders (always, even when secrets are absent —
 #      contradiction flags are captured explicitly in sell-now-proof).
 on:
   workflow_dispatch:
@@ -26,9 +30,35 @@ jobs:
   save-proof:
     name: Generate and commit GitHub ZIP proof
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: write
+
+    # Grant access to staging-environment secrets when they are stored
+    # under the 'staging' GitHub Actions Environment.
+    environment: staging
+
+    env:
+      STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
+      STAGING_APP_URL: ${{ secrets.STAGING_APP_URL }}
+      STAGING_BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+      STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+      STAGING_AUTH_TOKEN_SECRET: ${{ secrets.STAGING_AUTH_TOKEN_SECRET }}
+      STAGING_WORKER_ENABLED: ${{ secrets.STAGING_WORKER_ENABLED }}
+
+      STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
+      EVM_RPC_URL: ${{ secrets.EVM_RPC_URL }}
+      EVM_CHAIN_ID: ${{ secrets.EVM_CHAIN_ID }}
+
+      BILLING_PROVIDER: ${{ secrets.BILLING_PROVIDER }}
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      STRIPE_PRICE_ID: ${{ secrets.STRIPE_PRICE_ID }}
+
+      EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+      EMAIL_API_KEY: ${{ secrets.EMAIL_API_KEY }}
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      EMAIL_DOMAIN: ${{ secrets.EMAIL_DOMAIN }}
 
     steps:
       - name: Checkout main
@@ -42,10 +72,85 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Mask secret values (values never printed)
+        # Mask every sensitive variable so values never appear in logs.
+        # Only yes/no presence is printed below.
+        run: |
+          [ -n "$STAGING_API_URL" ]          && echo "::add-mask::$STAGING_API_URL"          || true
+          [ -n "$STAGING_APP_URL" ]          && echo "::add-mask::$STAGING_APP_URL"          || true
+          [ -n "$STAGING_BASE_URL" ]         && echo "::add-mask::$STAGING_BASE_URL"         || true
+          [ -n "$STAGING_DATABASE_URL" ]     && echo "::add-mask::$STAGING_DATABASE_URL"     || true
+          [ -n "$STAGING_AUTH_TOKEN_SECRET" ] && echo "::add-mask::$STAGING_AUTH_TOKEN_SECRET" || true
+          [ -n "$STAGING_EVM_RPC_URL" ]      && echo "::add-mask::$STAGING_EVM_RPC_URL"      || true
+          [ -n "$EVM_RPC_URL" ]              && echo "::add-mask::$EVM_RPC_URL"              || true
+          [ -n "$STRIPE_SECRET_KEY" ]        && echo "::add-mask::$STRIPE_SECRET_KEY"        || true
+          [ -n "$STRIPE_WEBHOOK_SECRET" ]    && echo "::add-mask::$STRIPE_WEBHOOK_SECRET"    || true
+          [ -n "$EMAIL_API_KEY" ]            && echo "::add-mask::$EMAIL_API_KEY"            || true
+
+      - name: Print secret presence (values never printed)
+        run: |
+          echo "STAGING_API_URL present:           $([ -n "$STAGING_API_URL" ] && echo yes || echo no)"
+          echo "STAGING_APP_URL present:           $([ -n "$STAGING_APP_URL" ] && echo yes || echo no)"
+          echo "STAGING_BASE_URL present:          $([ -n "$STAGING_BASE_URL" ] && echo yes || echo no)"
+          echo "STAGING_DATABASE_URL present:      $([ -n "$STAGING_DATABASE_URL" ] && echo yes || echo no)"
+          echo "STAGING_AUTH_TOKEN_SECRET present:  $([ -n "$STAGING_AUTH_TOKEN_SECRET" ] && echo yes || echo no)"
+          echo "STAGING_WORKER_ENABLED present:    $([ -n "$STAGING_WORKER_ENABLED" ] && echo yes || echo no)"
+          echo "STAGING_EVM_RPC_URL present:       $([ -n "$STAGING_EVM_RPC_URL" ] && echo yes || echo no)"
+          echo "EVM_RPC_URL present:               $([ -n "$EVM_RPC_URL" ] && echo yes || echo no)"
+          echo "EVM_CHAIN_ID present:              $([ -n "$EVM_CHAIN_ID" ] && echo yes || echo no)"
+          echo "BILLING_PROVIDER present:          $([ -n "$BILLING_PROVIDER" ] && echo yes || echo no)"
+          echo "STRIPE_SECRET_KEY present:         $([ -n "$STRIPE_SECRET_KEY" ] && echo yes || echo no)"
+          echo "STRIPE_WEBHOOK_SECRET present:     $([ -n "$STRIPE_WEBHOOK_SECRET" ] && echo yes || echo no)"
+          echo "STRIPE_PRICE_ID present:           $([ -n "$STRIPE_PRICE_ID" ] && echo yes || echo no)"
+          echo "EMAIL_PROVIDER present:            $([ -n "$EMAIL_PROVIDER" ] && echo yes || echo no)"
+          echo "EMAIL_API_KEY present:             $([ -n "$EMAIL_API_KEY" ] && echo yes || echo no)"
+          echo "EMAIL_FROM present:                $([ -n "$EMAIL_FROM" ] && echo yes || echo no)"
+          echo "EMAIL_DOMAIN present:              $([ -n "$EMAIL_DOMAIN" ] && echo yes || echo no)"
+
+      - name: Validate NIW positioning
+        run: python scripts/validate_niw_positioning.py
+
+      - name: Regenerate staging launch proof (with real secrets)
+        # Regenerates artifacts/staging-proof/latest/summary.json using the
+        # job-level secrets. With real credentials, configured=true replaces
+        # stale "not configured" blockers and the generated_at timestamp is fresh.
+        # Does NOT use --strict to avoid circular dependency with launch-proof
+        # artifacts that may not yet reflect the current billing/email state.
+        # The guard step below hard-fails on any remaining "not configured" blocker.
+        run: |
+          python scripts/generate_staging_launch_proof.py \
+            --mode staging
+
+      - name: Assert staging proof env vars are configured
+        # Hard failure if any "not configured" blocker survives.
+        # This is the strict gate for environment variable configuration.
+        run: |
+          python - <<'PY'
+          import json, sys
+          p = "artifacts/staging-proof/latest/summary.json"
+          data = json.load(open(p, encoding="utf-8"))
+          blockers = data.get("blockers", [])
+          print(json.dumps({
+              "generated_at": data.get("generated_at"),
+              "staging_env_configured": data.get("staging_env_configured"),
+              "staging_runtime_reachable": data.get("staging_runtime_reachable"),
+              "staging_database_reachable": data.get("staging_database_reachable"),
+              "staging_worker_enabled": data.get("staging_worker_enabled"),
+              "staging_auth_configured": data.get("staging_auth_configured"),
+              "broad_paid_saas_ready": data.get("broad_paid_saas_ready"),
+              "blockers": blockers,
+          }, indent=2))
+          not_configured = [b for b in blockers if "not configured" in b]
+          if not_configured:
+              print("ERROR: staging proof still says variables are not configured:")
+              for b in not_configured:
+                  print(f"  - {b}")
+              sys.exit(1)
+          print("OK: no 'not configured' blockers in staging proof")
+          PY
+
       - name: Detect staging provider secrets
         id: staging_secrets
-        env:
-          STAGING_EVM_RPC_URL: ${{ secrets.STAGING_EVM_RPC_URL }}
         run: |
           if [ -n "$STAGING_EVM_RPC_URL" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
@@ -227,13 +332,6 @@ jobs:
       - name: Warn on sell-now proof contradiction
         # Warns (no hard failure) when sell-now-proof shows provider_ready=false
         # while api/live_evidence reports provider_ready=true.
-        #
-        # A hard failure here is not needed: the new "Assert live-evidence-proof
-        # freshness and content" step above already hard-fails when STAGING_EVM_RPC_URL
-        # is configured but the proof is still fail-closed.  When secrets are absent
-        # the contradiction is expected and is captured explicitly in sell-now-proof
-        # contradiction_flags — committing those contradiction flags is the correct
-        # outcome so buyers/auditors can see the state clearly.
         run: |
           python - <<'PY'
           import json, sys
@@ -275,6 +373,15 @@ jobs:
               print(f'  sell_now_managed_ready={sell_managed}')
           PY
 
+      - name: Run no-billing launch proof
+        # Regenerates artifacts/launch-proof/latest/summary.json.
+        # BILLING_PROVIDER is forced to 'none' for this step: the no-billing proof
+        # validates the NIW/pilot launch path which intentionally excludes billing.
+        # Broad paid SaaS billing readiness is validated by the staging proof above.
+        env:
+          BILLING_PROVIDER: none
+        run: python scripts/staging/run_no_billing_launch_proof.py
+
       - name: Generate GitHub ZIP proof
         # GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA,
         # and GITHUB_REF_NAME are standard GitHub Actions environment variables
@@ -283,8 +390,10 @@ jobs:
 
       - name: Stage proof files
         run: |
+          git add artifacts/staging-proof/latest/
           git add artifacts/live-evidence-proof/latest/
           git add artifacts/sell-now-proof/latest/
+          git add artifacts/launch-proof/latest/
           git add artifacts/github-proof/latest/
 
       - name: Commit proof files (skip if unchanged)
@@ -294,7 +403,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes — proof files already up to date."
           else
-            git commit -m "Regenerate live-evidence-proof and sell-now proof [skip ci]"
+            git commit -m "Regenerate staging, live-evidence, sell-now, launch, and GitHub ZIP proof [skip ci]"
           fi
 
       - name: Push to main
