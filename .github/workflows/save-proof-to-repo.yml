@@ -54,11 +54,18 @@ jobs:
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
       STRIPE_PRICE_ID: ${{ secrets.STRIPE_PRICE_ID }}
+      PADDLE_ENVIRONMENT: ${{ secrets.PADDLE_ENVIRONMENT }}
+      PADDLE_API_KEY: ${{ secrets.PADDLE_API_KEY }}
+      PADDLE_CLIENT_TOKEN: ${{ secrets.PADDLE_CLIENT_TOKEN }}
+      PADDLE_PRICE_ID: ${{ secrets.PADDLE_PRICE_ID }}
+      PADDLE_WEBHOOK_SECRET: ${{ secrets.PADDLE_WEBHOOK_SECRET }}
 
       EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+      MAIL_PROVIDER: ${{ secrets.MAIL_PROVIDER }}
       EMAIL_API_KEY: ${{ secrets.EMAIL_API_KEY }}
       EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
       EMAIL_DOMAIN: ${{ secrets.EMAIL_DOMAIN }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
 
     steps:
       - name: Checkout main
@@ -85,7 +92,11 @@ jobs:
           [ -n "$EVM_RPC_URL" ]              && echo "::add-mask::$EVM_RPC_URL"              || true
           [ -n "$STRIPE_SECRET_KEY" ]        && echo "::add-mask::$STRIPE_SECRET_KEY"        || true
           [ -n "$STRIPE_WEBHOOK_SECRET" ]    && echo "::add-mask::$STRIPE_WEBHOOK_SECRET"    || true
+          [ -n "$PADDLE_API_KEY" ]           && echo "::add-mask::$PADDLE_API_KEY"           || true
+          [ -n "$PADDLE_CLIENT_TOKEN" ]      && echo "::add-mask::$PADDLE_CLIENT_TOKEN"      || true
+          [ -n "$PADDLE_WEBHOOK_SECRET" ]    && echo "::add-mask::$PADDLE_WEBHOOK_SECRET"    || true
           [ -n "$EMAIL_API_KEY" ]            && echo "::add-mask::$EMAIL_API_KEY"            || true
+          [ -n "$RESEND_API_KEY" ]           && echo "::add-mask::$RESEND_API_KEY"           || true
 
       - name: Print secret presence (values never printed)
         run: |
@@ -102,13 +113,35 @@ jobs:
           echo "STRIPE_SECRET_KEY present:         $([ -n "$STRIPE_SECRET_KEY" ] && echo yes || echo no)"
           echo "STRIPE_WEBHOOK_SECRET present:     $([ -n "$STRIPE_WEBHOOK_SECRET" ] && echo yes || echo no)"
           echo "STRIPE_PRICE_ID present:           $([ -n "$STRIPE_PRICE_ID" ] && echo yes || echo no)"
+          echo "PADDLE_ENVIRONMENT present:        $([ -n "$PADDLE_ENVIRONMENT" ] && echo yes || echo no)"
+          echo "PADDLE_API_KEY present:            $([ -n "$PADDLE_API_KEY" ] && echo yes || echo no)"
+          echo "PADDLE_CLIENT_TOKEN present:       $([ -n "$PADDLE_CLIENT_TOKEN" ] && echo yes || echo no)"
+          echo "PADDLE_PRICE_ID present:           $([ -n "$PADDLE_PRICE_ID" ] && echo yes || echo no)"
+          echo "PADDLE_WEBHOOK_SECRET present:     $([ -n "$PADDLE_WEBHOOK_SECRET" ] && echo yes || echo no)"
           echo "EMAIL_PROVIDER present:            $([ -n "$EMAIL_PROVIDER" ] && echo yes || echo no)"
+          echo "MAIL_PROVIDER present:             $([ -n "$MAIL_PROVIDER" ] && echo yes || echo no)"
           echo "EMAIL_API_KEY present:             $([ -n "$EMAIL_API_KEY" ] && echo yes || echo no)"
           echo "EMAIL_FROM present:                $([ -n "$EMAIL_FROM" ] && echo yes || echo no)"
           echo "EMAIL_DOMAIN present:              $([ -n "$EMAIL_DOMAIN" ] && echo yes || echo no)"
+          echo "RESEND_API_KEY present:            $([ -n "$RESEND_API_KEY" ] && echo yes || echo no)"
 
       - name: Validate NIW positioning
         run: python scripts/validate_niw_positioning.py
+
+      - name: Diagnose billing and email env var configuration
+        # Prints only true/false configured status — never prints secret values.
+        run: |
+          echo "BILLING_PROVIDER configured: $([ -n "$BILLING_PROVIDER" ] && echo true || echo false)"
+          echo "PADDLE_API_KEY configured: $([ -n "$PADDLE_API_KEY" ] && echo true || echo false)"
+          echo "PADDLE_CLIENT_TOKEN configured: $([ -n "$PADDLE_CLIENT_TOKEN" ] && echo true || echo false)"
+          echo "PADDLE_PRICE_ID configured: $([ -n "$PADDLE_PRICE_ID" ] && echo true || echo false)"
+          echo "PADDLE_WEBHOOK_SECRET configured: $([ -n "$PADDLE_WEBHOOK_SECRET" ] && echo true || echo false)"
+          echo "PADDLE_ENVIRONMENT configured: $([ -n "$PADDLE_ENVIRONMENT" ] && echo true || echo false)"
+          echo "EMAIL_PROVIDER configured: $([ -n "$EMAIL_PROVIDER" ] && echo true || echo false)"
+          echo "MAIL_PROVIDER configured: $([ -n "$MAIL_PROVIDER" ] && echo true || echo false)"
+          echo "RESEND_API_KEY configured: $([ -n "$RESEND_API_KEY" ] && echo true || echo false)"
+          echo "EMAIL_FROM configured: $([ -n "$EMAIL_FROM" ] && echo true || echo false)"
+          echo "EMAIL_DOMAIN configured: $([ -n "$EMAIL_DOMAIN" ] && echo true || echo false)"
 
       - name: Regenerate staging launch proof (with real secrets)
         # Regenerates artifacts/staging-proof/latest/summary.json using the
