@@ -19,9 +19,16 @@ name: Save GitHub ZIP Proof
 #   7. Hard-asserts freshness of artifacts/live-evidence-proof/latest/summary.json
 #      (fails if stale or if STAGING secrets are present but proof is still fail-closed).
 #      When secrets are absent the assertion passes with a notice.
-#   8. Runs sell-now proof and launch proof (paid SaaS when BILLING_PROVIDER=paddle, else no-billing).
-#   9. Runs GitHub ZIP proof.
-#  10. Commits all proof folders (always, even when secrets are absent —
+#   8. Runs paid SaaS launch proof BEFORE sell-now (BILLING_PROVIDER=paddle/stripe) or
+#      no-billing launch proof (BILLING_PROVIDER=none/disabled) so billing_ready and
+#      email_ready are current when sell-now reads them.
+#   9. Regenerates staging-proof a second time so required_dependencies.paid_launch_readiness
+#      reflects the freshly generated launch-proof artifact instead of a prior stale value.
+#  10. Runs sell-now proof AFTER launch-proof and second staging-proof pass.
+#  11. Runs GitHub ZIP proof AFTER sell-now proof.
+#  12. Asserts no contradictions between launch-proof and sell-now-proof (hard failure if
+#      launch-proof email_ready/billing_ready disagrees with sell-now-proof).
+#  13. Commits all proof folders (always, even when secrets are absent —
 #      contradiction flags are captured explicitly in sell-now-proof).
 on:
   workflow_dispatch:
@@ -390,10 +397,50 @@ jobs:
               print('The contradiction will be captured in sell-now-proof contradiction_flags.')
           PY
 
+      - name: Run paid SaaS launch proof
+        # Regenerates artifacts/launch-proof/latest/summary.json.
+        # Runs BEFORE sell-now-proof so sell-now reads fresh billing_ready and email_ready.
+        # Dispatches to the correct proof script based on BILLING_PROVIDER:
+        #   paddle / stripe  → run_paid_saas_launch_proof.py (validates billing credentials)
+        #   none / empty     → run_no_billing_launch_proof.py (NIW/pilot path, billing disabled)
+        # Uses the job-level BILLING_PROVIDER and PADDLE_* / email secrets so that
+        # billing_ready=true and email_ready=true appear in the artifact when configured.
+        run: |
+          if [ "$BILLING_PROVIDER" = "paddle" ] || [ "$BILLING_PROVIDER" = "stripe" ]; then
+            echo "BILLING_PROVIDER=$BILLING_PROVIDER: running paid SaaS launch proof"
+            python scripts/staging/run_paid_saas_launch_proof.py
+          else
+            echo "BILLING_PROVIDER=${BILLING_PROVIDER:-none}: running no-billing launch proof"
+            export BILLING_PROVIDER=none
+            python scripts/staging/run_no_billing_launch_proof.py
+          fi
+
+      - name: Regenerate staging proof after launch-proof
+        # Second pass of staging-proof so required_dependencies.paid_launch_readiness
+        # reflects the freshly generated launch-proof instead of the stale artifact
+        # from the previous run. No "not configured" env-var assertion is re-applied here —
+        # that was already enforced in the earlier "Assert staging proof env vars" step.
+        env:
+          BILLING_PROVIDER: ${{ secrets.BILLING_PROVIDER }}
+          PADDLE_ENVIRONMENT: ${{ secrets.PADDLE_ENVIRONMENT }}
+          PADDLE_API_KEY: ${{ secrets.PADDLE_API_KEY }}
+          PADDLE_CLIENT_TOKEN: ${{ secrets.PADDLE_CLIENT_TOKEN }}
+          PADDLE_PRICE_ID: ${{ secrets.PADDLE_PRICE_ID }}
+          PADDLE_WEBHOOK_SECRET: ${{ secrets.PADDLE_WEBHOOK_SECRET }}
+          EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+          MAIL_PROVIDER: ${{ secrets.MAIL_PROVIDER }}
+          EMAIL_DOMAIN: ${{ secrets.EMAIL_DOMAIN }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+        run: |
+          python scripts/generate_staging_launch_proof.py \
+            --mode staging
+
       - name: Generate sell-now proof
         # Aggregates all proof sources into artifacts/sell-now-proof/latest/.
-        # Must run after live-evidence-proof is refreshed and before
-        # write_github_zip_proof.py so github-proof can embed the sell-now fields.
+        # Runs AFTER launch-proof so sell-now reads fresh billing_ready and email_ready.
+        # Runs AFTER second staging-proof pass so required_dependencies are up to date.
+        # Must run before write_github_zip_proof.py so github-proof can embed the sell-now fields.
         run: python scripts/proof/write_sell_now_proof.py
 
       - name: Warn on sell-now proof contradiction
@@ -440,28 +487,104 @@ jobs:
               print(f'  sell_now_managed_ready={sell_managed}')
           PY
 
-      - name: Run paid SaaS launch proof
-        # Regenerates artifacts/launch-proof/latest/summary.json.
-        # Dispatches to the correct proof script based on BILLING_PROVIDER:
-        #   paddle / stripe  → run_paid_saas_launch_proof.py (validates billing credentials)
-        #   none / empty     → run_no_billing_launch_proof.py (NIW/pilot path, billing disabled)
-        # Uses the job-level BILLING_PROVIDER and PADDLE_* / email secrets so that
-        # billing_ready=true and email_ready=true appear in the artifact when configured.
-        run: |
-          if [ "$BILLING_PROVIDER" = "paddle" ] || [ "$BILLING_PROVIDER" = "stripe" ]; then
-            echo "BILLING_PROVIDER=$BILLING_PROVIDER: running paid SaaS launch proof"
-            python scripts/staging/run_paid_saas_launch_proof.py
-          else
-            echo "BILLING_PROVIDER=${BILLING_PROVIDER:-none}: running no-billing launch proof"
-            export BILLING_PROVIDER=none
-            python scripts/staging/run_no_billing_launch_proof.py
-          fi
-
       - name: Generate GitHub ZIP proof
         # GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA,
         # and GITHUB_REF_NAME are standard GitHub Actions environment variables
         # automatically set by the runner — no secrets involved.
         run: python scripts/proof/write_github_zip_proof.py
+
+      - name: Assert no contradictions between launch-proof and sell-now proof
+        # Hard failure if launch-proof and sell-now-proof contradict each other on
+        # billing_ready, email_ready, or broad_paid_saas_ready. A contradiction here
+        # means sell-now read a stale launch-proof (wrong proof generation order).
+        # Also checks that github-proof references fresh sell-now values.
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+
+          launch_path   = Path('artifacts/launch-proof/latest/summary.json')
+          sell_now_path = Path('artifacts/sell-now-proof/latest/summary.json')
+          github_path   = Path('artifacts/github-proof/latest/summary.json')
+
+          errors = []
+          if not launch_path.exists():
+              errors.append('artifacts/launch-proof/latest/summary.json not found')
+          if not sell_now_path.exists():
+              errors.append('artifacts/sell-now-proof/latest/summary.json not found')
+          if errors:
+              for e in errors:
+                  print(f'ERROR: {e}', file=sys.stderr)
+              sys.exit(1)
+
+          launch   = json.loads(launch_path.read_text())
+          sell_now = json.loads(sell_now_path.read_text())
+
+          launch_r   = launch.get('readiness', {})
+          lp_billing = bool(launch_r.get('billing_ready', False))
+          lp_email   = bool(launch_r.get('email_ready', False))
+          lp_broad   = bool(launch.get('broad_paid_saas_ready', False))
+
+          sn_billing  = bool(sell_now.get('billing_ready', False))
+          sn_email    = bool(sell_now.get('email_ready', False))
+          sn_broad    = bool(sell_now.get('broad_paid_saas_ready', False))
+          sn_blockers = sell_now.get('blockers', [])
+
+          contradictions = []
+          if lp_email and not sn_email:
+              contradictions.append(
+                  f'launch-proof email_ready=true but sell-now-proof email_ready=false '
+                  f'(blockers: {[b for b in sn_blockers if "email" in b]})'
+              )
+          if lp_billing and not sn_billing:
+              contradictions.append(
+                  f'launch-proof billing_ready=true but sell-now-proof billing_ready=false '
+                  f'(blockers: {[b for b in sn_blockers if "billing" in b]})'
+              )
+          if lp_broad and not sn_broad:
+              eb = [b for b in sn_blockers if 'email' in b or 'billing' in b]
+              if eb:
+                  contradictions.append(
+                      f'launch-proof broad_paid_saas_ready=true but sell-now-proof has '
+                      f'email/billing blockers: {eb}'
+                  )
+
+          if github_path.exists():
+              github  = json.loads(github_path.read_text())
+              gh_sell = github.get('sell_now_proof', {})
+              if gh_sell:
+                  gh_email   = bool(gh_sell.get('email_ready', False))
+                  gh_billing = bool(gh_sell.get('billing_ready', False))
+                  if sn_email and not gh_email:
+                      contradictions.append(
+                          'github-proof sell_now_proof.email_ready=false but '
+                          'sell-now-proof email_ready=true (stale github-proof embedding)'
+                      )
+                  if sn_billing and not gh_billing:
+                      contradictions.append(
+                          'github-proof sell_now_proof.billing_ready=false but '
+                          'sell-now-proof billing_ready=true (stale github-proof embedding)'
+                      )
+
+          if contradictions:
+              print('ERROR: proof contradictions detected — launch-proof and sell-now-proof disagree:',
+                    file=sys.stderr)
+              for c in contradictions:
+                  print(f'  - {c}', file=sys.stderr)
+              print('', file=sys.stderr)
+              print('Cause: sell-now read a stale launch-proof. '
+                    'Correct order: live-evidence → launch-proof → staging-proof (pass 2) '
+                    '→ sell-now → github-proof.', file=sys.stderr)
+              sys.exit(1)
+
+          lp_gen = launch.get('generated_at', 'unknown')
+          sn_gen = sell_now.get('generated_at', 'unknown')
+          print('OK: no contradictions between launch-proof and sell-now-proof.')
+          print(f'  launch-proof generated_at : {lp_gen}')
+          print(f'  sell-now generated_at     : {sn_gen}')
+          print(f'  launch email_ready={lp_email}  billing_ready={lp_billing}')
+          print(f'  sell-now email_ready={sn_email}  billing_ready={sn_billing}')
+          PY
 
       - name: Stage proof files
         run: |

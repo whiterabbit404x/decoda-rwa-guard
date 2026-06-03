@@ -69,6 +69,25 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
 
     contradiction_flags: list[str] = []
 
+    # Guard: treat final-readiness as absent if it is more than 14 days old.
+    # final-readiness is generated locally and is not refreshed by the CI workflow.
+    # Stale values must not pollute sell-now readiness decisions.
+    _stale_final_msg: str | None = None
+    if final_r:
+        _fg = final_r.get("generated_at", "")
+        try:
+            _fts = datetime.fromisoformat(_fg)
+            if _fts.tzinfo is None:
+                _fts = _fts.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - _fts).days > 14:
+                _stale_final_msg = (
+                    f"final-readiness artifact is stale (generated_at={_fg!r}); "
+                    "treating as absent — re-run scripts/validate_100_percent_readiness.py to refresh"
+                )
+                final_r = {}
+        except Exception:
+            pass
+
     # ── Live evidence fields (primary: live-evidence-proof) ───────────────────
     lpe = live_ev.get("live_provider_evidence", {})
     provider_ready = bool(lpe.get("provider_ready", False))
@@ -115,9 +134,30 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
     staging_worker_enabled = bool(staging.get("staging_worker_enabled", False))
 
     # ── Launch/billing/email fields ───────────────────────────────────────────
+    # Prefer launch-proof readiness for billing and email status — it is the
+    # canonical source after run_paid_saas_launch_proof.py executes.
     launch_readiness = launch.get("readiness", {})
     billing_ready = bool(launch_readiness.get("billing_ready", False))
     email_ready = bool(launch_readiness.get("email_ready", False))
+
+    # Cross-check: staging-proof billing/email vs. launch-proof.
+    # If staging-proof says billing/email validated=pass but launch-proof says
+    # billing_ready/email_ready=false, the proofs ran out of order (launch-proof
+    # was stale when sell-now read it). Flag the contradiction explicitly.
+    _staging_billing_pass = staging.get("billing_production_validation", {}).get("status") == "pass"
+    _staging_email_pass   = staging.get("email_production_validation", {}).get("status") == "pass"
+    if _staging_billing_pass and not billing_ready:
+        contradiction_flags.append(
+            "staging-proof billing_production_validation=pass but "
+            "launch-proof readiness.billing_ready=false "
+            "(launch-proof may be stale or proofs ran out of order)"
+        )
+    if _staging_email_pass and not email_ready:
+        contradiction_flags.append(
+            "staging-proof email_production_validation=pass but "
+            "launch-proof readiness.email_ready=false "
+            "(launch-proof may be stale or proofs ran out of order)"
+        )
 
     # ── Cross-source contradiction checks ────────────────────────────────────
     if final_r.get("broad_paid_saas_ready") is True and not billing_ready:
@@ -175,6 +215,9 @@ def build_summary(loaded: dict[str, dict | None]) -> dict:
 
     # ── Warnings ─────────────────────────────────────────────────────────────
     warnings: list[str] = []
+
+    if _stale_final_msg:
+        warnings.append(_stale_final_msg)
 
     if not github_actions_visible_green:
         warnings.append("github_actions_visible_green=false: CI green status not proven in artifact")
