@@ -390,10 +390,34 @@ jobs:
               print('The contradiction will be captured in sell-now-proof contradiction_flags.')
           PY
 
+      - name: Run paid SaaS launch proof
+        # Regenerates artifacts/launch-proof/latest/summary.json.
+        # Must run BEFORE release-proof and sell-now proof so all downstream
+        # aggregators read fresh billing/email/evidence readiness.
+        # Dispatches to the correct proof script based on BILLING_PROVIDER:
+        #   paddle / stripe  → run_paid_saas_launch_proof.py (validates billing credentials)
+        #   none / empty     → run_no_billing_launch_proof.py (NIW/pilot path, billing disabled)
+        run: |
+          if [ "$BILLING_PROVIDER" = "paddle" ] || [ "$BILLING_PROVIDER" = "stripe" ]; then
+            echo "BILLING_PROVIDER=$BILLING_PROVIDER: running paid SaaS launch proof"
+            python scripts/staging/run_paid_saas_launch_proof.py
+          else
+            echo "BILLING_PROVIDER=${BILLING_PROVIDER:-none}: running no-billing launch proof"
+            export BILLING_PROVIDER=none
+            python scripts/staging/run_no_billing_launch_proof.py
+          fi
+
+      - name: Regenerate release-proof
+        # Regenerates all release-proof artifacts (ci-required-gates, manifest,
+        # test-report-summary, release summary) using --mode staging.
+        # Reads the freshly generated launch-proof WITHOUT overwriting it.
+        # Must run after launch-proof so paid_launch_ready is reflected correctly.
+        run: python scripts/generate_release_proof.py --mode staging
+
       - name: Generate sell-now proof
         # Aggregates all proof sources into artifacts/sell-now-proof/latest/.
-        # Must run after live-evidence-proof is refreshed and before
-        # write_github_zip_proof.py so github-proof can embed the sell-now fields.
+        # Runs after launch-proof and release-proof so fresh billing/evidence state
+        # is captured. github-proof can embed sell-now fields in the next step.
         run: python scripts/proof/write_sell_now_proof.py
 
       - name: Warn on sell-now proof contradiction
@@ -440,22 +464,12 @@ jobs:
               print(f'  sell_now_managed_ready={sell_managed}')
           PY
 
-      - name: Run paid SaaS launch proof
-        # Regenerates artifacts/launch-proof/latest/summary.json.
-        # Dispatches to the correct proof script based on BILLING_PROVIDER:
-        #   paddle / stripe  → run_paid_saas_launch_proof.py (validates billing credentials)
-        #   none / empty     → run_no_billing_launch_proof.py (NIW/pilot path, billing disabled)
-        # Uses the job-level BILLING_PROVIDER and PADDLE_* / email secrets so that
-        # billing_ready=true and email_ready=true appear in the artifact when configured.
-        run: |
-          if [ "$BILLING_PROVIDER" = "paddle" ] || [ "$BILLING_PROVIDER" = "stripe" ]; then
-            echo "BILLING_PROVIDER=$BILLING_PROVIDER: running paid SaaS launch proof"
-            python scripts/staging/run_paid_saas_launch_proof.py
-          else
-            echo "BILLING_PROVIDER=${BILLING_PROVIDER:-none}: running no-billing launch proof"
-            export BILLING_PROVIDER=none
-            python scripts/staging/run_no_billing_launch_proof.py
-          fi
+      - name: Generate final-readiness proof
+        # Regenerates artifacts/final-readiness/latest/summary.json using
+        # --mode staging so the stale mode='local' blocker is eliminated.
+        # Must run after launch-proof and release-proof so all dependency gates
+        # reflect the current workflow run.
+        run: python scripts/validate_100_percent_readiness.py --mode staging
 
       - name: Generate GitHub ZIP proof
         # GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA,
@@ -463,12 +477,120 @@ jobs:
         # automatically set by the runner — no secrets involved.
         run: python scripts/proof/write_github_zip_proof.py
 
+      - name: Assert proof consistency
+        # Hard failure if any of these contradictions exist after all proof
+        # artifacts have been generated in the correct order.
+        run: |
+          python - <<'PY'
+          import json, sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          def load(p):
+              path = Path(p)
+              if not path.exists():
+                  return None
+              try:
+                  return json.loads(path.read_text())
+              except Exception:
+                  return None
+
+          def parse_dt(s):
+              if not s:
+                  return None
+              try:
+                  dt = datetime.fromisoformat(str(s))
+                  if dt.tzinfo is None:
+                      dt = dt.replace(tzinfo=timezone.utc)
+                  return dt
+              except Exception:
+                  return None
+
+          errors = []
+
+          launch   = load('artifacts/launch-proof/latest/summary.json')
+          release  = load('artifacts/release-proof/latest/summary.json')
+          sell_now = load('artifacts/sell-now-proof/latest/summary.json')
+          final_r  = load('artifacts/final-readiness/latest/summary.json')
+          github_p = load('artifacts/github-proof/latest/summary.json')
+
+          # 1. launch-proof paid_launch_ready=true but release-proof has stale launch blocker
+          if launch and release:
+              lp_paid = bool(launch.get('paid_launch_ready'))
+              rel_blockers = release.get('blockers', [])
+              stale = [b for b in rel_blockers if 'launch-proof not ready' in b]
+              if lp_paid and stale:
+                  errors.append(
+                      f'launch-proof paid_launch_ready=true but release-proof has stale '
+                      f'blocker: {stale[0]}'
+                  )
+
+          # 2. launch-proof broad_paid_saas_ready=true but sell-now has billing/email blockers
+          if launch and sell_now:
+              lp_broad = bool(launch.get('broad_paid_saas_ready'))
+              sn_blockers = sell_now.get('blockers', [])
+              billing_email = [
+                  b for b in sn_blockers
+                  if 'billing_ready=false' in b or 'email_ready=false' in b
+              ]
+              if lp_broad and billing_email:
+                  errors.append(
+                      f'launch-proof broad_paid_saas_ready=true but sell-now has billing/'
+                      f'email blockers: {billing_email}'
+                  )
+
+          # 3. final-readiness must not be older than launch-proof
+          if final_r and launch:
+              fr_dt = parse_dt(final_r.get('generated_at'))
+              lp_dt = parse_dt(launch.get('generated_at'))
+              if fr_dt and lp_dt and fr_dt < lp_dt:
+                  errors.append(
+                      f'final-readiness ({final_r["generated_at"]}) is older than '
+                      f'launch-proof ({launch["generated_at"]})'
+                  )
+
+          # 4. github-proof must not be older than sell-now or final-readiness
+          if github_p and sell_now:
+              gp_dt = parse_dt(github_p.get('generated_at'))
+              sn_dt = parse_dt(sell_now.get('generated_at'))
+              if gp_dt and sn_dt and gp_dt < sn_dt:
+                  errors.append(
+                      f'github-proof ({github_p["generated_at"]}) is older than '
+                      f'sell-now ({sell_now["generated_at"]})'
+                  )
+          if github_p and final_r:
+              gp_dt = parse_dt(github_p.get('generated_at'))
+              fr_dt = parse_dt(final_r.get('generated_at'))
+              if gp_dt and fr_dt and gp_dt < fr_dt:
+                  errors.append(
+                      f'github-proof ({github_p["generated_at"]}) is older than '
+                      f'final-readiness ({final_r["generated_at"]})'
+                  )
+
+          # 5. No artifact should have mode='local' after a staging workflow run
+          for name, data in [('final-readiness', final_r), ('release-proof', release)]:
+              if data and data.get('mode') == 'local':
+                  errors.append(
+                      f'{name} still has mode=\'local\' after staging workflow run — '
+                      'must be called with --mode staging'
+                  )
+
+          if errors:
+              print('PROOF CONSISTENCY ERRORS:')
+              for e in errors:
+                  print(f'  ERROR: {e}')
+              sys.exit(1)
+          print('OK: all proof consistency checks passed')
+          PY
+
       - name: Stage proof files
         run: |
           git add artifacts/staging-proof/latest/
           git add artifacts/live-evidence-proof/latest/
-          git add artifacts/sell-now-proof/latest/
           git add artifacts/launch-proof/latest/
+          git add artifacts/release-proof/latest/
+          git add artifacts/sell-now-proof/latest/
+          git add artifacts/final-readiness/latest/
           git add artifacts/github-proof/latest/
 
       - name: Commit proof files (skip if unchanged)
@@ -478,7 +600,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes — proof files already up to date."
           else
-            git commit -m "Regenerate staging, live-evidence, sell-now, launch, and GitHub ZIP proof [skip ci]"
+            git commit -m "Regenerate staging, live-evidence, launch, release, sell-now, final-readiness, and GitHub ZIP proof [skip ci]"
           fi
 
       - name: Push to main

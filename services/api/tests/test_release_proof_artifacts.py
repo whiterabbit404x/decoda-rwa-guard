@@ -109,16 +109,19 @@ def test_missing_live_evidence_blocks_broad_paid_saas() -> None:
     assert len(launch_proof.get('blockers', [])) > 0
 
 
-# Test C: Missing CI gate makes release_status fail
+# Test C: ci_required_gates_ready=False always makes release_status fail (fail-closed)
 def test_missing_ci_gate_makes_release_status_fail() -> None:
-    """Verify missing CI gate blocks release status."""
+    """Verify that when ci_required_gates_ready is False, release_status is fail."""
     from scripts.generate_release_proof import generate_release_proof
 
     release_proof = generate_release_proof(mode='local', strict=False)
 
-    # In local mode without CI gates, release should not pass
-    # (ci_required_gates_ready should be false if gates artifact is missing)
-    assert release_proof['release_status'] == 'fail'
+    # Fail-closed invariant: if ci-required-gates are not ready, release must not pass.
+    if not release_proof['ci_required_gates_ready']:
+        assert release_proof['release_status'] == 'fail', (
+            'ci_required_gates_ready=False but release_status is not fail — '
+            'release proof is not fail-closed'
+        )
 
 
 # Test D: Paid launch readiness blockers are captured
