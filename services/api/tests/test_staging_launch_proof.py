@@ -1102,3 +1102,108 @@ def test_y_strict_validator_rejects_safe_to_sell_without_staging_launch_ready(
     assert any('safe_to_sell_broadly_today' in e and 'broad_paid_saas_ready' in e for e in errors), (
         f'Expected overclaim error for safe_to_sell without broad_paid_saas_ready; got: {errors}'
     )
+
+
+# ---------------------------------------------------------------------------
+# Paddle billing and Resend mail acceptance tests (Session 16)
+# ---------------------------------------------------------------------------
+
+def test_paddle_plain_price_id_accepted_in_billing_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plain PADDLE_PRICE_ID (not a variant) is accepted in billing validation."""
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_plain_xyz')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_testkey_plain_xyz')
+    monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_prod_monthly_xyz')
+    for k in list(__import__('os').environ):
+        if k.startswith('PADDLE_PRICE_ID_'):
+            monkeypatch.delenv(k, raising=False)
+
+    result = build_billing_production_validation('staging')
+
+    assert result['price_id_present'] is True
+    assert not any('PADDLE_PRICE_ID' in b for b in result['blockers'])
+
+
+def test_paddle_variant_price_id_still_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PADDLE_PRICE_ID_PRO variant is still accepted when plain PADDLE_PRICE_ID is absent."""
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_variant_xyz')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_testkey_variant_xyz')
+    monkeypatch.delenv('PADDLE_PRICE_ID', raising=False)
+    monkeypatch.setenv('PADDLE_PRICE_ID_PRO', 'pri_pro_monthly_variant_xyz')
+
+    result = build_billing_production_validation('staging')
+
+    assert result['price_id_present'] is True
+    assert not any('PADDLE_PRICE_ID' in b for b in result['blockers'])
+
+
+def test_paddle_billing_blocked_when_price_id_absent_in_staging(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing all PADDLE_PRICE_ID forms blocks billing validation."""
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_noprice_xyz')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_testkey_noprice_xyz')
+    monkeypatch.delenv('PADDLE_PRICE_ID', raising=False)
+    for k in list(__import__('os').environ):
+        if k.startswith('PADDLE_PRICE_ID_'):
+            monkeypatch.delenv(k, raising=False)
+
+    result = build_billing_production_validation('staging')
+
+    assert result['price_id_present'] is False
+    assert result['status'] == 'fail'
+    assert any('PADDLE_PRICE_ID' in b for b in result['blockers'])
+
+
+def test_mail_provider_alias_accepted_in_staging_email_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MAIL_PROVIDER=resend is accepted as alias for EMAIL_PROVIDER in staging proof."""
+    monkeypatch.delenv('EMAIL_PROVIDER', raising=False)
+    monkeypatch.setenv('MAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('RESEND_API_KEY', 're_testApiKey_staging_alias_xyz')
+    monkeypatch.setenv('EMAIL_FROM', 'alerts@company.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'company.io')
+
+    result = build_email_production_validation('staging')
+
+    assert result['provider'] == 'resend'
+    assert result['api_key_present'] is True
+    assert result['sender_present'] is True
+    assert result['domain_present'] is True
+    assert result['status'] == 'pass'
+    assert result['blockers'] == []
+
+
+def test_staging_email_blocked_when_neither_email_nor_mail_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing both EMAIL_PROVIDER and MAIL_PROVIDER fails closed in staging proof."""
+    monkeypatch.delenv('EMAIL_PROVIDER', raising=False)
+    monkeypatch.delenv('MAIL_PROVIDER', raising=False)
+
+    result = build_email_production_validation('staging')
+
+    assert result['status'] == 'fail'
+    assert any('EMAIL_PROVIDER' in b for b in result['blockers'])
+
+
+def test_paddle_plus_resend_staging_billing_and_email_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Full Paddle billing + Resend mail combination passes staging production validation."""
+    # Billing
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_full_combo_xyz')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_full_combo_xyz')
+    monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_prod_monthly_full_combo_xyz')
+    monkeypatch.delenv('STRIPE_SECRET_KEY', raising=False)
+    # Email
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('RESEND_API_KEY', 're_testApiKey_full_combo_xyz')
+    monkeypatch.setenv('EMAIL_FROM', 'noreply@decoda.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'decoda.io')
+
+    billing = build_billing_production_validation('staging')
+    email = build_email_production_validation('staging')
+
+    assert billing['price_id_present'] is True
+    assert billing['status'] == 'pass'
+    assert billing['blockers'] == []
+    assert email['provider'] == 'resend'
+    assert email['status'] == 'pass'
+    assert email['blockers'] == []
