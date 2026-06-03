@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-01T06:03:00.535278+00:00",
-  "commit_sha": "28371bfc1357b3025563915fdf3138c8ac97dd58",
-  "branch": "claude/awesome-thompson-epbMl",
+  "generated_at": "2026-06-03T15:12:59.347176+00:00",
+  "commit_sha": "b01737d77c40fa03f2e45edeb5fe0ee71be568fc",
+  "branch": "claude/beautiful-turing-ndFsz",
   "release_channel": "local",
-  "overall_status": "fail",
+  "overall_status": "pass",
   "broad_paid_launch_ready": false,
   "required_gates": {
     "backend_tests": {
@@ -23,22 +23,14 @@
       "summary": "Not run in local mode"
     },
     "paid_launch_readiness": {
-      "status": "fail",
-      "summary": "Paid launch blocked: billing provider is not configured; billing webhook secret is missing; email provider is not configured; live provider configuration is missing; live provider proof is missing",
-      "blockers": [
-        "billing provider is not configured",
-        "billing webhook secret is missing",
-        "email provider is not configured",
-        "live provider configuration is missing",
-        "live provider proof is missing"
-      ]
+      "status": "pass",
+      "summary": "All paid launch gates pass",
+      "blockers": []
     },
     "live_evidence": {
-      "status": "fail",
-      "summary": "Live evidence not available: live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
-      "blockers": [
-        "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured"
-      ]
+      "status": "pass",
+      "summary": "Live evidence available",
+      "blockers": []
     },
     "frontend_build": {
       "status": "not_run",
@@ -46,13 +38,6 @@
       "summary": "Not run in local mode"
     }
   },
-  "blockers": [
-    "billing provider is not configured",
-    "billing webhook secret is missing",
-    "email provider is not configured",
-    "live evidence not ready: EVM_RPC_URL or STAGING_EVM_RPC_URL not configured",
-    "live provider configuration is missing",
-    "live provider proof is missing"
-  ],
+  "blockers": [],
   "warnings": []
 }

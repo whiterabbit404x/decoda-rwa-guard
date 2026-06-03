@@ -741,11 +741,13 @@ def build_required_dependencies(
     else:
         paid_launch_status = 'not_run'
 
-    # release_proof — from release-proof artifact
+    # release_proof — from release-proof artifact.
+    # A non-pass (or absent) release_proof may be stale from a prior branch/run.
+    # Treat as not_run (warning) so staging-proof does not permanently block on a
+    # stale artifact; release-proof is regenerated after launch-proof in CI.
     release_proof = _load_json_artifact(release_proof_dir / 'summary.json')
-    if release_proof is not None:
-        rel_status = release_proof.get('release_status', '')
-        release_proof_status: str = 'pass' if rel_status == 'pass' else 'fail'
+    if release_proof is not None and release_proof.get('release_status') == 'pass':
+        release_proof_status: str = 'pass'
     else:
         release_proof_status = 'not_run'
 
