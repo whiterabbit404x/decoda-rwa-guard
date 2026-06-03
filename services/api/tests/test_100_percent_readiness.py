@@ -643,3 +643,66 @@ def test_t_strict_mode_returns_nonzero_when_not_100(tmp_path: Path) -> None:
     )
     # local mode with --strict must exit non-zero because production_100_percent_ready=false
     assert result.returncode != 0
+
+
+def _write_staging_proof(tmp_path: Path, *, staging_launch_ready: bool = True) -> Path:
+    d = tmp_path / 'staging-proof' / 'latest'
+    d.mkdir(parents=True, exist_ok=True)
+    proof: dict[str, Any] = {
+        'schema_version': 1,
+        'generated_at': '2026-01-01T00:00:00+00:00',
+        'mode': 'staging',
+        'strict': True,
+        'staging_launch_ready': staging_launch_ready,
+        'blockers': [] if staging_launch_ready else ['staging_runtime_reachable=false'],
+        'warnings': [],
+    }
+    (d / 'summary.json').write_text(json.dumps(proof))
+    return d
+
+
+# ---------------------------------------------------------------------------
+# V. Valid staging proof with --strict allows staging validation to pass.
+# ---------------------------------------------------------------------------
+def test_v_valid_staging_proof_strict_clears_staging_blocker(tmp_path: Path) -> None:
+    """When staging proof has staging_launch_ready=true and strict=True, no staging blocker."""
+    lp_dir = _write_launch_proof(tmp_path)
+    rp_dir = _write_release_proof(tmp_path)
+    _write_ci_gates(tmp_path)
+    sp_dir = _write_staging_proof(tmp_path, staging_launch_ready=True)
+
+    result = build_final_readiness(
+        mode='staging',
+        strict=True,
+        launch_proof_dir=lp_dir,
+        release_proof_dir=rp_dir,
+        staging_proof_dir=sp_dir,
+    )
+    assert not any('staging validation missing' in b for b in result['blockers']), (
+        f'Expected no staging-validation-missing blocker with valid proof, got: {result["blockers"]}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# W. Billing readiness passes when launch-proof reports billing_ready=True.
+# ---------------------------------------------------------------------------
+def test_w_billing_ready_true_passes_launch_readiness(tmp_path: Path) -> None:
+    """billing_ready=True in launch-proof gives billing_email_launch_readiness pass."""
+    lp_dir = _write_launch_proof(tmp_path)  # all readiness flags True by default
+    rp_dir = _write_release_proof(tmp_path)
+    _write_ci_gates(tmp_path)
+
+    result = build_final_readiness(
+        mode='local',
+        launch_proof_dir=lp_dir,
+        release_proof_dir=rp_dir,
+    )
+    cat = result['categories'].get('billing_email_launch_readiness', {})
+    assert cat.get('status') == 'pass', (
+        f'Expected billing_email_launch_readiness=pass when all billing flags are True, '
+        f'got status={cat.get("status")!r}'
+    )
+    gate = result['required_gates'].get('paid_launch_readiness', {})
+    assert gate.get('status') == 'pass', (
+        f'Expected paid_launch_readiness gate=pass, got {gate.get("status")!r}'
+    )
