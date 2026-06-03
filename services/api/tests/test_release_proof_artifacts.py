@@ -766,3 +766,214 @@ def test_paid_saas_launch_proof_staging_mode_can_have_paid_launch_ready_true(
         assert data.get('paid_launch_ready') is True, (
             f'paid_launch_ready should be True in staging mode with all gates passing'
         )
+
+
+# ---------------------------------------------------------------------------
+# Ordering / consistency tests required by the proof pipeline fix
+# ---------------------------------------------------------------------------
+
+def test_manifest_sha256_matches_launch_proof_after_generation() -> None:
+    """Manifest SHA256 for launch-proof must match the actual file after generation."""
+    import hashlib
+
+    # Generate all proof artifacts atomically.
+    result = subprocess.run(
+        ['python', 'scripts/generate_release_proof.py', '--mode', 'local'],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f'generate_release_proof.py failed:\n{result.stderr}'
+
+    manifest_path = REPO_ROOT / 'artifacts' / 'release-proof' / 'latest' / 'manifest.json'
+    launch_path   = REPO_ROOT / 'artifacts' / 'launch-proof'  / 'latest' / 'summary.json'
+
+    assert manifest_path.exists(), 'manifest.json was not created'
+    assert launch_path.exists(),   'launch-proof summary.json was not created'
+
+    manifest = json.loads(manifest_path.read_text())
+    files = {entry['path']: entry for entry in manifest.get('files', [])}
+
+    launch_key = 'artifacts/launch-proof/latest/summary.json'
+    assert launch_key in files, f'manifest does not contain {launch_key}'
+
+    entry = files[launch_key]
+    actual_sha256 = hashlib.sha256(launch_path.read_bytes()).hexdigest()
+    assert entry['sha256'] == actual_sha256, (
+        f'Manifest SHA256 mismatch for launch-proof after generation.\n'
+        f'  manifest={entry["sha256"]}\n'
+        f'  actual  ={actual_sha256}\n'
+        'The manifest was not generated after the launch-proof was finalised.'
+    )
+
+
+def test_validate_release_proof_passes_after_proof_pipeline_generation() -> None:
+    """validate_release_proof must pass immediately after generate_release_proof runs."""
+    gen = subprocess.run(
+        ['python', 'scripts/generate_release_proof.py', '--mode', 'local'],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert gen.returncode == 0, f'generate_release_proof.py failed:\n{gen.stderr}'
+
+    val = subprocess.run(
+        ['python', 'scripts/validate_release_proof.py'],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert val.returncode == 0, (
+        f'validate_release_proof.py failed after pipeline generation:\n'
+        f'{val.stdout}\n{val.stderr}'
+    )
+
+
+def test_validate_release_proof_fails_when_launch_proof_modified_after_manifest() -> None:
+    """Modifying launch-proof after manifest generation must cause validation to fail."""
+    import hashlib, time
+
+    gen = subprocess.run(
+        ['python', 'scripts/generate_release_proof.py', '--mode', 'local'],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert gen.returncode == 0, f'generate_release_proof.py failed:\n{gen.stderr}'
+
+    # Overwrite launch-proof with different content to simulate post-manifest modification.
+    launch_path = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
+    original = launch_path.read_text()
+    tampered = json.loads(original)
+    tampered['_tampered_by_test'] = True
+    launch_path.write_text(json.dumps(tampered, indent=2))
+
+    try:
+        val = subprocess.run(
+            ['python', 'scripts/validate_release_proof.py'],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert val.returncode != 0, (
+            'validate_release_proof.py should have failed after launch-proof was modified, '
+            'but it passed. The manifest integrity check is not working.'
+        )
+        assert 'SHA256' in val.stdout + val.stderr, (
+            'Expected SHA256 mismatch error in output, got:\n'
+            f'{val.stdout}\n{val.stderr}'
+        )
+    finally:
+        # Restore original so other tests are not affected.
+        launch_path.write_text(original)
+        # Re-generate to leave artifacts in a consistent state.
+        subprocess.run(
+            ['python', 'scripts/generate_release_proof.py', '--mode', 'local'],
+            cwd=REPO_ROOT,
+            capture_output=True,
+        )
+
+
+def test_save_proof_workflow_step_order() -> None:
+    """save-proof-to-repo.yml must have launch-proof before release-proof before sell-now before github-proof."""
+    import yaml
+
+    workflow_path = REPO_ROOT / '.github' / 'workflows' / 'save-proof-to-repo.yml'
+    assert workflow_path.exists(), 'save-proof-to-repo.yml not found'
+
+    with open(workflow_path) as f:
+        workflow = yaml.safe_load(f)
+
+    jobs = workflow.get('jobs', {})
+    save_job = jobs.get('save-proof', {})
+    steps = save_job.get('steps', [])
+    step_names = [s.get('name', '') for s in steps]
+
+    def _index(keyword: str) -> int:
+        """Return the index of the first step whose name contains keyword."""
+        for i, name in enumerate(step_names):
+            if keyword.lower() in name.lower():
+                return i
+        return -1
+
+    launch_idx      = _index('launch proof')
+    release_idx     = _index('generate release proof')
+    validate_idx    = _index('validate release proof')
+    sell_now_idx    = _index('sell-now proof')
+    final_idx       = _index('final-readiness')
+    github_idx      = _index('github zip proof')
+
+    assert launch_idx != -1,   f'No "launch proof" step found in save-proof job. Steps: {step_names}'
+    assert release_idx != -1,  f'No "generate release proof" step found in save-proof job. Steps: {step_names}'
+    assert validate_idx != -1, f'No "validate release proof" step found in save-proof job. Steps: {step_names}'
+    assert sell_now_idx != -1, f'No "sell-now proof" step found in save-proof job. Steps: {step_names}'
+    assert github_idx != -1,   f'No "github zip proof" step found in save-proof job. Steps: {step_names}'
+
+    assert launch_idx < release_idx, (
+        f'launch-proof step ({launch_idx}) must come before generate-release-proof step ({release_idx}). '
+        f'Steps: {step_names}'
+    )
+    assert release_idx < validate_idx, (
+        f'generate-release-proof step ({release_idx}) must come before validate-release-proof step ({validate_idx}). '
+        f'Steps: {step_names}'
+    )
+    assert validate_idx < sell_now_idx, (
+        f'validate-release-proof step ({validate_idx}) must come before sell-now-proof step ({sell_now_idx}). '
+        f'Steps: {step_names}'
+    )
+    assert sell_now_idx < github_idx, (
+        f'sell-now-proof step ({sell_now_idx}) must come before github-zip-proof step ({github_idx}). '
+        f'Steps: {step_names}'
+    )
+    if final_idx != -1:
+        assert sell_now_idx < final_idx, (
+            f'sell-now-proof step ({sell_now_idx}) must come before final-readiness step ({final_idx}).'
+        )
+        assert final_idx < github_idx, (
+            f'final-readiness step ({final_idx}) must come before github-zip-proof step ({github_idx}).'
+        )
+
+
+def test_no_regen_launch_proof_flag_preserves_existing_launch_proof() -> None:
+    """--no-regen-launch-proof must not overwrite an existing launch-proof."""
+    import hashlib
+
+    # First, generate a fresh launch-proof using generate_release_proof.py normally.
+    gen1 = subprocess.run(
+        ['python', 'scripts/generate_release_proof.py', '--mode', 'local'],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert gen1.returncode == 0, f'Initial generation failed:\n{gen1.stderr}'
+
+    launch_path = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest' / 'summary.json'
+    sha_before = hashlib.sha256(launch_path.read_bytes()).hexdigest()
+
+    # Run again with --no-regen-launch-proof; launch-proof should be unchanged.
+    gen2 = subprocess.run(
+        ['python', 'scripts/generate_release_proof.py', '--mode', 'local', '--no-regen-launch-proof'],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert gen2.returncode == 0, f'Second generation failed:\n{gen2.stderr}'
+
+    sha_after = hashlib.sha256(launch_path.read_bytes()).hexdigest()
+    assert sha_before == sha_after, (
+        '--no-regen-launch-proof must not modify the existing launch-proof.\n'
+        f'  SHA256 before: {sha_before}\n'
+        f'  SHA256 after : {sha_after}'
+    )
+
+    # Validate should still pass because manifest was regenerated to hash the preserved file.
+    val = subprocess.run(
+        ['python', 'scripts/validate_release_proof.py'],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert val.returncode == 0, (
+        'validate_release_proof.py failed after --no-regen-launch-proof run:\n'
+        f'{val.stdout}\n{val.stderr}'
+    )

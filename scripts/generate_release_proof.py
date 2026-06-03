@@ -444,6 +444,57 @@ def generate_launch_proof(*, mode: str) -> dict[str, Any]:
     if not readiness['ci_required_gates_ready']:
         blockers.append('ci gates not ready')
 
+    # managed_pilot_ready: read from sell-now-proof artifact (file read, fail-closed).
+    managed_pilot_ready = False
+    _sell_now_path = REPO_ROOT / 'artifacts' / 'sell-now-proof' / 'latest' / 'summary.json'
+    if _sell_now_path.exists():
+        try:
+            with open(_sell_now_path) as _f:
+                _sell = json.load(_f)
+            managed_pilot_ready = _sell.get('sell_now_managed_ready') is True
+        except Exception:
+            pass
+
+    # niw_positioning_ready: run the lightweight validator script (fail-closed on any error).
+    niw_positioning_ready = False
+    try:
+        _niw = subprocess.run(
+            ['python', 'scripts/validate_niw_positioning.py'],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            timeout=30,
+        )
+        niw_positioning_ready = _niw.returncode == 0
+    except Exception:
+        pass
+
+    # readiness_categories: granular truth table required by cross-validation tests.
+    readiness_categories = {
+        'live_provider_evidence_ready': readiness.get('live_evidence_ready', False),
+        'managed_pilot_ready': managed_pilot_ready,
+        'niw_positioning_ready': niw_positioning_ready,
+        'broad_paid_saas_ready': broad_paid_saas_ready,
+        'ci_required_gates_ready': readiness.get('ci_required_gates_ready', False),
+    }
+
+    # allowed_claims / prohibited_claims: required by launch-proof cross-validation tests.
+    allowed_claims: list[str] = []
+    if niw_positioning_ready:
+        allowed_claims.append('NIW Strategic Infrastructure Guard positioning ready')
+    if managed_pilot_ready:
+        allowed_claims.append('controlled pilot / managed sale ready')
+    if readiness.get('live_evidence_ready'):
+        allowed_claims.append('live provider evidence ready')
+    allowed_claims.append('not broad paid SaaS ready')
+
+    prohibited_claims = [
+        'broad paid SaaS production ready',
+        'billing ready',
+        'staging runtime fully ready',
+        'staging database fully ready',
+        'worker fully ready',
+    ]
+
     return {
         'schema_version': 1,
         'generated_at': datetime.now(timezone.utc).isoformat(),
@@ -452,6 +503,9 @@ def generate_launch_proof(*, mode: str) -> dict[str, Any]:
         'paid_launch_ready': paid_launch_ready,
         'controlled_pilot_ready': controlled_pilot_ready,
         'broad_paid_saas_ready': broad_paid_saas_ready,
+        'readiness_categories': readiness_categories,
+        'allowed_claims': allowed_claims,
+        'prohibited_claims': prohibited_claims,
         'readiness': readiness,
         'blockers': sorted(set(blockers)),
         'warnings': [],
@@ -572,15 +626,23 @@ def generate_test_report_summary(*, mode: str) -> dict[str, Any]:
     }
 
 
-def main(mode: str = 'local', strict: bool = False) -> int:
-    """Generate all five proof artifacts in correct order."""
-    print(f'[generate-release-proof] mode={mode} strict={strict}')
+def main(mode: str = 'local', strict: bool = False, regen_launch_proof: bool = True) -> int:
+    """Generate all five proof artifacts in correct order.
+
+    When regen_launch_proof=False the launch-proof is preserved as-is so that a
+    richer proof written by run_paid_saas_launch_proof.py / run_no_billing_launch_proof.py
+    is not overwritten.  The manifest is still generated after all other files are
+    finalised, so it hashes the current launch-proof on disk.
+    """
+    print(f'[generate-release-proof] mode={mode} strict={strict} regen_launch_proof={regen_launch_proof}')
 
     # Create artifact directories
     release_proof_dir = REPO_ROOT / 'artifacts' / 'release-proof' / 'latest'
     launch_proof_dir = REPO_ROOT / 'artifacts' / 'launch-proof' / 'latest'
     release_proof_dir.mkdir(parents=True, exist_ok=True)
     launch_proof_dir.mkdir(parents=True, exist_ok=True)
+
+    launch_proof_path = launch_proof_dir / 'summary.json'
 
     # Phase 1: Generate and write independent first-order artifacts
     ci_gates = generate_ci_required_gates(mode=mode, strict=strict)
@@ -589,11 +651,20 @@ def main(mode: str = 'local', strict: bool = False) -> int:
         json.dump(ci_gates, f, indent=2)
     print(f'[generate-release-proof] wrote {ci_gates_path.relative_to(REPO_ROOT)}')
 
-    launch_proof = generate_launch_proof(mode=mode)
-    launch_proof_path = launch_proof_dir / 'summary.json'
-    with open(launch_proof_path, 'w') as f:
-        json.dump(launch_proof, f, indent=2)
-    print(f'[generate-release-proof] wrote {launch_proof_path.relative_to(REPO_ROOT)}')
+    if regen_launch_proof:
+        launch_proof = generate_launch_proof(mode=mode)
+        with open(launch_proof_path, 'w') as f:
+            json.dump(launch_proof, f, indent=2)
+        print(f'[generate-release-proof] wrote {launch_proof_path.relative_to(REPO_ROOT)}')
+    elif launch_proof_path.exists():
+        print(f'[generate-release-proof] preserved existing {launch_proof_path.relative_to(REPO_ROOT)}')
+    else:
+        # Fallback: no prior launch-proof exists, generate one so the manifest can hash it
+        print(f'[generate-release-proof] WARNING: --no-regen-launch-proof set but no existing launch-proof found; generating fallback')
+        launch_proof = generate_launch_proof(mode=mode)
+        with open(launch_proof_path, 'w') as f:
+            json.dump(launch_proof, f, indent=2)
+        print(f'[generate-release-proof] wrote {launch_proof_path.relative_to(REPO_ROOT)} (fallback)')
 
     # Phase 2: Generate release-proof summary (references ci-gates and launch-proof)
     release_proof = generate_release_proof(mode=mode, strict=strict)
@@ -632,6 +703,7 @@ def main(mode: str = 'local', strict: bool = False) -> int:
 if __name__ == '__main__':
     mode = 'local'
     strict = False
+    regen_launch_proof = True
 
     if len(sys.argv) > 1:
         if '--mode' in sys.argv:
@@ -640,5 +712,7 @@ if __name__ == '__main__':
                 mode = sys.argv[idx + 1]
         if '--strict' in sys.argv:
             strict = True
+        if '--no-regen-launch-proof' in sys.argv:
+            regen_launch_proof = False
 
-    raise SystemExit(main(mode=mode, strict=strict))
+    raise SystemExit(main(mode=mode, strict=strict, regen_launch_proof=regen_launch_proof))

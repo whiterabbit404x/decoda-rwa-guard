@@ -19,9 +19,13 @@ name: Save GitHub ZIP Proof
 #   7. Hard-asserts freshness of artifacts/live-evidence-proof/latest/summary.json
 #      (fails if stale or if STAGING secrets are present but proof is still fail-closed).
 #      When secrets are absent the assertion passes with a notice.
-#   8. Runs sell-now proof and launch proof (paid SaaS when BILLING_PROVIDER=paddle, else no-billing).
-#   9. Runs GitHub ZIP proof.
-#  10. Commits all proof folders (always, even when secrets are absent —
+#   8. Runs launch proof (paid SaaS when BILLING_PROVIDER=paddle/stripe, else no-billing).
+#   9. Generates release proof AFTER launch-proof is final, so the manifest hashes the
+#      correct launch-proof.  Validates the manifest immediately.
+#  10. Generates sell-now proof (after release-proof).
+#  11. Generates final-readiness proof (after sell-now-proof).
+#  12. Runs GitHub ZIP proof last.
+#  13. Commits all proof folders (always, even when secrets are absent —
 #      contradiction flags are captured explicitly in sell-now-proof).
 on:
   workflow_dispatch:
@@ -390,10 +394,39 @@ jobs:
               print('The contradiction will be captured in sell-now-proof contradiction_flags.')
           PY
 
+      - name: Run paid SaaS launch proof
+        # Regenerates artifacts/launch-proof/latest/summary.json.
+        # Must run BEFORE generate_release_proof so the manifest hashes the final file.
+        # Dispatches to the correct proof script based on BILLING_PROVIDER:
+        #   paddle / stripe       → run_paid_saas_launch_proof.py (validates billing credentials)
+        #   none / empty / other  → run_no_billing_launch_proof.py (NIW/pilot path, billing disabled)
+        # Uses the job-level BILLING_PROVIDER and PADDLE_* / email secrets so that
+        # billing_ready=true and email_ready=true appear in the artifact when configured.
+        run: |
+          if [ "$BILLING_PROVIDER" = "paddle" ] || [ "$BILLING_PROVIDER" = "stripe" ]; then
+            echo "BILLING_PROVIDER=$BILLING_PROVIDER: running paid SaaS launch proof"
+            python scripts/staging/run_paid_saas_launch_proof.py
+          else
+            echo "BILLING_PROVIDER=${BILLING_PROVIDER:-none}: running no-billing launch proof"
+            export BILLING_PROVIDER=none
+            python scripts/staging/run_no_billing_launch_proof.py
+          fi
+
+      - name: Generate release proof
+        # Generates artifacts/release-proof/latest/{ci-required-gates,summary,test-report,manifest}.
+        # MUST run after launch-proof is finalised so the manifest hashes the correct file.
+        # --no-regen-launch-proof preserves the richer launch-proof written by the step above.
+        run: python scripts/generate_release_proof.py --mode ci --no-regen-launch-proof
+
+      - name: Validate release proof
+        # Hard assertion: manifest SHA256 must match the current launch-proof on disk.
+        # Fails the workflow if launch-proof was modified after the manifest was generated.
+        run: python scripts/validate_release_proof.py
+
       - name: Generate sell-now proof
         # Aggregates all proof sources into artifacts/sell-now-proof/latest/.
-        # Must run after live-evidence-proof is refreshed and before
-        # write_github_zip_proof.py so github-proof can embed the sell-now fields.
+        # Must run after release-proof (and therefore after launch-proof) is refreshed
+        # and before write_github_zip_proof.py so github-proof can embed the sell-now fields.
         run: python scripts/proof/write_sell_now_proof.py
 
       - name: Warn on sell-now proof contradiction
@@ -440,22 +473,10 @@ jobs:
               print(f'  sell_now_managed_ready={sell_managed}')
           PY
 
-      - name: Run paid SaaS launch proof
-        # Regenerates artifacts/launch-proof/latest/summary.json.
-        # Dispatches to the correct proof script based on BILLING_PROVIDER:
-        #   paddle / stripe  → run_paid_saas_launch_proof.py (validates billing credentials)
-        #   none / empty     → run_no_billing_launch_proof.py (NIW/pilot path, billing disabled)
-        # Uses the job-level BILLING_PROVIDER and PADDLE_* / email secrets so that
-        # billing_ready=true and email_ready=true appear in the artifact when configured.
-        run: |
-          if [ "$BILLING_PROVIDER" = "paddle" ] || [ "$BILLING_PROVIDER" = "stripe" ]; then
-            echo "BILLING_PROVIDER=$BILLING_PROVIDER: running paid SaaS launch proof"
-            python scripts/staging/run_paid_saas_launch_proof.py
-          else
-            echo "BILLING_PROVIDER=${BILLING_PROVIDER:-none}: running no-billing launch proof"
-            export BILLING_PROVIDER=none
-            python scripts/staging/run_no_billing_launch_proof.py
-          fi
+      - name: Generate final-readiness proof
+        # Must run after sell-now-proof and release-proof are both final.
+        # Writes artifacts/final-readiness/latest/summary.json.
+        run: python scripts/validate_100_percent_readiness.py --mode ci
 
       - name: Generate GitHub ZIP proof
         # GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA,
@@ -467,8 +488,10 @@ jobs:
         run: |
           git add artifacts/staging-proof/latest/
           git add artifacts/live-evidence-proof/latest/
-          git add artifacts/sell-now-proof/latest/
           git add artifacts/launch-proof/latest/
+          git add artifacts/release-proof/latest/
+          git add artifacts/sell-now-proof/latest/
+          git add artifacts/final-readiness/latest/
           git add artifacts/github-proof/latest/
 
       - name: Commit proof files (skip if unchanged)
@@ -478,7 +501,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes — proof files already up to date."
           else
-            git commit -m "Regenerate staging, live-evidence, sell-now, launch, and GitHub ZIP proof [skip ci]"
+            git commit -m "Regenerate staging, live-evidence, launch, release, sell-now, final-readiness, and GitHub ZIP proof [skip ci]"
           fi
 
       - name: Push to main
