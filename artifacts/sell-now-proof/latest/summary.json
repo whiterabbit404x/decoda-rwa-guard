@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T14:47:07.390293+00:00",
+  "generated_at": "2026-06-03T15:42:52.242924+00:00",
   "sell_now_managed_ready": true,
   "broad_paid_saas_ready": false,
   "safe_to_sell_broadly_today": false,
@@ -11,16 +11,18 @@
   "staging_runtime_reachable": false,
   "staging_database_reachable": true,
   "staging_worker_enabled": true,
-  "billing_ready": true,
-  "email_ready": true,
+  "billing_ready": false,
+  "email_ready": false,
   "blockers": [
-    "staging_runtime_reachable=false"
+    "staging_runtime_reachable=false",
+    "billing_ready=false: billing provider not configured",
+    "email_ready=false: email provider not configured"
   ],
   "warnings": [],
   "contradiction_flags": [],
   "safe_claims": [
     "controlled pilot ready: single customer with direct onboarding, no billing required",
-    "overall readiness score: 96/100",
+    "overall readiness score: 90/100",
     "live EVM telemetry received and proven in CI artifact",
     "detection \u2192 alert \u2192 incident chain proven from live provider data"
   ],
