@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-06-03T13:58:37.761538+00:00",
+  "generated_at": "2026-06-03T14:47:07.559527+00:00",
   "launch_mode": "paid_saas",
   "billing_provider": "paddle",
   "repository": "/home/runner/work/decoda-rwa-guard/decoda-rwa-guard",
@@ -26,7 +26,7 @@
     "sell_now_managed_ready": true,
     "safe_claims": [
       "controlled pilot ready: single customer with direct onboarding, no billing required",
-      "overall readiness score: 90/100",
+      "overall readiness score: 96/100",
       "live EVM telemetry received and proven in CI artifact",
       "detection \u2192 alert \u2192 incident chain proven from live provider data"
     ],

@@ -1,6 +1,6 @@
 # Sell-Now Proof
 
-**Generated:** 2026-06-03T13:58:37.550815+00:00
+**Generated:** 2026-06-03T14:47:07.390293+00:00
 
 ## Readiness Summary
 
@@ -27,17 +27,16 @@
 | staging_database_reachable | YES |
 | staging_worker_enabled | YES |
 | billing_ready | YES |
-| email_ready | NO |
+| email_ready | YES |
 
 ## Blockers
 
 - staging_runtime_reachable=false
-- email_ready=false: email provider not configured
 
 ## Safe Claims
 
 - controlled pilot ready: single customer with direct onboarding, no billing required
-- overall readiness score: 90/100
+- overall readiness score: 96/100
 - live EVM telemetry received and proven in CI artifact
 - detection → alert → incident chain proven from live provider data
 
