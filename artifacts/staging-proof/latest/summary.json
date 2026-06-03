@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T11:29:33.827212+00:00",
-  "mode": "local",
+  "generated_at": "2026-06-03T12:05:18.405912+00:00",
+  "mode": "staging",
   "strict": false,
-  "release_channel": "local",
+  "release_channel": "staging",
   "staging_launch_ready": false,
   "broad_paid_saas_ready": false,
   "safe_to_sell_broadly_today": false,
@@ -25,7 +25,7 @@
     "staging_migrations_validated": false,
     "staging_runtime_validated": false,
     "staging_live_evidence_validated": false,
-    "generated_at": "2026-06-03T11:29:33.827242+00:00",
+    "generated_at": "2026-06-03T12:05:18.405940+00:00",
     "blockers": [
       "STAGING_API_URL not configured",
       "STAGING_APP_URL not configured",
@@ -74,7 +74,7 @@
     ]
   },
   "billing_production_validation": {
-    "status": "fail",
+    "status": "pass",
     "billing_provider": "other",
     "live_secret_key_present": true,
     "webhook_secret_present": true,
@@ -85,7 +85,7 @@
     "warnings": []
   },
   "email_production_validation": {
-    "status": "fail",
+    "status": "pass",
     "provider": "resend",
     "api_key_present": true,
     "sender_present": true,
@@ -108,7 +108,6 @@
     "STAGING_AUTH_TOKEN_SECRET not configured",
     "STAGING_DATABASE_URL not configured",
     "STAGING_WORKER_ENABLED not configured; staging worker presence not confirmed",
-    "cannot reach broad_paid_saas_ready in 'local' mode; run with --mode staging --strict using real credentials",
     "live_evidence_ready downgraded: evm_rpc_configured=false; real EVM provider secrets required to claim live evidence",
     "required dependency failed: paid_launch_readiness",
     "required dependency failed: release_proof"

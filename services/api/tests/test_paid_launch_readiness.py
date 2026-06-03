@@ -808,6 +808,91 @@ def test_paid_launch_passes_with_paddle_billing_and_resend_mail(monkeypatch: pyt
     assert 'STRIPE_SECRET_KEY' not in out.get('billing_missing_env', [])
 
 
+def test_paddle_price_id_production_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PADDLE_PRICE_ID_PRODUCTION is accepted when plain PADDLE_PRICE_ID is absent."""
+    _clear_launch_env(monkeypatch)
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_prod_xyz')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_prod_xyz')
+    monkeypatch.setenv('PADDLE_PRICE_ID_PRODUCTION', 'pri_production_monthly_xyz')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_testkey_prod_xyz')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
+
+    out = check_billing_readiness()
+
+    assert out['billing_ready'] is True
+    assert out['billing_missing_env'] == []
+    assert 'STRIPE_SECRET_KEY' not in out.get('billing_missing_env', [])
+
+
+def test_paddle_price_id_monthly_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PADDLE_PRICE_ID_MONTHLY is accepted when plain PADDLE_PRICE_ID is absent."""
+    _clear_launch_env(monkeypatch)
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_monthly_xyz')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_monthly_xyz')
+    monkeypatch.setenv('PADDLE_PRICE_ID_MONTHLY', 'pri_monthly_plan_xyz')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_testkey_monthly_xyz')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
+
+    out = check_billing_readiness()
+
+    assert out['billing_ready'] is True
+    assert out['billing_missing_env'] == []
+
+
+def test_paddle_price_id_yearly_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PADDLE_PRICE_ID_YEARLY is accepted when plain PADDLE_PRICE_ID is absent."""
+    _clear_launch_env(monkeypatch)
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_yearly_xyz')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_yearly_xyz')
+    monkeypatch.setenv('PADDLE_PRICE_ID_YEARLY', 'pri_yearly_plan_xyz')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_testkey_yearly_xyz')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
+
+    out = check_billing_readiness()
+
+    assert out['billing_ready'] is True
+    assert out['billing_missing_env'] == []
+
+
+def test_resend_readiness_passes_with_email_resend_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """EMAIL_RESEND_API_KEY is accepted as an alias for RESEND_API_KEY."""
+    _clear_launch_env(monkeypatch)
+    monkeypatch.delenv('RESEND_API_KEY', raising=False)
+    monkeypatch.setenv('EMAIL_PROVIDER', 'resend')
+    monkeypatch.setenv('EMAIL_RESEND_API_KEY', 're_alias_testkey_xyz')
+    monkeypatch.setenv('EMAIL_FROM', 'alerts@decoda.io')
+    monkeypatch.setenv('EMAIL_DOMAIN', 'decoda.io')
+
+    out = check_email_readiness()
+
+    assert out['email_ready'] is True
+    assert out['email_status'] == 'ready'
+    assert out['email_missing_env'] == []
+
+
+def test_stripe_vars_not_required_when_billing_provider_is_paddle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stripe env vars must not appear in billing_missing_env when BILLING_PROVIDER=paddle."""
+    _clear_launch_env(monkeypatch)
+    monkeypatch.setenv('BILLING_PROVIDER', 'paddle')
+    monkeypatch.setenv('PADDLE_API_KEY', 'pdl_api_testkey_nostripe_xyz')
+    monkeypatch.setenv('PADDLE_CLIENT_TOKEN', 'pdl_client_testkey_nostripe_xyz')
+    monkeypatch.setenv('PADDLE_PRICE_ID', 'pri_nostripe_plan_xyz')
+    monkeypatch.setenv('PADDLE_WEBHOOK_SECRET', 'pdl_whsec_testkey_nostripe_xyz')
+    monkeypatch.setenv('PADDLE_ENVIRONMENT', 'production')
+
+    out = check_billing_readiness()
+
+    assert out['billing_ready'] is True
+    stripe_vars = ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PRICE_ID']
+    for var in stripe_vars:
+        assert var not in out['billing_missing_env'], (
+            f'{var} must not be required when BILLING_PROVIDER=paddle'
+        )
+
+
 def test_mail_provider_alias_with_paddle_billing_passes(monkeypatch: pytest.MonkeyPatch) -> None:
     """MAIL_PROVIDER alias is accepted in full paid launch readiness check with Paddle billing."""
     _clear_launch_env(monkeypatch)
