@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T16:47:57.637863+00:00",
-  "commit_sha": "0b5af765880433dd0999198a353e62ae50f60457",
-  "branch": "claude/affectionate-goldberg-bhnoI",
-  "release_channel": "local",
+  "generated_at": "2026-06-03T16:57:21.732985+00:00",
+  "commit_sha": "bfb0218cdab5a8bcb3b53b9052957b087fcd131a",
+  "branch": "main",
+  "release_channel": "ci",
   "overall_status": "fail",
   "broad_paid_launch_ready": false,
   "required_gates": {
@@ -24,12 +24,8 @@
     },
     "paid_launch_readiness": {
       "status": "fail",
-      "summary": "Paid launch blocked: billing provider is not configured; billing webhook secret is missing; email provider is not configured; live provider configuration is missing; live provider proof is missing",
+      "summary": "Paid launch blocked: live provider proof is missing",
       "blockers": [
-        "billing provider is not configured",
-        "billing webhook secret is missing",
-        "email provider is not configured",
-        "live provider configuration is missing",
         "live provider proof is missing"
       ]
     },
@@ -45,10 +41,6 @@
     }
   },
   "blockers": [
-    "billing provider is not configured",
-    "billing webhook secret is missing",
-    "email provider is not configured",
-    "live provider configuration is missing",
     "live provider proof is missing"
   ],
   "warnings": []

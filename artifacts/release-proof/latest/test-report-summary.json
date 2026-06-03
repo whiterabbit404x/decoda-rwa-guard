@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T16:47:57.646501+00:00",
-  "release_channel": "local",
-  "commit_sha": "0b5af765880433dd0999198a353e62ae50f60457",
-  "branch": "claude/affectionate-goldberg-bhnoI",
+  "generated_at": "2026-06-03T16:57:21.739676+00:00",
+  "release_channel": "ci",
+  "commit_sha": "bfb0218cdab5a8bcb3b53b9052957b087fcd131a",
+  "branch": "main",
   "test_suites": {
     "release_proof_artifacts": {
       "name": "release-proof-artifacts",
@@ -15,8 +15,6 @@
     }
   },
   "overall_status": "fail",
-  "blockers": [
-    "test suite not executed in local mode"
-  ],
+  "blockers": [],
   "warnings": []
 }

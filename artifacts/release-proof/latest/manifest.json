@@ -1,28 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-03T16:47:57.650870+00:00",
-  "release_channel": "local",
-  "commit_sha": "0b5af765880433dd0999198a353e62ae50f60457",
-  "branch": "claude/affectionate-goldberg-bhnoI",
+  "generated_at": "2026-06-03T16:57:21.742941+00:00",
+  "release_channel": "ci",
+  "commit_sha": "bfb0218cdab5a8bcb3b53b9052957b087fcd131a",
+  "branch": "main",
   "files": [
     {
       "path": "artifacts/release-proof/latest/summary.json",
-      "sha256": "f954df5663d12b9dbfe5e14476e321bad6ecce3056b7afcf525dd89aec648eb9",
-      "size_bytes": 761,
+      "sha256": "0e3f5142606b964042a27d4f01828209cd33be32de35d89a0c5a2679e9faa622",
+      "size_bytes": 728,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/release-proof/latest/ci-required-gates.json",
-      "sha256": "f156ee7ff16f54cbf7d3c8f2f544479b8e2f6a4be2c1efa3da9058ca43f30e98",
-      "size_bytes": 1860,
+      "sha256": "2d1d93e2469666be5f641266282d813b2e5a2f0ff42f53e025172511307475aa",
+      "size_bytes": 1328,
       "required": true,
       "status": "present"
     },
     {
       "path": "artifacts/launch-proof/latest/summary.json",
-      "sha256": "6e2512c3e89183af47f27f4fbb481ba93752aaa017836fb5e40927b1500d5514",
-      "size_bytes": 1362,
+      "sha256": "337fbdd92432773752dbd9c8ac00ff03c08fd9786b59970983625d195baf964d",
+      "size_bytes": 4257,
       "required": true,
       "status": "present"
     }
